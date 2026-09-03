@@ -10,6 +10,7 @@ from graph_engine.composition.resolver import ResolutionError
 
 from tests.product.composition_harness import request_for
 from tests.product.conformance import ALL_BINDING_IDS
+from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS
 
 _FEATURE_OWNERS = (
     "assurance.execution",
@@ -19,33 +20,12 @@ _FEATURE_OWNERS = (
     "assurance.intake",
     "assurance.quality",
 )
-_PUBLIC_IMPORT_ALIASES = {
-    "intake.prepare",
-    "intake.case",
-    "generation.generate",
-    "execution.execute",
-    "execution.rerun",
-    "quality.assess",
-    "quality.issue-review",
-    "quality.issue-analyze",
-    "quality.issue-reconcile",
-    "quality.report",
-    "healing.repair-failure",
-    "healing.repair-coverage",
-    "improvement.archive",
-    "improvement.retro",
-    "improvement.review",
-    "improvement.evaluate",
-    "improvement.export",
-    "improvement.apply",
-    "improvement.rollback",
-}
-_FEATURE_PREFIXES = tuple(f"{owner}." for owner in _FEATURE_OWNERS)
+_PRODUCT_FACTORY = "assurance_product.graphs.factory:build_product_graphs"
 
 
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])
 def test_composition_has_exact_provider_and_binding_closure(adapter, installed_sources):
-    from assurance_product.models import finalize_aliases
+    from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
     from assurance_product.product import resolve_assurance_composition
 
     composition = resolve_assurance_composition(request_for(adapter, installed_sources))
@@ -53,10 +33,35 @@ def test_composition_has_exact_provider_and_binding_closure(adapter, installed_s
     entries = composition.registries.capabilities.entries
     bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
     assert set(bindings) == set(ALL_BINDING_IDS)
-    assert len(bindings) == 99
-    for binding_id in finalize_aliases():
-        assert bindings[binding_id].data is None
-        assert bindings[binding_id].secret_handles == ()
+    assert len(bindings) == 33
+    assert not hasattr(composition, "workflow")
+    assert composition.manifest.graph_factory_symbol == _PRODUCT_FACTORY
+    assert isinstance(composition.lock, type(composition.lock))
+    assert composition.lock.schema_version == "3"
+    contracts = all_feature_agent_contracts()
+    tasks = all_feature_task_contracts()
+    assert len(contracts) == 33
+    assert len(contracts) + len(tasks) == 41
+
+
+@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
+def test_composition_binds_semantic_agent_contracts_not_phase_aliases(
+    adapter,
+    installed_sources,
+) -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
+
+    composition = resolve_assurance_composition(request_for(adapter, installed_sources))
+    entries = composition.registries.capabilities.entries
+    bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
+    assert set(bindings) == set(AGENT_EXECUTION_CONTRACTS) == set(AGENT_RUNTIME_BINDINGS)
+    assert not any(item.startswith("assurance.product.agent.") for item in bindings)
+    for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
+        binding = bindings[contract_id]
+        assert binding.contract_id == contract.contract_id
+        assert binding.data is not None
 
 
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])
@@ -142,99 +147,22 @@ def test_resolve_accepts_already_imported_assurance_product(installed_sources):
 
 
 @pytest.mark.parametrize("adapter", ["opencode", "cursor"])
-def test_product_manifest_uses_only_the_modular_assembly_form(adapter, installed_sources):
-    from assurance_product.agent_contracts import FEATURE_AGENT_JOB_CATALOGS, expand_agent_job_slots
+def test_product_manifest_uses_only_the_graph_factory_form(adapter, installed_sources):
+    from assurance_product.models import PRODUCT_ENTRYPOINTS
     from assurance_product.product import resolve_assurance_composition
 
     resolved = resolve_assurance_composition(request_for(adapter, installed_sources))
     product_manifest = resolved.manifest
-    assert product_manifest.workflow is None
-    assert product_manifest.workflow_resource_id is None
-    assert product_manifest.workflow_module is not None
-    assert product_manifest.workflow_module.module_id == "assurance.product.workflow"
-    assert product_manifest.workflow_module.owner_id == "assurance.product"
-    assert product_manifest.workflow_module.module_version == "0.2.0"
-    assert product_manifest.workflow_module.name == "assurance"
-    assert product_manifest.workflow_module.role == "product"
-
-    requirements = product_manifest.workflow_module_resources
-    assert len(requirements) == 6
-    assert {(item.owner_id, item.module_id, item.resource_id) for item in requirements} == {
-        (
-            owner,
-            f"{owner}.workflow",
-            f"{owner}.workflow.module.v1",
-        )
-        for owner in _FEATURE_OWNERS
-    }
-
-    assert set(product_manifest.workflow_module.imports) == _PUBLIC_IMPORT_ALIASES
-    assert len(product_manifest.workflow_module.imports) == 19
-    for alias, spec in product_manifest.workflow_module.imports.items():
-        feature, export = alias.split(".", 1)
-        assert spec.owner_id == f"assurance.{feature}"
-        assert spec.module_id == f"assurance.{feature}.workflow"
-        assert spec.export == export
-
-    expanded = expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)
-    assert len(expanded) == 99
-    expected_bindings = {
-        (
-            f"assurance.{feature}.workflow",
-            f"{base}.{phase}",
-            alias,
-            contract.contract_id,
-        )
-        for alias, contract in expanded.items()
-        for feature, base, phase in (_slot_parts(alias),)
-    }
-    actual_bindings = {
-        (item.module_id, item.slot, item.capability_id, item.contract_id)
-        for item in product_manifest.workflow_slot_bindings
-    }
-    assert len(product_manifest.workflow_slot_bindings) == 99
-    assert actual_bindings == expected_bindings
-
-    assert set(resolved.workflow.entrypoints) == {
-        "intake",
-        "case",
-        "full",
-        "execute",
-        "archive",
-        "retro",
-        "issue-review",
-        "issue-analyze",
-        "issue-reconcile",
-        "improvement-review",
-        "improvement-evaluate",
-        "improvement-export",
-        "improvement-apply",
-        "improvement-rollback",
-    }
-    root = product_manifest.workflow_module
-    assert set(root.graphs) == {f"product-{name}" for name in resolved.workflow.entrypoints}
-    assert all(node.kind != "task" for graph in root.graphs.values() for node in graph.nodes.values())
-    assert all(
-        f"assurance.product.workflow.graph.product-{name}" in resolved.workflow.graphs
-        for name in resolved.workflow.entrypoints
-    )
-    assert all(
-        node.capability is None or not node.capability.startswith(_FEATURE_PREFIXES)
-        for graph in root.graphs.values()
-        for node in graph.nodes.values()
-    )
-    for graph in root.graphs.values():
-        for node in graph.nodes.values():
-            if node.kind != "subgraph":
-                continue
-            local = node.graph is not None and node.graph in root.graphs
-            imported = node.graph_import in _PUBLIC_IMPORT_ALIASES
-            assert local or imported
-            assert node.graph is None or node.graph_import is None
-
-
-def _slot_parts(alias: str) -> tuple[str, str, str]:
-    rest = alias.removeprefix("assurance.product.agent.")
-    feature, _, remainder = rest.partition(".")
-    base, _, phase = remainder.rpartition(".")
-    return feature, base, phase
+    assert not hasattr(product_manifest, "workflow")
+    assert getattr(product_manifest, "workflow", None) is None
+    assert getattr(product_manifest, "workflow_resource_id", None) is None
+    assert getattr(product_manifest, "workflow_module", None) is None
+    assert getattr(product_manifest, "workflow_module_resources", ()) == ()
+    assert getattr(product_manifest, "workflow_slot_bindings", ()) == ()
+    assert product_manifest.graph_factory_symbol == _PRODUCT_FACTORY
+    assert set(product_manifest.entrypoints) == set(PRODUCT_ENTRYPOINTS)
+    assert len(product_manifest.entrypoints) == 14
+    assert set(PUBLIC_BUNDLE_FIELDS) == set(_FEATURE_OWNERS)
+    assert not hasattr(resolved, "workflow")
+    assert getattr(resolved, "workflow", None) is None
+    assert resolved.lock.schema_version == "3"

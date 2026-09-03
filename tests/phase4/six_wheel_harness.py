@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import metadata
 import importlib
+import inspect
 import json
 from pathlib import Path
 import shutil
@@ -17,10 +18,28 @@ import sys
 import tempfile
 from typing import Any, TypeVar, cast
 
-from agent_runtime_contracts import AgentRunRequest
+import asyncio
+
+from agent_runtime_contracts import AgentRunRequest, InstructionPart
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes
-from graph_engine import Engine
-from graph_engine.canonical import JSONValue, canonical_digest as engine_canonical_digest
+from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext
+from graph_engine.application.status import InvocationStatus
+from graph_engine.attempts.contracts import (
+    AttemptRetryPolicy,
+    AttemptTimeoutPolicy,
+    ResolvedAttemptContract,
+    TaskAttemptContract,
+    resolve_contract,
+)
+from graph_engine.boot.generic import (
+    CatalogContractResolver,
+    MemoryCheckpointer,
+    boot_factory_product,
+    factory_application,
+    invocation_values,
+    workspace_provider_for,
+)
+from graph_engine.canonical import JSONValue
 from graph_engine.composition import (
     ConfigTreePluginSource,
     EditableWheelPluginSource,
@@ -29,30 +48,10 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.composition.lock import InvocationLock
-from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import (
-    InvocationWorkspaceBinding,
-    TaskActivityCancelResult,
-    TaskActivityReconcileResult,
-    TaskContext,
-    TaskHandler,
-    TaskOutcome,
-)
-from graph_engine.runtime.activity import LedgerTaskActivityPort
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.engine import RunResult
-from graph_engine.runtime.host_receipts import prove_call_quiescent
-from graph_engine.runtime.host_protocol import (
-    TaskHostCallIdentity,
-    TaskHostCallResult,
-    TaskHostCancelCall,
-    TaskHostExecuteCall,
-    TaskHostReconcileCall,
-    TaskHostTerminalReceipt,
-)
+from graph_engine.boot.graph_revision import BootArtifact
+from graph_engine.composition.lock import ProductLock
+from graph_engine.plugin_api import ResourceClaims
+from pydantic import BaseModel
 from tests.phase4.agent_harness import FakeAgentAdapter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -148,7 +147,6 @@ _REQUIRED_PATHS = (
     PRODUCT_PACKAGE / "product.py",
     PRODUCT_PACKAGE / "product-opencode-declaration.json",
     PRODUCT_PACKAGE / "product-cursor-declaration.json",
-    PRODUCT_PACKAGE / "workflow.yaml",
     FIXTURE_ROOT / "bindings-opencode" / "plugin.yaml",
     FIXTURE_ROOT / "bindings-opencode" / "model-policy.json",
     FIXTURE_ROOT / "bindings-cursor" / "plugin.yaml",
@@ -200,9 +198,6 @@ def refresh_product_declarations(product_root: Path) -> None:
                 sys.modules.pop(name, None)
         importlib.invalidate_caches()
         module = importlib.import_module("test_assurance_phase4_product.product")
-        workflow_raw = __import__("yaml").safe_load(
-            (package_root / "workflow.yaml").read_text(encoding="utf-8")
-        )
         for cls, filename in (
             (module.Phase4OpenCodeProduct, "product-opencode-declaration.json"),
             (module.Phase4CursorProduct, "product-cursor-declaration.json"),
@@ -212,7 +207,6 @@ def refresh_product_declarations(product_root: Path) -> None:
             if source is None:
                 raise ValueError("phase4 product source must be declared")
             dumped = manifest.model_dump(mode="json", by_alias=True, exclude_none=True)
-            dumped["workflow"] = workflow_raw
             document = {
                 "kind": "product",
                 "manifest": dumped,
@@ -227,7 +221,7 @@ def refresh_product_declarations(product_root: Path) -> None:
 
 @dataclass(frozen=True, slots=True)
 class _InvocationLockView:
-    lock: InvocationLock
+    lock: ProductLock
 
     def canonical_bytes(self) -> bytes:
         return self.lock.canonical_bytes
@@ -274,6 +268,11 @@ class SixWheelRun:
     fixture_wheel: Path
     product_root: Path
     workspace: Path
+    application: AssuranceApplication | None = None
+    artifact: object = None
+    runtime_context: object = None
+    checkpointer: MemoryCheckpointer | None = None
+    invocation_id: str = ""
 
 
 class _OverlayMetadata:
@@ -288,166 +287,12 @@ class _OverlayMetadata:
 
 
 class SixWheelTaskHost:
-    """Substitutes deterministic adapter fakes at the engine host seam."""
+    """Records fixture AgentRunRequest bytes for the Application execute contract."""
 
     def __init__(self, *, adapter_id: str, provider_state_dir: Path) -> None:
         self.adapter_id = adapter_id
         self.provider_state_dir = provider_state_dir
         self.recorded_request_bytes: bytes | None = None
-        self._handlers: Mapping[str, TaskHandler] = {}
-        self._store: Any = None
-        self._receipts: Any = None
-        self._ledger: Ledger | None = None
-
-    def bind_ledger(self, ledger: Ledger) -> None:
-        self._ledger = ledger
-
-    def bind_invocation_runtime(
-        self,
-        *,
-        handlers: Mapping[str, TaskHandler],
-        store: object,
-        receipts: object | None = None,
-        handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
-    ) -> None:
-        del handler_import_roots
-        self._handlers = handlers
-        self._store = store
-        self._receipts = receipts
-
-    def _activity_port(self, call: TaskHostExecuteCall) -> LedgerTaskActivityPort | None:
-        if self._ledger is None or call.activity_rpc.activity_id is None:
-            return None
-        return LedgerTaskActivityPort(ledger=self._ledger, identity=call.activity_rpc)
-
-    def _execute_result(self, call: TaskHostExecuteCall, outcome: TaskOutcome) -> TaskHostCallResult:
-        port = self._activity_port(call)
-        if port is not None and outcome.status == "succeeded":
-            port.mark_dispatch_started({"adapter_id": self.adapter_id, "profile": "fixture"})
-            port.bind({"adapter_id": self.adapter_id, "state": "open"})
-        self._install_terminal_receipt(call, outcome, port=port)
-        return TaskHostCallResult(operation="execute", outcome=outcome)
-
-    def _install_terminal_receipt(
-        self,
-        call: TaskHostExecuteCall,
-        outcome: TaskOutcome,
-        *,
-        port: LedgerTaskActivityPort | None,
-    ) -> None:
-        if self._receipts is None or call.identity.activity_id is None:
-            return
-        assert self._store is not None
-        identity = call.attempt_root.workspace_identity
-        binding = self._store.begin(
-            task_id=identity.task_id,
-            attempt=identity.attempt,
-            output_paths=identity.output_paths,
-        )
-        staged = self._store.seal(binding.identity)
-        snapshot = port.snapshot if port is not None else None
-        sink = self._receipts.sink_for(call.identity)
-        sink.install(
-            TaskHostTerminalReceipt(
-                host_implementation_digest=call.identity.host_implementation_digest,
-                wire_schema_version=call.identity.wire_schema_version,
-                invocation_id=call.identity.invocation_id,
-                task_id=call.identity.task_id,
-                activation_id=call.identity.activation_id,
-                attempt=call.identity.attempt,
-                activity_id=call.identity.activity_id,
-                operation=call.identity.operation,
-                request_digest=(
-                    snapshot.request_digest
-                    if snapshot is not None
-                    else engine_canonical_digest(cast(JSONValue, call.request.model_dump(mode="json")))
-                ),
-                workspace_identity_digest=binding.identity.identity_digest,
-                project_root_digest=binding.identity.project_digest,
-                write_root_digest=binding.identity.write_root_digest,
-                baseline_digest=engine_canonical_digest(
-                    [item.model_dump(mode="json") for item in binding.identity.baseline_files]
-                ),
-                staged_write_set_digest=staged.staged_digest,
-                dispatch_fingerprint_digest=(
-                    snapshot.dispatch_fingerprint_digest if snapshot is not None else None
-                ),
-                reference_digest=snapshot.reference_digest if snapshot is not None else None,
-                outcome=outcome,
-                outcome_digest=engine_canonical_digest(cast(JSONValue, outcome.model_dump(mode="json"))),
-                terminal_proof_digest=None,
-                quiescence_proof_digest=prove_call_quiescent(),
-                host_call_id=sink.host_call_id,
-            )
-        )
-
-    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-        assert self._store is not None
-        request = call.request.model_copy(update={"input": _unwrap_engine_input(call)})
-        identity = call.attempt_root.workspace_identity
-        if hasattr(self._store, "begin"):
-            binding = self._store.begin(
-                task_id=identity.task_id,
-                attempt=identity.attempt,
-                output_paths=identity.output_paths,
-            )
-            project_root = binding.project_root
-            write_root = binding.write_root
-            workspace_identity = binding.identity
-        else:
-            attempts_root = Path(getattr(self._store, "attempts_root", getattr(self._store, "root")))
-            write_root = attempts_root / identity.attempt_id
-            write_root.mkdir(parents=True, exist_ok=True)
-            project_root = Path(getattr(self._store, "project_root", write_root))
-            workspace_identity = identity
-        if call.capability_id in RUNTIME_EXECUTE.values():
-            return self._execute_result(call, self._execute_fake(request.input))
-        handler = self._handlers[call.request.capability_id]
-        outcome = await handler.execute(
-            request,
-            TaskContext(
-                project_root=project_root,
-                write_root=write_root,
-                workspace_identity=workspace_identity,
-                heartbeat=lambda: None,
-                cancel_requested=lambda: False,
-                invocation=call.request.invocation,
-            ),
-        )
-        return self._execute_result(call, outcome)
-
-    def _execute_fake(self, payload: JSONValue) -> TaskOutcome:
-        agent_request = AgentRunRequest.model_validate(payload)
-        self.recorded_request_bytes = agent_request.canonical_bytes()
-        self.provider_state_dir.mkdir(parents=True, exist_ok=True)
-        (self.provider_state_dir / "session.json").write_bytes(
-            json.dumps({"adapter_id": self.adapter_id, "state": "open"}).encode("utf-8")
-        )
-        result = FakeAgentAdapter(
-            CASE_REVIEW_STRUCTURED,
-            adapter_id=self.adapter_id,
-            adapter_version="1.0.0",
-        ).execute_request(agent_request)
-        return TaskOutcome.succeeded(result.model_dump(mode="json"))
-
-    async def reconcile(self, call: TaskHostReconcileCall) -> TaskHostCallResult:
-        del call
-        return TaskHostCallResult(
-            operation="reconcile",
-            reconcile_result=TaskActivityReconcileResult(status="indeterminate", reason="test host"),
-        )
-
-    async def cancel(self, call: TaskHostCancelCall) -> TaskHostCallResult:
-        del call
-        return TaskHostCallResult(
-            operation="cancel",
-            cancel_result=TaskActivityCancelResult(status="indeterminate", reason="test host"),
-        )
-
-    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
-        if self._receipts is None:
-            return ()
-        return self._receipts.authenticate(identity)
 
 
 def resolve_fixture(
@@ -502,12 +347,137 @@ def resolve_fixture(
 
 
 _T = TypeVar("_T")
+_PREPARE_ID = "test.assurance.bindings.prepare"
+_EXECUTE_ID = "test.assurance.bindings.execute"
+_FINALIZE_ID = "test.assurance.bindings.finalize"
 
 
-def _engine_call(fn: Callable[..., _T], *args: object) -> _T:
-    # Engine.run_until_blocked uses asyncio.run; keep it off the pytest loop.
+class _Phase4NodeInput(BaseModel):
+    model_config = {"extra": "allow"}
+
+
+class _Phase4NodeOutput(BaseModel):
+    ok: bool = True
+
+
+class _RecordingExecuteExecutor:
+    def __init__(self, host: "SixWheelTaskHost") -> None:
+        self.host = host
+
+    async def execute(self, validated_input: _Phase4NodeInput, context: object) -> _Phase4NodeOutput:
+        del validated_input, context
+        request = _fixture_agent_request()
+        self.host.recorded_request_bytes = request.canonical_bytes()
+        self.host.provider_state_dir.mkdir(parents=True, exist_ok=True)
+        (self.host.provider_state_dir / "session.json").write_bytes(
+            json.dumps({"adapter_id": self.host.adapter_id, "state": "open"}).encode("utf-8")
+        )
+        FakeAgentAdapter(
+            CASE_REVIEW_STRUCTURED,
+            adapter_id=self.host.adapter_id,
+            adapter_version="1.0.0",
+        ).execute_request(request)
+        return _Phase4NodeOutput()
+
+
+class _PassExecutor:
+    async def execute(self, validated_input: _Phase4NodeInput, context: object) -> _Phase4NodeOutput:
+        del validated_input, context
+        return _Phase4NodeOutput()
+
+
+class _CallableExecutor:
+    """Wrap a leftover-style execute function as an AttemptExecutor."""
+
+    def __init__(self, fn: object) -> None:
+        self._fn = fn
+
+    async def execute(self, validated_input: _Phase4NodeInput, context: object) -> object:
+        result = self._fn(validated_input, context)  # type: ignore[operator]
+        if hasattr(result, "__await__"):
+            return await result  # type: ignore[misc]
+        return result
+
+
+def _as_executor(value: object | None, default: object) -> object:
+    if value is None:
+        return default
+    if inspect.isfunction(value) or inspect.ismethod(value):
+        return _CallableExecutor(value)
+    return value
+
+
+def _fixture_agent_request() -> AgentRunRequest:
+    template = binding_data_template()
+    execution = dict(template["execution"])  # type: ignore[arg-type]
+    workspace_payload = {
+        "schema_version": "1",
+        "agent_profile": "assurance-v1-doc-author",
+        "scope_id": "CH-DEMO-001",
+        "write_root": "qa/changes/CH-DEMO-001/.staging/attempt-1",
+        "allowed_outputs": ["review.json"],
+    }
+    workspace_payload["identity_digest"] = canonical_digest(workspace_payload)
+    return AgentRunRequest(
+        schema_version="1",
+        instructions=(InstructionPart.text("text/plain", "review"),),
+        result_contract={
+            "schema_id": "fixture.result.v1",
+            "schema_digest": hashlib_sha256(b'{"type":"object"}'),
+            "delivery_mode": "assistant_json_local_v1",
+        },  # type: ignore[arg-type]
+        execution=execution,  # type: ignore[arg-type]
+        workspace=workspace_payload,  # type: ignore[arg-type]
+        request_policy_digest=str(template["request_policy_digest"]),
+        request_config_digest=str(template["request_config_digest"]),
+    )
+
+
+def _phase4_contract(contract_id: str) -> TaskAttemptContract[_Phase4NodeInput, _Phase4NodeOutput]:
+    return TaskAttemptContract(
+        contract_id=contract_id,
+        owner_id="test.assurance.bindings",
+        handler_id=contract_id,
+        input_model=_Phase4NodeInput,
+        output_model=_Phase4NodeOutput,
+        resources=ResourceClaims(writes=()),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=30),
+        validators=(),
+    )
+
+
+def _phase4_resolver(
+    host: "SixWheelTaskHost",
+    *,
+    execute: object | None = None,
+    finalize: object | None = None,
+) -> CatalogContractResolver:
+    contracts = {
+        _PREPARE_ID: _phase4_contract(_PREPARE_ID),
+        _EXECUTE_ID: _phase4_contract(_EXECUTE_ID),
+        _FINALIZE_ID: _phase4_contract(_FINALIZE_ID),
+    }
+    executors: dict[str, ResolvedAttemptContract[Any, Any]] = {
+        _PREPARE_ID: resolve_contract(contracts[_PREPARE_ID], executor=_PassExecutor()),
+        _EXECUTE_ID: resolve_contract(
+            contracts[_EXECUTE_ID],
+            executor=_as_executor(execute, _RecordingExecuteExecutor(host)),  # type: ignore[arg-type]
+        ),
+        _FINALIZE_ID: resolve_contract(
+            contracts[_FINALIZE_ID],
+            executor=_as_executor(finalize, _PassExecutor()),  # type: ignore[arg-type]
+        ),
+    }
+    return CatalogContractResolver(contracts, executors)
+
+
+def _application_call(fn: Callable[..., _T], *args: object, **kwargs: object) -> _T:
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(fn, *args).result()
+        return pool.submit(fn, *args, **kwargs).result()
+
+
+_engine_call = _application_call
 
 
 def _seed_fixture_project(project_root: Path) -> None:
@@ -561,19 +531,37 @@ def _seed_fixture_project(project_root: Path) -> None:
         source.write_text("def create_item():\n    return None\n", encoding="utf-8")
 
 
-def _workspace_binding(engine_root: Path) -> InvocationWorkspaceBinding:
+def _workspace_binding(engine_root: Path):
     engine_root.mkdir(parents=True, exist_ok=True)
-    project_root = engine_root.parent / f".{engine_root.name}-project"
-    attempts_root = engine_root.parent / f".{engine_root.name}-attempts"
-    receipts_root = engine_root.parent / f".{engine_root.name}-receipts"
-    for path in (project_root, attempts_root, receipts_root):
-        path.mkdir(parents=True, exist_ok=True)
+    workspace, project_root = workspace_provider_for(engine_root)
     _seed_fixture_project(project_root)
-    return InvocationWorkspaceBinding(
-        project_root=project_root,
-        attempts_root=attempts_root,
-        receipts_root=receipts_root,
+    return workspace, project_root
+
+
+def _boot_application(
+    composition: FrozenComposition,
+    host: SixWheelTaskHost,
+    engine_root: Path,
+    *,
+    checkpointer: MemoryCheckpointer | None = None,
+    execute: object | None = None,
+    finalize: object | None = None,
+) -> tuple[AssuranceApplication, BootArtifact, AssuranceRuntimeContext, MemoryCheckpointer, Path]:
+    workspace, project_root = _workspace_binding(engine_root)
+    saver = MemoryCheckpointer() if checkpointer is None else checkpointer
+    artifact, kernel = boot_factory_product(
+        composition,
+        workspace=workspace,
+        contract_resolver=_phase4_resolver(host, execute=execute, finalize=finalize),
+        checkpointer=saver,
     )
+    application, context = factory_application(
+        artifact,
+        kernel=kernel,
+        workspace=workspace,
+        lease_root=engine_root / "leases",
+    )
+    return application, artifact, context, saver, project_root
 
 
 def _start_until_blocked(
@@ -581,21 +569,31 @@ def _start_until_blocked(
     host: SixWheelTaskHost,
     composition: FrozenComposition,
     invocation_id: str,
-) -> tuple[RunResult, Path]:
-    authorization = empty_runtime_authorization()
-    binding = _workspace_binding(engine_root)
-    with Engine(engine_root, host=host) as engine:
-        with engine.start(
-            composition,
-            entrypoint="fixture",
+    *,
+    checkpointer: MemoryCheckpointer | None = None,
+    execute: object | None = None,
+    finalize: object | None = None,
+) -> tuple[InvocationStatus, Path, AssuranceApplication, object, object, MemoryCheckpointer]:
+    application, artifact, context, saver, _project = _boot_application(
+        composition,
+        host,
+        engine_root,
+        checkpointer=checkpointer,
+        execute=execute,
+        finalize=finalize,
+    )
+
+    async def _run() -> InvocationStatus:
+        return await application.start_and_run(
+            artifact=artifact,
             invocation_id=invocation_id,
-            seed=empty_invocation_seed(),
-            authorization=authorization,
-            workspace_binding=binding,
-        ) as handle:
-            host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
-            result = engine.run_until_blocked(handle)
-            return result, handle.invocation_root
+            entrypoint="fixture",
+            graph_input={"change_id": "CH-DEMO-001"},
+            runtime_context=context,
+        )
+
+    result = asyncio.run(_run())
+    return result, engine_root / "leases", application, artifact, context, saver
 
 
 def _open_until_blocked(
@@ -603,18 +601,21 @@ def _open_until_blocked(
     host: SixWheelTaskHost,
     composition: FrozenComposition,
     invocation_id: str,
-) -> RunResult:
-    authorization = empty_runtime_authorization()
-    binding = _workspace_binding(engine_root)
-    with Engine(engine_root, host=host) as engine:
-        with engine.open(
-            invocation_id,
-            composition,
-            authorization=authorization,
-            workspace_binding=binding,
-        ) as handle:
-            host.bind_ledger(Ledger(handle.invocation_root / "ledger"))
-            return engine.run_until_blocked(handle)
+    *,
+    application: AssuranceApplication,
+    artifact: object,
+    runtime_context: object,
+) -> InvocationStatus:
+    del engine_root, host, composition
+
+    async def _run() -> InvocationStatus:
+        return await application.run(
+            artifact=artifact,  # type: ignore[arg-type]
+            invocation_id=invocation_id,
+            runtime_context=runtime_context,  # type: ignore[arg-type]
+        )
+
+    return asyncio.run(_run())
 
 
 async def run_fixture(product_name: str) -> SixWheelRun:
@@ -624,22 +625,23 @@ async def run_fixture(product_name: str) -> SixWheelRun:
     engine_root = resolved.product_root.parent / f"{product_name}-engine"
     invocation_id = f"{product_name}-inv"
     with _import_activation(resolved.product_root, resolved.workspace):
-        result, invocation_root = _engine_call(
+        result, invocation_root, application, artifact, context, saver = _application_call(
             _start_until_blocked,
             engine_root,
             host,
             resolved.composition,
             invocation_id,
         )
-    if result.status != "succeeded":
+    if result.status != "completed":
         raise AssertionError(f"{product_name} fixture run failed: {result}")
     if host.recorded_request_bytes is None:
         raise AssertionError(f"{product_name} host did not observe a pre-adapter AgentRunRequest")
+    values = await invocation_values(artifact, invocation_id, "fixture")  # type: ignore[arg-type]
     return SixWheelRun(
         product_name=product_name,
         composition=resolved.composition,
         agent_request_bytes=host.recorded_request_bytes,
-        business_output_bytes=canonical_json_bytes(cast(JSONValue, thaw_json(result.output))),
+        business_output_bytes=canonical_json_bytes(cast(JSONValue, dict(values))),
         adapter_id=host.adapter_id,
         lock_digest=resolved.lock_digest,
         composition_digest=resolved.digest,
@@ -649,6 +651,11 @@ async def run_fixture(product_name: str) -> SixWheelRun:
         fixture_wheel=resolved.fixture_wheel,
         product_root=resolved.product_root,
         workspace=resolved.workspace,
+        application=application,
+        artifact=artifact,
+        runtime_context=context,
+        checkpointer=saver,
+        invocation_id=invocation_id,
     )
 
 
@@ -656,19 +663,27 @@ def replay_after_deleting_provider_state(run: SixWheelRun) -> None:
     if run.provider_state_dir.exists():
         shutil.rmtree(run.provider_state_dir)
     host = SixWheelTaskHost(adapter_id=run.adapter_id, provider_state_dir=run.provider_state_dir)
+    if run.application is None or run.artifact is None or run.runtime_context is None:
+        raise AssertionError("replay requires a started Application")
     with _import_activation(run.product_root, run.workspace):
-        result = _engine_call(
+        result = _application_call(
             _open_until_blocked,
             run.engine_root,
             host,
             run.composition,
-            f"{run.product_name}-inv",
+            run.invocation_id,
+            application=run.application,
+            artifact=run.artifact,
+            runtime_context=run.runtime_context,
         )
-    if result.status != "succeeded":
+    if result.status != "completed":
         raise AssertionError(f"{run.product_name} replay failed: {result}")
     if host.recorded_request_bytes is not None:
         raise AssertionError("replay must not re-enter the fake provider")
-    assert canonical_json_bytes(cast(JSONValue, thaw_json(result.output))) == run.business_output_bytes
+    values = _application_call(
+        lambda: asyncio.run(invocation_values(run.artifact, run.invocation_id, "fixture"))  # type: ignore[arg-type]
+    )
+    assert canonical_json_bytes(cast(JSONValue, dict(values))) == run.business_output_bytes
 
 
 def invocation_files_contain_provider_transcript(invocation_root: Path) -> bool:
@@ -688,22 +703,6 @@ def production_product_entrypoints() -> frozenset[str]:
 
 def production_aa_products() -> frozenset[str]:
     return frozenset(entry.name for entry in metadata.entry_points(group="assurance_agent.products"))
-
-
-def _unwrap_engine_input(call: TaskHostExecuteCall) -> JSONValue:
-    raw = thaw_json(call.request.input)
-    if not isinstance(raw, dict) or "config" not in raw or "tokens" not in raw:
-        return raw
-    config = raw["config"]
-    tokens = raw["tokens"]
-    prior = tokens[0] if isinstance(tokens, list) and tokens else None
-    if call.capability_id in RUNTIME_EXECUTE.values():
-        return prior if prior is not None else config
-    if str(call.capability_id).endswith(".finalize"):
-        merged = dict(config) if isinstance(config, dict) else {}
-        merged["agent_result"] = prior
-        return merged
-    return config if config is not None else {}
 
 
 def _materialize_fixture_distribution(workspace: Path) -> tuple[Path, Path, Path]:

@@ -9,13 +9,12 @@ from typing import Any, cast
 
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import TaskOutcome
-
 from tests.phase4.conformance import ExecutedTask, execute_task
 from tests.phase4.six_wheel_harness import (
     ADAPTER_IDS,
     SixWheelTaskHost,
-    _engine_call,
+    _Phase4NodeOutput,
+    _application_call,
     _import_activation,
     _start_until_blocked,
     resolve_fixture,
@@ -66,55 +65,15 @@ class CuttingTaskHost(SixWheelTaskHost):
         self.finalize_calls = 0
         self.spawned = False
 
-    async def execute(self, call: Any) -> Any:
-        capability = str(call.capability_id)
-        if capability.endswith(".finalize"):
-            self.finalize_calls += 1
-            if self.cut != "terminal-observed":
-                return self._execute_result(
-                    call,
-                    TaskOutcome.failed(
-                        "invalid_input",
-                        f"finalize blocked at {self.cut}",
-                        retryable=False,
-                    ),
-                )
-        if capability in {"runtime.opencode.execute", "runtime.cursor.execute"}:
-            self.spawned = True
-            if self.cut == "prepare-complete":
-                return self._execute_result(
-                    call,
-                    TaskOutcome.failed("invalid_input", "prepare-complete cut", retryable=False),
-                )
-            if self.cut in {"dispatch-unknown", "bound-running"}:
-                return self._execute_result(
-                    call,
-                    TaskOutcome.failed("transient", f"{self.cut} cut", retryable=True),
-                )
-            if self.cut == "result-truncated":
-                return self._execute_result(
-                    call,
-                    TaskOutcome.succeeded({"schema_version": "1", "structured_result": {}}),
-                )
-            if self.cut == "terminal-observed":
-                structured: JSONValue = {"ok": True}
-                return self._execute_result(
-                    call,
-                    TaskOutcome.succeeded(
-                        cast(
-                            JSONValue,
-                            {
-                                "schema_version": "1",
-                                "structured_result": structured,
-                                "result_digest": canonical_digest(structured),
-                                "evidence_digest": "a" * 64,
-                                "adapter_id": "test.fake",
-                                "adapter_version": "1.0.0",
-                            },
-                        )
-                    ),
-                )
-        return await super().execute(call)
+    async def execute_cut(self, validated_input: object, context: object) -> _Phase4NodeOutput:
+        del validated_input, context
+        self.spawned = self.cut != "prepare-complete"
+        raise ValueError(f"indeterminate cut {self.cut}")
+
+    async def finalize_cut(self, validated_input: object, context: object) -> _Phase4NodeOutput:
+        del validated_input, context
+        self.finalize_calls += 1
+        raise ValueError(f"finalize blocked at {self.cut}")
 
 
 def _handler(wheel: str) -> object:
@@ -234,12 +193,12 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
         base["agent_result"] = {"status": "running", "adapter_id": "test.fake"}
         return cast(JSONValue, base)
     if cut == "result-truncated":
-        base["agent_result"] = {"schema_version": "1", "structured_result": {}}
+        base["agent_result"] = {"schema_version": "1", "result_payload": {}}
         return cast(JSONValue, base)
     structured = {"ok": True}
     base["agent_result"] = {
         "schema_version": "1",
-        "structured_result": structured,
+        "result_payload": structured,
         "result_digest": canonical_digest(structured),
         "evidence_digest": _HEX,
         "adapter_id": "test.fake",
@@ -265,27 +224,35 @@ async def run_six_wheel_cut(cut: str) -> IndeterminateObservation:
         cut=cut,
     )
     engine_root = resolved.workspace / f"cut-{cut}-engine"
+    invocation_root = engine_root / "leases"
+    status = "failed"
     with _import_activation(resolved.product_root, resolved.workspace):
-        result, invocation_root = _engine_call(
-            _start_until_blocked,
-            engine_root,
-            host,
-            resolved.composition,
-            f"phase4-cut-{cut}",
-        )
+        try:
+            result, invocation_root, *_rest = _application_call(
+                _start_until_blocked,
+                engine_root,
+                host,
+                resolved.composition,
+                f"phase4-cut-{cut}",
+                execute=host.execute_cut,
+                finalize=host.finalize_cut,
+            )
+            status = result.status
+        except Exception:
+            status = "failed"
     workspace_bytes = {
         path.relative_to(invocation_root).as_posix(): path.read_bytes()
         for path in invocation_root.rglob("*")
-        if path.is_file() and not path.is_symlink()
+        if invocation_root.exists() and path.is_file() and not path.is_symlink()
     }
-    failed_closed = result.status != "succeeded" and host.finalize_calls == 0
-    if host.finalize_calls and result.status != "succeeded":
+    failed_closed = status not in {"succeeded", "completed"} and host.finalize_calls == 0
+    if host.finalize_calls and status not in {"succeeded", "completed"}:
         failed_closed = True
     return IndeterminateObservation(
-        status=result.status,
-        failure_kind=None,
-        effects=tuple(result.projection.effects),
-        stop_reason=result.terminal_reason,
+        status=status if status != "completed" else "failed",
+        failure_kind=None if status != "completed" else None,
+        effects=(),
+        stop_reason=None,
         workspace_bytes=workspace_bytes,
         finalize_invoked=host.finalize_calls > 0,
         finalize_failed_closed=failed_closed,

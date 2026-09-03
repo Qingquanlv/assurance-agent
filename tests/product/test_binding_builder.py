@@ -281,8 +281,8 @@ def test_duplicate_route_assignment_is_rejected_before_build(
     from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 
     raw = opencode_manifest.read_text(encoding="utf-8")
-    first_route = "  assurance.intake.case-design.prepare:\n"
-    next_route = "  assurance.intake.case-review.prepare:\n"
+    first_route = "  assurance.intake.agent.case-design.v1:\n"
+    next_route = "  assurance.intake.agent.case-review.v1:\n"
     start = raw.index(first_route)
     end = raw.index(next_route)
     duplicate = raw[start:end]
@@ -330,7 +330,7 @@ def test_missing_prepare_assignment_is_rejected(opencode_document):
     routes = dict(opencode_document["routes"])
     del routes[PREPARE_IDS[0]]
     opencode_document["routes"] = routes
-    with pytest.raises(ValidationError, match="prepare"):
+    with pytest.raises(ValidationError, match="33 semantic"):
         DeploymentBindingsV1.model_validate(opencode_document)
 
 
@@ -342,7 +342,7 @@ def test_extra_prepare_assignment_is_rejected(opencode_document):
     routes = dict(opencode_document["routes"])
     routes["assurance.product.unknown.prepare"] = routes[PREPARE_IDS[0]]
     opencode_document["routes"] = routes
-    with pytest.raises(ValidationError, match="prepare"):
+    with pytest.raises(ValidationError, match="33 semantic"):
         DeploymentBindingsV1.model_validate(opencode_document)
 
 
@@ -355,7 +355,7 @@ def test_unknown_prepare_assignment_is_rejected(opencode_document):
     assignment = routes.pop(PREPARE_IDS[0])
     routes["assurance.intake.not-a-capability.prepare"] = assignment
     opencode_document["routes"] = routes
-    with pytest.raises(ValidationError, match="prepare"):
+    with pytest.raises(ValidationError, match="33 semantic"):
         DeploymentBindingsV1.model_validate(opencode_document)
 
 
@@ -369,7 +369,7 @@ def test_output_directory_must_be_empty(tmp_path, opencode_manifest):
         build_deployment_wheel(opencode_manifest, occupied)
 
 
-def test_generated_provider_contributes_exactly_99_aliases(tmp_path, opencode_manifest):
+def test_generated_provider_contributes_exactly_33_semantic_bindings(tmp_path, opencode_manifest):
     from graph_engine.plugin_api import RegistryPorts
 
     from assurance_product.binding_builder import build_deployment_wheel
@@ -394,17 +394,16 @@ def test_generated_provider_contributes_exactly_99_aliases(tmp_path, opencode_ma
     assert descriptor.effects == ()
     assert descriptor.schemas == ()
     assert set(descriptor.bindings) == set(ALL_BINDING_IDS)
-    assert len(descriptor.bindings) == 99
+    assert len(descriptor.bindings) == 33
     assert contribution.task_handlers == {}
     assert contribution.commit_validators == {}
     assert contribution.effects == ()
     assert contribution.schemas == ()
     assert {binding.capability_id for binding in contribution.bindings} == set(ALL_BINDING_IDS)
-    assert len(contribution.bindings) == 99
+    assert len(contribution.bindings) == 33
 
 
 def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_manifest):
-    from agent_runtime_opencode.config import OpenCodeAdapterConfig
     from graph_engine.plugin_api import RegistryPorts
 
     from assurance_intake.contracts.agent import AgentBindingDataV1
@@ -420,31 +419,17 @@ def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_man
         evict_generated_binding_modules()
         sys.path.remove(str(installed))
     bindings = {item.capability_id: item for item in contribution.bindings}
-    for prepare_id in PREPARE_IDS:
-        stem = prepare_id.removesuffix(".prepare")
-        key = stem.removeprefix("assurance.")
-        prepare_alias = f"assurance.product.agent.{key}.prepare"
-        execute_alias = f"assurance.product.agent.{key}.execute"
-        finalize_alias = f"assurance.product.agent.{key}.finalize"
-        prepare = bindings[prepare_alias]
-        execute = bindings[execute_alias]
-        finalize = bindings[finalize_alias]
-        assert prepare.target_capability_id == prepare_id
-        assert prepare.secret_handles == ()
-        AgentBindingDataV1.model_validate(prepare.data)
-        assert execute.target_capability_id == "runtime.opencode.execute"
-        assert execute.secret_handles == ("opencode.token",)
-        OpenCodeAdapterConfig.model_validate(execute.data)
-        assert finalize.target_capability_id == f"{stem}.finalize"
-        assert finalize.data is None
-        assert finalize.secret_handles == ()
-        feature, _, base = key.partition(".")
-        expected_contract_id = f"assurance.{feature}.agent.{base}.v1"
-        assert prepare.contract_id == execute.contract_id == finalize.contract_id == expected_contract_id
+    assert set(bindings) == set(PREPARE_IDS)
+    for contract_id in PREPARE_IDS:
+        binding = bindings[contract_id]
+        assert binding.capability_id == contract_id
+        assert binding.contract_id == contract_id
+        assert binding.target_capability_id == "runtime.opencode.execute"
+        assert binding.secret_handles == ("opencode.token",)
+        AgentBindingDataV1.model_validate(binding.data)
 
 
 def test_cursor_wheel_keeps_confined_secret_handle(tmp_path, cursor_manifest):
-    from agent_runtime_cursor.config import CursorAdapterConfig
     from graph_engine.plugin_api import RegistryPorts
 
     from assurance_product.binding_builder import build_deployment_wheel
@@ -458,12 +443,11 @@ def test_cursor_wheel_keeps_confined_secret_handle(tmp_path, cursor_manifest):
     finally:
         evict_generated_binding_modules()
         sys.path.remove(str(installed))
-    execute = next(item for item in contribution.bindings if item.capability_id.endswith(".execute"))
-    config = CursorAdapterConfig.model_validate(execute.data)
-    assert config.secret_handle == "cursor.api-key"
-    assert config.environment_names == ("PATH", "CURSOR_API_KEY")
-    assert execute.secret_handles == ("cursor.api-key",)
-    assert execute.target_capability_id == "runtime.cursor.execute"
+    binding = next(iter(contribution.bindings))
+    assert binding.secret_handles == ("cursor.api-key",)
+    assert binding.target_capability_id == "runtime.cursor.execute"
+    assert binding.capability_id == binding.contract_id
+    assert all(item.secret_handles == ("cursor.api-key",) for item in contribution.bindings)
 
 
 class _EntryPointConfigParser(ConfigParser):

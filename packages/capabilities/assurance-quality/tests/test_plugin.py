@@ -100,3 +100,15 @@ def test_resource_bytes_rejects_non_canonical_path() -> None:
         resource_bytes("../secret")
     with pytest.raises(ValueError, match="canonical and relative"):
         resource_bytes("/schemas/trace.v2.schema.json")
+
+
+def test_quality_plugin_does_not_discover_graph_factory() -> None:
+    descriptor = QualityPlugin.descriptor()
+    contribution = QualityPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    assert descriptor.source is not None
+    assert descriptor.source.entrypoint_value == "assurance_quality.plugin:QualityPlugin"
+    assert "graphs.factory" not in descriptor.source.entrypoint_value
+    assert "assurance.quality.workflow.module.v1" not in descriptor.resources
+    assert not hasattr(contribution, "graph_factories")
+    assert contribution.attempt_contracts
+    assert all("graphs.factory" not in ref.contract_id for ref in contribution.attempt_contracts)

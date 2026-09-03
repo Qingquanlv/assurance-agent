@@ -84,7 +84,7 @@ def _agent_run(**overrides: object) -> AgentRunRequest:
         "result_contract": ResultContract(
             schema_id="fixture.result.v1",
             schema_digest=canonical_digest(_RESULT_SCHEMA),
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
         ),
         "execution": FrozenExecutionSelection(
             provider_model="provider_default",

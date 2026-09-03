@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from copy import deepcopy
 from collections.abc import Mapping
 from pathlib import Path
@@ -227,6 +228,7 @@ def test_case_review_result_schema_exposes_typed_finding_locators() -> None:
     schema = CaseReviewResultV1.model_json_schema()
 
     assert schema["properties"]["findings"]["items"] == {"$ref": "#/$defs/CaseReviewFindingV1"}
+    assert any("comma-separated dotted field paths" in note for note in schema["prompt_notes"])
 
 
 def _review_payload(
@@ -332,7 +334,7 @@ def test_intake_imports_no_legacy_package() -> None:
 def test_intake_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "case-design": (
@@ -387,7 +389,7 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
         assert contract.agent_profile == agent_profile
         assert contract.resources.writes == writes
         assert OUTPUT_ROUTE_TEMPLATES[base] == routes
-        dumped = contract.model_dump_json().lower()
+        dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
     assert forbidden_imports("assurance_intake", "assurance_product") == set()

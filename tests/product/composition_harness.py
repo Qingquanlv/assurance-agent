@@ -10,8 +10,6 @@ import sys
 from typing import Literal, cast
 import zipfile
 
-from graph_engine.graph.compiler import CompiledWorkflow
-
 import pytest
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
@@ -24,6 +22,8 @@ from graph_engine.composition import (
 from graph_engine.frozen_json import thaw_json
 
 from tests.product.conformance import ALL_BINDING_IDS, EVIDENCE_ROOT
+
+SHADOW_VALIDATOR_CLONE_ID = "test.assurance.execution.validator-parity.v1"
 
 _FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
 _DEPLOYMENT_FIXTURES = _FIXTURE_ROOT / "deployment"
@@ -49,12 +49,6 @@ class InstalledSources:
     configuration_tree: ConfigTreePluginSource
     wheels: dict[str, Path]
     extract_roots: dict[str, Path]
-
-
-@dataclass(frozen=True)
-class CompiledProduct:
-    workflow: CompiledWorkflow
-    composition: FrozenComposition
 
 
 def evict_generated_binding_modules() -> None:
@@ -116,15 +110,15 @@ def copy_config_tree(destination: Path) -> ConfigTreePluginSource:
 def project_binding_coverage(composition: FrozenComposition) -> dict[str, dict[str, JSONValue]]:
     entries = composition.registries.capabilities.entries
     bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
-    if set(bindings) != set(ALL_BINDING_IDS):
-        raise AssertionError("composition binding set is not the exact 99 aliases")
+    if set(bindings) != set(ALL_BINDING_IDS) or len(bindings) != 33:
+        raise AssertionError("composition binding set is not the exact 33 semantic contracts")
     projected: dict[str, dict[str, JSONValue]] = {}
     for binding_id in ALL_BINDING_IDS:
         entry = bindings[binding_id]
         projected[binding_id] = {
             "data": thaw_json(entry.data),
             "owner_id": entry.owner_id,
-            "phase": binding_id.rsplit(".", 1)[-1],
+            "contract_id": binding_id,
             "resource_ids": list(entry.resource_ids),
             "secret_handles": list(entry.secret_handles),
             "target_capability_id": entry.target_capability_id,
@@ -196,21 +190,3 @@ def installed_sources(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Inst
             extract = str(extract_root)
             while extract in sys.path:
                 sys.path.remove(extract)
-
-
-@pytest.fixture
-def compiled_product_workflow(installed_sources: InstalledSources) -> CompiledWorkflow:
-    from assurance_product.product import resolve_assurance_composition
-
-    return resolve_assurance_composition(request_for("opencode", installed_sources)).workflow
-
-
-@pytest.fixture
-def compiled_for(installed_sources: InstalledSources):
-    from assurance_product.product import resolve_assurance_composition
-
-    def factory(adapter: str) -> CompiledProduct:
-        composition = resolve_assurance_composition(request_for(adapter, installed_sources))
-        return CompiledProduct(workflow=composition.workflow, composition=composition)
-
-    return factory

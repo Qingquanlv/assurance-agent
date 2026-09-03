@@ -96,11 +96,54 @@ def test_wheels_omit_whole_tree_modules_and_result_export_schema(
     with zipfile.ZipFile(built_engine_wheel) as archive:
         engine_names = archive.namelist()
     assert all("tree_io" not in Path(name).parts for name in engine_names)
-    assert all(Path(name).name != "workspace.py" for name in engine_names)
+    assert all(name != "graph_engine/workspace.py" for name in engine_names)
     assert all("result-export" not in name for name in engine_names)
 
     with zipfile.ZipFile(built_product_wheel) as archive:
         product_names = archive.namelist()
     assert all("result-export" not in name for name in product_names)
     assert all("tree_io" not in Path(name).parts for name in product_names)
-    assert all(Path(name).name != "workspace.py" for name in product_names)
+    assert all(name != "graph_engine/workspace.py" for name in product_names)
+    assert all("runtime_selection.py" not in name for name in product_names)
+    assert "graph_engine.graphs" not in read_wheel_metadata(built_product_wheel).entry_points
+
+
+_CAPABILITY_WHEELS = (
+    ("assurance-intake", "assurance_intake", "build_intake_graphs"),
+    ("assurance-generation", "assurance_generation", "build_generation_graphs"),
+    ("assurance-execution", "assurance_execution", "build_execution_graphs"),
+    ("assurance-quality", "assurance_quality", "build_quality_graphs"),
+    ("assurance-healing", "assurance_healing", "build_healing_graphs"),
+    ("assurance-improvement", "assurance_improvement", "build_improvement_graphs"),
+)
+
+
+def test_capability_wheels_ship_python_graphs_without_topology_yaml(tmp_path: Path) -> None:
+    for package, module, factory in _CAPABILITY_WHEELS:
+        out_dir = tmp_path / package
+        subprocess.run(
+            ["uv", "build", "--package", package, "--out-dir", str(out_dir)],
+            check=True,
+        )
+        built = tuple(out_dir.glob("*.whl"))
+        assert len(built) == 1
+        wheel = built[0]
+        with zipfile.ZipFile(wheel) as archive:
+            names = archive.namelist()
+            source = archive.read(f"{module}/graphs/factory.py").decode("utf-8")
+        factory_path = f"{module}/graphs/factory.py"
+        yaml_path = f"{module}/resources/workflow/module.yaml"
+        assert factory_path in names
+        assert yaml_path not in names
+        assert all("workflow/module.yaml" not in name for name in names)
+        assert all("workflow/main.yaml" not in name for name in names)
+        assert all("graph-inventory.yaml" not in name for name in names)
+        assert all("runtime_selection.py" not in name for name in names)
+        graph_py = [name for name in names if name.startswith(f"{module}/graphs/") and name.endswith(".py")]
+        assert factory_path in graph_py
+        assert any(name.endswith("/__init__.py") for name in graph_py)
+        assert f"def {factory}" in source
+        metadata = read_wheel_metadata(wheel)
+        plugin_points = metadata.entry_points.get("graph_engine.plugins", {})
+        assert plugin_points
+        assert all("graphs.factory" not in value for value in plugin_points.values())

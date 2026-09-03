@@ -24,6 +24,7 @@ from assurance_generation.operations.planning import (
     failed_output,
     leafs_of,
     plan_review_outputs,
+    plan_review_input_paths,
     prepare_plan_outcome,
     resolve_family,
     split_finalize_input,
@@ -51,6 +52,11 @@ class PlanReviewPrepareHandler:
                 workspace=context.project_root,
             )
             binding = AgentBindingDataV1.model_validate(request.binding_data)
+            review_inputs = plan_review_input_paths(
+                context.project_root,
+                change_id=business.change_id,
+                family=family,
+            )
             return prepare_plan_outcome(
                 family=family,
                 skill_path=_REVIEW_SKILL_FILES[family],
@@ -62,6 +68,7 @@ class PlanReviewPrepareHandler:
                 context=context,
                 allowed_outputs=plan_review_outputs(business.change_id, family),
                 close_result_capabilities=True,
+                review_input_paths=review_inputs,
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
@@ -79,7 +86,7 @@ class PlanReviewFinalizeHandler:
             payload = AgentFinalizeInputV1.model_validate(stripped)
             try:
                 document = PlanReviewAuthoring.model_validate(
-                    thaw_json(payload.agent_result.structured_result),
+                    thaw_json(payload.agent_result.result_payload),
                     context={"capability_leafs": leafs_of(payload.capability_leafs)},
                 )
             except ValidationError as error:

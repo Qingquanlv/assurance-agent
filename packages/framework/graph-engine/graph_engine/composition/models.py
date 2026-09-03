@@ -11,16 +11,23 @@ from typing import TYPE_CHECKING, Literal, NoReturn, TypeAlias, TypeVar, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
+from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
-from graph_engine.graph.module_schema import WorkflowModuleDef
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.json_schema import assert_closed_json_schema
 from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.semantic_agent_ids import is_semantic_agent_contract_id
 from graph_engine.plugin_api import (
+    AttemptContractRef,
     CommitValidator,
     DurableEffectHandler,
     EffectPolicy,
@@ -37,8 +44,7 @@ from graph_engine.plugin_api import (
 )
 
 if TYPE_CHECKING:
-    from graph_engine.composition.lock import InvocationLock
-    from graph_engine.graph.compiler import CompiledWorkflow
+    from graph_engine.composition.lock import ProductLock
 
 
 class SourceKind(str, Enum):
@@ -497,6 +503,7 @@ class ContributionAuthority:
     source_digest: str
     contribution: PluginContribution
     authorities: tuple[ExecutableAuthority, ...]
+    attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.descriptor) is not PluginDescriptor:
@@ -535,9 +542,21 @@ class ContributionAuthority:
         if self.source_key.role is SourceRole.CONFIG:
             if values or self.provider_binding is not None:
                 raise ValueError("config contribution cannot retain executable authority")
+            if self.attempt_contracts:
+                raise ValueError("configuration-tree contributions cannot declare attempt contracts")
         elif self.provider_binding is None:
             raise ValueError("wheel contribution requires an owning provider binding")
+        contracts = tuple(self.attempt_contracts) or tuple(self.contribution.attempt_contracts)
+        if any(not isinstance(item, AttemptContractRef) for item in contracts):
+            raise TypeError("attempt contracts must contain AttemptContractRef values")
+        contract_ids = tuple(item.contract_id for item in contracts)
+        if contract_ids != tuple(sorted(contract_ids)) or len(contract_ids) != len(set(contract_ids)):
+            raise ValueError("attempt contracts require unique canonical order")
+        for item in contracts:
+            if not item.contract_id.startswith(f"{self.owner_id}."):
+                raise ValueError(f"attempt contract id is not owned by {self.owner_id}: {item.contract_id}")
         object.__setattr__(self, "authorities", values)
+        object.__setattr__(self, "attempt_contracts", contracts)
 
     @property
     def projection(self) -> FrozenJSONValue:
@@ -731,7 +750,12 @@ class CapabilityBindingEntry:
     contract_id: str | None = None
 
     def __post_init__(self) -> None:
-        _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
+        if self.capability_id.startswith(f"{self.owner_id}.") or is_semantic_agent_contract_id(
+            self.capability_id
+        ):
+            _validate_registry_id(self.capability_id, "binding id")
+        else:
+            _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
         _validate_registry_id(self.target_capability_id, "binding target capability id")
         if self.contract_id is not None:
             _validate_registry_id(self.contract_id, "binding contract id")
@@ -1197,6 +1221,66 @@ class EffectRegistry:
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptContractClaim:
+    """One Feature-declared Attempt contract plus the owner/dependency closure used to resolve it."""
+
+    contract: TaskAttemptContract[BaseModel, BaseModel]
+    dependencies: tuple[str, ...] = ()
+    available_handlers: Mapping[str, str] = dataclass_field(default_factory=dict)
+    available_validators: Mapping[str, str] = dataclass_field(default_factory=dict)
+    source_role: SourceRole = SourceRole.PLUGIN
+    handler: object | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.contract, TaskAttemptContract):
+            raise TypeError("attempt contract claim requires a TaskAttemptContract")
+        if not isinstance(self.source_role, SourceRole):
+            raise TypeError("attempt contract claim source role must be a SourceRole")
+        object.__setattr__(self, "dependencies", tuple(self.dependencies))
+        object.__setattr__(self, "available_handlers", MappingProxyType(dict(self.available_handlers)))
+        object.__setattr__(self, "available_validators", MappingProxyType(dict(self.available_validators)))
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptContractEntry:
+    contract_id: str
+    owner_id: str
+    handler_id: str
+    digest: str
+    validators: tuple[str, ...]
+    projection: FrozenJSONValue
+    authority_handler: object | None = dataclass_field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        _validate_owned_registry_id(self.contract_id, self.owner_id, "attempt contract")
+        _validate_registry_id(self.handler_id, "attempt contract handler id")
+        _validate_sha256(self.digest, "attempt contract")
+        object.__setattr__(self, "validators", tuple(self.validators))
+        object.__setattr__(self, "projection", freeze_json(self.projection))
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptContractRegistry:
+    entries: Mapping[str, AttemptContractEntry]
+
+    def __post_init__(self) -> None:
+        entries = _immutable_mapping(self.entries)
+        for contract_id, entry in entries.items():
+            if not isinstance(entry, AttemptContractEntry):
+                raise TypeError("attempt contract registry accepts only AttemptContractEntry values")
+            if contract_id != entry.contract_id:
+                raise ValueError(f"attempt contract registry key disagrees with entry: {contract_id}")
+        object.__setattr__(self, "entries", entries)
+
+    def projection(self) -> list[JSONValue]:
+        return [cast(JSONValue, thaw_json(entry.projection)) for entry in self.entries.values()]
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.projection())
+
+
+@dataclass(frozen=True, slots=True)
 class RegistrySet:
     sources: SourceRegistry
     capabilities: CapabilityRegistry
@@ -1317,60 +1401,6 @@ class PluginRequirement(FrozenModel):
             raise ValueError(f"invalid plugin version specifier: {value!r}") from error
 
 
-class WorkflowModuleRequirement(FrozenModel):
-    """One Feature or Product module resource required by a modular product."""
-
-    module_id: str
-    owner_id: str
-    resource_id: str
-
-    @field_validator("module_id")
-    @classmethod
-    def _validate_module_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow module module id")
-
-    @field_validator("owner_id")
-    @classmethod
-    def _validate_owner_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow module owner id")
-
-    @field_validator("resource_id")
-    @classmethod
-    def _validate_resource_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow module resource id")
-
-
-class WorkflowSlotBinding(FrozenModel):
-    """One Product-owned binding of a module slot to a concrete capability."""
-
-    module_id: str
-    slot: str
-    capability_id: str
-    contract_id: str
-
-    @field_validator("module_id")
-    @classmethod
-    def _validate_module_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow slot module id")
-
-    @field_validator("capability_id")
-    @classmethod
-    def _validate_capability_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow slot capability id")
-
-    @field_validator("contract_id")
-    @classmethod
-    def _validate_contract_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow slot contract id")
-
-    @field_validator("slot")
-    @classmethod
-    def _validate_slot(cls, value: str) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("workflow slot name must be non-empty text")
-        return value
-
-
 class ProductManifest(FrozenModel):
     """Normalized product input consumed by the registry platform."""
 
@@ -1383,11 +1413,7 @@ class ProductManifest(FrozenModel):
     entrypoints: Mapping[str, str]
     configuration: FrozenJSONValue = Field(default_factory=dict)
     config_plugin_paths: tuple[str, ...] = ()
-    workflow: WorkflowDef | None = None
-    workflow_resource_id: str | None = None
-    workflow_module: WorkflowModuleDef | None = None
-    workflow_module_resources: tuple[WorkflowModuleRequirement, ...] = ()
-    workflow_slot_bindings: tuple[WorkflowSlotBinding, ...] = ()
+    graph_factory_symbol: str
 
     @field_validator("product_id")
     @classmethod
@@ -1452,53 +1478,14 @@ class ProductManifest(FrozenModel):
             raise ValueError("config plugin paths must be unique")
         return frozen
 
-    @field_validator("workflow_resource_id")
-    @classmethod
-    def _validate_workflow_resource_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _validate_manifest_id(value, "workflow resource id")
-
     @model_validator(mode="after")
     def _validate_manifest_closure(self) -> ProductManifest:
-        if (
-            sum(
-                value is not None
-                for value in (self.workflow, self.workflow_resource_id, self.workflow_module)
-            )
-            != 1
-        ):
-            raise ValueError("product manifest requires exactly one workflow form")
-        if self.workflow_module is None:
-            if self.workflow_module_resources:
-                raise ValueError("workflow module resources are allowed only on the modular product form")
-            if self.workflow_slot_bindings:
-                raise ValueError("workflow slot bindings are allowed only on the modular product form")
-        else:
-            if self.workflow_module.owner_id != self.product_id:
-                raise ValueError("product module owner must equal product id")
-            if self.workflow_module.role != "product":
-                raise ValueError("product module role must be product")
-            if self.workflow_module.module_version != self.product_version:
-                raise ValueError("product module version must equal product version")
-            if dict(self.workflow_module.entrypoints) != dict(self.entrypoints):
-                raise ValueError("product module entrypoints must equal product entrypoints")
-        module_ids = tuple(item.module_id for item in self.workflow_module_resources)
-        if len(set(module_ids)) != len(module_ids):
-            raise ValueError("workflow module resource module ids must be unique")
-        resource_ids = tuple(item.resource_id for item in self.workflow_module_resources)
-        if len(set(resource_ids)) != len(resource_ids):
-            raise ValueError("workflow module resource ids must be unique")
-        slot_keys = tuple((item.module_id, item.slot) for item in self.workflow_slot_bindings)
-        if len(set(slot_keys)) != len(slot_keys):
-            raise ValueError("workflow slot bindings must be unique")
+        _validate_product_graph_factory_symbol(self.graph_factory_symbol, self.source)
         if not self.plugins:
             raise ValueError("product manifest must require at least one plugin")
         plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
         if len(set(plugin_ids)) != len(plugin_ids):
             raise ValueError("product plugin requirements must be unique")
-        if self.workflow is not None and dict(self.workflow.entrypoints) != dict(self.entrypoints):
-            raise ValueError("inline workflow entrypoints must equal product entrypoints")
         if self.source is not None:
             if self.source.entrypoint_group != "graph_engine.products":
                 raise ValueError("product source must use graph_engine.products")
@@ -1526,7 +1513,6 @@ class FrozenComposition:
     manifest: ProductManifest
     descriptors: tuple[PluginDescriptor, ...]
     registries: RegistrySet
-    workflow: CompiledWorkflow
     configuration: object
     contribution_authorities: Mapping[str, ContributionAuthority] = dataclass_field(
         compare=False,
@@ -1535,19 +1521,17 @@ class FrozenComposition:
     providers: Mapping[str, object]
     product_provider: object | None
     declarative_sources: Mapping[str, SourceSnapshot]
-    lock: InvocationLock
+    lock: ProductLock
     digest: str
 
     def __post_init__(self) -> None:
         from graph_engine.composition.lock import (
-            InvocationLock,
+            ProductLock,
             authenticate_composition_lock,
-            pinned_execution_host_lock,
         )
         from graph_engine.composition.contributions import validate_registry_contribution_authorities
         from graph_engine.composition.declarative import _authenticate_frozen_config_contribution
         from graph_engine.composition.sources import AuthenticatedProviderBinding
-        from graph_engine.graph.compiler import CompiledWorkflow
 
         if not isinstance(self.manifest, ProductManifest):
             raise TypeError("frozen composition manifest must be a ProductManifest")
@@ -1556,10 +1540,8 @@ class FrozenComposition:
             raise TypeError("frozen composition descriptors must contain PluginDescriptor values")
         if not isinstance(self.registries, RegistrySet):
             raise TypeError("frozen composition registries must be a RegistrySet")
-        if not isinstance(self.workflow, CompiledWorkflow):
-            raise TypeError("frozen composition workflow must be a CompiledWorkflow")
-        if not isinstance(self.lock, InvocationLock):
-            raise TypeError("frozen composition lock must be an InvocationLock")
+        if not isinstance(self.lock, ProductLock):
+            raise TypeError("factory composition lock must be a ProductLock")
         providers = _immutable_mapping(self.providers)
         contribution_authorities = _immutable_mapping(self.contribution_authorities)
         declarative_sources = _immutable_mapping(self.declarative_sources)
@@ -1610,13 +1592,10 @@ class FrozenComposition:
             self.manifest,
             descriptors,
             self.registries,
-            self.workflow,
             configuration,
             self.lock,
             contribution_authorities,
         )
-        if self.lock.execution_host != pinned_execution_host_lock():
-            raise ValueError("frozen composition execution host disagrees with the pinned engine host")
         expected_digest = canonical_digest({"lock_digest": self.lock.digest})
         if self.digest != expected_digest:
             raise ValueError("frozen composition digest does not authenticate its lock")
@@ -1705,8 +1684,7 @@ class FrozenComposition:
         cls,
         manifest: ProductManifest,
         registries: RegistrySet,
-        workflow: CompiledWorkflow,
-        lock: InvocationLock,
+        lock: ProductLock,
         *,
         descriptors: tuple[PluginDescriptor, ...] = (),
         configuration: object | None = None,
@@ -1722,7 +1700,6 @@ class FrozenComposition:
             manifest,
             tuple(descriptors),
             registries,
-            workflow,
             frozen_configuration,
             lock,
             {} if contribution_authorities is None else contribution_authorities,
@@ -1732,7 +1709,6 @@ class FrozenComposition:
             manifest=manifest,
             descriptors=tuple(descriptors),
             registries=registries,
-            workflow=workflow,
             configuration=frozen_configuration,
             contribution_authorities=({} if contribution_authorities is None else contribution_authorities),
             providers={} if providers is None else providers,
@@ -1826,6 +1802,36 @@ def _snapshot_digest(identity: SourceIdentity, files: tuple[SourceFile, ...]) ->
     return canonical_digest({"identity": identity_document, "files": file_document})
 
 
+def _validate_product_graph_factory_symbol(symbol: str, source: ProviderSource | None) -> str:
+    if not isinstance(symbol, str) or symbol.count(":") != 1:
+        raise ValueError("graph factory symbol must be module:attribute")
+    module_name, attribute = symbol.split(":")
+    if (
+        not module_name
+        or module_name.startswith(".")
+        or any(not part.isidentifier() for part in module_name.split("."))
+    ):
+        raise ValueError("graph factory symbol module is not a public absolute import")
+    if not attribute.isidentifier() or attribute.startswith("_"):
+        raise ValueError("graph factory symbol attribute must be a public name")
+    if module_name == "config_tree" or module_name.startswith("config_tree."):
+        raise ValueError("graph factory symbol cannot come from configuration")
+    if source is None:
+        return symbol
+    if not _module_belongs_to_import_roots(module_name, source.import_roots):
+        raise ValueError("graph factory symbol is outside the authenticated Product import roots")
+    return symbol
+
+
+def _module_belongs_to_import_roots(module_name: str, import_roots: tuple[str, ...]) -> bool:
+    for import_root in import_roots:
+        if not import_root:
+            continue
+        if module_name == import_root or module_name.startswith(f"{import_root}."):
+            return True
+    return False
+
+
 def _validate_canonical_relative_path(value: str) -> str:
     if not isinstance(value, str):
         raise TypeError("source file path must be text")
@@ -1848,6 +1854,10 @@ def _validate_canonical_relative_path(value: str) -> str:
 
 
 __all__ = [
+    "AttemptContractClaim",
+    "AttemptContractEntry",
+    "AttemptContractRef",
+    "AttemptContractRegistry",
     "CapabilityBindingEntry",
     "CapabilityEntry",
     "CapabilityRegistry",
@@ -1857,8 +1867,6 @@ __all__ = [
     "FrozenComposition",
     "PluginRequirement",
     "ProductManifest",
-    "WorkflowModuleRequirement",
-    "WorkflowSlotBinding",
     "RegistrySet",
     "ResourceEntry",
     "ResourceRegistry",

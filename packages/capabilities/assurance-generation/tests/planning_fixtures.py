@@ -226,7 +226,7 @@ def fake_agent_result(
 ) -> dict[str, JSONValue]:
     payload = cast(JSONValue, structured_result)
     result = AgentRunResult(
-        structured_result=payload,
+        result_payload=payload,
         result_digest=canonical_digest(payload),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",

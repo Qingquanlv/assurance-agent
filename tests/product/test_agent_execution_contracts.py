@@ -11,55 +11,47 @@ import pytest
 import yaml
 
 from agent_runtime_contracts import AgentRunRequest
-from graph_engine.plugin_api import ResourceClaimTemplate, TaskOutcome
+from graph_engine.plugin_api import ResourceClaimTemplate
 from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
-
-from tests.product.cli_support import (
-    SECRET_ENV,
-    SECRET_VALUE,
-    _CompletingScriptedHost,
-    start_lifecycle_invocation,
-)
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 EXPECTED_AGENT_PROFILES = {
-    "assurance.intake.case-design.prepare": "assurance-v1-doc-author",
-    "assurance.intake.case-review.prepare": "assurance-v1-reviewer",
-    "assurance.intake.explore.prepare": "assurance-v1-explorer",
-    "assurance.intake.intake.prepare": "assurance-v1-doc-author",
-    "assurance.generation.api.codegen-fix.prepare": "assurance-v1-test-author",
-    "assurance.generation.api.codegen.prepare": "assurance-v1-test-author",
-    "assurance.generation.api.plan-review.prepare": "assurance-v1-reviewer",
-    "assurance.generation.api.plan.prepare": "assurance-v1-doc-author",
-    "assurance.generation.e2e.codegen-fix.prepare": "assurance-v1-test-author",
-    "assurance.generation.e2e.codegen.prepare": "assurance-v1-test-author",
-    "assurance.generation.e2e.plan-review.prepare": "assurance-v1-reviewer",
-    "assurance.generation.e2e.plan.prepare": "assurance-v1-doc-author",
-    "assurance.generation.fuzz.codegen.prepare": "assurance-v1-test-author",
-    "assurance.generation.fuzz.plan-review.prepare": "assurance-v1-reviewer",
-    "assurance.generation.fuzz.plan.prepare": "assurance-v1-doc-author",
-    "assurance.generation.performance.codegen.prepare": "assurance-v1-test-author",
-    "assurance.generation.performance.plan-review.prepare": "assurance-v1-reviewer",
-    "assurance.generation.performance.plan.prepare": "assurance-v1-doc-author",
-    "assurance.execution.execute.prepare": "assurance-v1-executor",
-    "assurance.execution.run.prepare": "assurance-v1-executor",
-    "assurance.healing.coverage-repair.prepare": "assurance-v1-test-author",
-    "assurance.healing.fix-proposal.prepare": "assurance-v1-doc-author",
-    "assurance.quality.fact-baseline.prepare": "assurance-v1-doc-author",
-    "assurance.quality.inspect.prepare": "assurance-v1-reviewer",
-    "assurance.quality.issue-analysis.prepare": "assurance-v1-reporter",
-    "assurance.quality.issue-triage.prepare": "assurance-v1-reporter",
-    "assurance.quality.report.prepare": "assurance-v1-reporter",
-    "assurance.improvement.archive.prepare": "assurance-v1-archiver",
-    "assurance.improvement.improvement-review.prepare": "assurance-v1-reviewer",
-    "assurance.improvement.retro-eval-analysis.prepare": "assurance-v1-doc-author",
-    "assurance.improvement.retro-issue-analysis.prepare": "assurance-v1-doc-author",
-    "assurance.improvement.retro-workflow-analysis.prepare": "assurance-v1-doc-author",
-    "assurance.improvement.retro.prepare": "assurance-v1-doc-author",
+    "assurance.intake.agent.case-design.v1": "assurance-v1-doc-author",
+    "assurance.intake.agent.case-review.v1": "assurance-v1-reviewer",
+    "assurance.intake.agent.explore.v1": "assurance-v1-explorer",
+    "assurance.intake.agent.intake.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.api.codegen-fix.v1": "assurance-v1-test-author",
+    "assurance.generation.agent.api.codegen.v1": "assurance-v1-test-author",
+    "assurance.generation.agent.api.plan-review.v1": "assurance-v1-reviewer",
+    "assurance.generation.agent.api.plan.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.e2e.codegen-fix.v1": "assurance-v1-test-author",
+    "assurance.generation.agent.e2e.codegen.v1": "assurance-v1-test-author",
+    "assurance.generation.agent.e2e.plan-review.v1": "assurance-v1-reviewer",
+    "assurance.generation.agent.e2e.plan.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.fuzz.codegen.v1": "assurance-v1-test-author",
+    "assurance.generation.agent.fuzz.plan-review.v1": "assurance-v1-reviewer",
+    "assurance.generation.agent.fuzz.plan.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.performance.codegen.v1": "assurance-v1-test-author",
+    "assurance.generation.agent.performance.plan-review.v1": "assurance-v1-reviewer",
+    "assurance.generation.agent.performance.plan.v1": "assurance-v1-doc-author",
+    "assurance.execution.agent.execute.v1": "assurance-v1-executor",
+    "assurance.execution.agent.run.v1": "assurance-v1-executor",
+    "assurance.healing.agent.coverage-repair.v1": "assurance-v1-test-author",
+    "assurance.healing.agent.fix-proposal.v1": "assurance-v1-doc-author",
+    "assurance.quality.agent.fact-baseline.v1": "assurance-v1-doc-author",
+    "assurance.quality.agent.inspect.v1": "assurance-v1-reviewer",
+    "assurance.quality.agent.issue-analysis.v1": "assurance-v1-reporter",
+    "assurance.quality.agent.issue-triage.v1": "assurance-v1-reporter",
+    "assurance.quality.agent.report.v1": "assurance-v1-reporter",
+    "assurance.improvement.agent.archive.v1": "assurance-v1-archiver",
+    "assurance.improvement.agent.improvement-review.v1": "assurance-v1-reviewer",
+    "assurance.improvement.agent.retro-eval-analysis.v1": "assurance-v1-doc-author",
+    "assurance.improvement.agent.retro-issue-analysis.v1": "assurance-v1-doc-author",
+    "assurance.improvement.agent.retro-workflow-analysis.v1": "assurance-v1-doc-author",
+    "assurance.improvement.agent.retro.v1": "assurance-v1-doc-author",
 }
 
 
@@ -316,22 +308,31 @@ def test_opencode_agent_installation_rejects_conflicting_project_profile(tmp_pat
 
 
 def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
-    from assurance_product.agent_contracts import FEATURE_AGENT_JOB_CATALOGS, expand_agent_job_slots
+    from assurance_product.agent_contracts import (
+        FEATURE_AGENT_JOB_CATALOGS,
+        all_feature_agent_contracts,
+    )
     from assurance_product.models import all_binding_ids
+    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
-    expanded = expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)
     assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 33
-    assert len(expand_agent_job_slots(FEATURE_AGENT_JOB_CATALOGS)) == 99
-    assert all("opencode" not in contract.model_dump_json().lower() for contract in all_contracts)
-    assert all("cursor" not in contract.model_dump_json().lower() for contract in all_contracts)
-    assert set(expanded) == set(all_binding_ids())
+    assert len(all_feature_agent_contracts()) == 33
+    assert set(AGENT_RUNTIME_BINDINGS) == set(all_feature_agent_contracts()) == set(all_binding_ids())
+    assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
+    assert all(
+        "opencode" not in json.dumps(contract.canonical_projection()).lower() for contract in all_contracts
+    )
+    assert all(
+        "cursor" not in json.dumps(contract.canonical_projection()).lower() for contract in all_contracts
+    )
     assert all(hasattr(contract, "contract_id") for contract in all_contracts)
+    assert not any(item.startswith("assurance.product.agent.") for item in all_binding_ids())
 
 
-def test_prepare_ids_are_derived_from_the_feature_job_union() -> None:
+def test_semantic_contract_ids_are_the_feature_job_union() -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS, FEATURE_AGENT_JOB_CATALOGS
-    from assurance_product.models import PREPARE_IDS
+    from assurance_product.models import all_binding_ids
 
     derived = []
     for catalog in FEATURE_AGENT_JOB_CATALOGS:
@@ -339,48 +340,35 @@ def test_prepare_ids_are_derived_from_the_feature_job_union() -> None:
             body = contract.contract_id.removeprefix("assurance.").removesuffix(".v1")
             feature, marker, base = body.partition(".agent.")
             assert marker == ".agent."
-            derived.append(f"assurance.{feature}.{base}.prepare")
-    assert tuple(derived) == PREPARE_IDS
-    assert set(PREPARE_IDS) == set(AGENT_EXECUTION_CONTRACTS) == set(EXPECTED_AGENT_PROFILES)
+            derived.append(contract.contract_id)
+    assert set(derived) == set(AGENT_EXECUTION_CONTRACTS) == set(EXPECTED_AGENT_PROFILES)
+    assert set(all_binding_ids()) == set(AGENT_EXECUTION_CONTRACTS)
 
 
 def test_all_agent_skills_have_one_bound_agent_and_execution_contract(installed_sources) -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.binding_builder import _binding_documents
     from assurance_product.models import DeploymentBindingsV1
-    from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
-    from tests.product.product_runner import assemble_bound_product_workflow
 
-    assert set(PREPARE_IDS) == set(EXPECTED_AGENT_PROFILES) == set(AGENT_EXECUTION_CONTRACTS)
+    assert set(EXPECTED_AGENT_PROFILES) == set(AGENT_EXECUTION_CONTRACTS)
     fixture = Path(__file__).parent / "fixtures" / "deployment" / "opencode.yaml"
     bindings = DeploymentBindingsV1.model_validate(yaml.safe_load(fixture.read_text(encoding="utf-8")))
     binding_documents = {
         str(document["capability_id"]): document for document in _binding_documents(bindings)
     }
-    workflow = assemble_bound_product_workflow(installed_sources)
-    assert workflow.retry["agent-transient"].max_attempts == 12
-    assert workflow.retry["agent-transient"].retry_on == ("transient",)
-    graph_nodes = {
-        node.capability: node
-        for graph in workflow.graphs.values()
-        for node in graph.nodes.values()
-        if node.capability is not None
-    }
-    for prepare_id, expected_agent in EXPECTED_AGENT_PROFILES.items():
-        prepare_alias, execute_alias, _finalize_alias = alias_ids_for_prepare(prepare_id)
-        prepare_binding = binding_documents[prepare_alias]
-        binding_data = prepare_binding["data"]
+    assert set(binding_documents) == set(AGENT_EXECUTION_CONTRACTS)
+    for contract_id, expected_agent in EXPECTED_AGENT_PROFILES.items():
+        binding_data = binding_documents[contract_id]["data"]
         assert isinstance(binding_data, Mapping)
         assert binding_data["agent_profile"] == expected_agent
-        contract = AGENT_EXECUTION_CONTRACTS[prepare_id]
+        contract = AGENT_EXECUTION_CONTRACTS[contract_id]
         assert contract.agent_profile == expected_agent
         assert contract.resources.writes
-        assert graph_nodes[execute_alias].resources == contract.resources
 
 
 def test_agent_execute_contracts_render_exact_current_change_output_claims() -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
-    from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
+    from assurance_product.output_routes import OutputRouteCatalog
 
     change_id = "CH-CURRENT-001"
     catalog = OutputRouteCatalog()
@@ -393,15 +381,19 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         "qa/cases",
     )
     extra_claims = {
-        "assurance.intake.case-design.prepare": (f"qa/changes/{change_id}/cases",),
+        "assurance.intake.agent.case-design.v1": (f"qa/changes/{change_id}/cases",),
     }
-    for prepare_id, contract in AGENT_EXECUTION_CONTRACTS.items():
-        execute_alias = execute_alias_for_prepare(prepare_id)
+    for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         assert isinstance(contract.resources, ResourceClaimTemplate)
         assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
         resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
-        extra = extra_claims.get(prepare_id, ())
-        outputs = catalog.outputs(execute_alias, change_id)
+        extra = extra_claims.get(contract_id, ())
+        body = contract_id.removeprefix("assurance.").removesuffix(".v1")
+        feature, _, rest = body.partition(".agent.")
+        family, _, job = rest.rpartition(".")
+        if feature == "generation" and job in {"codegen", "codegen-fix"}:
+            extra = (*extra, f"qa/changes/{change_id}/generated/{family}/files")
+        outputs = catalog.outputs(contract_id, change_id)
         assert outputs == tuple(path for path in resolved.writes if path not in extra)
         assert extra == tuple(path for path in resolved.writes if path not in outputs)
         assert all(path.startswith(f"qa/changes/{change_id}/") for path in resolved.writes)
@@ -424,7 +416,7 @@ def test_exact_current_change_claims_do_not_scan_a_symlinked_sibling_on_promotio
     historical_link = sibling / ".runtime"
     historical_link.symlink_to(outside, target_is_directory=True)
 
-    template = AGENT_EXECUTION_CONTRACTS["assurance.intake.intake.prepare"].resources
+    template = AGENT_EXECUTION_CONTRACTS["assurance.intake.agent.intake.v1"].resources
     assert isinstance(template, ResourceClaimTemplate)
     claims = template.resolve({"workspace": {"scope_id": current_id}}).writes
     store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
@@ -451,7 +443,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     installed_sources,
 ) -> None:
     from assurance_intake.operations import ExplorePrepareHandler
-    from tests.product.product_runner import assemble_bound_product_workflow, workflow_graph
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     project = tmp_path / "project"
     current_id = "CH-CURRENT-001"
@@ -469,20 +461,17 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     historical_link = sibling / ".runtime"
     historical_link.symlink_to(outside, target_is_directory=True)
 
-    resources = (
-        workflow_graph(assemble_bound_product_workflow(installed_sources), "explore")
-        .nodes["prepare"]
-        .resources
-    )
+    resources = AGENT_EXECUTION_CONTRACTS["assurance.intake.agent.explore.v1"].resources
     assert isinstance(resources, ResourceClaimTemplate)
-    assert resources.parameters == {"change_id": "/change_id"}
+    assert resources.parameters == {"change_id": "/workspace/scope_id"}
     assert resources.reads == ("qa",)
-    claims = resources.resolve({"change_id": current_id}).writes
-    assert claims == (f"qa/changes/{current_id}/explore/context.json",)
+    claims = resources.resolve({"workspace": {"scope_id": current_id}}).writes
+    assert claims == (f"qa/changes/{current_id}/explore/exploration.json",)
+    context_claim = f"qa/changes/{current_id}/explore/context.json"
 
     store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
     try:
-        binding = store.begin(task_id="explore-prepare", attempt=1, output_paths=claims)
+        binding = store.begin(task_id="explore-prepare", attempt=1, output_paths=(context_claim,))
         invocation = InvocationMetadata(
             invocation_id="inv-explore-prepare",
             lock_digest="a" * 64,
@@ -494,7 +483,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
             task_id=binding.identity.task_id,
             graph_instance_id="explore-graph",
             node_id="prepare",
-            capability_id="assurance.intake.explore.prepare",
+            capability_id="assurance.intake.agent.explore.v1",
             binding_data={
                 "agent_profile": "aa-explorer",
                 "execution": {
@@ -531,7 +520,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
         assert outcome.status == "succeeded"
         agent_request = AgentRunRequest.model_validate(outcome.output)
         assert agent_request.workspace.scope_id == current_id
-        staged_context = binding.write_root / claims[0]
+        staged_context = binding.write_root / context_claim
         document = json.loads(staged_context.read_bytes())
         assert document["change_id"] == current_id
         assert document["requirement_summary"] == "# Current requirement\n\nCover item creation.\n"
@@ -543,57 +532,23 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     assert historical_link.is_symlink()
     assert sentinel.read_text(encoding="utf-8") == '{"historical":true}\n'
     assert tuple(path.name for path in outside.iterdir()) == ("sentinel.json",)
-    assert (project / claims[0]).read_bytes() == staged_context.read_bytes()
+    assert (project / context_claim).read_bytes() == staged_context.read_bytes()
 
 
 def test_transient_agent_provider_failure_retries_the_skill_node(
     installed_sources, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    target = "assurance.product.agent.intake.intake.execute"
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+    from assurance_product.product import resolve_assurance_composition
+    from tests.product.composition_harness import request_for
 
-    class TransientOnceHost(_CompletingScriptedHost):
-        def __init__(self) -> None:
-            super().__init__(
-                execution_sequence=(),
-                coverage_sequence=(),
-                threshold=0.90,
-                coverage_rounds=1,
-                review_decision="pass",
-                healing_decision="allowed",
-            )
-            self.target_attempts = 0
-
-        def _outcome(self, capability_id: str, request_input: object = None) -> TaskOutcome:
-            if capability_id == target:
-                self.target_attempts += 1
-                if self.target_attempts == 1:
-                    return TaskOutcome.failed("transient", "provider TLS handshake failed")
-            return super()._outcome(capability_id, request_input)
-
-    host = TransientOnceHost()
-
-    def host_factory(root: Path, authorization: object) -> Engine:
-        del authorization
-        return Engine(root, host=host)
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    invocation = start_lifecycle_invocation(
-        tmp_path,
-        installed_sources,
-        invocation_id="inv-agent-transient-retry",
-        drive=True,
-        require_succeeded=True,
-        entrypoint="intake",
-        host_factory=host_factory,
-    )
-    try:
-        retries = {
-            node.definition.retry
-            for graph in invocation.composition.workflow.graphs.values()
-            for node in graph.nodes.values()
-            if node.definition.capability == target
-        }
-        assert any(retry is not None and retry.endswith("agent-transient") for retry in retries)
-        assert host.target_attempts == 2
-    finally:
-        invocation.engine.close()
+    del tmp_path, monkeypatch
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    assert not hasattr(composition, "workflow")
+    leftover_alias = "assurance.product.agent.intake.intake.execute"
+    contract_id = "assurance.intake.agent.intake.v1"
+    assert leftover_alias not in composition.registries.capabilities.entries
+    assert contract_id in AGENT_EXECUTION_CONTRACTS
+    assert contract_id in composition.registries.capabilities.entries
+    binding = composition.registries.capabilities.entries[contract_id]
+    assert getattr(binding, "target_capability_id", None) == "runtime.opencode.execute"

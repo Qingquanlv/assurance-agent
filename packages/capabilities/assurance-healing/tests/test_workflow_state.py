@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import inspect
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskOutcome
@@ -72,3 +74,21 @@ async def test_repair_round_advance_rejects_invalid_counters_without_output(
     assert outcome.failure.retryable is False
     assert outcome.output is None
     assert outcome.effects == ()
+
+
+def test_repair_round_advance_handler_is_yaml_adapter_for_pure_function() -> None:
+    from assurance_healing.operations.workflow_state import HealingRepairRoundAdvanceHandler
+
+    source = inspect.getsource(HealingRepairRoundAdvanceHandler.execute)
+    assert "advance_repair_round" in source
+    assert "del context" in source
+
+
+def test_graph_advance_node_matches_legacy_valid_and_invalid_results() -> None:
+    from assurance_healing.contracts.decisions import advance_repair_round
+    from assurance_healing.graphs.nodes import advance_repair_round_node
+
+    payload = {"kind": "coverage", "rounds_used": 1, "rounds_budget": 4}
+    assert advance_repair_round_node(payload) == advance_repair_round(payload).model_dump(mode="json")
+    with pytest.raises((ValidationError, ValueError)):
+        advance_repair_round_node({"kind": "coverage", "rounds_used": 4, "rounds_budget": 4})

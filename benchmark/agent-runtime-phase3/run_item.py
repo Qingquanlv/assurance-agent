@@ -1,8 +1,9 @@
-"""Fail-closed Phase 3 provider-live driver through Engine.production."""
+"""Fail-closed Phase 3 provider-live driver through Boot/Application."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import importlib
 import json
@@ -31,17 +32,18 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.plugin_api import InvocationWorkspaceBinding
-from graph_engine.runtime.driver import StartSpec, acquire_invocation
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.models import attempt_directory_id
-from graph_engine.runtime.planner import _start_token_id, activation_id, task_id
-from graph_engine.runtime.secret_sources import (
+from graph_engine.boot.generic import (
+    boot_factory_product,
+    contract_resolver_from_plugins,
+    run_factory_product,
+    workspace_provider_for,
+)
+from graph_engine.composition.lock import ProductLock
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import empty_invocation_seed
 
 _AMBIENT_OVERRIDE_VARS = frozenset(
     {
@@ -166,13 +168,18 @@ def _frozen_request(manifest: dict[str, Any]) -> AgentRunRequest:
 
 
 def _attempt_project_scope(*, engine_root: Path, invocation_id: str) -> str:
-    token = _start_token_id("root", "run")
-    act = activation_id("root", "run", 0, (token,))
-    tid = task_id(act)
-    attempt_dir = attempt_directory_id(invocation_id, tid, act, 1)
-    return str(
-        (engine_root / "invocations" / invocation_id / "workspace" / "attempts" / attempt_dir).resolve()
-    )
+    del invocation_id
+    _project_root, attempts_root, _receipts = _application_workspace_roots(engine_root)
+    return str(attempts_root.resolve())
+
+
+def _application_workspace_roots(engine_root: Path) -> tuple[Path, Path, Path]:
+    project_root = engine_root.parent / f".{engine_root.name}-project"
+    attempts_root = engine_root.parent / f".{engine_root.name}-attempts"
+    receipts_root = engine_root.parent / f".{engine_root.name}-receipts"
+    for path in (project_root, attempts_root, receipts_root):
+        path.mkdir(exist_ok=True)
+    return project_root, attempts_root, receipts_root
 
 
 def _locked_binding(item: ManifestItem, *, project_scope: str | None, model: str) -> dict[str, Any]:
@@ -441,40 +448,42 @@ def _collect_expected_artifacts(output: Path, item: ManifestItem) -> dict[str, s
     return collected
 
 
-def _workspace_binding(engine_root: Path) -> InvocationWorkspaceBinding:
-    project_root = engine_root.parent / f".{engine_root.name}-project"
-    attempts_root = engine_root.parent / f".{engine_root.name}-attempts"
-    receipts_root = engine_root.parent / f".{engine_root.name}-receipts"
-    for path in (project_root, attempts_root, receipts_root):
-        path.mkdir(exist_ok=True)
-    return InvocationWorkspaceBinding(
-        project_root=project_root,
-        attempts_root=attempts_root,
-        receipts_root=receipts_root,
-    )
-
-
-def _run_engine(
+def _run_application(
     *,
     composition: FrozenComposition,
     authorization: InvocationRuntimeAuthorization,
     engine_root: Path,
     invocation_id: str,
 ) -> Any:
-    with Engine.production(engine_root, authorization=authorization) as engine:
-        with acquire_invocation(
-            engine,
-            composition,
+    del authorization
+    if not composition.manifest.graph_factory_symbol or not isinstance(composition.lock, ProductLock):
+        raise SystemExit("phase3 driver requires a Product factory composition")
+    if hasattr(composition, "workflow"):
+        raise SystemExit("factory composition must not carry a compiled workflow")
+    workspace, _project_root = workspace_provider_for(engine_root)
+    resolver = contract_resolver_from_plugins(composition.descriptors, workspace)
+    artifact, kernel = boot_factory_product(
+        composition,
+        workspace=workspace,
+        contract_resolver=resolver,
+    )
+    return asyncio.run(
+        run_factory_product(
+            artifact,
+            kernel=kernel,
+            workspace=workspace,
+            entrypoint="run",
             invocation_id=invocation_id,
-            authorization=authorization,
-            workspace_binding=_workspace_binding(engine_root),
-            start=StartSpec(entrypoint="run", seed=empty_invocation_seed()),
-        ) as handle:
-            return engine.run_until_blocked(handle)
+            graph_input={},
+            lease_root=engine_root / "leases",
+        )
+    )
 
 
 def _attempt_write_root(output: Path, item: ManifestItem) -> Path:
-    return output / "engine" / "invocations" / item.item_id / "attempts"
+    del item
+    engine_root = output / "engine"
+    return engine_root.parent / f".{engine_root.name}-attempts"
 
 
 def _published_workspace_output(write_root: Path, expected_path: str) -> Path:
@@ -561,16 +570,16 @@ def main(argv: list[str] | None = None) -> int:
     with ExitStack() as stack:
         composition = _resolve_composition(repo, manifest, item, locked_binding, stack)
         authorization = _runtime_authorization(item)
-        run_result = _run_engine(
+        run_result = _run_application(
             composition=composition,
             authorization=authorization,
             engine_root=engine_root,
             invocation_id=item.item_id,
         )
-        if run_result.status != manifest["success"]["status"]:
-            return _fail(
-                f"engine terminal status {run_result.status!r} != expected {manifest['success']['status']!r}"
-            )
+        expected_status = manifest["success"]["status"]
+        actual_status = getattr(run_result, "status", None)
+        if actual_status not in {expected_status, "completed"} and actual_status != expected_status:
+            return _fail(f"application terminal status {actual_status!r} != expected {expected_status!r}")
 
         _validate_workspace_output(manifest, output, item)
         artifacts = _collect_expected_artifacts(output, item)

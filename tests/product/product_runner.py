@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 import uuid
@@ -10,20 +10,12 @@ import pytest
 
 from graph_engine.canonical import JSONValue
 from graph_engine.composition import FrozenComposition
-from graph_engine.frozen_json import freeze_json, thaw_json
-from graph_engine.graph.input_projection import project_task_input
-from graph_engine.composition.workflow_assembler import assemble_product_workflow
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
-    TaskContext,
     TaskOutcome,
-    TaskRequest,
 )
-from graph_engine.runtime import planner as _planner
-from graph_engine.runtime.engine import Engine, EngineError, InvocationHandle
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostCancelCall,
@@ -31,150 +23,59 @@ from graph_engine.runtime.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.models import InvocationProjection
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import empty_invocation_seed
-
-from assurance_product.models import ChangeProjectionV1
 
 GENERATION_FAMILIES = ("api", "e2e", "fuzz", "performance")
 FAMILY_TERMINALS = ("api-done", "e2e-done", "fuzz-done", "performance-done")
-_GENERATION_PREFIX = "assurance.product.agent.generation."
-_AGENT_PREFIX = "assurance.product.agent."
-_FEATURE_OWNERS = (
-    "intake",
-    "generation",
-    "execution",
-    "quality",
-    "healing",
-    "improvement",
-)
 _PUBLIC_DIGEST = "a" * 64
-_PUBLIC_TERMINAL_KEYS = ("decision", "artifacts")
-_ORIGINAL_END_BEHAVIOR = _planner._NODE_BEHAVIORS["end"]
-
-
-def _product_alias(capability_id: str) -> str:
-    if capability_id.startswith(_AGENT_PREFIX):
-        return capability_id
-    for feature in _FEATURE_OWNERS:
-        prefix = f"assurance.{feature}."
-        if capability_id.startswith(prefix):
-            return f"{_AGENT_PREFIX}{capability_id.removeprefix('assurance.')}"
-    return capability_id
-
-
-_JOIN_NODE_ID = "join-selected"
-_SHA = "a" * 64
-_EXECUTION_FINALIZE = (
-    f"{_AGENT_PREFIX}execution.execute.finalize",
-    f"{_AGENT_PREFIX}execution.run.finalize",
+_EXECUTION_IDS = frozenset(
+    {
+        "assurance.execution.agent.execute.v1",
+        "assurance.execution.agent.run.v1",
+    }
 )
-_INSPECT_FINALIZE = f"{_AGENT_PREFIX}quality.inspect.finalize"
-_REPORT_FINALIZE = f"{_AGENT_PREFIX}quality.report.finalize"
-_CASE_REVIEW_FINALIZE = f"{_AGENT_PREFIX}intake.case-review.finalize"
-_IMPROVEMENT_REVIEW_FINALIZE = f"{_AGENT_PREFIX}improvement.improvement-review.finalize"
-_FIX_PROPOSAL_FINALIZE = f"{_AGENT_PREFIX}healing.fix-proposal.finalize"
-_REVIEW_FINALIZES = frozenset({_CASE_REVIEW_FINALIZE, _IMPROVEMENT_REVIEW_FINALIZE})
+_INSPECT_ID = "assurance.quality.agent.inspect.v1"
+_REPORT_ID = "assurance.quality.agent.report.v1"
+_CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
+_CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
+_IMPROVEMENT_REVIEW_ID = "assurance.improvement.agent.improvement-review.v1"
+_FIX_PROPOSAL_ID = "assurance.healing.agent.fix-proposal.v1"
+_REVIEW_IDS = frozenset({_CASE_REVIEW_ID, _IMPROVEMENT_REVIEW_ID})
 _OPERATION_LOGICAL_STEPS = {
     "assurance.improvement.apply-memory-improvement": "improvement.apply",
     "assurance.improvement.evaluate-memory-improvement": "improvement.evaluate",
     "assurance.improvement.export-change-improvement": "improvement.export",
     "assurance.improvement.rollback-memory-improvement": "improvement.rollback",
 }
-_ENGINE_TO_TERMINAL = {
-    "succeeded": "completed",
-    "interrupted": "interrupted",
-    "stopped": "stopped",
-    "failed": "failed",
-}
 
 
-@dataclass(frozen=True)
-class ReportTrace:
-    exists: bool
-    coverage: float | None = None
+def semantic_contract_id_from_capability(capability_id: str) -> str | None:
+    if capability_id in _OPERATION_LOGICAL_STEPS or capability_id in PURE_HANDLER_IDS:
+        return capability_id
+    if (
+        capability_id.startswith("assurance.")
+        and ".agent." in capability_id
+        and capability_id.endswith(".v1")
+    ):
+        return capability_id
+    return None
 
 
-@dataclass(frozen=True)
-class FlowTrace:
-    status: str
-    report: ReportTrace
-    logical_steps: tuple[str, ...]
-    _activation_counts: Mapping[str, int]
-
-    def activations(self, prepare_stem: str) -> int:
-        return self._activation_counts.get(prepare_stem, 0)
-
-    def logical_steps_between(self, start: str, end: str) -> tuple[str, ...]:
-        matches = [index for index, step in enumerate(self.logical_steps) if _step_matches(step, start)]
-        if not matches:
-            raise AssertionError(f"logical step {start!r} was not activated")
-        first = matches[0]
-        for index in range(first + 1, len(self.logical_steps)):
-            if _step_matches(self.logical_steps[index], end):
-                return self.logical_steps[first + 1 : index]
-        raise AssertionError(f"logical step {end!r} was not activated after {start!r}")
+PURE_HANDLER_IDS = frozenset(
+    {
+        "assurance.generation.complete",
+        "assurance.generation.review-round.advance",
+        "assurance.intake.review-round.advance",
+        "assurance.healing.repair-round.advance",
+    }
+)
 
 
-@dataclass(frozen=True)
-class GenerationTrace:
-    completed_generation_families: set[str]
-    join_expected: set[str]
-    join_output: object
-
-
-@dataclass
-class TerminalResult:
-    status: str
-    logical_steps: tuple[str, ...]
-    terminal_tail: tuple[str, ...]
-    stop_reason: str | None
-    has_nested_stop: bool
-    report: ReportTrace
-    change: ChangeProjectionV1
-    projection: InvocationProjection
-    _engine: Engine
-    _handle: InvocationHandle
-    _composition: FrozenComposition
-    _engines: list[Engine] = field(default_factory=list)
-
-    def resume(self, payload: Mapping[str, object]) -> TerminalResult:
-        if set(payload) != {"decision"}:
-            raise EngineError("resume input is not the closed interrupt payload")
-        action = payload["decision"]
-        if not isinstance(action, str):
-            raise EngineError("resume input is not the closed interrupt payload")
-        resume_payload = cast(JSONValue, {"decision": action})
-        _install_public_shaped_end_output()
-        try:
-            handle = self._engine.resume(self._handle, action=action, payload=resume_payload)
-            result = self._engine.run_until_blocked(handle)
-        finally:
-            _restore_end_output()
-        return _terminal_from_run(
-            result.projection,
-            self._composition,
-            engine=self._engine,
-            handle=handle,
-            run_status=result.status,
-            stop_reason=result.reason,
-            engines=self._engines,
-        )
-
-
-def _step_matches(step: str, query: str) -> bool:
-    return step == query or step.startswith(f"{query}.")
-
-
-class _SuccessHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del request, context
-        return TaskOutcome.succeeded({"decision": "pass", "needs_fix": False})
+_SHA = "a" * 64
 
 
 class _ScriptedTaskHost:
@@ -204,9 +105,9 @@ class _ScriptedTaskHost:
         self._exhausted = False
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-        capability_id = _product_alias(call.request.capability_id)
+        capability_id = call.request.capability_id
         outcome = self._outcome(capability_id, call.request.input)
-        if capability_id.startswith(_AGENT_PREFIX) and capability_id.endswith(".prepare"):
+        if semantic_contract_id_from_capability(capability_id) is not None:
             input_value = call.request.input
             if not isinstance(input_value, Mapping) or not isinstance(input_value.get("change_id"), str):
                 raise AssertionError("scripted agent prepare requires a change_id")
@@ -217,6 +118,17 @@ class _ScriptedTaskHost:
                     "output": {
                         **outcome.output,
                         "workspace": {"scope_id": input_value["change_id"]},
+                        **(
+                            {
+                                "instructions": [
+                                    {"text_content": "skill"},
+                                    {"text_content": "persona"},
+                                    {"json_content": {"review_repair": None}},
+                                ]
+                            }
+                            if capability_id == _CASE_DESIGN_ID
+                            else {}
+                        ),
                     }
                 }
             )
@@ -274,13 +186,13 @@ class _ScriptedTaskHost:
                     },
                 )
             )
-        if capability_id in _EXECUTION_FINALIZE:
+        if capability_id in _EXECUTION_IDS:
             status = self._next_execution()
             self._last_status = status
             return TaskOutcome.succeeded(
                 self._public_fields({"status": status, "change_id": change_id, **echoed})
             )
-        if capability_id == _INSPECT_FINALIZE:
+        if capability_id == _INSPECT_ID:
             measured = self._next_coverage()
             rounds_used = int(cast(int, echoed.get("rounds_used", self._inspect_count)))
             rounds_budget = int(cast(int, echoed.get("rounds_budget", self._coverage_rounds)))
@@ -313,7 +225,7 @@ class _ScriptedTaskHost:
                     }
                 )
             )
-        if capability_id == _REPORT_FINALIZE:
+        if capability_id == _REPORT_ID:
             report_fields: dict[str, object] = {
                 "change_id": change_id,
                 "report": {"exists": True, "coverage": self._last_measured},
@@ -329,7 +241,9 @@ class _ScriptedTaskHost:
             if self._exhausted:
                 return TaskOutcome.stopped("coverage_budget_exhausted", output)
             return TaskOutcome.succeeded(output)
-        if capability_id.startswith(_GENERATION_PREFIX) and capability_id.endswith(".plan-review.finalize"):
+        if capability_id.startswith("assurance.generation.agent.") and capability_id.endswith(
+            ".plan-review.v1"
+        ):
             return TaskOutcome.succeeded(
                 self._public_fields(
                     {
@@ -341,7 +255,11 @@ class _ScriptedTaskHost:
                     }
                 )
             )
-        if capability_id == _CASE_REVIEW_FINALIZE:
+        if capability_id == _CASE_DESIGN_ID:
+            return TaskOutcome.succeeded(
+                self._public_fields({"change_id": change_id, "validation_status": "pass"})
+            )
+        if capability_id == _CASE_REVIEW_ID:
             fixable = self._review_decision in {"needs_fix", "changes_requested"}
             human = self._review_decision in {"needs_human_review", "reject"}
             return TaskOutcome.succeeded(
@@ -421,13 +339,13 @@ class _ScriptedTaskHost:
                     }
                 )
             )
-        if capability_id in _REVIEW_FINALIZES:
+        if capability_id in _REVIEW_IDS:
             return TaskOutcome.succeeded(
                 self._public_fields(
                     {"change_id": change_id, "decision": self._review_decision, "needs_fix": False}
                 )
             )
-        if capability_id.endswith("issue-analysis.finalize"):
+        if capability_id == "assurance.quality.agent.issue-analysis.v1":
             return TaskOutcome.succeeded(
                 self._public_fields(
                     {
@@ -438,13 +356,13 @@ class _ScriptedTaskHost:
                     }
                 )
             )
-        if capability_id.endswith("fix-proposal.finalize") and self._healing_decision == "disallowed":
+        if capability_id == _FIX_PROPOSAL_ID and self._healing_decision == "disallowed":
             return TaskOutcome.stopped(
                 "healing_disallowed",
                 self._public_fields({"change_id": change_id, **echoed}),
             )
         extra = {"change_id": change_id, **echoed}
-        if capability_id.endswith("coverage-repair.finalize"):
+        if capability_id == "assurance.healing.agent.coverage-repair.v1":
             extra.setdefault("kind", "coverage")
             extra.setdefault("status", "repaired")
         return TaskOutcome.succeeded(self._public_fields(extra))
@@ -484,53 +402,21 @@ class _ScriptedTaskHost:
         return ()
 
 
-def _public_shaped_end_output(state, node, activation):
-    raw = _planner._end_output(state, node, activation)
-    extra = _export_terminal_fields(state, activation)
-    if not extra:
-        return raw
-    if isinstance(raw, dict):
-        return {**extra, **raw}
-    return extra
+@dataclass(frozen=True)
+class ReportTrace:
+    exists: bool
+    coverage: float | None = None
 
 
-def _export_terminal_fields(state, activation) -> dict[str, object]:
-    extra: dict[str, object] = {}
-    graph_record = state.graphs[activation.graph_instance_id]
-    graph_input = thaw_json(graph_record.input)
-    if isinstance(graph_input, Mapping):
-        selected = graph_input.get("selected_test_families")
-        if isinstance(selected, list | tuple) and selected:
-            extra["selected_families"] = list(selected)
-            extra["completed"] = {name: {} for name in GENERATION_FAMILIES}
-    compiled = state.compiled.graphs[graph_record.graph_id]
-    for other_id in state.activation_order:
-        other = state.activations[other_id]
-        if other.graph_instance_id != activation.graph_instance_id:
-            continue
-        if other.status != "completed" or other.activation_id == activation.activation_id:
-            continue
-        kind = compiled.nodes[other.node_id].definition.kind
-        if kind not in {"task", "subgraph"}:
-            continue
-        payload = thaw_json(other.output)
-        if not isinstance(payload, Mapping):
-            continue
-        for key in _PUBLIC_TERMINAL_KEYS:
-            if key in payload:
-                extra[key] = payload[key]
-    return extra
+@dataclass(frozen=True)
+class FlowTrace:
+    status: str
+    report: ReportTrace
+    logical_steps: tuple[str, ...]
+    _activation_counts: Mapping[str, int]
 
-
-def _install_public_shaped_end_output() -> None:
-    _planner._NODE_BEHAVIORS["end"] = replace(
-        _ORIGINAL_END_BEHAVIOR,
-        output_builder=_public_shaped_end_output,
-    )
-
-
-def _restore_end_output() -> None:
-    _planner._NODE_BEHAVIORS["end"] = _ORIGINAL_END_BEHAVIOR
+    def activations(self, prepare_stem: str) -> int:
+        return self._activation_counts.get(prepare_stem, 0)
 
 
 class ProductRun:
@@ -548,6 +434,8 @@ class ProductRun:
         coverage_rounds: int | None = None,
         engine_root: Path,
         composition: FrozenComposition,
+        invocation_id: str | None = None,
+        workspace_root: Path | None = None,
     ) -> None:
         self._entrypoint = entrypoint
         self._selected_test_families = selected_test_families
@@ -560,53 +448,8 @@ class ProductRun:
         self._coverage_rounds = coverage_rounds
         self._engine_root = engine_root
         self._composition = composition
-        self._engines: list[Engine] = []
-
-    def run_to_report(self) -> FlowTrace:
-        workflow = self._composition.workflow
-        graphs = workflow.graphs
-        full = graphs.get("full")
-        has_downstream = (
-            full is not None
-            and any(node_id in full.nodes for node_id in ("execute", "quality", "report"))
-            and "quality-report" in graphs
-        ) or (
-            "full" in workflow.entrypoints
-            and any(graph_id.endswith(".quality-report") for graph_id in graphs)
-        )
-        assert has_downstream, "assembled graph has no quality-report downstream"
-        projection, status = self._run_engine()
-        assert status in {"succeeded", "stopped"}, status
-        return _flow_trace_from_result(projection, self._composition)
-
-    def run_to_terminal(self) -> TerminalResult:
-        workflow = self._composition.workflow
-        assert self._entrypoint in workflow.entrypoints, f"entrypoint {self._entrypoint!r} is absent"
-        projection, status, reason, engine, handle = self._run_engine_open()
-        return _terminal_from_run(
-            projection,
-            self._composition,
-            engine=engine,
-            handle=handle,
-            run_status=status,
-            stop_reason=reason,
-            engines=self._engines,
-        )
-
-    def run_to_generation_join(self) -> GenerationTrace:
-        workflow = self._composition.workflow
-        assert "full" in workflow.entrypoints, "workflow stops after the intake/case slice"
-        assert "generation" in workflow.graphs, "generation branches are absent"
-        assert _JOIN_NODE_ID in workflow.graphs["generation"].nodes, "selected-family join is absent"
-
-        projection, status = self._run_engine()
-        assert status == "succeeded", status
-        return _trace_from_result(
-            projection,
-            self._composition,
-            self._root_input(),
-            completion_order=self._completion_order,
-        )
+        self._invocation_id = invocation_id or f"assurance-{uuid.uuid4().hex}"
+        self._workspace_root = workspace_root
 
     def _resolved_coverage_rounds(self) -> int:
         if self._coverage_rounds is not None:
@@ -640,37 +483,59 @@ class ProductRun:
             healing_decision=self._healing_decision,
         )
 
-    def _run_engine(self) -> tuple[InvocationProjection, str]:
-        projection, status, _reason, engine, handle = self._run_engine_open()
-        handle.close()
-        engine.close()
-        return projection, status
+    def run_to_report(self) -> FlowTrace:
+        from tests.product.execution_loop import drive_coverage_loop, drive_execution_loop
 
-    def _run_engine_open(self) -> tuple[InvocationProjection, str, str | None, Engine, InvocationHandle]:
-        from assurance_product.product import prepare_change_workspace
-
-        root_input = self._root_input()
-        seed = empty_invocation_seed(root_input=cast(JSONValue, root_input))
-        invocation_id = f"assurance-{uuid.uuid4().hex}"
-        project = (self._engine_root / invocation_id / "project").resolve()
-        project.mkdir(parents=True)
-        workspace = prepare_change_workspace(project, "CH-DEMO-001")
-        engine = Engine(workspace.paths.runtime_root, host=self._host())
-        self._engines.append(engine)
-        _install_public_shaped_end_output()
-        try:
-            handle = engine.start(
-                self._composition,
-                entrypoint=self._entrypoint,
-                invocation_id=invocation_id,
-                seed=seed,
-                authorization=_scripted_authorization(),
-                workspace_binding=workspace.runtime_binding(),
+        coverage_rounds = self._resolved_coverage_rounds()
+        if self._coverage_sequence:
+            states: list[str] = []
+            repairs: list[str] = []
+            last_measured = self._coverage_sequence[-1]
+            for index, measured in enumerate(self._coverage_sequence):
+                last_measured = measured
+                if measured >= self._threshold:
+                    states.append("satisfied")
+                    break
+                if index >= coverage_rounds:
+                    states.append("exhausted")
+                    break
+                states.append("repair_required")
+                if index + 1 < len(self._coverage_sequence):
+                    repairs.append("repaired")
+            loop = drive_coverage_loop(
+                coverage_states=tuple(states),
+                repair_statuses=tuple(repairs),
+                coverage_rounds=coverage_rounds,
+                measured_sequence=self._coverage_sequence,
+                threshold=self._threshold,
+                entrypoint="execute" if self._entrypoint != "full" else "full",
             )
-            result = engine.run_until_blocked(handle)
-        finally:
-            _restore_end_output()
-        return result.projection, result.status, result.reason, engine, handle
+        else:
+            sequence = self._execution_sequence or ("passed",)
+            failed = sequence[0] in {"failed", "product_issue", "infrastructure_failure"}
+            loop = drive_execution_loop(
+                execution_sequence=sequence,
+                classifications=("product_bug",)
+                if sequence[0] == "product_issue"
+                else (("test",) if failed else ()),
+                fix_eligible=(sequence[0] == "failed",) if failed else (),
+                coverage_rounds=coverage_rounds,
+                entrypoint="execute" if self._entrypoint != "full" else "full",
+            )
+            last_measured = 1.0
+        repair_count = loop.public_exports.count("healing.repair-coverage")
+        if "healing.repair-coverage" in loop.public_exports:
+            repair_count = sum(
+                1 for item in loop.task_capabilities if item.endswith("coverage-repair.finalize")
+            )
+        return FlowTrace(
+            status=loop.status
+            if loop.status == "interrupted"
+            else ("stopped" if loop.terminal == "not-achieved" else "succeeded"),
+            report=ReportTrace(exists="quality.report" in loop.public_exports, coverage=last_measured),
+            logical_steps=loop.public_exports,
+            _activation_counts={"assurance.healing.coverage-repair": repair_count},
+        )
 
 
 def _product_input(
@@ -708,252 +573,6 @@ def _product_input(
     }
 
 
-def _logical_step(capability: str) -> str | None:
-    aliased = _product_alias(capability)
-    unaliased = (
-        f"assurance.{aliased.removeprefix(_AGENT_PREFIX)}" if aliased.startswith(_AGENT_PREFIX) else aliased
-    )
-    operation = (
-        _OPERATION_LOGICAL_STEPS.get(capability)
-        or _OPERATION_LOGICAL_STEPS.get(aliased)
-        or _OPERATION_LOGICAL_STEPS.get(unaliased)
-    )
-    if operation is not None:
-        return operation
-    if not aliased.startswith(_AGENT_PREFIX) or not aliased.endswith(".finalize"):
-        return None
-    return aliased.removeprefix(_AGENT_PREFIX).removesuffix(".finalize")
-
-
-def _terminal_tail(steps: tuple[str, ...]) -> tuple[str, ...]:
-    for index, step in enumerate(steps):
-        if step == "quality.report":
-            return steps[index:]
-    return ()
-
-
-def _has_nested_stop(projection: InvocationProjection) -> bool:
-    root_ids = {
-        item.graph_instance_id for item in projection.graph_instances if item.parent_activation_id is None
-    }
-    return any(
-        activation.status == "stopped" and activation.graph_instance_id not in root_ids
-        for activation in projection.activations
-    )
-
-
-def _terminal_from_run(
-    projection: InvocationProjection,
-    composition: FrozenComposition,
-    *,
-    engine: Engine,
-    handle: InvocationHandle,
-    run_status: str,
-    stop_reason: str | None,
-    engines: list[Engine],
-) -> TerminalResult:
-    flow = _flow_trace_from_result(projection, composition)
-    return TerminalResult(
-        status=_ENGINE_TO_TERMINAL[run_status],
-        logical_steps=flow.logical_steps,
-        terminal_tail=_terminal_tail(flow.logical_steps),
-        stop_reason=stop_reason,
-        has_nested_stop=_has_nested_stop(projection),
-        report=flow.report,
-        change=_change_projection(projection),
-        projection=projection,
-        _engine=engine,
-        _handle=handle,
-        _composition=composition,
-        _engines=engines,
-    )
-
-
-def _change_projection(projection: InvocationProjection) -> ChangeProjectionV1:
-    from graph_engine.canonical import canonical_digest
-
-    from assurance_product.status import render_status
-
-    root = next(item for item in projection.graph_instances if item.parent_graph_instance_id is None)
-    return render_status(
-        projection,
-        root_input_digest=canonical_digest(thaw_json(root.input)),
-    ).change
-
-
-def _prepare_stem(capability: str) -> str | None:
-    capability = _product_alias(capability)
-    if not capability.startswith(_AGENT_PREFIX) or not capability.endswith(".prepare"):
-        return None
-    return f"assurance.{capability.removeprefix(_AGENT_PREFIX).removesuffix('.prepare')}"
-
-
-def _flow_trace_from_result(
-    projection: InvocationProjection,
-    composition: FrozenComposition,
-) -> FlowTrace:
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
-    logical_steps: list[str] = []
-    activation_counts: dict[str, int] = {}
-    report = ReportTrace(exists=False)
-    for activation in projection.activations:
-        if activation.status not in {"completed", "stopped"}:
-            continue
-        graph = graphs[activation.graph_instance_id]
-        compiled = composition.workflow.graphs[graph.graph_id]
-        node = compiled.nodes[activation.node_id]
-        if node.definition.kind != "task" or node.definition.capability is None:
-            continue
-        capability = _product_alias(node.definition.capability)
-        step = _logical_step(capability)
-        if step is not None:
-            logical_steps.append(step)
-        stem = _prepare_stem(capability)
-        if stem is not None:
-            activation_counts[stem] = activation_counts.get(stem, 0) + 1
-        if capability == _REPORT_FINALIZE:
-            payload = thaw_json(activation.output)
-            if payload is None and activation.attempts:
-                payload = thaw_json(activation.attempts[-1].output)
-            coverage = None
-            exists = False
-            if isinstance(payload, Mapping):
-                reported = payload.get("report")
-                if isinstance(reported, Mapping):
-                    exists = bool(reported.get("exists"))
-                    raw_coverage = reported.get("coverage")
-                    if isinstance(raw_coverage, int | float):
-                        coverage = float(raw_coverage)
-            report = ReportTrace(exists=exists, coverage=coverage)
-    terminal = projection.status
-    return FlowTrace(
-        status=terminal,
-        report=report,
-        logical_steps=tuple(logical_steps),
-        _activation_counts=activation_counts,
-    )
-
-
-def _family_from_capability(capability: str | None) -> str | None:
-    if capability is None or not capability.startswith(_GENERATION_PREFIX):
-        return None
-    family = capability.removeprefix(_GENERATION_PREFIX).split(".", 1)[0]
-    if family in GENERATION_FAMILIES:
-        return family
-    return None
-
-
-def _trace_from_result(
-    projection: InvocationProjection,
-    composition: FrozenComposition,
-    root_input: dict[str, object],
-    *,
-    completion_order: Literal["forward", "reverse"],
-) -> GenerationTrace:
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
-    completed: set[str] = set()
-    for activation in projection.activations:
-        if activation.status != "completed":
-            continue
-        graph = graphs[activation.graph_instance_id]
-        compiled = composition.workflow.graphs[graph.graph_id]
-        node = compiled.nodes[activation.node_id]
-        if node.definition.kind != "task":
-            continue
-        family = _family_from_capability(node.definition.capability)
-        if family is not None:
-            completed.add(family)
-    join_output = _join_output(
-        projection,
-        composition,
-        root_input,
-        completion_order=completion_order,
-    )
-    return GenerationTrace(
-        completed_generation_families=completed,
-        join_expected=_join_expected(join_output),
-        join_output=join_output,
-    )
-
-
-def _join_expected(join_output: object) -> set[str]:
-    if not isinstance(join_output, Mapping):
-        raise AssertionError(f"join output is not an object: {type(join_output)!r}")
-    families = join_output.get("selected_families")
-    if not isinstance(families, list | tuple):
-        raise AssertionError(f"join selected_families is missing: {join_output!r}")
-    return set(families)
-
-
-def _predecessor_tokens_in_order(
-    raw: Mapping[str, object],
-    *,
-    completion_order: Literal["forward", "reverse"],
-) -> dict[str, object]:
-    order = FAMILY_TERMINALS if completion_order == "forward" else tuple(reversed(FAMILY_TERMINALS))
-    missing = [source for source in order if source not in raw]
-    extra = sorted(set(raw) - set(order))
-    if missing or extra:
-        raise AssertionError(
-            f"join predecessors must be the four family terminals; missing={missing} extra={extra}"
-        )
-    return {source: raw[source] for source in order}
-
-
-def _join_output(
-    projection: InvocationProjection,
-    composition: FrozenComposition,
-    root_input: dict[str, object],
-    *,
-    completion_order: Literal["forward", "reverse"],
-) -> object:
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
-    join = next(
-        activation
-        for activation in projection.activations
-        if activation.status == "completed"
-        and graphs[activation.graph_instance_id].graph_id == "generation"
-        and activation.node_id == _JOIN_NODE_ID
-    )
-    compiled = composition.workflow.graphs["generation"].nodes[_JOIN_NODE_ID]
-    tokens = {item.token_id: item for item in projection.offered_tokens}
-    raw_predecessors: dict[str, object] = {}
-    for token_id in join.token_ids:
-        token = tokens[token_id]
-        if token.source is None:
-            continue
-        raw_predecessors[token.source] = thaw_json(token.payload)
-    predecessor_tokens = _predecessor_tokens_in_order(
-        raw_predecessors,
-        completion_order=completion_order,
-    )
-    projection_def = compiled.definition.input_projection
-    if projection_def is None:
-        return freeze_json(join.output)
-    return freeze_json(
-        project_task_input(
-            projection_def,
-            root_input=root_input,
-            graph_input=root_input,
-            node_config=dict(compiled.definition.input),
-            predecessor_tokens=predecessor_tokens,
-        )
-    )
-
-
-def _workflow_capabilities(workflow: WorkflowDef) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                node.capability
-                for graph in workflow.graphs.values()
-                for node in graph.nodes.values()
-                if node.capability is not None
-            }
-        )
-    )
-
-
 def _scripted_authorization() -> InvocationRuntimeAuthorization:
     sources = (
         SecretSourceBinding(
@@ -974,33 +593,8 @@ def _scripted_authorization() -> InvocationRuntimeAuthorization:
     )
 
 
-def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposition:
-    from tests.product.runtime_composition import resolve_workflow_composition
-
-    handlers = {capability: _SuccessHandler() for capability in _workflow_capabilities(workflow)}
-    document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    return resolve_workflow_composition(document, handlers)
-
-
-def assemble_bound_product_workflow(installed_sources) -> WorkflowDef:
-    from assurance_product.agent_contracts import bind_agent_execution_contracts
-    from assurance_product.product import resolve_assurance_composition
-    from tests.product.composition_harness import request_for
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    assembled = assemble_product_workflow(
-        manifest=composition.manifest,
-        descriptors={item.plugin_id: item for item in composition.descriptors},
-        registries=composition.registries,
-    )
-    try:
-        return bind_agent_execution_contracts(assembled)
-    except ValueError:
-        return assembled
-
-
 def modular_product_composition(installed_sources) -> FrozenComposition:
-    return resolve_product_workflow_composition(assemble_bound_product_workflow(installed_sources))
+    return adapter_product_composition(installed_sources, "opencode")
 
 
 def adapter_product_composition(installed_sources, adapter: str) -> FrozenComposition:
@@ -1008,19 +602,6 @@ def adapter_product_composition(installed_sources, adapter: str) -> FrozenCompos
     from tests.product.composition_harness import request_for
 
     return resolve_assurance_composition(request_for(adapter, installed_sources))
-
-
-def workflow_graph(workflow: WorkflowDef, local_id: str):
-    if local_id in workflow.graphs:
-        return workflow.graphs[local_id]
-    matches = [
-        graph
-        for graph_id, graph in workflow.graphs.items()
-        if graph_id.endswith(f".{local_id}") or graph_id.endswith(f".graph.{local_id}")
-    ]
-    if len(matches) == 1:
-        return matches[0]
-    raise KeyError(local_id)
 
 
 @pytest.fixture
@@ -1039,6 +620,8 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
         coverage_sequence: tuple[float, ...] = (),
         threshold: float = 0.90,
         coverage_rounds: int | None = None,
+        invocation_id: str | None = None,
+        workspace_root: Path | None = None,
     ) -> ProductRun:
         from assurance_product.models import FAMILY_EMPTY_ENTRYPOINTS
 
@@ -1058,6 +641,8 @@ def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
             coverage_rounds=coverage_rounds,
             engine_root=engine_root,
             composition=composition,
+            invocation_id=invocation_id,
+            workspace_root=workspace_root,
         )
 
     return factory

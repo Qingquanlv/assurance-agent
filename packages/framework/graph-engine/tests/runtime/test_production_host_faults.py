@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
-from graph_engine.runtime import production_host
-from graph_engine.runtime import production_worker
+from graph_engine.attempts import production_host
+from graph_engine.attempts import production_worker
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
@@ -28,7 +28,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceBinding,
 )
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
@@ -37,7 +37,7 @@ from graph_engine.runtime.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.events import (
+from graph_engine.attempts.activity import (
     GraphStarted,
     NodeActivated,
     TaskActivityPrepared,
@@ -46,16 +46,16 @@ from graph_engine.runtime.events import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.runtime.host_receipts import (
+from graph_engine.attempts.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.runtime.activity import LedgerTaskActivityPort
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.production_host import ProductionHostError, _ProductionTaskExecutionHost
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.activity import LedgerTaskActivityPort
+from graph_engine.attempts.activity import Ledger
+from graph_engine.attempts.production_host import ProductionHostError, _ProductionTaskExecutionHost
+from graph_engine.attempts.secret_sources import empty_runtime_authorization
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 def _write_handler(tmp_path: Path, *, class_name: str, body: str) -> tuple[str, tuple[str, ...]]:
@@ -588,7 +588,7 @@ def test_production_host_cancel_runs_through_worker(tmp_path: Path) -> None:
 
 
 def test_production_host_parent_alive_pipe_is_wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     captured: dict[str, int] = {}
 
@@ -1007,7 +1007,7 @@ def test_successful_handler_cannot_leave_a_detached_descendant_or_install_a_rece
 
 
 def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
     store = _task_workspace_store(tmp_path)
@@ -1043,7 +1043,7 @@ def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch
 def test_production_host_honors_call_timeout_longer_than_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     monkeypatch.setattr(module, "_CALL_TIMEOUT_SECONDS", 0.2)
     store = _task_workspace_store(tmp_path)
@@ -1262,7 +1262,9 @@ def test_worker_attestation_rejects_source_drift_after_spawn_before_dispatch(
         store=store,
         handler_import_roots={"test.echo.run": roots},
     )
-    worker_source = Path(production_worker.__file__).resolve()
+    import graph_engine.attempts.production_worker as production_worker_impl
+
+    worker_source = Path(production_worker_impl.__file__).resolve()
     original_source = worker_source.read_bytes()
     drifted = {"value": False}
 

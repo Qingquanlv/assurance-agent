@@ -7,6 +7,7 @@ dependencies = [
     "agent-runtime-contracts",
     "assurance-intake==0.2.0",
     "graph-engine",
+    "langgraph==1.2.11",
     "pydantic>=2.7",
     "pyyaml>=6.0",
 ]

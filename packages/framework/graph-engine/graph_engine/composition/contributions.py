@@ -17,6 +17,7 @@ from pydantic import (
 
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import (
+    AttemptContractRef,
     CapabilityBindingEntry,
     CommitValidatorEntry,
     ContributionAuthority,
@@ -28,6 +29,7 @@ from graph_engine.composition.models import (
     SourceRole,
     TaskHandlerEntry,
 )
+from graph_engine.composition.semantic_agent_ids import is_semantic_agent_contract_id
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
@@ -155,7 +157,12 @@ def validate_contribution_values(
         for binding in contribution.bindings:
             if not isinstance(binding, CapabilityBindingContribution):
                 raise ContributionValueError(f"plugin {owner_id} contributed an invalid binding entry")
-            _owned_id(binding.capability_id, owner_id, "binding")
+            if binding.capability_id.startswith(f"{owner_id}.") or is_semantic_agent_contract_id(
+                binding.capability_id
+            ):
+                _qualified_id(binding.capability_id, "binding id")
+            else:
+                _owned_id(binding.capability_id, owner_id, "binding")
             reserve(binding.capability_id, "binding")
             try:
                 freeze_json(binding.data)
@@ -299,6 +306,7 @@ class ContributionProjection(FrozenModel):
     resources: tuple[ResourceContributionProjection, ...]
     effects: tuple[EffectContributionProjection, ...]
     bindings: tuple[BindingContributionProjection, ...]
+    attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
     @field_validator(
         "task_handlers",
@@ -307,6 +315,7 @@ class ContributionProjection(FrozenModel):
         "resources",
         "effects",
         "bindings",
+        "attempt_contracts",
     )
     @classmethod
     def _validate_canonical_category(cls, values: tuple[object, ...]) -> tuple[object, ...]:
@@ -323,6 +332,8 @@ class ContributionProjection(FrozenModel):
             SourceRole.CONFIG,
         }:
             raise ValueError("contribution source key disagrees with its owner")
+        if self.source_key.role is SourceRole.CONFIG and self.attempt_contracts:
+            raise ValueError("configuration-tree contributions cannot declare attempt contracts")
         _validate_projection_digest(self.source_digest, "contribution source")
 
         category_ids = (
@@ -332,10 +343,14 @@ class ContributionProjection(FrozenModel):
             *((item.resource_id, "resource") for item in self.resources),
             *((item.kind, "effect") for item in self.effects),
             *((item.capability_id, "binding") for item in self.bindings),
+            *((item.contract_id, "attempt contract") for item in self.attempt_contracts),
         )
         seen: dict[str, str] = {}
         for entry_id, kind in category_ids:
-            _owned_id(entry_id, self.owner_id, kind)
+            if kind == "binding" and is_semantic_agent_contract_id(entry_id):
+                _qualified_id(entry_id, "binding id")
+            else:
+                _owned_id(entry_id, self.owner_id, kind)
             previous = seen.get(entry_id)
             if previous is not None:
                 raise ValueError(f"cross-kind contribution id: {entry_id} is both {previous} and {kind}")
@@ -466,6 +481,7 @@ class ContributionProjection(FrozenModel):
                 )
                 for item in sorted(contribution.bindings, key=lambda item: item.capability_id)
             ),
+            attempt_contracts=tuple(authority.attempt_contracts),
         )
 
     @classmethod
@@ -563,6 +579,7 @@ class ContributionProjection(FrozenModel):
             ),
             effects=tuple(effects),
             bindings=tuple(bindings),
+            attempt_contracts=tuple(authority.attempt_contracts),
         )
 
     def validate_selected(
@@ -585,6 +602,7 @@ class ContributionProjection(FrozenModel):
             "resources": {item.resource_id for item in self.resources},
             "effects": {item.kind for item in self.effects},
             "bindings": {item.capability_id for item in self.bindings},
+            "attempt_contracts": {(item.contract_id, item.digest) for item in self.attempt_contracts},
         }
         expected = {
             "task_handlers": set(descriptor.task_handlers),
@@ -593,9 +611,17 @@ class ContributionProjection(FrozenModel):
             "resources": set(descriptor.resources),
             "effects": set(descriptor.effects),
             "bindings": set(descriptor.bindings),
+            "attempt_contracts": {(item.contract_id, item.digest) for item in descriptor.attempt_contracts},
         }
         if actual != expected:
             raise ValueError("contribution authority categories disagree with descriptor declarations")
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and not data.get("attempt_contracts"):
+            data.pop("attempt_contracts", None)
+        return data
 
     def model_json_projection(self) -> JSONValue:
         return cast(JSONValue, self.model_dump(mode="json"))
@@ -737,12 +763,16 @@ def validate_contribution_projection_set(
             *((item.resource_id, "resource") for item in projection.resources),
             *((item.kind, "effect") for item in projection.effects),
             *((item.capability_id, "binding") for item in projection.bindings),
+            *((item.contract_id, "attempt contract") for item in projection.attempt_contracts),
         )
         for entry_id, kind in categories:
             previous = all_ids.get(entry_id)
-            if previous is not None:
+            if previous is not None and not (
+                is_semantic_agent_contract_id(entry_id)
+                and {previous, kind} == {"attempt contract", "binding"}
+            ):
                 raise ValueError(f"cross-kind contribution id: {entry_id} is both {previous} and {kind}")
-            all_ids[entry_id] = kind
+            all_ids[entry_id] = kind if previous is None else previous
         for effect in projection.effects:
             if effect.intent_schema_id not in schema_ids:
                 raise ValueError(f"unknown effect intent schema for {effect.kind}: {effect.intent_schema_id}")
@@ -835,7 +865,7 @@ def _validate_projection_digest(value: str, kind: str) -> None:
 
 
 def _projection_identifier(value: object) -> str:
-    for name in ("capability_id", "schema_id", "resource_id", "kind"):
+    for name in ("capability_id", "schema_id", "resource_id", "kind", "contract_id"):
         identifier = getattr(value, name, None)
         if isinstance(identifier, str):
             return identifier

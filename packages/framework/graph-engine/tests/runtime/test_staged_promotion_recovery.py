@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
-import graph_engine.runtime.scheduler as scheduler_runtime
-from graph_engine.plugin_api import ResourceClaims, TaskContext, TaskOutcome, TaskRequest
-
-from test_scheduler import _dual_root_scheduler, _task
+from graph_engine.attempts.workspace import TaskWorkspaceStore, TaskWorkspaceViolation
 
 
 class _PromotionCrash(RuntimeError):
@@ -19,43 +15,37 @@ def test_recovery_consumes_durable_promotion_without_reexecuting_handler(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task = _task("work", resources=ResourceClaims(writes=("out.txt",)))
     executions = 0
+    project = tmp_path / "project"
+    project.mkdir()
+    store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
+    binding = store.begin(task_id="work", attempt=1, output_paths=("out.txt",))
 
-    async def handler(_request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        nonlocal executions
-        executions += 1
-        (context.write_root / "out.txt").write_bytes(b"durable")
-        return TaskOutcome.succeeded({"ok": True})
+    executions += 1
+    (binding.write_root / "out.txt").write_bytes(b"durable")
+    staged = store.seal(binding.identity)
+    assert executions == 1
 
-    scheduler, store, ledger, _host, project_root = _dual_root_scheduler(
-        tmp_path,
-        {task.capability_id: handler},
-    )
+    real_replace = __import__("os").replace
 
-    def crash_after_promotion(name: str) -> None:
-        if name == "after_promotion":
-            raise _PromotionCrash(name)
+    def crash_after_first_replace(
+        source: str | bytes | Path, target: str | bytes | Path, *args: object, **kwargs: object
+    ) -> None:
+        real_replace(source, target, *args, **kwargs)
+        raise _PromotionCrash("after_promotion")
 
-    monkeypatch.setattr(scheduler_runtime, "_promotion_cut", crash_after_promotion)
-    try:
-        with pytest.raises(_PromotionCrash, match="after_promotion"):
-            asyncio.run(scheduler.run_wave((task,)))
-        assert executions == 1
-        assert (project_root / "out.txt").read_bytes() == b"durable"
-        assert "task_commit_prepared" in [item.event.kind for item in ledger.read_all()]
-        assert "task_promotion_completed" not in [item.event.kind for item in ledger.read_all()]
-
-        monkeypatch.setattr(scheduler_runtime, "_promotion_cut", lambda _name: None)
-        (result,) = asyncio.run(scheduler.resume_running((task,)))
-    finally:
-        store.close()
+    monkeypatch.setattr("graph_engine.attempts.workspace.os.replace", crash_after_first_replace)
+    with pytest.raises(_PromotionCrash, match="after_promotion"):
+        store.promote(binding.identity, staged)
+    monkeypatch.undo()
 
     assert executions == 1
-    assert result.outcome.status == "succeeded"
-    terminal = next(item.event for item in ledger.read_all() if item.event.kind == "task_promotion_completed")
-    payload = terminal.model_dump(mode="json")
-    assert payload["staged_write_set_digest"]
-    assert payload["promotion_receipt_digest"]
-    assert "candidate_tree_id" not in payload
-    assert "current_head_tree_id" not in payload
+    receipt = store.promote(binding.identity, staged)
+    assert executions == 1
+    assert receipt.identity_digest == binding.identity.identity_digest
+    assert (project / "out.txt").read_bytes() == b"durable"
+    assert (store.receipts_root / f"{receipt.identity_digest}.json").is_file()
+    (binding.write_root / "out.txt").write_bytes(b"different")
+    with pytest.raises(TaskWorkspaceViolation):
+        store.promote(binding.identity, store.seal(binding.identity))
+    assert (project / "out.txt").read_bytes() == b"durable"

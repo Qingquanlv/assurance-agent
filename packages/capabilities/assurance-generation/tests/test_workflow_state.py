@@ -12,6 +12,23 @@ from tests.product.test_change_local_output_routing import execute_task
 _FAMILIES = ("api", "e2e", "fuzz", "performance")
 _STAGES = ("plan", "codegen")
 _ADVANCE_ID = "assurance.generation.review-round.advance"
+_COMPLETE_ID = "assurance.generation.complete"
+
+
+def test_generation_handlers_are_yaml_adapters_for_pure_functions() -> None:
+    import inspect
+
+    from assurance_generation.operations.workflow_state import (
+        GenerationCompleteHandler,
+        GenerationReviewRoundAdvanceHandler,
+    )
+
+    complete_source = inspect.getsource(GenerationCompleteHandler.execute)
+    advance_source = inspect.getsource(GenerationReviewRoundAdvanceHandler.execute)
+    assert "complete_generation" in complete_source
+    assert "advance_review_round" in advance_source
+    assert "del context" in complete_source
+    assert "del context" in advance_source
 
 
 def _handler():
@@ -27,6 +44,50 @@ async def _advance(payload: dict[str, object]) -> TaskOutcome:
         capability_id=_ADVANCE_ID,
     )
     return executed.outcome
+
+
+async def _complete(payload: dict[str, object]) -> TaskOutcome:
+    from assurance_generation.operations.workflow_state import GenerationCompleteHandler
+
+    executed = await execute_task(
+        GenerationCompleteHandler(),
+        cast(JSONValue, payload),
+        capability_id=_COMPLETE_ID,
+    )
+    return executed.outcome
+
+
+async def test_generation_complete_emits_the_public_module_output() -> None:
+    outcome = await _complete(
+        {
+            "completed": [{"value": True}] * 4,
+            "selected_families": ["api", "fuzz"],
+        }
+    )
+    assert outcome.status == "succeeded"
+    assert outcome.output == {
+        "families": {
+            "api": {"completed": True},
+            "fuzz": {"completed": True},
+        },
+        "selected_families": ["api", "fuzz"],
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"completed": [{"value": True}] * 3, "selected_families": ["api"]},
+        {"completed": [{"value": True}] * 4, "selected_families": []},
+        {"completed": [{"value": True}] * 4, "selected_families": ["api", "api"]},
+        {"completed": [{"value": False}] * 4, "selected_families": ["api"]},
+    ],
+)
+async def test_generation_complete_rejects_invalid_lane_state(payload: dict[str, object]) -> None:
+    outcome = await _complete(payload)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.parametrize("family", _FAMILIES)

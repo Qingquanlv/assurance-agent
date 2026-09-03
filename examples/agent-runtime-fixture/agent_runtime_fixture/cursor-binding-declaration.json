@@ -1,1 +1,53 @@
-{"descriptor":{"bindings":["fixture.binding.run"],"commit_validators":[],"dependencies":[{"plugin_id":"fixture.runtime","version_specifier":"==1.0.0"},{"plugin_id":"runtime.cursor","version_specifier":"==0.1.0"}],"engine_api":"2.0","plugin_id":"fixture.binding","plugin_version":"1.0.0","schema_version":"1","source":{"declaration_path":"agent_runtime_fixture/cursor-binding-declaration.json","distribution":"agent-runtime-fixture","entrypoint_group":"graph_engine.plugins","entrypoint_name":"cursor-binding","entrypoint_value":"agent_runtime_fixture.bindings:CursorBindingPlugin","import_roots":[""],"version":"1.0.0"},"task_handlers":[]},"kind":"plugin","schema_version":"1","source":{"declaration_path":"agent_runtime_fixture/cursor-binding-declaration.json","distribution":"agent-runtime-fixture","entrypoint_group":"graph_engine.plugins","entrypoint_name":"cursor-binding","entrypoint_value":"agent_runtime_fixture.bindings:CursorBindingPlugin","import_roots":[""],"version":"1.0.0"}}
+{
+  "descriptor": {
+    "attempt_contracts": [],
+    "bindings": [
+      "fixture.binding.run"
+    ],
+    "commit_validators": [],
+    "dependencies": [
+      {
+        "plugin_id": "fixture.runtime",
+        "version_specifier": "==1.0.0"
+      },
+      {
+        "plugin_id": "runtime.cursor",
+        "version_specifier": "==0.1.0"
+      }
+    ],
+    "effects": [],
+    "engine_api": "2.0",
+    "plugin_id": "fixture.binding",
+    "plugin_version": "1.0.0",
+    "resources": [],
+    "schema_version": "1",
+    "schemas": [],
+    "source": {
+      "declaration_path": "agent_runtime_fixture/cursor-binding-declaration.json",
+      "distribution": "agent-runtime-fixture",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "cursor-binding",
+      "entrypoint_value": "agent_runtime_fixture.bindings:CursorBindingPlugin",
+      "import_roots": [
+        "",
+        "agent_runtime_fixture"
+      ],
+      "version": "1.0.0"
+    },
+    "task_handlers": []
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "agent_runtime_fixture/cursor-binding-declaration.json",
+    "distribution": "agent-runtime-fixture",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "cursor-binding",
+    "entrypoint_value": "agent_runtime_fixture.bindings:CursorBindingPlugin",
+    "import_roots": [
+      "",
+      "agent_runtime_fixture"
+    ],
+    "version": "1.0.0"
+  }
+}

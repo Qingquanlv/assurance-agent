@@ -17,6 +17,7 @@ from graph_engine.composition.lock import (
     LockedProduct,
     LockedSource,
     LockedSourceFile,
+    ProductLock,
     RegistryDigests,
     RegistryProjections,
 )
@@ -34,8 +35,6 @@ from graph_engine.composition.models import (
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
-    WorkflowModuleRequirement,
-    WorkflowSlotBinding,
     RegistrySet,
     ResourceEntry,
     ResourceRegistry,
@@ -64,6 +63,7 @@ from graph_engine.composition.source_fs import (
     SourceSnapshotError,
     capture_declared_tree,
     capture_explicit_file,
+    recapture_declared_files,
 )
 from graph_engine.composition.sources import (
     EditableWheelProductSource,
@@ -106,9 +106,8 @@ __all__ = [
     "MetadataProvider",
     "PluginSource",
     "PluginRequirement",
+    "ProductLock",
     "ProductManifest",
-    "WorkflowModuleRequirement",
-    "WorkflowSlotBinding",
     "ProductFileSource",
     "ProductSource",
     "RegistryPlatform",
@@ -136,6 +135,7 @@ __all__ = [
     "TaskHandlerEntry",
     "capture_declared_tree",
     "capture_explicit_file",
+    "recapture_declared_files",
     "load_snapshotted_entrypoint",
     "load_config_tree",
     "load_product_file",

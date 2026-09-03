@@ -5,17 +5,16 @@ from pathlib import Path
 
 import pytest
 
-import graph_engine.runtime.ledger as ledger_runtime
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import TaskActivityPort, TaskOutcome, TaskWorkspaceIdentity
-from graph_engine.runtime.activity import (
+from graph_engine.attempts.activity import (
     LedgerTaskActivityPort,
     MAX_ACTIVITY_VALUE_BYTES,
     TaskActivityConflict,
     TaskActivityIndeterminate,
     TaskActivityReferenceInvalid,
 )
-from graph_engine.runtime.events import (
+from graph_engine.attempts.activity import (
     GraphStarted,
     NodeActivated,
     TaskActivityPrepared,
@@ -26,9 +25,9 @@ from graph_engine.runtime.events import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.runtime.host_protocol import TaskActivityRpcIdentity
-from graph_engine.runtime.ledger import Ledger, LedgerConflictError
-from graph_engine.runtime.models import fold_events
+from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity
+from graph_engine.attempts.activity import Ledger, LedgerConflictError
+from graph_engine.attempts.activity import fold_events
 
 
 _LOCK = "a" * 64
@@ -303,7 +302,7 @@ def test_ambiguous_publication_authenticates_exact_range(
         if name == "final_installed":
             raise OSError("append result unavailable")
 
-    monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_install)
+    monkeypatch.setattr("graph_engine.evidence.ledger._append_boundary", fail_after_install)
     snapshot = port.mark_dispatch_started(_FINGERPRINT)
     assert snapshot.state == "dispatch_started"
     kinds = [item.event.kind for item in Ledger(ledger.root).read_all()]
@@ -329,7 +328,7 @@ def test_unreadable_publication_is_indeterminate(
             raise OSError("ledger unreadable")
         return original_read()
 
-    monkeypatch.setattr(ledger_runtime, "_append_boundary", fail_after_install)
+    monkeypatch.setattr("graph_engine.evidence.ledger._append_boundary", fail_after_install)
     ledger.read_all = unreadable  # type: ignore[method-assign]
     with pytest.raises(TaskActivityIndeterminate):
         port.mark_dispatch_started(_FINGERPRINT)

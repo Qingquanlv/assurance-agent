@@ -15,7 +15,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskRequest,
 )
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
     TaskHostCallIdentity,
@@ -23,18 +23,18 @@ from graph_engine.runtime.host_protocol import (
     TaskHostProtocolError,
     scan_for_secret_leaks,
 )
-from graph_engine.runtime.production_host import (
+from graph_engine.attempts.production_host import (
     ProductionHostError,
     _ProcessSupervisor,
     _ProductionTaskExecutionHost,
 )
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     SecretSourceBinding,
     empty_runtime_authorization,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.workspace import TaskWorkspaceStore
 
 
 _CANARY = b"canary-secret-material"
@@ -165,7 +165,7 @@ def test_production_spawn_never_puts_secret_in_worker_argv(
             del timeout
             return 0
 
-    monkeypatch.setattr("graph_engine.runtime.production_host.subprocess.Popen", _RecordingPopen)
+    monkeypatch.setattr("graph_engine.attempts.production_host.subprocess.Popen", _RecordingPopen)
     supervisor = _ProcessSupervisor.for_platform()
     supervisor.spawn(attempt_root=tmp_path / "attempt", call_digest="d" * 64)
     kwargs = captured["kwargs"]
@@ -222,7 +222,7 @@ def test_production_host_rejects_unauthorized_secret_handle(tmp_path: Path) -> N
 def test_production_host_revokes_parent_secrets_after_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     handler_path = tmp_path / "secret_handler.py"
     handler_path.write_text(
@@ -270,7 +270,7 @@ def test_spawn_failure_revokes_secrets_resolved_by_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     secret_path = tmp_path / "secret.txt"
     secret_path.write_bytes(_CANARY)
@@ -302,7 +302,7 @@ def test_secret_channel_disconnect_revokes_parent_material_and_cleans_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from graph_engine.runtime import production_host as module
+    from graph_engine.attempts import production_host as module
 
     handler_path = tmp_path / "secret_handler.py"
     handler_path.write_text(

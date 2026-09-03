@@ -34,7 +34,7 @@ async def test_terminal_reduction_returns_schema_valid_agent_run_result(tmp_path
         assert forbidden not in encoded
     assert "dispatch" not in encoded
     assert "sess-1" not in encoded
-    assert result.structured_result == {"ok": True}
+    assert result.result_payload == {"ok": True}
     assert result.result_digest == canonical_digest({"ok": True})
     assert result.adapter_id == "runtime.cursor"
     assert result.adapter_version == "0.1.0"
@@ -66,14 +66,14 @@ async def test_product_result_schema_on_contract_validates(tmp_path: Path) -> No
         result_contract=ResultContract(
             schema_id="assurance.intake.result.intake.v1",
             schema_digest=canonical_digest(schema),
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
             schema_document=schema,
         )
     )
     fixture = execute_fixture(tmp_path, host, agent_run=run)
     outcome = await fixture.handler.execute(fixture.request, fixture.context)
     result = AgentRunResult.model_validate(outcome.output)
-    assert thaw_json(result.structured_result) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    assert thaw_json(result.result_payload) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
 
 
 async def test_terminal_reduction_rejects_result_schema_failure(tmp_path: Path) -> None:

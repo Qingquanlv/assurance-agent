@@ -25,7 +25,7 @@ from assurance_improvement.contracts.review import (
     ImprovementReviewSubject,
 )
 from assurance_improvement.contracts.delivery import artifact_digest
-from assurance_improvement.contracts.workflow import AUTO_REVIEW_DECISIONS
+from assurance_improvement.contracts.decisions import AUTO_REVIEW_DECISIONS
 from assurance_improvement.operations.common import InputError, failed_input, succeeded, validate_input
 from assurance_improvement.operations.keys import improvement_event_id
 
@@ -216,40 +216,47 @@ class ValidateImprovementReviewAssessmentHandler:
             return failed_input(error)
 
 
+def apply_auto_review(
+    payload: ApplyAutoReviewInput,
+) -> tuple[ImprovementAutoReviewStatus, ImprovementProjection]:
+    if payload.assessment.improvement_id != payload.current.improvement_id:
+        raise InputError("auto-review improvement_id does not match")
+    if payload.assessment.expected_improvement_version != payload.current.version:
+        raise InputError("auto-review version does not match")
+    if payload.assessment.decision not in AUTO_REVIEW_DECISIONS:
+        raise InputError(f"unsupported auto-review decision: {payload.assessment.decision}")
+    result, target, verdict = _AUTO_REVIEW[payload.assessment.decision]
+    next_state = target if target is not None else payload.current.state
+    if target is not None:
+        assert_improvement_transition(payload.current.state, next_state)
+    updated = payload.current.model_copy(
+        update={
+            "state": next_state,
+            "version": payload.current.version + (1 if target is not None else 0),
+            "approval_source": "automatic" if result == "approved" else "none",
+            "last_auto_review": LastAutoReview(
+                review_id=payload.assessment.review_id,
+                subject_sha256=payload.assessment.subject_sha256,
+                assessment_sha256=artifact_digest(payload.assessment),
+                policy_version="1",
+                verdict=verdict,
+            ),
+        }
+    )
+    status = ImprovementAutoReviewStatus(
+        review_id=payload.assessment.review_id,
+        improvement_id=payload.assessment.improvement_id,
+        result=result,
+    )
+    return status, updated
+
+
 class ApplyImprovementAutoReviewHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
             payload = validate_input(ApplyAutoReviewInput, request.input)
-            if payload.assessment.improvement_id != payload.current.improvement_id:
-                raise InputError("auto-review improvement_id does not match")
-            if payload.assessment.expected_improvement_version != payload.current.version:
-                raise InputError("auto-review version does not match")
-            if payload.assessment.decision not in AUTO_REVIEW_DECISIONS:
-                raise InputError(f"unsupported auto-review decision: {payload.assessment.decision}")
-            result, target, verdict = _AUTO_REVIEW[payload.assessment.decision]
-            next_state = target if target is not None else payload.current.state
-            if target is not None:
-                assert_improvement_transition(payload.current.state, next_state)
-            updated = payload.current.model_copy(
-                update={
-                    "state": next_state,
-                    "version": payload.current.version + (1 if target is not None else 0),
-                    "approval_source": "automatic" if result == "approved" else "none",
-                    "last_auto_review": LastAutoReview(
-                        review_id=payload.assessment.review_id,
-                        subject_sha256=payload.assessment.subject_sha256,
-                        assessment_sha256=artifact_digest(payload.assessment),
-                        policy_version="1",
-                        verdict=verdict,
-                    ),
-                }
-            )
-            status = ImprovementAutoReviewStatus(
-                review_id=payload.assessment.review_id,
-                improvement_id=payload.assessment.improvement_id,
-                result=result,
-            )
+            status, updated = apply_auto_review(payload)
             dumped = updated.model_dump(mode="json")
             return succeeded(
                 {
@@ -388,6 +395,7 @@ __all__ = [
     "SelectCurrentRetroAutoReviewItemsHandler",
     "SummarizeAutoReviewBatchHandler",
     "ValidateImprovementReviewAssessmentHandler",
+    "apply_auto_review",
     "apply_review",
     "assert_improvement_transition",
 ]

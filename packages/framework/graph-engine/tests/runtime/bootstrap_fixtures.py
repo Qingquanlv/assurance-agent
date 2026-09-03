@@ -1,9 +1,10 @@
-"""Shared schema-v2 bootstrap identity for synthetic runtime test fixtures."""
+"""Evidence-only bootstrap identity for leftover host/activity tests."""
 
 from __future__ import annotations
 
-from graph_engine.runtime.events import InvocationStarted
-from graph_engine.runtime.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
+import graph_engine.evidence.ledger as leftover_ledger
+from graph_engine.evidence.events import InvocationStarted
+from graph_engine.evidence.seed import EMPTY_RUNTIME_AUTHORIZATION_DIGEST, empty_invocation_seed
 
 _EMPTY_SEED = empty_invocation_seed()
 
@@ -26,3 +27,10 @@ def synthetic_invocation_started(
         runtime_authorization_digest=runtime_authorization_digest,
         root_input_digest=_EMPTY_SEED.root_input_digest if root_input_digest is None else root_input_digest,
     )
+
+
+__all__ = [
+    "empty_invocation_seed",
+    "leftover_ledger",
+    "synthetic_invocation_started",
+]

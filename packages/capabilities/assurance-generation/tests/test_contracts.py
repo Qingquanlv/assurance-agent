@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from typing import cast
 
@@ -206,7 +207,7 @@ def test_generation_contracts_import_only_intake_contracts() -> None:
 def test_generation_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "api.codegen-fix": (
@@ -342,13 +343,35 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
         assert contract.contract_id == f"assurance.generation.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
-        assert contract.resources.writes == writes
+        family, _, stage = base.partition(".")
+        expected_claims = writes
+        if stage in {"codegen", "codegen-fix"}:
+            expected_claims = tuple(sorted((*writes, f"qa/changes/{{change_id}}/generated/{family}/files")))
+        assert contract.resources.writes == expected_claims
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
-        dumped = contract.model_dump_json().lower()
+        dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
     found = forbidden_generation_imports()
     assert not any(name == "assurance_product" or name.startswith("assurance_product.") for name in found)
+
+
+def test_codegen_job_claims_cover_dynamic_change_local_mapping_targets() -> None:
+    from graph_engine.plugin_api import ResourceClaimTemplate
+
+    from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+
+    for family in ("api", "e2e", "fuzz", "performance"):
+        for suffix in ("codegen", "codegen-fix") if family in {"api", "e2e"} else ("codegen",):
+            base = f"{family}.{suffix}"
+            resources = AGENT_JOB_CONTRACTS[base].resources
+            assert isinstance(resources, ResourceClaimTemplate)
+            claims = resources.resolve({"workspace": {"scope_id": "CH-1"}}).writes
+            dynamic_root = f"qa/changes/CH-1/generated/{family}/files"
+            assert dynamic_root in claims
+            assert dynamic_root not in tuple(
+                path.replace("{change_id}", "CH-1") for path in OUTPUT_ROUTE_TEMPLATES[base]
+            )
 
 
 def test_generation_schema_bytes_equal_model_schema() -> None:

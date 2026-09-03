@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from graph_engine import ENGINE_API_VERSION, RegistryPorts
+from graph_engine.plugin_api import AttemptContractRef
+
+from agent_runtime_contracts import AgentExecutionContract
+from assurance_quality.contracts.agent import (
+    FactBaselineResultV1,
+    InspectionResultV1,
+    IssueAnalysisResultV1,
+    IssueTriageResultV1,
+    QualitySkillInputV1,
+    ReportResultV1,
+)
+from assurance_quality.contracts.attempts import (
+    AGENT_JOB_CONTRACTS,
+    TASK_ATTEMPT_CONTRACTS,
+    attempt_contract_refs,
+)
+from assurance_quality.plugin import QualityPlugin
+
+
+def test_quality_owns_five_agent_contracts() -> None:
+    assert len(AGENT_JOB_CONTRACTS) == 5
+    assert TASK_ATTEMPT_CONTRACTS == {}
+    expected = {
+        "fact-baseline": ("aa-fact-baseline", "assurance-v1-doc-author", FactBaselineResultV1),
+        "inspect": ("aa-inspect", "assurance-v1-reviewer", InspectionResultV1),
+        "issue-analysis": ("aa-issue-analyzer", "assurance-v1-reporter", IssueAnalysisResultV1),
+        "issue-triage": ("aa-issue-triage-advisor", "assurance-v1-reporter", IssueTriageResultV1),
+        "report": ("aa-report-generator", "assurance-v1-reporter", ReportResultV1),
+    }
+    assert set(AGENT_JOB_CONTRACTS) == set(expected)
+    for base, (skill_id, profile, result_model) in expected.items():
+        contract = AGENT_JOB_CONTRACTS[base]
+        assert isinstance(contract, AgentExecutionContract)
+        assert contract.contract_id == f"assurance.quality.agent.{base}.v1"
+        assert contract.owner_id == "assurance.quality"
+        assert contract.prepare_handler_id == f"assurance.quality.{base}.prepare"
+        assert contract.finalize_handler_id == f"assurance.quality.{base}.finalize"
+        assert contract.skill_id == skill_id
+        assert contract.agent_profile == profile
+        assert contract.input_model is QualitySkillInputV1
+        assert contract.agent_result_model is result_model
+        assert contract.output_model is result_model
+        assert contract.validators == ()
+        assert contract.retry.max_attempts == 1
+        assert contract.timeout.seconds == 60
+
+
+def test_quality_plugin_projects_authenticated_attempt_contracts() -> None:
+    refs = attempt_contract_refs()
+    contribution = QualityPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    assert refs == contribution.attempt_contracts == QualityPlugin.descriptor().attempt_contracts
+    assert all(isinstance(item, AttemptContractRef) for item in refs)
+    assert len(contribution.commit_validators) == 6
+    assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())

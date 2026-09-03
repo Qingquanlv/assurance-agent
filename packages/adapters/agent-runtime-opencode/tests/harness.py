@@ -254,7 +254,7 @@ def agent_run_request(*, result_schema: dict[str, object] | None = None) -> Agen
         result_contract=ResultContract(
             schema_id="fixture.result.v1",
             schema_digest=canonical_digest(schema),
-            extraction_mode="structured",
+            delivery_mode="assistant_json_local_v1",
         ),
         execution=FrozenExecutionSelection(
             provider_model="provider_default",

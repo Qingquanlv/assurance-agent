@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Literal
 import unicodedata
 from urllib.parse import urlparse
@@ -13,7 +14,7 @@ from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_product.agent_contracts import PREPARE_IDS
+from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
 PRODUCT_ID = "assurance"
 ENGINE_API = "2.0"
@@ -321,13 +322,13 @@ class DeploymentBindingsV1(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_closed_document(self) -> DeploymentBindingsV1:
-        expected = set(PREPARE_IDS)
+        expected = set(AGENT_EXECUTION_CONTRACTS)
         actual = set(self.routes)
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
         if missing or extra:
             raise ValueError(
-                f"routes must contain exactly the 33 prepare IDs; missing={missing!r} extra={extra!r}"
+                f"routes must contain exactly the 33 semantic Agent contract IDs; missing={missing!r} extra={extra!r}"
             )
         for assignment in self.routes.values():
             if assignment.permission_profile_id not in self.permission_profiles:
@@ -401,26 +402,8 @@ def adapter_secret_handles(binding: OpenCodeBindingV1 | CursorBindingV1) -> tupl
     return (handle,)
 
 
-def alias_ids_for_prepare(prepare_id: str) -> tuple[str, str, str]:
-    stem = prepare_id.removesuffix(".prepare")
-    key = stem.removeprefix("assurance.")
-    return (
-        f"assurance.product.agent.{key}.prepare",
-        f"assurance.product.agent.{key}.execute",
-        f"assurance.product.agent.{key}.finalize",
-    )
-
-
 def all_binding_ids() -> tuple[str, ...]:
-    return tuple(alias for prepare_id in PREPARE_IDS for alias in alias_ids_for_prepare(prepare_id))
-
-
-def finalize_aliases() -> tuple[str, ...]:
-    return tuple(alias_ids_for_prepare(prepare_id)[2] for prepare_id in PREPARE_IDS)
-
-
-def expected_finalize_ids() -> frozenset[str]:
-    return frozenset(prepare_id.removesuffix(".prepare") + ".finalize" for prepare_id in PREPARE_IDS)
+    return tuple(sorted(AGENT_EXECUTION_CONTRACTS))
 
 
 TEST_FAMILY_ORDER: tuple[Literal["api", "e2e", "fuzz", "performance"], ...] = (
@@ -447,6 +430,11 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     }
 )
 PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS
+THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - FAMILY_NONEMPTY_ENTRYPOINTS
+RuntimeKind = Literal["legacy-v2", "langgraph-v1"]
+ENTRYPOINT_RUNTIME_CUTOVER: MappingProxyType[str, RuntimeKind] = MappingProxyType(
+    {name: "langgraph-v1" for name in sorted(PRODUCT_ENTRYPOINTS)}
+)
 
 
 def _canonical_token(value: str, label: str) -> str:
@@ -656,6 +644,22 @@ def authenticate_product_input_resources(value: ProductInputV1, composition: obj
         raise ValueError("capability catalog is missing typed_leafs")
     if value.capability_leafs != tuple(leafs):
         raise ValueError("product capability_leafs disagree with the authenticated catalog")
+
+
+class ProductReceiptRefV1(FrozenModel):
+    receipt_id: str = Field(min_length=1)
+    receipt_digest: str = Field(pattern=_SHA256)
+
+
+class ProductPublicOutput(FrozenModel):
+    change_id: str
+    status: Literal["completed", "failed"]
+    receipts: tuple[ProductReceiptRefV1, ...] = ()
+
+    @field_validator("change_id")
+    @classmethod
+    def _change_id(cls, value: str) -> str:
+        return _canonical_token(value, "change_id")
 
 
 class GraphStatusV1(FrozenModel):

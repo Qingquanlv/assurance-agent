@@ -814,7 +814,7 @@ def _healing_finalize_payload(
     proposal = FixProposalResultV1.model_validate(structured)
     proposal_digest = canonical_digest(cast(JSONValue, proposal.model_dump(mode="json")))
     result = AgentRunResult(
-        structured_result=cast(JSONValue, structured),
+        result_payload=cast(JSONValue, structured),
         result_digest=runtime_digest(cast(JSONValue, structured)),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",

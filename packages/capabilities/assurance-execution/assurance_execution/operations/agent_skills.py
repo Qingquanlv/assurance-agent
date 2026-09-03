@@ -72,7 +72,7 @@ def result_contract() -> ResultContract:
     return ResultContract(
         schema_id=EXECUTION_RESULT_ID,
         schema_digest=canonical_digest(payload),
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
         schema_document=payload,
     )
 
@@ -308,7 +308,7 @@ def _finalize_payload(
     except ValidationError:
         pass
     envelope = validate_input(ExecutionFinalizeRequestV1, data)
-    structured = thaw_json(envelope.agent_result.structured_result)
+    structured = thaw_json(envelope.agent_result.result_payload)
     if not isinstance(structured, dict):
         raise InputError("execution result must be an object")
     baseline_tree_id = structured.get("baseline_tree_id")
@@ -367,7 +367,7 @@ def _authenticate_files(workspace: Path, declared: tuple[str, ...]) -> list[dict
 
 
 def _structured(payload: AgentFinalizeInputV1) -> object:
-    return thaw_json(payload.agent_result.structured_result)
+    return thaw_json(payload.agent_result.result_payload)
 
 
 def _finalize_evidence(payload: AgentFinalizeInputV1, workspace: Path) -> ExecutionEvidenceV1:

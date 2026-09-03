@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.plugin_api import PluginDependency, ProviderSource
+from graph_engine.plugin_api import (
+    PluginContribution,
+    PluginDependency,
+    PluginDescriptor,
+    ProviderSource,
+    RegistryPorts,
+)
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
+from assurance_quality.contracts.attempts import attempt_contract_refs
 from assurance_quality.operations import quality_handlers
 from assurance_quality.resource_loader import resource_bytes
 from assurance_quality.validators.issues import IssueValidator, ProblemApplyValidator
@@ -43,7 +52,6 @@ QUALITY_RESOURCE_FILES: dict[str, str] = {
     "assurance.quality.skill.aa-issue-analyzer.v1": "skills/aa-issue-analyzer/SKILL.md",
     "assurance.quality.skill.aa-issue-triage-advisor.v1": "skills/aa-issue-triage-advisor/SKILL.md",
     "assurance.quality.skill.aa-report-generator.v1": "skills/aa-report-generator/SKILL.md",
-    "assurance.quality.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -119,3 +127,11 @@ class QualityPlugin(CapabilityPlugin):
         commit_validators=_VALIDATORS,
         dependencies=QUALITY_DEPENDENCIES,
     )
+
+    @classmethod
+    def descriptor(cls) -> PluginDescriptor:
+        return cls.spec.descriptor().model_copy(update={"attempt_contracts": attempt_contract_refs()})
+
+    @classmethod
+    def contribute(cls, ports: RegistryPorts) -> PluginContribution:
+        return replace(cls.spec.contribution(ports), attempt_contracts=attempt_contract_refs())

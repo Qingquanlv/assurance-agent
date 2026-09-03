@@ -25,7 +25,7 @@ from graph_engine.plugin_api import (  # noqa: E402
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.runtime.activity import (  # noqa: E402
+from graph_engine.attempts.activity import (  # noqa: E402
     AttemptWorkspaceLost,
     TaskActivityConflict,
     TaskActivityIndeterminate,
@@ -33,27 +33,23 @@ from graph_engine.runtime.activity import (  # noqa: E402
     TaskActivityRecoveryUnsupported,
     TaskActivityReferenceInvalid,
 )
-from graph_engine.runtime.engine import (  # noqa: E402
-    Engine,
-    EngineConflictError,
-    EngineError,
-    EnginePublicationIndeterminate,
-    InvocationHandle,
-    RunResult,
+from graph_engine.boot.graph_revision import (  # noqa: E402
+    BootArtifact,
+    EntrypointGraphContract,
+    FeatureFactoryRef,
+    GraphBuildManifest,
+    GraphRevision,
 )
-from graph_engine.runtime.invocation_lock import (  # noqa: E402
-    InvocationDrift,
-    authenticate_invocation_lock,
-    install_invocation_lock_at,
-    read_invocation_lock_at,
-)
+from graph_engine.composition.lock import ProductLock  # noqa: E402
 
 __all__ = [
     "ENGINE_API_VERSION",
-    "Engine",
-    "EngineConflictError",
-    "EngineError",
-    "EnginePublicationIndeterminate",
+    "BootArtifact",
+    "EntrypointGraphContract",
+    "FeatureFactoryRef",
+    "GraphBuildManifest",
+    "GraphRevision",
+    "ProductLock",
     "AttemptWorkspaceLost",
     "CandidateFile",
     "CandidateWriteSet",
@@ -62,10 +58,7 @@ __all__ = [
     "PluginDescriptor",
     "PluginProvider",
     "RegistryPorts",
-    "InvocationHandle",
-    "InvocationDrift",
     "InvocationMetadata",
-    "RunResult",
     "ResourceClaims",
     "SecretHandleUnauthorized",
     "SecretPort",
@@ -86,7 +79,4 @@ __all__ = [
     "TaskStatus",
     "ValidationContext",
     "ValidationResult",
-    "authenticate_invocation_lock",
-    "install_invocation_lock_at",
-    "read_invocation_lock_at",
 ]

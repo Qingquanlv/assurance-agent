@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, cast
+
+from langchain_core.runnables.config import RunnableConfig
+from langgraph.graph.state import CompiledStateGraph
+
+from assurance_execution.graphs.factory import ExecutionGraphs
+from assurance_generation.graphs.factory import GenerationGraphs
+from assurance_healing.graphs.factory import HealingGraphs
+from assurance_improvement.graphs.factory import ImprovementGraphs
+from assurance_intake.graphs.factory import IntakeGraphs
+from assurance_product.graphs.entrypoints import (
+    build_archive_root,
+    build_case_root,
+    build_improvement_apply_root,
+    build_improvement_evaluate_root,
+    build_improvement_export_root,
+    build_improvement_review_root,
+    build_improvement_rollback_root,
+    build_intake_root,
+    build_issue_analyze_root,
+    build_issue_reconcile_root,
+    build_issue_review_root,
+    build_retro_root,
+)
+from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
+from assurance_product.models import FEATURE_WORKFLOW_OWNERS, PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
+from assurance_quality.graphs.factory import QualityGraphs
+from graph_engine.boot.boot import GraphBuildContext
+from graph_engine.boot.graph_revision import EntrypointGraphContract
+
+_BUNDLE_TYPES: Mapping[str, type] = {
+    "assurance.intake": IntakeGraphs,
+    "assurance.generation": GenerationGraphs,
+    "assurance.execution": ExecutionGraphs,
+    "assurance.quality": QualityGraphs,
+    "assurance.healing": HealingGraphs,
+    "assurance.improvement": ImprovementGraphs,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ProductFeatureBundles:
+    intake: IntakeGraphs
+    generation: GenerationGraphs
+    execution: ExecutionGraphs
+    quality: QualityGraphs
+    healing: HealingGraphs
+    improvement: ImprovementGraphs
+
+
+@dataclass(frozen=True, slots=True)
+class ThinEntrypointGraphs:
+    entrypoints: Mapping[str, CompiledStateGraph]
+
+
+def coerce_feature_bundles(features: Mapping[str, object]) -> ProductFeatureBundles:
+    owners = tuple(features)
+    if len(owners) != len(set(owners)):
+        raise ValueError("duplicate feature owners")
+    expected = set(FEATURE_WORKFLOW_OWNERS)
+    got = set(owners)
+    missing = expected - got
+    extra = got - expected
+    if missing:
+        raise ValueError(f"missing feature owners: {sorted(missing)}")
+    if extra:
+        raise ValueError(f"extra feature owners: {sorted(extra)}")
+    typed: dict[str, object] = {}
+    for owner in FEATURE_WORKFLOW_OWNERS:
+        bundle = features[owner]
+        required = _BUNDLE_TYPES[owner]
+        if not isinstance(bundle, required):
+            raise TypeError(f"{owner} must be {required.__name__}")
+        typed[owner] = bundle
+    return ProductFeatureBundles(
+        intake=cast(IntakeGraphs, typed["assurance.intake"]),
+        generation=cast(GenerationGraphs, typed["assurance.generation"]),
+        execution=cast(ExecutionGraphs, typed["assurance.execution"]),
+        quality=cast(QualityGraphs, typed["assurance.quality"]),
+        healing=cast(HealingGraphs, typed["assurance.healing"]),
+        improvement=cast(ImprovementGraphs, typed["assurance.improvement"]),
+    )
+
+
+def build_thin_entrypoint_graphs(
+    *,
+    context: GraphBuildContext,
+    features: Mapping[str, object],
+) -> ThinEntrypointGraphs:
+    bundles = coerce_feature_bundles(features)
+    entrypoints = {
+        "intake": build_intake_root(context, bundles.intake.prepare),
+        "case": build_case_root(context, bundles.intake.case),
+        "archive": build_archive_root(context, bundles.improvement.archive),
+        "retro": build_retro_root(context, bundles.improvement.retro),
+        "issue-review": build_issue_review_root(context, bundles.quality.issue_review),
+        "issue-analyze": build_issue_analyze_root(context, bundles.quality.issue_analyze),
+        "issue-reconcile": build_issue_reconcile_root(context, bundles.quality.issue_reconcile),
+        "improvement-review": build_improvement_review_root(context, bundles.improvement.review),
+        "improvement-evaluate": build_improvement_evaluate_root(context, bundles.improvement.evaluate),
+        "improvement-export": build_improvement_export_root(context, bundles.improvement.export),
+        "improvement-apply": build_improvement_apply_root(context, bundles.improvement.apply),
+        "improvement-rollback": build_improvement_rollback_root(context, bundles.improvement.rollback),
+    }
+    if set(entrypoints) != set(THIN_ENTRYPOINTS) or len(entrypoints) != 12:
+        raise ValueError("thin roots must be the 12 declared entrypoints")
+    return ThinEntrypointGraphs(entrypoints=MappingProxyType(entrypoints))
+
+
+@dataclass(frozen=True, slots=True)
+class ProductGraphs:
+    entrypoints: Mapping[str, CompiledStateGraph]
+    contracts: Mapping[str, EntrypointGraphContract]
+
+
+def _closed_entrypoints(entrypoints: Mapping[str, CompiledStateGraph]) -> Mapping[str, CompiledStateGraph]:
+    names = tuple(entrypoints)
+    if len(names) != len(set(names)):
+        raise ValueError("duplicate product roots")
+    expected = set(PRODUCT_ENTRYPOINTS)
+    got = set(names)
+    missing = expected - got
+    extra = got - expected
+    if missing:
+        raise ValueError(f"missing product entrypoints: {sorted(missing)}")
+    if extra:
+        raise ValueError(f"extra product entrypoints: {sorted(extra)}")
+    if len(entrypoints) != 14:
+        raise ValueError("product roots must be the 14 declared entrypoints")
+    return MappingProxyType(dict(entrypoints))
+
+
+def build_product_graphs(
+    *,
+    context: GraphBuildContext,
+    features: Mapping[str, object],
+) -> ProductGraphs:
+    from assurance_product.graphs.execute import build_execute_root
+    from assurance_product.graphs.full import build_full_root
+
+    bundles = coerce_feature_bundles(features)
+    thin = build_thin_entrypoint_graphs(context=context, features=features)
+    thin_names = tuple(thin.entrypoints)
+    if len(thin_names) != len(set(thin_names)):
+        raise ValueError("duplicate product roots")
+    execute = build_execute_root(context, bundles)
+    execute_tail = build_execute_root(context, bundles)
+    full = build_full_root(context, bundles, execute_tail)
+    entrypoints = {
+        **dict(thin.entrypoints),
+        "execute": execute,
+        "full": full,
+    }
+    return ProductGraphs(entrypoints=_closed_entrypoints(entrypoints), contracts=ENTRYPOINT_CONTRACTS)
+
+
+def product_invoke_config(name: str) -> RunnableConfig:
+    return {"recursion_limit": ENTRYPOINT_RECURSION_LIMITS[name]}
+
+
+def invoke_product_root(
+    graphs: ProductGraphs,
+    name: str,
+    payload: Mapping[str, object],
+    **kwargs: Any,
+) -> dict[str, Any]:
+    config = dict(product_invoke_config(name))
+    extra = kwargs.pop("config", None)
+    if isinstance(extra, Mapping):
+        config.update(dict(extra))
+    result = graphs.entrypoints[name].invoke(payload, config=cast(RunnableConfig, config), **kwargs)
+    if not isinstance(result, dict):
+        raise TypeError("product root invoke must return a mapping")
+    return result
+
+
+invoke_product_root.config = product_invoke_config  # type: ignore[attr-defined]
+
+
+__all__ = [
+    "ProductFeatureBundles",
+    "ProductGraphs",
+    "ThinEntrypointGraphs",
+    "build_product_graphs",
+    "build_thin_entrypoint_graphs",
+    "coerce_feature_bundles",
+    "invoke_product_root",
+    "product_invoke_config",
+]

@@ -21,12 +21,14 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import PluginDescriptor, ProviderSource, TaskHandler
 
 _CALLBACK_REGISTRY_NAME = "_assurance_product_runtime_test_callbacks"
+_VALIDATOR_REGISTRY_NAME = "_assurance_product_runtime_test_validators"
 _CALLBACKS: dict[str, Mapping[str, TaskHandler]] = {}
+_VALIDATORS: dict[str, Mapping[str, object]] = {}
 setattr(builtins, _CALLBACK_REGISTRY_NAME, _CALLBACKS)
+setattr(builtins, _VALIDATOR_REGISTRY_NAME, _VALIDATORS)
 
 _PLUGIN_OWNERS = (
     "assurance.product.agent",
@@ -54,7 +56,7 @@ def _owner_for(capability_id: str) -> str:
     for owner in _PLUGIN_OWNERS:
         if capability_id.startswith(f"{owner}."):
             return owner
-    raise AssertionError(f"workflow capability is not owned by a test plugin: {capability_id}")
+    raise AssertionError(f"capability is not owned by a test plugin: {capability_id}")
 
 
 def _handlers_by_owner(handlers: Mapping[str, TaskHandler]) -> dict[str, dict[str, TaskHandler]]:
@@ -64,43 +66,18 @@ def _handlers_by_owner(handlers: Mapping[str, TaskHandler]) -> dict[str, dict[st
     return grouped
 
 
-_PERMISSIVE_SCHEMA = b"true"
-
-
-def _workflow_schema_ids(workflow: WorkflowDef) -> tuple[str, ...]:
-    ids: set[str] = set(workflow.schemas)
-    for graph in workflow.graphs.values():
-        for node in graph.nodes.values():
-            if node.input_schema is not None:
-                ids.add(node.input_schema)
-            if node.output_schema is not None:
-                ids.add(node.output_schema)
-    return tuple(sorted(ids))
-
-
-def _owner_for_schema(schema_id: str) -> str:
-    for owner in sorted(_PLUGIN_OWNERS, key=len, reverse=True):
-        if schema_id.startswith(f"{owner}."):
-            return owner
-    raise AssertionError(f"workflow schema is not owned by a test plugin: {schema_id}")
-
-
-def _schemas_by_owner(workflow: WorkflowDef) -> dict[str, tuple[str, ...]]:
-    grouped: dict[str, list[str]] = {}
-    for schema_id in _workflow_schema_ids(workflow):
-        grouped.setdefault(_owner_for_schema(schema_id), []).append(schema_id)
-    return {owner: tuple(sorted(ids)) for owner, ids in grouped.items()}
-
-
 def resolve_workflow_composition(
     workflow: dict[str, object],
     handlers: Mapping[str, TaskHandler],
+    *,
+    commit_validators: Mapping[str, object] | None = None,
 ) -> FrozenComposition:
-    parsed_workflow = WorkflowDef.model_validate(workflow)
+    del workflow
     identity = uuid.uuid4().hex
     distribution_name = f"assurance-product-runtime-test-{identity}"
     package_name = f"assurance_product_runtime_test_{identity}"
     product_entrypoint = f"product-{identity}"
+    factory_symbol = f"{package_name}.provider:build_runtime_graphs"
     source_root = Path(tempfile.mkdtemp(prefix="assurance-product-runtime-source-")).resolve()
     package_root = source_root / package_name
     package_root.mkdir()
@@ -108,8 +85,12 @@ def resolve_workflow_composition(
     provider_value = f"{package_name}.provider"
     product_declaration_path = f"{package_name}/product-declaration.json"
     grouped = _handlers_by_owner(handlers)
-    schemas_by_owner = _schemas_by_owner(parsed_workflow)
-    owners = tuple(owner for owner in _PLUGIN_OWNERS if owner in grouped or owner in schemas_by_owner)
+    validators = dict(commit_validators or {})
+    validator_owners = {
+        owner: {key: value for key, value in validators.items() if key.startswith(f"{owner}.")}
+        for owner in _PLUGIN_OWNERS
+    }
+    owners = tuple(owner for owner in _PLUGIN_OWNERS if owner in grouped or validator_owners.get(owner))
     product_source = ProviderSource(
         distribution=distribution_name,
         version="1.0.0",
@@ -117,9 +98,11 @@ def resolve_workflow_composition(
         entrypoint_name=product_entrypoint,
         entrypoint_value=f"{provider_value}:RuntimeProduct",
         declaration_path=product_declaration_path,
-        import_roots=("",),
+        import_roots=("", package_name),
     )
-    plugin_specs: list[tuple[str, str, str, PluginDescriptor, ProviderSource, dict[str, TaskHandler]]] = []
+    plugin_specs: list[
+        tuple[str, str, str, PluginDescriptor, ProviderSource, dict[str, TaskHandler], dict[str, object]]
+    ] = []
     for index, owner in enumerate(owners):
         plugin_entrypoint = f"plugin-{identity}-{index}"
         declaration_path = f"{package_name}/plugin-declaration-{index}.json"
@@ -131,7 +114,7 @@ def resolve_workflow_composition(
             entrypoint_name=plugin_entrypoint,
             entrypoint_value=f"{provider_value}:{class_name}",
             declaration_path=declaration_path,
-            import_roots=("",),
+            import_roots=("", package_name),
         )
         descriptor = PluginDescriptor(
             schema_version="1",
@@ -140,8 +123,8 @@ def resolve_workflow_composition(
             plugin_version="1.0.0",
             engine_api=ENGINE_API_VERSION,
             task_handlers=tuple(sorted(grouped.get(owner, {}))),
-            commit_validators=(),
-            schemas=schemas_by_owner.get(owner, ()),
+            commit_validators=tuple(sorted(validator_owners.get(owner, {}))),
+            schemas=(),
         )
         plugin_specs.append(
             (
@@ -151,6 +134,7 @@ def resolve_workflow_composition(
                 descriptor,
                 plugin_source,
                 grouped.get(owner, {}),
+                validator_owners.get(owner, {}),
             )
         )
     manifest = ProductManifest(
@@ -159,17 +143,13 @@ def resolve_workflow_composition(
         product_id="test.product",
         product_version="1.0.0",
         engine_api=ENGINE_API_VERSION,
-        plugins=tuple(PluginRequirement(plugin_id=owner, version_specifier="==1.0.0") for owner in owners),
-        entrypoints=dict(parsed_workflow.entrypoints),
+        plugins=tuple(PluginRequirement(plugin_id=owner, version_specifier="==1.0.0") for owner in owners)
+        or (PluginRequirement(plugin_id="assurance.intake", version_specifier="==1.0.0"),),
+        entrypoints={"main": "root"},
         configuration={},
-        workflow=parsed_workflow,
+        graph_factory_symbol=factory_symbol,
     )
     manifest_document = manifest.model_dump(mode="json")
-    manifest_document["workflow"] = parsed_workflow.model_dump(
-        mode="json",
-        by_alias=True,
-        exclude_unset=True,
-    )
     (source_root / product_declaration_path).write_bytes(
         canonical_json_bytes(
             {
@@ -182,17 +162,53 @@ def resolve_workflow_composition(
     )
     callback_key = f"product-{identity}"
     _CALLBACKS[callback_key] = dict(handlers)
+    _VALIDATORS[callback_key] = dict(validators)
     provider_lines = [
+        "from dataclasses import dataclass",
+        "from typing import TypedDict",
+        "from langgraph.graph import END, START, StateGraph",
+        "from graph_engine.boot.generic import entrypoint_digest",
+        "from graph_engine.boot.graph_revision import EntrypointGraphContract",
+        "from graph_engine.composition import ProductManifest",
+        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor",
         "import builtins",
         "import json",
-        "from graph_engine.composition import ProductManifest",
-        "from graph_engine.plugin_api import PluginContribution, PluginDescriptor, SchemaContribution",
         f"_all_callbacks = getattr(builtins, {_CALLBACK_REGISTRY_NAME!r})[{callback_key!r}]",
+        f"_all_validators = getattr(builtins, {_VALIDATOR_REGISTRY_NAME!r})[{callback_key!r}]",
+        "class RuntimeState(TypedDict, total=False):",
+        "    ok: bool",
+        "@dataclass(frozen=True, slots=True)",
+        "class RuntimeGraphs:",
+        "    entrypoints: dict",
+        "    contracts: dict",
+        "def build_runtime_graphs(context, features=None):",
+        "    del features",
+        "    builder = StateGraph(RuntimeState)",
+        "    builder.add_node('run', lambda state: {'ok': True})",
+        "    builder.add_edge(START, 'run')",
+        "    builder.add_edge('run', END)",
+        "    contracts = {'main': EntrypointGraphContract(",
+        "        name='main',",
+        f"        input_model='{package_name}.provider.RuntimeState',",
+        f"        output_model='{package_name}.provider.RuntimeState',",
+        f"        state_model='{package_name}.provider.RuntimeState',",
+        "        input_schema_digest=entrypoint_digest('main', 'input'),",
+        "        output_schema_digest=entrypoint_digest('main', 'output'),",
+        "        state_schema_digest=entrypoint_digest('main', 'state'),",
+        "        state_schema_version='1',",
+        "        recursion_limit=32,",
+        "    )}",
+        "    return RuntimeGraphs({'main': context.compile_root(builder)}, contracts)",
         "class _DelegatingHandler:",
         "    def __init__(self, delegate):",
         "        self._delegate = delegate",
         "    async def execute(self, request, context):",
         "        return await self._delegate.execute(request, context)",
+        "class _DelegatingValidator:",
+        "    def __init__(self, delegate):",
+        "        self._delegate = delegate",
+        "    def validate(self, staged, context):",
+        "        return self._delegate.validate(staged, context)",
         "class RuntimeProduct:",
         "    @staticmethod",
         "    def manifest():",
@@ -206,6 +222,7 @@ def resolve_workflow_composition(
         descriptor,
         plugin_source,
         owner_handlers,
+        owner_validators,
     ) in plugin_specs:
         (source_root / declaration_path).write_bytes(
             canonical_json_bytes(
@@ -218,8 +235,8 @@ def resolve_workflow_composition(
             )
         )
         handler_keys = json.dumps(sorted(owner_handlers), sort_keys=True)
+        validator_keys = json.dumps(sorted(owner_validators), sort_keys=True)
         descriptor_json = json.dumps(descriptor.model_dump(mode="json"), sort_keys=True)
-        owner_schema_ids = json.dumps(list(descriptor.schemas), sort_keys=True)
         provider_lines.extend(
             [
                 f"class {class_name}:",
@@ -229,13 +246,10 @@ def resolve_workflow_composition(
                 "    @staticmethod",
                 "    def contribute(_ports):",
                 f"        keys = {handler_keys}",
-                f"        schema_ids = {owner_schema_ids}",
+                f"        validator_ids = {validator_keys}",
                 "        return PluginContribution(",
                 "            task_handlers={key: _DelegatingHandler(_all_callbacks[key]) for key in keys},",
-                "            schemas=tuple(",
-                "                SchemaContribution(schema_id, 'application/schema+json', b'true')",
-                "                for schema_id in schema_ids",
-                "            ),",
+                "            commit_validators={key: _DelegatingValidator(_all_validators[key]) for key in validator_ids},",
                 "        )",
             ]
         )
@@ -281,7 +295,7 @@ def resolve_workflow_composition(
                     source_root=source_root,
                     source_files=source_files,
                 )
-                for plugin_entrypoint, declaration_path, _class_name, _descriptor, _source, _handlers in plugin_specs
+                for plugin_entrypoint, declaration_path, _class_name, _descriptor, _source, _handlers, _validators in plugin_specs
             ),
         )
     )

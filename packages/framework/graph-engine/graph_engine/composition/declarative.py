@@ -17,8 +17,6 @@ from graph_engine.composition.models import (
     SourceIdentity,
     SourceKind,
     SourceSnapshot,
-    WorkflowModuleRequirement,
-    WorkflowSlotBinding,
     _validate_canonical_relative_path,
 )
 from graph_engine.composition.source_fs import (
@@ -28,8 +26,6 @@ from graph_engine.composition.source_fs import (
     capture_explicit_file,
 )
 from graph_engine.errors import GraphEngineError
-from graph_engine.graph.module_schema import WorkflowModuleDef
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
@@ -53,7 +49,6 @@ _PLUGIN_MANIFEST = "plugin.yaml"
 _SAFE_MEDIA_SUFFIXES = {
     "application/json": (".json",),
     "application/schema+json": (".json",),
-    "application/vnd.graph-engine.workflow+yaml": (".yaml", ".yml"),
     "application/yaml": (".yaml", ".yml"),
     "text/markdown": (".md",),
     "text/plain": (".txt",),
@@ -62,7 +57,6 @@ _SAFE_MEDIA_SUFFIXES = {
 _SAFE_MEDIA_TYPES = frozenset(_SAFE_MEDIA_SUFFIXES)
 _YAML_MEDIA_TYPES = frozenset(
     {
-        "application/vnd.graph-engine.workflow+yaml",
         "application/yaml",
         "text/yaml",
     }
@@ -282,11 +276,7 @@ class DeclarativeProductDocument(FrozenModel):
     entrypoints: dict[str, str]
     configuration: dict[str, dict[str, JSONValue]]
     config_plugin_paths: tuple[str, ...] = ()
-    workflow: WorkflowDef | None = None
-    workflow_resource_id: str | None = None
-    workflow_module: WorkflowModuleDef | None = None
-    workflow_module_resources: tuple[WorkflowModuleRequirement, ...] = ()
-    workflow_slot_bindings: tuple[WorkflowSlotBinding, ...] = ()
+    graph_factory_symbol: str
 
     @field_validator("product_id")
     @classmethod
@@ -334,46 +324,11 @@ class DeclarativeProductDocument(FrozenModel):
             raise ValueError("config plugin paths must be unique")
         return tuple(validated)
 
-    @field_validator("workflow_resource_id")
-    @classmethod
-    def _validate_workflow_resource_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _qualified_id(value, "workflow resource id")
-
     @model_validator(mode="after")
     def _validate_manifest_closure(self) -> Self:
-        if (
-            sum(
-                value is not None
-                for value in (self.workflow, self.workflow_resource_id, self.workflow_module)
-            )
-            != 1
-        ):
-            raise ValueError("product manifest requires exactly one workflow form")
-        if self.workflow_module is None:
-            if self.workflow_module_resources:
-                raise ValueError("workflow module resources are allowed only on the modular product form")
-            if self.workflow_slot_bindings:
-                raise ValueError("workflow slot bindings are allowed only on the modular product form")
-        else:
-            if self.workflow_module.owner_id != self.product_id:
-                raise ValueError("product module owner must equal product id")
-            if self.workflow_module.role != "product":
-                raise ValueError("product module role must be product")
-            if self.workflow_module.module_version != self.product_version:
-                raise ValueError("product module version must equal product version")
-            if self.workflow_module.entrypoints != self.entrypoints:
-                raise ValueError("product module entrypoints must equal product entrypoints")
-        module_ids = tuple(item.module_id for item in self.workflow_module_resources)
-        if len(set(module_ids)) != len(module_ids):
-            raise ValueError("workflow module resource module ids must be unique")
-        resource_ids = tuple(item.resource_id for item in self.workflow_module_resources)
-        if len(set(resource_ids)) != len(resource_ids):
-            raise ValueError("workflow module resource ids must be unique")
-        slot_keys = tuple((item.module_id, item.slot) for item in self.workflow_slot_bindings)
-        if len(set(slot_keys)) != len(slot_keys):
-            raise ValueError("workflow slot bindings must be unique")
+        from graph_engine.composition.models import _validate_product_graph_factory_symbol
+
+        _validate_product_graph_factory_symbol(self.graph_factory_symbol, None)
         plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
         if not plugin_ids:
             raise ValueError("product manifest must require at least one plugin")
@@ -382,8 +337,6 @@ class DeclarativeProductDocument(FrozenModel):
         unknown_configuration = set(self.configuration) - set(plugin_ids)
         if unknown_configuration:
             raise ValueError(f"configuration targets an unrequired plugin: {min(unknown_configuration)}")
-        if self.workflow is not None and self.workflow.entrypoints != self.entrypoints:
-            raise ValueError("inline workflow entrypoints must equal product entrypoints")
         return self
 
     @property
@@ -509,11 +462,7 @@ def _parse_plugin_document(content: bytes) -> DeclarativePluginDocument:
 
 def _parse_product_document(content: bytes) -> DeclarativeProductDocument:
     try:
-        raw = _safe_yaml_mapping(
-            content,
-            "product manifest",
-            allowed_executable_paths=frozenset({("workflow_module", "imports")}),
-        )
+        raw = _safe_yaml_mapping(content, "product manifest")
         document = DeclarativeProductDocument.model_validate(raw)
         return cast(DeclarativeProductDocument, _freeze_nested_values(document))
     except (ValidationError, PluginContractError, ValueError) as error:
@@ -771,9 +720,7 @@ def _validate_resource_content(declared: DeclaredResourceFile, content: bytes) -
         if declared.media_type in _JSON_MEDIA_TYPES:
             _strict_json_value(content, label)
         elif declared.media_type in _YAML_MEDIA_TYPES:
-            parsed = _strict_yaml_value(content, label)
-            if declared.media_type == "application/vnd.graph-engine.workflow+yaml":
-                WorkflowDef.model_validate(parsed)
+            _strict_yaml_value(content, label)
         else:
             _decode_utf8(content, label)
     except (json.JSONDecodeError, ValidationError, ValueError, yaml.YAMLError) as error:

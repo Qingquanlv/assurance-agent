@@ -10,6 +10,15 @@ cases.
 
 ## Inputs
 
+Read every exact product-source path cited by the approved plan before any discovery.
+A glob result of `No files found` is not evidence that product source is absent;
+ignored source files remain exact-readable. Use path-scoped grep only after the
+exact reads, and never replace source-backed plan facts with guesses from naming.
+
+Never read `.env`, `*.env`, or credential-bearing benchmark environment files.
+Use environment variable names and non-secret defaults only; implement the approved
+configuration contract without inspecting credential values.
+
 ### required
 
 - reviewed performance plan (`PlanResultV1`) including scenario identity and
@@ -65,6 +74,12 @@ Framework is Locust. Keep Case ID → symbol → target file traceability exact.
 
 Plan, case, and review inputs are immutable. Read them as approved evidence;
 never rewrite, repair, or supersede them during codegen.
+
+The runtime `allowed_outputs` list is the exact write whitelist and overrides
+the wildcard-shaped output descriptions above. If a fixture or helper path is
+not listed, keep the fixture or helper inside an authorized mapped target.
+Never attempt or declare an unlisted support file, and never return a manifest
+entry for a write that the tool rejected or that you did not reopen.
 
 Every closed-mapping target must appear in `files` as a `test_entry` with the
 exact mapped Case IDs. Reopen every target before returning and verify that the

@@ -7,6 +7,22 @@ from pydantic import ValidationError
 import graph_engine
 import graph_engine.plugin_api as plugin_api
 from graph_engine.canonical import canonical_digest
+from graph_engine.composition.contributions import (
+    ContributionProjection,
+    ContributionSourceKeyProjection,
+)
+from graph_engine.composition.models import (
+    AttemptContractRef,
+    CapabilityRegistry,
+    ContributionAuthority,
+    EffectRegistry,
+    RegistrySet,
+    ResourceRegistry,
+    SchemaRegistry,
+    SourceKey,
+    SourceRegistry,
+    SourceRole,
+)
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
@@ -546,3 +562,72 @@ def test_validation_result_requires_reason_exactly_for_rejection(
 ) -> None:
     with pytest.raises(ValidationError, match="reason"):
         ValidationResult.model_validate(fields)
+
+
+def _empty_descriptor(plugin_id: str = "toy.runtime") -> PluginDescriptor:
+    return PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id=plugin_id,
+        plugin_version="1.0.0",
+        engine_api=">=0.2,<0.3",
+        task_handlers=(),
+        commit_validators=(),
+    )
+
+
+def test_descriptor_and_realized_attempt_contracts_must_match_ids_and_digests() -> None:
+    contract = AttemptContractRef(contract_id="toy.runtime.attempt.v1", digest="a" * 64)
+    authority = ContributionAuthority(
+        provider_binding=object(),
+        descriptor=_empty_descriptor(),
+        owner_id="toy.runtime",
+        source_key=SourceKey(SourceRole.PLUGIN, "toy.runtime"),
+        source_digest="b" * 64,
+        contribution=PluginContribution.empty(),
+        authorities=(),
+        attempt_contracts=(contract,),
+    )
+    descriptor_projection = ContributionProjection.from_authority(authority)
+    realized_projection = ContributionProjection.from_registry_owner(
+        RegistrySet(
+            sources=SourceRegistry(entries={}),
+            capabilities=CapabilityRegistry.empty(),
+            schemas=SchemaRegistry(entries={}),
+            resources=ResourceRegistry(entries={}),
+            effects=EffectRegistry(entries={}),
+        ),
+        authority,
+    )
+    assert descriptor_projection.attempt_contracts == (contract,)
+    assert realized_projection.attempt_contracts == descriptor_projection.attempt_contracts
+    mismatched = AttemptContractRef(contract_id="toy.runtime.attempt.v1", digest="c" * 64)
+    assert descriptor_projection.attempt_contracts != (mismatched,)
+
+
+def test_configuration_tree_contributions_cannot_declare_attempt_contracts() -> None:
+    contract = AttemptContractRef(contract_id="toy.config.attempt.v1", digest="a" * 64)
+    with pytest.raises(ValueError, match="attempt contract"):
+        ContributionAuthority(
+            provider_binding=None,
+            descriptor=_empty_descriptor("toy.config"),
+            owner_id="toy.config",
+            source_key=SourceKey(SourceRole.CONFIG, "toy.config"),
+            source_digest="b" * 64,
+            contribution=PluginContribution.empty(),
+            authorities=(),
+            attempt_contracts=(contract,),
+        )
+    with pytest.raises(ValidationError, match="attempt contract"):
+        ContributionProjection(
+            owner_id="toy.config",
+            source_key=ContributionSourceKeyProjection(role=SourceRole.CONFIG, owner_id="toy.config"),
+            source_digest="b" * 64,
+            task_handlers=(),
+            commit_validators=(),
+            schemas=(),
+            resources=(),
+            effects=(),
+            bindings=(),
+            attempt_contracts=(contract,),
+        )

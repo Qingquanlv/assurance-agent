@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.plugin_api import PluginDependency, ProviderSource
+from graph_engine.plugin_api import (
+    PluginContribution,
+    PluginDependency,
+    PluginDescriptor,
+    ProviderSource,
+    RegistryPorts,
+)
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
+from assurance_execution.contracts.attempts import attempt_contract_refs
 from assurance_execution.operations import execution_handlers
 from assurance_execution.resource_loader import resource_bytes
 from assurance_execution.validators import ClosedMappingValidator, ExecutionEvidenceValidator
@@ -28,7 +37,6 @@ EXECUTION_RESOURCE_FILES: dict[str, str] = {
     "assurance.execution.result.execution.v1": "result-contracts/execution.v1.schema.json",
     "assurance.execution.skill.aa-execute.v1": "skills/aa-execute/SKILL.md",
     "assurance.execution.skill.aa-run.v1": "skills/aa-run/SKILL.md",
-    "assurance.execution.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -63,3 +71,11 @@ class ExecutionPlugin(CapabilityPlugin):
         commit_validators=_VALIDATORS,
         dependencies=EXECUTION_DEPENDENCIES,
     )
+
+    @classmethod
+    def descriptor(cls) -> PluginDescriptor:
+        return cls.spec.descriptor().model_copy(update={"attempt_contracts": attempt_contract_refs()})
+
+    @classmethod
+    def contribute(cls, ports: RegistryPorts) -> PluginContribution:
+        return replace(cls.spec.contribution(ports), attempt_contracts=attempt_contract_refs())

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from pydantic import BaseModel
+
+from graph_engine.canonical import canonical_digest
 from graph_engine.composition.contributions import (
     ContributionValueError,
     ValidatedContribution,
@@ -11,6 +14,9 @@ from graph_engine.composition.contributions import (
     validate_registry_contribution_authorities,
 )
 from graph_engine.composition.models import (
+    AttemptContractClaim,
+    AttemptContractEntry,
+    AttemptContractRegistry,
     AuthenticatedContribution,
     CapabilityBindingEntry,
     CapabilityRegistry,
@@ -27,6 +33,7 @@ from graph_engine.composition.models import (
     SourceKey,
     SourceKind,
     SourceRegistry,
+    SourceRole,
     SourceSnapshot,
     TaskHandlerEntry,
     _snapshot_owner_id,
@@ -44,6 +51,10 @@ from graph_engine.plugin_api import (
 
 class RegistryConflict(GraphEngineError):
     """Raised when selected contributions cannot form the five closed registries."""
+
+
+class RegistryConflictError(RegistryConflict):
+    """Raised when Attempt contracts cannot close over owner, handler, validator, or model identity."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,4 +350,72 @@ def _duplicates(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted({value for value in values if values.count(value) > 1}))
 
 
-__all__ = ["RegistryConflict"]
+def build_attempt_registry(claims: Sequence[object]) -> AttemptContractRegistry:
+    """Resolve authenticated, data-only Attempt contracts into a closed registry."""
+
+    entries: dict[str, AttemptContractEntry] = {}
+    for claim in tuple(claims):
+        if not isinstance(claim, AttemptContractClaim):
+            raise RegistryConflictError("attempt registry accepts only AttemptContractClaim values")
+        if claim.source_role is SourceRole.CONFIG:
+            raise RegistryConflictError("configuration-tree contributions cannot declare attempt contracts")
+        contract = claim.contract
+        _qualified_id(contract.contract_id, "attempt contract id")
+        _qualified_id(contract.owner_id, "attempt contract owner id")
+        _qualified_id(contract.handler_id, "attempt contract handler id")
+        if contract.contract_id in entries:
+            raise RegistryConflictError(f"duplicate attempt contract id: {contract.contract_id}")
+        if not contract.contract_id.startswith(f"{contract.owner_id}."):
+            raise RegistryConflictError(
+                f"attempt contract id is not owned by {contract.owner_id}: {contract.contract_id}"
+            )
+        if not _has_model_identity(contract.input_model) or not _has_model_identity(contract.output_model):
+            raise RegistryConflictError("attempt contract is missing schema/model identity")
+        validators = tuple(contract.validators)
+        if validators != tuple(sorted(set(validators))) or len(validators) != len(set(validators)):
+            raise RegistryConflictError("attempt contract validators require unique canonical order")
+        handler_owner = claim.available_handlers.get(contract.handler_id)
+        if handler_owner is None:
+            raise RegistryConflictError(f"missing attempt contract handler: {contract.handler_id}")
+        if handler_owner != contract.owner_id and handler_owner not in claim.dependencies:
+            raise RegistryConflictError(
+                f"attempt contract cannot bind foreign handler without owner dependency authority: "
+                f"{contract.handler_id}"
+            )
+        for validator_id in validators:
+            validator_owner = claim.available_validators.get(validator_id)
+            if validator_owner is None:
+                raise RegistryConflictError(f"missing attempt contract validator: {validator_id}")
+            if validator_owner != contract.owner_id and validator_owner not in claim.dependencies:
+                raise RegistryConflictError(
+                    f"attempt contract cannot bind foreign validator without owner dependency authority: "
+                    f"{validator_id}"
+                )
+        projection = contract.canonical_projection()
+        entries[contract.contract_id] = AttemptContractEntry(
+            contract_id=contract.contract_id,
+            owner_id=contract.owner_id,
+            handler_id=contract.handler_id,
+            digest=canonical_digest(projection),
+            validators=validators,
+            projection=projection,
+            authority_handler=claim.handler,
+        )
+    return AttemptContractRegistry(entries)
+
+
+def _has_model_identity(model: object) -> bool:
+    if not isinstance(model, type) or not issubclass(model, BaseModel):
+        return False
+    module = getattr(model, "__module__", "")
+    qualname = getattr(model, "__qualname__", "")
+    if not module or not qualname:
+        return False
+    try:
+        schema = model.model_json_schema()
+    except (TypeError, ValueError):
+        return False
+    return isinstance(schema, dict)
+
+
+__all__ = ["RegistryConflict", "RegistryConflictError", "build_attempt_registry"]

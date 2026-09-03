@@ -8,7 +8,14 @@ from typing import Literal, Self, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import Field, field_validator, model_validator
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
@@ -21,6 +28,7 @@ from graph_engine.composition.models import (
     CapabilityBindingEntry,
     CommitValidatorEntry,
     ContributionAuthority,
+    PluginRequirement,
     ProductManifest,
     RegistrySet,
     SourceIdentity,
@@ -32,15 +40,41 @@ from graph_engine.composition.models import (
 )
 from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
-from graph_engine.graph.compiler import CompiledWorkflow
-from graph_engine.graph.module_schema import WorkflowModuleDef
-from graph_engine.graph.schema import GraphDef, WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel, PluginDescriptor, ProviderSource
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TASK_HOST_IMPLEMENTATION_ID = "graph.engine.task-host"
+
+
+class HistoricalProductManifest(FrozenModel):
+    """Read-only leftover v2 product document embedded in InvocationLock."""
+
+    schema_version: Literal["1"]
+    source: ProviderSource | None
+    product_id: str
+    product_version: str
+    engine_api: str
+    plugins: tuple[PluginRequirement, ...]
+    entrypoints: Mapping[str, str]
+    configuration: FrozenJSONValue = Field(default_factory=dict)
+    config_plugin_paths: tuple[str, ...] = ()
+    graph_factory_symbol: str | None = None
+    workflow: FrozenJSONValue | None = None
+    workflow_resource_id: str | None = None
+    workflow_module: FrozenJSONValue | None = None
+    workflow_module_resources: tuple[FrozenJSONValue, ...] = ()
+    workflow_slot_bindings: tuple[FrozenJSONValue, ...] = ()
+
+
+def _parse_locked_manifest(manifest: object) -> ProductManifest | HistoricalProductManifest:
+    try:
+        return ProductManifest.model_validate(manifest)
+    except (TypeError, ValueError, ValidationError):
+        return HistoricalProductManifest.model_validate(manifest)
+
+
 TASK_HOST_WIRE_SCHEMA_VERSION: Literal["1"] = "1"
 
 
@@ -160,8 +194,8 @@ class LockedProduct(FrozenModel):
         if canonical_digest(manifest) != self.manifest_digest:
             raise ValueError("locked product manifest digest does not authenticate its projection")
         try:
-            parsed_manifest = ProductManifest.model_validate(manifest)
-        except (TypeError, ValueError) as error:
+            parsed_manifest = _parse_locked_manifest(manifest)
+        except (TypeError, ValueError, ValidationError) as error:
             raise ValueError("locked product manifest violates its frozen schema") from error
         if (
             parsed_manifest.product_id != self.product_id
@@ -274,11 +308,26 @@ class RegistryDigests(FrozenModel):
     schemas: str
     resources: str
     effects: str
+    attempt_contracts: str | None = None
 
     @field_validator("sources", "capabilities", "schemas", "resources", "effects")
     @classmethod
     def _validate_digest(cls, value: str) -> str:
         return _sha256(value, "registry")
+
+    @field_validator("attempt_contracts")
+    @classmethod
+    def _validate_attempt_contracts_digest(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _sha256(value, "attempt contract registry")
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and not data.get("attempt_contracts"):
+            data.pop("attempt_contracts", None)
+        return data
 
 
 class RegistryProjections(FrozenModel):
@@ -289,13 +338,28 @@ class RegistryProjections(FrozenModel):
     schemas: FrozenJSONValue
     resources: FrozenJSONValue
     effects: FrozenJSONValue
+    attempt_contracts: FrozenJSONValue = ()
 
     @model_validator(mode="after")
     def _validate_projection_shapes(self) -> RegistryProjections:
-        for field_name in ("sources", "capabilities", "schemas", "resources", "effects"):
+        for field_name in (
+            "sources",
+            "capabilities",
+            "schemas",
+            "resources",
+            "effects",
+            "attempt_contracts",
+        ):
             if not isinstance(getattr(self, field_name), tuple):
                 raise ValueError(f"{field_name} registry projection must be a list")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and not data.get("attempt_contracts"):
+            data.pop("attempt_contracts", None)
+        return data
 
 
 class ExecutionHostLock(FrozenModel):
@@ -315,7 +379,7 @@ class ExecutionHostLock(FrozenModel):
 
 
 def pinned_execution_host_lock() -> ExecutionHostLock:
-    runtime_dir = Path(__file__).resolve().parent.parent / "runtime"
+    attempts_dir = Path(__file__).resolve().parent.parent / "attempts"
     source_files = []
     for relative_path in (
         "production_host.py",
@@ -323,10 +387,10 @@ def pinned_execution_host_lock() -> ExecutionHostLock:
         "host_protocol.py",
         "host_receipts.py",
     ):
-        path = runtime_dir / relative_path
+        path = attempts_dir / relative_path
         source_files.append(
             {
-                "path": f"graph_engine/runtime/{relative_path}",
+                "path": f"graph_engine/attempts/{relative_path}",
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
         )
@@ -410,7 +474,7 @@ class InvocationLock(FrozenModel):
         if set(self.dependency_order) != set(plugin_ids):
             raise ValueError("invocation lock dependency order disagrees with locked plugins")
         try:
-            manifest = ProductManifest.model_validate(thaw_json(self.product.manifest))
+            manifest = _parse_locked_manifest(thaw_json(self.product.manifest))
             expected_order = resolve_dependency_order(
                 {plugin.plugin_id: plugin.descriptor for plugin in self.plugins},
                 manifest.plugins,
@@ -439,8 +503,8 @@ class InvocationLock(FrozenModel):
             raise ValueError("invocation lock compiled workflow must be a mapping")
         if canonical_digest(compiled_workflow) != self.compiled_workflow_digest:
             raise ValueError("invocation lock workflow digest does not authenticate its projection")
-        if self.execution_host != pinned_execution_host_lock():
-            raise ValueError("invocation lock execution host is not the pinned engine host")
+        if not self.execution_host.implementation_id or not self.execution_host.implementation_digest:
+            raise ValueError("invocation lock execution host is incomplete")
         return self
 
     @classmethod
@@ -492,8 +556,137 @@ class InvocationLock(FrozenModel):
             digest=hashlib.sha256(encoded).hexdigest(),
         )
 
+    def model_dump_json(self, *args: object, **kwargs: object) -> str:
+        del args, kwargs
+        return self.canonical_bytes.decode("utf-8") + "\n"
 
-def build_invocation_lock(
+
+class ProductLock(FrozenModel):
+    schema_version: Literal["3"] = "3"
+    digest_algorithm: Literal["graph-engine-source-v1"] = "graph-engine-source-v1"
+    engine_api: str
+    engine: LockedSource
+    engine_digest: str
+    product: LockedProduct
+    plugins: tuple[LockedPlugin, ...]
+    dependency_order: tuple[str, ...]
+    registry_projections: RegistryProjections
+    registry_digests: RegistryDigests
+    configuration: FrozenJSONValue
+    configuration_digest: str
+    capability_bindings: FrozenJSONValue
+    capability_bindings_digest: str
+    canonical_bytes: bytes = Field(exclude=True, repr=False)
+    digest: str
+
+    @field_validator(
+        "engine_digest",
+        "configuration_digest",
+        "capability_bindings_digest",
+        "digest",
+    )
+    @classmethod
+    def _validate_digest(cls, value: str) -> str:
+        return _sha256(value, "product lock")
+
+    @model_validator(mode="after")
+    def _authenticate_canonical_form(self) -> ProductLock:
+        expected = canonical_json_bytes(_product_lock_projection(self))
+        if self.canonical_bytes != expected:
+            raise ValueError("product lock canonical bytes disagree with its projection")
+        if hashlib.sha256(expected).hexdigest() != self.digest:
+            raise ValueError("product lock digest does not authenticate canonical bytes")
+        if self.engine.kind != SourceKind.ENGINE or self.engine.digest != self.engine_digest:
+            raise ValueError("product lock engine identity disagrees with its digest")
+        engine_identity = thaw_json(self.engine.identity)
+        if not isinstance(engine_identity, dict) or (
+            engine_identity.get("distribution") != "graph-engine"
+            or not isinstance(engine_identity.get("version"), str)
+            or engine_identity.get("installation") not in {"installed", "editable"}
+        ):
+            raise ValueError("product lock engine identity is incomplete")
+        if engine_identity["installation"] == "installed" and "root" in engine_identity:
+            raise ValueError("installed engine identity must be relocatable")
+        if engine_identity["installation"] == "editable" and not isinstance(engine_identity.get("root"), str):
+            raise ValueError("editable engine identity must retain its root")
+        plugin_ids = tuple(plugin.plugin_id for plugin in self.plugins)
+        if plugin_ids != tuple(sorted(plugin_ids)) or len(plugin_ids) != len(set(plugin_ids)):
+            raise ValueError("locked plugins must have unique canonical order")
+        if len(self.dependency_order) != len(set(self.dependency_order)):
+            raise ValueError("product lock dependency order must not repeat plugin ids")
+        if set(self.dependency_order) != set(plugin_ids):
+            raise ValueError("product lock dependency order disagrees with locked plugins")
+        try:
+            manifest = ProductManifest.model_validate(thaw_json(self.product.manifest))
+            expected_order = resolve_dependency_order(
+                {plugin.plugin_id: plugin.descriptor for plugin in self.plugins},
+                manifest.plugins,
+            )
+        except (ValueError, TypeError, DependencyConflict) as error:
+            raise ValueError("product lock dependency declarations are invalid") from error
+        if self.dependency_order != expected_order:
+            raise ValueError("product lock dependency order is not canonical")
+        _validate_locked_contribution_projection_set(self.plugins, self.registry_projections)
+        expected_registry_digests = _registry_digests_from_projections(self.registry_projections)
+        if self.registry_digests != expected_registry_digests:
+            raise ValueError("product lock registry digests do not authenticate their projections")
+        configuration = cast(JSONValue, thaw_json(self.configuration))
+        if canonical_digest(configuration) != self.configuration_digest:
+            raise ValueError("product lock configuration digest does not authenticate its projection")
+        bindings = cast(JSONValue, thaw_json(self.capability_bindings))
+        if not isinstance(bindings, list):
+            raise ValueError("product lock capability bindings must be a list")
+        expected_bindings = _binding_projection_from_capabilities(self.registry_projections.capabilities)
+        if bindings != expected_bindings:
+            raise ValueError("product lock capability bindings disagree with the capability registry")
+        if canonical_digest(bindings) != self.capability_bindings_digest:
+            raise ValueError("product lock binding digest does not authenticate its projection")
+        return self
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        engine_api: str,
+        engine: LockedSource,
+        engine_digest: str,
+        product: LockedProduct,
+        plugins: tuple[LockedPlugin, ...],
+        dependency_order: tuple[str, ...],
+        registry_projections: RegistryProjections,
+        registry_digests: RegistryDigests,
+        configuration: object,
+        configuration_digest: str,
+        capability_bindings: object,
+        capability_bindings_digest: str,
+    ) -> Self:
+        ordered_plugins = tuple(sorted(plugins, key=lambda plugin: plugin.plugin_id))
+        values = {
+            "schema_version": "3",
+            "digest_algorithm": "graph-engine-source-v1",
+            "engine_api": engine_api,
+            "engine": engine,
+            "engine_digest": engine_digest,
+            "product": product,
+            "plugins": ordered_plugins,
+            "dependency_order": tuple(dependency_order),
+            "registry_projections": registry_projections,
+            "registry_digests": registry_digests,
+            "configuration": configuration,
+            "configuration_digest": configuration_digest,
+            "capability_bindings": capability_bindings,
+            "capability_bindings_digest": capability_bindings_digest,
+        }
+        projection = _product_lock_values_projection(**values)
+        encoded = canonical_json_bytes(projection)
+        return cls(
+            **values,
+            canonical_bytes=encoded,
+            digest=hashlib.sha256(encoded).hexdigest(),
+        )
+
+
+def build_product_lock(
     *,
     manifest: ProductManifest,
     product_snapshot: SourceSnapshot,
@@ -501,10 +694,9 @@ def build_invocation_lock(
     dependency_order: tuple[str, ...],
     registries: RegistrySet,
     configuration: object,
-    workflow: CompiledWorkflow,
     engine_snapshot: SourceSnapshot,
     contribution_authorities: Mapping[str, ContributionAuthority],
-) -> InvocationLock:
+) -> ProductLock:
     validate_registry_contribution_authorities(
         registries,
         contribution_authorities,
@@ -555,8 +747,7 @@ def build_invocation_lock(
     configuration_projection = cast(JSONValue, thaw_json(configuration))
     registry_projections = compute_registry_projections(registries)
     capability_bindings = _binding_projection_from_capabilities(registry_projections.capabilities)
-    compiled_workflow = _compiled_workflow_projection(workflow)
-    return InvocationLock.create(
+    return ProductLock.create(
         engine_api=ENGINE_API_VERSION,
         engine=_locked_source(engine_snapshot),
         engine_digest=engine_snapshot.digest,
@@ -569,8 +760,6 @@ def build_invocation_lock(
         configuration_digest=canonical_digest(configuration_projection),
         capability_bindings=capability_bindings,
         capability_bindings_digest=canonical_digest(capability_bindings),
-        compiled_workflow=compiled_workflow,
-        compiled_workflow_digest=canonical_digest(compiled_workflow),
     )
 
 
@@ -742,9 +931,8 @@ def authenticate_composition_lock(
     manifest: ProductManifest,
     descriptors: tuple[PluginDescriptor, ...],
     registries: RegistrySet,
-    workflow: object,
     configuration: object,
-    lock: InvocationLock,
+    lock: InvocationLock | ProductLock,
     contribution_authorities: Mapping[str, ContributionAuthority],
 ) -> None:
     validate_registry_contribution_authorities(
@@ -752,8 +940,8 @@ def authenticate_composition_lock(
         contribution_authorities,
         descriptors,
     )
-    if not isinstance(workflow, CompiledWorkflow):
-        raise TypeError("composition workflow must be compiled")
+    if not isinstance(lock, ProductLock):
+        raise TypeError("factory composition lock must be a ProductLock")
     engine_source = registries.sources.entries.get(SourceKey(SourceRole.ENGINE, "graph.engine"))
     if engine_source is None or lock.engine != _locked_source(engine_source.snapshot):
         raise ValueError("invocation lock engine source disagrees with composition")
@@ -826,13 +1014,6 @@ def authenticate_composition_lock(
         raise ValueError("invocation lock capability bindings disagree with composition")
     if lock.capability_bindings_digest != canonical_digest(capability_bindings):
         raise ValueError("invocation lock capability binding digest disagrees with composition")
-    compiled_workflow = _compiled_workflow_projection(workflow)
-    if thaw_json(lock.compiled_workflow) != compiled_workflow:
-        raise ValueError("invocation lock workflow projection disagrees with composition")
-    if lock.compiled_workflow_digest != canonical_digest(compiled_workflow):
-        raise ValueError("invocation lock workflow digest disagrees with composition")
-    if lock.execution_host != pinned_execution_host_lock():
-        raise ValueError("invocation lock execution host disagrees with the pinned engine host")
 
 
 def _locked_source(snapshot: SourceSnapshot) -> LockedSource:
@@ -878,73 +1059,8 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
     return projection
 
 
-def _workflow_lock_projection(workflow: WorkflowDef) -> JSONValue:
-    dumped = workflow.model_dump(mode="json", by_alias=True, exclude_defaults=True)
-    _restore_input_projection_discriminators(
-        dumped,
-        workflow.graphs,
-        restore_output_projection=True,
-    )
-    return cast(JSONValue, dumped)
-
-
-def _workflow_module_lock_projection(module: WorkflowModuleDef) -> JSONValue:
-    dumped = module.model_dump(mode="json", by_alias=True, exclude_defaults=True)
-    _restore_input_projection_discriminators(
-        dumped,
-        module.graphs,
-        restore_output_projection=True,
-    )
-    dumped_exports = dumped.get("exports")
-    if isinstance(dumped_exports, dict):
-        for export_name, export in module.exports.items():
-            dumped_export = dumped_exports.get(export_name)
-            if isinstance(dumped_export, dict):
-                dumped_export["output_projection"] = export.output_projection.model_dump(
-                    mode="json",
-                    by_alias=True,
-                )
-    return cast(JSONValue, dumped)
-
-
-def _restore_input_projection_discriminators(
-    dumped: dict[str, object],
-    graphs: Mapping[str, GraphDef],
-    *,
-    restore_output_projection: bool = False,
-) -> None:
-    dumped_graphs = dumped.get("graphs")
-    if not isinstance(dumped_graphs, dict):
-        return
-    for graph_id, graph in graphs.items():
-        dumped_graph = dumped_graphs[graph_id]
-        if not isinstance(dumped_graph, dict):
-            continue
-        dumped_nodes = dumped_graph["nodes"]
-        for node_id, node in graph.nodes.items():
-            if node.input_projection is not None:
-                dumped_nodes[node_id]["input_projection"] = node.input_projection.model_dump(
-                    mode="json",
-                    by_alias=True,
-                )
-            if restore_output_projection and node.output_projection is not None:
-                dumped_nodes[node_id]["output_projection"] = node.output_projection.model_dump(
-                    mode="json",
-                    by_alias=True,
-                )
-
-
 def _manifest_projection(manifest: ProductManifest) -> JSONValue:
-    projection = manifest.model_dump(mode="json", by_alias=True)
-    if manifest.workflow is not None:
-        projection["workflow"] = _workflow_lock_projection(manifest.workflow)
-    if manifest.workflow_module is not None:
-        projection["workflow_module"] = _workflow_module_lock_projection(manifest.workflow_module)
-    else:
-        projection.pop("workflow_module", None)
-        projection.pop("workflow_module_resources", None)
-        projection.pop("workflow_slot_bindings", None)
-    return cast(JSONValue, projection)
+    return cast(JSONValue, manifest.model_dump(mode="json", by_alias=True))
 
 
 def _descriptor_projection(descriptor: PluginDescriptor) -> JSONValue:
@@ -972,6 +1088,16 @@ def _descriptor_projection(descriptor: PluginDescriptor) -> JSONValue:
             "resources": sorted(descriptor.resources),
             "effects": sorted(descriptor.effects),
             "bindings": sorted(descriptor.bindings),
+            **(
+                {
+                    "attempt_contracts": [
+                        {"contract_id": item.contract_id, "digest": item.digest}
+                        for item in descriptor.attempt_contracts
+                    ]
+                }
+                if descriptor.attempt_contracts
+                else {}
+            ),
         },
     )
 
@@ -1051,15 +1177,108 @@ def _invocation_lock_values_projection(
     }
 
 
+def _product_lock_projection(lock: ProductLock) -> JSONValue:
+    return _product_lock_values_projection(
+        schema_version=lock.schema_version,
+        digest_algorithm=lock.digest_algorithm,
+        engine_api=lock.engine_api,
+        engine=lock.engine,
+        engine_digest=lock.engine_digest,
+        product=lock.product,
+        plugins=lock.plugins,
+        dependency_order=lock.dependency_order,
+        registry_projections=lock.registry_projections,
+        registry_digests=lock.registry_digests,
+        configuration=lock.configuration,
+        configuration_digest=lock.configuration_digest,
+        capability_bindings=lock.capability_bindings,
+        capability_bindings_digest=lock.capability_bindings_digest,
+    )
+
+
+def _product_lock_values_projection(
+    *,
+    schema_version: str,
+    digest_algorithm: str,
+    engine_api: str,
+    engine: LockedSource,
+    engine_digest: str,
+    product: LockedProduct,
+    plugins: tuple[LockedPlugin, ...],
+    dependency_order: tuple[str, ...],
+    registry_projections: RegistryProjections,
+    registry_digests: RegistryDigests,
+    configuration: object,
+    configuration_digest: str,
+    capability_bindings: object,
+    capability_bindings_digest: str,
+) -> JSONValue:
+    return {
+        "schema_version": schema_version,
+        "digest_algorithm": digest_algorithm,
+        "engine_api": engine_api,
+        "engine": _locked_source_projection(engine),
+        "engine_digest": engine_digest,
+        "product": _locked_product_projection(product),
+        "plugins": [_locked_plugin_projection(plugin) for plugin in plugins],
+        "dependency_order": list(dependency_order),
+        "registry_projections": _registry_projection_map(
+            registry_projections, include_attempt_contracts=True
+        ),
+        "registry_digests": _registry_digest_map(registry_digests, include_attempt_contracts=True),
+        "configuration": cast(JSONValue, thaw_json(configuration)),
+        "configuration_digest": configuration_digest,
+        "capability_bindings": cast(JSONValue, thaw_json(capability_bindings)),
+        "capability_bindings_digest": capability_bindings_digest,
+    }
+
+
+def _registry_projection_map(
+    projections: RegistryProjections,
+    *,
+    include_attempt_contracts: bool,
+) -> dict[str, JSONValue]:
+    values: dict[str, JSONValue] = {
+        "sources": cast(JSONValue, thaw_json(projections.sources)),
+        "capabilities": cast(JSONValue, thaw_json(projections.capabilities)),
+        "schemas": cast(JSONValue, thaw_json(projections.schemas)),
+        "resources": cast(JSONValue, thaw_json(projections.resources)),
+        "effects": cast(JSONValue, thaw_json(projections.effects)),
+    }
+    contracts = cast(JSONValue, thaw_json(projections.attempt_contracts))
+    if include_attempt_contracts and contracts:
+        values["attempt_contracts"] = contracts
+    return values
+
+
+def _registry_digest_map(
+    registry_digests: RegistryDigests,
+    *,
+    include_attempt_contracts: bool,
+) -> dict[str, JSONValue]:
+    values: dict[str, JSONValue] = {
+        "sources": registry_digests.sources,
+        "capabilities": registry_digests.capabilities,
+        "schemas": registry_digests.schemas,
+        "resources": registry_digests.resources,
+        "effects": registry_digests.effects,
+    }
+    if include_attempt_contracts and registry_digests.attempt_contracts is not None:
+        values["attempt_contracts"] = registry_digests.attempt_contracts
+    return values
+
+
 def _registry_digests_from_projections(
     projections: RegistryProjections,
 ) -> RegistryDigests:
+    contracts = cast(JSONValue, thaw_json(projections.attempt_contracts))
     return RegistryDigests(
         sources=canonical_digest(cast(JSONValue, thaw_json(projections.sources))),
         capabilities=canonical_digest(cast(JSONValue, thaw_json(projections.capabilities))),
         schemas=canonical_digest(cast(JSONValue, thaw_json(projections.schemas))),
         resources=canonical_digest(cast(JSONValue, thaw_json(projections.resources))),
         effects=canonical_digest(cast(JSONValue, thaw_json(projections.effects))),
+        attempt_contracts=canonical_digest(contracts) if contracts else None,
     )
 
 
@@ -1074,13 +1293,6 @@ def _binding_projection_from_capabilities(capabilities: object) -> list[JSONValu
         if item.get("kind") == "binding":
             bindings.append(cast(JSONValue, dict(item)))
     return bindings
-
-
-def _compiled_workflow_projection(workflow: CompiledWorkflow) -> JSONValue:
-    return cast(
-        JSONValue,
-        workflow.model_dump(mode="json", by_alias=True, exclude={"digest"}),
-    )
 
 
 def _locked_product_projection(product: LockedProduct) -> JSONValue:
@@ -1156,11 +1368,11 @@ __all__ = [
     "LockedProduct",
     "LockedSource",
     "LockedSourceFile",
+    "ProductLock",
     "RegistryDigests",
     "RegistryProjections",
     "TASK_HOST_IMPLEMENTATION_ID",
     "TASK_HOST_WIRE_SCHEMA_VERSION",
-    "build_invocation_lock",
     "compute_registry_digests",
     "compute_registry_projections",
     "pinned_execution_host_lock",

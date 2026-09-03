@@ -8,6 +8,9 @@ Your task is to inspect the product as required by the explore skill, produce on
 
 - Create the complete `exploration.json` with the native `write` tool and read it back
   before finishing. Shell and legacy `aa` helper commands are unavailable.
+- Do not use glob to check either Explore path (`context.json` or `exploration.json`).
+  Ignored change-local files can be hidden from repository search; use an exact native
+  read for the prepared context and for output verification.
 - Autonomous, degraded, and no-source runs must still write a complete valid
   `exploration.json`; weak evidence changes its contents, not the output contract.
 - Write only declared `qa/changes/<change-id>/explore/**` outputs.

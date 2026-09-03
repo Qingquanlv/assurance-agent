@@ -3,12 +3,18 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
-import graph_engine.runtime.task_workspace as task_workspace
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore, TaskWorkspaceViolation
+import graph_engine.attempts.workspace as task_workspace
+from graph_engine.plugin_api import TaskWorkspaceBinding
+from graph_engine.attempts.workspace import (
+    TaskWorkspaceProvider,
+    TaskWorkspaceStore,
+    TaskWorkspaceViolation,
+)
 
 
 def _store(tmp_path: Path) -> tuple[TaskWorkspaceStore, Path, Path]:
@@ -204,7 +210,7 @@ def test_ancestor_symlink_swap_cannot_redirect_descriptor_bound_target_replace(
                 project_parent.symlink_to(outside, target_is_directory=True)
         real_replace(source, target, *args, **kwargs)
 
-    monkeypatch.setattr("graph_engine.runtime.task_workspace.os.replace", swap_parent_then_replace)
+    monkeypatch.setattr("graph_engine.attempts.workspace.os.replace", swap_parent_then_replace)
 
     with pytest.raises(TaskWorkspaceViolation):
         store.promote(binding.identity, staged)
@@ -262,6 +268,54 @@ def test_ancestor_symlink_swap_cannot_redirect_baseline_or_staged_scan(
     with pytest.raises(TaskWorkspaceViolation):
         store.seal(binding.identity)
     assert staging_sentinel.read_bytes() == b"outside"
+
+
+@pytest.fixture
+def provider(tmp_path: Path) -> TaskWorkspaceProvider:
+    store, _project, _attempts = _store(tmp_path)
+    return TaskWorkspaceProvider(store)
+
+
+@pytest.fixture
+def binding(provider: TaskWorkspaceProvider) -> TaskWorkspaceBinding:
+    opened = provider.store.begin(task_id="task/sealed-bytes", attempt=1, output_paths=("out",))
+    (opened.write_root / "out").mkdir()
+    (opened.write_root / "out" / "b.txt").write_bytes(b"bravo")
+    (opened.write_root / "out" / "a.txt").write_bytes(b"alpha")
+    return opened
+
+
+async def test_seal_authenticates_complete_candidate_bytes(
+    provider: TaskWorkspaceProvider, binding: TaskWorkspaceBinding
+) -> None:
+    all_staged_paths = ("out/a.txt", "out/b.txt")
+    sealed = await provider.seal(binding)
+    assert tuple(item.path for item in sealed.files) == tuple(sorted(all_staged_paths))
+    assert all(sha256(item.content).hexdigest() == item.after_sha256 for item in sealed.files)
+
+    def mutate_staged_file() -> None:
+        (binding.write_root / "out" / "a.txt").write_bytes(b"mutated after seal")
+
+    mutate_staged_file()
+    with pytest.raises(TaskWorkspaceViolation, match="drifted after sealing"):
+        await provider.prepare(binding, sealed)
+
+
+async def test_promotion_consumes_durable_sealed_bytes_not_mutated_stage(
+    provider: TaskWorkspaceProvider, binding: TaskWorkspaceBinding
+) -> None:
+    sealed = await provider.seal(binding)
+    prepared = await provider.prepare(binding, sealed)
+
+    def mutate_or_remove_live_stage() -> None:
+        (binding.write_root / "out" / "a.txt").unlink()
+        (binding.write_root / "out" / "b.txt").write_bytes(b"live stage mutated")
+
+    mutate_or_remove_live_stage()
+    receipt = await provider.promote(prepared)
+    canonical_file = provider.store.project_root / sealed.files[0].path
+    assert canonical_file.read_bytes() == sealed.files[0].content
+    assert receipt.sealed_digest == sealed.sealed_digest
 
 
 def test_claim_scan_excludes_bound_roots_by_path_identity_not_directory_name(tmp_path: Path) -> None:

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from agent_runtime_contracts import InstructionPart
+from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_opencode.observation import (
+    advertised_runtime_capabilities,
     classify_provider_state,
+    parse_closed_terminal_result,
     provider_error_is_transient,
     provider_error_message,
-    structured_result_from_messages,
 )
 from harness import _bound_fixture, agent_run_request  # pyright: ignore[reportMissingImports]
 
@@ -19,6 +22,11 @@ def _message_gets(fixture: object, session_id: str) -> int:
         for item in fake.records
         if item.method == "GET" and item.path.startswith(f"/session/{session_id}/message")
     )
+
+
+def test_opencode_observation_advertises_local_schema_validation_only() -> None:
+    assert advertised_runtime_capabilities() == AgentRuntimeCapabilities()
+    assert "provider_schema" not in advertised_runtime_capabilities().model_dump()
 
 
 def test_nested_opencode_provider_error_message_is_transient() -> None:
@@ -39,18 +47,25 @@ def test_nested_opencode_provider_error_message_is_transient() -> None:
     assert provider_error_is_transient({}, messages) is True
 
 
-def test_complete_result_wins_message_aborted_race() -> None:
+def test_complete_result_with_message_error_is_rejected() -> None:
     messages = [
         {
             "info": {
+                "id": "asst-1",
                 "role": "assistant",
+                "time": {"created": 1, "completed": 2},
                 "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}},
             },
-            "parts": [{"type": "text", "text": '{"output_files":["result.json"]}'}],
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"output_files":["result.json"]}'},
+                {"type": "step-finish", "reason": "stop"},
+            ],
         }
     ]
 
-    assert structured_result_from_messages(messages) == {"output_files": ["result.json"]}
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
     assert (
         classify_provider_state(
             session_id="ses_1",
@@ -58,7 +73,7 @@ def test_complete_result_wins_message_aborted_race() -> None:
             session={},
             messages=messages,
         )
-        == "succeeded"
+        == "canceled"
     )
 
 
@@ -73,7 +88,8 @@ def test_incomplete_result_with_message_aborted_stays_canceled() -> None:
         }
     ]
 
-    assert structured_result_from_messages(messages) is None
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
     assert (
         classify_provider_state(
             session_id="ses_1",
@@ -309,7 +325,7 @@ async def test_idle_invalid_only_candidate_has_precise_invalid_output() -> None:
         fixture.close()
 
 
-def test_completed_write_tool_content_is_the_structured_result() -> None:
+def test_completed_write_tool_content_is_not_the_agent_result() -> None:
     messages = [
         {
             "info": {"id": "msg_user", "role": "user"},
@@ -337,10 +353,8 @@ def test_completed_write_tool_content_is_the_structured_result() -> None:
             "parts": [{"type": "text", "text": ""}],
         },
     ]
-    assert structured_result_from_messages(messages) == {
-        "artifact": "result.json",
-        "status": "ok",
-    }
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
     assert (
         classify_provider_state(
             session_id="ses_live",
@@ -348,7 +362,7 @@ def test_completed_write_tool_content_is_the_structured_result() -> None:
             session={"id": "ses_live"},
             messages=messages,
         )
-        == "succeeded"
+        == "running"
     )
 
 
@@ -369,7 +383,8 @@ def test_top_level_json_array_does_not_expose_nested_object_as_result() -> None:
         }
     ]
 
-    assert structured_result_from_messages(messages) is None
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
 
 
 def test_running_write_tool_is_not_a_structured_result() -> None:
@@ -387,10 +402,11 @@ def test_running_write_tool_is_not_a_structured_result() -> None:
             ],
         }
     ]
-    assert structured_result_from_messages(messages) is None
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
 
 
-def test_embedded_json_in_assistant_prose_is_the_structured_result() -> None:
+def test_embedded_json_in_assistant_prose_is_rejected() -> None:
     messages = [
         {
             "info": {"id": "msg_user", "role": "user"},
@@ -411,16 +427,184 @@ def test_embedded_json_in_assistant_prose_is_the_structured_result() -> None:
             "parts": [{"type": "text", "text": "Done."}],
         },
     ]
-    assert structured_result_from_messages(messages) == {"ok": True}
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "busy"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "running"
+    )
 
 
-def test_busy_session_with_completed_result_is_succeeded() -> None:
+def test_idle_non_closed_history_is_terminal_failure() -> None:
     messages = [
         {
-            "info": {"id": "msg_result", "role": "assistant"},
-            "parts": [{"type": "text", "text": '{"ok": true}'}],
+            "info": {
+                "id": "asst-1",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "text", "text": '{"ok": true} extra commentary'},
+            ],
         }
     ]
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(messages)
+    assert (
+        classify_provider_state(
+            session_id="ses_idle",
+            status_map={"ses_idle": {"type": "idle"}},
+            session={"id": "ses_idle"},
+            messages=messages,
+        )
+        == "failed"
+    )
+
+
+def test_intermediate_reasoning_then_closed_terminal_succeeds() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_user", "role": "user"},
+            "parts": [{"type": "text", "text": "write the result"}],
+        },
+        {
+            "info": {"id": "msg_tool", "role": "assistant"},
+            "parts": [
+                {"type": "reasoning", "text": "I will write the file first"},
+                {"type": "tool", "state": {"status": "completed"}},
+            ],
+        },
+        {
+            "info": {
+                "id": "msg_result",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"ok": true}'},
+                {"type": "step-finish", "reason": "stop"},
+            ],
+        },
+    ]
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+@pytest.mark.parametrize("kind", ["file", "unknown"])
+def test_forbidden_part_on_terminal_message_fails(kind: str) -> None:
+    messages = [
+        {
+            "info": {
+                "id": "asst-1",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"ok": true}'},
+                {"type": kind, "text": "not allowed on the terminal message"},
+                {"type": "step-finish", "reason": "stop"},
+            ],
+        }
+    ]
+    with pytest.raises(ValueError, match="forbidden terminal part type"):
+        parse_closed_terminal_result(messages)
+
+
+def _live_shaped_terminal(text: str) -> list[dict[str, object]]:
+    return [
+        {
+            "info": {"id": "msg_user", "role": "user"},
+            "parts": [{"type": "text", "text": "write the result"}],
+        },
+        {
+            "info": {
+                "id": "msg_result",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "reasoning", "text": "The user wants exactly one JSON object."},
+                {"type": "text", "text": text},
+                {"type": "step-finish", "reason": "stop"},
+                {"type": "patch"},
+            ],
+        },
+    ]
+
+
+def test_reasoning_beside_the_terminal_text_is_a_closed_result() -> None:
+    messages = _live_shaped_terminal('{"ok": true}')
+
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+def test_session_absent_from_status_map_counts_as_idle() -> None:
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={},
+            session={"id": "ses_live"},
+            messages=_live_shaped_terminal('{"ok": true}'),
+        )
+        == "succeeded"
+    )
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={},
+            session={"id": "ses_live"},
+            messages=_live_shaped_terminal('{"ok": true} and some commentary'),
+        )
+        == "failed"
+    )
+
+
+def test_busy_session_with_closed_result_is_succeeded() -> None:
+    messages = [
+        {
+            "info": {
+                "id": "msg_result",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"ok": true}'},
+                {"type": "step-finish", "reason": "stop"},
+            ],
+        }
+    ]
+    assert parse_closed_terminal_result(messages) == {"ok": True}
     assert (
         classify_provider_state(
             session_id="ses_live",

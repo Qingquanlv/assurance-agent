@@ -133,10 +133,10 @@ EXPECTED_FAULT_GATE_NODE_IDS = {
         "packages/adapters/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
     ),
     "stop_interrupt": (
-        "tests/product/test_stop_and_interrupts.py::test_business_stop_is_resumable_only_at_declared_interrupt",
+        "tests/product/test_stop_and_interrupts.py::test_revision_mismatch_rejects_drifted_resume",
         "tests/product/test_stop_and_interrupts.py::test_invalid_resume_input_fails",
-        "tests/product/test_stop_and_interrupts.py::test_healing_disallowed_is_business_stop_not_completion",
-        "tests/product/test_stop_and_interrupts.py::test_nested_stop_does_not_become_normal_completion",
+        "packages/framework/graph-engine/tests/application/test_application_interrupts.py::test_disallowed_human_action_raises_with_actual_value",
+        "tests/product/test_stop_and_interrupts.py::test_interrupt_runtime_lives_under_the_change_without_tree_store",
     ),
     "coverage_healing": (
         "tests/product/test_coverage_loop.py::test_low_coverage_reenters_generation_until_policy_passes",
@@ -225,7 +225,7 @@ def test_run_gate_nodes_isolates_cross_file_binding_pollution() -> None:
     result = conformance.run_gate_nodes(
         REPO_ROOT,
         (
-            "tests/product/test_binding_builder.py::test_generated_provider_contributes_exactly_99_aliases",
+            "tests/product/test_binding_builder.py::test_generated_provider_contributes_exactly_33_semantic_bindings",
             "tests/product/test_composition_authority.py::test_forged_alias_target_fails_closed",
         ),
     )

@@ -206,6 +206,16 @@ def check_archives(source_root: Path, dist_root: Path) -> None:
                     raise SystemExit(f"legacy path in {wheel.name}: {member}")
             if any(".data/scripts/" in member for member in names):
                 raise SystemExit(f"undeclared executable scripts in {wheel.name}")
+            if any(
+                member.endswith(item)
+                for member in names
+                for item in (
+                    "resources/workflow/module.yaml",
+                    "resources/workflow/main.yaml",
+                    "graph-inventory.yaml",
+                )
+            ):
+                raise SystemExit(f"topology YAML leaked into {wheel.name}")
         if distribution not in ASSURANCE_SPECS:
             continue
         spec = ASSURANCE_SPECS[distribution]

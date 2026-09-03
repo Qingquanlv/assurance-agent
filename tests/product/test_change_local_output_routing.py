@@ -21,13 +21,13 @@ from graph_engine.plugin_api import (
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.phase4.conformance import ExecutedTask
 
-from assurance_product.models import PREPARE_IDS
-from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
+from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+from assurance_product.output_routes import OutputRouteCatalog
 
 _SHA = "a" * 64
 _FORBIDDEN_SEGMENTS = frozenset({".runtime", ".staging"})
 _FORBIDDEN_PREFIXES = ("qa/archive", "tests/")
-EXECUTE_ALIASES = tuple(execute_alias_for_prepare(prepare_id) for prepare_id in PREPARE_IDS)
+EXECUTE_ALIASES = tuple(sorted(AGENT_EXECUTION_CONTRACTS))
 BINDING: dict[str, JSONValue] = {
     "agent_profile": "aa-doc-author",
     "execution": {
@@ -146,7 +146,7 @@ async def execute_task(
 
 def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
     return AgentRunResult(
-        structured_result=structured_result,
+        result_payload=structured_result,
         result_digest=canonical_digest(structured_result),
         evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
         adapter_id="test.fake",
@@ -184,14 +184,16 @@ def test_output_routes_are_owned_by_the_installed_product_and_are_not_project_co
     workspace = ChangeWorkspace.open(project, "CH-1")
 
     catalog = OutputRouteCatalog()
-    assert workspace.output_route("assurance.intake.intake.execute") == catalog.outputs(
-        "assurance.intake.intake.execute",
+    assert workspace.output_route("assurance.intake.agent.intake.v1") == catalog.outputs(
+        "assurance.intake.agent.intake.v1",
         "CH-1",
     )
-    assert workspace.output_route("assurance.intake.explore.execute") == (
+    assert workspace.output_route("assurance.intake.agent.explore.v1") == (
         "qa/changes/CH-1/explore/exploration.json",
     )
-    assert workspace.output_route("assurance.quality.report.execute") == ("qa/changes/CH-1/report/report.md",)
+    assert workspace.output_route("assurance.quality.agent.report.v1") == (
+        "qa/changes/CH-1/report/report.md",
+    )
 
 
 def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_path: Path) -> None:
@@ -215,7 +217,7 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
     request = AgentRunRequest.model_validate(prepared.output)
     catalog = OutputRouteCatalog()
     assert request.workspace.allowed_outputs == catalog.outputs(
-        "assurance.intake.intake.execute",
+        "assurance.intake.agent.intake.v1",
         "RET-dept-management",
     )
     assert request.workspace.write_root == "qa/changes/RET-dept-management/.staging/attempt-1"

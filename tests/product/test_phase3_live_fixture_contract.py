@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest
+from agent_runtime_fixture.contracts import frozen_run_request
 from agent_runtime_fixture.product import FixtureProduct
-from graph_engine.graph.input_projection import project_task_input
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MANIFEST = _REPO_ROOT / "benchmark" / "agent-runtime-phase3" / "manifest.json"
@@ -29,18 +29,10 @@ def test_phase3_live_manifest_has_one_locked_fixture_per_adapter(repo_root: Path
 
 
 def test_fixture_run_node_projects_the_frozen_agent_run_request() -> None:
-    workflow = FixtureProduct.manifest().workflow
-    assert workflow is not None
-    node = workflow.graphs["root"].nodes["run"]
-    assert node.input_projection is not None
-    projected = project_task_input(
-        node.input_projection,
-        root_input={},
-        graph_input={},
-        node_config=node.input,
-        predecessor_tokens={},
-    )
-    AgentRunRequest.model_validate(projected)
+    manifest = FixtureProduct.manifest()
+    assert getattr(manifest, "workflow", None) is None
+    assert manifest.graph_factory_symbol == "agent_runtime_fixture.product:build_fixture_graphs"
+    AgentRunRequest.model_validate(frozen_run_request().model_dump(mode="json"))
 
 
 def _load_run_item(repo_root: Path):
@@ -59,7 +51,7 @@ def test_workspace_output_is_the_dual_root_write_set(tmp_path: Path, repo_root: 
     run_item = _load_run_item(repo_root)
     payload = {"artifact": "result.json", "status": "ok"}
     item_id = "phase3-opencode-live"
-    write_root = tmp_path / "engine" / "invocations" / item_id / "attempts" / "task-1" / "attempt-1"
+    write_root = tmp_path / ".engine-attempts" / "task-1" / "attempt-1"
     leftover_workspace = tmp_path / "engine" / "invocations" / item_id / "workspace"
     published = write_root / "result.json"
     leftover = leftover_workspace / "trees" / ("5" * 64) / "result.json"
@@ -81,7 +73,7 @@ def test_workspace_output_is_the_dual_root_write_set(tmp_path: Path, repo_root: 
     )
     run_item._validate_workspace_output(manifest, tmp_path, item)
     selected = run_item._published_workspace_output(
-        tmp_path / "engine" / "invocations" / item_id / "attempts",
+        tmp_path / ".engine-attempts",
         "result.json",
     )
     assert selected == published

@@ -17,6 +17,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    SerializerFunctionWrapHandler,
     field_serializer,
     field_validator,
     model_serializer,
@@ -29,6 +30,8 @@ from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 
 if TYPE_CHECKING:
+    from graph_engine.attempts.keys import AttemptKey
+    from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
     from graph_engine.canonical import JSONValue
 else:
     JSONValue = JsonValue
@@ -61,6 +64,18 @@ ActivityState = Literal["prepared", "dispatch_started", "bound", "terminal_obser
 
 class FrozenModel(BaseModel):
     model_config = _FROZEN_MODEL_CONFIG
+
+
+class AttemptContractRef(FrozenModel):
+    """Data-only Attempt contract identity authenticated for one owner."""
+
+    contract_id: str
+    digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @field_validator("contract_id")
+    @classmethod
+    def _validate_contract_id_field(cls, value: str) -> str:
+        return _validate_contract_id(value, "attempt contract id")
 
 
 class InvocationMetadata(FrozenModel):
@@ -924,6 +939,10 @@ class PromotionReceipt(FrozenModel):
             raise ValueError("promotion receipt digest is not canonical")
         return self
 
+    @property
+    def sealed_digest(self) -> str:
+        return self.staged_digest
+
 
 class CandidateFile(FrozenModel):
     path: str
@@ -937,12 +956,70 @@ class CandidateWriteSet(FrozenModel):
     files: tuple[CandidateFile, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SealedFile:
+    path: str
+    before_sha256: str | None
+    before_mode: int | None
+    after_sha256: str
+    after_mode: int
+    content: bytes
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "content", bytes(self.content))
+
+
+@dataclass(frozen=True, slots=True)
+class SealedWriteSet:
+    files: tuple[SealedFile, ...]
+    sealed_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedWorkspaceRef:
+    identity: TaskWorkspaceIdentity
+    sealed: SealedWriteSet
+    prepared_digest: str
+
+
+class WorkspaceProvider(Protocol):
+    async def open_or_create(
+        self, attempt_key: AttemptKey, claims: ResourceClaims
+    ) -> TaskWorkspaceBinding: ...
+    async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet: ...
+    async def prepare(
+        self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet
+    ) -> PreparedWorkspaceRef: ...
+    async def promote(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
+    async def recover_promotion(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
+
+
 class ValidationContext(FrozenModel):
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        allow_inf_nan=False,
+        arbitrary_types_allowed=True,
+    )
+
     invocation_id: str
     task_id: str
     graph_instance_id: str
     node_id: str
     resources: ResourceClaims
+    task_input: JSONValue = None
+    task_output: JSONValue = None
+    evidence_refs: tuple[str, ...] = ()
+    write_set: SealedWriteSet | None = None
+
+    @field_validator("task_input", "task_output", mode="after")
+    @classmethod
+    def _freeze_semantic_json(cls, value: JSONValue) -> Any:
+        return freeze_json(value)
+
+    @field_serializer("task_input", "task_output")
+    def _serialize_semantic_json(self, value: object) -> Any:
+        return thaw_json(value)
 
 
 class ValidationResult(FrozenModel):
@@ -976,6 +1053,45 @@ class PathWriteSet(Protocol):
 
 class CommitValidator(Protocol):
     def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult: ...
+
+
+def run_validators(
+    validator_ids: tuple[str, ...],
+    registry: Mapping[str, CommitValidator],
+    write_set: PathWriteSet,
+    context: ValidationContext,
+) -> RejectedTaskResult | PermanentTaskFailure | None:
+    """Run contract validators in declared order. An empty tuple is an explicit no-op."""
+
+    from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
+
+    if validator_ids == ():
+        return None
+    for validator_id in validator_ids:
+        try:
+            validator = registry[validator_id]
+        except KeyError:
+            return PermanentTaskFailure(
+                kind="configuration",
+                message=f"validator {validator_id} is not registered",
+            )
+        try:
+            result = validator.validate(write_set, context)
+        except Exception as error:
+            return PermanentTaskFailure(
+                kind="internal",
+                message=f"validator {validator_id} failed: {error}",
+            )
+        if not isinstance(result, ValidationResult):
+            return PermanentTaskFailure(
+                kind="internal",
+                message=(
+                    f"validator {validator_id} returned {type(result).__name__}, expected ValidationResult"
+                ),
+            )
+        if not result.accepted:
+            return RejectedTaskResult(reason=result.reason or validator_id)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1082,6 +1198,7 @@ class PluginContribution:
     resources: tuple[ResourceContribution, ...] = ()
     effects: tuple[EffectRegistration, ...] = ()
     bindings: tuple[CapabilityBindingContribution, ...] = ()
+    attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "task_handlers", _freeze_mapping(self.task_handlers, "task handler id"))
@@ -1094,6 +1211,7 @@ class PluginContribution:
         object.__setattr__(self, "resources", tuple(self.resources))
         object.__setattr__(self, "effects", tuple(self.effects))
         object.__setattr__(self, "bindings", tuple(self.bindings))
+        object.__setattr__(self, "attempt_contracts", _freeze_attempt_contracts(self.attempt_contracts))
 
     @classmethod
     def empty(cls) -> PluginContribution:
@@ -1186,6 +1304,7 @@ class PluginDescriptor(FrozenModel):
     resources: tuple[str, ...] = ()
     effects: tuple[str, ...] = ()
     bindings: tuple[str, ...] = ()
+    attempt_contracts: tuple[AttemptContractRef, ...] = ()
 
     @field_validator("plugin_id")
     @classmethod
@@ -1202,6 +1321,17 @@ class PluginDescriptor(FrozenModel):
     def _validate_descriptor_engine_api(cls, value: str) -> str:
         return _validate_engine_api(value)
 
+    @field_validator("attempt_contracts")
+    @classmethod
+    def _validate_attempt_contracts(
+        cls, values: tuple[AttemptContractRef, ...]
+    ) -> tuple[AttemptContractRef, ...]:
+        contracts = tuple(values)
+        contract_ids = tuple(item.contract_id for item in contracts)
+        if contract_ids != tuple(sorted(contract_ids)) or len(contract_ids) != len(set(contract_ids)):
+            raise ValueError("attempt contracts require unique canonical order")
+        return contracts
+
     @model_validator(mode="after")
     def _validate_source_expectation(self) -> PluginDescriptor:
         if self.source is None:
@@ -1211,6 +1341,13 @@ class PluginDescriptor(FrozenModel):
         if Version(self.source.version) != Version(self.plugin_version):
             raise ValueError("source version must equal plugin version")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
+        data = serializer(self)
+        if isinstance(data, dict) and not data.get("attempt_contracts"):
+            data.pop("attempt_contracts", None)
+        return data
 
 
 class PluginProvider(Protocol):
@@ -1273,6 +1410,19 @@ def _freeze_mapping(capabilities: Mapping[str, _Capability], kind: str) -> Mappi
     return MappingProxyType(dict(sorted(copied.items())))
 
 
+def _freeze_attempt_contracts(values: object) -> tuple[AttemptContractRef, ...]:
+    if not isinstance(values, tuple | list):
+        raise PluginContractError("attempt contracts must be a tuple")
+    contracts = tuple(
+        item if isinstance(item, AttemptContractRef) else AttemptContractRef.model_validate(item)
+        for item in values
+    )
+    contract_ids = tuple(item.contract_id for item in contracts)
+    if contract_ids != tuple(sorted(contract_ids)) or len(contract_ids) != len(set(contract_ids)):
+        raise PluginContractError("attempt contracts require unique canonical order")
+    return contracts
+
+
 def _contribution_ids(
     contribution: PluginContribution,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -1283,6 +1433,7 @@ def _contribution_ids(
         ("resource", tuple(entry.resource_id for entry in contribution.resources)),
         ("effect", tuple(entry.kind for entry in contribution.effects)),
         ("binding", tuple(entry.capability_id for entry in contribution.bindings)),
+        ("attempt contract", tuple(item.contract_id for item in contribution.attempt_contracts)),
     )
 
 
@@ -1309,9 +1460,16 @@ def _validate_descriptor_ids(descriptor: PluginDescriptor) -> tuple[tuple[str, t
         ("resource", descriptor.resources),
         ("effect", descriptor.effects),
         ("binding", descriptor.bindings),
+        ("attempt contract", tuple(item.contract_id for item in descriptor.attempt_contracts)),
     )
     _validate_unique_contribution_ids(groups)
     return groups
+
+
+def _attempt_contract_pairs(
+    values: tuple[AttemptContractRef, ...],
+) -> tuple[tuple[str, str], ...]:
+    return tuple((item.contract_id, item.digest) for item in values)
 
 
 def validate_contribution(descriptor: PluginDescriptor, contribution: PluginContribution) -> None:
@@ -1327,10 +1485,22 @@ def validate_contribution(descriptor: PluginDescriptor, contribution: PluginCont
     for (kind, declared), (_, contributed) in zip(descriptor_groups, contribution_groups, strict=True):
         if set(declared) != set(contributed):
             raise PluginContractError(f"{kind} declarations disagree with contribution")
+    if _attempt_contract_pairs(descriptor.attempt_contracts) != _attempt_contract_pairs(
+        contribution.attempt_contracts
+    ):
+        raise PluginContractError("attempt contract declarations disagree with contribution")
+
+
+def realize_plugin(descriptor: PluginDescriptor, contribution: PluginContribution) -> PluginContribution:
+    """Authenticate a realized contribution against its descriptor, including Attempt contracts."""
+
+    validate_contribution(descriptor, contribution)
+    return contribution
 
 
 __all__ = [
     "ActivityState",
+    "AttemptContractRef",
     "CapabilityBindingContribution",
     "CandidateFile",
     "CandidateWriteSet",
@@ -1353,6 +1523,8 @@ __all__ = [
     "PathBearingFile",
     "PathWriteSet",
     "PluginProvider",
+    "PreparedWorkspaceRef",
+    "PromotionReceipt",
     "ProviderSource",
     "RecoverableTaskHandler",
     "RegistryPorts",
@@ -1360,8 +1532,12 @@ __all__ = [
     "ResourceClaims",
     "ResourceClaimTemplate",
     "SchemaContribution",
+    "SealedFile",
+    "SealedWriteSet",
     "SecretHandleUnauthorized",
     "SecretPort",
+    "StagedFile",
+    "StagedWriteSet",
     "TaskActivityCancelResult",
     "TaskActivityPort",
     "TaskActivityReconcileResult",
@@ -1374,10 +1550,10 @@ __all__ = [
     "TaskStatus",
     "TaskWorkspaceBinding",
     "TaskWorkspaceIdentity",
-    "StagedFile",
-    "StagedWriteSet",
-    "PromotionReceipt",
     "ValidationContext",
     "ValidationResult",
+    "WorkspaceProvider",
+    "realize_plugin",
+    "run_validators",
     "validate_contribution",
 ]

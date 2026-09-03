@@ -17,7 +17,7 @@ convention, and knows nothing about any concrete adapter.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar
 
 from graph_engine.plugin_api import (
@@ -29,9 +29,23 @@ from graph_engine.plugin_api import (
     TaskHandler,
 )
 
+from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_contracts.schema import canonical_json_bytes
 
 _SCHEMA_MEDIA_TYPE = "application/schema+json"
+
+
+class StructuredOutputCapabilityError(ValueError):
+    """Raised when a contract requires provider schema the adapter does not advertise."""
+
+
+def negotiate_provider_schema(*, required: bool, capabilities: AgentRuntimeCapabilities) -> None:
+    del capabilities
+    if required:
+        raise StructuredOutputCapabilityError(
+            "adapter does not advertise provider-enforced structured output"
+        )
+
 
 RUNTIME_REQUEST_SCHEMA = canonical_json_bytes(
     {
@@ -53,10 +67,10 @@ RUNTIME_RESULT_SCHEMA = canonical_json_bytes(
         "properties": {
             "adapter_id": {"minLength": 1, "type": "string"},
             "result_digest": {"maxLength": 64, "minLength": 64, "type": "string"},
+            "result_payload": {"additionalProperties": False, "type": "object"},
             "schema_version": {"const": "1", "type": "string"},
-            "structured_result": {"additionalProperties": False, "type": "object"},
         },
-        "required": ["adapter_id", "result_digest", "schema_version", "structured_result"],
+        "required": ["adapter_id", "result_digest", "result_payload", "schema_version"],
         "type": "object",
     }
 )
@@ -76,6 +90,7 @@ class RuntimeAdapterSpec:
     engine_api: str
     source: ProviderSource
     handler: Callable[[], TaskHandler]
+    capabilities: AgentRuntimeCapabilities = field(default_factory=AgentRuntimeCapabilities)
 
     @property
     def plugin_id(self) -> str:
@@ -141,4 +156,6 @@ __all__ = [
     "RUNTIME_RESULT_SCHEMA",
     "RuntimeAdapterPlugin",
     "RuntimeAdapterSpec",
+    "StructuredOutputCapabilityError",
+    "negotiate_provider_schema",
 ]

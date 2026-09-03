@@ -87,7 +87,7 @@ class InstructionPart(FrozenModel):
 class ResultContract(FrozenModel):
     schema_id: str = Field(min_length=1)
     schema_digest: str = Field(pattern=_SHA256_PATTERN)
-    extraction_mode: Literal["structured"]
+    delivery_mode: Literal["assistant_json_local_v1"]
     schema_document: JSONValue | None = None
 
     @field_validator("schema_document", mode="after")
@@ -232,7 +232,7 @@ class AgentRunRequest(FrozenModel):
 
 class AgentRunResult(FrozenModel):
     schema_version: Literal["1"] = "1"
-    structured_result: JSONValue
+    result_payload: JSONValue
     result_digest: str = Field(pattern=_SHA256_PATTERN)
     evidence_digest: str = Field(pattern=_SHA256_PATTERN)
     provider_diff_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
@@ -240,13 +240,13 @@ class AgentRunResult(FrozenModel):
     adapter_version: str = Field(min_length=1)
     diagnostics: tuple[str, ...] = ()
 
-    @field_validator("structured_result", mode="after")
+    @field_validator("result_payload", mode="after")
     @classmethod
-    def _freeze_structured_result(cls, value: JSONValue) -> Any:
+    def _freeze_result_payload(cls, value: JSONValue) -> Any:
         return freeze_json(value)
 
-    @field_serializer("structured_result")
-    def _serialize_structured_result(self, value: object) -> Any:
+    @field_serializer("result_payload")
+    def _serialize_result_payload(self, value: object) -> Any:
         return thaw_json(value)
 
     @field_validator("diagnostics")
@@ -256,7 +256,7 @@ class AgentRunResult(FrozenModel):
 
     @model_validator(mode="after")
     def _authenticate_result_digest(self) -> Self:
-        thawed = thaw_json(self.structured_result)
+        thawed = thaw_json(self.result_payload)
         reject_credentials_in_digest_input(thawed)
         expected = canonical_digest(thawed)
         if self.result_digest != expected:

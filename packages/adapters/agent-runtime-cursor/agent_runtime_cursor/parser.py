@@ -213,7 +213,7 @@ def reduce_terminal(
     reject_credentials_in_digest_input(evidence)
     result = AgentRunResult.model_validate(
         {
-            "structured_result": validated,
+            "result_payload": validated,
             "result_digest": result_digest,
             "evidence_digest": canonical_digest(evidence),
             "provider_diff_digest": None,

@@ -14,7 +14,6 @@ from typing import cast
 import pytest
 import yaml
 
-import graph_engine.composition.resolver as resolver_runtime
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.composition import (
     CapabilityBindingEntry,
@@ -27,10 +26,10 @@ from graph_engine.composition import (
     ExecutableModuleProvenance,
     ExecutableProvenance,
     FrozenComposition,
-    InvocationLock,
     LockedProduct,
     PluginRequirement,
     ProductFileSource,
+    ProductLock,
     ProductManifest,
     RegistryPlatform,
     RegistrySet,
@@ -38,28 +37,23 @@ from graph_engine.composition import (
     ResourceRegistry,
     ResolutionError,
     ResolutionRequest,
-    SourceFile,
     SourceKey,
     SourceRole,
-    SourceSnapshot,
     SchemaEntry,
     SchemaRegistry,
     TaskHandlerEntry,
     WheelPluginSource,
     WheelProductSource,
-    WorkflowSlotBinding,
 )
 from graph_engine.composition.dependencies import DependencyConflict
-from graph_engine.composition.lock import _locked_source, build_invocation_lock
+from graph_engine.composition.lock import _locked_source, build_product_lock
 from graph_engine.composition.models import ContributionAuthority, ExecutableAuthority
 from graph_engine.composition.provenance import StandardLoader
 from graph_engine.composition.registries import RegistryConflict
 from graph_engine.composition.resolver import _capture_editable_engine_snapshot
 from graph_engine.composition.sources import _snapshot_installed_engine_distribution
-from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
-from graph_engine.graph.compiler import CompileError, CompiledWorkflow
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
     CandidateWriteSet,
@@ -72,7 +66,6 @@ from graph_engine.plugin_api import (
     PluginDependency,
     PluginDescriptor,
     ProviderSource,
-    InvocationWorkspaceBinding,
     RegistryPorts,
     ResourceContribution,
     SchemaContribution,
@@ -82,28 +75,11 @@ from graph_engine.plugin_api import (
     ValidationContext,
     ValidationResult,
 )
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.invocation_lock import InvocationDrift
 
 
 class _Handler:
     async def execute(self, _request: TaskRequest, _context: TaskContext) -> TaskOutcome:
         return TaskOutcome.succeeded({"ok": True})
-
-
-def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
-    project_root = root.parent / f".{root.name}-project"
-    attempts_root = root.parent / f".{root.name}-attempts"
-    receipts_root = root.parent / f".{root.name}-receipts"
-    for path in (project_root, attempts_root, receipts_root):
-        path.mkdir(exist_ok=True)
-    return InvocationWorkspaceBinding(
-        project_root=project_root,
-        attempts_root=attempts_root,
-        receipts_root=receipts_root,
-    )
 
 
 class _EffectHandler:
@@ -313,70 +289,13 @@ class _MetadataProvider:
             raise metadata.PackageNotFoundError(name) from error
 
 
-def _workflow(
-    capability: str = "toy.runtime.greet",
-    *,
-    schemas: tuple[str, ...] = (),
-    resources: tuple[str, ...] = (),
-    effects: tuple[str, ...] = (),
-    entrypoints: dict[str, str] | None = None,
-) -> WorkflowDef:
-    return WorkflowDef.model_validate(
-        {
-            "name": "toy",
-            "entrypoints": entrypoints or {"hello": "root"},
-            "schemas": schemas,
-            "resources": resources,
-            "effects": effects,
-            "retry": {"once": {"max_attempts": 1}},
-            "timeout": {"short": {"run_seconds": 1}},
-            "graphs": {
-                "root": {
-                    "max_activations": 2,
-                    "start": "greet",
-                    "nodes": {
-                        "greet": {
-                            "kind": "task",
-                            "capability": capability,
-                            "retry": "once",
-                            "timeout": "short",
-                        },
-                        "done": {"kind": "end"},
-                    },
-                    "edges": [{"from": "greet", "to": "done"}],
-                }
-            },
-        }
-    )
-
-
-def _passive_workflow() -> WorkflowDef:
-    return WorkflowDef.model_validate(
-        {
-            "name": "passive",
-            "entrypoints": {"hello": "root"},
-            "retry": {},
-            "timeout": {},
-            "graphs": {
-                "root": {
-                    "max_activations": 1,
-                    "start": "done",
-                    "nodes": {"done": {"kind": "end"}},
-                    "edges": [],
-                }
-            },
-        }
-    )
-
-
 def _manifest(
     *,
     product_id: str = "toy.a",
     plugins: tuple[PluginRequirement, ...] | None = None,
-    workflow: WorkflowDef | None = None,
     configuration: dict[str, dict[str, object]] | None = None,
+    graph_factory_symbol: str = "toy_product:provider",
 ) -> ProductManifest:
-    selected_workflow = workflow or _workflow()
     return ProductManifest(
         schema_version="1",
         source=None,
@@ -384,9 +303,9 @@ def _manifest(
         product_version="1.0.0",
         engine_api=ENGINE_API_VERSION,
         plugins=plugins or (PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.0.0"),),
-        entrypoints=dict(selected_workflow.entrypoints),
+        entrypoints={"hello": "root"},
         configuration=configuration or {},
-        workflow=selected_workflow,
+        graph_factory_symbol=graph_factory_symbol,
     )
 
 
@@ -431,10 +350,7 @@ def _replace_distribution_file(
 
 
 def _manifest_declaration(manifest: ProductManifest) -> dict[str, object]:
-    document = manifest.model_dump(mode="json")
-    if manifest.workflow is not None:
-        document["workflow"] = manifest.workflow.model_dump(mode="json", exclude_defaults=True)
-    return document
+    return manifest.model_dump(mode="json")
 
 
 def _distribution(
@@ -609,7 +525,7 @@ def _platform(
             entrypoint_name=initial_manifest.product_id,
             entrypoint_value="toy_product:provider",
             declaration_path=declaration_path,
-            import_roots=("",),
+            import_roots=("", "toy_product"),
         )
         product._manifest = initial_manifest.model_copy(update={"source": source_expectation})
         if isinstance(product, _DriftingProductProvider):
@@ -765,7 +681,11 @@ def test_registry_platform_resolves_one_frozen_composition(
 
     assert isinstance(composition, FrozenComposition)
     assert composition.manifest.product_id == "toy.a"
-    assert composition.workflow.entrypoints == {"hello": "root"}
+    assert composition.manifest.entrypoints == {"hello": "root"}
+    assert isinstance(composition.lock, ProductLock)
+    assert composition.lock.schema_version == "3"
+    assert not hasattr(composition, "workflow")
+    assert not hasattr(composition.lock, "compiled_workflow")
     assert composition.lock.digest == composition.lock_digest
     assert composition.registries.capabilities.task_handlers["toy.runtime.greet"]
     assert composition.providers["toy.runtime"]._provider is provider
@@ -776,9 +696,6 @@ def test_registry_platform_resolves_one_frozen_composition(
     )
     assert thaw_json(composition.lock.configuration) == {}
     assert composition.lock.configuration_digest == canonical_digest({})
-    compiled_projection = cast(dict[str, object], thaw_json(composition.lock.compiled_workflow))
-    assert compiled_projection["entrypoints"] == {"hello": "root"}
-    assert canonical_digest(compiled_projection) == composition.lock.compiled_workflow_digest
     assert thaw_json(composition.lock.registry_projections.sources)
     assert thaw_json(composition.lock.registry_projections.capabilities)
     assert thaw_json(composition.lock.capability_bindings) == []
@@ -808,7 +725,7 @@ def test_registry_platform_resolves_one_frozen_composition(
     drifted_engine = composition.lock.engine.model_copy(
         update={"identity": {**engine_identity, "version": "9.9.9"}}
     )
-    drifted_lock = InvocationLock.create(
+    drifted_lock = ProductLock.create(
         engine_api=composition.lock.engine_api,
         engine=drifted_engine,
         engine_digest=drifted_engine.digest,
@@ -821,8 +738,6 @@ def test_registry_platform_resolves_one_frozen_composition(
         configuration_digest=composition.lock.configuration_digest,
         capability_bindings=composition.lock.capability_bindings,
         capability_bindings_digest=composition.lock.capability_bindings_digest,
-        compiled_workflow=composition.lock.compiled_workflow,
-        compiled_workflow_digest=composition.lock.compiled_workflow_digest,
     )
     with pytest.raises(ValueError, match="engine source"):
         replace(
@@ -845,7 +760,7 @@ def test_registry_platform_resolves_one_frozen_composition(
         source=composition.lock.product.source,
     )
     with pytest.raises(ValueError, match="dependency declarations"):
-        InvocationLock.create(
+        ProductLock.create(
             engine_api=composition.lock.engine_api,
             engine=composition.lock.engine,
             engine_digest=composition.lock.engine_digest,
@@ -858,8 +773,6 @@ def test_registry_platform_resolves_one_frozen_composition(
             configuration_digest=composition.lock.configuration_digest,
             capability_bindings=composition.lock.capability_bindings,
             capability_bindings_digest=composition.lock.capability_bindings_digest,
-            compiled_workflow=composition.lock.compiled_workflow,
-            compiled_workflow_digest=composition.lock.compiled_workflow_digest,
         )
 
     forged_lock = composition.lock.model_copy()
@@ -959,7 +872,7 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         resources=composition.registries.resources,
         effects=composition.registries.effects,
     )
-    forged_lock = build_invocation_lock(
+    forged_lock = build_product_lock(
         manifest=composition.manifest,
         product_snapshot=forged_registries.sources.entries[
             SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
@@ -968,7 +881,6 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         dependency_order=composition.lock.dependency_order,
         registries=forged_registries,
         configuration=composition.configuration,
-        workflow=composition.workflow,
         engine_snapshot=forged_registries.sources.entries[
             SourceKey(SourceRole.ENGINE, "graph.engine")
         ].snapshot,
@@ -979,7 +891,6 @@ def test_public_frozen_composition_rejects_self_consistent_unowned_executable_pr
         FrozenComposition.freeze(
             composition.manifest,
             forged_registries,
-            composition.workflow,
             forged_lock,
             descriptors=composition.descriptors,
             configuration=composition.configuration,
@@ -1035,7 +946,7 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
     platform, plugins, product_source = _platform(
         tmp_path,
         monkeypatch,
-        product=_ProductProvider(_manifest(workflow=_passive_workflow())),
+        product=_ProductProvider(_manifest()),
         plugins={
             "toy.runtime": _PluginProvider(
                 "toy.runtime",
@@ -1077,7 +988,7 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
     )
 
     with pytest.raises(ValueError, match="contribution authority"):
-        build_invocation_lock(
+        build_product_lock(
             manifest=composition.manifest,
             product_snapshot=forged_registries.sources.entries[
                 SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
@@ -1086,7 +997,6 @@ def test_declared_executable_set_cannot_be_removed_from_a_self_consistent_lock(
             dependency_order=composition.lock.dependency_order,
             registries=forged_registries,
             configuration=composition.configuration,
-            workflow=composition.workflow,
             engine_snapshot=forged_registries.sources.entries[
                 SourceKey(SourceRole.ENGINE, "graph.engine")
             ].snapshot,
@@ -1139,7 +1049,7 @@ def test_nonexecutable_contribution_authority_rejects_self_consistent_registry_l
     platform, plugins, product_source = _platform(
         tmp_path,
         monkeypatch,
-        product=_ProductProvider(_manifest(workflow=_passive_workflow())),
+        product=_ProductProvider(_manifest()),
         plugins={
             "toy.runtime": _PluginProvider(
                 "toy.runtime",
@@ -1231,7 +1141,7 @@ def test_nonexecutable_contribution_authority_rejects_self_consistent_registry_l
         )
 
     with pytest.raises(ValueError, match="contribution authority"):
-        build_invocation_lock(
+        build_product_lock(
             manifest=composition.manifest,
             product_snapshot=forged.sources.entries[
                 SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
@@ -1240,7 +1150,6 @@ def test_nonexecutable_contribution_authority_rejects_self_consistent_registry_l
             dependency_order=composition.lock.dependency_order,
             registries=forged,
             configuration=composition.configuration,
-            workflow=composition.workflow,
             engine_snapshot=forged.sources.entries[SourceKey(SourceRole.ENGINE, "graph.engine")].snapshot,
             contribution_authorities=composition.contribution_authorities,
         )
@@ -1273,7 +1182,7 @@ def test_frozen_composition_rejects_self_consistent_forged_raw_contribution_gene
     platform, plugins, product_source = _platform(
         tmp_path,
         monkeypatch,
-        product=_ProductProvider(_manifest(workflow=_passive_workflow())),
+        product=_ProductProvider(_manifest()),
         plugins={
             "toy.runtime": _PluginProvider(
                 "toy.runtime",
@@ -1328,7 +1237,7 @@ def test_frozen_composition_rejects_self_consistent_forged_raw_contribution_gene
         capabilities=capabilities,
         schemas=schemas,
     )
-    forged_lock = build_invocation_lock(
+    forged_lock = build_product_lock(
         manifest=composition.manifest,
         product_snapshot=forged_registries.sources.entries[
             SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
@@ -1337,7 +1246,6 @@ def test_frozen_composition_rejects_self_consistent_forged_raw_contribution_gene
         dependency_order=composition.lock.dependency_order,
         registries=forged_registries,
         configuration=composition.configuration,
-        workflow=composition.workflow,
         engine_snapshot=forged_registries.sources.entries[
             SourceKey(SourceRole.ENGINE, "graph.engine")
         ].snapshot,
@@ -1349,7 +1257,6 @@ def test_frozen_composition_rejects_self_consistent_forged_raw_contribution_gene
             manifest=composition.manifest,
             descriptors=composition.descriptors,
             registries=forged_registries,
-            workflow=composition.workflow,
             configuration=composition.configuration,
             contribution_authorities={"toy.runtime": forged_authority},
             providers=composition.providers,
@@ -1519,11 +1426,10 @@ def test_external_reexported_executable_is_rejected_and_corrected_retry_is_clean
     external_name = f"round5_external_{executable_kind}"
     selected_name = f"toy_runtime.round5_selected_{executable_kind}"
     provider = _ImportedExecutableProvider(descriptor, external_name, executable_kind)
-    workflow = _workflow() if executable_kind == "task_handler" else _passive_workflow()
     platform, plugins, product_source = _platform(
         tmp_path / "wheels",
         monkeypatch,
-        product=_ProductProvider(_manifest(workflow=workflow)),
+        product=_ProductProvider(_manifest()),
         plugins={plugin_id: provider},
     )
     assert product_source is not None
@@ -1596,9 +1502,7 @@ def test_frozen_composition_rejects_same_module_executable_substitution(
     platform, plugins, product_source = _platform(
         tmp_path,
         monkeypatch,
-        product=_ProductProvider(
-            _manifest(workflow=_workflow() if descriptor_kind == "task_handler" else _passive_workflow())
-        ),
+        product=_ProductProvider(_manifest()),
         plugins={plugin_id: provider},
     )
     assert product_source is not None
@@ -1667,7 +1571,6 @@ def test_frozen_composition_rejects_same_module_executable_substitution(
         FrozenComposition.freeze(
             composition.manifest,
             registries,
-            composition.workflow,
             composition.lock,
             descriptors=composition.descriptors,
             configuration=composition.configuration,
@@ -1755,9 +1658,7 @@ def test_stateful_attribute_dispatch_cannot_switch_an_authenticated_callable_at_
     platform, plugins, product_source = _platform(
         tmp_path / "wheels",
         monkeypatch,
-        product=_ProductProvider(
-            _manifest(workflow=_workflow() if executable_kind == "task_handler" else _passive_workflow())
-        ),
+        product=_ProductProvider(_manifest()),
         plugins={plugin_id: provider},
     )
     assert product_source is not None
@@ -1932,9 +1833,7 @@ def test_descriptor_subclass_cannot_switch_an_authenticated_callable_at_runtime(
     platform, plugins, product_source = _platform(
         tmp_path / "wheels",
         monkeypatch,
-        product=_ProductProvider(
-            _manifest(workflow=_workflow() if executable_kind == "task_handler" else _passive_workflow())
-        ),
+        product=_ProductProvider(_manifest()),
         plugins={plugin_id: provider},
     )
     assert product_source is not None
@@ -2096,7 +1995,6 @@ def test_repeated_fresh_contributions_preserve_each_frozen_authority_generation(
         FrozenComposition.freeze(
             composition.manifest,
             composition.registries,
-            composition.workflow,
             composition.lock,
             descriptors=composition.descriptors,
             configuration=composition.configuration,
@@ -2146,7 +2044,7 @@ def test_frozen_composition_rejects_mixed_executable_authority_generations(
     )
     mixed_registries = replace(first.registries, capabilities=mixed_capabilities)
     with pytest.raises(ValueError, match="contribution authority"):
-        build_invocation_lock(
+        build_product_lock(
             manifest=first.manifest,
             product_snapshot=mixed_registries.sources.entries[
                 SourceKey(SourceRole.PRODUCT, first.manifest.product_id)
@@ -2155,7 +2053,6 @@ def test_frozen_composition_rejects_mixed_executable_authority_generations(
             dependency_order=first.lock.dependency_order,
             registries=mixed_registries,
             configuration=first.configuration,
-            workflow=first.workflow,
             engine_snapshot=mixed_registries.sources.entries[
                 SourceKey(SourceRole.ENGINE, "graph.engine")
             ].snapshot,
@@ -2268,7 +2165,6 @@ def test_product_and_plugin_may_share_their_domain_id(
     manifest = _manifest(
         product_id=plugin_id,
         plugins=(PluginRequirement(plugin_id=plugin_id, version_specifier="==1.0.0"),),
-        workflow=_workflow(f"{plugin_id}.greet"),
     )
     platform, plugins, product_source = _platform(
         tmp_path,
@@ -2292,7 +2188,7 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         _manifest(
             product_id=domain_id,
             plugins=(PluginRequirement(plugin_id=domain_id, version_specifier="==1.0.0"),),
-            workflow=_workflow(f"{domain_id}.greet"),
+            graph_factory_symbol="toy_combined.product:provider",
         )
     )
     plugin = _PluginProvider(domain_id)
@@ -2305,7 +2201,7 @@ def test_product_and_plugin_resolve_from_sibling_modules_in_one_distribution(
         entrypoint_name=domain_id,
         entrypoint_value="toy_combined.product:provider",
         declaration_path=product_path,
-        import_roots=("",),
+        import_roots=("", "toy_combined"),
     )
     plugin_source_expectation = ProviderSource(
         distribution="toy-combined",
@@ -2379,9 +2275,7 @@ def _write_mixed_product(path: Path) -> None:
                 ],
                 "entrypoints": {"hello": "root"},
                 "configuration": {"toy.runtime": {"greeting": "你好"}},
-                "workflow": _workflow("toy.flow.greet").model_dump(
-                    mode="json", by_alias=True, exclude_unset=True
-                ),
+                "graph_factory_symbol": "toy.product:build",
             },
             sort_keys=False,
             allow_unicode=True,
@@ -2570,7 +2464,6 @@ def test_source_roles_disjoin_adversarial_product_and_plugin_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     plugin_id = "toy.a.product-source"
-    workflow = _workflow(f"{plugin_id}.greet")
     platform, plugins, product_source = _platform(
         tmp_path,
         monkeypatch,
@@ -2578,7 +2471,6 @@ def test_source_roles_disjoin_adversarial_product_and_plugin_ids(
             _manifest(
                 product_id="toy.a",
                 plugins=(PluginRequirement(plugin_id=plugin_id, version_specifier="==1.0.0"),),
-                workflow=workflow,
             )
         ),
         plugins={plugin_id: _PluginProvider(plugin_id)},
@@ -2608,40 +2500,6 @@ def test_resolution_rejects_drifted_product_manifest(tmp_path: Path, monkeypatch
         platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
 
 
-@pytest.mark.parametrize(
-    ("reference_kind", "expected"),
-    (
-        ("capability", "unknown capability"),
-        ("schema", "unknown schema"),
-        ("resource", "unknown resource"),
-        ("effect", "unknown effect"),
-    ),
-)
-def test_resolution_rejects_unknown_graph_registry_references(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    reference_kind: str,
-    expected: str,
-) -> None:
-    kwargs: dict[str, object] = {}
-    capability = "toy.runtime.greet"
-    if reference_kind == "capability":
-        capability = "toy.runtime.missing"
-    else:
-        kwargs[f"{reference_kind}s"] = (f"toy.runtime.missing-{reference_kind}",)
-    workflow = _workflow(capability, **kwargs)  # type: ignore[arg-type]
-    platform, plugins, product_source = _platform(
-        tmp_path,
-        monkeypatch,
-        product=_ProductProvider(_manifest(workflow=workflow)),
-        plugins={"toy.runtime": _PluginProvider("toy.runtime")},
-    )
-    assert product_source is not None
-
-    with pytest.raises(CompileError, match=expected):
-        platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
-
-
 def test_resolution_rejects_unknown_effect_schema_reference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2667,26 +2525,10 @@ def test_resolution_rejects_unknown_effect_schema_reference(
         effects=("toy.runtime.audit",),
     )
     provider = _PluginProvider("toy.runtime", contribution=contribution, descriptors=(descriptor,))
-    workflow = WorkflowDef.model_validate(
-        {
-            "name": "toy",
-            "entrypoints": {"hello": "root"},
-            "retry": {},
-            "timeout": {},
-            "graphs": {
-                "root": {
-                    "max_activations": 1,
-                    "start": "done",
-                    "nodes": {"done": {"kind": "end"}},
-                    "edges": [],
-                }
-            },
-        }
-    )
     platform, plugins, product_source = _platform(
         tmp_path,
         monkeypatch,
-        product=_ProductProvider(_manifest(workflow=workflow)),
+        product=_ProductProvider(_manifest()),
         plugins={"toy.runtime": provider},
     )
     assert product_source is not None
@@ -2708,85 +2550,6 @@ def test_resolution_rejects_invalid_product_configuration(
 
     with pytest.raises(Exception, match="configuration"):
         platform.resolve(ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],)))
-
-
-def test_product_manifest_requires_one_workflow_form_and_entrypoint_closure() -> None:
-    workflow = _workflow()
-    base = {
-        "schema_version": "1",
-        "source": None,
-        "product_id": "toy.a",
-        "product_version": "1.0.0",
-        "engine_api": ENGINE_API_VERSION,
-        "plugins": [{"plugin_id": "toy.runtime", "version_specifier": "==1.0.0"}],
-        "entrypoints": {"hello": "root"},
-        "configuration": {},
-    }
-    with pytest.raises(ValueError, match="exactly one workflow form"):
-        ProductManifest.model_validate({**base, "workflow": workflow, "workflow_resource_id": "toy.a.flow"})
-    with pytest.raises(ValueError, match="exactly one workflow form"):
-        ProductManifest.model_validate({**base})
-    with pytest.raises(ValueError, match="entrypoints"):
-        ProductManifest.model_validate({**base, "entrypoints": {"other": "root"}, "workflow": workflow})
-
-
-def test_resource_workflow_must_close_product_entrypoints(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    product_file = tmp_path / "product.yaml"
-    flow_root = tmp_path / "flow"
-    _write_flow_plugin(flow_root)
-    workflow_path = flow_root / "workflow.yaml"
-    workflow_path.write_text(
-        yaml.safe_dump(
-            _workflow("toy.flow.greet", entrypoints={"other": "root"}).model_dump(
-                mode="json", by_alias=True, exclude_unset=True
-            )
-        ),
-        encoding="utf-8",
-    )
-    plugin_document = yaml.safe_load((flow_root / "plugin.yaml").read_text(encoding="utf-8"))
-    plugin_document["files"].append(
-        {
-            "kind": "resource",
-            "resource_id": "toy.flow.workflow",
-            "path": "workflow.yaml",
-            "media_type": "application/vnd.graph-engine.workflow+yaml",
-        }
-    )
-    (flow_root / "plugin.yaml").write_text(yaml.safe_dump(plugin_document, sort_keys=False), encoding="utf-8")
-    product_file.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": "1",
-                "product_id": "toy.mixed",
-                "product_version": "1.0.0",
-                "engine_api": ENGINE_API_VERSION,
-                "plugins": [
-                    {"plugin_id": "toy.runtime", "version_specifier": "==1.0.0"},
-                    {"plugin_id": "toy.flow", "version_specifier": "==1.0.0"},
-                ],
-                "entrypoints": {"hello": "root"},
-                "configuration": {},
-                "workflow_resource_id": "toy.flow.workflow",
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-    platform, plugins, _ = _platform(
-        tmp_path / "wheels",
-        monkeypatch,
-        plugins={"toy.runtime": _PluginProvider("toy.runtime")},
-    )
-
-    with pytest.raises(Exception, match="entrypoints"):
-        platform.resolve(
-            ResolutionRequest(
-                product=ProductFileSource(path=product_file),
-                plugins=(plugins["toy.runtime"], ConfigTreePluginSource(path=flow_root)),
-            )
-        )
 
 
 def test_failed_resolution_has_no_runtime_write_surface(
@@ -2835,28 +2598,10 @@ def test_registry_digests_cover_complete_registered_schema_resource_and_effect_v
         schemas=("toy.runtime.intent", "toy.runtime.receipt"),
         effects=("toy.runtime.audit",),
     )
-    end_workflow = WorkflowDef.model_validate(
-        {
-            "name": "toy",
-            "entrypoints": {"hello": "root"},
-            "schemas": ["toy.runtime.intent", "toy.runtime.receipt"],
-            "effects": ["toy.runtime.audit"],
-            "retry": {},
-            "timeout": {},
-            "graphs": {
-                "root": {
-                    "max_activations": 1,
-                    "start": "done",
-                    "nodes": {"done": {"kind": "end"}},
-                    "edges": [],
-                }
-            },
-        }
-    )
     platform, plugins, product_source = _platform(
         tmp_path,
         monkeypatch,
-        product=_ProductProvider(_manifest(workflow=end_workflow)),
+        product=_ProductProvider(_manifest()),
         plugins={
             "toy.runtime": _PluginProvider(
                 "toy.runtime", contribution=contribution, descriptors=(descriptor,)
@@ -3010,778 +2755,22 @@ def _write_lock_matrix_config_plugin(path: Path) -> None:
     )
 
 
-def _lock_matrix_contribution(
-    *,
-    schema: bytes = b'{"type":"object"}',
-    resource: bytes = b"base resource\n",
-    binding_data: object = None,
-) -> PluginContribution:
-    return PluginContribution(
-        task_handlers={"toy.runtime.greet": _Handler()},
-        schemas=(SchemaContribution("toy.runtime.schema", "application/schema+json", schema),),
-        resources=(ResourceContribution("toy.runtime.resource", "text/plain", resource),),
-        bindings=(
-            CapabilityBindingContribution(
-                capability_id="toy.runtime.alias",
-                target_capability_id="toy.runtime.greet",
-                data={"mode": "base"} if binding_data is None else binding_data,
-                resource_ids=("toy.runtime.resource",),
-            ),
-        ),
-    )
-
-
-def _lock_matrix_descriptor(
-    *,
-    version: str = "1.0.0",
-    dependencies: tuple[PluginDependency, ...] = (),
-) -> PluginDescriptor:
-    return PluginDescriptor(
-        schema_version="1",
-        source=None,
-        plugin_id="toy.runtime",
-        plugin_version=version,
-        engine_api=ENGINE_API_VERSION,
-        task_handlers=("toy.runtime.greet",),
-        commit_validators=(),
-        dependencies=dependencies,
-        schemas=("toy.runtime.schema",),
-        resources=("toy.runtime.resource",),
-        bindings=("toy.runtime.alias",),
-    )
-
-
-def _refresh_lock_matrix_product_distribution(
-    distribution: metadata.Distribution,
-    provider: _ProductProvider,
+def test_graph_factory_symbol_resolve_emits_product_lock_without_compiled_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    manifest = provider._manifest
-    assert manifest.source is not None
-    _replace_distribution_file(
-        distribution,
-        "toy_product/product-declaration.json",
-        canonical_json_bytes(
-            {
-                "schema_version": "1",
-                "kind": "product",
-                "source": manifest.source.model_dump(mode="json"),
-                "manifest": _manifest_declaration(manifest),
-            }
-        ),
-    )
+    from graph_engine.composition.lock import ProductLock
 
-
-def _refresh_lock_matrix_plugin_distribution(
-    distribution: metadata.Distribution,
-    provider: _PluginProvider,
-) -> None:
-    descriptor = provider._descriptors[0]
-    assert descriptor.source is not None
-    _replace_distribution_file(
-        distribution,
-        "toy_runtime/plugin-declaration.json",
-        canonical_json_bytes(
-            {
-                "schema_version": "1",
-                "kind": "plugin",
-                "source": descriptor.source.model_dump(mode="json"),
-                "descriptor": descriptor.model_dump(mode="json"),
-            }
-        ),
-    )
-
-
-def _locked_file_digest(files: object, suffix: str) -> str:
-    matches = [item.sha256 for item in files if item.path.endswith(suffix)]  # type: ignore[union-attr]
-    assert len(matches) == 1
-    return matches[0]
-
-
-def _lock_matrix_facets(composition: FrozenComposition) -> dict[str, object]:
-    lock = composition.lock
-    plugins = {plugin.plugin_id: plugin for plugin in lock.plugins}
-    runtime = plugins["toy.runtime"]
-    config = plugins["toy.config"]
-    engine_identity = cast(dict[str, object], thaw_json(lock.engine.identity))
-    manifest = cast(dict[str, object], thaw_json(lock.product.manifest))
-    compiled = cast(dict[str, object], thaw_json(lock.compiled_workflow))
-    binding_projection = cast(list[dict[str, JSONValue]], thaw_json(lock.capability_bindings))
-    semantic_bindings = [
-        {
-            key: value
-            for key, value in binding.items()
-            if key not in {"implementation_digest", "target_implementation"}
-        }
-        for binding in binding_projection
-    ]
-    return {
-        "engine_code": tuple((item.path, item.sha256) for item in lock.engine.files),
-        "engine_version": engine_identity["version"],
-        "product_code": _locked_file_digest(lock.product.source.files, "toy_product/__init__.py"),
-        "product_version": lock.product.product_version,
-        "plugin_code": _locked_file_digest(runtime.source.files, "toy_runtime/__init__.py"),
-        "plugin_version": runtime.plugin_version,
-        "config_bytes": config.source.digest,
-        "dependencies": tuple(
-            (dependency.plugin_id, dependency.version_specifier) for dependency in runtime.dependencies
-        ),
-        "schema": lock.registry_digests.schemas,
-        "resource": lock.registry_digests.resources,
-        "binding": canonical_digest(cast(JSONValue, semantic_bindings)),
-        "validated_config": lock.configuration_digest,
-        "graph_definition": canonical_digest(cast(JSONValue, manifest["workflow"])),
-        "compiled_artifact": lock.compiled_workflow_digest,
-        "entrypoint_map": canonical_digest(cast(JSONValue, compiled["entrypoints"])),
-    }
-
-
-_LOCK_MATRIX_ALLOWED_CHANGES = {
-    "engine_code": {"engine_code"},
-    "engine_version": {"engine_version"},
-    "product_code": {"product_code"},
-    "product_version": {"product_version"},
-    "plugin_code": {"plugin_code"},
-    "plugin_version": {"plugin_version"},
-    "config_bytes": {"config_bytes"},
-    "dependencies": {"dependencies"},
-    "schema": {"schema"},
-    "resource": {"resource"},
-    "binding": {"binding"},
-    "validated_config": {"validated_config"},
-    "graph_definition": {"graph_definition", "compiled_artifact"},
-    "compiled_artifact": {"compiled_artifact"},
-    "entrypoint_map": {"graph_definition", "compiled_artifact", "entrypoint_map"},
-}
-
-
-@pytest.mark.parametrize("facet", tuple(_LOCK_MATRIX_ALLOWED_CHANGES))
-def test_engine_open_rejects_each_independently_reresolved_lock_facet_without_claim_or_append(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    facet: str,
-) -> None:
-    config_root = tmp_path / "config"
-    _write_lock_matrix_config_plugin(config_root)
-    workflow = _workflow(
-        "toy.runtime.greet",
-        schemas=("toy.runtime.schema",),
-        resources=("toy.runtime.resource",),
-    )
-    product_provider = _ProductProvider(
-        _manifest(
-            plugins=(
-                PluginRequirement(plugin_id="toy.config", version_specifier="==1.0.0"),
-                PluginRequirement(plugin_id="toy.runtime", version_specifier=">=1,<2"),
-            ),
-            workflow=workflow,
-            configuration={"toy.runtime": {"mode": "base"}},
-        )
-    )
-    runtime_provider = _PluginProvider(
-        "toy.runtime",
-        descriptors=(_lock_matrix_descriptor(),),
-        contribution=_lock_matrix_contribution(),
-    )
     platform, plugins, product_source = _platform(
-        tmp_path / "wheels",
-        monkeypatch,
-        product=product_provider,
-        plugins={"toy.runtime": runtime_provider},
-    )
-    assert product_source is not None
-    metadata_provider = cast(_MetadataProvider, platform._metadata_provider)
-    product_distribution = metadata_provider._distributions["toy-product"]
-    product_provider._manifest = product_provider._manifest.model_copy(
-        update={"config_plugin_paths": (str(config_root.resolve()),)}
-    )
-    _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
-    request = ResolutionRequest(
-        product=product_source,
-        plugins=(plugins["toy.runtime"], ConfigTreePluginSource(path=config_root)),
-    )
-    original = platform.resolve(request)
-    engine_root = tmp_path / "engine"
-    workspace_binding = _workspace_binding(engine_root)
-    with Engine(engine_root) as engine:
-        engine.start(
-            original,
-            entrypoint="hello",
-            invocation_id="facet-drift",
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        ).close()
-    invocation = engine_root / "invocations" / "facet-drift"
-    before_ledger = b"".join(
-        path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json"))
-    )
-    runtime_distribution = metadata_provider._distributions["toy-runtime"]
-
-    if facet in {"engine_code", "engine_version"}:
-        snapshot = resolver_runtime._capture_engine_snapshot()
-        if facet == "engine_code":
-            changed = SourceSnapshot.from_identity(
-                snapshot.identity,
-                (*snapshot.files, SourceFile.from_bytes("facet-engine.txt", b"changed\n")),
-            )
-        else:
-            changed = SourceSnapshot.from_identity(
-                replace(snapshot.identity, version="9.9.9"),
-                snapshot.files,
-            )
-        monkeypatch.setattr(resolver_runtime, "_capture_engine_snapshot", lambda: changed)
-    elif facet == "product_code":
-        path = Path(product_distribution.locate_file("toy_product/__init__.py"))
-        _replace_distribution_file(
-            product_distribution,
-            "toy_product/__init__.py",
-            path.read_bytes() + b"# product code drift\n",
-        )
-    elif facet == "product_version":
-        assert product_provider._manifest.source is not None
-        source = product_provider._manifest.source.model_copy(update={"version": "1.0.1"})
-        product_provider._manifest = product_provider._manifest.model_copy(
-            update={"product_version": "1.0.1", "source": source}
-        )
-        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
-        _replace_distribution_file(
-            product_distribution,
-            "toy_product-1.0.0.dist-info/METADATA",
-            b"Metadata-Version: 2.1\nName: toy-product\nVersion: 1.0.1\n",
-        )
-        metadata_provider._distributions["toy-product"] = metadata.Distribution.at(product_distribution._path)
-    elif facet == "plugin_code":
-        path = Path(runtime_distribution.locate_file("toy_runtime/__init__.py"))
-        _replace_distribution_file(
-            runtime_distribution,
-            "toy_runtime/__init__.py",
-            path.read_bytes() + b"# plugin code drift\n",
-        )
-    elif facet == "plugin_version":
-        descriptor = runtime_provider._descriptors[0]
-        assert descriptor.source is not None
-        source = descriptor.source.model_copy(update={"version": "1.0.1"})
-        runtime_provider._descriptors = (
-            descriptor.model_copy(update={"plugin_version": "1.0.1", "source": source}),
-        )
-        _refresh_lock_matrix_plugin_distribution(runtime_distribution, runtime_provider)
-        _replace_distribution_file(
-            runtime_distribution,
-            "toy_runtime-1.0.0.dist-info/METADATA",
-            b"Metadata-Version: 2.1\nName: toy-runtime\nVersion: 1.0.1\n",
-        )
-        metadata_provider._distributions["toy-runtime"] = metadata.Distribution.at(runtime_distribution._path)
-    elif facet == "config_bytes":
-        plugin_yaml = config_root / "plugin.yaml"
-        plugin_yaml.write_bytes(plugin_yaml.read_bytes() + b"# config byte drift\n")
-    elif facet == "dependencies":
-        descriptor = runtime_provider._descriptors[0]
-        runtime_provider._descriptors = (
-            descriptor.model_copy(update={"dependencies": (PluginDependency("toy.config", "==1.0.0"),)}),
-        )
-        _refresh_lock_matrix_plugin_distribution(runtime_distribution, runtime_provider)
-    elif facet == "schema":
-        runtime_provider._contribution = _lock_matrix_contribution(
-            schema=b'{"type":"object","required":["changed"]}'
-        )
-    elif facet == "resource":
-        runtime_provider._contribution = _lock_matrix_contribution(resource=b"changed resource\n")
-    elif facet == "binding":
-        runtime_provider._contribution = _lock_matrix_contribution(binding_data={"mode": "changed"})
-    elif facet == "validated_config":
-        product_provider._manifest = product_provider._manifest.model_copy(
-            update={"configuration": {"toy.runtime": {"mode": "changed"}}}
-        )
-        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
-    elif facet == "graph_definition":
-        document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
-        document["graphs"]["root"]["nodes"]["greet"]["input"] = {"changed": True}
-        changed_workflow = WorkflowDef.model_validate(document)
-        product_provider._manifest = product_provider._manifest.model_copy(
-            update={"workflow": changed_workflow}
-        )
-        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
-    elif facet == "compiled_artifact":
-        real_compile = resolver_runtime.compile_workflow
-
-        def compile_with_changed_artifact(
-            selected_workflow: WorkflowDef,
-            registries: RegistrySet,
-        ) -> object:
-            compiled = real_compile(selected_workflow, registries)
-            changed = compiled.model_copy(update={"name": f"{compiled.name}-changed"})
-            payload = cast(
-                JSONValue,
-                changed.model_dump(mode="json", by_alias=True, exclude={"digest"}),
-            )
-            return changed.model_copy(update={"digest": canonical_digest(payload)})
-
-        monkeypatch.setattr(resolver_runtime, "compile_workflow", compile_with_changed_artifact)
-    else:
-        changed_workflow = _workflow(
-            "toy.runtime.greet",
-            schemas=("toy.runtime.schema",),
-            resources=("toy.runtime.resource",),
-            entrypoints={"alternate": "root", "hello": "root"},
-        )
-        product_provider._manifest = product_provider._manifest.model_copy(
-            update={
-                "entrypoints": dict(changed_workflow.entrypoints),
-                "workflow": changed_workflow,
-            }
-        )
-        _refresh_lock_matrix_product_distribution(product_distribution, product_provider)
-
-    for module_name in tuple(sys.modules):
-        if module_name in {"toy_product", "toy_runtime"}:
-            sys.modules.pop(module_name, None)
-    drifted = RegistryPlatform(metadata_provider=metadata_provider).resolve(request)
-    original_facets = _lock_matrix_facets(original)
-    drifted_facets = _lock_matrix_facets(drifted)
-    changed_facets = {name for name, value in original_facets.items() if drifted_facets[name] != value}
-    assert facet in changed_facets
-    assert changed_facets <= _LOCK_MATRIX_ALLOWED_CHANGES[facet]
-    assert drifted.lock.canonical_bytes != original.lock.canonical_bytes
-    claims = 0
-
-    def reject_claim(self: Engine, invocation_fd: int) -> int:
-        del self, invocation_fd
-        nonlocal claims
-        claims += 1
-        raise AssertionError("runner claim must not be attempted")
-
-    monkeypatch.setattr(Engine, "_acquire_runner_claim", reject_claim)
-    with Engine(engine_root) as engine, pytest.raises(InvocationDrift):
-        engine.open(
-            "facet-drift",
-            drifted,
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        )
-
-    assert claims == 0
-    assert (
-        b"".join(path.read_bytes() for path in sorted((invocation / "ledger").glob("[0-9]*.json")))
-        == before_ledger
-    )
-
-
-_MODULAR_FEATURE_YAML = """
-schema_version: "1"
-role: feature
-owner_id: toy.feature
-module_id: toy.feature.workflow
-module_version: 1.0.0
-exports:
-  run:
-    graph: feature-run
-    input_schema: toy.feature.workflow.run.input.v1
-    output_schema: toy.feature.workflow.run.output.v1
-    output_projection:
-      type: child_output_pointer
-      pointer: ""
-capability_slots:
-  worker.execute:
-    contract_id: toy.feature.agent.worker.v1
-schemas:
-  - toy.feature.workflow.run.input.v1
-  - toy.feature.workflow.run.output.v1
-resources: []
-effects: []
-retry:
-  once: {max_attempts: 1}
-timeout:
-  short: {run_seconds: 30}
-graphs:
-  feature-run:
-    max_activations: 2
-    start: work
-    nodes:
-      work:
-        kind: task
-        capability_slot: worker.execute
-        retry: once
-        timeout: short
-      done: {kind: end}
-    edges:
-      - {from: work, to: done}
-"""
-
-_MODULAR_PRODUCT_YAML = """
-schema_version: "1"
-role: product
-name: toy
-owner_id: toy.product
-module_id: toy.product.workflow
-module_version: 1.0.0
-entrypoints: {main: root}
-imports:
-  run:
-    owner_id: toy.feature
-    module_id: toy.feature.workflow
-    export: run
-exports: {}
-capability_slots: {}
-schemas:
-  - toy.feature.workflow.run.input.v1
-  - toy.feature.workflow.run.output.v1
-resources: []
-effects: []
-retry:
-  once: {max_attempts: 1}
-timeout:
-  short: {run_seconds: 30}
-graphs:
-  root:
-    max_activations: 2
-    start: child
-    nodes:
-      child:
-        kind: subgraph
-        graph_import: run
-        input_schema: toy.feature.workflow.run.input.v1
-        output_schema: toy.feature.workflow.run.output.v1
-        output_projection:
-          type: child_output_pointer
-          pointer: ""
-      done: {kind: end}
-    edges:
-      - {from: child, to: done}
-"""
-
-_SCHEMA_JSON = b'{"type":"object","additionalProperties":false}'
-
-
-def _modular_feature_bytes(*, timeout_run_seconds: float = 30) -> bytes:
-    return _MODULAR_FEATURE_YAML.replace("run_seconds: 30", f"run_seconds: {timeout_run_seconds}").encode()
-
-
-def _modular_slot_bindings(
-    bindings: tuple[WorkflowSlotBinding, ...] | None = None,
-) -> list[dict[str, str]]:
-    selected = bindings
-    if selected is None:
-        selected = (
-            WorkflowSlotBinding(
-                module_id="toy.feature.workflow",
-                slot="worker.execute",
-                capability_id="toy.product.agent.worker.execute",
-                contract_id="toy.feature.agent.worker.v1",
-            ),
-        )
-    return [
-        {
-            "module_id": item.module_id,
-            "slot": item.slot,
-            "capability_id": item.capability_id,
-            "contract_id": item.contract_id,
-        }
-        for item in selected
-    ]
-
-
-def _write_modular_product_file(
-    path: Path,
-    *,
-    slot_bindings: tuple[WorkflowSlotBinding, ...] | None = None,
-) -> None:
-    module = yaml.safe_load(_MODULAR_PRODUCT_YAML)
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": "1",
-                "product_id": "toy.product",
-                "product_version": "1.0.0",
-                "engine_api": ENGINE_API_VERSION,
-                "plugins": [
-                    {"plugin_id": "toy.feature", "version_specifier": "==1.0.0"},
-                    {"plugin_id": "toy.product", "version_specifier": "==1.0.0"},
-                    {"plugin_id": "toy.runtime", "version_specifier": "==1.0.0"},
-                ],
-                "entrypoints": {"main": "root"},
-                "configuration": {},
-                "workflow_module": module,
-                "workflow_module_resources": [
-                    {
-                        "module_id": "toy.feature.workflow",
-                        "owner_id": "toy.feature",
-                        "resource_id": "toy.feature.workflow.module",
-                    }
-                ],
-                "workflow_slot_bindings": _modular_slot_bindings(slot_bindings),
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-
-def _feature_plugin(content: bytes) -> _PluginProvider:
-    return _PluginProvider(
-        "toy.feature",
-        descriptors=(
-            PluginDescriptor(
-                schema_version="1",
-                source=None,
-                plugin_id="toy.feature",
-                plugin_version="1.0.0",
-                engine_api=ENGINE_API_VERSION,
-                task_handlers=(),
-                commit_validators=(),
-                schemas=(
-                    "toy.feature.workflow.run.input.v1",
-                    "toy.feature.workflow.run.output.v1",
-                ),
-                resources=("toy.feature.workflow.module",),
-            ),
-        ),
-        contribution=PluginContribution(
-            schemas=(
-                SchemaContribution(
-                    "toy.feature.workflow.run.input.v1",
-                    "application/schema+json",
-                    _SCHEMA_JSON,
-                ),
-                SchemaContribution(
-                    "toy.feature.workflow.run.output.v1",
-                    "application/schema+json",
-                    _SCHEMA_JSON,
-                ),
-            ),
-            resources=(
-                ResourceContribution(
-                    "toy.feature.workflow.module",
-                    "application/vnd.graph-engine.workflow-module+yaml",
-                    content,
-                ),
-            ),
-        ),
-    )
-
-
-def _product_binding_plugin() -> _PluginProvider:
-    return _PluginProvider(
-        "toy.product",
-        descriptors=(
-            PluginDescriptor(
-                schema_version="1",
-                source=None,
-                plugin_id="toy.product",
-                plugin_version="1.0.0",
-                engine_api=ENGINE_API_VERSION,
-                task_handlers=(),
-                commit_validators=(),
-                bindings=("toy.product.agent.worker.execute",),
-            ),
-        ),
-        contribution=PluginContribution(
-            bindings=(
-                CapabilityBindingContribution(
-                    capability_id="toy.product.agent.worker.execute",
-                    target_capability_id="toy.runtime.greet",
-                    contract_id="toy.feature.agent.worker.v1",
-                ),
-            )
-        ),
-    )
-
-
-def _modular_request(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    feature_bytes: bytes | None = None,
-    slot_bindings: tuple[WorkflowSlotBinding, ...] | None = None,
-    plugin_order: tuple[str, ...] = ("toy.feature", "toy.product", "toy.runtime"),
-) -> tuple[RegistryPlatform, ResolutionRequest]:
-    feature = _feature_plugin(feature_bytes or _modular_feature_bytes())
-    product_binding = _product_binding_plugin()
-    runtime = _PluginProvider("toy.runtime")
-    platform, plugins, _product_source = _platform(
-        tmp_path / "wheels",
-        monkeypatch,
-        plugins={
-            "toy.feature": feature,
-            "toy.product": product_binding,
-            "toy.runtime": runtime,
-        },
-    )
-    product_file = tmp_path / "product.yaml"
-    _write_modular_product_file(product_file, slot_bindings=slot_bindings)
-    return platform, ResolutionRequest(
-        product=ProductFileSource(path=product_file),
-        plugins=tuple(plugins[plugin_id] for plugin_id in plugin_order),
-    )
-
-
-def _resolve_modular(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    feature_bytes: bytes | None = None,
-    slot_bindings: tuple[WorkflowSlotBinding, ...] | None = None,
-    plugin_order: tuple[str, ...] = ("toy.feature", "toy.product", "toy.runtime"),
-) -> FrozenComposition:
-    platform, request = _modular_request(
         tmp_path,
         monkeypatch,
-        feature_bytes=feature_bytes,
-        slot_bindings=slot_bindings,
-        plugin_order=plugin_order,
-    )
-    return platform.resolve(request)
-
-
-def test_modular_resolve_rejects_wrong_namespaced_entrypoint_graph(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    real_assemble = resolver_runtime.assemble_product_workflow
-
-    def _wrong_graph(**kwargs: object) -> WorkflowDef:
-        workflow = real_assemble(**kwargs)  # type: ignore[arg-type]
-        return workflow.model_copy(update={"entrypoints": {"main": "toy.feature.workflow.graph.feature-run"}})
-
-    monkeypatch.setattr(resolver_runtime, "assemble_product_workflow", _wrong_graph)
-    with pytest.raises(ResolutionError, match="entrypoints"):
-        _resolve_modular(tmp_path / "wrong-entry", monkeypatch)
-
-
-def test_resolve_legacy_and_modular_products_return_compiled_workflow(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    legacy_platform, legacy_plugins, legacy_product = _platform(
-        tmp_path / "legacy",
-        monkeypatch,
-        product=_ProductProvider(_manifest()),
+        product=_ProductProvider(_manifest(graph_factory_symbol="toy_product:provider")),
         plugins={"toy.runtime": _PluginProvider("toy.runtime")},
     )
-    assert legacy_product is not None
-    legacy = legacy_platform.resolve(
-        ResolutionRequest(product=legacy_product, plugins=(legacy_plugins["toy.runtime"],))
+    assert product_source is not None
+    composition = platform.resolve(
+        ResolutionRequest(product=product_source, plugins=(plugins["toy.runtime"],))
     )
-    modular = _resolve_modular(tmp_path / "modular", monkeypatch)
-    assert type(legacy.workflow) is type(modular.workflow)
-    assert isinstance(legacy.workflow, CompiledWorkflow)
-    assert isinstance(modular.workflow, CompiledWorkflow)
-    assert modular.workflow.entrypoints == {"main": "toy.product.workflow.graph.root"}
-    compiled_graph = modular.workflow.graphs["toy.feature.workflow.graph.feature-run"]
-    assert compiled_graph.nodes["work"].definition.capability == "toy.product.agent.worker.execute"
-
-
-def test_modular_assembly_error_occurs_before_lock_or_ledger(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    calls: list[object] = []
-    original = resolver_runtime.build_invocation_lock
-
-    def _blocked_lock(**kwargs: object) -> object:
-        calls.append(kwargs)
-        return original(**kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(resolver_runtime, "build_invocation_lock", _blocked_lock)
-    runtime_root = tmp_path / "runtime"
-    with pytest.raises(Exception, match="missing|slot"):
-        _resolve_modular(
-            tmp_path / "wheels",
-            monkeypatch,
-            slot_bindings=(),
-        )
-    assert calls == []
-    assert not runtime_root.exists()
-
-
-def test_module_byte_drift_changes_authenticated_digests(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = _resolve_modular(tmp_path / "original", monkeypatch, feature_bytes=_modular_feature_bytes())
-    drifted = _resolve_modular(
-        tmp_path / "drifted",
-        monkeypatch,
-        feature_bytes=_modular_feature_bytes(timeout_run_seconds=9),
-    )
-    original_resource = original.registries.resources.entries["toy.feature.workflow.module"]
-    drifted_resource = drifted.registries.resources.entries["toy.feature.workflow.module"]
-    assert original_resource.sha256 != drifted_resource.sha256
-    original_feature = next(plugin for plugin in original.lock.plugins if plugin.plugin_id == "toy.feature")
-    drifted_feature = next(plugin for plugin in drifted.lock.plugins if plugin.plugin_id == "toy.feature")
-    assert original_feature.contribution_digest != drifted_feature.contribution_digest
-    assert original.lock.compiled_workflow_digest != drifted.lock.compiled_workflow_digest
-    assert original.lock.digest != drifted.lock.digest
-
-
-def test_registration_permutations_produce_identical_assembled_and_lock_bytes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    platform, request = _modular_request(tmp_path, monkeypatch)
-    orders = (
-        request.plugins,
-        (request.plugins[2], request.plugins[0], request.plugins[1]),
-        (request.plugins[1], request.plugins[2], request.plugins[0]),
-    )
-    compositions = [
-        platform.resolve(ResolutionRequest(product=request.product, plugins=plugins)) for plugins in orders
-    ]
-    expected_lock = compositions[0].lock.canonical_bytes
-    expected_workflow = compositions[0].lock.compiled_workflow_digest
-    for composition in compositions[1:]:
-        assert composition.lock.canonical_bytes == expected_lock
-        assert composition.lock.compiled_workflow_digest == expected_workflow
-        assert composition.workflow.digest == compositions[0].workflow.digest
-
-
-def test_modular_composition_cannot_resume_legacy_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    legacy_platform, legacy_plugins, legacy_product = _platform(
-        tmp_path / "legacy",
-        monkeypatch,
-        product=_ProductProvider(_manifest(product_id="toy.product")),
-        plugins={"toy.runtime": _PluginProvider("toy.runtime")},
-    )
-    assert legacy_product is not None
-    legacy = legacy_platform.resolve(
-        ResolutionRequest(product=legacy_product, plugins=(legacy_plugins["toy.runtime"],))
-    )
-    modular = _resolve_modular(tmp_path / "modular", monkeypatch)
-    engine_root = tmp_path / "engine"
-    workspace_binding = _workspace_binding(engine_root)
-    with Engine(engine_root) as engine:
-        engine.start(
-            legacy,
-            entrypoint="hello",
-            invocation_id="cross-form",
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        ).close()
-        with pytest.raises(InvocationDrift):
-            engine.open(
-                "cross-form",
-                modular,
-                authorization=empty_runtime_authorization(),
-                workspace_binding=workspace_binding,
-            )
-
-
-def test_same_modular_composition_resume_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    platform, request = _modular_request(tmp_path, monkeypatch)
-    composition = platform.resolve(request)
-    repeated = platform.resolve(request)
-    assert repeated.lock.canonical_bytes == composition.lock.canonical_bytes
-    engine_root = tmp_path / "engine"
-    workspace_binding = _workspace_binding(engine_root)
-    with Engine(engine_root) as engine:
-        engine.start(
-            composition,
-            entrypoint="main",
-            invocation_id="same-form",
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        ).close()
-        engine.open(
-            "same-form",
-            repeated,
-            authorization=empty_runtime_authorization(),
-            workspace_binding=workspace_binding,
-        ).close()
+    assert not hasattr(composition, "workflow")
+    assert isinstance(composition.lock, ProductLock)
+    assert composition.lock.schema_version == "3"
+    assert not hasattr(composition.lock, "compiled_workflow")

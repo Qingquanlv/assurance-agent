@@ -65,3 +65,24 @@ def test_bindings_build_rejects_nonempty_output(cli_runner, tmp_path: Path):
         ["bindings", "build", "--manifest", str(_OPENCODE_MANIFEST), "--output-dir", str(output)],
     )
     assert result.exit_code == 40, result.output
+
+
+def test_bindings_build_stays_on_authenticated_catalogs(cli_runner, tmp_path: Path):
+    from assurance_product.cli import app
+
+    output = tmp_path / "catalog-out"
+    result = cli_runner.invoke(
+        app,
+        [
+            "bindings",
+            "build",
+            "--json",
+            "--manifest",
+            str(_OPENCODE_MANIFEST),
+            "--output-dir",
+            str(output),
+            "--graph",
+            str(tmp_path / "graph.py"),
+        ],
+    )
+    assert result.exit_code == 2, result.output

@@ -39,7 +39,7 @@ def fixture_resources() -> dict[str, bytes]:
 def fixture_config() -> dict[str, JSONValue]:
     return {
         "permissions": {"writes": ["result.json"]},
-        "request_policy": {"extraction_mode": "structured"},
+        "request_policy": {"delivery_mode": "assistant_json_local_v1"},
     }
 
 
@@ -50,7 +50,7 @@ def _result_contract(schema_bytes: bytes) -> ResultContract:
     return ResultContract(
         schema_id="fixture.result.v1",
         schema_digest=canonical_digest(cast(JSONValue, schema)),
-        extraction_mode="structured",
+        delivery_mode="assistant_json_local_v1",
         schema_document=schema,
     )
 

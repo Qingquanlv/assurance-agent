@@ -15,6 +15,7 @@ root_packages =
     agent_runtime_fixture
     assurance_product
 
+# Permanent boundary: cross-Feature .graphs imports remain forbidden.
 [importlinter:contract:generation-intake-contracts-only]
 name = generation may import only intake contracts
 type = forbidden
@@ -27,7 +28,7 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
+    assurance_intake.graphs
 
 [importlinter:contract:execution-assurance-contracts-only]
 name = execution may import only intake and generation contracts
@@ -41,14 +42,14 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
+    assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
+    assurance_generation.graphs
 
 [importlinter:contract:healing-assurance-contracts-only]
 name = healing may import only intake, generation, and execution contracts
@@ -62,21 +63,21 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
+    assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
+    assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
     assurance_execution.validators
     assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
-    assurance_execution.workflow
+    assurance_execution.graphs
 
 [importlinter:contract:healing-no-quality]
 name = healing must not import quality
@@ -98,28 +99,28 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
+    assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
+    assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
     assurance_execution.validators
     assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
-    assurance_execution.workflow
+    assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
     assurance_healing.validators
     assurance_healing.effects
     assurance_healing.resource_loader
     assurance_healing.resources
-    assurance_healing.workflow
+    assurance_healing.graphs
 
 [importlinter:contract:improvement-assurance-contracts-only]
 name = improvement may import only intake, generation, execution, healing, and quality contracts
@@ -133,35 +134,35 @@ forbidden_modules =
     assurance_intake.effects
     assurance_intake.resource_loader
     assurance_intake.resources
-    assurance_intake.workflow
+    assurance_intake.graphs
     assurance_generation.plugin
     assurance_generation.operations
     assurance_generation.validators
     assurance_generation.effects
     assurance_generation.resource_loader
     assurance_generation.resources
-    assurance_generation.workflow
+    assurance_generation.graphs
     assurance_execution.plugin
     assurance_execution.operations
     assurance_execution.validators
     assurance_execution.effects
     assurance_execution.resource_loader
     assurance_execution.resources
-    assurance_execution.workflow
+    assurance_execution.graphs
     assurance_healing.plugin
     assurance_healing.operations
     assurance_healing.validators
     assurance_healing.effects
     assurance_healing.resource_loader
     assurance_healing.resources
-    assurance_healing.workflow
+    assurance_healing.graphs
     assurance_quality.plugin
     assurance_quality.operations
     assurance_quality.validators
     assurance_quality.effects
     assurance_quality.resource_loader
     assurance_quality.resources
-    assurance_quality.workflow
+    assurance_quality.graphs
 
 [importlinter:contract:features-downward]
 name = features must not import concrete clients or product

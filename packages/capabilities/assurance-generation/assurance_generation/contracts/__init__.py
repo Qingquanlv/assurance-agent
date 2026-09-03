@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
     CodegenFixCandidateV1,
@@ -33,9 +34,16 @@ from assurance_generation.contracts.plans import (
     PlanCheckDocument,
     PlanResultV1,
 )
+from assurance_generation.contracts.decisions import (
+    GenerationCompletionOutput,
+    GenerationReviewRoundAdvanceOutput,
+    advance_review_round,
+    complete_generation,
+)
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring, ReviewFinding
 
 __all__ = [
+    "AGENT_JOB_CONTRACTS",
     "ApiGeneratedFilesV1",
     "CampaignResult",
     "CampaignSpec",
@@ -66,4 +74,9 @@ __all__ = [
     "PlanReview",
     "PlanReviewAuthoring",
     "ReviewFinding",
+    "advance_review_round",
+    "attempt_contract_refs",
+    "complete_generation",
+    "GenerationCompletionOutput",
+    "GenerationReviewRoundAdvanceOutput",
 ]

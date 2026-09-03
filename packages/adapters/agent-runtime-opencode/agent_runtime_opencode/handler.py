@@ -39,6 +39,7 @@ from agent_runtime_opencode.discovery import (
 from agent_runtime_opencode.observation import (
     classify_admission,
     classify_provider_state,
+    parse_closed_terminal_result,
     parse_sse_frames,
     prompt_admission_body,
     reduce_sse_frames,
@@ -49,8 +50,8 @@ from agent_runtime_opencode.protocol import (
     canonical_json_text,
     resolve_advertised_profile,
 )
-from agent_runtime_opencode.reducer import contract_result_candidate_from_messages, reduce_terminal
-from agent_runtime_opencode.workspace_binding import workspace_binding_title
+from agent_runtime_opencode.reducer import reduce_terminal, result_candidate_satisfies_contract
+from agent_runtime_opencode.workspace_binding import reject_isolated_root_discovery, workspace_binding_title
 
 
 def workspace_identity_digest_for(context: TaskContext) -> str:
@@ -511,6 +512,7 @@ class OpenCodeHandler:
         session_id: str,
     ) -> TaskActivityReconcileResult | None:
         try:
+            reject_isolated_root_discovery(context.write_root)
             title = workspace_binding_title(
                 context,
                 agent_run.workspace,
@@ -654,13 +656,16 @@ class OpenCodeHandler:
         if kind == "succeeded":
             status_record = status_map.get(session_id) if isinstance(status_map, dict) else None
             if isinstance(status_record, dict) and status_record.get("type") == "busy":
-                safe_result = contract_result_candidate_from_messages(
-                    messages,
+                try:
+                    candidate = parse_closed_terminal_result(messages)
+                except ValueError:
+                    return TaskActivityReconcileResult(status="running", reference=dumped)
+                if not result_candidate_satisfies_contract(
+                    candidate,
                     agent_run=agent_run,
                     request=request,
                     canaries=canaries,
-                )
-                if safe_result is None:
+                ):
                     return TaskActivityReconcileResult(status="running", reference=dumped)
                 try:
                     await client.abort(session_id)

@@ -9,7 +9,6 @@ from typing import Literal, NoReturn, cast
 import click
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue
 from graph_engine.composition import (
     CapabilityBindingEntry,
     ConfigTreePluginSource,
@@ -17,34 +16,28 @@ from graph_engine.composition import (
     WheelPluginSource,
 )
 from graph_engine.errors import GraphEngineError
-from graph_engine.runtime.driver import StartSpec, acquire_invocation
-from graph_engine.runtime.engine import Engine, EngineError, RunResult
-from graph_engine.runtime.events import InvocationStarted
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import InvocationProjection, fold_events
-from graph_engine.runtime.secret_sources import (
+from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     RuntimeAuthorizationError,
     SecretSourceBinding,
     authorize_binding_secret_handles,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import empty_invocation_seed
 
+from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.export import PublishError, publish_achieved, select_publish_change
-from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1
+from assurance_product.models import PRODUCT_ENTRYPOINTS
 from assurance_product.product import (
     AssuranceCompositionError,
     AssuranceCompositionRequest,
-    GraphAuditResult,
-    audit_full_graph,
     prepare_change_workspace,
     reopen_change_workspace,
     resolve_assurance_composition,
 )
-from assurance_product.status import ArchiveError, archive_published, render_status, write_runtime_projections
+from assurance_product.application import RuntimeSelectionError, SelectionCrash
+from assurance_product.status import ArchiveError, archive_published
 
 _SOURCE_FLAGS = (
     "product",
@@ -68,16 +61,21 @@ _RUN_EXIT = {
     "interrupted": (30, "interrupted"),
     "failed": (40, "failed"),
 }
+_STATUS_EXIT = {
+    "completed": 0,
+    "succeeded": 0,
+    "running": 20,
+    "blocked": 20,
+    "stopped": 20,
+    "interrupted": 30,
+    "failed": 40,
+}
 
 
 class CommandError(Exception):
     def __init__(self, message: str, code: int = 40) -> None:
         super().__init__(message)
         self.code = code
-
-
-def create_engine(root: Path, authorization: InvocationRuntimeAuthorization) -> Engine:
-    return Engine.production(root, authorization=authorization)
 
 
 def main() -> None:
@@ -118,26 +116,27 @@ def compile_command(
         _SOURCE_FLAGS,
     )
     try:
-        composition, audit = _resolve_and_audit(
+        from assurance_product.product import reject_organization_overrides
+
+        reject_organization_overrides(Path(cast(str, config_tree)))
+        composition, _audit = _resolve_and_audit(
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
             binding_entrypoint=cast(str, binding_entrypoint),
             binding_declaration=cast(str, binding_declaration),
             config_tree=cast(str, config_tree),
         )
+        artifacts = AssuranceProductApplication().compile(
+            composition,
+            product=cast(str, product),
+            config_tree=cast(str, config_tree),
+        )
+        document = artifacts.model_dump()
     except CommandError as error:
         _fail(str(error), error.code)
-    _emit(
-        {
-            "lock_digest": composition.lock_digest,
-            "composition_digest": composition.digest,
-            "workflow_digest": composition.workflow.digest,
-            "product": product,
-            "engine_api": composition.lock.engine_api,
-            "entrypoints": sorted(composition.workflow.entrypoints),
-            "audit": audit.model_dump(mode="json"),
-        }
-    )
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(document)
 
 
 @app.group("bindings")
@@ -295,7 +294,8 @@ def run_command(
             "actions": list(result.actions),
         }
     )
-    raise SystemExit(_RUN_EXIT[result.status][0])
+    exit_spec = _RUN_EXIT.get(result.status)
+    raise SystemExit(exit_spec[0] if exit_spec is not None else _STATUS_EXIT[mapped])
 
 
 @app.command("status")
@@ -336,24 +336,30 @@ def status_command(
         _EXISTING_FLAGS,
     )
     try:
-        projection, identity = _read_authenticated_projection(
-            project_dir=Path(cast(str, project_dir)),
-            change_id=cast(str, change),
-            invocation_id=cast(str, invocation_id),
+        composition, _audit = _resolve_and_audit(
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
             binding_entrypoint=cast(str, binding_entrypoint),
             binding_declaration=cast(str, binding_declaration),
             config_tree=cast(str, config_tree),
-            secrets=secrets,
         )
-        document = render_status(
-            projection,
-            root_input_digest=identity["root_input_digest"],
-            change_id=cast(str, change),
-        ).model_dump(mode="json")
+        authorization = _authorize_secrets(composition, secrets)
+        workspace = _bind_workspace(Path(cast(str, project_dir)), cast(str, change), create=False)
+        document = (
+            AssuranceProductApplication()
+            .status(
+                workspace=workspace,
+                composition=composition,
+                authorization=authorization,
+                invocation_id=cast(str, invocation_id),
+                change_id=cast(str, change),
+            )
+            .model_dump(mode="json")
+        )
     except CommandError as error:
         _fail(str(error), error.code)
+    except Exception as error:
+        _fail(str(error), 40)
     _emit(document)
 
 
@@ -369,6 +375,7 @@ def status_command(
 @click.option("--secret", "secrets", multiple=True)
 @click.option("--action")
 @click.option("--reason")
+@click.option("--resume-file", type=click.Path())
 @click.option("--json", "as_json", is_flag=True)
 def resume_command(
     project_dir: str | None,
@@ -382,26 +389,31 @@ def resume_command(
     secrets: tuple[str, ...],
     action: str | None,
     reason: str | None,
+    resume_file: str | None,
     as_json: bool,
 ) -> None:
     del as_json
-    _require_options(
-        {
-            "project_dir": project_dir,
-            "change": change,
-            "invocation_id": invocation_id,
-            "product": product,
-            "binding_dist": binding_dist,
-            "binding_entrypoint": binding_entrypoint,
-            "binding_declaration": binding_declaration,
-            "config_tree": config_tree,
-            "action": action,
-            "reason": reason,
-        },
-        (*_EXISTING_FLAGS, "action", "reason"),
-    )
+    if resume_file and (action or reason):
+        raise click.UsageError("--resume-file is mutually exclusive with --action/--reason")
+    required = {
+        "project_dir": project_dir,
+        "change": change,
+        "invocation_id": invocation_id,
+        "product": product,
+        "binding_dist": binding_dist,
+        "binding_entrypoint": binding_entrypoint,
+        "binding_declaration": binding_declaration,
+        "config_tree": config_tree,
+    }
+    if resume_file:
+        _require_options(required, _EXISTING_FLAGS)
+    else:
+        _require_options(
+            {**required, "action": action, "reason": reason},
+            (*_EXISTING_FLAGS, "action", "reason"),
+        )
     try:
-        result, mapped = _resume_invocation(
+        result, mapped, code = _resume_invocation(
             project_dir=Path(cast(str, project_dir)),
             change_id=cast(str, change),
             invocation_id=cast(str, invocation_id),
@@ -411,8 +423,9 @@ def resume_command(
             binding_declaration=cast(str, binding_declaration),
             config_tree=cast(str, config_tree),
             secrets=secrets,
-            action=cast(str, action),
-            reason=cast(str, reason),
+            action=action,
+            reason=reason,
+            resume_file=None if resume_file is None else Path(resume_file),
         )
     except CommandError as error:
         _fail(str(error), error.code)
@@ -424,7 +437,7 @@ def resume_command(
             "action": action,
         }
     )
-    raise SystemExit(_RUN_EXIT[result.status][0])
+    raise SystemExit(code)
 
 
 @app.command("export")
@@ -512,26 +525,26 @@ def lock_show(
         _EXISTING_FLAGS,
     )
     try:
-        composition, _projection, _identity = _open_authenticated(
-            project_dir=Path(cast(str, project_dir)),
-            change_id=cast(str, change),
-            invocation_id=cast(str, invocation_id),
+        composition, _audit = _resolve_and_audit(
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
             binding_entrypoint=cast(str, binding_entrypoint),
             binding_declaration=cast(str, binding_declaration),
             config_tree=cast(str, config_tree),
-            secrets=secrets,
+        )
+        authorization = _authorize_secrets(composition, secrets)
+        workspace = _bind_workspace(Path(cast(str, project_dir)), cast(str, change), create=False)
+        document = AssuranceProductApplication().lock_show(
+            workspace=workspace,
+            composition=composition,
+            authorization=authorization,
+            invocation_id=cast(str, invocation_id),
         )
     except CommandError as error:
         _fail(str(error), error.code)
-    _emit(
-        {
-            "lock_digest": composition.lock_digest,
-            "engine_api": composition.lock.engine_api,
-            "lock": composition.lock.model_dump(mode="json"),
-        }
-    )
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(document)
 
 
 def _require_options(values: Mapping[str, object], names: Sequence[str]) -> None:
@@ -556,7 +569,7 @@ def _resolve_and_audit(
     binding_entrypoint: str,
     binding_declaration: str,
     config_tree: str,
-) -> tuple[FrozenComposition, GraphAuditResult]:
+) -> tuple[FrozenComposition, None]:
     if binding_entrypoint != "deployment":
         raise CommandError("binding entrypoint must be deployment")
     if product not in {"assurance-opencode", "assurance-cursor"}:
@@ -581,18 +594,7 @@ def _resolve_and_audit(
         OSError,
     ) as error:
         raise CommandError(str(error)) from error
-    audit = audit_full_graph(composition.workflow, composition)
-    if any(
-        (
-            audit.unreachable_nodes,
-            audit.dead_ends,
-            audit.forbidden_direct_targets,
-            audit.missing_bindings,
-            audit.uninventoried_nodes,
-        )
-    ):
-        raise CommandError(f"graph audit failed: {audit.model_dump(mode='json')}")
-    return composition, audit
+    return composition, None
 
 
 def _authorization(secrets: Sequence[str]) -> InvocationRuntimeAuthorization:
@@ -650,15 +652,6 @@ def _authorize_secrets(
     return authorization
 
 
-def _load_product_input(path: Path, *, entrypoint: str, composition: FrozenComposition) -> ProductInputV1:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        value = ProductInputV1.model_validate(payload)
-        return value.validate_for_entrypoint(entrypoint).authenticate_against(composition)
-    except (OSError, json.JSONDecodeError, ValidationError, ValueError) as error:
-        raise CommandError(str(error)) from error
-
-
 def _bind_workspace(project_dir: Path, change_id: str, *, create: bool) -> ChangeWorkspace:
     try:
         if create:
@@ -668,63 +661,20 @@ def _bind_workspace(project_dir: Path, change_id: str, *, create: bool) -> Chang
         raise CommandError(str(error)) from error
 
 
-def _write_projections(
-    workspace: ChangeWorkspace,
-    projection: InvocationProjection,
-    envelopes: Sequence[object],
-    *,
-    root_input_digest: str,
-) -> None:
-    try:
-        write_runtime_projections(
-            workspace,
-            projection,
-            envelopes,
-            root_input_digest=root_input_digest,
-        )
-    except (OSError, ValueError) as error:
-        raise CommandError(str(error)) from error
-
-
-def _publish_projections(
-    workspace: ChangeWorkspace,
-    invocation_root: Path,
-    projection: InvocationProjection | None = None,
-) -> tuple[InvocationProjection, dict[str, str]]:
-    envelopes = Ledger(invocation_root / "ledger").read_all()
-    identity = _start_identity(envelopes)
-    published = fold_events(envelopes) if projection is None else projection
-    _write_projections(
-        workspace,
-        published,
-        envelopes,
-        root_input_digest=identity["root_input_digest"],
-    )
-    return published, identity
-
-
 @contextmanager
 def _engine_failures() -> Iterator[None]:
     try:
         yield
-    except (EngineError, GraphEngineError, OSError, ValidationError) as error:
-        raise CommandError(str(error)) from error
-
-
-def _plan_start(
-    input_path: Path,
-    *,
-    entrypoint: str,
-    composition: FrozenComposition,
-    change_id: str,
-) -> StartSpec:
-    product_input = _load_product_input(input_path, entrypoint=entrypoint, composition=composition)
-    if product_input.change_id != change_id:
-        raise CommandError("change does not match product input change_id")
-    return StartSpec(
-        entrypoint=entrypoint,
-        seed=empty_invocation_seed(root_input=cast(JSONValue, product_input.model_dump(mode="json"))),
-    )
+    except (
+        GraphEngineError,
+        OSError,
+        ValidationError,
+        RuntimeSelectionError,
+        SelectionCrash,
+        RuntimeError,
+        ValueError,
+    ) as error:
+        raise CommandError(f"{type(error).__name__}: {error}") from error
 
 
 def _start_invocation(
@@ -750,32 +700,19 @@ def _start_invocation(
         binding_declaration=binding_declaration,
         config_tree=config_tree,
     )
-    plan = _plan_start(
-        input_path,
-        entrypoint=entrypoint,
-        composition=composition,
-        change_id=change_id,
-    )
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
-        with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            with engine.start(
-                composition,
-                entrypoint=plan.entrypoint,
-                invocation_id=invocation_id,
-                seed=plan.seed,
-                authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-            ) as handle:
-                _publish_projections(workspace, handle.invocation_root)
-    return {
-        "invocation_id": invocation_id,
-        "change_id": change_id,
-        "lock_digest": composition.lock_digest,
-        "composition_digest": composition.digest,
-        "root_input_digest": plan.seed.root_input_digest,
-    }
+        return AssuranceProductApplication().start(
+            project_dir=project_dir,
+            change_id=change_id,
+            invocation_id=invocation_id,
+            composition=composition,
+            authorization=authorization,
+            entrypoint=entrypoint,
+            input_path=input_path,
+            workspace=workspace,
+        )
 
 
 def _run_invocation(
@@ -791,7 +728,7 @@ def _run_invocation(
     entrypoint: str | None,
     input_path: Path | None,
     secrets: Sequence[str],
-) -> tuple[RunResult, str]:
+) -> tuple[SimpleRun, str]:
     composition, _audit = _resolve_and_audit(
         product=product,
         binding_dist=binding_dist,
@@ -801,32 +738,19 @@ def _run_invocation(
     )
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=True)
-    binding = workspace.runtime_binding()
     with _engine_failures():
-        with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            plan: StartSpec | None = None
-            if not engine.invocation_exists(invocation_id):
-                if entrypoint is None or input_path is None:
-                    raise CommandError("first run requires --entrypoint and --input")
-                if entrypoint not in PRODUCT_ENTRYPOINTS:
-                    raise CommandError(f"unknown product entrypoint: {entrypoint}")
-                plan = _plan_start(
-                    input_path,
-                    entrypoint=entrypoint,
-                    composition=composition,
-                    change_id=change_id,
-                )
-            with acquire_invocation(
-                engine,
-                composition,
-                invocation_id=invocation_id,
-                authorization=authorization,
-                workspace_binding=binding,
-                start=plan,
-            ) as handle:
-                result = engine.run_until_blocked(handle)
-                _publish_projections(workspace, handle.invocation_root, result.projection)
-    return result, _RUN_EXIT[result.status][1]
+        result, mapped, _code = AssuranceProductApplication().run(
+            project_dir=project_dir,
+            change_id=change_id,
+            invocation_id=invocation_id,
+            composition=composition,
+            authorization=authorization,
+            entrypoint=entrypoint,
+            input_path=input_path,
+            workspace=workspace,
+            secrets=secrets,
+        )
+    return cast(SimpleRun, result), mapped
 
 
 def _resume_invocation(
@@ -840,9 +764,10 @@ def _resume_invocation(
     binding_declaration: str,
     config_tree: str,
     secrets: Sequence[str],
-    action: str,
-    reason: str,
-) -> tuple[RunResult, str]:
+    action: str | None,
+    reason: str | None,
+    resume_file: Path | None = None,
+) -> tuple[SimpleRun, str, int]:
     composition, _audit = _resolve_and_audit(
         product=product,
         binding_dist=binding_dist,
@@ -853,22 +778,18 @@ def _resume_invocation(
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=False)
     with _engine_failures():
-        with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            with acquire_invocation(
-                engine,
-                composition,
-                invocation_id=invocation_id,
+        return cast(
+            tuple[SimpleRun, str, int],
+            AssuranceProductApplication().resume(
+                workspace=workspace,
+                composition=composition,
                 authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-                start=None,
-            ) as opened:
-                resumed = engine.resume(opened, action=action, payload={"reason": reason})
-                try:
-                    result = engine.run_until_blocked(resumed)
-                    _publish_projections(workspace, resumed.invocation_root, result.projection)
-                finally:
-                    resumed.close()
-    return result, _RUN_EXIT[result.status][1]
+                invocation_id=invocation_id,
+                action=action,
+                reason=reason,
+                resume_file=resume_file,
+            ),
+        )
 
 
 def _export_change(*, project_dir: Path, change_id: str | None) -> dict[str, object]:
@@ -887,73 +808,3 @@ def _archive_change(*, project_dir: Path, change_id: str) -> dict[str, object]:
         return archive_published(Path(project_dir).resolve(), change_id)
     except (ArchiveError, ValueError, OSError) as error:
         raise CommandError(str(error)) from error
-
-
-def _read_authenticated_projection(
-    *,
-    project_dir: Path,
-    change_id: str,
-    invocation_id: str,
-    product: str,
-    binding_dist: str,
-    binding_entrypoint: str,
-    binding_declaration: str,
-    config_tree: str,
-    secrets: Sequence[str],
-) -> tuple[InvocationProjection, dict[str, str]]:
-    _composition, projection, identity = _open_authenticated(
-        project_dir=project_dir,
-        change_id=change_id,
-        invocation_id=invocation_id,
-        product=product,
-        binding_dist=binding_dist,
-        binding_entrypoint=binding_entrypoint,
-        binding_declaration=binding_declaration,
-        config_tree=config_tree,
-        secrets=secrets,
-    )
-    return projection, identity
-
-
-def _open_authenticated(
-    *,
-    project_dir: Path,
-    change_id: str,
-    invocation_id: str,
-    product: str,
-    binding_dist: str,
-    binding_entrypoint: str,
-    binding_declaration: str,
-    config_tree: str,
-    secrets: Sequence[str],
-) -> tuple[FrozenComposition, InvocationProjection, dict[str, str]]:
-    composition, _audit = _resolve_and_audit(
-        product=product,
-        binding_dist=binding_dist,
-        binding_entrypoint=binding_entrypoint,
-        binding_declaration=binding_declaration,
-        config_tree=config_tree,
-    )
-    authorization = _authorize_secrets(composition, secrets)
-    workspace = _bind_workspace(project_dir, change_id, create=False)
-    with _engine_failures():
-        with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            with acquire_invocation(
-                engine,
-                composition,
-                invocation_id=invocation_id,
-                authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-                start=None,
-            ) as handle:
-                projection, identity = _publish_projections(workspace, handle.invocation_root)
-    return composition, projection, identity
-
-
-def _start_identity(envelopes: Sequence[object]) -> dict[str, str]:
-    if not envelopes:
-        raise CommandError("invocation has no ledger bootstrap")
-    event = getattr(envelopes[0], "event", None)
-    if not isinstance(event, InvocationStarted):
-        raise CommandError("invocation ledger lacks its canonical bootstrap")
-    return {"root_input_digest": event.root_input_digest}

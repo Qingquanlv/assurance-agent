@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+from graph_engine.attempts.events import (
+    ActiveSystemInterrupt,
+    AttemptSnapshot,
+    SystemInterruptCompletionCheckpointed,
+    SystemInterruptIssuanceAnchored,
+)
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.persistence.attempt_journal import AttemptJournalPort
+from graph_engine.persistence.checkpoint_observer import CheckpointAnchorNotice
+from graph_engine.persistence.journal import CheckpointAnchor
+from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeMarker
+
+
+class AttemptCheckpointObserver:
+    def __init__(self, journal: AttemptJournalPort) -> None:
+        self._journal = journal
+
+    async def on_anchored(self, notice: CheckpointAnchorNotice) -> None:
+        _validate_anchor(notice.anchor)
+        if not notice.markers:
+            return
+        if notice.source == "pending_write":
+            await self._anchor_issuance(
+                notice,
+                tuple(marker for marker in notice.markers if marker.kind == "system_interrupt_issued"),
+            )
+            return
+        await self._anchor_issuance(
+            notice,
+            tuple(marker for marker in notice.markers if marker.kind == "system_interrupt_issued"),
+        )
+        await self._anchor_completion(
+            notice,
+            tuple(marker for marker in notice.markers if marker.kind == "system_interrupt_completed"),
+        )
+
+    async def _anchor_issuance(
+        self,
+        notice: CheckpointAnchorNotice,
+        markers: Sequence[CheckpointBridgeMarker],
+    ) -> None:
+        for marker in markers:
+            key, snapshot, issued = await self._require_issued(notice, marker)
+            if issued.issuance_anchored:
+                continue
+            await self._journal.append(
+                key,
+                (
+                    SystemInterruptIssuanceAnchored(
+                        generation=marker.generation,
+                        ordinal=marker.ordinal,
+                        envelope_digest=marker.envelope_digest,
+                        checkpoint_id=notice.anchor.checkpoint_id,
+                    ),
+                ),
+                expected_revision=snapshot.revision,
+                fencing_token=notice.anchor.fencing_token,
+            )
+
+    async def _anchor_completion(
+        self,
+        notice: CheckpointAnchorNotice,
+        markers: Sequence[CheckpointBridgeMarker],
+    ) -> None:
+        grouped: dict[str, list[CheckpointBridgeMarker]] = {}
+        for marker in markers:
+            grouped.setdefault(marker.attempt_key, []).append(marker)
+        for attempt_digest, batch in grouped.items():
+            key = AttemptKey(digest=attempt_digest)
+            snapshot = await self._journal.load(key)
+            if snapshot is None:
+                raise ValueError("attempt is missing for checkpoint marker")
+            _assert_invocation(snapshot, notice.anchor)
+            events: list[SystemInterruptCompletionCheckpointed] = []
+            for marker in batch:
+                issued = _find_issued(snapshot, marker)
+                if issued is None:
+                    if marker.generation in snapshot.retired_generations:
+                        continue
+                    raise ValueError("generation does not match issued interrupt")
+                _assert_marker_identity(issued, marker)
+                events.append(
+                    SystemInterruptCompletionCheckpointed(
+                        generation=marker.generation,
+                        ordinal=marker.ordinal,
+                        envelope_digest=marker.envelope_digest,
+                        checkpoint_id=notice.anchor.checkpoint_id,
+                    )
+                )
+            if events:
+                await self._journal.append(
+                    key,
+                    tuple(events),
+                    expected_revision=snapshot.revision,
+                    fencing_token=notice.anchor.fencing_token,
+                )
+
+    async def _require_issued(
+        self,
+        notice: CheckpointAnchorNotice,
+        marker: CheckpointBridgeMarker,
+    ) -> tuple[AttemptKey, AttemptSnapshot, ActiveSystemInterrupt]:
+        key = AttemptKey(digest=marker.attempt_key)
+        snapshot = await self._journal.load(key)
+        if snapshot is None:
+            raise ValueError("attempt is missing for checkpoint marker")
+        _assert_invocation(snapshot, notice.anchor)
+        issued = _find_issued(snapshot, marker)
+        if issued is None:
+            raise ValueError("generation does not match issued interrupt")
+        _assert_marker_identity(issued, marker)
+        return key, snapshot, issued
+
+
+def _validate_anchor(anchor: CheckpointAnchor) -> None:
+    if anchor.thread_id != anchor.invocation_id:
+        raise ValueError("thread id must equal invocation id")
+
+
+def _assert_invocation(snapshot: AttemptSnapshot, anchor: CheckpointAnchor) -> None:
+    if snapshot.invocation_id is not None and snapshot.invocation_id != anchor.invocation_id:
+        raise ValueError("checkpoint invocation identity drifted")
+
+
+def _find_issued(snapshot: AttemptSnapshot, marker: CheckpointBridgeMarker) -> ActiveSystemInterrupt | None:
+    for item in snapshot.active_interrupts:
+        if item.generation == marker.generation:
+            return item
+    current = snapshot.active_interrupt
+    if current is not None and current.generation == marker.generation:
+        return current
+    return None
+
+
+def _assert_marker_identity(issued: ActiveSystemInterrupt, marker: CheckpointBridgeMarker) -> None:
+    if issued.envelope_digest != marker.envelope_digest:
+        raise ValueError("envelope digest drifted")
+    if issued.ordinal != marker.ordinal:
+        raise ValueError("ordinal drifted")
+
+
+__all__ = ["AttemptCheckpointObserver"]

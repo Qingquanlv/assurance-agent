@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import (
     EffectPolicy,
     EffectRegistration,
+    PluginContribution,
     PluginDependency,
+    PluginDescriptor,
     ProviderSource,
+    RegistryPorts,
 )
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
+
+from assurance_improvement.contracts.attempts import attempt_contract_refs
 
 from assurance_improvement.effects.archive import (
     ARCHIVE_INTENT_SCHEMA,
@@ -74,7 +81,6 @@ IMPROVEMENT_RESOURCE_FILES: dict[str, str] = {
         "skills/aa-retro-workflow-analysis/SKILL.md"
     ),
     "assurance.improvement.skill.aa-retro.v1": "skills/aa-retro/SKILL.md",
-    "assurance.improvement.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -161,3 +167,11 @@ class ImprovementPlugin(CapabilityPlugin):
         dependencies=IMPROVEMENT_DEPENDENCIES,
         effects=_effect_registrations,
     )
+
+    @classmethod
+    def descriptor(cls) -> PluginDescriptor:
+        return cls.spec.descriptor().model_copy(update={"attempt_contracts": attempt_contract_refs()})
+
+    @classmethod
+    def contribute(cls, ports: RegistryPorts) -> PluginContribution:
+        return replace(cls.spec.contribution(ports), attempt_contracts=attempt_contract_refs())

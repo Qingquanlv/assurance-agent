@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.plugin_api import ProviderSource
+from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource, RegistryPorts
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
+from assurance_intake.contracts.attempts import attempt_contract_refs
 from assurance_intake.operations import (
     CaseDesignFinalizeHandler,
     CaseDesignPrepareHandler,
@@ -48,10 +51,10 @@ INTAKE_RESOURCE_FILES: dict[str, str] = {
     "assurance.intake.skill.aa-case-design.visual-companion.v1": (
         "skills/aa-case-design/visual-companion.md"
     ),
+    "assurance.intake.skill.aa-case-repair.v1": "skills/aa-case-repair/SKILL.md",
     "assurance.intake.skill.aa-case-reviewer.v1": "skills/aa-case-reviewer/SKILL.md",
     "assurance.intake.skill.aa-explore.v1": "skills/aa-explore/SKILL.md",
     "assurance.intake.skill.aa-intake.v1": "skills/aa-intake/SKILL.md",
-    "assurance.intake.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -95,3 +98,11 @@ class IntakePlugin(CapabilityPlugin):
         task_handlers=_HANDLERS,
         commit_validators=_VALIDATORS,
     )
+
+    @classmethod
+    def descriptor(cls) -> PluginDescriptor:
+        return cls.spec.descriptor().model_copy(update={"attempt_contracts": attempt_contract_refs()})
+
+    @classmethod
+    def contribute(cls, ports: RegistryPorts) -> PluginContribution:
+        return replace(cls.spec.contribution(ports), attempt_contracts=attempt_contract_refs())

@@ -34,7 +34,6 @@ from graph_engine.plugin_api import (
 )
 
 _SCHEMA_MEDIA_TYPE = "application/schema+json"
-_WORKFLOW_MODULE_MIME = "application/vnd.graph-engine.workflow-module+yaml"
 
 
 def resource_media_type(path: str) -> str:
@@ -42,8 +41,6 @@ def resource_media_type(path: str) -> str:
 
     if path.endswith(".schema.json"):
         return _SCHEMA_MEDIA_TYPE
-    if path.endswith("workflow/module.yaml"):
-        return _WORKFLOW_MODULE_MIME
     if path.endswith(".json"):
         return "application/json"
     return "text/plain"

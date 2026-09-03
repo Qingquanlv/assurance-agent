@@ -277,7 +277,7 @@ def test_plugin_problem_apply_validator_is_path_only() -> None:
 
 @pytest.mark.parametrize("classification", ["test", "test-data"])
 def test_public_issue_analysis_allows_fix_eligible_only_for_test_kinds(classification: str) -> None:
-    from assurance_quality.contracts.workflow import IssueAnalysisPublicV1
+    from assurance_quality.contracts.decisions import IssueAnalysisPublicV1
 
     accepted = IssueAnalysisPublicV1.model_validate({"classification": classification, "fix_eligible": True})
     assert accepted.fix_eligible is True
@@ -290,7 +290,7 @@ def test_public_issue_analysis_allows_fix_eligible_only_for_test_kinds(classific
     ["product_bug", "environment_failure", "infrastructure_failure", "unknown", "pending", "failed"],
 )
 def test_public_issue_analysis_rejects_fix_eligible_for_non_test_kinds(classification: str) -> None:
-    from assurance_quality.contracts.workflow import IssueAnalysisPublicV1
+    from assurance_quality.contracts.decisions import IssueAnalysisPublicV1
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):

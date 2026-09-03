@@ -10,6 +10,16 @@ from graph_engine.plugin_api import TaskOutcome
 from tests.product.test_change_local_output_routing import execute_task
 
 
+def test_review_round_advance_handler_is_yaml_adapter_for_pure_function() -> None:
+    import inspect
+
+    from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler
+
+    source = inspect.getsource(ReviewRoundAdvanceHandler.execute)
+    assert "advance_review_round" in source
+    assert "del context" in source
+
+
 def _handler():
     from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler
 

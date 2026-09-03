@@ -10,9 +10,12 @@ from urllib.parse import urljoin
 import httpx
 from pydantic import Field, model_validator
 
+from agent_runtime_contracts.runtime_binding import AgentRuntimeCapabilities
 from agent_runtime_contracts.schema import canonical_json_bytes
 from agent_runtime_opencode.config import OpenCodeAdapterConfig, endpoint_origin
 from graph_engine.plugin_api import FrozenModel
+
+OPENCODE_RUNTIME_CAPABILITIES = AgentRuntimeCapabilities()
 
 
 class OpenCodeProtocolProfile(FrozenModel):

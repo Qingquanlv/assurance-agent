@@ -20,6 +20,17 @@ unless every capability value is byte-for-byte present in the enum.
 
 ## Inputs
 
+Read `proposal.md` first. When its `Product Source Verification` section lists
+exact product-source paths, read every listed path directly before any discovery.
+A glob result of `No files found` is not evidence that product source is absent;
+ignored source files remain exact-readable. Only declare source unavailable after
+those exact reads and a path-scoped grep both fail.
+
+Never read `.env`, `*.env`, or credential-bearing benchmark environment files.
+Use environment variable names and non-secret defaults only; derive the required
+variable names from approved plans, test configuration source, and the locked
+benchmark requirement without inspecting secret values.
+
 ### required
 
 - `qa/changes/<change-id>/cases/**/case.yaml`
@@ -43,6 +54,20 @@ unless every capability value is byte-for-byte present in the enum.
 - `qa/changes/<change-id>/plans/performance-codegen-plan.md`
 - `qa/changes/<change-id>/plans/performance-codegen-mapping.json`
 - `qa/changes/<change-id>/plans/performance-review-summary.md`
+
+## Closed Codegen Mapping Contract
+
+`performance-codegen-mapping.json` must use this exact JSON shape:
+
+```json
+{"schema_version":"1","layer":"performance","entries":[{"case_id":"TC_DEPT_PERF_001","symbol":"DeptUser.read_department","target_file":"tests/perf/locustfile_dept.py"}]}
+```
+
+Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are
+`schema_version`, `layer`, `entries`, and optional `schema_case_ids`. Each entry
+has exactly `case_id`, `symbol`, and `target_file`. Do not emit `family`,
+`change_id`, `mappings`, or `test_function`. Map every selected Performance
+Case ID exactly once, and no other Case ID.
 
 ## Boundaries
 

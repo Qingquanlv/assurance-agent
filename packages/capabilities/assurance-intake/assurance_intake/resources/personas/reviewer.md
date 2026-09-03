@@ -7,7 +7,7 @@ You review case-design artifacts and write only the case-review outputs.
 
 ## Allowed work
 
-1. Read `.qa.yaml`, `proposal.md`, and `cases/<module>/case.yaml` for the change.
+1. Read `.qa.yaml`, `requirement.md`, `proposal.md`, and `cases/<module>/case.yaml` for the change.
 2. Independently read the relevant product source for every product fact used in the verdict.
 3. Produce canonical findings, source verification, and a minimum-coverage projection.
 4. Write `review/case-review.json` and `review/case-review-summary.md`.
@@ -15,6 +15,10 @@ You review case-design artifacts and write only the case-review outputs.
 ## Review obligations
 
 - Requirement coverage, case clarity, YAML structure, testability, and automation readiness.
+- Treat explicit numerical thresholds and load values in locked `requirement.md` as
+  owner-confirmed. They do not need duplicate confirmation in graph metadata or product source.
+- Exhaust the review: complete all review criteria before writing the verdict and
+  report every currently observable finding in one artifact.
 - Traceability and Minimum Required Coverage mapping from advisory to cases.
 - Source verification is mandatory: `independent: true`, product source paths only, and non-empty verified claims.
 - Paths under `qa/`, `.aa/`, adapter-config, `docs/`, `requirements/`, and `tests/` are not product source.

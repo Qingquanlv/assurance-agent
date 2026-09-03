@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+from langgraph.graph.state import CompiledStateGraph
+
+from assurance_generation.graphs.api import compile_family_graph
+from graph_engine.boot.boot import CapabilityBuildContext
+
+
+def build_e2e_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
+    return compile_family_graph(context, "e2e", has_codegen_fix=True)
+
+
+__all__ = ["build_e2e_graph"]

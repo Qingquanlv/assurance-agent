@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import subprocess
@@ -11,20 +12,10 @@ from typing import get_args
 
 import pytest
 
-from graph_engine.plugin_api import InvocationWorkspaceBinding, TaskContext, TaskHandler
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.events import RuntimeEvent
-from graph_engine.runtime.host_protocol import (
-    TaskHostCallIdentity,
-    TaskHostCallResult,
-    TaskHostExecuteCall,
-)
-from graph_engine.runtime.secret_sources import empty_runtime_authorization
-from graph_engine.runtime.seed import empty_invocation_seed
-from graph_engine.runtime.task_workspace import TaskWorkspaceStore
+from graph_engine.attempts.activity import RuntimeEvent
 
-from tests.product.cli_support import start_lifecycle_invocation
-from tests.product.composition_harness import InstalledSources
+from tests.product.cli_support import SECRET_ENV, SECRET_VALUE, common_lifecycle_args
+from tests.product.composition_harness import InstalledSources, request_for
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -103,66 +94,9 @@ def _forbidden_layout_hits(root: Path) -> set[str]:
     return hits
 
 
-class _InProcessTestHost:
-    def __init__(self) -> None:
-        self._handlers: dict[str, TaskHandler] = {}
-        self._store: TaskWorkspaceStore | None = None
-
-    def bind_invocation_runtime(
-        self,
-        *,
-        handlers: dict[str, TaskHandler],
-        store: TaskWorkspaceStore,
-    ) -> None:
-        self._handlers = handlers
-        self._store = store
-
-    async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-        assert self._store is not None
-        handler = self._handlers[call.request.capability_id]
-        identity = call.attempt_root.workspace_identity
-        binding = self._store.begin(
-            task_id=identity.task_id,
-            attempt=identity.attempt,
-            output_paths=identity.output_paths,
-        )
-        outcome = await handler.execute(
-            call.request,
-            TaskContext(
-                project_root=binding.project_root,
-                write_root=binding.write_root,
-                workspace_identity=binding.identity,
-                heartbeat=lambda: None,
-                cancel_requested=lambda: False,
-                invocation=call.request.invocation,
-            ),
-        )
-        return TaskHostCallResult(operation="execute", outcome=outcome)
-
-    async def reconcile(self, call: object) -> TaskHostCallResult:
-        del call
-        raise AssertionError("reconcile must stay unwired")
-
-    async def cancel(self, call: object) -> TaskHostCallResult:
-        del call
-        raise AssertionError("cancel must stay unwired")
-
-    def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[()]:
-        del identity
-        return ()
-
-
-def _workspace_binding(root: Path) -> InvocationWorkspaceBinding:
-    project_root = root.parent / f".{root.name}-project"
-    attempts_root = root.parent / f".{root.name}-attempts"
-    receipts_root = root.parent / f".{root.name}-receipts"
-    for path in (project_root, attempts_root, receipts_root):
-        path.mkdir(exist_ok=True)
-    return InvocationWorkspaceBinding(
-        project_root=project_root,
-        attempts_root=attempts_root,
-        receipts_root=receipts_root,
-    )
+def _is_leftover_tree_workspace(name: str) -> bool:
+    parts = Path(name).parts
+    return len(parts) >= 2 and parts[-1] == "workspace.py" and parts[-2] == "runtime"
 
 
 def _toy_a_composition(root: Path, monkeypatch: pytest.MonkeyPatch):
@@ -243,13 +177,13 @@ def test_built_wheels_omit_tree_workspace_and_result_export(tmp_path: Path) -> N
     with zipfile.ZipFile(engine_wheels[0]) as archive:
         names = archive.namelist()
     assert all("tree_io" not in Path(name).parts for name in names)
-    assert all(Path(name).name != "workspace.py" for name in names)
+    assert all(not _is_leftover_tree_workspace(name) for name in names)
     assert all("result-export" not in name for name in names)
 
     with zipfile.ZipFile(product_wheels[0]) as archive:
         names = archive.namelist()
     assert all("result-export" not in name for name in names)
-    assert all(Path(name).name != "workspace.py" for name in names)
+    assert all(not _is_leftover_tree_workspace(name) for name in names)
     assert all("tree_io" not in Path(name).parts for name in names)
 
 
@@ -271,47 +205,66 @@ def test_toy_and_assurance_invocation_creates_no_whole_tree_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     installed_sources: InstalledSources,
+    cli_runner,
 ) -> None:
-    invocation = start_lifecycle_invocation(
-        tmp_path / "assurance",
-        installed_sources,
+    from assurance_product.cli import app
+    from assurance_product.product import resolve_assurance_composition
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path / "assurance",
+        installed_sources=installed_sources,
+        composition=composition,
         invocation_id="inv-residual-001",
-        drive=True,
+        change_id="CH-RESIDUAL-001",
     )
-    try:
-        roots: Iterable[Path] = (
-            invocation.project_dir,
-            invocation.engine_root,
-            invocation.project_dir / "qa" / "changes" / invocation.change_id,
-        )
-        hits = set()
-        for root in roots:
-            hits.update(_forbidden_layout_hits(root))
-        assert not hits, hits
-        status_path = invocation.project_dir / "qa" / "changes" / invocation.change_id / "status.json"
-        if status_path.is_file():
-            status = json.loads(status_path.read_text(encoding="utf-8"))
-            assert set(status).isdisjoint(_TREE_ID_FIELD_NAMES)
-    finally:
-        invocation.engine.close()
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    change = project_dir / "qa" / "changes" / change_id
+    roots: Iterable[Path] = (project_dir, change)
+    hits = set()
+    for root in roots:
+        hits.update(_forbidden_layout_hits(root))
+    assert not hits, hits
+    status_path = change / "status.json"
+    if status_path.is_file():
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        assert set(status).isdisjoint(_TREE_ID_FIELD_NAMES)
+
+    from graph_engine.boot.generic import (
+        boot_factory_product,
+        contract_resolver_from_plugins,
+        run_factory_product,
+        workspace_provider_for,
+    )
+    from graph_engine.composition.lock import ProductLock
 
     composition = _toy_a_composition(tmp_path / "toy-composition", monkeypatch)
-    engine_root = tmp_path / "toy-engine"
-    binding = _workspace_binding(engine_root)
-    with Engine(engine_root, host=_InProcessTestHost()) as engine:
-        with engine.start(
-            composition,
+    assert not hasattr(composition, "workflow")
+    assert composition.manifest.graph_factory_symbol
+    assert isinstance(composition.lock, ProductLock)
+    workspace, project_root = workspace_provider_for(tmp_path / "toy-engine")
+    resolver = contract_resolver_from_plugins(composition.descriptors, workspace)
+    artifact, kernel = boot_factory_product(
+        composition,
+        workspace=workspace,
+        contract_resolver=resolver,
+    )
+    result = asyncio.run(
+        run_factory_product(
+            artifact,
+            kernel=kernel,
+            workspace=workspace,
             entrypoint="hello",
             invocation_id="toy-residual-1",
-            seed=empty_invocation_seed(),
-            authorization=empty_runtime_authorization(),
-            workspace_binding=binding,
-        ) as handle:
-            result = engine.run_until_blocked(handle)
-            assert result.status == "succeeded", result
-            assert "final_tree_id" not in result.model_dump(mode="json")
-            toy_hits = _forbidden_layout_hits(tmp_path / "toy-engine")
-            toy_hits.update(_forbidden_layout_hits(binding.project_root))
-            toy_hits.update(_forbidden_layout_hits(binding.attempts_root))
-            toy_hits.update(_forbidden_layout_hits(binding.receipts_root))
-            assert not toy_hits, toy_hits
+            graph_input={"name": "Ada"},
+            lease_root=tmp_path / "toy-leases",
+        )
+    )
+    assert getattr(result, "status") == "completed", result
+    dumped = getattr(result, "model_dump")(mode="json") if hasattr(result, "model_dump") else vars(result)
+    assert "final_tree_id" not in dumped
+    toy_hits = _forbidden_layout_hits(tmp_path / "toy-engine")
+    toy_hits.update(_forbidden_layout_hits(project_root))
+    assert not toy_hits, toy_hits

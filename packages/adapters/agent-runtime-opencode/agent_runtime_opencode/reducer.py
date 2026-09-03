@@ -15,9 +15,10 @@ from graph_engine.plugin_api import TaskOutcome, TaskRequest
 from agent_runtime_opencode.discovery import ADAPTER_VERSION
 from agent_runtime_opencode.observation import (
     ProviderTerminal,
+    _terminal_error_kind,
+    parse_closed_terminal_result,
     provider_error_is_transient,
     provider_error_message,
-    structured_result_from_messages,
 )
 from agent_runtime_opencode.redaction import (
     bound_redacted_messages,
@@ -47,6 +48,15 @@ def reduce_terminal(
             failure_message(provider_error_message(session, messages), canaries=canaries)
         )
     if kind == "failed":
+        if _terminal_error_kind(session, messages) is None:
+            try:
+                parse_closed_terminal_result(messages)
+            except ValueError as error:
+                return TaskOutcome.failed(
+                    "invalid_output",
+                    failure_message(str(error), canaries=canaries),
+                    retryable=False,
+                )
         retryable = provider_error_is_transient(session, messages)
         return TaskOutcome.failed(
             "transient" if retryable else "external_effect",
@@ -70,21 +80,8 @@ def _reduce_success(
     diff: object | None,
     canaries: Sequence[str | bytes],
 ) -> TaskOutcome:
-    structured = contract_result_candidate_from_messages(
-        messages,
-        agent_run=agent_run,
-        request=request,
-        canaries=canaries,
-    )
-    if structured is None:
-        structured = structured_result_from_messages(messages)
-    if not isinstance(structured, dict):
-        return TaskOutcome.failed(
-            "invalid_output",
-            failure_message("structured result is missing", canaries=canaries),
-            retryable=False,
-        )
     try:
+        structured = parse_closed_terminal_result(messages)
         validated = _validate_result_candidate(
             structured,
             agent_run=agent_run,
@@ -99,8 +96,12 @@ def _reduce_success(
         )
     result_digest = canonical_digest(validated)
     provider_diff_digest = _diff_digest(diff, canaries=canaries)
+    provider, model = _provider_and_model(agent_run)
     evidence = {
+        "adapter_id": ADAPTER_ID,
         "history_digest": _history_digest(messages, canaries=canaries),
+        "model": model,
+        "provider": provider,
         "provider_diff_digest": provider_diff_digest,
         "result_digest": result_digest,
         "terminal": "succeeded",
@@ -110,7 +111,7 @@ def _reduce_success(
     reject_credentials_in_digest_input(evidence)
     result = AgentRunResult.model_validate(
         {
-            "structured_result": validated,
+            "result_payload": validated,
             "result_digest": result_digest,
             "evidence_digest": canonical_digest(evidence),
             "provider_diff_digest": provider_diff_digest,
@@ -120,24 +121,6 @@ def _reduce_success(
         }
     )
     return TaskOutcome.succeeded(result.model_dump(mode="json"))
-
-
-def contract_result_candidate_from_messages(
-    messages: Sequence[object],
-    *,
-    agent_run: AgentRunRequest,
-    request: TaskRequest,
-    canaries: Sequence[str | bytes],
-) -> dict[str, Any] | None:
-    return structured_result_from_messages(
-        messages,
-        accept=lambda candidate: result_candidate_satisfies_contract(
-            candidate,
-            agent_run=agent_run,
-            request=request,
-            canaries=canaries,
-        ),
-    )
 
 
 def result_candidate_satisfies_contract(
@@ -157,6 +140,14 @@ def result_candidate_satisfies_contract(
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _provider_and_model(agent_run: AgentRunRequest) -> tuple[str, str]:
+    selected = agent_run.execution.provider_model
+    if selected == "provider_default":
+        return "provider_default", "provider_default"
+    provider, separator, model_id = selected.partition("/")
+    return provider, model_id if separator else provider
 
 
 def _validate_result_candidate(

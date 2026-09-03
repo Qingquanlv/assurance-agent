@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import cast
+from collections.abc import Mapping
+from typing import Any, cast
 
 from graph_engine import ENGINE_API_VERSION
+from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
     CapabilityBindingContribution,
@@ -12,9 +14,11 @@ from graph_engine.plugin_api import (
     PluginDescriptor,
     ProviderSource,
     RegistryPorts,
+    WorkspaceProvider,
 )
 
 from agent_runtime_fixture import RESULT_SCHEMA_RESOURCE_ID, RUN_CAPABILITY_ID, package_resource_bytes
+from agent_runtime_fixture.contracts import RUN_CONTRACT, bind_run_executor
 
 _OPENCODE_SOURCE = ProviderSource(
     distribution="agent-runtime-fixture",
@@ -23,7 +27,7 @@ _OPENCODE_SOURCE = ProviderSource(
     entrypoint_name="opencode-binding",
     entrypoint_value="agent_runtime_fixture.bindings:OpenCodeBindingPlugin",
     declaration_path="agent_runtime_fixture/opencode-binding-declaration.json",
-    import_roots=("",),
+    import_roots=("", "agent_runtime_fixture"),
 )
 _CURSOR_SOURCE = ProviderSource(
     distribution="agent-runtime-fixture",
@@ -32,7 +36,7 @@ _CURSOR_SOURCE = ProviderSource(
     entrypoint_name="cursor-binding",
     entrypoint_value="agent_runtime_fixture.bindings:CursorBindingPlugin",
     declaration_path="agent_runtime_fixture/cursor-binding-declaration.json",
-    import_roots=("",),
+    import_roots=("", "agent_runtime_fixture"),
 )
 
 
@@ -75,6 +79,17 @@ def _contribute(target: str, adapter: dict[str, JSONValue]) -> PluginContributio
     )
 
 
+def published_attempt_contracts() -> tuple[TaskAttemptContract[Any, Any], ...]:
+    return (RUN_CONTRACT,)
+
+
+def bind_attempt_executors(
+    workspace: WorkspaceProvider,
+) -> Mapping[str, ResolvedAttemptContract[Any, Any]]:
+    resolved = bind_run_executor(workspace)
+    return {resolved.contract.contract_id: resolved}
+
+
 class OpenCodeBindingPlugin:
     @staticmethod
     def descriptor() -> PluginDescriptor:
@@ -92,6 +107,9 @@ class OpenCodeBindingPlugin:
                 "protocol_profile": "opencode-http-v1",
             },
         )
+
+    published_attempt_contracts = staticmethod(published_attempt_contracts)
+    bind_attempt_executors = staticmethod(bind_attempt_executors)
 
 
 class CursorBindingPlugin:
@@ -111,3 +129,6 @@ class CursorBindingPlugin:
                 "protocol_profile": "confined_process",
             },
         )
+
+    published_attempt_contracts = staticmethod(published_attempt_contracts)
+    bind_attempt_executors = staticmethod(bind_attempt_executors)

@@ -13,30 +13,34 @@ from graph_engine.composition.dependencies import DependencyConflict
 from graph_engine.composition.resolver import ResolutionError
 from graph_engine.composition.source_fs import SourceSnapshotError
 
-from tests.product.composition_harness import copy_config_tree, request_for
+from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID, copy_config_tree, request_for
 
 
 def test_undeclared_installed_module_cannot_change_assembly(installed_sources, tmp_path: Path, monkeypatch):
-    from graph_engine.canonical import canonical_json_bytes
-    from graph_engine.composition.workflow_assembler import assemble_product_workflow
-
     from assurance_product.product import resolve_assurance_composition
 
-    def _bytes():
+    def _lock_identity():
         composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-        assembled = assemble_product_workflow(
-            manifest=composition.manifest,
-            descriptors={item.plugin_id: item for item in composition.descriptors},
-            registries=composition.registries,
+        return (
+            type(composition.lock).__name__,
+            composition.lock.digest,
+            composition.manifest.graph_factory_symbol,
         )
-        return canonical_json_bytes(assembled.model_dump(mode="json", by_alias=True, exclude_unset=True))
 
-    before = _bytes()
+    before = _lock_identity()
     extra = tmp_path / "assurance_undeclared_feature"
     extra.mkdir()
     (extra / "__init__.py").write_text("PLUGIN = object()\n", encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
-    assert _bytes() == before
+    assert _lock_identity() == before
+
+
+def test_shadow_validator_clone_is_absent_from_authenticated_composition(installed_sources):
+    from assurance_product.product import resolve_assurance_composition
+
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    assert SHADOW_VALIDATOR_CLONE_ID not in composition.registries.capabilities.entries
+    assert SHADOW_VALIDATOR_CLONE_ID not in json.dumps(composition.lock.model_dump(mode="json"))
 
 
 def test_unknown_product_entrypoint_is_rejected(installed_sources):
@@ -223,7 +227,7 @@ def test_forged_alias_target_fails_closed(installed_sources, tmp_path: Path) -> 
         execute = next(
             binding
             for binding in bindings
-            if isinstance(binding, dict) and str(binding.get("capability_id", "")).endswith(".execute")
+            if isinstance(binding, dict) and str(binding.get("capability_id", "")).endswith(".v1")
         )
         execute["target_capability_id"] = "assurance.intake.intake.prepare"
 
@@ -235,7 +239,7 @@ def test_forged_alias_target_fails_closed(installed_sources, tmp_path: Path) -> 
     _swap_sys_path(original, mutated)
     _drop_modules_from_roots(original)
     try:
-        with pytest.raises(AssuranceCompositionError, match="execute alias target drifted"):
+        with pytest.raises(AssuranceCompositionError, match="semantic binding target drifted"):
             resolve_assurance_composition(request)
     finally:
         _swap_sys_path(mutated, original)

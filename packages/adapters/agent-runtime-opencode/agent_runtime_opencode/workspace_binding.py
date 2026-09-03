@@ -9,6 +9,24 @@ from graph_engine.plugin_api import TaskContext
 
 
 BINDING_TITLE_PREFIX = "aa-workspace-binding-v1:"
+FORBIDDEN_DISCOVERY_FILES = (
+    "opencode.json",
+    "opencode.jsonc",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTEXT.md",
+)
+FORBIDDEN_DISCOVERY_DIRS = (".opencode", ".agents")
+
+
+def reject_isolated_root_discovery(root: Path) -> None:
+    resolved = root.resolve()
+    for name in FORBIDDEN_DISCOVERY_FILES:
+        if (resolved / name).is_file():
+            raise ValueError(f"isolated execution root must not contain {name}")
+    for name in FORBIDDEN_DISCOVERY_DIRS:
+        if (resolved / name).exists():
+            raise ValueError(f"isolated execution root must not contain {name}")
 
 
 def _relative_write_root(context: TaskContext) -> str:
@@ -67,6 +85,7 @@ def workspace_binding_title(
     workspace: AgentWorkspaceV1,
     session_id: str,
 ) -> str:
+    reject_isolated_root_discovery(context.write_root)
     write_root = _relative_write_root(context)
     if write_root != workspace.write_root:
         raise ValueError("write_root must match the task context")
@@ -86,6 +105,9 @@ def workspace_binding_title(
 
 __all__ = [
     "BINDING_TITLE_PREFIX",
+    "FORBIDDEN_DISCOVERY_DIRS",
+    "FORBIDDEN_DISCOVERY_FILES",
+    "reject_isolated_root_discovery",
     "workspace_binding_document",
     "workspace_binding_title",
 ]

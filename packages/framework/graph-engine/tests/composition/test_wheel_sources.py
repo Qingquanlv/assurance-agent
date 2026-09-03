@@ -29,7 +29,6 @@ from graph_engine.composition import (
 )
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.plugin_api import PluginContribution, PluginDescriptor, ProviderSource
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.composition import PluginRequirement, ProductManifest
 
 
@@ -60,42 +59,54 @@ class _PluginProvider:
         return PluginContribution.empty()
 
 
+def _factory_product_source(
+    *,
+    distribution: str,
+    version: str,
+    entrypoint_name: str,
+    entrypoint_value: str,
+    declaration_path: str,
+) -> ProviderSource:
+    return ProviderSource(
+        distribution=distribution,
+        version=version,
+        entrypoint_group="graph_engine.products",
+        entrypoint_name=entrypoint_name,
+        entrypoint_value=entrypoint_value,
+        declaration_path=declaration_path,
+        import_roots=("", "toy_plugin"),
+    )
+
+
+def _factory_product_manifest(
+    *,
+    source: ProviderSource,
+    product_id: str,
+    product_version: str,
+) -> ProductManifest:
+    return ProductManifest(
+        schema_version="1",
+        source=source,
+        product_id=product_id,
+        product_version=product_version,
+        engine_api="0.2",
+        plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier=f"=={product_version}"),),
+        entrypoints={"main": "root"},
+        configuration={},
+        graph_factory_symbol="toy_plugin:provider",
+    )
+
+
 class _ProductProvider:
     def manifest(self) -> ProductManifest:
-        return ProductManifest(
-            schema_version="1",
-            source=ProviderSource(
-                distribution="toy-product",
-                version="1.2.3",
-                entrypoint_group="graph_engine.products",
-                entrypoint_name="toy.product",
-                entrypoint_value="toy_plugin:provider",
-                declaration_path="toy_plugin/product-declaration.json",
-                import_roots=("",),
-            ),
-            product_id="toy.product",
-            product_version="1.2.3",
-            engine_api="0.2",
-            plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.2.3"),),
-            entrypoints={"main": "root"},
-            configuration={},
-            workflow=WorkflowDef.model_validate(
-                {
-                    "name": "toy",
-                    "entrypoints": {"main": "root"},
-                    "retry": {},
-                    "timeout": {},
-                    "graphs": {
-                        "root": {
-                            "max_activations": 1,
-                            "start": "done",
-                            "nodes": {"done": {"kind": "end"}},
-                            "edges": [],
-                        }
-                    },
-                }
-            ),
+        source = _factory_product_source(
+            distribution="toy-product",
+            version="1.2.3",
+            entrypoint_name="toy.product",
+            entrypoint_value="toy_plugin:provider",
+            declaration_path="toy_plugin/product-declaration.json",
         )
+        return _factory_product_manifest(source=source, product_id="toy.product", product_version="1.2.3")
 
 
 def WheelPluginSource(**values: object) -> _WheelPluginSource:
@@ -151,44 +162,19 @@ def EditableWheelProductSource(**values: object) -> _EditableWheelProductSource:
     source_files = tuple(values["source_files"])  # type: ignore[arg-type]
     if declaration_path not in source_files:
         values["source_files"] = (*source_files, declaration_path)
-    source = ProviderSource(
+    source = _factory_product_source(
         distribution=str(values["distribution"]),
         version="1.2.3",
-        entrypoint_group="graph_engine.products",
         entrypoint_name=str(values["entrypoint_name"]),
         entrypoint_value="toy_plugin:provider",
         declaration_path=declaration_path,
-        import_roots=("",),
     )
-    workflow = WorkflowDef.model_validate(
-        {
-            "name": "toy",
-            "entrypoints": {"main": "root"},
-            "retry": {},
-            "timeout": {},
-            "graphs": {
-                "root": {
-                    "max_activations": 1,
-                    "start": "done",
-                    "nodes": {"done": {"kind": "end"}},
-                    "edges": [],
-                }
-            },
-        }
-    )
-    manifest = ProductManifest(
-        schema_version="1",
+    manifest = _factory_product_manifest(
         source=source,
         product_id=str(values["entrypoint_name"]),
         product_version="1.2.3",
-        engine_api="0.2",
-        plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.2.3"),),
-        entrypoints={"main": "root"},
-        configuration={},
-        workflow=workflow,
     )
     manifest_document = manifest.model_dump(mode="json")
-    manifest_document["workflow"] = workflow.model_dump(mode="json", exclude_defaults=True)
     (root / declaration_path).write_bytes(
         canonical_json_bytes(
             {
@@ -300,44 +286,19 @@ def _installed_distribution(
         ),
         ("toy.product", "toy_plugin:provider"),
     )
-    product_source = ProviderSource(
+    product_source = _factory_product_source(
         distribution=name,
         version=version,
-        entrypoint_group="graph_engine.products",
         entrypoint_name=product_name,
         entrypoint_value=product_value,
         declaration_path="toy_plugin/product-declaration.json",
-        import_roots=("",),
     )
-    workflow = WorkflowDef.model_validate(
-        {
-            "name": "toy",
-            "entrypoints": {"main": "root"},
-            "retry": {},
-            "timeout": {},
-            "graphs": {
-                "root": {
-                    "max_activations": 1,
-                    "start": "done",
-                    "nodes": {"done": {"kind": "end"}},
-                    "edges": [],
-                }
-            },
-        }
-    )
-    product_manifest = ProductManifest(
-        schema_version="1",
+    product_manifest = _factory_product_manifest(
         source=product_source,
         product_id=product_name,
         product_version=version,
-        engine_api="0.2",
-        plugins=(PluginRequirement(plugin_id="toy.runtime", version_specifier="==1.2.3"),),
-        entrypoints={"main": "root"},
-        configuration={},
-        workflow=workflow,
     )
     product_manifest_document = product_manifest.model_dump(mode="json")
-    product_manifest_document["workflow"] = workflow.model_dump(mode="json", exclude_defaults=True)
     product_declaration = package / "product-declaration.json"
     product_declaration.write_bytes(
         canonical_json_bytes(

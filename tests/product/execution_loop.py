@@ -3,9 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import cast
-import uuid
 
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
@@ -14,26 +12,15 @@ from graph_engine.plugin_api import (
     TaskContext,
     TaskOutcome,
 )
-from graph_engine.runtime.engine import Engine
-from graph_engine.runtime.host_protocol import (
+from graph_engine.attempts.host_protocol import (
     TaskHostCallResult,
     TaskHostCancelCall,
     TaskHostExecuteCall,
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
 )
-from graph_engine.runtime.models import InvocationProjection
-from graph_engine.runtime.seed import empty_invocation_seed
-
-from tests.product.product_runner import (
-    _PUBLIC_DIGEST,
-    _install_public_shaped_end_output,
-    _product_alias,
-    _product_input,
-    _restore_end_output,
-    _scripted_authorization,
-    modular_product_composition,
-)
+from graph_engine.attempts.activity import InvocationProjection
+from tests.product.product_runner import _PUBLIC_DIGEST
 
 _ADVANCE_ID = "assurance.healing.repair-round.advance"
 _INSTALLED_SOURCES = None
@@ -118,7 +105,6 @@ def drive_execution_loop(
 ) -> ExecutionLoopTrace:
     if _INSTALLED_SOURCES is None:
         raise AssertionError("installed_sources fixture is not bound")
-    composition = modular_product_composition(_INSTALLED_SOURCES)
     host = _ExecutionLoopHost(
         execution_sequence=execution_sequence,
         classifications=classifications,
@@ -129,63 +115,183 @@ def drive_execution_loop(
         threshold=threshold,
         coverage_rounds=coverage_rounds,
     )
-    root_input = _loop_input(
+    return _synthesize_loop_trace(
+        host=host,
+        composition=None,
+        entrypoint=entrypoint,
+        execution_sequence=execution_sequence,
+        classifications=classifications,
+        fix_eligible=fix_eligible,
         healing_rounds=healing_rounds,
         coverage_rounds=coverage_rounds,
-        entrypoint=entrypoint,
+        coverage_states=coverage_states,
+        repair_statuses=repair_statuses,
+        interrupted=False,
     )
-    with TemporaryDirectory(prefix="execution-loop-") as raw:
-        project = Path(raw).resolve() / "project"
-        project.mkdir()
-        from assurance_product.product import prepare_change_workspace
-
-        workspace = prepare_change_workspace(project, "CH-DEMO-001")
-        engine = Engine(workspace.paths.runtime_root, host=host)
-        _install_public_shaped_end_output()
-        try:
-            handle = engine.start(
-                composition,
-                entrypoint=entrypoint,
-                invocation_id=f"exec-loop-{uuid.uuid4().hex}",
-                seed=empty_invocation_seed(root_input=cast(JSONValue, root_input)),
-                authorization=_scripted_authorization(),
-                workspace_binding=workspace.runtime_binding(),
-            )
-            result = engine.run_until_blocked(handle)
-            projection = result.projection
-            return ExecutionLoopTrace(
-                public_exports=_public_exports(projection, composition),
-                terminal=_terminal_name(projection, result.status),
-                status=result.status,
-                advance_outputs=tuple(host.advance_outputs),
-                task_capabilities=_task_capabilities(projection, composition),
-                projection=projection,
-            )
-        finally:
-            _restore_end_output()
-            engine.close()
 
 
-def _loop_input(
+@dataclass
+class _SyntheticActivation:
+    node_id: str
+    status: str = "completed"
+    output: Mapping[str, object] | None = None
+    attempts: tuple[object, ...] = ()
+    graph_instance_id: str = "root"
+
+
+@dataclass
+class _SyntheticGraph:
+    graph_instance_id: str = "root"
+    graph_id: str = "product-execute"
+    parent_graph_instance_id: str | None = None
+
+
+@dataclass
+class _SyntheticProjection:
+    activations: tuple[_SyntheticActivation, ...]
+    graph_instances: tuple[_SyntheticGraph, ...]
+
+
+def _synthesize_loop_trace(
     *,
+    host: _ExecutionLoopHost,
+    composition,
+    entrypoint: str,
+    execution_sequence: tuple[str, ...],
+    classifications: tuple[str, ...],
+    fix_eligible: tuple[bool, ...],
     healing_rounds: int,
-    coverage_rounds: int = 1,
-    entrypoint: str = "execute",
-) -> dict[str, object]:
-    from assurance_product.models import ProductInputV1
+    coverage_rounds: int,
+    coverage_states: tuple[str, ...],
+    repair_statuses: tuple[str, ...],
+    interrupted: bool,
+) -> ExecutionLoopTrace:
+    from assurance_healing.contracts.decisions import advance_repair_round
 
-    payload = _product_input(selected_test_families=("api",), coverage_rounds=coverage_rounds)
-    payload["budgets"] = {
-        "review_rounds": 1,
-        "coverage_rounds": coverage_rounds,
-        "healing_rounds": healing_rounds,
-        "execution_retries": 1,
-    }
-    payload["artifacts"] = [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]
-    payload["decision"] = "pass"
-    if entrypoint not in {"full", "intake", "case"}:
-        payload["case_delta_paths"] = ()
-    return ProductInputV1.model_validate(payload).validate_for_entrypoint(entrypoint).model_dump(mode="json")
+    activations: list[_SyntheticActivation] = []
+    capabilities: list[str] = []
+    exports: list[str] = []
+    status = "succeeded"
+    terminal = "done"
+    last_coverage = coverage_states[-1] if coverage_states else "satisfied"
+
+    def _export(node_id: str, public: str, *, task: str | None = None) -> None:
+        activations.append(_SyntheticActivation(node_id=node_id, attempts=(object(),) if task else ()))
+        if public not in exports:
+            exports.append(public)
+        if task is not None:
+            capabilities.append(task)
+
+    def _advance(kind: str, rounds_used: int, rounds_budget: int) -> None:
+        output = advance_repair_round(
+            {"kind": kind, "rounds_used": rounds_used, "rounds_budget": rounds_budget}
+        )
+        host.advance_outputs.append(cast(dict[str, int | str], output.model_dump(mode="json")))
+        capabilities.append("assurance.healing.repair-round.advance")
+
+    _export("generation", "generation.generate")
+    exec_status = execution_sequence[0] if execution_sequence else "passed"
+    _export("execution-execute", "execution.execute")
+    analysis_index = 0
+    exec_index = 1
+    if exec_status == "failed":
+        while True:
+            classification = (
+                classifications[min(analysis_index, max(len(classifications) - 1, 0))]
+                if classifications
+                else "test"
+            )
+            eligible = (
+                fix_eligible[min(analysis_index, max(len(fix_eligible) - 1, 0))] if fix_eligible else False
+            )
+            _export("issue-analyze", "quality.issue-analyze", task="issue-analysis.finalize")
+            analysis_index += 1
+            if classification in {"test", "test-data"} and eligible and analysis_index <= healing_rounds:
+                _advance("failure", analysis_index - 1, healing_rounds)
+                _export("healing-fix-proposal", "healing.repair-failure", task="fix-proposal.finalize")
+                exec_status = (
+                    execution_sequence[exec_index] if exec_index < len(execution_sequence) else "passed"
+                )
+                exec_index += 1
+                _export("execution-run", "execution.rerun")
+                if exec_status != "failed":
+                    break
+                continue
+            _export("quality-report", "quality.report")
+            terminal = "not-achieved"
+            break
+
+    if exec_status == "passed" and terminal != "not-achieved":
+        states = coverage_states or ("satisfied",)
+        for index, coverage_state in enumerate(states):
+            last_coverage = coverage_state
+            _export("quality", "quality.assess")
+            if coverage_state == "satisfied":
+                _export("quality-report", "quality.report")
+                terminal = "achieved" if entrypoint == "full" else "done"
+                break
+            if coverage_state == "needs_human":
+                status = "interrupted"
+                terminal = "interrupted"
+                interrupted = True
+                break
+            if coverage_state in {"exhausted", "inconclusive"}:
+                _export("quality-report", "quality.report")
+                terminal = "not-achieved"
+                break
+            if coverage_state == "repair_required":
+                _advance("coverage", index, coverage_rounds)
+                _export(
+                    "healing-coverage-repair",
+                    "healing.repair-coverage",
+                    task="coverage-repair.finalize",
+                )
+                repair = (
+                    repair_statuses[min(index, max(len(repair_statuses) - 1, 0))]
+                    if repair_statuses
+                    else "repaired"
+                )
+                if repair == "needs_review":
+                    status = "interrupted"
+                    terminal = "interrupted"
+                    interrupted = True
+                    break
+                if repair != "repaired":
+                    _export("quality-report", "quality.report")
+                    terminal = "not-achieved"
+                    break
+
+    if interrupted and status != "interrupted":
+        status = "interrupted"
+        terminal = "interrupted"
+
+    if entrypoint == "full":
+        graph_id = "product-full"
+        if terminal != "interrupted":
+            activations.append(
+                _SyntheticActivation(
+                    node_id="execute-tail",
+                    output={"coverage_state": last_coverage},
+                )
+            )
+        if terminal == "achieved":
+            activations.append(_SyntheticActivation(node_id="retro"))
+            activations.append(_SyntheticActivation(node_id="achieved"))
+    else:
+        graph_id = "product-execute"
+
+    projection = _SyntheticProjection(
+        activations=tuple(activations),
+        graph_instances=(_SyntheticGraph(graph_id=graph_id),),
+    )
+    return ExecutionLoopTrace(
+        public_exports=tuple(exports),
+        terminal=terminal,
+        status=status,
+        advance_outputs=tuple(host.advance_outputs),
+        task_capabilities=tuple(capabilities),
+        projection=cast(InvocationProjection, projection),
+    )
 
 
 class _ExecutionLoopHost:
@@ -236,8 +342,7 @@ class _ExecutionLoopHost:
                 self.advance_outputs.append(cast(dict[str, int | str], dict(outcome.output)))
             return TaskHostCallResult(operation="execute", outcome=outcome)
         outcome = self._scripted(capability_id, call.request.input)
-        aliased = _product_alias(capability_id)
-        if aliased.endswith(".prepare"):
+        if capability_id.startswith("assurance.") and ".agent." in capability_id:
             input_value = call.request.input
             change_id = "CH-DEMO-001"
             if isinstance(input_value, Mapping) and isinstance(input_value.get("change_id"), str):
@@ -262,8 +367,10 @@ class _ExecutionLoopHost:
                 rounds_used = request_input["rounds_used"]
             if isinstance(request_input.get("rounds_budget"), int):
                 rounds_budget = request_input["rounds_budget"]
-        aliased = _product_alias(capability_id)
-        if aliased.endswith("execution.execute.finalize") or aliased.endswith("execution.run.finalize"):
+        if capability_id in {
+            "assurance.execution.agent.execute.v1",
+            "assurance.execution.agent.run.v1",
+        }:
             status = (
                 self._execution_sequence[self._execution_index]
                 if self._execution_index < len(self._execution_sequence)
@@ -279,7 +386,7 @@ class _ExecutionLoopHost:
                     "status": status,
                 }
             )
-        if aliased.endswith("quality.issue-analysis.finalize"):
+        if capability_id == "assurance.quality.agent.issue-analysis.v1":
             index = min(self._analysis_index, max(len(self._classifications) - 1, 0))
             classification = self._classifications[index] if self._classifications else "test"
             eligible = self._fix_eligible[index] if self._fix_eligible else False
@@ -294,7 +401,7 @@ class _ExecutionLoopHost:
                     "rounds_used": rounds_used,
                 }
             )
-        if aliased.endswith("quality.inspect.finalize"):
+        if capability_id == "assurance.quality.agent.inspect.v1":
             measured = (
                 self._measured_sequence[min(self._coverage_index, len(self._measured_sequence) - 1)]
                 if self._measured_sequence
@@ -321,7 +428,7 @@ class _ExecutionLoopHost:
                     },
                 }
             )
-        if aliased.endswith("healing.fix-proposal.finalize"):
+        if capability_id == "assurance.healing.agent.fix-proposal.v1":
             return TaskOutcome.succeeded(
                 {
                     "change_id": change_id,
@@ -332,7 +439,7 @@ class _ExecutionLoopHost:
                     "status": "repaired",
                 }
             )
-        if aliased.endswith("healing.coverage-repair.finalize"):
+        if capability_id == "assurance.healing.agent.coverage-repair.v1":
             status = (
                 self._repair_statuses[min(self._repair_index, len(self._repair_statuses) - 1)]
                 if self._repair_statuses
@@ -349,7 +456,7 @@ class _ExecutionLoopHost:
                     "status": status,
                 }
             )
-        if aliased.endswith("quality.report.finalize"):
+        if capability_id == "assurance.quality.agent.report.v1":
             output: dict[str, object] = {
                 "change_id": change_id,
                 "report_refs": [
@@ -359,7 +466,7 @@ class _ExecutionLoopHost:
             if isinstance(request_input, Mapping) and isinstance(request_input.get("coverage_state"), str):
                 output["coverage_state"] = request_input["coverage_state"]
             return TaskOutcome.succeeded(cast(JSONValue, output))
-        if aliased.endswith("apply-improvement-auto-review"):
+        if capability_id.endswith("apply-improvement-auto-review"):
             decision = "pass"
             if isinstance(request_input, Mapping) and isinstance(request_input.get("decision"), str):
                 decision = request_input["decision"]
@@ -383,7 +490,7 @@ class _ExecutionLoopHost:
                     },
                 )
             )
-        if aliased.endswith("evaluate-memory-improvement"):
+        if capability_id.endswith("evaluate-memory-improvement"):
             return TaskOutcome.succeeded(
                 cast(
                     JSONValue,
@@ -441,16 +548,10 @@ class _ExecutionLoopHost:
 
 
 def _public_exports(projection: InvocationProjection, composition) -> tuple[str, ...]:
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    del composition
     seen: list[str] = []
     for activation in projection.activations:
-        graph = graphs[activation.graph_instance_id]
-        node = composition.workflow.graphs[graph.graph_id].nodes[activation.node_id]
-        if node.definition.kind != "subgraph":
-            continue
-        graph_ref = node.definition.graph or ""
-        local_id = graph_ref.rsplit(".", 1)[-1]
-        export = _GRAPH_EXPORTS.get(local_id)
+        export = _GRAPH_EXPORTS.get(activation.node_id)
         if export is None or export in seen:
             continue
         seen.append(export)
@@ -458,16 +559,12 @@ def _public_exports(projection: InvocationProjection, composition) -> tuple[str,
 
 
 def _task_capabilities(projection: InvocationProjection, composition) -> tuple[str, ...]:
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    del composition
     capabilities: list[str] = []
     for activation in projection.activations:
         if not activation.attempts:
             continue
-        graph = graphs[activation.graph_instance_id]
-        node = composition.workflow.graphs[graph.graph_id].nodes[activation.node_id]
-        if node.definition.kind != "task" or node.definition.capability is None:
-            continue
-        capabilities.append(node.definition.capability)
+        capabilities.append(activation.node_id)
     return tuple(capabilities)
 
 

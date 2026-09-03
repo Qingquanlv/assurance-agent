@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.plugin_api import PluginDependency, ProviderSource
+from graph_engine.plugin_api import (
+    PluginContribution,
+    PluginDependency,
+    PluginDescriptor,
+    ProviderSource,
+    RegistryPorts,
+)
 from graph_engine.plugin_kit import CapabilityPlugin, CapabilitySpec
 
+from assurance_generation.contracts.attempts import attempt_contract_refs
 from assurance_generation.operations import generation_handlers
 from assurance_generation.resource_loader import resource_bytes
 from assurance_generation.validators import (
@@ -47,7 +56,6 @@ GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.skill.aa-performance-codegen.v1": "skills/aa-performance-codegen/SKILL.md",
     "assurance.generation.skill.aa-performance-plan-reviewer.v1": "skills/aa-performance-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-performance-plan.v1": "skills/aa-performance-plan/SKILL.md",
-    "assurance.generation.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -87,3 +95,11 @@ class GenerationPlugin(CapabilityPlugin):
         commit_validators=_VALIDATORS,
         dependencies=GENERATION_DEPENDENCIES,
     )
+
+    @classmethod
+    def descriptor(cls) -> PluginDescriptor:
+        return cls.spec.descriptor().model_copy(update={"attempt_contracts": attempt_contract_refs()})
+
+    @classmethod
+    def contribute(cls, ports: RegistryPorts) -> PluginContribution:
+        return replace(cls.spec.contribution(ports), attempt_contracts=attempt_contract_refs())

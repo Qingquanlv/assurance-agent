@@ -9,6 +9,11 @@ generated files and mapping, and `assurance_intake.contracts` for reviewed cases
 
 ## Inputs
 
+Read every exact product-source path cited by the approved plan before any discovery.
+A glob result of `No files found` is not evidence that product source is absent;
+ignored source files remain exact-readable. Use path-scoped grep only after the
+exact reads, and never replace source-backed plan facts with guesses from naming.
+
 ### required
 
 - reviewed E2E plan (`PlanResultV1`)
@@ -67,6 +72,12 @@ traceability exact.
 Plan, case, and review inputs are immutable. Read them as approved evidence;
 never rewrite, repair, or supersede them during codegen.
 
+The runtime `allowed_outputs` list is the exact write whitelist and overrides
+the wildcard-shaped output descriptions above. If a fixture or helper path is
+not listed, keep the fixture or helper inside an authorized mapped target.
+Never attempt or declare an unlisted support file, and never return a manifest
+entry for a write that the tool rejected or that you did not reopen.
+
 Every closed-mapping target must appear in `files` as a `test_entry` with the
 exact mapped Case IDs. Reopen every target before returning and verify that the
 mapped symbol exists in that file. Do not list plan, case, or review inputs in
@@ -76,10 +87,10 @@ mapped symbol exists in that file. Do not list plan, case, or review inputs in
 
 Before writing the manifest, resolve every mapped test parameter to a fixture
 defined or imported by the test module, an ancestor `conftest.py`, or the
-installed Playwright pytest plugin. Generate any missing project fixture under
-authorized `qa/changes/<change-id>/generated/e2e/files/tests/e2e/**`, record
-changed fixture files as `support` with
-`case_ids: []`, and finish only when the unresolved fixture set is empty.
+installed Playwright pytest plugin. Use an explicitly listed support output
+when one exists; otherwise define each missing fixture in the authorized mapped
+test module. Record a support file only when its exact path is in
+`allowed_outputs`, and finish only when the unresolved fixture set is empty.
 
 `conftest.py` is pytest discovery configuration, not an importable support
 module. Never generate `from conftest import ...` or otherwise import a

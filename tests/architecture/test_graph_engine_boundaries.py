@@ -71,6 +71,7 @@ FEATURE_IMPLEMENTATION_SUFFIXES = (
     "resource_loader",
     "resources",
     "workflow",
+    "graphs",
 )
 
 FOUR_ROLE_ROOTS = frozenset(
@@ -109,6 +110,7 @@ PRODUCT_LOWER_PUBLIC_SURFACES = frozenset(
 
 ALLOWED_ROOTS = set(sys.stdlib_module_names) | {
     "graph_engine",
+    "langgraph",
     "packaging",
     "pydantic",
     "pydantic_core",
@@ -320,7 +322,7 @@ def test_product_may_import_lower_public_surfaces(repo_root: Path) -> None:
         PRODUCT_LOWER_PUBLIC_SURFACES
         | {"assurance_product"}
         | set(sys.stdlib_module_names)
-        | {"click", "packaging", "pydantic", "pydantic_core", "yaml"}
+        | {"click", "langgraph", "packaging", "pydantic", "pydantic_core", "yaml"}
     )
 
 
