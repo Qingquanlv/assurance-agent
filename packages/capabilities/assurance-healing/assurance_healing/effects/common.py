@@ -10,13 +10,10 @@ from pydantic import BaseModel, ValidationError
 from graph_engine.canonical import JSONValue
 from graph_engine.effects.state import EffectCallContext, EffectStateIntegrityError, effect_intent_digest
 from graph_engine.frozen_json import thaw_json
+from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import EffectApplyResult, EffectIntent, EffectReconcileResult, TaskFailure
 
 _Model = TypeVar("_Model", bound=BaseModel)
-
-
-class StoreCrash(RuntimeError):
-    """Crash cut raised by a test store. Production stores must not raise this."""
 
 
 def _payload_dict(intent: EffectIntent) -> dict[str, object]:
@@ -65,7 +62,13 @@ async def apply_effect(
         )
     dumped = payload.model_dump(mode="json")
     digest = effect_intent_digest(intent.kind, dumped)
-    existing = await context.observe(business_key=expected, intent_digest=digest)
+    try:
+        existing = await context.observe(business_key=expected, intent_digest=digest)
+    except EffectStateIntegrityError as error:
+        return EffectApplyResult(
+            status="permanent",
+            failure=TaskFailure(kind="invalid_output", message=str(error), retryable=False),
+        )
     if existing.status == "committed" and existing.receipt is not None:
         return EffectApplyResult.applied(cast(JSONValue, existing.receipt))
     try:
@@ -87,7 +90,7 @@ async def apply_effect(
             status="permanent",
             failure=TaskFailure(kind="invalid_output", message=str(error), retryable=False),
         )
-    except StoreCrash:
+    except StaleFencingToken:
         raise
     except RuntimeError:
         raise

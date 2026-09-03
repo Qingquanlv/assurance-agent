@@ -5,7 +5,9 @@ from pathlib import Path
 import pytest
 from graph_engine import RegistryPorts
 from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue
 from graph_engine.effects.state import EffectCallContext, MemoryEffectState, bind_effect_call
+from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import EffectPolicy
 from tests.phase4.conformance import execute_task
 
@@ -35,6 +37,42 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
 )
 
 
+class _StaleCommitState:
+    def __init__(self) -> None:
+        self._inner = MemoryEffectState()
+
+    async def observe(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        fencing_token: int,
+    ):
+        return await self._inner.observe(
+            effect_kind=effect_kind,
+            settlement_key=settlement_key,
+            business_key=business_key,
+            intent_digest=intent_digest,
+            fencing_token=fencing_token,
+        )
+
+    async def commit(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        payload: JSONValue,
+        receipt: JSONValue,
+        fencing_token: int,
+    ):
+        del effect_kind, settlement_key, business_key, intent_digest, payload, receipt, fencing_token
+        raise StaleFencingToken("fencing token is stale")
+
+
 def _context(kind: str, state: MemoryEffectState | FaultingEffectState | None = None) -> EffectCallContext:
     return bind_effect_call(
         state=state or MemoryEffectState(),
@@ -42,6 +80,44 @@ def _context(kind: str, state: MemoryEffectState | FaultingEffectState | None = 
         settlement_key="c" * 64,
         fencing_token=3,
     )
+
+
+@pytest.mark.asyncio
+async def test_delivery_apply_observe_integrity_is_permanent() -> None:
+    state = MemoryEffectState()
+    await state.commit(
+        effect_kind=DELIVERY_KIND,
+        settlement_key="c" * 64,
+        business_key=DELIVERY_KEY,
+        intent_digest="0" * 64,
+        payload={"seed": True},
+        receipt={"seed": True},
+        fencing_token=3,
+    )
+    result = await ImprovementDeliveryEffect().apply(delivery_intent(), _context(DELIVERY_KIND, state))
+    assert result.status == "permanent"
+    assert result.failure is not None
+    assert result.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_delivery_apply_stale_fence_on_commit_is_not_transient() -> None:
+    result = None
+    try:
+        result = await ImprovementDeliveryEffect().apply(
+            delivery_intent(),
+            bind_effect_call(
+                state=_StaleCommitState(),
+                effect_kind=DELIVERY_KIND,
+                settlement_key="c" * 64,
+                fencing_token=3,
+            ),
+        )
+    except StaleFencingToken:
+        return
+    assert result.status != "transient"
+    assert result.failure is not None
+    assert result.failure.retryable is False
 
 
 @pytest.mark.asyncio
