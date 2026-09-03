@@ -6,9 +6,7 @@ from pathlib import Path
 
 from tests.architecture.legacy_import_inventory import scan_legacy_imports
 
-PHASE4_WORKFLOW = Path(
-    "tests/phase4/fixtures/six-wheel-product/test_assurance_phase4_product/workflow.yaml"
-)
+PHASE4_WORKFLOW = Path("tests/phase4/fixtures/six-wheel-product/test_assurance_phase4_product/workflow.yaml")
 CONVERTED_PRODUCTS = (
     Path("examples/graph-engine-toy-a/graph_engine_toy_a/product.py"),
     Path("examples/graph-engine-toy-b/graph_engine_toy_b/product.py"),
@@ -99,9 +97,7 @@ def _product_uses_workflow_def(path: Path) -> bool:
 
 def test_converted_examples_and_phase4_fixture_do_not_embed_workflow_def() -> None:
     still_embedded = tuple(
-        path.as_posix()
-        for path in CONVERTED_PRODUCTS
-        if _product_uses_workflow_def(_repo_root() / path)
+        path.as_posix() for path in CONVERTED_PRODUCTS if _product_uses_workflow_def(_repo_root() / path)
     )
     assert still_embedded == ()
 
@@ -115,9 +111,7 @@ def test_compiler_and_custom_runtime_packages_are_physically_absent() -> None:
 def test_production_imports_no_leftover_compiler_or_runtime_modules() -> None:
     hits = scan_legacy_imports()
     production = tuple(
-        hit
-        for hit in hits
-        if hit.path.startswith("packages/") and "/tests/" not in f"/{hit.path}/"
+        hit for hit in hits if hit.path.startswith("packages/") and "/tests/" not in f"/{hit.path}/"
     )
     assert production == (), tuple(sorted({hit.path for hit in production}))
 
@@ -155,14 +149,16 @@ def test_cli_imports_no_engine_planner_scheduler_or_leftover_fold() -> None:
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 imported.add(alias.name)
-        leftover = sorted(name for name in imported if name in CLI_FORBIDDEN_NAMES or name.startswith("graph_engine.runtime"))
+        leftover = sorted(
+            name
+            for name in imported
+            if name in CLI_FORBIDDEN_NAMES or name.startswith("graph_engine.runtime")
+        )
         assert leftover == []
 
 
 def test_permanent_modules_resolve_without_runtime_package() -> None:
-    assert not (
-        _repo_root() / "packages/framework/graph-engine/graph_engine/runtime"
-    ).exists()
+    assert not (_repo_root() / "packages/framework/graph-engine/graph_engine/runtime").exists()
     failed: list[str] = []
     for name in PERMANENT_MODULES:
         try:
@@ -170,7 +166,11 @@ def test_permanent_modules_resolve_without_runtime_package() -> None:
         except Exception as error:  # noqa: BLE001 — deletion gate reports the exact import
             failed.append(f"{name}:{type(error).__name__}:{error}")
             continue
-        source = Path(getattr(module, "__file__", "")).read_text(encoding="utf-8") if getattr(module, "__file__", None) else ""
+        source = (
+            Path(getattr(module, "__file__", "")).read_text(encoding="utf-8")
+            if getattr(module, "__file__", None)
+            else ""
+        )
         if "graph_engine.runtime" in source:
             failed.append(f"{name}:source-imports-graph_engine.runtime")
         assert failed == []

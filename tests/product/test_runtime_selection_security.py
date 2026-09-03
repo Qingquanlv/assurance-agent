@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @pytest.fixture(autouse=True)
-def _reset_handshake_crash() -> None:
+def _reset_handshake_crash() -> Iterator[None]:
     yield
     from assurance_product import application
 
@@ -316,7 +317,7 @@ def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    
+
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     invocation_id = f"inv-lg-disagree-{field}"
@@ -380,7 +381,7 @@ def test_reopen_ignores_current_switch_during_initializing(
     from assurance_product import application
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    
+
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(

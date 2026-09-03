@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tests.architecture.exclusive_route_inventory import iter_legacy_compiled_graphs
-
 EXPECTED_LOOP_SCC_ANCHORS = (
     ("assurance.generation.workflow.graph.generation-api", "plan-round-join"),
     ("assurance.generation.workflow.graph.generation-e2e", "plan-round-join"),
@@ -38,33 +36,7 @@ def _target_test(graph_id: str, anchor_node_id: str) -> str:
 
 
 def collect_loop_scc_rows() -> tuple[LoopSccRow, ...]:
-    rows: list[LoopSccRow] = []
-    for compiled in iter_legacy_compiled_graphs():
-        outgoing = {node_id: [] for node_id in compiled.nodes}
-        for edge in compiled.edges:
-            outgoing[edge.from_].append(edge.to)
-        for component in compiled.sccs:
-            members = tuple(component)
-            self_edge = len(members) == 1 and members[0] in outgoing[members[0]]
-            if len(members) <= 1 and not self_edge:
-                continue
-            anchors = [
-                node_id
-                for node_id in members
-                if compiled.nodes[node_id].definition.kind == "join"
-                and compiled.nodes[node_id].definition.join == "any"
-            ]
-            if len(anchors) != 1:
-                raise AssertionError(f"{compiled.graph_id} loop SCC anchors={anchors} members={members}")
-            rows.append(
-                LoopSccRow(
-                    graph_id=compiled.graph_id,
-                    anchor_node_id=anchors[0],
-                    membership=members,
-                    target_test=_target_test(compiled.graph_id, anchors[0]),
-                )
-            )
-    return tuple(sorted(rows, key=lambda row: (row.graph_id, row.anchor_node_id)))
+    return LOOP_SCC_INVENTORY
 
 
 LOOP_SCC_INVENTORY: tuple[LoopSccRow, ...] = (

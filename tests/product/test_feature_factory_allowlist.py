@@ -160,7 +160,7 @@ def test_allowlist_rejects_missing_extra_and_duplicate_owners(tmp_path: Path) ->
             missing_request,
             checkpointer=helpers.real_anchored_checkpointer(),
             runtime_ports=RuntimePorts(
-                attempt_kernel=object(),
+                attempt_kernel=object(),  # type: ignore[arg-type]
                 secret_resolver=object(),
                 workspace_provider=object(),
             ),

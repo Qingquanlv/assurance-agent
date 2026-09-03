@@ -40,7 +40,8 @@ class StructuredOutputCapabilityError(ValueError):
 
 
 def negotiate_provider_schema(*, required: bool, capabilities: AgentRuntimeCapabilities) -> None:
-    if required and not capabilities.provider_schema:
+    del capabilities
+    if required:
         raise StructuredOutputCapabilityError(
             "adapter does not advertise provider-enforced structured output"
         )

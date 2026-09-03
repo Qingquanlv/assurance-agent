@@ -3,11 +3,12 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from assurance_healing.contracts.agent import FixProposalResultV1
+from assurance_healing.contracts.proposal import FixProposalSummary
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES
 from assurance_healing.graphs.factory import build_healing_graphs
@@ -183,7 +184,7 @@ def test_publish_repair_fails_closed_for_missing_unknown_and_in_progress() -> No
     failure_model = FixProposalResultV1(
         schema_version="1",
         change_id="CH-FIX-001",
-        summary={"eligible_count": 1},
+        summary=FixProposalSummary(eligible_count=1),
     ).model_dump()
     assert "status" not in failure_model
     published_failure = publish_repair(failure_graph_input(), failure_model, receipt)
@@ -201,8 +202,9 @@ def test_publish_repair_uses_kernel_receipt_effect_refs_not_output_extras() -> N
     output = coverage_agent_output()
     output["effect_refs"] = [{"kind": "forged.healing.effect", "digest": _SHA}]
     published = publish_repair(coverage_graph_input(), output, receipt)
-    assert {item["kind"] for item in published["effect_refs"]} == set(HEALING_EFFECT_IDS)
-    assert "forged.healing.effect" not in {item["kind"] for item in published["effect_refs"]}
+    effect_refs = cast(list[dict[str, object]], published["effect_refs"])
+    assert {item["kind"] for item in effect_refs} == set(HEALING_EFFECT_IDS)
+    assert "forged.healing.effect" not in {item["kind"] for item in effect_refs}
 
 
 def test_healing_graphs_do_not_import_foreign_graphs_or_implementation() -> None:
@@ -307,7 +309,7 @@ async def test_committed_fix_proposal_without_status_terminates_repaired() -> No
     output = FixProposalResultV1(
         schema_version="1",
         change_id="CH-FIX-001",
-        summary={"eligible_count": 1},
+        summary=FixProposalSummary(eligible_count=1),
     ).model_dump()
     assert "status" not in output
     result = await harness.run(

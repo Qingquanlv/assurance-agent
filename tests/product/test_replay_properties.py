@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 import pytest
 
@@ -135,10 +135,13 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     modular = modular_product_composition(installed_sources)
     assert legacy.lock_digest != modular.lock_digest
 
-    def execute(state: dict[str, str]) -> dict[str, str]:
+    class _State(TypedDict, total=False):
+        value: str
+
+    def execute(state: _State) -> _State:
         return state
 
-    builder = StateGraph(dict)
+    builder = StateGraph(_State)
     builder.add_node("execute", execute)
     builder.add_edge(START, "execute")
     builder.add_edge("execute", END)
@@ -172,14 +175,14 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     context = AssuranceRuntimeContext(
         revision_id=original.manifest.revision.revision_id,
         fencing_token=1,
-        attempt_kernel=object(),
+        attempt_kernel=cast(Any, object()),
         secret_resolver=object(),
         workspace_provider=object(),
     )
     drifted_context = AssuranceRuntimeContext(
         revision_id=drifted.manifest.revision.revision_id,
         fencing_token=1,
-        attempt_kernel=object(),
+        attempt_kernel=cast(Any, object()),
         secret_resolver=object(),
         workspace_provider=object(),
     )
@@ -192,6 +195,7 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
             graph_input={"change_id": "CH-1"},
             runtime_context=context,
         )
+
         def _durable() -> tuple[tuple[Path, bytes], ...]:
             return tuple(
                 sorted(

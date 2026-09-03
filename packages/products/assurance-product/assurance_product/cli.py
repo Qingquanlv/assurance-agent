@@ -24,7 +24,7 @@ from graph_engine.attempts.secret_sources import (
     runtime_authorization_digest,
 )
 
-from assurance_product.application import AssuranceProductApplication
+from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.export import PublishError, publish_achieved, select_publish_change
@@ -294,11 +294,8 @@ def run_command(
             "actions": list(result.actions),
         }
     )
-    raise SystemExit(
-        _RUN_EXIT.get(result.status, _STATUS_EXIT[mapped])[0]
-        if result.status in _RUN_EXIT
-        else _STATUS_EXIT[mapped]
-    )
+    exit_spec = _RUN_EXIT.get(result.status)
+    raise SystemExit(exit_spec[0] if exit_spec is not None else _STATUS_EXIT[mapped])
 
 
 @app.command("status")
@@ -731,7 +728,7 @@ def _run_invocation(
     entrypoint: str | None,
     input_path: Path | None,
     secrets: Sequence[str],
-) -> tuple[object, str]:
+) -> tuple[SimpleRun, str]:
     composition, _audit = _resolve_and_audit(
         product=product,
         binding_dist=binding_dist,
@@ -753,7 +750,7 @@ def _run_invocation(
             workspace=workspace,
             secrets=secrets,
         )
-    return result, mapped
+    return cast(SimpleRun, result), mapped
 
 
 def _resume_invocation(
@@ -770,7 +767,7 @@ def _resume_invocation(
     action: str | None,
     reason: str | None,
     resume_file: Path | None = None,
-) -> tuple[object, str, int]:
+) -> tuple[SimpleRun, str, int]:
     composition, _audit = _resolve_and_audit(
         product=product,
         binding_dist=binding_dist,
@@ -781,14 +778,17 @@ def _resume_invocation(
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=False)
     with _engine_failures():
-        return AssuranceProductApplication().resume(
-            workspace=workspace,
-            composition=composition,
-            authorization=authorization,
-            invocation_id=invocation_id,
-            action=action,
-            reason=reason,
-            resume_file=resume_file,
+        return cast(
+            tuple[SimpleRun, str, int],
+            AssuranceProductApplication().resume(
+                workspace=workspace,
+                composition=composition,
+                authorization=authorization,
+                invocation_id=invocation_id,
+                action=action,
+                reason=reason,
+                resume_file=resume_file,
+            ),
         )
 
 

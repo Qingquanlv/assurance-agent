@@ -13,6 +13,7 @@ from typing import Literal, cast
 import yaml
 
 from graph_engine.boot.graph_revision import GraphRevision
+from graph_engine.composition import FrozenComposition
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.evidence.legacy_v2 import (
     LedgerPublicationIndeterminate,
@@ -224,7 +225,7 @@ def collect_drain_evidence(composition: object | None = None) -> DrainEvidence:
     model = next(iter(models)) if len(models) == 1 else ""
     product_lock_digest = ""
     graph_revision_id = ""
-    if composition is not None:
+    if isinstance(composition, FrozenComposition):
         from assurance_product.product import coexistence_graph_manifest, product_lock_from_composition
 
         product_lock = product_lock_from_composition(composition)

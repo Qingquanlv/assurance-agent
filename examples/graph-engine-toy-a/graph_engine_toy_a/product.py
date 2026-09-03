@@ -52,7 +52,9 @@ def _publish_greet(_state: ToyAState, output: object, _receipt: object) -> dict[
     return {"message": str(message)}
 
 
-def build_toy_a_graphs(context: GraphBuildContext, features: Mapping[str, object] | None = None) -> ToyAGraphs:
+def build_toy_a_graphs(
+    context: GraphBuildContext, features: Mapping[str, object] | None = None
+) -> ToyAGraphs:
     del features
     capability = context.for_capability("toy.a")
     builder: StateGraph[ToyAState] = StateGraph(ToyAState)

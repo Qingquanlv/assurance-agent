@@ -153,14 +153,16 @@ def test_product_manifest_uses_only_the_graph_factory_form(adapter, installed_so
 
     resolved = resolve_assurance_composition(request_for(adapter, installed_sources))
     product_manifest = resolved.manifest
-    assert product_manifest.workflow is None
-    assert product_manifest.workflow_resource_id is None
-    assert product_manifest.workflow_module is None
-    assert product_manifest.workflow_module_resources == ()
-    assert product_manifest.workflow_slot_bindings == ()
+    assert not hasattr(product_manifest, "workflow")
+    assert getattr(product_manifest, "workflow", None) is None
+    assert getattr(product_manifest, "workflow_resource_id", None) is None
+    assert getattr(product_manifest, "workflow_module", None) is None
+    assert getattr(product_manifest, "workflow_module_resources", ()) == ()
+    assert getattr(product_manifest, "workflow_slot_bindings", ()) == ()
     assert product_manifest.graph_factory_symbol == _PRODUCT_FACTORY
     assert set(product_manifest.entrypoints) == set(PRODUCT_ENTRYPOINTS)
     assert len(product_manifest.entrypoints) == 14
     assert set(PUBLIC_BUNDLE_FIELDS) == set(_FEATURE_OWNERS)
-    assert resolved.workflow is None
+    assert not hasattr(resolved, "workflow")
+    assert getattr(resolved, "workflow", None) is None
     assert resolved.lock.schema_version == "3"

@@ -29,7 +29,6 @@ from graph_engine.composition.models import (
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
-    RegistrySet,
     SourceFile,
     SourceIdentity,
     SourceKind,
@@ -477,6 +476,7 @@ class RegistryPlatform:
             if not isinstance(value, Mapping):
                 raise ResolutionError(f"configuration for {plugin_id} must be a mapping")
         return configuration
+
 
 def _capture_engine_snapshot() -> SourceSnapshot:
     package_root = Path(__file__).resolve().parents[1]

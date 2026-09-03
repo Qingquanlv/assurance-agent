@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, TypedDict, cast
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -46,7 +47,7 @@ def _context(artifact: BootArtifact) -> AssuranceRuntimeContext:
     return AssuranceRuntimeContext(
         revision_id=artifact.manifest.revision.revision_id,
         fencing_token=1,
-        attempt_kernel=object(),
+        attempt_kernel=cast(Any, object()),
         secret_resolver=object(),
         workspace_provider=object(),
     )
@@ -56,11 +57,14 @@ def test_invalid_resume_input_fails(tmp_path: Path) -> None:
     from langgraph.graph import END, START, StateGraph
     from langgraph.types import interrupt
 
-    def approve(state: dict[str, str]) -> dict[str, str]:
+    class _State(TypedDict, total=False):
+        decision: str
+
+    def approve(state: _State) -> _State:
         raw = interrupt({"kind": "human", "actions": ["approve", "reject"]})
         return {"decision": str(raw)}
 
-    builder = StateGraph(dict)
+    builder = StateGraph(_State)
     builder.add_node("approve", approve)
     builder.add_edge(START, "approve")
     builder.add_edge("approve", END)
@@ -99,10 +103,13 @@ def test_invalid_resume_input_fails(tmp_path: Path) -> None:
 def test_revision_mismatch_rejects_drifted_resume(tmp_path: Path) -> None:
     from langgraph.graph import END, START, StateGraph
 
-    def execute(state: dict[str, str]) -> dict[str, str]:
+    class _State(TypedDict, total=False):
+        value: str
+
+    def execute(state: _State) -> _State:
         return state
 
-    builder = StateGraph(dict)
+    builder = StateGraph(_State)
     builder.add_node("execute", execute)
     builder.add_edge(START, "execute")
     builder.add_edge("execute", END)

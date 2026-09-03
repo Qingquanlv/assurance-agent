@@ -4,6 +4,7 @@ import pickle
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, cast
 
 from graph_engine.application.runtime_context import AssuranceRuntimeContext
 from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
@@ -13,6 +14,8 @@ from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.boot.boot import EngineGraphBuildContext, RuntimePorts, bind_attempt_factory
 from graph_engine.boot.graph_revision import BootArtifact
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
+from graph_engine.persistence.checkpoint_observer import CheckpointAnchorObserverPort
+from graph_engine.composition import FrozenComposition
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.journal import (
     CheckpointAnchor,
@@ -224,10 +227,11 @@ class ProductRuntimePorts:
         if observers is not None:
             if not observers or any(not isinstance(item, AttemptCheckpointObserver) for item in observers):
                 raise ProductionObserverError("production observer registry cannot be fake-only or empty")
-            registered = tuple(observers)
+            registered = cast(tuple[CheckpointAnchorObserverPort, ...], tuple(observers))
         else:
             registered = (observer,)
-        async with open_sqlite_checkpointer(workspace, observers=registered) as backend:
+        observer_ports: Sequence[CheckpointAnchorObserverPort] = registered
+        async with open_sqlite_checkpointer(workspace, observers=observer_ports) as backend:
             allow = getattr(backend.serializer, "with_msgpack_allowlist", None)
             if callable(allow):
                 backend.serializer = allow(
@@ -242,7 +246,7 @@ class ProductRuntimePorts:
             if cls.test_kernel_resolutions is not None:
                 original = kernel.execute_or_recover
 
-                async def _scripted(*args: object, **kwargs: object) -> object:
+                async def _scripted(*args: Any, **kwargs: Any) -> Any:
                     remaining = cls.test_kernel_resolutions
                     if remaining:
                         resolution = remaining.pop(0)
@@ -374,9 +378,8 @@ class ProductRuntimePorts:
             ),
         }
         graphs = build_product_graphs(context=context, features=features)
-        manifest = coexistence_graph_manifest(
-            self.composition, product_lock_from_composition(self.composition)
-        )  # type: ignore[arg-type]
+        composition = cast(FrozenComposition, self.composition)
+        manifest = coexistence_graph_manifest(composition, product_lock_from_composition(composition))
         artifact = BootArtifact(
             manifest=manifest,
             entrypoints=graphs.entrypoints,

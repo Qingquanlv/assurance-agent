@@ -22,7 +22,7 @@ import asyncio
 
 from agent_runtime_contracts import AgentRunRequest, InstructionPart
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes
-from graph_engine.application import AssuranceApplication, RevisionMismatch
+from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext
 from graph_engine.application.status import InvocationStatus
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
@@ -48,7 +48,8 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.composition.lock import InvocationLock
+from graph_engine.boot.graph_revision import BootArtifact
+from graph_engine.composition.lock import ProductLock
 from graph_engine.plugin_api import ResourceClaims
 from pydantic import BaseModel
 from tests.phase4.agent_harness import FakeAgentAdapter
@@ -220,7 +221,7 @@ def refresh_product_declarations(product_root: Path) -> None:
 
 @dataclass(frozen=True, slots=True)
 class _InvocationLockView:
-    lock: InvocationLock
+    lock: ProductLock
 
     def canonical_bytes(self) -> bytes:
         return self.lock.canonical_bytes
@@ -545,7 +546,7 @@ def _boot_application(
     checkpointer: MemoryCheckpointer | None = None,
     execute: object | None = None,
     finalize: object | None = None,
-) -> tuple[AssuranceApplication, object, object, MemoryCheckpointer, Path]:
+) -> tuple[AssuranceApplication, BootArtifact, AssuranceRuntimeContext, MemoryCheckpointer, Path]:
     workspace, project_root = _workspace_binding(engine_root)
     saver = MemoryCheckpointer() if checkpointer is None else checkpointer
     artifact, kernel = boot_factory_product(

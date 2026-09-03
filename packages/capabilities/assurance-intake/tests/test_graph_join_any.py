@@ -391,8 +391,8 @@ async def test_compiled_graph_replay_of_same_arrival_id_is_deduplicated() -> Non
     builder.add_edge("offer", "advance-join")
     builder.add_edge("advance-join", END)
     graph = builder.compile(checkpointer=None)
-    first = await graph.ainvoke(_join_seed())
-    replayed = await graph.ainvoke(first)
+    first = await graph.ainvoke(cast(Any, _join_seed()))
+    replayed = await graph.ainvoke(cast(Any, first))
     assert replayed["case_review_inbox"]["arrivals"] == [arrival]
     assert replayed["current_trigger"] == arrival
     assert replayed["case_review_inbox"]["current_trigger"] == arrival

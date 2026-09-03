@@ -30,7 +30,7 @@ def test_phase3_live_manifest_has_one_locked_fixture_per_adapter(repo_root: Path
 
 def test_fixture_run_node_projects_the_frozen_agent_run_request() -> None:
     manifest = FixtureProduct.manifest()
-    assert manifest.workflow is None
+    assert getattr(manifest, "workflow", None) is None
     assert manifest.graph_factory_symbol == "agent_runtime_fixture.product:build_fixture_graphs"
     AgentRunRequest.model_validate(frozen_run_request().model_dump(mode="json"))
 

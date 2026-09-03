@@ -104,9 +104,11 @@ def registered_ids_with_prefix(prefix: str) -> tuple[str, ...]:
 
     ids = set(AGENT_EXECUTION_CONTRACTS) | set(all_binding_ids())
     try:
-        from assurance_product.agent_contracts import LEGACY_AGENT_PHASE_ALIASES
+        import assurance_product.agent_contracts as agent_contracts
 
-        ids.update(LEGACY_AGENT_PHASE_ALIASES)
+        aliases = getattr(agent_contracts, "LEGACY_AGENT_PHASE_ALIASES", ())
+        if aliases:
+            ids.update(aliases)
     except ImportError:
         pass
     return tuple(sorted(item for item in ids if item.startswith(prefix)))
@@ -137,8 +139,9 @@ def compiled_artifacts(installed_sources):
     from assurance_product.application import AssuranceProductApplication
     from tests.product.composition_harness import request_for
 
-    if hasattr(application_module, "CoexistenceBuildArtifacts"):
-        return application_module.CoexistenceBuildArtifacts(
+    coexistence = getattr(application_module, "CoexistenceBuildArtifacts", None)
+    if coexistence is not None:
+        return coexistence(
             invocation_lock={"schema_version": "2", "digest": "x" * 64},
             product_lock={"schema_version": "3", "digest": "y" * 64},
             manifest={"revision": {"revision_id": "z" * 64}},

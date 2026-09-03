@@ -440,9 +440,10 @@ def coexistence_graph_manifest(
         "assurance_product.graphs.factory:build_product_graphs",
         *(ref.symbol for ref in FEATURE_GRAPH_FACTORIES),
     )
+    contracts = getattr(composition, "semantic_attempt_contracts", {})
     attempt_contract_digests = {
         contract_id: canonical_digest(contract.canonical_projection())
-        for contract_id, contract in composition.semantic_attempt_contracts.items()
+        for contract_id, contract in cast(Mapping[str, Any], contracts).items()
         if hasattr(contract, "canonical_projection")
     }
     revision = GraphRevision.build(

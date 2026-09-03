@@ -551,4 +551,4 @@ def test_transient_agent_provider_failure_retries_the_skill_node(
     assert contract_id in AGENT_EXECUTION_CONTRACTS
     assert contract_id in composition.registries.capabilities.entries
     binding = composition.registries.capabilities.entries[contract_id]
-    assert binding.target_capability_id == "runtime.opencode.execute"
+    assert getattr(binding, "target_capability_id", None) == "runtime.opencode.execute"

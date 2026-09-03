@@ -356,6 +356,7 @@ def test_archive_returns_existing_archive_when_change_is_gone(tmp_path: Path) ->
 def test_cli_archive_does_not_call_legacy_engine(cli_runner, tmp_path: Path, monkeypatch) -> None:
     from assurance_product.cli import app
     from assurance_product.export import publish_achieved
+
     def _forbid(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("archive must not call leftover Engine or driver")
 

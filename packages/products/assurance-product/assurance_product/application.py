@@ -13,7 +13,7 @@ from typing import Any, Literal, cast
 
 from pydantic import Field
 
-from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext
+from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, StartedInvocation
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.composition.lock import InvocationLock, ProductLock
@@ -346,7 +346,9 @@ class _ManifestView:
         if isinstance(manifest, Mapping):
             self._data = dict(manifest)
             revision = manifest["revision"]
-            self.revision = revision if not isinstance(revision, Mapping) else _RevisionView(revision)
+            if not isinstance(revision, Mapping):
+                raise TypeError("graph manifest revision must be a mapping")
+            self.revision = _RevisionView(revision)
             return
         self._data = manifest.model_dump(mode="json")
         self.revision = manifest.revision
@@ -441,8 +443,9 @@ class AssuranceProductApplication:
         product_input = _load_input(input_path, entrypoint=entrypoint, composition=composition)
         if product_input.change_id != change_id:
             raise ValueError("change does not match product input change_id")
-        root_input = cast(JSONValue, product_input.model_dump(mode="json"))
-        root_input_digest = canonical_digest(cast(JSONValue, dict(root_input)))
+        root_input_data = product_input.model_dump(mode="json")
+        root_input = cast(JSONValue, root_input_data)
+        root_input_digest = canonical_digest(cast(JSONValue, root_input_data))
         product_lock = product_lock_from_composition(composition)
         existing = load_selection(workspace, invocation_id)
         if existing is not None:
@@ -521,7 +524,7 @@ class AssuranceProductApplication:
         input_path: Path | None,
         workspace: ChangeWorkspace,
         secrets: Sequence[str],
-    ) -> tuple[object, str, int]:
+    ) -> tuple[SimpleRun, str, int]:
         del project_dir, secrets
         existing = load_selection(workspace, invocation_id)
         needs_handshake = existing is None and not _legacy_invocation_exists(workspace, invocation_id)
@@ -573,7 +576,7 @@ class AssuranceProductApplication:
         action: str | None,
         reason: str | None,
         resume_file: Path | None,
-    ) -> tuple[object, str, int]:
+    ) -> tuple[SimpleRun, str, int]:
         record = self._resolve_existing(
             workspace,
             invocation_id,
@@ -828,11 +831,12 @@ class AssuranceProductApplication:
                 owner_id="assurance-product",
                 start_pins=ports.backend,
             )
-            application._started[invocation_id] = type(
-                "Started",
-                (),
-                {"entrypoint": record.entrypoint, "invocation_id": invocation_id, "thread_id": invocation_id},
-            )()
+            application._started[invocation_id] = StartedInvocation(
+                thread_id=invocation_id,
+                revision_id=ports.revision_id,
+                invocation_id=invocation_id,
+                entrypoint=record.entrypoint,
+            )
             result = await application.run(
                 artifact=artifact,
                 invocation_id=invocation_id,
@@ -861,11 +865,12 @@ class AssuranceProductApplication:
                 owner_id="assurance-product",
                 start_pins=ports.backend,
             )
-            application._started[invocation_id] = type(
-                "Started",
-                (),
-                {"entrypoint": record.entrypoint, "invocation_id": invocation_id, "thread_id": invocation_id},
-            )()
+            application._started[invocation_id] = StartedInvocation(
+                thread_id=invocation_id,
+                revision_id=ports.revision_id,
+                invocation_id=invocation_id,
+                entrypoint=record.entrypoint,
+            )
             result = await application.resume(
                 artifact=artifact,
                 invocation_id=invocation_id,
@@ -891,11 +896,12 @@ class AssuranceProductApplication:
                 lease=ports.backend.lease,
                 owner_id="assurance-product",
             )
-            application._started[invocation_id] = type(
-                "Started",
-                (),
-                {"entrypoint": record.entrypoint, "invocation_id": invocation_id, "thread_id": invocation_id},
-            )()
+            application._started[invocation_id] = StartedInvocation(
+                thread_id=invocation_id,
+                revision_id=ports.revision_id,
+                invocation_id=invocation_id,
+                entrypoint=record.entrypoint,
+            )
             result = await application.status(
                 artifact=artifact,
                 invocation_id=invocation_id,

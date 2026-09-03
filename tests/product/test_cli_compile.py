@@ -162,7 +162,7 @@ def test_compile_emits_v3_product_artifacts_without_runtime_secrets(cli_runner, 
     assert "AssuranceAttemptKernel" not in encoded
     assert "secret" not in encoded.lower() or "secret_handles" in encoded
     assert "/Users/" not in json.dumps(artifacts.graph_manifest.model_dump(mode="json"))
-    assert artifacts.graph_manifest.revision.revision_id
+    assert getattr(artifacts.graph_manifest.revision, "revision_id", None)
 
 
 def test_organization_config_change_alters_product_lock_not_topology(

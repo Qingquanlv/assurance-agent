@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime_ports() -> None:
+def _reset_runtime_ports() -> Iterator[None]:
     yield
     try:
         from assurance_product.runtime_ports import ProductRuntimePorts

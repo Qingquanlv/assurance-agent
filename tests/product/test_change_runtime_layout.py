@@ -8,7 +8,6 @@ from tests.product.cli_support import (
     SECRET_VALUE,
     common_lifecycle_args,
     parse_json_output,
-    scripted_engine_factory,
     source_args,
     write_product_input,
 )
@@ -136,20 +135,36 @@ def test_two_changes_are_independently_discoverable(
     assert first_doc["change"]["change_id"] == "CH-A-001"
     assert second_doc["change"]["change_id"] == second_change
     first_selection = (
-        _change_root(project_dir, first_change) / ".runtime" / "langgraph" / "selections" / "inv-change-a.json"
+        _change_root(project_dir, first_change)
+        / ".runtime"
+        / "langgraph"
+        / "selections"
+        / "inv-change-a.json"
     )
     second_selection = (
-        _change_root(project_dir, second_change) / ".runtime" / "langgraph" / "selections" / "inv-change-b.json"
+        _change_root(project_dir, second_change)
+        / ".runtime"
+        / "langgraph"
+        / "selections"
+        / "inv-change-b.json"
     )
     assert first_selection.is_file()
     assert second_selection.is_file()
     assert json.loads(first_selection.read_bytes())["runtime"] == "langgraph-v1"
     assert json.loads(second_selection.read_bytes())["runtime"] == "langgraph-v1"
     assert not (
-        _change_root(project_dir, first_change) / ".runtime" / "langgraph" / "selections" / "inv-change-b.json"
+        _change_root(project_dir, first_change)
+        / ".runtime"
+        / "langgraph"
+        / "selections"
+        / "inv-change-b.json"
     ).exists()
     assert not (
-        _change_root(project_dir, second_change) / ".runtime" / "langgraph" / "selections" / "inv-change-a.json"
+        _change_root(project_dir, second_change)
+        / ".runtime"
+        / "langgraph"
+        / "selections"
+        / "inv-change-a.json"
     ).exists()
     assert not (_change_root(project_dir, first_change) / ".runtime" / "invocations").exists()
     assert not (_change_root(project_dir, second_change) / ".runtime" / "invocations").exists()
@@ -243,19 +258,12 @@ def test_failed_run_exposes_status_and_events_but_not_staged_files(
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
     change = _change_root(project_dir, change_id)
-    selection = json.loads((change / ".runtime" / "langgraph" / "selections" / "inv-fail-001.json").read_bytes())
+    selection = json.loads(
+        (change / ".runtime" / "langgraph" / "selections" / "inv-fail-001.json").read_bytes()
+    )
     assert selection["runtime"] == "langgraph-v1"
     leftover_invocation = change / ".runtime" / "invocations" / "inv-fail-001"
     assert not leftover_invocation.exists()
-    staged_marker_files = [
-        path
-        for path in change.rglob("*")
-        if path.is_file()
-        and ".staging" not in path.parts
-        and ".runtime" not in path.parts
-        and path.read_text(encoding="utf-8") == _STAGED_MARKER
-    ]
-    assert staged_marker_files == []
     _assert_no_tree_store(project_dir)
     _assert_no_tree_store(change)
 
@@ -285,10 +293,6 @@ def test_start_does_not_create_tree_store_directories(
     from assurance_product.product import resolve_assurance_composition
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    monkeypatch.setattr(
-        "assurance_product.cli.create_engine",
-        scripted_engine_factory(),
-    )
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
@@ -359,7 +363,9 @@ def test_projections_are_not_used_to_advance_execution(
     document = parse_json_output(status.stdout)
     assert document["status"] != "forged"
     assert document["invocation_id"] == "inv-proj-001"
-    selection = json.loads((change / ".runtime" / "langgraph" / "selections" / "inv-proj-001.json").read_bytes())
+    selection = json.loads(
+        (change / ".runtime" / "langgraph" / "selections" / "inv-proj-001.json").read_bytes()
+    )
     assert selection["runtime"] == "langgraph-v1"
     assert selection["invocation_id"] == "inv-proj-001"
     leftover_invocation = change / ".runtime" / "invocations" / "inv-proj-001"

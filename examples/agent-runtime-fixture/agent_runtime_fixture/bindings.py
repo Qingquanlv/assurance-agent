@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import cast
+from typing import Any, cast
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
@@ -18,7 +18,7 @@ from graph_engine.plugin_api import (
 )
 
 from agent_runtime_fixture import RESULT_SCHEMA_RESOURCE_ID, RUN_CAPABILITY_ID, package_resource_bytes
-from agent_runtime_fixture.contracts import RUN_CONTRACT, RUN_CONTRACT_REF, bind_run_executor
+from agent_runtime_fixture.contracts import RUN_CONTRACT, bind_run_executor
 
 _OPENCODE_SOURCE = ProviderSource(
     distribution="agent-runtime-fixture",
@@ -79,13 +79,13 @@ def _contribute(target: str, adapter: dict[str, JSONValue]) -> PluginContributio
     )
 
 
-def published_attempt_contracts() -> tuple[TaskAttemptContract[object, object], ...]:
+def published_attempt_contracts() -> tuple[TaskAttemptContract[Any, Any], ...]:
     return (RUN_CONTRACT,)
 
 
 def bind_attempt_executors(
     workspace: WorkspaceProvider,
-) -> Mapping[str, ResolvedAttemptContract[object, object]]:
+) -> Mapping[str, ResolvedAttemptContract[Any, Any]]:
     resolved = bind_run_executor(workspace)
     return {resolved.contract.contract_id: resolved}
 

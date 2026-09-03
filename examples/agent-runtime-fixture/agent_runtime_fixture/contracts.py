@@ -51,7 +51,10 @@ class RunExecutor:
         context: AttemptExecutionContext,
     ) -> RunOutput:
         del validated_input
-        binding = await self._workspace.open_or_create(context.attempt_key, RUN_CONTRACT.resources)
+        claims = RUN_CONTRACT.resources
+        if not isinstance(claims, ResourceClaims):
+            raise TypeError("fixture run contract must use concrete resource claims")
+        binding = await self._workspace.open_or_create(context.attempt_key, claims)
         payload = {"artifact": "result.json", "status": "ok"}
         (binding.write_root / "result.json").write_text(json.dumps(payload), encoding="utf-8")
         return RunOutput.model_validate(payload)

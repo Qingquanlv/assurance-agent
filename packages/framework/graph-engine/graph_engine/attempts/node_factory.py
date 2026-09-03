@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, cast
 
 from langgraph.config import get_config
 from langgraph.errors import GraphInterrupt
@@ -167,7 +167,7 @@ class AttemptNodeFactory:
             ordinal=ordinal,
             envelope_digest=envelope_digest,
         )
-        await record(key, event, context)
+        await cast(Callable[..., Awaitable[None]], record)(key, event, context)
         payload = _interrupt_payload(
             key,
             ActiveSystemInterrupt(generation=generation, ordinal=ordinal, envelope_digest=envelope_digest),

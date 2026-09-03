@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -79,7 +79,7 @@ def build_phase4_graphs(
         builder.add_node(
             name,
             cast(
-                object,
+                Any,
                 capability.attempt(
                     contract_id,
                     semantic_node_id=name,

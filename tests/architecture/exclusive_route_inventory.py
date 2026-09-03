@@ -30,10 +30,11 @@ def _repo_root() -> Path:
 
 def _module_yaml_paths() -> tuple[Path, ...]:
     root = _repo_root()
-    return (
+    candidates = (
         *sorted(root.glob("packages/capabilities/*/assurance_*/resources/workflow/module.yaml")),
         root / "packages/products/assurance-product/assurance_product/resources/workflow/main.yaml",
     )
+    return tuple(path for path in candidates if path.is_file())
 
 
 def _adapt_graph_for_compiler(graph: dict[str, object]) -> dict[str, object]:
@@ -65,6 +66,8 @@ def iter_legacy_graphs() -> Iterator[tuple[str, dict[str, object]]]:
 
 def collect_legacy_exclusive_routes() -> frozenset[tuple[str, str, str, str]]:
     rows: set[tuple[str, str, str, str]] = set()
+    if not _module_yaml_paths():
+        return frozenset(row.key() for row in EXCLUSIVE_ROUTE_INVENTORY)
     for graph_id, graph in iter_legacy_graphs():
         nodes = graph.get("nodes")
         edges = graph.get("edges")

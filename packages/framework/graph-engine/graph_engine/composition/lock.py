@@ -73,6 +73,8 @@ def _parse_locked_manifest(manifest: object) -> ProductManifest | HistoricalProd
         return ProductManifest.model_validate(manifest)
     except (TypeError, ValueError, ValidationError):
         return HistoricalProductManifest.model_validate(manifest)
+
+
 TASK_HOST_WIRE_SCHEMA_VERSION: Literal["1"] = "1"
 
 

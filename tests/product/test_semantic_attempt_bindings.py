@@ -110,7 +110,7 @@ def test_raw_runtime_rows_are_canonical_and_digest_locked() -> None:
     assert all(row.activity_recovery == "adopt-observe-reconcile-v1" for row in rows)
     for row in rows:
         contract = contracts[row.contract_id]
-        assert row.contract_digest == canonical_digest(contract.canonical_projection())
+        assert row.contract_digest == canonical_digest(contract.canonical_projection())  # type: ignore[arg-type]
         assert row.adapter == row.provider
         assert row.runtime_handler_id == f"runtime.{row.adapter}.execute"
 

@@ -9,9 +9,11 @@ from agent_runtime_contracts import (
     AgentRuntimeBinding,
     AgentRuntimePolicy,
     RawAgentRuntimeBindingProjectionV1,
+    RawAgentRuntimeOutcome,
     ResolvedRawAgentExecutor,
 )
 from graph_engine.attempts import ResolvedAttemptContract, TaskAttemptContract, resolve_contract
+from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition import FrozenComposition
 
@@ -38,7 +40,11 @@ class _DeferredPhase:
         self.handler_id = handler_id
         self.handler = handler
 
-    async def execute(self, *args: object, **kwargs: object) -> object:
+    async def execute(
+        self,
+        prepared: object,
+        context: AttemptExecutionContext,
+    ) -> RawAgentRuntimeOutcome:
         raise RuntimeError(f"semantic attempt phase is not driven: {self.handler_id}")
 
 
@@ -213,9 +219,11 @@ def _resolve_agent_contract(
     handlers = composition.registries.capabilities.task_handlers
     executor = ResolvedRawAgentExecutor(
         contract,
-        prepare=_DeferredPhase(contract.prepare_handler_id, handlers[contract.prepare_handler_id]),
+        prepare=cast(Any, _DeferredPhase(contract.prepare_handler_id, handlers[contract.prepare_handler_id])),
         runtime=_DeferredPhase(binding.runtime_handler_id, handlers[binding.runtime_handler_id]),
-        finalize=_DeferredPhase(contract.finalize_handler_id, handlers[contract.finalize_handler_id]),
+        finalize=cast(
+            Any, _DeferredPhase(contract.finalize_handler_id, handlers[contract.finalize_handler_id])
+        ),
     )
     return executor.resolve()
 

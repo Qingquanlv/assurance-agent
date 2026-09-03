@@ -51,6 +51,7 @@ INTAKE_RESOURCE_FILES: dict[str, str] = {
     "assurance.intake.skill.aa-case-design.visual-companion.v1": (
         "skills/aa-case-design/visual-companion.md"
     ),
+    "assurance.intake.skill.aa-case-repair.v1": "skills/aa-case-repair/SKILL.md",
     "assurance.intake.skill.aa-case-reviewer.v1": "skills/aa-case-reviewer/SKILL.md",
     "assurance.intake.skill.aa-explore.v1": "skills/aa-explore/SKILL.md",
     "assurance.intake.skill.aa-intake.v1": "skills/aa-intake/SKILL.md",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -62,7 +62,7 @@ def build_fixture_graphs(
     builder.add_node(
         "run",
         cast(
-            object,
+            Any,
             capability.attempt(
                 RUN_CONTRACT.contract_id,
                 semantic_node_id="run",

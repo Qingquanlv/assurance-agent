@@ -395,7 +395,7 @@ def _changed_paths(before: object, after: object, prefix: tuple[str, ...] = ()) 
     return set() if before == after else {prefix}
 
 
-def _path_allowed(path: tuple[str, ...], allowed: tuple[str, ...]) -> bool:
+def _path_allowed(path: tuple[str, ...], allowed: tuple[tuple[str, ...], ...]) -> bool:
     return any(path[: len(candidate)] == candidate for candidate in allowed)
 
 
@@ -527,8 +527,10 @@ class ExploreFinalizeHandler:
 
 class CaseDesignFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        parsed: AgentFinalizeInputV1 | None = None
         try:
             payload = validate_input(AgentFinalizeInputV1, _finalize_payload(request.input))
+            parsed = payload
             change_id = _case_change_id(payload.change_id)
             capability_leafs = _leafs(payload.capability_leafs)
             receipt = _artifact_list(payload)
@@ -601,8 +603,8 @@ class CaseDesignFinalizeHandler:
                     "review_repair": None,
                     **_review_round_fields(request.input),
                 }
-                if "payload" in locals() and payload.review_repair is not None:
-                    repair_output["review_repair"] = payload.review_repair.model_dump(mode="json")
+                if parsed is not None and parsed.review_repair is not None:
+                    repair_output["review_repair"] = parsed.review_repair.model_dump(mode="json")
                 return TaskOutcome.succeeded(cast(JSONValue, repair_output))
             return failed_output(str(error))
 

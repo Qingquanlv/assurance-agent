@@ -155,16 +155,17 @@ def test_providers_return_one_minimal_manifest_per_adapter():
     assert opencode.entrypoints == cursor.entrypoints
     assert opencode.configuration == {}
     assert cursor.configuration == {}
-    assert opencode.workflow is None
-    assert cursor.workflow is None
-    assert opencode.workflow_resource_id is None
-    assert cursor.workflow_resource_id is None
-    assert opencode.workflow_module is None
-    assert cursor.workflow_module is None
-    assert opencode.workflow_module_resources == ()
-    assert cursor.workflow_module_resources == ()
-    assert opencode.workflow_slot_bindings == ()
-    assert cursor.workflow_slot_bindings == ()
+    assert not hasattr(opencode, "workflow")
+    assert getattr(opencode, "workflow", None) is None
+    assert getattr(cursor, "workflow", None) is None
+    assert getattr(opencode, "workflow_resource_id", None) is None
+    assert getattr(cursor, "workflow_resource_id", None) is None
+    assert getattr(opencode, "workflow_module", None) is None
+    assert getattr(cursor, "workflow_module", None) is None
+    assert getattr(opencode, "workflow_module_resources", ()) == ()
+    assert getattr(cursor, "workflow_module_resources", ()) == ()
+    assert getattr(opencode, "workflow_slot_bindings", ()) == ()
+    assert getattr(cursor, "workflow_slot_bindings", ()) == ()
     assert (
         opencode.graph_factory_symbol
         == cursor.graph_factory_symbol
@@ -198,8 +199,9 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
     assert len(AGENT_EXECUTION_CONTRACTS) == 33
     for provider in (AssuranceOpenCodeProductProvider, AssuranceCursorProductProvider):
         manifest = provider.manifest()
-        assert manifest.workflow is None
-        assert manifest.workflow_module is None
+        assert not hasattr(manifest, "workflow")
+        assert getattr(manifest, "workflow", None) is None
+        assert getattr(manifest, "workflow_module", None) is None
         assert manifest.graph_factory_symbol == "assurance_product.graphs.factory:build_product_graphs"
         for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
             resources = contract.resources

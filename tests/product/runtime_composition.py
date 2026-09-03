@@ -90,9 +90,7 @@ def resolve_workflow_composition(
         owner: {key: value for key, value in validators.items() if key.startswith(f"{owner}.")}
         for owner in _PLUGIN_OWNERS
     }
-    owners = tuple(
-        owner for owner in _PLUGIN_OWNERS if owner in grouped or validator_owners.get(owner)
-    )
+    owners = tuple(owner for owner in _PLUGIN_OWNERS if owner in grouped or validator_owners.get(owner))
     product_source = ProviderSource(
         distribution=distribution_name,
         version="1.0.0",

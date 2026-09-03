@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -21,7 +21,7 @@ from graph_engine.boot.source_authentication import (
     ProductFactoryRef,
     authenticate_factory_ref,
 )
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import ProductLock
 from graph_engine.composition.models import FrozenComposition, SourceKey, SourceRole
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
@@ -140,7 +140,9 @@ def factory_application(
     return application, context
 
 
-async def invocation_values(artifact: BootArtifact, invocation_id: str, entrypoint: str) -> Mapping[str, object]:
+async def invocation_values(
+    artifact: BootArtifact, invocation_id: str, entrypoint: str
+) -> Mapping[str, object]:
     graph = artifact.entrypoints[entrypoint]
     snapshot = await graph.aget_state({"configurable": {"thread_id": invocation_id}})
     values = getattr(snapshot, "values", {})
@@ -166,7 +168,7 @@ async def run_factory_product(
         artifact=artifact,
         invocation_id=invocation_id,
         entrypoint=entrypoint,
-        graph_input=dict(graph_input),
+        graph_input=cast(Mapping[str, JSONValue], dict(graph_input)),
         runtime_context=context,
     )
 
@@ -209,14 +211,14 @@ def contract_resolver_from_plugins(
         published = getattr(plugin_cls, "published_attempt_contracts", None)
         bind = getattr(plugin_cls, "bind_attempt_executors", None)
         if callable(published):
-            for contract in published():
+            for contract in cast(Iterable[TaskAttemptContract[Any, Any]], published()):
                 data[contract.contract_id] = contract
         if callable(bind):
             try:
                 resolved = bind(workspace, fail_first=fail_first)
             except TypeError:
                 resolved = bind(workspace)
-            for contract_id, item in dict(resolved).items():
+            for contract_id, item in cast(Mapping[str, ResolvedAttemptContract[Any, Any]], resolved).items():
                 executors[str(contract_id)] = item
     return CatalogContractResolver(data, executors)
 

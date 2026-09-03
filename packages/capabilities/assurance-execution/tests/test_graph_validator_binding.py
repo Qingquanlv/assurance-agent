@@ -8,7 +8,7 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables.config import RunnableConfig
 
-from agent_runtime_contracts import ResolvedRawAgentExecutor
+from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
@@ -59,7 +59,7 @@ _OUTSIDE_REASON = "execution candidate may write only tests and change execution
 
 
 class _DeferredPhase:
-    async def execute(self, *args: object, **kwargs: object) -> object:
+    async def execute(self, prepared: object, context: object) -> RawAgentRuntimeOutcome:
         raise RuntimeError("semantic attempt phase is not driven")
 
 
@@ -121,9 +121,9 @@ def _boot_resolved_execute() -> ResolvedAttemptContract[Any, Any]:
     agent = AGENT_JOB_CONTRACTS["execute"]
     return ResolvedRawAgentExecutor(
         agent,
-        prepare=_DeferredPhase(),
+        prepare=cast(Any, _DeferredPhase()),
         runtime=_DeferredPhase(),
-        finalize=_DeferredPhase(),
+        finalize=cast(Any, _DeferredPhase()),
     ).resolve()
 
 

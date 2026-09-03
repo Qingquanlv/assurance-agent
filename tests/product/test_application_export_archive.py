@@ -22,6 +22,7 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
+
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
@@ -37,6 +38,7 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
 
     def _forbid(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("LangGraph export/archive must not call legacy Engine/driver/fold_events")
+
     monkeypatch.setattr("graph_engine.evidence.legacy_v2.fold_legacy_events", _forbid)
     project = write_achieved(tmp_path, project=project_dir)
     exported = cli_runner.invoke(
@@ -76,9 +78,14 @@ def test_lock_show_renders_v2_for_legacy_and_v3_for_langgraph(
     leftover_workspace = ChangeWorkspace.open(leftover_project, leftover_change)
     leftover_workspace.initialize()
     leftover_lock_bytes = (
-        Path(__file__).resolve().parents[2]
-        / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
-    ).read_text(encoding="utf-8").strip().encode()
+        (
+            Path(__file__).resolve().parents[2]
+            / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
+        )
+        .read_text(encoding="utf-8")
+        .strip()
+        .encode()
+    )
     leftover_invocation = leftover_workspace.paths.runtime_root / "invocations" / "inv-lock-v2"
     leftover_invocation.mkdir(parents=True, exist_ok=True)
     (leftover_invocation / "invocation.lock.json").write_bytes(leftover_lock_bytes)
@@ -213,7 +220,10 @@ def test_lock_show_fails_on_ambiguous_runtime_evidence(
         (
             Path(__file__).resolve().parents[2]
             / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
-        ).read_text(encoding="utf-8").strip().encode()
+        )
+        .read_text(encoding="utf-8")
+        .strip()
+        .encode()
     )
     result = cli_runner.invoke(
         app,

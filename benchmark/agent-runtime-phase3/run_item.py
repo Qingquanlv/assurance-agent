@@ -579,9 +579,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_status = manifest["success"]["status"]
         actual_status = getattr(run_result, "status", None)
         if actual_status not in {expected_status, "completed"} and actual_status != expected_status:
-            return _fail(
-                f"application terminal status {actual_status!r} != expected {expected_status!r}"
-            )
+            return _fail(f"application terminal status {actual_status!r} != expected {expected_status!r}")
 
         _validate_workspace_output(manifest, output, item)
         artifacts = _collect_expected_artifacts(output, item)

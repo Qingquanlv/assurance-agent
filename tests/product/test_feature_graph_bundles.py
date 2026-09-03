@@ -4,7 +4,7 @@ import ast
 from collections.abc import Callable, Mapping
 from dataclasses import fields
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -260,8 +260,8 @@ def test_spy_contexts_have_no_handler_validator_or_runtime_injection() -> None:
 
 
 def test_recording_context_records_the_compile_checkpointer(monkeypatch) -> None:
-    class Marker(dict):
-        pass
+    class Marker(TypedDict, total=False):
+        value: str
 
     def noop(state: Marker) -> Marker:
         return state
@@ -269,7 +269,7 @@ def test_recording_context_records_the_compile_checkpointer(monkeypatch) -> None
     saver = InMemorySaver()
     original = StateGraph.compile
 
-    def forced(graph: StateGraph[Any], checkpointer: object = None, **kwargs: object) -> object:
+    def forced(graph: StateGraph[Any], checkpointer: object = None, **kwargs: Any) -> object:
         return original(graph, checkpointer=saver, **kwargs)
 
     monkeypatch.setattr(StateGraph, "compile", forced)

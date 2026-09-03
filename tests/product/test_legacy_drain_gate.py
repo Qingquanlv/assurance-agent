@@ -225,7 +225,7 @@ def _operator_record(invocation_id: str, outcome: str = "terminated") -> Operato
         invocation_id=invocation_id,
         outcome=outcome,  # type: ignore[arg-type]
         operator_id="operator.drain",
-        record_digest=canonical_digest(payload),
+        record_digest=canonical_digest(payload),  # type: ignore[arg-type]
     )
 
 

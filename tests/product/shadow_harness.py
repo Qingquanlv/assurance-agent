@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 import uuid
 
 from assurance_product.models import RuntimeKind
@@ -352,7 +352,7 @@ def _scenario_decisions(entrypoint: str, scenario: str) -> tuple[SemanticDecisio
 
 
 def _run_legacy(
-    product_runner: object,
+    product_runner: Any,
     entrypoint: str,
     scenario: str,
     invocation: ShadowInvocation,
@@ -391,7 +391,7 @@ def _run_legacy(
     }:
         if scenario in {"generation-api", "generation-all-families"} and entrypoint == "full":
             result = run.run_to_terminal()
-            families = sorted(kwargs.get("selected_test_families") or ("api",))
+            families = sorted(cast(tuple[str, ...], kwargs.get("selected_test_families") or ("api",)))
             trigger = {"predecessor": "generation", "value": {"families": families}}
             return {
                 "status": _status(result.status),
@@ -809,9 +809,14 @@ def _evaluate_payload() -> dict[str, object]:
     parent = str(helper.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
-    from test_evaluate_graph_contract import complete_evaluate_payload
+    import importlib.util
 
-    return complete_evaluate_payload()
+    loaded = importlib.util.spec_from_file_location("test_evaluate_graph_contract", helper)
+    if loaded is None or loaded.loader is None:
+        raise ImportError("test_evaluate_graph_contract")
+    module = importlib.util.module_from_spec(loaded)
+    loaded.loader.exec_module(module)
+    return module.complete_evaluate_payload()
 
 
 def _evaluate_kernel_bundle(

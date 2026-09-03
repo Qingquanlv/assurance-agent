@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import get_type_hints
+from typing import Any, cast, get_type_hints
 from unittest.mock import MagicMock
 
 import pytest
@@ -154,7 +154,7 @@ def test_agent_contract_omitting_validators_is_invalid() -> None:
             resources=sample.resources,
             retry=sample.retry,
             timeout=sample.timeout,
-        )
+        )  # type: ignore[call-arg]
 
 
 def test_registered_validators_remain_unbound_and_legal() -> None:
@@ -232,7 +232,7 @@ async def test_advance_review_round_matches_legacy_handler_without_touching_cont
     spy = MagicMock(spec=TaskContext)
     executed = await execute_task(
         ReviewRoundAdvanceHandler(),
-        payload,
+        cast(Any, payload),
         capability_id="assurance.intake.review-round.advance",
     )
     output = advance_review_round(payload)

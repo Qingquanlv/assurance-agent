@@ -96,58 +96,8 @@ def test_status_json_matches_schema_after_start(cli_runner, installed_sources, t
 def test_render_status_projects_started_invocation(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ):
-    from assurance_product.change_workspace import ChangeWorkspace
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.status import render_status
-    from graph_engine.attempts.activity import Ledger, fold_events
+    del cli_runner, installed_sources, tmp_path, monkeypatch
     pytest.skip("leftover Engine status projection was retired")
-    from graph_engine.attempts.secret_sources import (
-        InvocationRuntimeAuthorization,
-        SecretSourceBinding,
-        runtime_authorization_digest,
-    )
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-render-001",
-    )
-    started = cli_runner.invoke(app, ["start", *args])
-    assert started.exit_code == 0, started.output
-    secrets = (
-        SecretSourceBinding(handle="opencode.token", source_kind="environment", source_locator=SECRET_ENV),
-    )
-    authorization = InvocationRuntimeAuthorization(
-        schema_version="1",
-        secret_sources=secrets,
-        digest=runtime_authorization_digest(secrets),
-    )
-    workspace = ChangeWorkspace.open(project_dir, change_id)
-    with Engine(workspace.paths.runtime_root, host=None) as engine:
-        with engine.open(
-            "inv-render-001",
-            composition,
-            authorization=authorization,
-            workspace_binding=workspace.runtime_binding(),
-        ) as handle:
-            envelopes = Ledger(handle.invocation_root / "ledger").read_all()
-            projection = fold_events(envelopes)
-            start_doc = parse_json_output(started.stdout)
-            status = render_status(
-                projection,
-                root_input_digest=start_doc["root_input_digest"],
-                change_id=change_id,
-            )
-    assert status.invocation_id == "inv-render-001"
-    assert status.lock_digest == composition.lock_digest
-    assert status.change.change_id == change_id
-    assert "seed_tree_id" not in start_doc
-    assert "current_head_tree_id" not in status.model_dump(mode="json")
-    assert status.graph_hierarchy
 
 
 def test_lock_show_prints_authenticated_closed_projection(
@@ -251,9 +201,14 @@ def test_lock_show_keeps_v2_for_legacy_records(cli_runner, installed_sources, tm
     workspace = ChangeWorkspace.open(project_dir, change_id)
     workspace.initialize()
     leftover_lock_bytes = (
-        Path(__file__).resolve().parents[2]
-        / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
-    ).read_text(encoding="utf-8").strip().encode()
+        (
+            Path(__file__).resolve().parents[2]
+            / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
+        )
+        .read_text(encoding="utf-8")
+        .strip()
+        .encode()
+    )
     leftover_invocation = workspace.paths.runtime_root / "invocations" / "inv-lock-legacy-v2"
     leftover_invocation.mkdir(parents=True, exist_ok=True)
     (leftover_invocation / "invocation.lock.json").write_bytes(leftover_lock_bytes)

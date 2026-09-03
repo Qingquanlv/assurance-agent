@@ -62,7 +62,7 @@ def _context(artifact: BootArtifact) -> AssuranceRuntimeContext:
     return AssuranceRuntimeContext(
         revision_id=artifact.manifest.revision.revision_id,
         fencing_token=1,
-        attempt_kernel=object(),
+        attempt_kernel=object(),  # type: ignore[arg-type]
         secret_resolver=object(),
         workspace_provider=object(),
     )

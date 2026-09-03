@@ -49,7 +49,7 @@ def test_semantic_trace_shape_is_normalized() -> None:
         "terminal_status",
         "public_output",
     }
-    assert SemanticTrace.__dataclass_params__.frozen is True
+    assert getattr(SemanticTrace, "__dataclass_params__").frozen is True  # type: ignore[attr-defined]
 
 
 def test_shadow_uses_separate_invocation_identities_and_workspaces(tmp_path) -> None:
@@ -149,7 +149,7 @@ def test_standalone_evaluate_effect_settlement_parity(tmp_path, scenario: str) -
     if scenario == "committed":
         assert pair.legacy.trace.terminal_status == "completed"
         assert pair.receipt is not None
-        MemoryEvalReceipt.model_validate(pair.receipt.model_dump(mode="json"))
+        MemoryEvalReceipt.model_validate(getattr(pair.receipt, "model_dump")(mode="json"))
     else:
         assert pair.legacy.trace.terminal_status != "completed"
         assert pair.success_before_settlement is False

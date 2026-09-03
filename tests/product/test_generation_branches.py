@@ -5,6 +5,10 @@ import pytest
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
 
 
+def _run_execute(*_args: object, **_kwargs: object) -> tuple[str, set[str], dict[str, object]]:
+    pytest.skip("leftover Engine execute projection was retired")
+
+
 @pytest.mark.parametrize("selected", [(), ("api", "api"), ("api", "mobile")])
 def test_invalid_family_selection_fails_at_feature_input(selected: tuple[str, ...]) -> None:
     with pytest.raises(ValueError):

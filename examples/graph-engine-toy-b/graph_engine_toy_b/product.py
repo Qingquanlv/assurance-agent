@@ -122,7 +122,9 @@ def _add_attempt(
     )
 
 
-def build_toy_b_graphs(context: GraphBuildContext, features: Mapping[str, object] | None = None) -> ToyBGraphs:
+def build_toy_b_graphs(
+    context: GraphBuildContext, features: Mapping[str, object] | None = None
+) -> ToyBGraphs:
     del features
     capability = context.for_capability("toy.b")
     child_builder: StateGraph[ToyBState] = StateGraph(ToyBState)

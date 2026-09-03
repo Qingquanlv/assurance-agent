@@ -262,8 +262,8 @@ def test_toy_and_assurance_invocation_creates_no_whole_tree_layout(
             lease_root=tmp_path / "toy-leases",
         )
     )
-    assert result.status == "completed", result
-    dumped = result.model_dump(mode="json") if hasattr(result, "model_dump") else vars(result)
+    assert getattr(result, "status") == "completed", result
+    dumped = getattr(result, "model_dump")(mode="json") if hasattr(result, "model_dump") else vars(result)
     assert "final_tree_id" not in dumped
     toy_hits = _forbidden_layout_hits(tmp_path / "toy-engine")
     toy_hits.update(_forbidden_layout_hits(project_root))

@@ -132,7 +132,7 @@ def test_evaluate_memory_improvement_is_effectful_not_a_pure_function() -> None:
             resources=contract.resources,
             retry=contract.retry,
             timeout=contract.timeout,
-        )
+        )  # type: ignore[call-arg]
 
 
 def test_improvement_plugin_projects_forty_one_owner_contracts() -> None:

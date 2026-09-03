@@ -28,8 +28,6 @@ from agent_runtime_cursor.handler import CursorDispatchIncomplete
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
 from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete
 from graph_engine import ENGINE_API_VERSION
-from graph_engine.boot.generic import entrypoint_digest
-from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.composition import (
     EditableWheelPluginSource,
@@ -458,6 +456,8 @@ class ConfinedTestHost:
 
     def _context(self, call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall) -> TaskContext:
         identity = call.attempt_root.workspace_identity
+        if self._project_root is None or self._write_root is None:
+            raise RuntimeError("confined host workspace roots are unbound")
         project_root = Path(self._project_root)
         write_root = Path(self._write_root)
         port = None
@@ -697,7 +697,9 @@ class _AdapterHarness:
             host_implementation_digest=host_lock.implementation_digest,
         )
 
-    def _prepared_activity(self, request: TaskRequest, project_root: Path, write_root: Path) -> TaskActivitySnapshot:
+    def _prepared_activity(
+        self, request: TaskRequest, project_root: Path, write_root: Path
+    ) -> TaskActivitySnapshot:
         return TaskActivitySnapshot(
             activity_id="adapter-activity",
             request_digest=engine_digest(request.model_dump(mode="json")),
@@ -904,7 +906,9 @@ class _AdapterHarness:
             outcome_status = getattr(scenario, "last_outcome_status", None)
         if outcome_status is None and activity is not None and activity.state == "terminal_observed":
             outcome_status = "succeeded"
-        receipts = scenario.host.read_terminal_receipts(self._host_identity(scenario.invocation_id, "execute"))
+        receipts = scenario.host.read_terminal_receipts(
+            self._host_identity(scenario.invocation_id, "execute")
+        )
         host_cancel = None if scenario.host.last_cancel is None else scenario.host.last_cancel.status
         host_reconcile = None if scenario.host.last_reconcile is None else scenario.host.last_reconcile.status
         return CutResult(
@@ -918,8 +922,9 @@ class _AdapterHarness:
             workspace_identity=None if activity is None else activity.workspace_identity,
             provider_calls=self._count_on_provider(scenario.provider, "dispatch"),
             receipt_count=len(receipts) if receipt_count is None else receipt_count,
-            instruction_bytes=scenario.host.last_request_bytes or scenario.request.model_dump(mode="json")
-            and canonical_json_bytes(thaw_json(scenario.request.input)),
+            instruction_bytes=(
+                scenario.host.last_request_bytes or canonical_json_bytes(thaw_json(scenario.request.input))
+            ),
             host_calls=tuple(scenario.host.host_calls),
             scheduler_drives=self._drives,
             context_exposed=scenario.host.last_context_fields

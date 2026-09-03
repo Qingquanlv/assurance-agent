@@ -347,7 +347,7 @@ async def test_request_rework_on_prepare_graph_advances_once_through_inbox() -> 
     config = _config()
     interrupted: object | None
     try:
-        interrupted = await graph.ainvoke(_input(), config=config)
+        interrupted = await graph.ainvoke(cast(Any, _input()), config=config)
     except GraphInterrupt as error:
         interrupted = error
     else:
@@ -391,7 +391,7 @@ async def test_request_rework_advances_when_review_result_nulls_rounds() -> None
     config = _config()
     interrupted: object | None
     try:
-        interrupted = await graph.ainvoke(_input(), config=config)
+        interrupted = await graph.ainvoke(cast(Any, _input()), config=config)
     except GraphInterrupt as error:
         interrupted = error
     else:

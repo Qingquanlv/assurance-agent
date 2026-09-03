@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
@@ -199,7 +199,9 @@ def completed_invocation(
     try:
         yield invocation
     finally:
-        invocation.engine.close()
+        close = getattr(invocation.engine, "close", None)
+        if callable(close):
+            close()
 
 
 def common_lifecycle_args(

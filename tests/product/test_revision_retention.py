@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -140,7 +141,7 @@ def test_same_process_does_not_import_a_second_wheel_version_on_mismatch(tmp_pat
     imports: list[str] = []
     original_import = __import__
 
-    def _watch(name: str, *args: object, **kwargs: object):
+    def _watch(name: str, *args: Any, **kwargs: Any):
         imports.append(name)
         return original_import(name, *args, **kwargs)
 
@@ -191,7 +192,7 @@ def test_resume_file_asserts_revision_before_opening_ports(tmp_path: Path, monke
         order.append("open")
         raise AssertionError("checkpoint or Kernel opened before revision check")
 
-    def _assert(*_args: object, **_kwargs: object):
+    def _assert(*_args: Any, **_kwargs: Any):
         order.append("assert")
         return live_assert(*_args, **_kwargs)
 
