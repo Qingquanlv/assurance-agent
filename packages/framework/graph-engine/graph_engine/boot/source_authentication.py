@@ -20,7 +20,12 @@ from graph_engine.composition.models import (
     SourceSnapshot,
     _module_belongs_to_import_roots,
 )
-from graph_engine.composition.source_fs import DeclaredTreePolicy, SourceSnapshotError, capture_declared_tree
+from graph_engine.composition.source_fs import (
+    DeclaredTreePolicy,
+    SourceSnapshotError,
+    capture_declared_tree,
+    recapture_source_snapshot,
+)
 from graph_engine.composition.sources import (
     _capture_parent_attributes,
     _preloaded_physical_authority,
@@ -262,8 +267,6 @@ def _factory_module_name(loaded: object) -> str:
 
 
 def _revalidate_source_bytes(snapshot: SourceSnapshot, source_files: tuple[str, ...]) -> None:
-    policy = DeclaredTreePolicy(kind=snapshot.identity.kind)
-    after = capture_declared_tree(snapshot.identity.root, source_files, policy)
-    rebuilt = SourceSnapshot.from_identity(snapshot.identity, after.files)
+    rebuilt = recapture_source_snapshot(snapshot, source_files)
     if rebuilt.digest != snapshot.digest:
         raise FactoryAuthenticationError("factory source changed while authenticating its symbol")

@@ -19,6 +19,7 @@ from graph_engine.composition import (
     SourceSnapshotError,
     capture_declared_tree,
     capture_explicit_file,
+    recapture_declared_files,
 )
 
 
@@ -121,6 +122,37 @@ def test_declared_tree_rejects_duplicate_paths(tmp_path: Path) -> None:
             ("plugin.yaml", "plugin.yaml"),
             DeclaredTreePolicy.config_tree(),
         )
+
+
+def test_recapture_declared_files_ignores_sibling_site_packages(tmp_path: Path) -> None:
+    package = tmp_path / "graph_engine_toy_a"
+    package.mkdir()
+    declared = "graph_engine_toy_a/product.py"
+    (package / "product.py").write_bytes(b"def build() -> None:\n    return None\n")
+    sibling = tmp_path / "pydantic"
+    sibling.mkdir()
+    (sibling / "__init__.py").write_bytes(b"")
+    cache = package / "__pycache__"
+    cache.mkdir()
+    (cache / "product.cpython-311.pyc").write_bytes(b"\0")
+
+    with pytest.raises(
+        SourceSnapshotError,
+        match="declared source file set does not match the physical tree",
+    ):
+        capture_declared_tree(
+            tmp_path,
+            (declared,),
+            DeclaredTreePolicy(kind=SourceKind.WHEEL_PRODUCT),
+        )
+
+    captured = recapture_declared_files(
+        tmp_path,
+        (declared,),
+        DeclaredTreePolicy(kind=SourceKind.WHEEL_PRODUCT),
+    )
+    assert tuple(item.path for item in captured) == (declared,)
+    assert captured[0].content == b"def build() -> None:\n    return None\n"
 
 
 @pytest.mark.parametrize("declared", ((), ("plugin.yaml", "missing.yaml")))

@@ -63,6 +63,7 @@ from graph_engine.composition.source_fs import (
     SourceSnapshotError,
     capture_declared_tree,
     capture_explicit_file,
+    recapture_declared_files,
 )
 from graph_engine.composition.sources import (
     EditableWheelProductSource,
@@ -134,6 +135,7 @@ __all__ = [
     "TaskHandlerEntry",
     "capture_declared_tree",
     "capture_explicit_file",
+    "recapture_declared_files",
     "load_snapshotted_entrypoint",
     "load_config_tree",
     "load_product_file",

@@ -102,6 +102,40 @@ def capture_declared_tree(
         _close_descriptors_preserving_primary((root_fd,), sys.exception())
 
 
+def recapture_declared_files(
+    root: Path,
+    files: tuple[str, ...],
+    policy: DeclaredTreePolicy,
+) -> tuple[SourceFile, ...]:
+    """Re-read named files without requiring the root to be a closed exclusive tree.
+
+    Installed wheel snapshots live in a shared site-packages root. Sibling
+    distributions and interpreter ``__pycache__`` entries are expected and must
+    not count as source drift.
+    """
+
+    root_fd = _open_physical_directory(root)
+    try:
+        normalized = _validate_closed_file_list(files)
+        captured = tuple(_read_stable_file_at(root_fd, path, policy) for path in normalized)
+        _resolve_stable_root(root, root_fd)
+        return captured
+    finally:
+        _close_descriptors_preserving_primary((root_fd,), sys.exception())
+
+
+def recapture_source_snapshot(
+    snapshot: SourceSnapshot,
+    source_files: tuple[str, ...],
+) -> SourceSnapshot:
+    policy = DeclaredTreePolicy(kind=snapshot.identity.kind)
+    if snapshot.identity.kind in {SourceKind.WHEEL_PRODUCT, SourceKind.WHEEL_PLUGIN}:
+        captured = recapture_declared_files(snapshot.identity.root, source_files, policy)
+    else:
+        captured = capture_declared_tree(snapshot.identity.root, source_files, policy).files
+    return SourceSnapshot.from_identity(snapshot.identity, captured)
+
+
 def capture_explicit_file(
     root: Path,
     file: str,
@@ -403,4 +437,6 @@ __all__ = [
     "SourceSnapshotError",
     "capture_declared_tree",
     "capture_explicit_file",
+    "recapture_declared_files",
+    "recapture_source_snapshot",
 ]

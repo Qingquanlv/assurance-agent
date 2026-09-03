@@ -18,12 +18,14 @@ from graph_engine.attempts.contracts import (
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.boot.boot import (
     BootRequest,
+    BootValidationError,
     ContractOwnershipError,
     ContractResolverPort,
     GraphBuildContext,
     GraphEngineBoot,
     RuntimePorts,
     SourceAuthenticator,
+    _assert_source_bytes,
 )
 from graph_engine.boot.graph_revision import FeatureFactoryRef
 from graph_engine.boot.source_authentication import (
@@ -33,6 +35,7 @@ from graph_engine.boot.source_authentication import (
 )
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import ProductLock
+from graph_engine.composition.models import SourceFile, SourceIdentity, SourceKind, SourceSnapshot
 from graph_engine.composition.source_fs import DeclaredTreePolicy, capture_declared_tree
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 from graph_engine.persistence.checkpoint_store import MemoryCheckpointStore
@@ -431,13 +434,68 @@ def test_feature_context_rejects_foreign_contract(
         )
 
 
+def _wheel_product_source(root: Path, *, extra_sibling: bool) -> AuthenticatedFactorySource:
+    package = root / "graph_engine_toy_a"
+    package.mkdir()
+    (package / "product.py").write_bytes(b"def build_toy_a_graphs() -> dict[str, object]:\n    return {}\n")
+    if extra_sibling:
+        sibling = root / "pydantic"
+        sibling.mkdir()
+        (sibling / "__init__.py").write_bytes(b"")
+        cache = package / "__pycache__"
+        cache.mkdir()
+        (cache / "product.cpython-311.pyc").write_bytes(b"\0")
+    declared = ("graph_engine_toy_a/product.py",)
+    identity = SourceIdentity(
+        kind=SourceKind.WHEEL_PRODUCT,
+        root=root.resolve(),
+        distribution="graph-engine-toy-a",
+        version="1.0.0",
+        entrypoint_group="graph_engine.products",
+        entrypoint_name="toy-a",
+        entrypoint_value="graph_engine_toy_a.product:build_toy_a_graphs",
+        declaration_path="graph_engine_toy_a/product-declaration.json",
+        import_roots=("", "graph_engine_toy_a"),
+        product_id="toy.a",
+        product_version="1.0.0",
+    )
+    snapshot = SourceSnapshot.from_identity(
+        identity,
+        tuple(SourceFile.from_bytes(path, (root / path).read_bytes()) for path in declared),
+    )
+    return AuthenticatedFactorySource(
+        owner_id="toy.a",
+        snapshot=snapshot,
+        provider_source=ProviderSource(
+            distribution="graph-engine-toy-a",
+            version="1.0.0",
+            entrypoint_group="graph_engine.products",
+            entrypoint_name="toy-a",
+            entrypoint_value="graph_engine_toy_a.product:build_toy_a_graphs",
+            declaration_path="graph_engine_toy_a/product-declaration.json",
+            import_roots=("", "graph_engine_toy_a"),
+        ),
+        source_files=declared,
+    )
+
+
+def test_assert_source_bytes_accepts_installed_wheel_siblings(tmp_path: Path) -> None:
+    source = _wheel_product_source(tmp_path, extra_sibling=True)
+    _assert_source_bytes(source)
+
+
+def test_assert_source_bytes_detects_installed_wheel_drift(tmp_path: Path) -> None:
+    source = _wheel_product_source(tmp_path, extra_sibling=True)
+    (tmp_path / "graph_engine_toy_a" / "product.py").write_bytes(b"def mutated() -> None:\n    return None\n")
+    with pytest.raises(BootValidationError, match="source drift"):
+        _assert_source_bytes(source)
+
+
 def test_extra_or_missing_roots_are_rejected(
     authenticator: SourceAuthenticator,
     resolver: ContractResolverPort,
     tmp_path: Path,
 ) -> None:
-    from graph_engine.boot.boot import BootValidationError
-
     boot = GraphEngineBoot(authenticator=authenticator, contract_resolver=resolver)
     request = make_boot_request(tmp_path, product_factory_source=_INCOMPLETE_PRODUCT_FACTORY_SOURCE)
     with pytest.raises(BootValidationError, match="root"):
