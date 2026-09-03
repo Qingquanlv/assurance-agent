@@ -125,3 +125,5 @@ def test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix(
     assert "resources/workflow/main.yaml" in smoke_script
     assert "graph-inventory.yaml" in smoke_script
     assert "runtime_selection" not in smoke_script or "runtime_selection.py" in smoke_script
+    assert 'Path(member).name == "workspace.py"' not in smoke_script
+    assert 'member == "graph_engine/workspace.py"' in smoke_script
