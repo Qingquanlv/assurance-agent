@@ -15,8 +15,34 @@ from graph_engine.canonical import JSONValue, canonical_json_bytes
 from assurance_product.change_workspace import ChangeWorkspace
 
 
+_BINDING_KEYS = frozenset({"invocation_id", "revision_id"})
+
+
 class RevisionRegistryError(ValueError):
     """Raised when a GraphRevision cannot be stored, replayed, or retired."""
+
+
+def _read_current_binding(path: Path) -> dict[str, str]:
+    if path.is_symlink() or not path.is_file():
+        raise RevisionRegistryError("revision binding is missing")
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RevisionRegistryError("revision binding is corrupt") from error
+    if not isinstance(payload, dict) or set(payload) != _BINDING_KEYS:
+        raise RevisionRegistryError("revision binding is not current")
+    invocation_id = payload.get("invocation_id")
+    revision_id = payload.get("revision_id")
+    if not isinstance(invocation_id, str) or not isinstance(revision_id, str):
+        raise RevisionRegistryError("revision binding is corrupt")
+    expected = {"invocation_id": invocation_id, "revision_id": revision_id}
+    if raw != canonical_json_bytes(cast(JSONValue, expected)) + b"\n":
+        raise RevisionRegistryError("revision binding is not canonical")
+    filename_id = path.name.removesuffix(".json")
+    if invocation_id != filename_id:
+        raise RevisionRegistryError("revision binding invocation_id mismatch")
+    return expected
 
 
 class RevisionRegistry:
@@ -78,10 +104,10 @@ class RevisionRegistry:
 
     def revision_for(self, invocation_id: str) -> str:
         path = self._bindings / f"{invocation_id}.json"
-        if path.is_symlink() or not path.is_file():
-            raise RevisionRegistryError("revision binding is missing")
-        payload = json.loads(path.read_bytes())
-        return str(payload["revision_id"])
+        payload = _read_current_binding(path)
+        if payload["invocation_id"] != invocation_id:
+            raise RevisionRegistryError("revision binding invocation_id mismatch")
+        return payload["revision_id"]
 
     def active_counts(self) -> Mapping[str, int]:
         counts: dict[str, int] = {}
@@ -90,10 +116,8 @@ class RevisionRegistry:
         for path in self._bindings.iterdir():
             if path.name.startswith(".") or not path.name.endswith(".json"):
                 continue
-            if path.is_symlink() or not path.is_file():
-                continue
-            payload = json.loads(path.read_bytes())
-            revision_id = str(payload["revision_id"])
+            payload = _read_current_binding(path)
+            revision_id = payload["revision_id"]
             counts[revision_id] = counts.get(revision_id, 0) + 1
         return MappingProxyType(counts)
 

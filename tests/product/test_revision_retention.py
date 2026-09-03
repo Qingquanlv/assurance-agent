@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -65,16 +66,63 @@ def test_registry_counts_active_invocations_by_revision(tmp_path: Path) -> None:
     assert registry.revision_for("inv-lg-1") == first.revision_id
 
 
+def _binding_path(workspace: ChangeWorkspace, invocation_id: str) -> Path:
+    return workspace.paths.langgraph_leases / "revisions" / "bindings" / f"{invocation_id}.json"
+
+
 def test_revision_binding_payload_has_no_runtime_discriminator(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     registry = RevisionRegistry(workspace)
     revision = _revision(lock="a" * 64)
     registry.remember(revision)
     registry.bind("inv-bind", revision.revision_id)
-    payload = (workspace.paths.langgraph_leases / "revisions" / "bindings" / "inv-bind.json").read_text()
+    payload = _binding_path(workspace, "inv-bind").read_text()
     assert "runtime" not in payload
     assert '"invocation_id"' in payload
     assert '"revision_id"' in payload
+
+
+def test_revision_for_and_active_counts_reject_extra_fields(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    registry = RevisionRegistry(workspace)
+    revision = _revision(lock="a" * 64)
+    registry.remember(revision)
+    registry.bind("inv-extra", revision.revision_id)
+    path = _binding_path(workspace, "inv-extra")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["runtime"] = "legacy-v2"
+    path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(RevisionRegistryError):
+        registry.revision_for("inv-extra")
+    with pytest.raises(RevisionRegistryError):
+        registry.active_counts()
+
+
+def test_revision_for_rejects_non_canonical_bytes_and_invocation_id_mismatch(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    registry = RevisionRegistry(workspace)
+    revision = _revision(lock="a" * 64)
+    registry.remember(revision)
+    registry.bind("inv-canon", revision.revision_id)
+    path = _binding_path(workspace, "inv-canon")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(RevisionRegistryError):
+        registry.revision_for("inv-canon")
+
+    registry.bind("inv-mismatch", revision.revision_id)
+    mismatch = _binding_path(workspace, "inv-mismatch")
+    mismatch.write_text(
+        json.dumps({"invocation_id": "inv-other", "revision_id": revision.revision_id}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RevisionRegistryError):
+        registry.revision_for("inv-mismatch")
+    with pytest.raises(RevisionRegistryError):
+        registry.active_counts()
 
 
 def test_retire_refuses_while_a_resumable_invocation_exists(tmp_path: Path) -> None:

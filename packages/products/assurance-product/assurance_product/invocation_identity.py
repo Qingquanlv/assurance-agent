@@ -51,10 +51,9 @@ def maybe_crash(point: str) -> None:
 
 def load_identity(workspace: ChangeWorkspace, invocation_id: str) -> InvocationIdentityRecord | None:
     path = identity_path(workspace, invocation_id)
+    _reject_irregular_identity_path(path)
     if not path.exists():
         return None
-    if path.is_symlink() or not path.is_file():
-        raise RuntimeSelectionError("identity record must be a regular file")
     try:
         raw = path.read_bytes()
         payload = json.loads(raw)
@@ -140,10 +139,15 @@ def _identity_bytes(record: InvocationIdentityRecord) -> bytes:
     return canonical_json_bytes(record.model_dump(mode="json")) + b"\n"
 
 
-def _atomic_replace(path: Path, encoded: bytes) -> None:
-    if path.exists() and (path.is_symlink() or not path.is_file()):
+def _reject_irregular_identity_path(path: Path) -> None:
+    if path.is_symlink() or (path.exists() and not path.is_file()):
         raise RuntimeSelectionError("identity record must be a regular file")
+
+
+def _atomic_replace(path: Path, encoded: bytes) -> None:
+    _reject_irregular_identity_path(path)
     pending = path.with_name(f".{path.name}.pending")
+    _reject_irregular_identity_path(pending)
     pending.write_bytes(encoded)
     os.replace(pending, path)
 

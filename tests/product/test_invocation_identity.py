@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.invocation_identity import (
     InvocationIdentityRecord,
+    RuntimeSelectionError,
     complete_initialized,
     identity_path,
     load_identity,
@@ -105,8 +106,6 @@ def test_write_and_load_round_trip_uses_canonical_bytes(tmp_path: Path) -> None:
 
 
 def test_load_identity_rejects_symlink_and_non_canonical_bytes(tmp_path: Path) -> None:
-    from assurance_product.invocation_identity import RuntimeSelectionError
-
     workspace = _workspace(tmp_path)
     write_initializing(workspace, _record(phase="initializing"))
     path = identity_path(workspace, "inv-1")
@@ -124,9 +123,43 @@ def test_load_identity_rejects_symlink_and_non_canonical_bytes(tmp_path: Path) -
         load_identity(workspace, "inv-1")
 
 
-def test_identity_drift_and_phase_regression_fail_closed(tmp_path: Path) -> None:
-    from assurance_product.invocation_identity import RuntimeSelectionError
+def test_load_identity_rejects_dangling_symlink(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.paths.langgraph_identities.mkdir(parents=True, exist_ok=True)
+    path = identity_path(workspace, "inv-1")
+    path.symlink_to(path.with_name("missing.json"))
+    assert not path.exists()
+    assert path.is_symlink()
+    with pytest.raises(RuntimeSelectionError, match="regular file"):
+        load_identity(workspace, "inv-1")
 
+
+def test_write_initializing_rejects_pending_symlink(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.paths.langgraph_identities.mkdir(parents=True, exist_ok=True)
+    path = identity_path(workspace, "inv-1")
+    pending = path.with_name(f".{path.name}.pending")
+    target = path.with_name("pending-target.json")
+    target.write_text("hijacked\n", encoding="utf-8")
+    pending.symlink_to(target)
+    with pytest.raises(RuntimeSelectionError, match="regular file"):
+        write_initializing(workspace, _record(phase="initializing"))
+    assert target.read_text(encoding="utf-8") == "hijacked\n"
+    assert pending.is_symlink()
+    assert not path.exists()
+
+
+def test_write_initializing_rejects_identity_symlink(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.paths.langgraph_identities.mkdir(parents=True, exist_ok=True)
+    path = identity_path(workspace, "inv-1")
+    path.symlink_to(path.with_name("missing.json"))
+    with pytest.raises(RuntimeSelectionError, match="regular file"):
+        write_initializing(workspace, _record(phase="initializing"))
+    assert path.is_symlink()
+
+
+def test_identity_drift_and_phase_regression_fail_closed(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     write_initializing(workspace, _record(phase="initializing"))
     with pytest.raises(RuntimeSelectionError):

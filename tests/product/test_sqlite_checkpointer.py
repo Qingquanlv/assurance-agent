@@ -108,7 +108,7 @@ async def _factory_opens_absolute_runtime_owned_control_path(tmp_path: Path) -> 
         assert not workspace.paths.langgraph_checkpoints.is_symlink()
         assert workspace.paths.langgraph_checkpoints.is_absolute()
         assert workspace.paths.langgraph_leases.is_dir()
-        assert workspace.paths.langgraph_selections.is_dir()
+        assert workspace.paths.langgraph_identities.is_dir()
         assert await backend.full_synchronous()
         assert getattr(backend.serializer, "pickle_fallback") is False
         saver = backend.checkpointer(_identity())

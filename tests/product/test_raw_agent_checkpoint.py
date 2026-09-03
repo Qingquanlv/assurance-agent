@@ -137,26 +137,20 @@ def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
 
 def test_all_fourteen_roots_select_langgraph() -> None:
     from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
-    from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
+    from assurance_product.models import PRODUCT_ENTRYPOINTS
 
-    assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
-    flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
-    leftover = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "legacy-v2"}
-    assert flipped == set(PRODUCT_ENTRYPOINTS)
-    assert leftover == set()
-    assert leftover == set(_LEFTOVER)
-    assert flipped == set(_LANGGRAPH)
+    assert set(ENTRYPOINT_AGENT_CONTRACT_IDS) == set(PRODUCT_ENTRYPOINTS)
+    assert set(PRODUCT_ENTRYPOINTS) == set(_LANGGRAPH)
+    assert set(_LEFTOVER) == set()
     for name in _T5A_LANGGRAPH:
-        assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "langgraph-v1"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name] == ()
     for name in _T5B_LANGGRAPH | _T5C_LANGGRAPH | _T5D_LANGGRAPH:
-        assert ENTRYPOINT_RUNTIME_CUTOVER[name] == "langgraph-v1"
         assert ENTRYPOINT_AGENT_CONTRACT_IDS[name]
 
 
 def test_checkpoint_r_records_candidate_lock_and_revision(installed_sources) -> None:
     from assurance_product.product import (
-        coexistence_graph_manifest,
+        product_graph_manifest,
         product_lock_from_composition,
         resolve_assurance_composition,
     )
@@ -164,7 +158,7 @@ def test_checkpoint_r_records_candidate_lock_and_revision(installed_sources) -> 
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     product_lock = product_lock_from_composition(composition)
-    manifest = coexistence_graph_manifest(composition, product_lock)
+    manifest = product_graph_manifest(composition, product_lock)
     rows = RAW_AGENT_RUNTIME_BINDING_ROWS
     sha = _candidate_sha()
 
@@ -567,7 +561,7 @@ def test_live_opencode_cutover_binding_records_checkpoint_r(
     tmp_path: Path,
 ) -> None:
     from assurance_product.product import (
-        coexistence_graph_manifest,
+        product_graph_manifest,
         product_lock_from_composition,
         resolve_assurance_composition,
     )
@@ -575,7 +569,7 @@ def test_live_opencode_cutover_binding_records_checkpoint_r(
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     product_lock = product_lock_from_composition(composition)
-    manifest = coexistence_graph_manifest(composition, product_lock)
+    manifest = product_graph_manifest(composition, product_lock)
     rows = RAW_AGENT_RUNTIME_BINDING_ROWS
     assert {row.adapter for row in rows} == {"opencode"}
     assert {row.provider for row in rows} == {"opencode"}

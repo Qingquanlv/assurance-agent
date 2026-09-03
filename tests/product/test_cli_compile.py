@@ -217,7 +217,7 @@ def test_new_invocations_are_langgraph_without_a_selection_branch() -> None:
     assert "select_runtime" not in source
     assert "use_test_runtime_selector" not in source
     assert "ENTRYPOINT_RUNTIME_CUTOVER" not in source
-    assert "LangGraphRuntimeRecord" in source
+    assert "InvocationIdentityRecord" in source
     assert set(PRODUCT_ENTRYPOINTS)
 
 
@@ -292,9 +292,16 @@ def test_historical_leftover_evidence_is_readable_only_through_the_evidence_read
     start_source = inspect.getsource(AssuranceProductApplication.start)
     run_source = inspect.getsource(AssuranceProductApplication.run)
     resume_source = inspect.getsource(AssuranceProductApplication.resume)
-    assert "leftover workflow execution is deleted" in start_source
-    assert "leftover workflow execution is deleted" in run_source
-    assert "leftover workflow execution is deleted" in resume_source
+    resolve_source = inspect.getsource(AssuranceProductApplication._resolve_existing)
+    assert "load_identity" in start_source
+    assert "load_identity" in run_source
+    assert "load_identity" in resolve_source
+    assert "_resolve_existing" in resume_source
+    for source in (start_source, run_source, resume_source, resolve_source):
+        assert "leftover workflow execution is deleted" not in source
+        assert "read_legacy_ledger" not in source
+        assert "fold_legacy_events" not in source
+        assert "legacy-v2" not in source
 
 
 def test_aa_topology_override_is_rejected(cli_runner, installed_sources, tmp_path: Path):
