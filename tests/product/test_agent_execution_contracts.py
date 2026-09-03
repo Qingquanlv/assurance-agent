@@ -544,7 +544,7 @@ def test_transient_agent_provider_failure_retries_the_skill_node(
 
     del tmp_path, monkeypatch
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    assert composition.workflow is None
+    assert not hasattr(composition, "workflow")
     leftover_alias = "assurance.product.agent.intake.intake.execute"
     contract_id = "assurance.intake.agent.intake.v1"
     assert leftover_alias not in composition.registries.capabilities.entries

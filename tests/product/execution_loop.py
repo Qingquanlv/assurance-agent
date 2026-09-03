@@ -14,7 +14,6 @@ from graph_engine.plugin_api import (
     TaskContext,
     TaskOutcome,
 )
-from tests.product.product_runner import Engine
 from graph_engine.attempts.host_protocol import (
     TaskHostCallResult,
     TaskHostCancelCall,
@@ -23,8 +22,6 @@ from graph_engine.attempts.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.attempts.activity import InvocationProjection
-from tests.product.product_runner import empty_invocation_seed
-
 from tests.product.product_runner import (
     _PUBLIC_DIGEST,
     _product_input,
@@ -137,28 +134,8 @@ def drive_execution_loop(
         from assurance_product.product import prepare_change_workspace
 
         workspace = prepare_change_workspace(project, "CH-DEMO-001")
-        engine = Engine(workspace.paths.runtime_root, host=host)
-        try:
-            handle = engine.start(
-                composition,
-                entrypoint=entrypoint,
-                invocation_id=f"exec-loop-{uuid.uuid4().hex}",
-                seed=empty_invocation_seed(root_input=cast(JSONValue, root_input)),
-                authorization=_scripted_authorization(),
-                workspace_binding=workspace.runtime_binding(),
-            )
-            result = engine.run_until_blocked(handle)
-            projection = result.projection
-            return ExecutionLoopTrace(
-                public_exports=_public_exports(projection, composition),
-                terminal=_terminal_name(projection, result.status),
-                status=result.status,
-                advance_outputs=tuple(host.advance_outputs),
-                task_capabilities=_task_capabilities(projection, composition),
-                projection=projection,
-            )
-        finally:
-            engine.close()
+        del workspace, host, composition, root_input, entrypoint
+        raise AssertionError("leftover Engine execution loop was retired; drive LangGraph/Application instead")
 
 
 def _loop_input(
@@ -437,16 +414,10 @@ class _ExecutionLoopHost:
 
 
 def _public_exports(projection: InvocationProjection, composition) -> tuple[str, ...]:
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    del composition
     seen: list[str] = []
     for activation in projection.activations:
-        graph = graphs[activation.graph_instance_id]
-        node = composition.workflow.graphs[graph.graph_id].nodes[activation.node_id]
-        if node.definition.kind != "subgraph":
-            continue
-        graph_ref = node.definition.graph or ""
-        local_id = graph_ref.rsplit(".", 1)[-1]
-        export = _GRAPH_EXPORTS.get(local_id)
+        export = _GRAPH_EXPORTS.get(activation.node_id)
         if export is None or export in seen:
             continue
         seen.append(export)
@@ -454,16 +425,12 @@ def _public_exports(projection: InvocationProjection, composition) -> tuple[str,
 
 
 def _task_capabilities(projection: InvocationProjection, composition) -> tuple[str, ...]:
-    graphs = {item.graph_instance_id: item for item in projection.graph_instances}
+    del composition
     capabilities: list[str] = []
     for activation in projection.activations:
         if not activation.attempts:
             continue
-        graph = graphs[activation.graph_instance_id]
-        node = composition.workflow.graphs[graph.graph_id].nodes[activation.node_id]
-        if node.definition.kind != "task" or node.definition.capability is None:
-            continue
-        capabilities.append(node.definition.capability)
+        capabilities.append(activation.node_id)
     return tuple(capabilities)
 
 

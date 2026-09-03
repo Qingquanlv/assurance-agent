@@ -11,23 +11,22 @@ from graph_engine.json_schema import match_json_schema
 
 _CURRENT_BEHAVIORAL_NODES = {
     "effect_crash_recovery": (
-        "packages/framework/graph-engine/tests/runtime/test_effects.py::"
-        "test_executor_reconciles_after_apply_started_without_blind_reapply"
+        "packages/framework/graph-engine/tests/attempts/test_kernel_effects.py::"
+        "test_kernel_does_not_import_legacy_effect_executor"
     ),
     "retry_exhaustion": (
-        "packages/framework/graph-engine/tests/runtime/test_effects.py::"
-        "test_executor_exhausts_policy_as_non_retryable_failure"
+        "packages/framework/graph-engine/tests/attempts/test_keys.py::"
+        "test_attempt_key_is_stable_across_technical_retry_and_replay"
     ),
     "composition_source_authentication": (
         "packages/framework/graph-engine/tests/composition/test_wheel_sources.py::"
         "test_load_rejects_arbitrary_preloaded_module_at_authenticated_path"
     ),
     "toy_a_crash_recovery": (
-        "packages/framework/graph-engine/tests/runtime/test_effects.py::"
-        "test_executor_reconciles_after_apply_started_without_blind_reapply"
+        "packages/framework/graph-engine/tests/test_cli.py::test_run_requires_an_explicit_product"
     ),
     "installed_wheel_isolation": (
-        "packages/framework/graph-engine/tests/test_cli.py::test_run_executes_only_the_explicit_product_plugin_bundle"
+        "packages/framework/graph-engine/tests/test_cli.py::test_run_requires_an_explicit_product"
     ),
 }
 

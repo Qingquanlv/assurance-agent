@@ -1,11 +1,6 @@
 {
   "descriptor": {
-    "attempt_contracts": [
-      {
-        "contract_id": "fixture.binding.run",
-        "digest": "b85587b1891fc8fec00dab4efcf4a944e86e5fa714bde966445527a2e8765621"
-      }
-    ],
+    "attempt_contracts": [],
     "bindings": [
       "fixture.binding.run"
     ],

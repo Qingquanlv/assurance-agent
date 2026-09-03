@@ -9,7 +9,6 @@ from typing import Literal, NoReturn, cast
 import click
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue
 from graph_engine.composition import (
     CapabilityBindingEntry,
     ConfigTreePluginSource,
@@ -17,11 +16,6 @@ from graph_engine.composition import (
     WheelPluginSource,
 )
 from graph_engine.errors import GraphEngineError
-from graph_engine.runtime.driver import StartSpec, acquire_invocation
-from graph_engine.runtime.engine import Engine, EngineError, RunResult
-from graph_engine.runtime.events import InvocationStarted
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import InvocationProjection, fold_events
 from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     RuntimeAuthorizationError,
@@ -29,13 +23,12 @@ from graph_engine.attempts.secret_sources import (
     authorize_binding_secret_handles,
     runtime_authorization_digest,
 )
-from graph_engine.runtime.seed import empty_invocation_seed
 
 from assurance_product.application import AssuranceProductApplication
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.export import PublishError, publish_achieved, select_publish_change
-from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1
+from assurance_product.models import PRODUCT_ENTRYPOINTS
 from assurance_product.product import (
     AssuranceCompositionError,
     AssuranceCompositionRequest,
@@ -44,7 +37,7 @@ from assurance_product.product import (
     resolve_assurance_composition,
 )
 from assurance_product.runtime_selection import RuntimeSelectionError, SelectionCrash
-from assurance_product.status import ArchiveError, archive_published, write_runtime_projections
+from assurance_product.status import ArchiveError, archive_published
 
 _SOURCE_FLAGS = (
     "product",
@@ -83,10 +76,6 @@ class CommandError(Exception):
     def __init__(self, message: str, code: int = 40) -> None:
         super().__init__(message)
         self.code = code
-
-
-def create_engine(root: Path, authorization: InvocationRuntimeAuthorization) -> Engine:
-    return Engine.production(root, authorization=authorization)
 
 
 def main() -> None:
@@ -360,7 +349,7 @@ def status_command(
         authorization = _authorize_secrets(composition, secrets)
         workspace = _bind_workspace(Path(cast(str, project_dir)), cast(str, change), create=False)
         document = (
-            AssuranceProductApplication(engine_factory=create_engine)
+            AssuranceProductApplication()
             .status(
                 workspace=workspace,
                 composition=composition,
@@ -548,7 +537,7 @@ def lock_show(
         )
         authorization = _authorize_secrets(composition, secrets)
         workspace = _bind_workspace(Path(cast(str, project_dir)), cast(str, change), create=False)
-        document = AssuranceProductApplication(engine_factory=create_engine).lock_show(
+        document = AssuranceProductApplication().lock_show(
             workspace=workspace,
             composition=composition,
             authorization=authorization,
@@ -666,15 +655,6 @@ def _authorize_secrets(
     return authorization
 
 
-def _load_product_input(path: Path, *, entrypoint: str, composition: FrozenComposition) -> ProductInputV1:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        value = ProductInputV1.model_validate(payload)
-        return value.validate_for_entrypoint(entrypoint).authenticate_against(composition)
-    except (OSError, json.JSONDecodeError, ValidationError, ValueError) as error:
-        raise CommandError(str(error)) from error
-
-
 def _bind_workspace(project_dir: Path, change_id: str, *, create: bool) -> ChangeWorkspace:
     try:
         if create:
@@ -684,47 +664,11 @@ def _bind_workspace(project_dir: Path, change_id: str, *, create: bool) -> Chang
         raise CommandError(str(error)) from error
 
 
-def _write_projections(
-    workspace: ChangeWorkspace,
-    projection: InvocationProjection,
-    envelopes: Sequence[object],
-    *,
-    root_input_digest: str,
-) -> None:
-    try:
-        write_runtime_projections(
-            workspace,
-            projection,
-            envelopes,
-            root_input_digest=root_input_digest,
-        )
-    except (OSError, ValueError) as error:
-        raise CommandError(str(error)) from error
-
-
-def _publish_projections(
-    workspace: ChangeWorkspace,
-    invocation_root: Path,
-    projection: InvocationProjection | None = None,
-) -> tuple[InvocationProjection, dict[str, str]]:
-    envelopes = Ledger(invocation_root / "ledger").read_all()
-    identity = _start_identity(envelopes)
-    published = fold_events(envelopes) if projection is None else projection
-    _write_projections(
-        workspace,
-        published,
-        envelopes,
-        root_input_digest=identity["root_input_digest"],
-    )
-    return published, identity
-
-
 @contextmanager
 def _engine_failures() -> Iterator[None]:
     try:
         yield
     except (
-        EngineError,
         GraphEngineError,
         OSError,
         ValidationError,
@@ -734,22 +678,6 @@ def _engine_failures() -> Iterator[None]:
         ValueError,
     ) as error:
         raise CommandError(f"{type(error).__name__}: {error}") from error
-
-
-def _plan_start(
-    input_path: Path,
-    *,
-    entrypoint: str,
-    composition: FrozenComposition,
-    change_id: str,
-) -> StartSpec:
-    product_input = _load_product_input(input_path, entrypoint=entrypoint, composition=composition)
-    if product_input.change_id != change_id:
-        raise CommandError("change does not match product input change_id")
-    return StartSpec(
-        entrypoint=entrypoint,
-        seed=empty_invocation_seed(root_input=cast(JSONValue, product_input.model_dump(mode="json"))),
-    )
 
 
 def _start_invocation(
@@ -778,7 +706,7 @@ def _start_invocation(
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
-        return AssuranceProductApplication(engine_factory=create_engine).start(
+        return AssuranceProductApplication().start(
             project_dir=project_dir,
             change_id=change_id,
             invocation_id=invocation_id,
@@ -803,7 +731,7 @@ def _run_invocation(
     entrypoint: str | None,
     input_path: Path | None,
     secrets: Sequence[str],
-) -> tuple[RunResult, str]:
+) -> tuple[object, str]:
     composition, _audit = _resolve_and_audit(
         product=product,
         binding_dist=binding_dist,
@@ -814,7 +742,7 @@ def _run_invocation(
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
-        result, mapped, _code = AssuranceProductApplication(engine_factory=create_engine).run(
+        result, mapped, _code = AssuranceProductApplication().run(
             project_dir=project_dir,
             change_id=change_id,
             invocation_id=invocation_id,
@@ -842,7 +770,7 @@ def _resume_invocation(
     action: str | None,
     reason: str | None,
     resume_file: Path | None = None,
-) -> tuple[RunResult, str, int]:
+) -> tuple[object, str, int]:
     composition, _audit = _resolve_and_audit(
         product=product,
         binding_dist=binding_dist,
@@ -853,7 +781,7 @@ def _resume_invocation(
     authorization = _authorize_secrets(composition, secrets)
     workspace = _bind_workspace(project_dir, change_id, create=False)
     with _engine_failures():
-        return AssuranceProductApplication(engine_factory=create_engine).resume(
+        return AssuranceProductApplication().resume(
             workspace=workspace,
             composition=composition,
             authorization=authorization,
@@ -880,73 +808,3 @@ def _archive_change(*, project_dir: Path, change_id: str) -> dict[str, object]:
         return archive_published(Path(project_dir).resolve(), change_id)
     except (ArchiveError, ValueError, OSError) as error:
         raise CommandError(str(error)) from error
-
-
-def _read_authenticated_projection(
-    *,
-    project_dir: Path,
-    change_id: str,
-    invocation_id: str,
-    product: str,
-    binding_dist: str,
-    binding_entrypoint: str,
-    binding_declaration: str,
-    config_tree: str,
-    secrets: Sequence[str],
-) -> tuple[InvocationProjection, dict[str, str]]:
-    _composition, projection, identity = _open_authenticated(
-        project_dir=project_dir,
-        change_id=change_id,
-        invocation_id=invocation_id,
-        product=product,
-        binding_dist=binding_dist,
-        binding_entrypoint=binding_entrypoint,
-        binding_declaration=binding_declaration,
-        config_tree=config_tree,
-        secrets=secrets,
-    )
-    return projection, identity
-
-
-def _open_authenticated(
-    *,
-    project_dir: Path,
-    change_id: str,
-    invocation_id: str,
-    product: str,
-    binding_dist: str,
-    binding_entrypoint: str,
-    binding_declaration: str,
-    config_tree: str,
-    secrets: Sequence[str],
-) -> tuple[FrozenComposition, InvocationProjection, dict[str, str]]:
-    composition, _audit = _resolve_and_audit(
-        product=product,
-        binding_dist=binding_dist,
-        binding_entrypoint=binding_entrypoint,
-        binding_declaration=binding_declaration,
-        config_tree=config_tree,
-    )
-    authorization = _authorize_secrets(composition, secrets)
-    workspace = _bind_workspace(project_dir, change_id, create=False)
-    with _engine_failures():
-        with create_engine(workspace.paths.runtime_root, authorization) as engine:
-            with acquire_invocation(
-                engine,
-                composition,
-                invocation_id=invocation_id,
-                authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-                start=None,
-            ) as handle:
-                projection, identity = _publish_projections(workspace, handle.invocation_root)
-    return composition, projection, identity
-
-
-def _start_identity(envelopes: Sequence[object]) -> dict[str, str]:
-    if not envelopes:
-        raise CommandError("invocation has no ledger bootstrap")
-    event = getattr(envelopes[0], "event", None)
-    if not isinstance(event, InvocationStarted):
-        raise CommandError("invocation ledger lacks its canonical bootstrap")
-    return {"root_input_digest": event.root_input_digest}

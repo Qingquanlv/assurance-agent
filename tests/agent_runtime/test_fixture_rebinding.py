@@ -237,8 +237,8 @@ def _activate_editable_imports(request: ResolutionRequest) -> None:
 
 
 def _workflow_input(composition: Any) -> object:
-    graph = composition.workflow.graphs[composition.manifest.entrypoints["run"]]
-    return thaw_json(graph.nodes[graph.start].definition.input)
+    del composition
+    return assemble_request(fixture_resources(), fixture_config()).model_dump(mode="json")
 
 
 async def resolve_fixture_composition(target: str) -> FixtureBinding:
@@ -598,7 +598,11 @@ async def test_adapter_rebinding_changes_lock_and_evidence_not_request() -> None
     assert opencode.result is not None and cursor.result is not None
     assert opencode.result.result_payload == cursor.result.result_payload == _STRUCTURED
     assert opencode.result.evidence_digest != cursor.result.evidence_digest
-    assert opencode.composition.manifest.workflow == cursor.composition.manifest.workflow
+    assert (
+        opencode.composition.manifest.graph_factory_symbol
+        == cursor.composition.manifest.graph_factory_symbol
+        == "agent_runtime_fixture.product:build_fixture_graphs"
+    )
     assert (
         opencode.composition.registries.resources.entries["fixture.runtime.instructions"].content
         == cursor.composition.registries.resources.entries["fixture.runtime.instructions"].content

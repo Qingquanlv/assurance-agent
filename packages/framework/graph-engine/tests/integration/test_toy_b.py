@@ -126,7 +126,7 @@ def test_toy_b_static_declarations_match_live_providers(
     composition = _toy_composition(tmp_path, monkeypatch, "b")
     assert composition.manifest.product_id == "toy.b"
     assert composition.manifest.graph_factory_symbol == "graph_engine_toy_b.product:build_toy_b_graphs"
-    assert composition.workflow is None
+    assert not hasattr(composition, "workflow")
     assert isinstance(composition.lock, ProductLock)
     assert tuple(descriptor.plugin_id for descriptor in composition.descriptors) == ("toy.b",)
 
@@ -186,5 +186,5 @@ async def test_toy_b_replay_is_deterministic_and_products_are_separate(
     assert toy_a.manifest.product_id == "toy.a"
     assert toy_b.manifest.product_id == "toy.b"
     assert toy_a.lock_digest != toy_b.lock_digest
-    assert toy_a.workflow is None
-    assert toy_b.workflow is None
+    assert not hasattr(toy_a, "workflow")
+    assert not hasattr(toy_b, "workflow")

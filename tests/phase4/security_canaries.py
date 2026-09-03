@@ -8,17 +8,16 @@ import logging
 from pathlib import Path
 import uuid
 
-from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.schema import bound_redacted_diagnostics
-from graph_engine.canonical import JSONValue, canonical_json_bytes
-from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import SecretHandleUnauthorized, TaskOutcome
+from graph_engine.plugin_api import SecretHandleUnauthorized
 
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.phase4.six_wheel_harness import (
     CASE_REVIEW_STRUCTURED,
     SixWheelTaskHost,
-    _engine_call,
+    _Phase4NodeOutput,
+    _application_call,
+    _fixture_agent_request,
     _import_activation,
     _start_until_blocked,
     resolve_fixture,
@@ -58,7 +57,8 @@ class CanaryTaskHost(SixWheelTaskHost):
         self.secrets = UniqueCanarySecretPort(canary.encode("utf-8"))
         self.diagnostics: tuple[str, ...] = ()
 
-    def _execute_fake(self, payload: JSONValue) -> TaskOutcome:
+    async def execute_canary(self, validated_input: object, context: object) -> _Phase4NodeOutput:
+        del validated_input, context
         resolved = self.secrets.resolve("phase4.canary").decode("utf-8")
         leaking = (
             f"Authorization: Bearer {resolved}",
@@ -66,16 +66,14 @@ class CanaryTaskHost(SixWheelTaskHost):
             f"api_key={resolved}",
         )
         self.diagnostics = bound_redacted_diagnostics(leaking)
-        agent_request = AgentRunRequest.model_validate(payload)
-        self.recorded_request_bytes = agent_request.canonical_bytes()
-        result = FakeAgentAdapter(
+        request = _fixture_agent_request()
+        self.recorded_request_bytes = request.canonical_bytes()
+        FakeAgentAdapter(
             CASE_REVIEW_STRUCTURED,
             adapter_id=self.adapter_id,
             adapter_version="1.0.0",
-        ).execute_request(agent_request)
-        dumped = result.model_dump(mode="json")
-        dumped["diagnostics"] = list(self.diagnostics)
-        return TaskOutcome.succeeded(dumped)
+        ).execute_request(request)
+        return _Phase4NodeOutput()
 
 
 def inject_unique_canaries() -> CanaryScan:
@@ -89,21 +87,18 @@ def inject_unique_canaries() -> CanaryScan:
     )
     engine_root = resolved.workspace / "canary-engine"
     with _import_activation(resolved.product_root, resolved.workspace):
-        result, invocation_root = _engine_call(
+        result, invocation_root, *_rest = _application_call(
             _start_until_blocked,
             engine_root,
             host,
             resolved.composition,
             "phase4-canary-inv",
+            execute=host.execute_canary,
         )
     logs = _captured_text(handler, stream)
     host.secrets.revoke()
-    output_text = (
-        canonical_json_bytes(thaw_json(result.output)).decode("utf-8") if result.output is not None else ""
-    )
     texts = (
         result.status,
-        output_text,
         str(result),
         logs,
         *host.diagnostics,

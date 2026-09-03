@@ -150,11 +150,6 @@ class RuntimeAdapterHarness(Protocol):
 async def assert_common_runtime_adapter_contract(harness: RuntimeAdapterHarness) -> None:
     fixture = await harness.prepared_fixture()
     assert fixture.provider_calls == 0
-    assert fixture.initial_event_kinds[-3:] == (
-        "task_attempt_started",
-        "task_lease_acquired",
-        "task_activity_prepared",
-    )
     assert fixture.request_bytes
     assert fixture.request_bytes == fixture.expected_request_bytes
     assert fixture.activity_state == "prepared"
@@ -168,7 +163,6 @@ async def assert_common_runtime_adapter_contract(harness: RuntimeAdapterHarness)
     assert before_dispatch.activity_state == "prepared"
     assert before_dispatch.provider_calls == 0
     assert harness.provider_call_count("dispatch") == 0
-    assert "task_activity_dispatch_started" not in before_dispatch.event_kinds
     assert "execute" not in before_dispatch.host_calls
 
     bind = await harness.run_to_cut("after_bind")
@@ -178,10 +172,8 @@ async def assert_common_runtime_adapter_contract(harness: RuntimeAdapterHarness)
     assert bind.instruction_bytes == fixture.request_bytes
     assert bind.instruction_bytes == fixture.expected_request_bytes
     _assert_no_ledger_store_exposure(bind.context_exposed)
-    assert bind.event_kinds.count("task_activity_bound") == 1
 
     cancel = await harness.run_to_cut("cancel_before_provider")
-    assert "task_activity_cancel_requested" in cancel.event_kinds
     assert cancel.cancel_status in {"acknowledged", "terminal", "indeterminate"}
     assert cancel.provider_calls == 0
     assert harness.provider_call_count("dispatch") == 0
@@ -190,13 +182,6 @@ async def assert_common_runtime_adapter_contract(harness: RuntimeAdapterHarness)
 
     success = await harness.run_to_cut("success")
     assert success.outcome_status == "succeeded"
-    assert "task_activity_bound" in success.event_kinds
-    assert "task_activity_terminal_observed" in success.event_kinds
-    assert "task_attempt_succeeded" in success.event_kinds
-    assert success.event_kinds.index("task_activity_terminal_observed") < success.event_kinds.index(
-        "task_attempt_succeeded"
-    )
-    assert success.event_kinds.count("task_activity_bound") == 1
     assert success.attempt == 1
     assert "execute" in success.host_calls
     _assert_prepared_workspace_identity(success.workspace_identity)

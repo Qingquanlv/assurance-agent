@@ -14,8 +14,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
-from graph_engine.runtime.events import EventEnvelope, RuntimeEvent
-from graph_engine.runtime.models import fold_events
+from graph_engine.evidence.events import EventEnvelope, RuntimeEvent
+from graph_engine.evidence.models import fold_events
 
 
 _FINAL_BATCH = re.compile(r"^(?P<first>[0-9]{10})-(?P<last>[0-9]{10})\.json$")

@@ -9,8 +9,8 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
-from graph_engine.runtime.events import EventEnvelope
-from graph_engine.runtime.models import InvocationProjection, ProjectionError, fold_events
+from graph_engine.evidence.events import EventEnvelope
+from graph_engine.evidence.models import InvocationProjection, ProjectionError, fold_events
 
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"

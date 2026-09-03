@@ -61,7 +61,6 @@ def _descriptor(source: ProviderSource, adapter_plugin_id: str) -> PluginDescrip
             PluginDependency(plugin_id=adapter_plugin_id, version_specifier="==0.1.0"),
         ),
         bindings=(RUN_CAPABILITY_ID,),
-        attempt_contracts=(RUN_CONTRACT_REF,),
     )
 
 
@@ -77,7 +76,6 @@ def _contribute(target: str, adapter: dict[str, JSONValue]) -> PluginContributio
                 },
             ),
         ),
-        attempt_contracts=(RUN_CONTRACT_REF,),
     )
 
 

@@ -57,8 +57,8 @@ def test_adapter_selections_have_different_composition_and_lock_digests() -> Non
     cursor = resolve_fixture("phase4-cursor")
     assert opencode.digest != cursor.digest
     assert opencode.lock_digest != cursor.lock_digest
-    assert opencode.composition.manifest.workflow is None
-    assert cursor.composition.manifest.workflow is None
+    assert not hasattr(opencode.composition.manifest, "workflow")
+    assert not hasattr(cursor.composition.manifest, "workflow")
     assert (
         opencode.composition.manifest.graph_factory_symbol
         == cursor.composition.manifest.graph_factory_symbol

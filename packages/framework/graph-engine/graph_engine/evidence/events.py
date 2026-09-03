@@ -13,7 +13,7 @@ from graph_engine.plugin_api import (
     TaskOutcome,
     TaskWorkspaceIdentity,
 )
-from graph_engine.runtime.frozen_json import FrozenJSONValue, thaw_json
+from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 
 
 _STRICT_FROZEN = ConfigDict(

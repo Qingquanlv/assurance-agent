@@ -13,7 +13,7 @@ from typing import Literal, cast
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import thaw_json
-from graph_engine.runtime.models import (
+from graph_engine.evidence.models import (
     ActivationRecord,
     AttemptRecord,
     GraphInstanceRecord,

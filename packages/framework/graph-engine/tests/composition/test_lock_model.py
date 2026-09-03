@@ -4,7 +4,6 @@ import hashlib
 import base64
 import json
 import math
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -14,8 +13,6 @@ from graph_engine.composition import (
     ExecutableKind,
     ExecutableModuleProvenance,
     ExecutableProvenance,
-    ExecutionHostLock,
-    InvocationLock,
     LockedDependency,
     LockedPlugin,
     LockedProduct,
@@ -31,7 +28,6 @@ from graph_engine.composition.provenance import StandardLoader
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
-
 
 _A = "a" * 64
 _B = "b" * 64
@@ -55,7 +51,7 @@ def _empty_contribution(plugin_id: str, source_digest: str) -> dict[str, object]
     }
 
 
-def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
+def _lock(*, reverse_manifest: bool = False) -> ProductLock:
     product_expectation = ProviderSource(
         distribution="toy-a",
         version="1.0.0",
@@ -63,7 +59,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
         entrypoint_name="toy.a",
         entrypoint_value="toy_a.product:provider",
         declaration_path="toy_a/product-declaration.json",
-        import_roots=("",),
+        import_roots=("", "toy_a"),
     )
     manifest_items = [
         ("schema_version", "1"),
@@ -75,8 +71,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
         ("entrypoints", {"你好": "根"}),
         ("configuration", {}),
         ("config_plugin_paths", []),
-        ("workflow", None),
-        ("workflow_resource_id", "toy.workflow"),
+        ("graph_factory_symbol", "toy_a.product:provider"),
     ]
     manifest = dict(reversed(manifest_items) if reverse_manifest else manifest_items)
     product_source = LockedSource(
@@ -88,7 +83,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             "entrypoint_name": "toy.a",
             "entrypoint_value": "toy_a.product:provider",
             "declaration_path": "toy_a/product-declaration.json",
-            "import_roots": [""],
+            "import_roots": ["", "toy_a"],
         },
         digest=_A,
         files=(LockedSourceFile(path="toy_a/product.py", sha256=_B),),
@@ -297,12 +292,7 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
             "target_implementation": task_provenance.projection(),
         }
     ]
-    compiled_workflow = {
-        "entrypoints": {"你好": "根"},
-        "graphs": {"根": {"start": "node"}},
-        "name": "toy",
-    }
-    return InvocationLock.create(
+    return ProductLock.create(
         engine_api="2.0",
         engine=engine_source,
         engine_digest=_F,
@@ -315,13 +305,11 @@ def _lock(*, reverse_manifest: bool = False) -> InvocationLock:
         configuration_digest=canonical_digest(configuration),
         capability_bindings=capability_bindings,
         capability_bindings_digest=canonical_digest(capability_bindings),
-        compiled_workflow=compiled_workflow,
-        compiled_workflow_digest=canonical_digest(compiled_workflow),
     )
 
 
 def _recreate_lock(
-    lock: InvocationLock,
+    lock: ProductLock,
     *,
     registry_projections: RegistryProjections | None = None,
     registry_digests: RegistryDigests | None = None,
@@ -329,13 +317,11 @@ def _recreate_lock(
     configuration_digest: str | None = None,
     capability_bindings: object | None = None,
     capability_bindings_digest: str | None = None,
-    compiled_workflow: object | None = None,
-    compiled_workflow_digest: str | None = None,
     product: LockedProduct | None = None,
     plugins: tuple[LockedPlugin, ...] | None = None,
     dependency_order: tuple[str, ...] | None = None,
-) -> InvocationLock:
-    return InvocationLock.create(
+) -> ProductLock:
+    return ProductLock.create(
         engine_api=lock.engine_api,
         engine=lock.engine,
         engine_digest=lock.engine_digest,
@@ -350,97 +336,31 @@ def _recreate_lock(
             lock.capability_bindings if capability_bindings is None else capability_bindings
         ),
         capability_bindings_digest=(capability_bindings_digest or lock.capability_bindings_digest),
-        compiled_workflow=(lock.compiled_workflow if compiled_workflow is None else compiled_workflow),
-        compiled_workflow_digest=(compiled_workflow_digest or lock.compiled_workflow_digest),
     )
 
 
-def test_invocation_lock_has_one_golden_canonical_projection() -> None:
+def test_product_lock_has_one_canonical_projection() -> None:
     lock = _lock()
+    payload = json.loads(lock.canonical_bytes)
 
-    expected = (
-        Path(__file__)
-        .with_name("invocation-lock-v2.golden.json")
-        .read_text(encoding="utf-8")
-        .strip()
-        .encode()
-    )
-    assert lock.canonical_bytes == expected
-    assert lock.digest == hashlib.sha256(expected).hexdigest()
+    assert lock.schema_version == "3"
+    assert lock.digest == hashlib.sha256(lock.canonical_bytes).hexdigest()
     assert b'"canonical_bytes"' not in lock.canonical_bytes
-    assert "digest" not in json.loads(lock.canonical_bytes)
+    assert "digest" not in payload
+    assert "compiled_workflow" not in payload
+    assert "compiled_workflow_digest" not in payload
+    assert "execution_host" not in payload
+    assert payload["schema_version"] == "3"
+    assert payload["product"]["manifest"]["graph_factory_symbol"] == "toy_a.product:provider"
 
 
-def test_lock_golden_omits_none_contract_id() -> None:
+def test_lock_omits_none_contract_id() -> None:
     lock = _lock()
-    expected = (
-        Path(__file__)
-        .with_name("invocation-lock-v2.golden.json")
-        .read_text(encoding="utf-8")
-        .strip()
-        .encode()
-    )
-    assert lock.canonical_bytes == expected
     assert b'"contract_id"' not in lock.canonical_bytes
     payload = json.loads(lock.canonical_bytes)
     assert all("contract_id" not in binding for binding in payload["plugins"][0]["contribution"]["bindings"])
     assert all("contract_id" not in entry for entry in payload["registry_projections"]["capabilities"])
     assert all("contract_id" not in binding for binding in payload["capability_bindings"])
-
-
-def test_invocation_lock_schema_version_stays_2_when_modular_fields_unset() -> None:
-    lock = _lock()
-    assert lock.schema_version == "2"
-    payload = json.loads(lock.canonical_bytes)
-    manifest = payload["product"]["manifest"]
-    assert "workflow_module" not in manifest
-    assert "workflow_module_resources" not in manifest
-    assert "workflow_slot_bindings" not in manifest
-
-
-def test_invocation_lock_schema_version_2_pins_execution_host() -> None:
-    lock = _lock()
-    assert lock.schema_version == "2"
-    assert lock.execution_host.implementation_id == "graph.engine.task-host"
-    assert lock.execution_host.wire_schema_version == "1"
-    assert b'"execution_host"' in lock.canonical_bytes
-    assert b'"schema_version":"2"' in lock.canonical_bytes
-    payload = json.loads(lock.canonical_bytes)
-    assert "execution_host" in payload
-    assert payload["execution_host"]["implementation_id"] == "graph.engine.task-host"
-
-
-def test_invocation_lock_rejects_schema_version_1_and_foreign_host() -> None:
-    lock = _lock()
-    with pytest.raises(ValidationError):
-        InvocationLock(
-            **{**lock.model_dump(exclude={"canonical_bytes", "digest"}), "schema_version": "1"},
-            canonical_bytes=lock.canonical_bytes,
-            digest=lock.digest,
-        )
-    drifted = ExecutionHostLock(
-        implementation_id="graph.engine.other-host",
-        implementation_digest=lock.execution_host.implementation_digest,
-        wire_schema_version="1",
-    )
-    with pytest.raises((ValidationError, TypeError, ValueError), match="execution host"):
-        InvocationLock.create(
-            engine_api=lock.engine_api,
-            engine=lock.engine,
-            engine_digest=lock.engine_digest,
-            product=lock.product,
-            plugins=lock.plugins,
-            dependency_order=lock.dependency_order,
-            registry_projections=lock.registry_projections,
-            registry_digests=lock.registry_digests,
-            configuration=lock.configuration,
-            configuration_digest=lock.configuration_digest,
-            capability_bindings=lock.capability_bindings,
-            capability_bindings_digest=lock.capability_bindings_digest,
-            compiled_workflow=lock.compiled_workflow,
-            compiled_workflow_digest=lock.compiled_workflow_digest,
-            execution_host=drifted,
-        )
 
 
 def test_lock_projection_normalizes_unicode_map_and_tuple_order() -> None:
@@ -475,7 +395,7 @@ def test_invocation_lock_rejects_noncanonical_bytes_and_digest() -> None:
     lock = _lock()
 
     with pytest.raises(ValidationError, match="canonical bytes"):
-        InvocationLock(
+        ProductLock(
             **lock.model_dump(exclude={"canonical_bytes", "digest"}),
             canonical_bytes=b"{}",
             digest=hashlib.sha256(b"{}").hexdigest(),
@@ -503,7 +423,7 @@ def test_invocation_lock_recomputes_exact_dependency_closure() -> None:
     with pytest.raises(ValidationError, match="dependency declarations"):
         _recreate_lock(lock, plugins=(invalid,))
     with pytest.raises(ValidationError, match="digest"):
-        InvocationLock(
+        ProductLock(
             **lock.model_dump(exclude={"canonical_bytes", "digest"}),
             canonical_bytes=lock.canonical_bytes,
             digest=_A,
@@ -778,8 +698,6 @@ def test_lock_authenticates_auditable_projections_against_their_digests() -> Non
             capability_bindings=[],
             capability_bindings_digest=canonical_digest([]),
         )
-    with pytest.raises(ValidationError, match="workflow digest"):
-        _recreate_lock(lock, compiled_workflow={"entrypoints": {}, "graphs": {}, "name": "toy"})
 
 
 def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
@@ -810,21 +728,7 @@ def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
 
 
 def _product_lock() -> ProductLock:
-    lock = _lock()
-    return ProductLock.create(
-        engine_api=lock.engine_api,
-        engine=lock.engine,
-        engine_digest=lock.engine_digest,
-        product=lock.product,
-        plugins=lock.plugins,
-        dependency_order=lock.dependency_order,
-        registry_projections=lock.registry_projections,
-        registry_digests=lock.registry_digests,
-        configuration=lock.configuration,
-        configuration_digest=lock.configuration_digest,
-        capability_bindings=lock.capability_bindings,
-        capability_bindings_digest=lock.capability_bindings_digest,
-    )
+    return _lock()
 
 
 def test_product_lock_v3_omits_compiled_workflow_and_execution_host() -> None:

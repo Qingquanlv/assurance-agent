@@ -47,7 +47,7 @@ from graph_engine.attempts.host_receipts import (
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.runtime.ledger import Ledger
+from graph_engine.evidence.ledger import Ledger
 from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     resolve_secret_source,

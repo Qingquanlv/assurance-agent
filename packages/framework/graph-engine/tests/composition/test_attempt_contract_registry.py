@@ -304,18 +304,9 @@ def test_product_lock_v3_digest_changes_with_attempt_registry() -> None:
     assert base_lock.registry_digests.attempt_contracts != changed_lock.registry_digests.attempt_contracts
 
 
-def test_invocation_lock_v2_golden_bytes_do_not_change() -> None:
+def test_product_lock_omits_empty_attempt_contracts() -> None:
     lock = _lock()
-    expected = (
-        __import__("pathlib")
-        .Path(__file__)
-        .with_name("invocation-lock-v2.golden.json")
-        .read_text(encoding="utf-8")
-        .strip()
-        .encode()
-    )
-    assert lock.canonical_bytes == expected
-    assert lock.schema_version == "2"
+    assert lock.schema_version == "3"
     assert b"attempt_contracts" not in lock.canonical_bytes
 
 

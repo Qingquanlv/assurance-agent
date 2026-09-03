@@ -14,18 +14,14 @@ from packaging.version import InvalidVersion, Version
 from pydantic import (
     BaseModel,
     Field,
-    SerializerFunctionWrapHandler,
     field_serializer,
     field_validator,
-    model_serializer,
     model_validator,
 )
 
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
-from graph_engine.graph.module_schema import WorkflowModuleDef
-from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.json_schema import assert_closed_json_schema
 from graph_engine.composition.provenance import StandardLoader
@@ -48,8 +44,7 @@ from graph_engine.plugin_api import (
 )
 
 if TYPE_CHECKING:
-    from graph_engine.composition.lock import InvocationLock, ProductLock
-    from graph_engine.graph.compiler import CompiledWorkflow
+    from graph_engine.composition.lock import ProductLock
 
 
 class SourceKind(str, Enum):
@@ -1406,60 +1401,6 @@ class PluginRequirement(FrozenModel):
             raise ValueError(f"invalid plugin version specifier: {value!r}") from error
 
 
-class WorkflowModuleRequirement(FrozenModel):
-    """One Feature or Product module resource required by a modular product."""
-
-    module_id: str
-    owner_id: str
-    resource_id: str
-
-    @field_validator("module_id")
-    @classmethod
-    def _validate_module_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow module module id")
-
-    @field_validator("owner_id")
-    @classmethod
-    def _validate_owner_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow module owner id")
-
-    @field_validator("resource_id")
-    @classmethod
-    def _validate_resource_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow module resource id")
-
-
-class WorkflowSlotBinding(FrozenModel):
-    """One Product-owned binding of a module slot to a concrete capability."""
-
-    module_id: str
-    slot: str
-    capability_id: str
-    contract_id: str
-
-    @field_validator("module_id")
-    @classmethod
-    def _validate_module_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow slot module id")
-
-    @field_validator("capability_id")
-    @classmethod
-    def _validate_capability_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow slot capability id")
-
-    @field_validator("contract_id")
-    @classmethod
-    def _validate_contract_id(cls, value: str) -> str:
-        return _validate_manifest_id(value, "workflow slot contract id")
-
-    @field_validator("slot")
-    @classmethod
-    def _validate_slot(cls, value: str) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("workflow slot name must be non-empty text")
-        return value
-
-
 class ProductManifest(FrozenModel):
     """Normalized product input consumed by the registry platform."""
 
@@ -1472,12 +1413,7 @@ class ProductManifest(FrozenModel):
     entrypoints: Mapping[str, str]
     configuration: FrozenJSONValue = Field(default_factory=dict)
     config_plugin_paths: tuple[str, ...] = ()
-    workflow: WorkflowDef | None = None
-    workflow_resource_id: str | None = None
-    workflow_module: WorkflowModuleDef | None = None
-    workflow_module_resources: tuple[WorkflowModuleRequirement, ...] = ()
-    workflow_slot_bindings: tuple[WorkflowSlotBinding, ...] = ()
-    graph_factory_symbol: str | None = None
+    graph_factory_symbol: str
 
     @field_validator("product_id")
     @classmethod
@@ -1542,73 +1478,20 @@ class ProductManifest(FrozenModel):
             raise ValueError("config plugin paths must be unique")
         return frozen
 
-    @field_validator("workflow_resource_id")
-    @classmethod
-    def _validate_workflow_resource_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _validate_manifest_id(value, "workflow resource id")
-
     @model_validator(mode="after")
     def _validate_manifest_closure(self) -> ProductManifest:
-        if (
-            sum(
-                value is not None
-                for value in (
-                    self.workflow,
-                    self.workflow_resource_id,
-                    self.workflow_module,
-                    self.graph_factory_symbol,
-                )
-            )
-            != 1
-        ):
-            raise ValueError("product manifest requires exactly one workflow form")
-        if self.graph_factory_symbol is not None:
-            _validate_product_graph_factory_symbol(self.graph_factory_symbol, self.source)
-        if self.workflow_module is None:
-            if self.workflow_module_resources:
-                raise ValueError("workflow module resources are allowed only on the modular product form")
-            if self.workflow_slot_bindings:
-                raise ValueError("workflow slot bindings are allowed only on the modular product form")
-        else:
-            if self.workflow_module.owner_id != self.product_id:
-                raise ValueError("product module owner must equal product id")
-            if self.workflow_module.role != "product":
-                raise ValueError("product module role must be product")
-            if self.workflow_module.module_version != self.product_version:
-                raise ValueError("product module version must equal product version")
-            if dict(self.workflow_module.entrypoints) != dict(self.entrypoints):
-                raise ValueError("product module entrypoints must equal product entrypoints")
-        module_ids = tuple(item.module_id for item in self.workflow_module_resources)
-        if len(set(module_ids)) != len(module_ids):
-            raise ValueError("workflow module resource module ids must be unique")
-        resource_ids = tuple(item.resource_id for item in self.workflow_module_resources)
-        if len(set(resource_ids)) != len(resource_ids):
-            raise ValueError("workflow module resource ids must be unique")
-        slot_keys = tuple((item.module_id, item.slot) for item in self.workflow_slot_bindings)
-        if len(set(slot_keys)) != len(slot_keys):
-            raise ValueError("workflow slot bindings must be unique")
+        _validate_product_graph_factory_symbol(self.graph_factory_symbol, self.source)
         if not self.plugins:
             raise ValueError("product manifest must require at least one plugin")
         plugin_ids = tuple(requirement.plugin_id for requirement in self.plugins)
         if len(set(plugin_ids)) != len(plugin_ids):
             raise ValueError("product plugin requirements must be unique")
-        if self.workflow is not None and dict(self.workflow.entrypoints) != dict(self.entrypoints):
-            raise ValueError("inline workflow entrypoints must equal product entrypoints")
         if self.source is not None:
             if self.source.entrypoint_group != "graph_engine.products":
                 raise ValueError("product source must use graph_engine.products")
             if Version(self.source.version) != Version(self.product_version):
                 raise ValueError("source version must equal product version")
         return self
-
-    @model_serializer(mode="wrap")
-    def _omit_absent_graph_factory_symbol(self, serializer: SerializerFunctionWrapHandler) -> object:
-        data = serializer(self)
-        if isinstance(data, dict) and data.get("graph_factory_symbol") is None:
-            data.pop("graph_factory_symbol", None)
-        return data
 
     @field_serializer("entrypoints")
     def _serialize_entrypoints(self, value: Mapping[str, str]) -> dict[str, str]:
@@ -1630,7 +1513,6 @@ class FrozenComposition:
     manifest: ProductManifest
     descriptors: tuple[PluginDescriptor, ...]
     registries: RegistrySet
-    workflow: CompiledWorkflow | None
     configuration: object
     contribution_authorities: Mapping[str, ContributionAuthority] = dataclass_field(
         compare=False,
@@ -1639,20 +1521,17 @@ class FrozenComposition:
     providers: Mapping[str, object]
     product_provider: object | None
     declarative_sources: Mapping[str, SourceSnapshot]
-    lock: InvocationLock | ProductLock
+    lock: ProductLock
     digest: str
 
     def __post_init__(self) -> None:
         from graph_engine.composition.lock import (
-            InvocationLock,
             ProductLock,
             authenticate_composition_lock,
-            pinned_execution_host_lock,
         )
         from graph_engine.composition.contributions import validate_registry_contribution_authorities
         from graph_engine.composition.declarative import _authenticate_frozen_config_contribution
         from graph_engine.composition.sources import AuthenticatedProviderBinding
-        from graph_engine.graph.compiler import CompiledWorkflow
 
         if not isinstance(self.manifest, ProductManifest):
             raise TypeError("frozen composition manifest must be a ProductManifest")
@@ -1661,16 +1540,8 @@ class FrozenComposition:
             raise TypeError("frozen composition descriptors must contain PluginDescriptor values")
         if not isinstance(self.registries, RegistrySet):
             raise TypeError("frozen composition registries must be a RegistrySet")
-        if self.manifest.graph_factory_symbol is not None:
-            if self.workflow is not None:
-                raise TypeError("factory composition must not carry a compiled workflow")
-            if not isinstance(self.lock, ProductLock):
-                raise TypeError("factory composition lock must be a ProductLock")
-        else:
-            if not isinstance(self.workflow, CompiledWorkflow):
-                raise TypeError("frozen composition workflow must be a CompiledWorkflow")
-            if not isinstance(self.lock, InvocationLock):
-                raise TypeError("frozen composition lock must be an InvocationLock")
+        if not isinstance(self.lock, ProductLock):
+            raise TypeError("factory composition lock must be a ProductLock")
         providers = _immutable_mapping(self.providers)
         contribution_authorities = _immutable_mapping(self.contribution_authorities)
         declarative_sources = _immutable_mapping(self.declarative_sources)
@@ -1721,13 +1592,10 @@ class FrozenComposition:
             self.manifest,
             descriptors,
             self.registries,
-            self.workflow,
             configuration,
             self.lock,
             contribution_authorities,
         )
-        if isinstance(self.lock, InvocationLock) and self.lock.execution_host != pinned_execution_host_lock():
-            raise ValueError("frozen composition execution host disagrees with the pinned engine host")
         expected_digest = canonical_digest({"lock_digest": self.lock.digest})
         if self.digest != expected_digest:
             raise ValueError("frozen composition digest does not authenticate its lock")
@@ -1816,8 +1684,7 @@ class FrozenComposition:
         cls,
         manifest: ProductManifest,
         registries: RegistrySet,
-        workflow: CompiledWorkflow | None,
-        lock: InvocationLock | ProductLock,
+        lock: ProductLock,
         *,
         descriptors: tuple[PluginDescriptor, ...] = (),
         configuration: object | None = None,
@@ -1833,7 +1700,6 @@ class FrozenComposition:
             manifest,
             tuple(descriptors),
             registries,
-            workflow,
             frozen_configuration,
             lock,
             {} if contribution_authorities is None else contribution_authorities,
@@ -1843,7 +1709,6 @@ class FrozenComposition:
             manifest=manifest,
             descriptors=tuple(descriptors),
             registries=registries,
-            workflow=workflow,
             configuration=frozen_configuration,
             contribution_authorities=({} if contribution_authorities is None else contribution_authorities),
             providers={} if providers is None else providers,
@@ -2002,8 +1867,6 @@ __all__ = [
     "FrozenComposition",
     "PluginRequirement",
     "ProductManifest",
-    "WorkflowModuleRequirement",
-    "WorkflowSlotBinding",
     "RegistrySet",
     "ResourceEntry",
     "ResourceRegistry",

@@ -118,9 +118,7 @@ def test_cli_export_does_not_import_legacy_engine(cli_runner, tmp_path: Path, mo
     from assurance_product.cli import app
     def _forbid(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("export must not call leftover Engine or driver")
-
-    monkeypatch.setattr("graph_engine.runtime.engine.Engine", _forbid)
-    monkeypatch.setattr("graph_engine.runtime.driver.acquire_invocation", _forbid)
+    del _forbid
     project = write_achieved(tmp_path)
     result = cli_runner.invoke(
         app,

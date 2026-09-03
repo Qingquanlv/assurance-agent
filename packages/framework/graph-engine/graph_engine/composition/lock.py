@@ -8,7 +8,14 @@ from typing import Literal, Self, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
-from pydantic import Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
+from pydantic import (
+    Field,
+    SerializerFunctionWrapHandler,
+    ValidationError,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
@@ -21,6 +28,7 @@ from graph_engine.composition.models import (
     CapabilityBindingEntry,
     CommitValidatorEntry,
     ContributionAuthority,
+    PluginRequirement,
     ProductManifest,
     RegistrySet,
     SourceIdentity,
@@ -32,15 +40,39 @@ from graph_engine.composition.models import (
 )
 from graph_engine.composition.dependencies import DependencyConflict, resolve_dependency_order
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
-from graph_engine.graph.compiler import CompiledWorkflow
-from graph_engine.graph.module_schema import WorkflowModuleDef
-from graph_engine.graph.schema import GraphDef, WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel, PluginDescriptor, ProviderSource
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 TASK_HOST_IMPLEMENTATION_ID = "graph.engine.task-host"
+
+
+class HistoricalProductManifest(FrozenModel):
+    """Read-only leftover v2 product document embedded in InvocationLock."""
+
+    schema_version: Literal["1"]
+    source: ProviderSource | None
+    product_id: str
+    product_version: str
+    engine_api: str
+    plugins: tuple[PluginRequirement, ...]
+    entrypoints: Mapping[str, str]
+    configuration: FrozenJSONValue = Field(default_factory=dict)
+    config_plugin_paths: tuple[str, ...] = ()
+    graph_factory_symbol: str | None = None
+    workflow: FrozenJSONValue | None = None
+    workflow_resource_id: str | None = None
+    workflow_module: FrozenJSONValue | None = None
+    workflow_module_resources: tuple[FrozenJSONValue, ...] = ()
+    workflow_slot_bindings: tuple[FrozenJSONValue, ...] = ()
+
+
+def _parse_locked_manifest(manifest: object) -> ProductManifest | HistoricalProductManifest:
+    try:
+        return ProductManifest.model_validate(manifest)
+    except (TypeError, ValueError, ValidationError):
+        return HistoricalProductManifest.model_validate(manifest)
 TASK_HOST_WIRE_SCHEMA_VERSION: Literal["1"] = "1"
 
 
@@ -160,8 +192,8 @@ class LockedProduct(FrozenModel):
         if canonical_digest(manifest) != self.manifest_digest:
             raise ValueError("locked product manifest digest does not authenticate its projection")
         try:
-            parsed_manifest = ProductManifest.model_validate(manifest)
-        except (TypeError, ValueError) as error:
+            parsed_manifest = _parse_locked_manifest(manifest)
+        except (TypeError, ValueError, ValidationError) as error:
             raise ValueError("locked product manifest violates its frozen schema") from error
         if (
             parsed_manifest.product_id != self.product_id
@@ -440,7 +472,7 @@ class InvocationLock(FrozenModel):
         if set(self.dependency_order) != set(plugin_ids):
             raise ValueError("invocation lock dependency order disagrees with locked plugins")
         try:
-            manifest = ProductManifest.model_validate(thaw_json(self.product.manifest))
+            manifest = _parse_locked_manifest(thaw_json(self.product.manifest))
             expected_order = resolve_dependency_order(
                 {plugin.plugin_id: plugin.descriptor for plugin in self.plugins},
                 manifest.plugins,
@@ -469,8 +501,8 @@ class InvocationLock(FrozenModel):
             raise ValueError("invocation lock compiled workflow must be a mapping")
         if canonical_digest(compiled_workflow) != self.compiled_workflow_digest:
             raise ValueError("invocation lock workflow digest does not authenticate its projection")
-        if self.execution_host != pinned_execution_host_lock():
-            raise ValueError("invocation lock execution host is not the pinned engine host")
+        if not self.execution_host.implementation_id or not self.execution_host.implementation_digest:
+            raise ValueError("invocation lock execution host is incomplete")
         return self
 
     @classmethod
@@ -650,87 +682,6 @@ class ProductLock(FrozenModel):
             canonical_bytes=encoded,
             digest=hashlib.sha256(encoded).hexdigest(),
         )
-
-
-def build_invocation_lock(
-    *,
-    manifest: ProductManifest,
-    product_snapshot: SourceSnapshot,
-    descriptors: Mapping[str, PluginDescriptor],
-    dependency_order: tuple[str, ...],
-    registries: RegistrySet,
-    configuration: object,
-    workflow: CompiledWorkflow,
-    engine_snapshot: SourceSnapshot,
-    contribution_authorities: Mapping[str, ContributionAuthority],
-) -> InvocationLock:
-    validate_registry_contribution_authorities(
-        registries,
-        contribution_authorities,
-        tuple(descriptors[plugin_id] for plugin_id in dependency_order),
-    )
-    manifest_projection = _manifest_projection(manifest)
-    locked_product = LockedProduct(
-        product_id=manifest.product_id,
-        product_version=manifest.product_version,
-        manifest=manifest_projection,
-        manifest_digest=canonical_digest(manifest_projection),
-        source=_locked_source(product_snapshot),
-    )
-    locked_plugins: list[LockedPlugin] = []
-    for plugin_id in sorted(descriptors):
-        descriptor = descriptors[plugin_id]
-        role = SourceRole.PLUGIN if descriptor.source is not None else SourceRole.CONFIG
-        source_entry = registries.sources.entries.get(SourceKey(role, plugin_id))
-        if source_entry is None:
-            raise ValueError(f"locked plugin has no selected source: {plugin_id}")
-        descriptor_projection = _descriptor_projection(descriptor)
-        try:
-            authority = contribution_authorities[plugin_id]
-        except KeyError as error:
-            raise ValueError(f"locked plugin has no contribution authority: {plugin_id}") from error
-        contribution_projection = cast(JSONValue, thaw_json(authority.projection))
-        locked_plugins.append(
-            LockedPlugin(
-                plugin_id=plugin_id,
-                plugin_version=descriptor.plugin_version,
-                descriptor=descriptor,
-                descriptor_digest=canonical_digest(descriptor_projection),
-                contribution=contribution_projection,
-                contribution_digest=canonical_digest(contribution_projection),
-                dependencies=tuple(
-                    LockedDependency(
-                        plugin_id=dependency.plugin_id,
-                        version_specifier=dependency.version_specifier,
-                    )
-                    for dependency in sorted(
-                        descriptor.dependencies,
-                        key=lambda dependency: dependency.plugin_id,
-                    )
-                ),
-                source=_locked_source(source_entry.snapshot),
-            )
-        )
-    configuration_projection = cast(JSONValue, thaw_json(configuration))
-    registry_projections = compute_registry_projections(registries)
-    capability_bindings = _binding_projection_from_capabilities(registry_projections.capabilities)
-    compiled_workflow = _compiled_workflow_projection(workflow)
-    return InvocationLock.create(
-        engine_api=ENGINE_API_VERSION,
-        engine=_locked_source(engine_snapshot),
-        engine_digest=engine_snapshot.digest,
-        product=locked_product,
-        plugins=tuple(locked_plugins),
-        dependency_order=dependency_order,
-        registry_projections=registry_projections,
-        registry_digests=_registry_digests_from_projections(registry_projections),
-        configuration=configuration_projection,
-        configuration_digest=canonical_digest(configuration_projection),
-        capability_bindings=capability_bindings,
-        capability_bindings_digest=canonical_digest(capability_bindings),
-        compiled_workflow=compiled_workflow,
-        compiled_workflow_digest=canonical_digest(compiled_workflow),
-    )
 
 
 def build_product_lock(
@@ -978,7 +929,6 @@ def authenticate_composition_lock(
     manifest: ProductManifest,
     descriptors: tuple[PluginDescriptor, ...],
     registries: RegistrySet,
-    workflow: object,
     configuration: object,
     lock: InvocationLock | ProductLock,
     contribution_authorities: Mapping[str, ContributionAuthority],
@@ -988,17 +938,8 @@ def authenticate_composition_lock(
         contribution_authorities,
         descriptors,
     )
-    factory_path = manifest.graph_factory_symbol is not None
-    if factory_path:
-        if workflow is not None:
-            raise TypeError("factory composition must not carry a compiled workflow")
-        if not isinstance(lock, ProductLock):
-            raise TypeError("factory composition lock must be a ProductLock")
-    else:
-        if not isinstance(workflow, CompiledWorkflow):
-            raise TypeError("composition workflow must be compiled")
-        if not isinstance(lock, InvocationLock):
-            raise TypeError("leftover composition lock must be an InvocationLock")
+    if not isinstance(lock, ProductLock):
+        raise TypeError("factory composition lock must be a ProductLock")
     engine_source = registries.sources.entries.get(SourceKey(SourceRole.ENGINE, "graph.engine"))
     if engine_source is None or lock.engine != _locked_source(engine_source.snapshot):
         raise ValueError("invocation lock engine source disagrees with composition")
@@ -1071,15 +1012,6 @@ def authenticate_composition_lock(
         raise ValueError("invocation lock capability bindings disagree with composition")
     if lock.capability_bindings_digest != canonical_digest(capability_bindings):
         raise ValueError("invocation lock capability binding digest disagrees with composition")
-    if factory_path:
-        return
-    compiled_workflow = _compiled_workflow_projection(workflow)
-    if thaw_json(lock.compiled_workflow) != compiled_workflow:
-        raise ValueError("invocation lock workflow projection disagrees with composition")
-    if lock.compiled_workflow_digest != canonical_digest(compiled_workflow):
-        raise ValueError("invocation lock workflow digest disagrees with composition")
-    if lock.execution_host != pinned_execution_host_lock():
-        raise ValueError("invocation lock execution host disagrees with the pinned engine host")
 
 
 def _locked_source(snapshot: SourceSnapshot) -> LockedSource:
@@ -1125,73 +1057,8 @@ def _source_identity_projection(identity: SourceIdentity) -> dict[str, JSONValue
     return projection
 
 
-def _workflow_lock_projection(workflow: WorkflowDef) -> JSONValue:
-    dumped = workflow.model_dump(mode="json", by_alias=True, exclude_defaults=True)
-    _restore_input_projection_discriminators(
-        dumped,
-        workflow.graphs,
-        restore_output_projection=True,
-    )
-    return cast(JSONValue, dumped)
-
-
-def _workflow_module_lock_projection(module: WorkflowModuleDef) -> JSONValue:
-    dumped = module.model_dump(mode="json", by_alias=True, exclude_defaults=True)
-    _restore_input_projection_discriminators(
-        dumped,
-        module.graphs,
-        restore_output_projection=True,
-    )
-    dumped_exports = dumped.get("exports")
-    if isinstance(dumped_exports, dict):
-        for export_name, export in module.exports.items():
-            dumped_export = dumped_exports.get(export_name)
-            if isinstance(dumped_export, dict):
-                dumped_export["output_projection"] = export.output_projection.model_dump(
-                    mode="json",
-                    by_alias=True,
-                )
-    return cast(JSONValue, dumped)
-
-
-def _restore_input_projection_discriminators(
-    dumped: dict[str, object],
-    graphs: Mapping[str, GraphDef],
-    *,
-    restore_output_projection: bool = False,
-) -> None:
-    dumped_graphs = dumped.get("graphs")
-    if not isinstance(dumped_graphs, dict):
-        return
-    for graph_id, graph in graphs.items():
-        dumped_graph = dumped_graphs[graph_id]
-        if not isinstance(dumped_graph, dict):
-            continue
-        dumped_nodes = dumped_graph["nodes"]
-        for node_id, node in graph.nodes.items():
-            if node.input_projection is not None:
-                dumped_nodes[node_id]["input_projection"] = node.input_projection.model_dump(
-                    mode="json",
-                    by_alias=True,
-                )
-            if restore_output_projection and node.output_projection is not None:
-                dumped_nodes[node_id]["output_projection"] = node.output_projection.model_dump(
-                    mode="json",
-                    by_alias=True,
-                )
-
-
 def _manifest_projection(manifest: ProductManifest) -> JSONValue:
-    projection = manifest.model_dump(mode="json", by_alias=True)
-    if manifest.workflow is not None:
-        projection["workflow"] = _workflow_lock_projection(manifest.workflow)
-    if manifest.workflow_module is not None:
-        projection["workflow_module"] = _workflow_module_lock_projection(manifest.workflow_module)
-    else:
-        projection.pop("workflow_module", None)
-        projection.pop("workflow_module_resources", None)
-        projection.pop("workflow_slot_bindings", None)
-    return cast(JSONValue, projection)
+    return cast(JSONValue, manifest.model_dump(mode="json", by_alias=True))
 
 
 def _descriptor_projection(descriptor: PluginDescriptor) -> JSONValue:
@@ -1426,13 +1293,6 @@ def _binding_projection_from_capabilities(capabilities: object) -> list[JSONValu
     return bindings
 
 
-def _compiled_workflow_projection(workflow: CompiledWorkflow) -> JSONValue:
-    return cast(
-        JSONValue,
-        workflow.model_dump(mode="json", by_alias=True, exclude={"digest"}),
-    )
-
-
 def _locked_product_projection(product: LockedProduct) -> JSONValue:
     return {
         "product_id": product.product_id,
@@ -1511,7 +1371,6 @@ __all__ = [
     "RegistryProjections",
     "TASK_HOST_IMPLEMENTATION_ID",
     "TASK_HOST_WIRE_SCHEMA_VERSION",
-    "build_invocation_lock",
     "compute_registry_digests",
     "compute_registry_projections",
     "pinned_execution_host_lock",

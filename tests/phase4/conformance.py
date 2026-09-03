@@ -159,6 +159,7 @@ def _contribution_id_groups(contribution: PluginContribution) -> tuple[tuple[str
         tuple(entry.resource_id for entry in contribution.resources),
         tuple(entry.kind for entry in contribution.effects),
         tuple(entry.capability_id for entry in contribution.bindings),
+        tuple(item.contract_id for item in contribution.attempt_contracts),
     )
 
 

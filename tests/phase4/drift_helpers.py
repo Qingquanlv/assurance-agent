@@ -8,24 +8,22 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from graph_engine import Engine
+from graph_engine.application import RevisionMismatch
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from tests.product.product_runner import EngineError, InvocationDrift
-from graph_engine.attempts.secret_sources import empty_runtime_authorization
 
 from tests.phase4.six_wheel_harness import (
     FIXTURE_ROOT,
     SixWheelComposition,
     SixWheelTaskHost,
-    _engine_call,
+    _application_call,
+    _boot_application,
     _import_activation,
     _start_until_blocked,
-    _workspace_binding,
     resolve_fixture,
 )
 
 _CATALOG = FIXTURE_ROOT / "capability-catalog.v1.json"
-_STARTED: dict[int, tuple[Path, Path, str]] = {}
+_STARTED: dict[int, tuple[Path, Path, str, object, object, object]] = {}
 
 
 def resolve_with_one_mutation(facet: str) -> tuple[SixWheelComposition, SixWheelComposition]:
@@ -45,22 +43,42 @@ def assert_open_rejects_drift_without_ledger_append(
     original: SixWheelComposition,
     drifted: SixWheelComposition,
 ) -> None:
-    engine_root, invocation_root, invocation_id = _started_invocation(original)
-    before = _ledger_snapshot(invocation_root)
+    engine_root, invocation_root, invocation_id, application, artifact, context = _started_invocation(
+        original
+    )
+    before = _durable_snapshot(engine_root, invocation_root)
     host = SixWheelTaskHost(
         adapter_id="runtime.opencode",
         provider_state_dir=original.workspace / "drift-open-provider",
     )
     with _import_activation(original.product_root, original.workspace):
-        with pytest.raises((InvocationDrift, EngineError)):
-            with Engine(engine_root, host=host) as engine:
-                engine.open(
-                    invocation_id,
-                    drifted.composition,
-                    authorization=empty_runtime_authorization(),
-                    workspace_binding=_workspace_binding(engine_root),
-                )
-    assert _ledger_snapshot(invocation_root) == before
+        _drifted_app, drifted_artifact, _drifted_context, _saver, _project = _boot_application(
+            drifted.composition,
+            host,
+            original.workspace / "drift-open-engine",
+        )
+        del _drifted_app, _drifted_context
+        with pytest.raises((RevisionMismatch, ValueError)):
+            _application_call(
+                _run_drifted,
+                application,
+                drifted_artifact,
+                invocation_id,
+                context,
+            )
+    assert _durable_snapshot(engine_root, invocation_root) == before
+
+
+def _run_drifted(application, artifact, invocation_id: str, context) -> None:
+    import asyncio
+
+    asyncio.run(
+        application.run(
+            artifact=artifact,
+            invocation_id=invocation_id,
+            runtime_context=context,
+        )
+    )
 
 
 def _cached_original() -> SixWheelComposition:
@@ -71,7 +89,7 @@ def _cached_original() -> SixWheelComposition:
     return cast(SixWheelComposition, cached)
 
 
-def _started_invocation(original: SixWheelComposition) -> tuple[Path, Path, str]:
+def _started_invocation(original: SixWheelComposition) -> tuple[Path, Path, str, object, object, object]:
     key = id(original)
     existing = _STARTED.get(key)
     if existing is not None:
@@ -83,27 +101,28 @@ def _started_invocation(original: SixWheelComposition) -> tuple[Path, Path, str]
     engine_root = original.workspace / "drift-engine"
     invocation_id = "phase4-drift-inv"
     with _import_activation(original.product_root, original.workspace):
-        result, invocation_root = _engine_call(
+        result, invocation_root, application, artifact, context, _saver = _application_call(
             _start_until_blocked,
             engine_root,
             host,
             original.composition,
             invocation_id,
         )
-    if result.status != "succeeded":
+    if result.status != "completed":
         raise AssertionError(f"drift original start failed: {result}")
-    started = (engine_root, invocation_root, invocation_id)
+    started = (engine_root, invocation_root, invocation_id, application, artifact, context)
     _STARTED[key] = started
     return started
 
 
-def _ledger_snapshot(invocation_root: Path) -> bytes:
-    ledger = invocation_root / "ledger"
+def _durable_snapshot(engine_root: Path, invocation_root: Path) -> bytes:
     parts: list[bytes] = []
-    if ledger.exists():
-        for path in sorted(ledger.rglob("*")):
-            if path.is_file() and not path.is_symlink():
-                parts.append(path.relative_to(ledger).as_posix().encode("utf-8"))
+    for root in (engine_root, invocation_root):
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and not path.is_symlink() and path.name != "runner.json":
+                parts.append(path.relative_to(root).as_posix().encode("utf-8"))
                 parts.append(path.read_bytes())
     return b"\n".join(parts)
 

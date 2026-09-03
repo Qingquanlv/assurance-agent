@@ -13,7 +13,7 @@ from graph_engine.plugin_api import (
     TaskFailure,
     TaskWorkspaceIdentity,
 )
-from graph_engine.runtime.events import (
+from graph_engine.evidence.events import (
     EffectApplyStarted,
     EffectIntentCommitted,
     EffectReceiptRecorded,
@@ -47,7 +47,7 @@ from graph_engine.runtime.events import (
     TokenConsumed,
     TokenOffered,
 )
-from graph_engine.runtime.frozen_json import FrozenJSONValue, thaw_json
+from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 
 
 class ProjectionError(GraphEngineError):

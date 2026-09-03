@@ -456,9 +456,9 @@ def _run_application(
     invocation_id: str,
 ) -> Any:
     del authorization
-    if composition.manifest.graph_factory_symbol is None or not isinstance(composition.lock, ProductLock):
+    if not composition.manifest.graph_factory_symbol or not isinstance(composition.lock, ProductLock):
         raise SystemExit("phase3 driver requires a Product factory composition")
-    if composition.workflow is not None:
+    if hasattr(composition, "workflow"):
         raise SystemExit("factory composition must not carry a compiled workflow")
     workspace, _project_root = workspace_provider_for(engine_root)
     resolver = contract_resolver_from_plugins(composition.descriptors, workspace)

@@ -250,10 +250,8 @@ def _resolve_bundle(
 
 
 def _require_factory_composition(composition: FrozenComposition) -> None:
-    if composition.manifest.graph_factory_symbol is None or not isinstance(composition.lock, ProductLock):
+    if not composition.manifest.graph_factory_symbol or not isinstance(composition.lock, ProductLock):
         raise GraphEngineError("graph-engine CLI runs Product factory compositions")
-    if composition.workflow is not None:
-        raise GraphEngineError("factory composition must not carry a compiled workflow")
 
 
 def _compile_document(

@@ -34,7 +34,8 @@ def test_composition_has_exact_provider_and_binding_closure(adapter, installed_s
     bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
     assert set(bindings) == set(ALL_BINDING_IDS)
     assert len(bindings) == 33
-    assert composition.workflow is None
+    assert not hasattr(composition, "workflow")
+    assert composition.manifest.graph_factory_symbol == _PRODUCT_FACTORY
     assert isinstance(composition.lock, type(composition.lock))
     assert composition.lock.schema_version == "3"
     contracts = all_feature_agent_contracts()

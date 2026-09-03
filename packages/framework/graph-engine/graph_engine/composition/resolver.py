@@ -22,7 +22,7 @@ from graph_engine.composition.declarative import (
     load_product_file,
 )
 from graph_engine.composition.dependencies import resolve_dependency_order
-from graph_engine.composition.lock import build_invocation_lock, build_product_lock
+from graph_engine.composition.lock import build_product_lock
 from graph_engine.composition.models import (
     AuthenticatedContribution,
     ContributionAuthority,
@@ -38,10 +38,6 @@ from graph_engine.composition.models import (
     SourceSnapshot,
 )
 from graph_engine.composition.registries import _build_registries
-from graph_engine.composition.workflow_assembler import (
-    WorkflowAssemblyError,
-    assemble_product_workflow,
-)
 from graph_engine.composition.source_fs import (
     DeclaredTreePolicy,
     SourceSnapshotError,
@@ -64,8 +60,6 @@ from graph_engine.composition.sources import (
 )
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import freeze_json
-from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
-from graph_engine.graph.schema import parse_workflow
 from graph_engine.plugin_api import (
     FrozenModel,
     PluginDescriptor,
@@ -197,38 +191,20 @@ class RegistryPlatform:
         # 11. Validate and freeze namespaced product configuration.
         configuration = self._validate_configuration(manifest, loaded.descriptors)
 
-        # 12. Factory path skips leftover compile; leftover forms still compile every entrypoint.
-        if manifest.graph_factory_symbol is not None:
-            workflow = None
-            lock = build_product_lock(
-                manifest=manifest,
-                product_snapshot=captured.product,
-                descriptors=loaded.descriptors,
-                dependency_order=dependency_order,
-                registries=registries,
-                configuration=configuration,
-                engine_snapshot=captured.engine,
-                contribution_authorities=contribution_authorities,
-            )
-        else:
-            workflow = self._compile_product_workflow(manifest, registries, loaded.descriptors)
-            lock = build_invocation_lock(
-                manifest=manifest,
-                product_snapshot=captured.product,
-                descriptors=loaded.descriptors,
-                dependency_order=dependency_order,
-                registries=registries,
-                configuration=configuration,
-                workflow=workflow,
-                engine_snapshot=captured.engine,
-                contribution_authorities=contribution_authorities,
-            )
+        lock = build_product_lock(
+            manifest=manifest,
+            product_snapshot=captured.product,
+            descriptors=loaded.descriptors,
+            dependency_order=dependency_order,
+            registries=registries,
+            configuration=configuration,
+            engine_snapshot=captured.engine,
+            contribution_authorities=contribution_authorities,
+        )
 
-        # 15. Return the sole complete composition value; no runtime path was touched.
         return FrozenComposition.freeze(
             manifest,
             registries,
-            workflow,
             lock,
             descriptors=tuple(loaded.descriptors[plugin_id] for plugin_id in dependency_order),
             configuration=configuration,
@@ -502,52 +478,6 @@ class RegistryPlatform:
                 raise ResolutionError(f"configuration for {plugin_id} must be a mapping")
         return configuration
 
-    def _compile_product_workflow(
-        self,
-        manifest: ProductManifest,
-        registries: RegistrySet,
-        descriptors: Mapping[str, PluginDescriptor],
-    ) -> CompiledWorkflow:
-        if manifest.workflow_module is not None:
-            try:
-                workflow = assemble_product_workflow(
-                    manifest=manifest,
-                    descriptors=descriptors,
-                    registries=registries,
-                )
-            except WorkflowAssemblyError as error:
-                raise ResolutionError(str(error)) from error
-        elif manifest.workflow is not None:
-            workflow = manifest.workflow
-        else:
-            assert manifest.workflow_resource_id is not None
-            resource = registries.resources.entries.get(manifest.workflow_resource_id)
-            if resource is None:
-                raise ResolutionError(
-                    f"product workflow resource is not registered: {manifest.workflow_resource_id}"
-                )
-            if resource.media_type != "application/vnd.graph-engine.workflow+yaml":
-                raise ResolutionError("product workflow resource has the wrong media type")
-            try:
-                workflow = parse_workflow(resource.content.decode("utf-8"))
-            except Exception as error:
-                raise ResolutionError("product workflow resource is invalid") from error
-        expected_entrypoints = _expected_product_entrypoints(manifest)
-        if dict(workflow.entrypoints) != expected_entrypoints:
-            raise ResolutionError("product entrypoints disagree with the selected workflow")
-        compiled = compile_workflow(workflow, registries)
-        if dict(compiled.entrypoints) != expected_entrypoints:  # pragma: no cover - compiler copies.
-            raise ResolutionError("compiled workflow entrypoints disagree with product")
-        return compiled
-
-
-def _expected_product_entrypoints(manifest: ProductManifest) -> dict[str, str]:
-    if manifest.workflow_module is None:
-        return dict(manifest.entrypoints)
-    module_id = manifest.workflow_module.module_id
-    return {name: f"{module_id}.graph.{local}" for name, local in manifest.entrypoints.items()}
-
-
 def _capture_engine_snapshot() -> SourceSnapshot:
     package_root = Path(__file__).resolve().parents[1]
     project_root = package_root.parent
@@ -641,11 +571,7 @@ def _normalize_declarative_product(product: DeclarativeProduct) -> ProductManife
         entrypoints=document.entrypoints,
         configuration=document.configuration,
         config_plugin_paths=tuple(str(path) for path in product.config_plugin_paths),
-        workflow=document.workflow,
-        workflow_resource_id=document.workflow_resource_id,
-        workflow_module=document.workflow_module,
-        workflow_module_resources=document.workflow_module_resources,
-        workflow_slot_bindings=document.workflow_slot_bindings,
+        graph_factory_symbol=document.graph_factory_symbol,
     )
 
 

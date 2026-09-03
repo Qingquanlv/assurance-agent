@@ -56,7 +56,7 @@
     "distribution": "agent-runtime-fixture",
     "version": "1.0.0",
     "source_root": "examples/agent-runtime-fixture",
-    "source_digest": "bf4c7fcb684235b9406dcfbbc754809991a1b1321238f390bf7fb77674904b4c",
+    "source_digest": "f4c3561911ff35aadec81f1041b79ed47e848148fffe1f0fd64ddd545adca85d",
     "wheel_name": "agent_runtime_fixture-1.0.0-py3-none-any.whl",
     "wheel_sha256": "820c1059f0ca50780949900d36a15e9966d1da42ab5879177e0b99fdb1562d67"
   },
@@ -71,8 +71,8 @@
     }
   },
   "canonical_request": {
-    "digest": "291eaf55be4fdf23332d9551e808a52e00dfcdcfd92e83e1ca64e6954d5acf71",
-    "canonical_bytes": "{\"execution\":{\"limits\":{\"max_seconds\":120},\"permission_profile_digest\":\"70751fb8b22ad8d5b91adf52d61748e1c165ecac1a30775d57a3266c456be893\",\"provider_model\":\"provider_default\",\"worker_profile\":\"fixture-v1\"},\"instructions\":[{\"digest\":\"69fd61870ef2d182ac40e1ab96826984ad6966489511a7cc8a66a323b59677ef\",\"json_content\":null,\"media_type\":\"text/plain\",\"text_content\":\"Write result.json with status \\\"ok\\\" and artifact \\\"result.json\\\".\\n\"}],\"request_config_digest\":\"65d4e5652b580f524b734bb1441bc5bdb1ca3e9bd797b691ac5f3e048cc66d03\",\"request_policy_digest\":\"9296f9d1f826b868095d7afe9bad0ec93c48694650f793552febb4a1b7781652\",\"result_contract\":{\"extraction_mode\":\"structured\",\"schema_digest\":\"56e341c9d4dd6ccaac2bc2038dad7539ff03d3895c3d66d02b24172d4ba9141e\",\"schema_document\":{\"additionalProperties\":false,\"properties\":{\"artifact\":{\"type\":\"string\"},\"status\":{\"const\":\"ok\",\"type\":\"string\"}},\"required\":[\"artifact\",\"status\"],\"type\":\"object\"},\"schema_id\":\"fixture.result.v1\"},\"schema_version\":\"1\",\"workspace\":{\"agent_profile\":\"assurance-v1-doc-author\",\"allowed_outputs\":[\"result.json\"],\"identity_digest\":\"3b566b91efb386db0f76e89e31425403f338c0c18bd3d416cf3d7d1c278e1668\",\"schema_version\":\"1\",\"scope_id\":\"CH-1\",\"write_root\":\"qa/changes/CH-1/.staging/attempt-1\"}}"
+    "digest": "8acba470fd40724bd0bda5d891d34431647b7db07666d90f2fc24f3cbe11ab25",
+    "canonical_bytes": "{\"execution\":{\"limits\":{\"max_seconds\":120},\"permission_profile_digest\":\"70751fb8b22ad8d5b91adf52d61748e1c165ecac1a30775d57a3266c456be893\",\"provider_model\":\"provider_default\",\"worker_profile\":\"fixture-v1\"},\"instructions\":[{\"digest\":\"69fd61870ef2d182ac40e1ab96826984ad6966489511a7cc8a66a323b59677ef\",\"json_content\":null,\"media_type\":\"text/plain\",\"text_content\":\"Write result.json with status \\\"ok\\\" and artifact \\\"result.json\\\".\\n\"}],\"request_config_digest\":\"8675ebd59548614d076b3fd463df110b94a9cb3eade2c773ec2c52869a614e8e\",\"request_policy_digest\":\"eee84af528315a28226cc673c6cdda1b4e91f12623dc1cb55a950fd69eccd26a\",\"result_contract\":{\"delivery_mode\":\"assistant_json_local_v1\",\"schema_digest\":\"56e341c9d4dd6ccaac2bc2038dad7539ff03d3895c3d66d02b24172d4ba9141e\",\"schema_document\":{\"additionalProperties\":false,\"properties\":{\"artifact\":{\"type\":\"string\"},\"status\":{\"const\":\"ok\",\"type\":\"string\"}},\"required\":[\"artifact\",\"status\"],\"type\":\"object\"},\"schema_id\":\"fixture.result.v1\"},\"schema_version\":\"1\",\"workspace\":{\"agent_profile\":\"assurance-v1-doc-author\",\"allowed_outputs\":[\"result.json\"],\"identity_digest\":\"3b566b91efb386db0f76e89e31425403f338c0c18bd3d416cf3d7d1c278e1668\",\"schema_version\":\"1\",\"scope_id\":\"CH-1\",\"write_root\":\"qa/changes/CH-1/.staging/attempt-1\"}}"
   },
   "workspace": {
     "initial_tree_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
@@ -96,7 +96,7 @@
     "opencode": {
       "adapter_id": "runtime.opencode.execute",
       "source_root": "packages/adapters/agent-runtime-opencode/agent_runtime_opencode",
-      "source_digest": "348074b07c43be70d2f29b781749daf870477f9140dfec271b0fc9348578fbc8",
+      "source_digest": "3f20e8c7a288be62ecc03a24465b4280f38b3760643653549cc5f4f94e0785f3",
       "adapter_version": "0.1.0",
       "protocol_profile": "opencode-http-v1",
       "prompt_admission": "caller-message-id-v1",
@@ -110,7 +110,7 @@
     "cursor": {
       "adapter_id": "runtime.cursor.execute",
       "source_root": "packages/adapters/agent-runtime-cursor/agent_runtime_cursor",
-      "source_digest": "bafdf01f5e08ffd7754edd60357da1793af999340f149fcd9d2251532c95e144",
+      "source_digest": "244e56fccd7f37d1ed2015a1c17dde0f74ef1ca2073c60823a257dd199461d6d",
       "adapter_version": "0.1.0",
       "protocol_profile": "confined_process",
       "executable": "/Users/lvqingquan/.local/share/cursor-agent/versions/2026.08.11-e8db854/cursor-agent",

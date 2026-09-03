@@ -267,10 +267,6 @@ def _authenticate_assurance_composition(
 
     if composition.manifest.graph_factory_symbol != _PRODUCT_FACTORY_SYMBOL:
         raise AssuranceCompositionError("product graph factory symbol drifted")
-    if composition.manifest.workflow_module is not None:
-        raise AssuranceCompositionError("factory product must not carry a workflow module")
-    if composition.manifest.workflow_module_resources or composition.manifest.workflow_slot_bindings:
-        raise AssuranceCompositionError("factory product must not carry leftover slot bindings")
     if not isinstance(composition.lock, ProductLock) or composition.lock.schema_version != "3":
         raise AssuranceCompositionError("composition lock is not ProductLock v3")
 
@@ -359,7 +355,6 @@ def _with_semantic_attempt_contracts(
         manifest=composition.manifest,
         descriptors=composition.descriptors,
         registries=composition.registries,
-        workflow=composition.workflow,
         configuration=composition.configuration,
         contribution_authorities=composition.contribution_authorities,
         providers=composition.providers,

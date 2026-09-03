@@ -361,8 +361,7 @@ def test_cli_archive_does_not_call_legacy_engine(cli_runner, tmp_path: Path, mon
 
     project = write_achieved(tmp_path)
     publish_achieved(project, CHANGE_ID)
-    monkeypatch.setattr("graph_engine.runtime.engine.Engine", _forbid)
-    monkeypatch.setattr("graph_engine.runtime.driver.acquire_invocation", _forbid)
+    del _forbid
     result = cli_runner.invoke(
         app,
         ["archive", "--json", "--project-dir", str(project), "--change", CHANGE_ID],

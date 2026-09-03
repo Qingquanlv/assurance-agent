@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -12,11 +12,13 @@ from graph_engine.application import AssuranceApplication, AssuranceRuntimeConte
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import InvocationLock, ProductLock
-from graph_engine.runtime.engine import Engine, RunResult
-from graph_engine.runtime.events import InvocationStarted
-from graph_engine.runtime.ledger import Ledger
-from graph_engine.runtime.models import InvocationProjection, fold_events
-from graph_engine.runtime.seed import empty_invocation_seed
+from graph_engine.evidence.events import InvocationStarted
+from graph_engine.evidence.legacy_v2 import (
+    authenticate_invocation_lock_v2,
+    fold_legacy_events,
+    read_legacy_ledger,
+)
+from graph_engine.evidence.models import InvocationProjection
 from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
 from assurance_product.binding_builder import build_deployment_wheel
@@ -168,8 +170,8 @@ def parse_resume_file(path: Path, pending_ids: Sequence[str] = ()) -> object:
 
 
 class AssuranceProductApplication:
-    def __init__(self, engine_factory: Callable[..., Engine] | None = None) -> None:
-        self._engine_factory = engine_factory
+    def __init__(self) -> None:
+        return None
 
     def compile(
         self,
@@ -223,23 +225,15 @@ class AssuranceProductApplication:
         else:
             runtime = select_runtime(entrypoint)
             build_identity = composition.lock.digest if runtime == "legacy-v2" else product_lock.digest
-        initializing: SelectionRecord
         if runtime == "legacy-v2":
-            initializing = LegacyRuntimeRecord(
-                phase="initializing",
-                invocation_id=invocation_id,
-                entrypoint=entrypoint,
-                root_input_digest=root_input_digest,
-                build_identity=build_identity,
-            )
-        else:
-            initializing = LangGraphRuntimeRecord(
-                phase="initializing",
-                invocation_id=invocation_id,
-                entrypoint=entrypoint,
-                root_input_digest=root_input_digest,
-                build_identity=build_identity,
-            )
+            raise RuntimeSelectionError("leftover workflow execution is deleted")
+        initializing = LangGraphRuntimeRecord(
+            phase="initializing",
+            invocation_id=invocation_id,
+            entrypoint=entrypoint,
+            root_input_digest=root_input_digest,
+            build_identity=build_identity,
+        )
         write_initializing(workspace, initializing)
         _bind_revision(
             workspace,
@@ -249,50 +243,28 @@ class AssuranceProductApplication:
             product_lock=product_lock,
             build_identity=build_identity,
         )
-        if runtime == "legacy-v2":
-            identity_digest = self._start_legacy(
+        identity_digest = asyncio.run(
+            self._start_langgraph(
                 workspace=workspace,
                 composition=composition,
-                authorization=authorization,
                 invocation_id=invocation_id,
                 entrypoint=entrypoint,
-                root_input=root_input,
+                root_input=cast(Mapping[str, JSONValue], root_input),
+                product_lock=product_lock,
             )
-            maybe_crash("after_identity")
-            complete_initialized(
-                workspace,
-                LegacyRuntimeRecord(
-                    phase="initialized",
-                    invocation_id=invocation_id,
-                    entrypoint=entrypoint,
-                    root_input_digest=root_input_digest,
-                    build_identity=build_identity,
-                    identity_digest=identity_digest,
-                ),
-            )
-        else:
-            identity_digest = asyncio.run(
-                self._start_langgraph(
-                    workspace=workspace,
-                    composition=composition,
-                    invocation_id=invocation_id,
-                    entrypoint=entrypoint,
-                    root_input=cast(Mapping[str, JSONValue], root_input),
-                    product_lock=product_lock,
-                )
-            )
-            maybe_crash("after_identity")
-            complete_initialized(
-                workspace,
-                LangGraphRuntimeRecord(
-                    phase="initialized",
-                    invocation_id=invocation_id,
-                    entrypoint=entrypoint,
-                    root_input_digest=root_input_digest,
-                    build_identity=build_identity,
-                    identity_digest=identity_digest,
-                ),
-            )
+        )
+        maybe_crash("after_identity")
+        complete_initialized(
+            workspace,
+            LangGraphRuntimeRecord(
+                phase="initialized",
+                invocation_id=invocation_id,
+                entrypoint=entrypoint,
+                root_input_digest=root_input_digest,
+                build_identity=build_identity,
+                identity_digest=identity_digest,
+            ),
+        )
         return {
             "invocation_id": invocation_id,
             "change_id": change_id,
@@ -343,12 +315,7 @@ class AssuranceProductApplication:
             )
         )
         if record.runtime == "legacy-v2":
-            return self._run_legacy(
-                workspace=workspace,
-                composition=composition,
-                authorization=authorization,
-                invocation_id=invocation_id,
-            )
+            raise RuntimeSelectionError("leftover workflow execution is deleted")
         status = asyncio.run(
             self._run_langgraph(
                 workspace=workspace,
@@ -379,21 +346,7 @@ class AssuranceProductApplication:
         )
         require_initialized(record)
         if record.runtime == "legacy-v2":
-            if resume_file is not None:
-                payload = parse_resume_file(resume_file)
-                if isinstance(payload, dict) and "action" in payload:
-                    action = str(payload["action"])
-                    reason = str(payload.get("reason") or "resumed")
-            if action is None or reason is None:
-                raise ValueError("legacy resume requires --action and --reason")
-            return self._resume_legacy(
-                workspace=workspace,
-                composition=composition,
-                authorization=authorization,
-                invocation_id=invocation_id,
-                action=action,
-                reason=reason,
-            )
+            raise RuntimeSelectionError("leftover workflow execution is deleted")
         resume_payload: object
         _assert_langgraph_revision(workspace, composition, invocation_id)
         if resume_file is not None:
@@ -444,9 +397,7 @@ class AssuranceProductApplication:
             authorization=authorization,
         )
         if record.runtime == "legacy-v2":
-            projection, identity = self._legacy_projection(
-                workspace, composition, authorization, invocation_id
-            )
+            projection, identity = self._historical_legacy_projection(workspace, invocation_id)
             return render_status(
                 projection,
                 root_input_digest=identity["root_input_digest"],
@@ -483,10 +434,12 @@ class AssuranceProductApplication:
         if record.runtime == "legacy-v2":
             if _langgraph_db_has_invocation(workspace, invocation_id):
                 raise RuntimeSelectionError("runtime evidence is ambiguous")
+            lock_path = workspace.paths.runtime_root / "invocations" / invocation_id / "invocation.lock.json"
+            lock = authenticate_invocation_lock_v2(lock_path.read_bytes())
             return {
-                "lock_digest": composition.lock_digest,
-                "engine_api": composition.lock.engine_api,
-                "lock": composition.lock.model_dump(mode="json"),
+                "lock_digest": lock.digest,
+                "engine_api": lock.engine_api,
+                "lock": json.loads(lock.canonical_bytes.decode("utf-8")),
             }
         if _legacy_invocation_exists(workspace, invocation_id):
             raise RuntimeSelectionError("runtime evidence is ambiguous")
@@ -557,7 +510,7 @@ class AssuranceProductApplication:
             raise RuntimeSelectionError("invocation evidence is absent")
         if _langgraph_db_has_invocation(workspace, invocation_id):
             raise RuntimeSelectionError("both-runtime artifacts are present")
-        projection, identity = self._legacy_projection(workspace, composition, authorization, invocation_id)
+        projection, identity = self._historical_legacy_projection(workspace, invocation_id)
         return backfill_legacy(
             workspace,
             invocation_id=invocation_id,
@@ -567,137 +520,12 @@ class AssuranceProductApplication:
             identity_digest=composition.lock.digest,
         )
 
-    def _start_legacy(
-        self,
-        *,
-        workspace: ChangeWorkspace,
-        composition: Any,
-        authorization: InvocationRuntimeAuthorization,
-        invocation_id: str,
-        entrypoint: str,
-        root_input: JSONValue,
-    ) -> str:
-        factory = self._engine_factory
-        if factory is None:
-            from graph_engine.runtime.engine import Engine as ProductionEngine
-
-            factory = ProductionEngine.production
-        with factory(workspace.paths.runtime_root, authorization) as engine:
-            if engine.invocation_exists(invocation_id):
-                maybe_crash("after_identity")
-                return composition.lock.digest
-            with engine.start(
-                composition,
-                entrypoint=entrypoint,
-                invocation_id=invocation_id,
-                seed=empty_invocation_seed(root_input=root_input),
-                authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-            ) as handle:
-                _publish_legacy(workspace, handle.invocation_root)
-        maybe_crash("after_identity")
-        return composition.lock.digest
-
-    def _run_legacy(
-        self,
-        *,
-        workspace: ChangeWorkspace,
-        composition: Any,
-        authorization: InvocationRuntimeAuthorization,
-        invocation_id: str,
-    ) -> tuple[RunResult, str, int]:
-        from graph_engine.runtime.driver import acquire_invocation
-
-        factory = self._engine_factory
-        if factory is None:
-            from graph_engine.runtime.engine import Engine as ProductionEngine
-
-            factory = ProductionEngine.production
-        with factory(workspace.paths.runtime_root, authorization) as engine:
-            with acquire_invocation(
-                engine,
-                composition,
-                invocation_id=invocation_id,
-                authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-                start=None,
-            ) as handle:
-                result = engine.run_until_blocked(handle)
-                _publish_legacy(workspace, handle.invocation_root, result.projection)
-        mapped = {
-            "succeeded": (0, "completed"),
-            "stopped": (20, "stopped"),
-            "interrupted": (30, "interrupted"),
-            "failed": (40, "failed"),
-        }
-        code, name = mapped[result.status]
-        return result, name, code
-
-    def _resume_legacy(
-        self,
-        *,
-        workspace: ChangeWorkspace,
-        composition: Any,
-        authorization: InvocationRuntimeAuthorization,
-        invocation_id: str,
-        action: str,
-        reason: str,
-    ) -> tuple[RunResult, str, int]:
-        from graph_engine.runtime.driver import acquire_invocation
-
-        factory = self._engine_factory
-        if factory is None:
-            from graph_engine.runtime.engine import Engine as ProductionEngine
-
-            factory = ProductionEngine.production
-        with factory(workspace.paths.runtime_root, authorization) as engine:
-            with acquire_invocation(
-                engine,
-                composition,
-                invocation_id=invocation_id,
-                authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-                start=None,
-            ) as opened:
-                resumed = engine.resume(opened, action=action, payload={"reason": reason})
-                try:
-                    result = engine.run_until_blocked(resumed)
-                    _publish_legacy(workspace, resumed.invocation_root, result.projection)
-                finally:
-                    resumed.close()
-        mapped = {
-            "succeeded": (0, "completed"),
-            "stopped": (20, "stopped"),
-            "interrupted": (30, "interrupted"),
-            "failed": (40, "failed"),
-        }
-        code, name = mapped[result.status]
-        return result, name, code
-
-    def _legacy_projection(
+    def _historical_legacy_projection(
         self,
         workspace: ChangeWorkspace,
-        composition: Any,
-        authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
     ) -> tuple[InvocationProjection, dict[str, str]]:
-        from graph_engine.runtime.driver import acquire_invocation
-
-        factory = self._engine_factory
-        if factory is None:
-            from graph_engine.runtime.engine import Engine as ProductionEngine
-
-            factory = ProductionEngine.production
-        with factory(workspace.paths.runtime_root, authorization) as engine:
-            with acquire_invocation(
-                engine,
-                composition,
-                invocation_id=invocation_id,
-                authorization=authorization,
-                workspace_binding=workspace.runtime_binding(),
-                start=None,
-            ) as handle:
-                return _publish_legacy(workspace, handle.invocation_root)
+        return _read_historical_legacy(workspace, invocation_id)
 
     async def _start_langgraph(
         self,
@@ -893,19 +721,19 @@ def _load_input(path: Path, *, entrypoint: str, composition: Any) -> ProductInpu
     )
 
 
-def _publish_legacy(
+def _read_historical_legacy(
     workspace: ChangeWorkspace,
-    invocation_root: Path,
-    projection: InvocationProjection | None = None,
+    invocation_id: str,
 ) -> tuple[InvocationProjection, dict[str, str]]:
-    envelopes = Ledger(invocation_root / "ledger").read_all()
+    invocation_root = workspace.paths.runtime_root / "invocations" / invocation_id
+    envelopes = read_legacy_ledger(invocation_root / "ledger")
     if not envelopes:
         raise ValueError("invocation has no ledger bootstrap")
     event = getattr(envelopes[0], "event", None)
     if not isinstance(event, InvocationStarted):
         raise ValueError("invocation ledger lacks its canonical bootstrap")
     identity = {"root_input_digest": event.root_input_digest}
-    published = fold_events(envelopes) if projection is None else projection
+    published = fold_legacy_events(envelopes)
     write_runtime_projections(
         workspace,
         published,

@@ -43,12 +43,7 @@
         "agent_runtime_fixture"
       ],
       "version": "1.0.0"
-    },
-    "workflow": null,
-    "workflow_module": null,
-    "workflow_module_resources": [],
-    "workflow_resource_id": null,
-    "workflow_slot_bindings": []
+    }
   },
   "schema_version": "1",
   "source": {

@@ -69,7 +69,7 @@ def test_toy_a_static_declarations_match_live_providers(
     composition = _toy_a_composition(tmp_path, monkeypatch)
     assert composition.manifest.product_id == "toy.a"
     assert composition.manifest.graph_factory_symbol == "graph_engine_toy_a.product:build_toy_a_graphs"
-    assert composition.workflow is None
+    assert not hasattr(composition, "workflow")
     assert isinstance(composition.lock, ProductLock)
     assert tuple(descriptor.plugin_id for descriptor in composition.descriptors) == ("toy.a",)
 

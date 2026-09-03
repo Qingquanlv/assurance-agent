@@ -50,9 +50,6 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
 
     def _forbid(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("LangGraph export/archive must not call legacy Engine/driver/fold_events")
-
-    monkeypatch.setattr("graph_engine.runtime.engine.Engine", _forbid)
-    monkeypatch.setattr("graph_engine.runtime.driver.acquire_invocation", _forbid)
     monkeypatch.setattr("graph_engine.evidence.legacy_v2.fold_legacy_events", _forbid)
     project = write_achieved(tmp_path, project=project_dir)
     exported = cli_runner.invoke(
@@ -70,50 +67,90 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
 def test_lock_show_renders_v2_for_legacy_and_v3_for_langgraph(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
+    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_selection import use_test_runtime_selector
+    from assurance_product.revision_registry import RevisionRegistry
+    from assurance_product.runtime_selection import (
+        LegacyRuntimeRecord,
+        complete_initialized,
+        use_test_runtime_selector,
+        write_initializing,
+    )
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    legacy_args, legacy_project, legacy_change = common_lifecycle_args(
+    leftover_args, leftover_project, leftover_change = common_lifecycle_args(
         tmp_path=tmp_path / "legacy",
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-lock-v2",
     )
-    legacy_start = cli_runner.invoke(app, ["start", *legacy_args])
-    assert legacy_start.exit_code == 0, legacy_start.output
-    legacy_lock = cli_runner.invoke(
+    (leftover_project / "qa" / "changes" / leftover_change).mkdir(parents=True, exist_ok=True)
+    leftover_workspace = ChangeWorkspace.open(leftover_project, leftover_change)
+    leftover_workspace.initialize()
+    leftover_lock_bytes = (
+        Path(__file__).resolve().parents[2]
+        / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
+    ).read_text(encoding="utf-8").strip().encode()
+    leftover_invocation = leftover_workspace.paths.runtime_root / "invocations" / "inv-lock-v2"
+    leftover_invocation.mkdir(parents=True, exist_ok=True)
+    (leftover_invocation / "invocation.lock.json").write_bytes(leftover_lock_bytes)
+    from graph_engine.evidence.legacy_v2 import authenticate_invocation_lock_v2
+
+    leftover_digest = authenticate_invocation_lock_v2(leftover_lock_bytes).digest
+    write_initializing(
+        leftover_workspace,
+        LegacyRuntimeRecord(
+            phase="initializing",
+            invocation_id="inv-lock-v2",
+            entrypoint="archive",
+            root_input_digest="c" * 64,
+            build_identity=leftover_digest,
+        ),
+    )
+    complete_initialized(
+        leftover_workspace,
+        LegacyRuntimeRecord(
+            phase="initialized",
+            invocation_id="inv-lock-v2",
+            entrypoint="archive",
+            root_input_digest="c" * 64,
+            build_identity=leftover_digest,
+            identity_digest=leftover_digest,
+        ),
+    )
+    RevisionRegistry(leftover_workspace).bind("inv-lock-v2", runtime="legacy-v2", revision_id=leftover_digest)
+    leftover_lock = cli_runner.invoke(
         app,
         [
             "lock",
             "show",
             "--json",
             "--project-dir",
-            str(legacy_project),
+            str(leftover_project),
             "--change",
-            legacy_change,
+            leftover_change,
             "--invocation-id",
             "inv-lock-v2",
             "--product",
-            legacy_args[legacy_args.index("--product") + 1],
+            leftover_args[leftover_args.index("--product") + 1],
             "--binding-dist",
-            legacy_args[legacy_args.index("--binding-dist") + 1],
+            leftover_args[leftover_args.index("--binding-dist") + 1],
             "--binding-entrypoint",
             "deployment",
             "--binding-declaration",
-            legacy_args[legacy_args.index("--binding-declaration") + 1],
+            leftover_args[leftover_args.index("--binding-declaration") + 1],
             "--config-tree",
-            legacy_args[legacy_args.index("--config-tree") + 1],
+            leftover_args[leftover_args.index("--config-tree") + 1],
             "--secret",
-            legacy_args[legacy_args.index("--secret") + 1],
+            leftover_args[leftover_args.index("--secret") + 1],
         ],
     )
-    assert legacy_lock.exit_code == 0, legacy_lock.output
-    legacy_document = parse_json_output(legacy_lock.stdout)
-    assert legacy_document["lock"]["schema_version"] == "2"
-    assert "compiled_workflow" in legacy_document["lock"]
+    assert leftover_lock.exit_code == 0, leftover_lock.output
+    leftover_document = parse_json_output(leftover_lock.stdout)
+    assert leftover_document["lock"]["schema_version"] == "2"
+    assert "compiled_workflow" in leftover_document["lock"]
 
     use_test_runtime_selector(lambda _entrypoint: "langgraph-v1")
     lg_args, lg_project, lg_change = common_lifecycle_args(
@@ -176,19 +213,23 @@ def test_lock_show_fails_on_ambiguous_runtime_evidence(
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    selection = (
+    leftover_lock = (
         project_dir
         / "qa"
         / "changes"
         / change_id
         / ".runtime"
-        / "langgraph"
-        / "selections"
-        / "inv-lock-ambiguous.json"
+        / "invocations"
+        / "inv-lock-ambiguous"
+        / "invocation.lock.json"
     )
-    payload = json.loads(selection.read_text(encoding="utf-8"))
-    payload["runtime"] = "langgraph-v1"
-    selection.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    leftover_lock.parent.mkdir(parents=True, exist_ok=True)
+    leftover_lock.write_bytes(
+        (
+            Path(__file__).resolve().parents[2]
+            / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
+        ).read_text(encoding="utf-8").strip().encode()
+    )
     result = cli_runner.invoke(
         app,
         [

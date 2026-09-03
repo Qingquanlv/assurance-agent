@@ -72,3 +72,9 @@ def test_legacy_imports_are_only_on_explicit_allowlist() -> None:
     unexpected = unallowlisted_hits(hits, allowlist)
     paths = tuple(sorted({hit.path for hit in unexpected}))
     assert unexpected == (), paths
+
+
+def test_legacy_import_inventory_is_empty_without_allowlist() -> None:
+    hits = scan_legacy_imports()
+    paths = tuple(sorted({hit.path for hit in hits}))
+    assert hits == (), paths

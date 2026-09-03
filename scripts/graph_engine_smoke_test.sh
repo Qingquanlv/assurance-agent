@@ -231,7 +231,7 @@ resolved = RegistryPlatform().resolve(
         ),
     )
 )
-assert resolved.workflow is None
+assert not hasattr(resolved, "workflow")
 root = Path(sys.argv[1])
 workspace, _project_root = workspace_provider_for(root)
 resolver = contract_resolver_from_plugins(resolved.descriptors, workspace)

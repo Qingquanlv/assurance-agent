@@ -8,35 +8,4 @@ plugins:
 entrypoints:
   hello: root
 configuration: {}
-workflow:
-  name: toy-a
-  entrypoints:
-    hello: root
-  retry:
-    once:
-      max_attempts: 2
-      retry_on:
-        - transient
-  timeout:
-    short:
-      run_seconds: 5
-  graphs:
-    root:
-      max_activations: 2
-      start: greet
-      nodes:
-        greet:
-          kind: task
-          capability: toy.a.greet
-          input:
-            name: Ada
-          retry: once
-          timeout: short
-          resources:
-            writes:
-              - greeting.txt
-        done:
-          kind: end
-      edges:
-        - from: greet
-          to: done
+graph_factory_symbol: graph_engine_toy_a.product:build_toy_a_graphs

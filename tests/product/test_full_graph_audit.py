@@ -62,6 +62,7 @@ def test_factory_composition_has_no_leftover_compiled_workflow(installed_sources
     from assurance_product.product import resolve_assurance_composition
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    assert composition.workflow is None
+    assert composition.manifest.graph_factory_symbol
     assert composition.lock.schema_version == "3"
     assert not hasattr(composition, "audit_full_graph")
+    assert not hasattr(composition, "workflow")

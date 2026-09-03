@@ -241,7 +241,8 @@ def test_toy_and_assurance_invocation_creates_no_whole_tree_layout(
     from graph_engine.composition.lock import ProductLock
 
     composition = _toy_a_composition(tmp_path / "toy-composition", monkeypatch)
-    assert composition.workflow is None
+    assert not hasattr(composition, "workflow")
+    assert composition.manifest.graph_factory_symbol
     assert isinstance(composition.lock, ProductLock)
     workspace, project_root = workspace_provider_for(tmp_path / "toy-engine")
     resolver = contract_resolver_from_plugins(composition.descriptors, workspace)

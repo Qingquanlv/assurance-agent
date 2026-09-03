@@ -302,7 +302,7 @@ def test_ambiguous_publication_authenticates_exact_range(
         if name == "final_installed":
             raise OSError("append result unavailable")
 
-    monkeypatch.setattr("graph_engine.runtime.ledger._append_boundary", fail_after_install)
+    monkeypatch.setattr("graph_engine.evidence.ledger._append_boundary", fail_after_install)
     snapshot = port.mark_dispatch_started(_FINGERPRINT)
     assert snapshot.state == "dispatch_started"
     kinds = [item.event.kind for item in Ledger(ledger.root).read_all()]
@@ -328,7 +328,7 @@ def test_unreadable_publication_is_indeterminate(
             raise OSError("ledger unreadable")
         return original_read()
 
-    monkeypatch.setattr("graph_engine.runtime.ledger._append_boundary", fail_after_install)
+    monkeypatch.setattr("graph_engine.evidence.ledger._append_boundary", fail_after_install)
     ledger.read_all = unreadable  # type: ignore[method-assign]
     with pytest.raises(TaskActivityIndeterminate):
         port.mark_dispatch_started(_FINGERPRINT)

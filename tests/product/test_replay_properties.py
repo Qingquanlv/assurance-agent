@@ -122,47 +122,95 @@ def test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash
 def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     tmp_path: Path, installed_sources
 ) -> None:
-    from graph_engine.plugin_api import InvocationWorkspaceBinding
-    from graph_engine.attempts.secret_sources import empty_runtime_authorization
-    from tests.product.product_runner import Engine, EngineError, InvocationDrift, empty_invocation_seed
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.graph import END, START, StateGraph
 
+    from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, RevisionMismatch
+    from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
+    from graph_engine.canonical import canonical_digest
+    from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
     from tests.product.product_runner import adapter_product_composition, modular_product_composition
 
     legacy = adapter_product_composition(installed_sources, "cursor")
     modular = modular_product_composition(installed_sources)
-    engine_root = tmp_path / "replay-legacy-lock"
-    engine_root.mkdir()
-    engine = Engine(engine_root)
-    project = engine_root / "project"
-    attempts = engine_root / "attempts"
-    receipts = engine_root / "receipts"
-    for path in (project, attempts, receipts):
-        path.mkdir(parents=True, exist_ok=True)
-    handle = engine.start(
-        legacy,
-        entrypoint="intake",
-        invocation_id="inv-replay-legacy-001",
-        seed=empty_invocation_seed(),
-        authorization=empty_runtime_authorization(),
-        workspace_binding=InvocationWorkspaceBinding(
-            project_root=project,
-            attempts_root=attempts,
-            receipts_root=receipts,
-        ),
-    )
-    handle.close()
-    ledger = engine_root / "invocations" / "inv-replay-legacy-001" / "ledger"
-    before = tuple(sorted((path, path.read_bytes()) for path in ledger.rglob("*") if path.is_file()))
-    with pytest.raises((InvocationDrift, EngineError)):
-        Engine(engine_root).open(
-            "inv-replay-legacy-001",
-            modular,
-            authorization=empty_runtime_authorization(),
-            workspace_binding=InvocationWorkspaceBinding(
-                project_root=project,
-                attempts_root=attempts,
-                receipts_root=receipts,
-            ),
+    assert legacy.lock_digest != modular.lock_digest
+
+    def execute(state: dict[str, str]) -> dict[str, str]:
+        return state
+
+    builder = StateGraph(dict)
+    builder.add_node("execute", execute)
+    builder.add_edge(START, "execute")
+    builder.add_edge("execute", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+
+    def _artifact(lock: str) -> BootArtifact:
+        revision = GraphRevision.build(
+            product_lock_digest=lock,
+            wheel_source_digests={"assurance.product": "d" * 64},
+            factory_symbols=("assurance_product.graphs.factory:build_product_graphs",),
+            state_schema_versions={"intake": "1"},
+            langgraph_version="1.2.11",
+            checkpoint_contract_version="1",
         )
-    after = tuple(sorted((path, path.read_bytes()) for path in ledger.rglob("*") if path.is_file()))
-    assert after == before
+        return BootArtifact(
+            manifest=GraphBuildManifest(
+                revision=revision,
+                entrypoint_contract_digests={"intake": canonical_digest({"entrypoint": "intake"})},
+                attempt_contract_digests={},
+            ),
+            entrypoints={"intake": graph},
+            attempt_contracts={},
+            checkpointer_backend_id="memory",
+        )
+
+    original = _artifact(legacy.lock_digest)
+    drifted = _artifact(modular.lock_digest)
+    lease_root = tmp_path / "replay-legacy-lock"
+    lease_root.mkdir()
+    application = AssuranceApplication(lease=LocalInvocationRunnerLease(lease_root), owner_id="runner-a")
+    context = AssuranceRuntimeContext(
+        revision_id=original.manifest.revision.revision_id,
+        fencing_token=1,
+        attempt_kernel=object(),
+        secret_resolver=object(),
+        workspace_provider=object(),
+    )
+    drifted_context = AssuranceRuntimeContext(
+        revision_id=drifted.manifest.revision.revision_id,
+        fencing_token=1,
+        attempt_kernel=object(),
+        secret_resolver=object(),
+        workspace_provider=object(),
+    )
+
+    async def _run() -> None:
+        await application.start(
+            artifact=original,
+            invocation_id="inv-replay-legacy-001",
+            entrypoint="intake",
+            graph_input={"change_id": "CH-1"},
+            runtime_context=context,
+        )
+        def _durable() -> tuple[tuple[Path, bytes], ...]:
+            return tuple(
+                sorted(
+                    (path, path.read_bytes())
+                    for path in lease_root.rglob("*")
+                    if path.is_file() and path.name != "runner.json"
+                )
+            )
+
+        before = _durable()
+        with pytest.raises(RevisionMismatch):
+            await application.run(
+                artifact=drifted,
+                invocation_id="inv-replay-legacy-001",
+                runtime_context=drifted_context,
+            )
+        after = _durable()
+        assert after == before
+
+    import asyncio
+
+    asyncio.run(_run())
