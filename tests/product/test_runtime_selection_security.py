@@ -24,8 +24,8 @@ def _runtime_root(project_dir: Path, change_id: str) -> Path:
     return project_dir / "qa" / "changes" / change_id / ".runtime"
 
 
-def _selection_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
-    return _runtime_root(project_dir, change_id) / "langgraph" / "selections" / f"{invocation_id}.json"
+def _identity_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
+    return _runtime_root(project_dir, change_id) / "langgraph" / "identities" / f"{invocation_id}.json"
 
 
 def test_initializing_record_is_not_resumable(
@@ -95,7 +95,7 @@ def test_corrupt_selection_record_fails_closed(
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    path = _selection_path(project_dir, change_id, "inv-corrupt-selection")
+    path = _identity_path(project_dir, change_id, "inv-corrupt-selection")
     path.write_text("{not-json", encoding="utf-8")
     status = cli_runner.invoke(
         app,
@@ -139,7 +139,7 @@ def test_selection_symlink_is_rejected(cli_runner, installed_sources, tmp_path: 
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    path = _selection_path(project_dir, change_id, "inv-symlink-selection")
+    path = _identity_path(project_dir, change_id, "inv-symlink-selection")
     backup = path.read_bytes()
     path.unlink()
     target = path.with_name("inv-symlink-selection.real.json")
@@ -173,7 +173,7 @@ def test_selection_symlink_is_rejected(cli_runner, installed_sources, tmp_path: 
     assert status.exit_code == 40, status.output
 
 
-def test_both_runtime_artifacts_fail_closed(
+def test_unknown_control_entry_fails_closed_before_mutation(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
     from assurance_product.cli import app
@@ -185,17 +185,15 @@ def test_both_runtime_artifacts_fail_closed(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
-        invocation_id="inv-both-runtime",
+        invocation_id="inv-unknown-control",
         entrypoint="full",
         families=("api",),
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    leftover_lock = (
-        _runtime_root(project_dir, change_id) / "invocations" / "inv-both-runtime" / "invocation.lock.json"
-    )
-    leftover_lock.parent.mkdir(parents=True, exist_ok=True)
-    leftover_lock.write_text("{}\n", encoding="utf-8")
+    leftover = _runtime_root(project_dir, change_id) / "invocations"
+    leftover.mkdir(parents=True, exist_ok=True)
+    (leftover / "inv-unknown-control").mkdir()
     status = cli_runner.invoke(
         app,
         [
@@ -206,7 +204,7 @@ def test_both_runtime_artifacts_fail_closed(
             "--change",
             change_id,
             "--invocation-id",
-            "inv-both-runtime",
+            "inv-unknown-control",
             "--product",
             args[args.index("--product") + 1],
             "--binding-dist",
@@ -222,6 +220,7 @@ def test_both_runtime_artifacts_fail_closed(
         ],
     )
     assert status.exit_code == 40, status.output
+    assert leftover.is_dir()
 
 
 def test_absent_legacy_evidence_without_marker_fails_closed(
@@ -279,9 +278,9 @@ def test_record_evidence_disagreement_fails_closed(
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    path = _selection_path(project_dir, change_id, "inv-disagree-001")
+    path = _identity_path(project_dir, change_id, "inv-disagree-001")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["identity_digest"] = "0" * 64
+    payload["revision_id"] = "0" * 64
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
     status = cli_runner.invoke(
         app,
@@ -311,7 +310,7 @@ def test_record_evidence_disagreement_fails_closed(
     assert status.exit_code == 40, status.output
 
 
-@pytest.mark.parametrize("field", ["identity_digest", "build_identity", "root_input_digest"])
+@pytest.mark.parametrize("field", ["revision_id", "product_lock_digest", "root_input_digest"])
 def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch, field: str
 ) -> None:
@@ -330,7 +329,7 @@ def test_langgraph_initialized_record_disagrees_with_checkpoint_evidence(
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    path = _selection_path(project_dir, change_id, invocation_id)
+    path = _identity_path(project_dir, change_id, invocation_id)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload[field] = "0" * 64
     path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
@@ -394,12 +393,12 @@ def test_reopen_ignores_current_switch_during_initializing(
     monkeypatch.setattr(application, "_TEST_CRASH_AT", "after_initializing")
     crashed = cli_runner.invoke(app, ["start", *args])
     assert crashed.exit_code == 40, crashed.output
-    payload = json.loads(_selection_path(project_dir, change_id, "inv-reopen-switch").read_text())
-    assert payload["runtime"] == "langgraph-v1"
+    payload = json.loads(_identity_path(project_dir, change_id, "inv-reopen-switch").read_text())
+    assert "runtime" not in payload
     assert payload["phase"] == "initializing"
     monkeypatch.setattr(application, "_TEST_CRASH_AT", None)
     restarted = cli_runner.invoke(app, ["start", *args])
     assert restarted.exit_code == 0, restarted.output
-    completed = json.loads(_selection_path(project_dir, change_id, "inv-reopen-switch").read_text())
-    assert completed["runtime"] == "langgraph-v1"
+    completed = json.loads(_identity_path(project_dir, change_id, "inv-reopen-switch").read_text())
+    assert "runtime" not in completed
     assert completed["phase"] == "initialized"

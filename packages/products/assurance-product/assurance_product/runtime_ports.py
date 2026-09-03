@@ -33,7 +33,7 @@ from graph_engine.plugin_api import (
 )
 
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.product import coexistence_graph_manifest, product_lock_from_composition
+from assurance_product.product import product_graph_manifest, product_lock_from_composition
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend, open_sqlite_checkpointer
 
 
@@ -221,7 +221,7 @@ class ProductRuntimePorts:
         observers: Sequence[object] | None = None,
     ) -> AsyncIterator[ProductRuntimePorts]:
         product_lock = product_lock_from_composition(composition)  # type: ignore[arg-type]
-        manifest = coexistence_graph_manifest(composition, product_lock)  # type: ignore[arg-type]
+        manifest = product_graph_manifest(composition, product_lock)  # type: ignore[arg-type]
         journal = DurableAttemptJournal(workspace.paths.langgraph_leases / "attempts.pkl")
         observer = AttemptCheckpointObserver(journal)
         if observers is not None:
@@ -379,7 +379,7 @@ class ProductRuntimePorts:
         }
         graphs = build_product_graphs(context=context, features=features)
         composition = cast(FrozenComposition, self.composition)
-        manifest = coexistence_graph_manifest(composition, product_lock_from_composition(composition))
+        manifest = product_graph_manifest(composition, product_lock_from_composition(composition))
         artifact = BootArtifact(
             manifest=manifest,
             entrypoints=graphs.entrypoints,

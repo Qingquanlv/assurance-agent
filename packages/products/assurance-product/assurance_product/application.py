@@ -1,38 +1,37 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
-import os
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, cast
-
-from pydantic import Field
+from typing import Any, cast
 
 from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, StartedInvocation
 from graph_engine.boot.graph_revision import GraphBuildManifest
-from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import InvocationLock, ProductLock
-from graph_engine.evidence.events import InvocationStarted
-from graph_engine.evidence.legacy_v2 import (
-    authenticate_invocation_lock_v2,
-    fold_legacy_events,
-    read_legacy_ledger,
-)
-from graph_engine.evidence.models import InvocationProjection
 from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
-from graph_engine.plugin_api import FrozenModel
 
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.export import publish_achieved, select_publish_change
+from assurance_product.invocation_identity import (
+    InvocationIdentityRecord,
+    RuntimeSelectionError,
+    SelectionCrash,
+    complete_initialized,
+    load_identity,
+    maybe_crash,
+    record_digest,
+    require_initialized,
+    write_initializing,
+)
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, StatusV1
 from assurance_product.product import (
-    coexistence_graph_manifest,
+    product_graph_manifest,
     product_lock_from_composition,
     reject_organization_overrides,
 )
@@ -44,46 +43,11 @@ from assurance_product.revision_registry import (
 from assurance_product.runtime_ports import ProductRuntimePorts
 from assurance_product.status import (
     archive_published,
-    render_status,
     render_status_from_langgraph,
-    write_runtime_projections,
 )
 
 _TEST_CRASH_AT: str | None = None
-_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
-
-class SelectionCrash(RuntimeError):
-    """Raised by the test-only handshake crash injector."""
-
-
-class RuntimeSelectionError(ValueError):
-    """Raised when an invocation identity record or runtime evidence is invalid."""
-
-
-class LegacyRuntimeRecord(FrozenModel):
-    schema_version: Literal["1"] = "1"
-    runtime: Literal["legacy-v2"] = "legacy-v2"
-    phase: Literal["initializing", "initialized"]
-    invocation_id: str
-    entrypoint: str
-    root_input_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    build_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-    identity_digest: str | None = None
-
-
-class LangGraphRuntimeRecord(FrozenModel):
-    schema_version: Literal["1"] = "1"
-    runtime: Literal["langgraph-v1"] = "langgraph-v1"
-    phase: Literal["initializing", "initialized"]
-    invocation_id: str
-    entrypoint: str
-    root_input_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    build_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-    identity_digest: str | None = None
-
-
-SelectionRecord = LegacyRuntimeRecord | LangGraphRuntimeRecord
 
 ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingProxyType(
     {
@@ -131,164 +95,6 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
         ),
     }
 )
-
-
-def selection_path(workspace: ChangeWorkspace, invocation_id: str) -> Path:
-    return workspace.paths.langgraph_selections / f"{invocation_id}.json"
-
-
-def maybe_crash(point: str) -> None:
-    if _TEST_CRASH_AT == point:
-        raise SelectionCrash(point)
-
-
-def load_selection(workspace: ChangeWorkspace, invocation_id: str) -> SelectionRecord | None:
-    path = selection_path(workspace, invocation_id)
-    if not path.exists():
-        return None
-    if path.is_symlink() or not path.is_file():
-        raise RuntimeSelectionError("selection record must be a regular file")
-    try:
-        payload = json.loads(path.read_bytes())
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeSelectionError("selection record is corrupt") from error
-    except Exception as error:
-        raise RuntimeSelectionError("selection record is corrupt") from error
-    if not isinstance(payload, dict):
-        raise RuntimeSelectionError("selection record is corrupt")
-    runtime = payload.get("runtime")
-    try:
-        if runtime == "legacy-v2":
-            return LegacyRuntimeRecord.model_validate(payload)
-        if runtime == "langgraph-v1":
-            return LangGraphRuntimeRecord.model_validate(payload)
-    except Exception as error:
-        raise RuntimeSelectionError("selection record is corrupt") from error
-    raise RuntimeSelectionError("selection record runtime is unknown")
-
-
-def write_initializing(workspace: ChangeWorkspace, record: SelectionRecord) -> SelectionRecord:
-    if record.phase != "initializing":
-        raise RuntimeSelectionError("phase 1 must write an initializing record")
-    workspace.paths.langgraph_root.mkdir(mode=0o700, exist_ok=True)
-    workspace.paths.langgraph_selections.mkdir(mode=0o700, exist_ok=True)
-    path = selection_path(workspace, record.invocation_id)
-    encoded = _identity_bytes(record)
-    with _namespace_lock(workspace):
-        existing = load_selection(workspace, record.invocation_id)
-        if existing is not None:
-            _assert_same_identity(existing, record)
-            if existing.phase in {"initializing", "initialized"}:
-                return existing
-            raise RuntimeSelectionError("selection record disagrees with the requested identity")
-        _atomic_replace(path, encoded)
-    maybe_crash("after_initializing")
-    return record
-
-
-def complete_initialized(workspace: ChangeWorkspace, record: SelectionRecord) -> SelectionRecord:
-    if record.phase != "initialized" or not record.identity_digest:
-        raise RuntimeSelectionError("phase 3 must write an initialized identity digest")
-    path = selection_path(workspace, record.invocation_id)
-    encoded = _identity_bytes(record)
-    with _namespace_lock(workspace):
-        existing = load_selection(workspace, record.invocation_id)
-        if existing is None:
-            raise RuntimeSelectionError("initialized replacement requires an initializing record")
-        _assert_same_identity(existing, record)
-        if existing.phase == "initialized":
-            if _identity_bytes(existing) != encoded:
-                raise RuntimeSelectionError("initialized selection record disagrees with evidence")
-            return existing
-        maybe_crash("before_initialized")
-        _atomic_replace(path, encoded)
-    return record
-
-
-def backfill_legacy(
-    workspace: ChangeWorkspace,
-    *,
-    invocation_id: str,
-    entrypoint: str,
-    root_input_digest: str,
-    build_identity: str,
-    identity_digest: str,
-) -> LegacyRuntimeRecord:
-    existing = load_selection(workspace, invocation_id)
-    record = LegacyRuntimeRecord(
-        phase="initialized",
-        invocation_id=invocation_id,
-        entrypoint=entrypoint,
-        root_input_digest=root_input_digest,
-        build_identity=build_identity,
-        identity_digest=identity_digest,
-    )
-    if existing is not None:
-        if _identity_bytes(existing) != _identity_bytes(record):
-            raise RuntimeSelectionError("backfill disagrees with an existing selection record")
-        if not isinstance(existing, LegacyRuntimeRecord):
-            raise RuntimeSelectionError("backfill disagrees with an existing selection record")
-        return existing
-    workspace.paths.langgraph_root.mkdir(mode=0o700, exist_ok=True)
-    workspace.paths.langgraph_selections.mkdir(mode=0o700, exist_ok=True)
-    with _namespace_lock(workspace):
-        again = load_selection(workspace, invocation_id)
-        if again is not None:
-            if _identity_bytes(again) != _identity_bytes(record):
-                raise RuntimeSelectionError("backfill disagrees with an existing selection record")
-            if not isinstance(again, LegacyRuntimeRecord):
-                raise RuntimeSelectionError("backfill disagrees with an existing selection record")
-            return again
-        _atomic_replace(selection_path(workspace, invocation_id), _identity_bytes(record))
-    return record
-
-
-def require_initialized(record: SelectionRecord) -> SelectionRecord:
-    if record.phase != "initialized" or not record.identity_digest:
-        raise RuntimeSelectionError("only an initialized selection record is resumable")
-    return record
-
-
-def record_digest(record: SelectionRecord) -> str:
-    return canonical_digest(record.model_dump(mode="json"))
-
-
-def _assert_same_identity(existing: SelectionRecord, requested: SelectionRecord) -> None:
-    if (
-        existing.runtime != requested.runtime
-        or existing.invocation_id != requested.invocation_id
-        or existing.entrypoint != requested.entrypoint
-        or existing.root_input_digest != requested.root_input_digest
-        or existing.build_identity != requested.build_identity
-    ):
-        raise RuntimeSelectionError("selection record disagrees with the requested identity")
-
-
-def _identity_bytes(record: SelectionRecord) -> bytes:
-    return canonical_json_bytes(record.model_dump(mode="json")) + b"\n"
-
-
-def _atomic_replace(path: Path, encoded: bytes) -> None:
-    if path.exists() and (path.is_symlink() or not path.is_file()):
-        raise RuntimeSelectionError("selection record must be a regular file")
-    pending = path.with_name(f".{path.name}.pending")
-    pending.write_bytes(encoded)
-    os.replace(pending, path)
-
-
-def _namespace_lock(workspace: ChangeWorkspace):
-    workspace.paths.langgraph_selections.mkdir(mode=0o700, exist_ok=True)
-
-    class _Lock:
-        def __enter__(self) -> None:
-            self._fd = os.open(str(workspace.paths.langgraph_selections), _DIRECTORY_FLAGS)
-            fcntl.flock(self._fd, fcntl.LOCK_EX)
-
-        def __exit__(self, *_args: object) -> None:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
-            os.close(self._fd)
-
-    return _Lock()
 
 
 if set(ENTRYPOINT_AGENT_CONTRACT_IDS) != set(PRODUCT_ENTRYPOINTS):
@@ -423,7 +229,7 @@ class AssuranceProductApplication:
         product_lock = product_lock_from_composition(composition)
         if product_lock.schema_version != "3":
             raise ValueError("aa compile emits only ProductLock v3")
-        manifest = coexistence_graph_manifest(composition, product_lock)
+        manifest = product_graph_manifest(composition, product_lock)
         return ProductBuildArtifacts(product_lock, manifest)
 
     def start(
@@ -447,12 +253,12 @@ class AssuranceProductApplication:
         root_input = cast(JSONValue, root_input_data)
         root_input_digest = canonical_digest(cast(JSONValue, root_input_data))
         product_lock = product_lock_from_composition(composition)
-        existing = load_selection(workspace, invocation_id)
+        existing = load_identity(workspace, invocation_id)
         if existing is not None:
-            runtime = existing.runtime
-            build_identity = existing.build_identity
+            product_lock_digest = existing.product_lock_digest
+            revision_id = existing.revision_id
             if existing.entrypoint != entrypoint or existing.root_input_digest != root_input_digest:
-                raise RuntimeSelectionError("selection record disagrees with the requested identity")
+                raise RuntimeSelectionError("identity record disagrees with the requested identity")
             if existing.phase == "initialized":
                 return {
                     "invocation_id": invocation_id,
@@ -462,27 +268,26 @@ class AssuranceProductApplication:
                     "root_input_digest": root_input_digest,
                 }
         else:
-            runtime = "langgraph-v1"
-            build_identity = product_lock.digest
-        if runtime == "legacy-v2":
-            raise RuntimeSelectionError("leftover workflow execution is deleted")
-        initializing = LangGraphRuntimeRecord(
+            product_lock_digest = product_lock.digest
+            revision_id = product_graph_manifest(composition, product_lock).revision.revision_id
+        initializing = InvocationIdentityRecord(
+            schema_version="1",
             phase="initializing",
             invocation_id=invocation_id,
             entrypoint=entrypoint,
             root_input_digest=root_input_digest,
-            build_identity=build_identity,
+            product_lock_digest=product_lock_digest,
+            revision_id=revision_id,
         )
         write_initializing(workspace, initializing)
         _bind_revision(
             workspace,
             invocation_id=invocation_id,
-            runtime=runtime,
             composition=composition,
             product_lock=product_lock,
-            build_identity=build_identity,
+            product_lock_digest=product_lock_digest,
         )
-        identity_digest = asyncio.run(
+        asyncio.run(
             self._start_langgraph(
                 workspace=workspace,
                 composition=composition,
@@ -495,13 +300,14 @@ class AssuranceProductApplication:
         maybe_crash("after_identity")
         complete_initialized(
             workspace,
-            LangGraphRuntimeRecord(
+            InvocationIdentityRecord(
+                schema_version="1",
                 phase="initialized",
                 invocation_id=invocation_id,
                 entrypoint=entrypoint,
                 root_input_digest=root_input_digest,
-                build_identity=build_identity,
-                identity_digest=identity_digest,
+                product_lock_digest=product_lock_digest,
+                revision_id=revision_id,
             ),
         )
         return {
@@ -526,13 +332,13 @@ class AssuranceProductApplication:
         secrets: Sequence[str],
     ) -> tuple[SimpleRun, str, int]:
         del project_dir, secrets
-        existing = load_selection(workspace, invocation_id)
-        needs_handshake = existing is None and not _legacy_invocation_exists(workspace, invocation_id)
+        existing = load_identity(workspace, invocation_id)
+        needs_handshake = existing is None
         needs_finish = existing is not None and existing.phase != "initialized"
         if needs_handshake or needs_finish:
             if entrypoint is None or input_path is None:
                 if needs_finish:
-                    raise RuntimeSelectionError("only an initialized selection record is resumable")
+                    raise RuntimeSelectionError("only an initialized identity record is resumable")
                 raise ValueError("first run requires --entrypoint and --input")
             document = self.start(
                 project_dir=workspace.paths.project_root,
@@ -553,8 +359,6 @@ class AssuranceProductApplication:
                 authorization=authorization,
             )
         )
-        if record.runtime == "legacy-v2":
-            raise RuntimeSelectionError("leftover workflow execution is deleted")
         status = asyncio.run(
             self._run_langgraph(
                 workspace=workspace,
@@ -584,8 +388,6 @@ class AssuranceProductApplication:
             authorization=authorization,
         )
         require_initialized(record)
-        if record.runtime == "legacy-v2":
-            raise RuntimeSelectionError("leftover workflow execution is deleted")
         resume_payload: object
         _assert_langgraph_revision(workspace, composition, invocation_id)
         if resume_file is not None:
@@ -635,19 +437,12 @@ class AssuranceProductApplication:
             composition=composition,
             authorization=authorization,
         )
-        if record.runtime == "legacy-v2":
-            projection, identity = self._historical_legacy_projection(workspace, invocation_id)
-            return render_status(
-                projection,
-                root_input_digest=identity["root_input_digest"],
-                change_id=change_id,
-            )
         status_name, snapshot, journal_events = asyncio.run(
             self._status_langgraph(workspace, composition, invocation_id, record)
         )
         return render_status_from_langgraph(
             invocation_id=invocation_id,
-            lock_digest=record.build_identity,
+            lock_digest=record.product_lock_digest,
             root_input_digest=record.root_input_digest,
             entrypoint=record.entrypoint,
             change_id=change_id,
@@ -664,26 +459,14 @@ class AssuranceProductApplication:
         authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
     ) -> dict[str, object]:
-        record = self._resolve_existing(
+        self._resolve_existing(
             workspace,
             invocation_id,
             composition=composition,
             authorization=authorization,
         )
-        if record.runtime == "legacy-v2":
-            if _langgraph_db_has_invocation(workspace, invocation_id):
-                raise RuntimeSelectionError("runtime evidence is ambiguous")
-            lock_path = workspace.paths.runtime_root / "invocations" / invocation_id / "invocation.lock.json"
-            lock = authenticate_invocation_lock_v2(lock_path.read_bytes())
-            return {
-                "lock_digest": lock.digest,
-                "engine_api": lock.engine_api,
-                "lock": json.loads(lock.canonical_bytes.decode("utf-8")),
-            }
-        if _legacy_invocation_exists(workspace, invocation_id):
-            raise RuntimeSelectionError("runtime evidence is ambiguous")
         product_lock = product_lock_from_composition(composition)
-        manifest = coexistence_graph_manifest(composition, product_lock)
+        manifest = product_graph_manifest(composition, product_lock)
         return {
             "lock_digest": product_lock.digest,
             "engine_api": product_lock.engine_api,
@@ -718,53 +501,21 @@ class AssuranceProductApplication:
         *,
         composition: Any,
         authorization: InvocationRuntimeAuthorization,
-    ) -> SelectionRecord:
-        record = load_selection(workspace, invocation_id)
-        if record is not None:
-            if record.runtime == "langgraph-v1" and _legacy_invocation_exists(workspace, invocation_id):
-                raise RuntimeSelectionError("both-runtime artifacts are present")
-            if record.runtime == "langgraph-v1" and record.phase == "initialized":
-                row = _langgraph_started_row(workspace, invocation_id)
-                identity = _langgraph_identity_digest(workspace, invocation_id)
-                if row is None or identity is None:
-                    raise RuntimeSelectionError("langgraph evidence is absent")
-                if (
-                    record.identity_digest != identity
-                    or record.build_identity != row[2]
-                    or record.root_input_digest != row[3]
-                ):
-                    raise RuntimeSelectionError("selection record disagrees with langgraph evidence")
-            if record.runtime == "legacy-v2" and record.phase == "initialized":
-                identity = _legacy_lock_digest(workspace, invocation_id)
-                if identity is None:
-                    raise RuntimeSelectionError("legacy evidence is absent")
-                if (
-                    record.identity_digest != identity
-                    or record.build_identity != identity
-                    or record.identity_digest != record.build_identity
-                ):
-                    raise RuntimeSelectionError("selection record disagrees with legacy evidence")
-            return record
-        if not _legacy_invocation_exists(workspace, invocation_id):
+    ) -> InvocationIdentityRecord:
+        record = load_identity(workspace, invocation_id)
+        if record is None:
             raise RuntimeSelectionError("invocation evidence is absent")
-        if _langgraph_db_has_invocation(workspace, invocation_id):
-            raise RuntimeSelectionError("both-runtime artifacts are present")
-        projection, identity = self._historical_legacy_projection(workspace, invocation_id)
-        return backfill_legacy(
-            workspace,
-            invocation_id=invocation_id,
-            entrypoint=projection.entrypoint or "",
-            root_input_digest=identity["root_input_digest"],
-            build_identity=composition.lock.digest,
-            identity_digest=composition.lock.digest,
-        )
-
-    def _historical_legacy_projection(
-        self,
-        workspace: ChangeWorkspace,
-        invocation_id: str,
-    ) -> tuple[InvocationProjection, dict[str, str]]:
-        return _read_historical_legacy(workspace, invocation_id)
+        if record.phase == "initialized":
+            row = _langgraph_started_row(workspace, invocation_id)
+            if row is None:
+                raise RuntimeSelectionError("langgraph evidence is absent")
+            if (
+                record.revision_id != row[1]
+                or record.product_lock_digest != row[2]
+                or record.root_input_digest != row[3]
+            ):
+                raise RuntimeSelectionError("identity record disagrees with langgraph evidence")
+        return record
 
     async def _start_langgraph(
         self,
@@ -778,9 +529,7 @@ class AssuranceProductApplication:
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
-            RevisionRegistry(workspace).remember(
-                coexistence_graph_manifest(composition, product_lock).revision
-            )
+            RevisionRegistry(workspace).remember(product_graph_manifest(composition, product_lock).revision)
             artifact = await ports.compile_roots(
                 invocation_id=invocation_id,
                 root_input_digest=canonical_digest(dict(root_input)),
@@ -817,7 +566,7 @@ class AssuranceProductApplication:
         workspace: ChangeWorkspace,
         composition: Any,
         invocation_id: str,
-        record: SelectionRecord,
+        record: InvocationIdentityRecord,
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
@@ -850,7 +599,7 @@ class AssuranceProductApplication:
         workspace: ChangeWorkspace,
         composition: Any,
         invocation_id: str,
-        record: SelectionRecord,
+        record: InvocationIdentityRecord,
         resume: object,
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
@@ -884,7 +633,7 @@ class AssuranceProductApplication:
         workspace: ChangeWorkspace,
         composition: Any,
         invocation_id: str,
-        record: SelectionRecord,
+        record: InvocationIdentityRecord,
     ) -> tuple[str, object, tuple[object, ...]]:
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
@@ -917,7 +666,7 @@ class AssuranceProductApplication:
         workspace: ChangeWorkspace,
         composition: Any,
         invocation_id: str,
-        record: SelectionRecord,
+        record: InvocationIdentityRecord,
     ) -> tuple[str, ...]:
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with ProductRuntimePorts.open(workspace, composition) as ports:
@@ -963,54 +712,6 @@ def _load_input(path: Path, *, entrypoint: str, composition: Any) -> ProductInpu
     )
 
 
-def _read_historical_legacy(
-    workspace: ChangeWorkspace,
-    invocation_id: str,
-) -> tuple[InvocationProjection, dict[str, str]]:
-    invocation_root = workspace.paths.runtime_root / "invocations" / invocation_id
-    envelopes = read_legacy_ledger(invocation_root / "ledger")
-    if not envelopes:
-        raise ValueError("invocation has no ledger bootstrap")
-    event = getattr(envelopes[0], "event", None)
-    if not isinstance(event, InvocationStarted):
-        raise ValueError("invocation ledger lacks its canonical bootstrap")
-    identity = {"root_input_digest": event.root_input_digest}
-    published = fold_legacy_events(envelopes)
-    write_runtime_projections(
-        workspace,
-        published,
-        envelopes,
-        root_input_digest=identity["root_input_digest"],
-    )
-    return published, identity
-
-
-def _legacy_invocation_exists(workspace: ChangeWorkspace, invocation_id: str) -> bool:
-    lock = workspace.paths.runtime_root / "invocations" / invocation_id / "invocation.lock.json"
-    return lock.is_file() and not lock.is_symlink()
-
-
-def _legacy_lock_digest(workspace: ChangeWorkspace, invocation_id: str) -> str | None:
-    lock = workspace.paths.runtime_root / "invocations" / invocation_id / "invocation.lock.json"
-    if not lock.is_file() or lock.is_symlink():
-        return None
-    raw = lock.read_bytes()
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    digest = payload.get("digest")
-    if isinstance(digest, str) and len(digest) == 64:
-        return digest
-    from hashlib import sha256
-
-    return sha256(raw).hexdigest()
-
-
-def _langgraph_db_has_invocation(workspace: ChangeWorkspace, invocation_id: str) -> bool:
-    return _langgraph_started_row(workspace, invocation_id) is not None
-
-
 def _langgraph_started_row(
     workspace: ChangeWorkspace, invocation_id: str
 ) -> tuple[str, str, str, str] | None:
@@ -1037,50 +738,28 @@ def _langgraph_started_row(
     return (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
 
 
-def _langgraph_identity_digest(workspace: ChangeWorkspace, invocation_id: str) -> str | None:
-    row = _langgraph_started_row(workspace, invocation_id)
-    if row is None:
-        return None
-    return canonical_digest(
-        {
-            "invocation_id": row[0],
-            "graph_revision": row[1],
-            "product_lock_digest": row[2],
-            "root_input_digest": row[3],
-        }
-    )
-
-
 def _bind_revision(
     workspace: ChangeWorkspace,
     *,
     invocation_id: str,
-    runtime: Literal["legacy-v2", "langgraph-v1"],
     composition: Any,
     product_lock: ProductLock,
-    build_identity: str,
+    product_lock_digest: str,
 ) -> None:
     registry = RevisionRegistry(workspace)
-    if runtime != "langgraph-v1":
-        registry.bind(invocation_id, runtime="legacy-v2", revision_id=build_identity)
-        return
-    current = coexistence_graph_manifest(composition, product_lock).revision
+    current = product_graph_manifest(composition, product_lock).revision
     try:
-        bound_runtime, bound_id = registry.revision_for(invocation_id)
+        bound_id = registry.revision_for(invocation_id)
     except RevisionRegistryError as error:
         if "missing" not in str(error):
             raise
-        if current.product_lock_digest != build_identity:
+        if current.product_lock_digest != product_lock_digest:
             raise RevisionRegistryError(
-                f"required artifact: graph revision {build_identity} product lock {build_identity}"
+                f"required artifact: graph revision {product_lock_digest} product lock {product_lock_digest}"
             ) from error
         registry.remember(current)
-        registry.bind(invocation_id, runtime="langgraph-v1", revision_id=current.revision_id)
+        registry.bind(invocation_id, current.revision_id)
         return
-    if bound_runtime != "langgraph-v1":
-        raise RevisionRegistryError(
-            f"required artifact: graph revision {bound_id} product lock {build_identity}"
-        )
     recorded = registry.get(bound_id)
     if recorded.revision_id != current.revision_id:
         raise RevisionRegistryError(
@@ -1092,7 +771,7 @@ def _bind_revision(
 
 def _assert_langgraph_revision(workspace: ChangeWorkspace, composition: Any, invocation_id: str) -> None:
     product_lock = product_lock_from_composition(composition)
-    current = coexistence_graph_manifest(composition, product_lock).revision
+    current = product_graph_manifest(composition, product_lock).revision
     assert_recorded_revision(workspace, invocation_id, current)
 
 
@@ -1104,19 +783,15 @@ async def _graph_snapshot(artifact: object, entrypoint: str, invocation_id: str)
 __all__ = [
     "ENTRYPOINT_AGENT_CONTRACT_IDS",
     "AssuranceProductApplication",
-    "LangGraphRuntimeRecord",
-    "LegacyRuntimeRecord",
+    "InvocationIdentityRecord",
     "ProductBuildArtifacts",
     "RuntimeSelectionError",
     "SelectionCrash",
-    "SelectionRecord",
-    "backfill_legacy",
     "complete_initialized",
-    "load_selection",
+    "load_identity",
     "maybe_crash",
     "parse_resume_file",
     "record_digest",
     "require_initialized",
-    "selection_path",
     "write_initializing",
 ]

@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 from pathlib import Path, PurePosixPath
-from types import MappingProxyType
 from typing import Literal
 import unicodedata
 from urllib.parse import urlparse
@@ -338,10 +337,6 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
 )
 PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS
 THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - FAMILY_NONEMPTY_ENTRYPOINTS
-RuntimeKind = Literal["legacy-v2", "langgraph-v1"]
-ENTRYPOINT_RUNTIME_CUTOVER: MappingProxyType[str, RuntimeKind] = MappingProxyType(
-    {name: "langgraph-v1" for name in sorted(PRODUCT_ENTRYPOINTS)}
-)
 
 
 def _canonical_token(value: str, label: str) -> str:

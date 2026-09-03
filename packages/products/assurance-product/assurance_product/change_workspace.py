@@ -21,7 +21,7 @@ class ChangePaths:
     langgraph_root: Path
     langgraph_checkpoints: Path
     langgraph_leases: Path
-    langgraph_selections: Path
+    langgraph_identities: Path
 
 
 def safe_change_id(change_id: str) -> str:
@@ -73,7 +73,7 @@ _LANGGRAPH_SQLITE_NAMES = frozenset(
         "checkpoints.sqlite3-journal",
     }
 )
-_LANGGRAPH_DIRECTORY_NAMES = frozenset({"leases", "selections"})
+_LANGGRAPH_DIRECTORY_NAMES = frozenset({"leases", "identities"})
 
 
 def _validate_langgraph_subtree(path: Path) -> None:
@@ -132,7 +132,7 @@ class ChangeWorkspace:
             langgraph_root=langgraph_root,
             langgraph_checkpoints=langgraph_root / "checkpoints.sqlite3",
             langgraph_leases=langgraph_root / "leases",
-            langgraph_selections=langgraph_root / "selections",
+            langgraph_identities=langgraph_root / "identities",
         )
         return cls(paths)
 
@@ -163,7 +163,7 @@ class ChangeWorkspace:
         runtime = self.paths.runtime_root
         staging = self.paths.staging_root
         required_runtime = {"activities", "receipts"}
-        allowed_runtime = required_runtime | {"invocations", "ledger", "langgraph"}
+        allowed_runtime = required_runtime | {"langgraph"}
         runtime_exists = runtime.exists()
         staging_exists = staging.exists()
         if runtime_exists != staging_exists:

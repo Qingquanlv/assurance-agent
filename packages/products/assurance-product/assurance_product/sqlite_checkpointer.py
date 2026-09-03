@@ -783,7 +783,7 @@ async def open_sqlite_checkpointer(
 
 
 def _prepare_control_tree(paths: ChangePaths) -> None:
-    for path in (paths.langgraph_root, paths.langgraph_leases, paths.langgraph_selections):
+    for path in (paths.langgraph_root, paths.langgraph_leases, paths.langgraph_identities):
         if path.exists():
             if path.is_symlink() or not path.is_dir():
                 raise ValueError("langgraph control path must be a real directory")

@@ -53,98 +53,14 @@ def test_langgraph_export_and_archive_never_call_legacy_driver(
     assert archived.exit_code == 0, archived.output
 
 
-def test_lock_show_renders_v2_for_legacy_and_v3_for_langgraph(
+def test_lock_show_renders_current_product_lock(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.revision_registry import RevisionRegistry
-    from assurance_product.application import (
-        LegacyRuntimeRecord,
-        complete_initialized,
-        write_initializing,
-    )
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    leftover_args, leftover_project, leftover_change = common_lifecycle_args(
-        tmp_path=tmp_path / "legacy",
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-lock-v2",
-    )
-    (leftover_project / "qa" / "changes" / leftover_change).mkdir(parents=True, exist_ok=True)
-    leftover_workspace = ChangeWorkspace.open(leftover_project, leftover_change)
-    leftover_workspace.initialize()
-    leftover_lock_bytes = (
-        (
-            Path(__file__).resolve().parents[2]
-            / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
-        )
-        .read_text(encoding="utf-8")
-        .strip()
-        .encode()
-    )
-    leftover_invocation = leftover_workspace.paths.runtime_root / "invocations" / "inv-lock-v2"
-    leftover_invocation.mkdir(parents=True, exist_ok=True)
-    (leftover_invocation / "invocation.lock.json").write_bytes(leftover_lock_bytes)
-    from graph_engine.evidence.legacy_v2 import authenticate_invocation_lock_v2
-
-    leftover_digest = authenticate_invocation_lock_v2(leftover_lock_bytes).digest
-    write_initializing(
-        leftover_workspace,
-        LegacyRuntimeRecord(
-            phase="initializing",
-            invocation_id="inv-lock-v2",
-            entrypoint="archive",
-            root_input_digest="c" * 64,
-            build_identity=leftover_digest,
-        ),
-    )
-    complete_initialized(
-        leftover_workspace,
-        LegacyRuntimeRecord(
-            phase="initialized",
-            invocation_id="inv-lock-v2",
-            entrypoint="archive",
-            root_input_digest="c" * 64,
-            build_identity=leftover_digest,
-            identity_digest=leftover_digest,
-        ),
-    )
-    RevisionRegistry(leftover_workspace).bind("inv-lock-v2", runtime="legacy-v2", revision_id=leftover_digest)
-    leftover_lock = cli_runner.invoke(
-        app,
-        [
-            "lock",
-            "show",
-            "--json",
-            "--project-dir",
-            str(leftover_project),
-            "--change",
-            leftover_change,
-            "--invocation-id",
-            "inv-lock-v2",
-            "--product",
-            leftover_args[leftover_args.index("--product") + 1],
-            "--binding-dist",
-            leftover_args[leftover_args.index("--binding-dist") + 1],
-            "--binding-entrypoint",
-            "deployment",
-            "--binding-declaration",
-            leftover_args[leftover_args.index("--binding-declaration") + 1],
-            "--config-tree",
-            leftover_args[leftover_args.index("--config-tree") + 1],
-            "--secret",
-            leftover_args[leftover_args.index("--secret") + 1],
-        ],
-    )
-    assert leftover_lock.exit_code == 0, leftover_lock.output
-    leftover_document = parse_json_output(leftover_lock.stdout)
-    assert leftover_document["lock"]["schema_version"] == "2"
-    assert "compiled_workflow" in leftover_document["lock"]
-
     lg_args, lg_project, lg_change = common_lifecycle_args(
         tmp_path=tmp_path / "langgraph",
         installed_sources=installed_sources,
@@ -189,7 +105,7 @@ def test_lock_show_renders_v2_for_legacy_and_v3_for_langgraph(
     assert document["revision"]["revision_id"]
 
 
-def test_lock_show_fails_on_ambiguous_runtime_evidence(
+def test_lock_show_rejects_unknown_control_entries(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
     from assurance_product.cli import app
@@ -201,30 +117,12 @@ def test_lock_show_fails_on_ambiguous_runtime_evidence(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
-        invocation_id="inv-lock-ambiguous",
+        invocation_id="inv-lock-unknown",
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    leftover_lock = (
-        project_dir
-        / "qa"
-        / "changes"
-        / change_id
-        / ".runtime"
-        / "invocations"
-        / "inv-lock-ambiguous"
-        / "invocation.lock.json"
-    )
-    leftover_lock.parent.mkdir(parents=True, exist_ok=True)
-    leftover_lock.write_bytes(
-        (
-            Path(__file__).resolve().parents[2]
-            / "packages/framework/graph-engine/tests/composition/invocation-lock-v2.golden.json"
-        )
-        .read_text(encoding="utf-8")
-        .strip()
-        .encode()
-    )
+    leftover = project_dir / "qa" / "changes" / change_id / ".runtime" / "ledger"
+    leftover.mkdir(parents=True, exist_ok=True)
     result = cli_runner.invoke(
         app,
         [
@@ -236,7 +134,7 @@ def test_lock_show_fails_on_ambiguous_runtime_evidence(
             "--change",
             change_id,
             "--invocation-id",
-            "inv-lock-ambiguous",
+            "inv-lock-unknown",
             "--product",
             args[args.index("--product") + 1],
             "--binding-dist",

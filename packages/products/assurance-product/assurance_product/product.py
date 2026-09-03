@@ -386,7 +386,7 @@ def reject_organization_overrides(organization_root: Path | None) -> None:
         raise OrganizationOverrideError(str(error)) from error
 
 
-def coexistence_graph_manifest(
+def product_graph_manifest(
     composition: FrozenComposition,
     product_lock: ProductLock,
 ):
