@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
+from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from tests.product.composition_harness import request_for
 
@@ -37,7 +39,9 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(installed_so
     assert len(contracts) == 33
     assert set(bindings) == set(contracts)
     assert len(bindings) == 33
-    assert all(binding.model != "fixture-model" or binding.provider == "opencode" for binding in bindings.values())
+    assert all(
+        binding.model != "fixture-model" or binding.provider == "opencode" for binding in bindings.values()
+    )
 
 
 def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) -> None:
@@ -213,3 +217,155 @@ def test_raw_binding_rows_reject_invalid_catalog(mutate: str, match: str, instal
 
     with pytest.raises(ValueError, match=match):
         authenticate_raw_agent_runtime_bindings(rows, contracts, adapter="opencode")
+
+
+class _PhaseInput(BaseModel):
+    change_id: str = "CH-1"
+
+
+class _PhasePrepared(BaseModel):
+    prompt: str = "ok"
+
+
+class _PhaseOutput(BaseModel):
+    status: str = "ok"
+
+
+class _FailingHandler:
+    def __init__(self, message: str = "phase rejected") -> None:
+        self.message = message
+
+    async def execute(self, request: object, context: object) -> object:
+        del request, context
+        from graph_engine.plugin_api import TaskOutcome
+
+        return TaskOutcome.failed("invalid_output", self.message)
+
+
+def _phase_scope(tmp_path: Path):
+    from graph_engine.attempts import AttemptExecutionContext, AttemptKey, AuthorizedAttemptScope
+    from graph_engine.plugin_api import DirectoryIdentity, TaskWorkspaceBinding, TaskWorkspaceIdentity
+
+    project = tmp_path / "project"
+    write = tmp_path / "write"
+    project.mkdir()
+    write.mkdir()
+    digest = "a" * 64
+    identity = TaskWorkspaceIdentity.model_construct(
+        task_id="task",
+        attempt=1,
+        attempt_id="attempt-1",
+        output_paths=(),
+        baseline_files=(),
+        project_digest=digest,
+        write_root_digest=digest,
+        identity_digest=digest,
+        layout_schema_version="1",
+    )
+    directory = DirectoryIdentity.model_construct(
+        path_digest=digest,
+        device=1,
+        inode=1,
+        identity_digest=digest,
+    )
+    return AuthorizedAttemptScope(
+        execution=AttemptExecutionContext(
+            invocation_id="inv-1",
+            public_entrypoint="intake",
+            semantic_node_id="case-design",
+            attempt_key=AttemptKey(digest=digest),
+            fencing_token=1,
+        ),
+        workspace=TaskWorkspaceBinding(
+            identity=identity,
+            project_root=project,
+            write_root=write,
+            project_root_identity=directory,
+            write_root_identity=directory,
+        ),
+    )
+
+
+def _runtime_binding():
+    from agent_runtime_contracts import AgentRuntimeBinding, AgentRuntimePolicy
+
+    return AgentRuntimeBinding(
+        contract_id="assurance.intake.agent.case-design.v1",
+        runtime_handler_id="runtime.opencode.execute",
+        provider="opencode",
+        model="provider_default",
+        policy=AgentRuntimePolicy(
+            request_policy_handle="assurance.policy.v1",
+            request_config_handle="assurance.config.v1",
+        ),
+        secret_handles=(),
+    )
+
+
+def _finalize_bundle(tmp_path: Path):
+    from agent_runtime_contracts import (
+        AgentRunResult,
+        RawFinalizeBundle,
+        ReadOnlyRawWorkspace,
+        canonical_digest,
+    )
+
+    payload = {"status": "ok"}
+    run_result = AgentRunResult.model_validate(
+        {
+            "result_payload": payload,
+            "result_digest": canonical_digest(payload),
+            "evidence_digest": "b" * 64,
+            "adapter_id": "agent-runtime-fixture",
+            "adapter_version": "1.0.0",
+        }
+    )
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    return RawFinalizeBundle(
+        validated_input=_PhaseInput(),
+        prepared=_PhasePrepared(),
+        agent_result=_PhaseOutput(),
+        run_evidence=run_result,
+        raw_workspace=ReadOnlyRawWorkspace(raw),
+    )
+
+
+def test_installed_prepare_returns_permanent_failure_on_invalid_outcome(tmp_path: Path) -> None:
+    from graph_engine.attempts import PermanentTaskFailure
+
+    from assurance_product.runtime_bindings import InstalledPreparePhase
+
+    phase = InstalledPreparePhase("assurance.intake.case-design.prepare", _FailingHandler(), None)
+    result = asyncio.run(phase.execute(_PhaseInput(), _phase_scope(tmp_path)))
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert result.message == "phase rejected"
+
+
+def test_installed_runtime_returns_permanent_failure_on_invalid_outcome(tmp_path: Path) -> None:
+    from graph_engine.attempts import PermanentTaskFailure
+
+    from assurance_product.runtime_bindings import InstalledRuntimePhase
+
+    phase = InstalledRuntimePhase("runtime.opencode.execute", _FailingHandler(), _runtime_binding())
+    result = asyncio.run(phase.execute(_PhasePrepared(), _phase_scope(tmp_path)))
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert result.message == "phase rejected"
+
+
+def test_installed_finalize_returns_permanent_failure_on_invalid_outcome(tmp_path: Path) -> None:
+    from graph_engine.attempts import PermanentTaskFailure
+
+    from assurance_product.runtime_bindings import InstalledFinalizePhase
+
+    phase = InstalledFinalizePhase(
+        "assurance.intake.case-design.finalize",
+        _FailingHandler(),
+        _PhaseOutput,
+    )
+    result = asyncio.run(phase.execute(_finalize_bundle(tmp_path), _phase_scope(tmp_path)))
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert result.message == "phase rejected"

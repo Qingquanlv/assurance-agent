@@ -303,7 +303,11 @@ class InstalledPreparePhase:
         self._handler = handler
         self._binding_data = binding_data
 
-    async def execute(self, validated_input: BaseModel, scope: AuthorizedAttemptScope) -> AgentRunRequest:
+    async def execute(
+        self,
+        validated_input: BaseModel,
+        scope: AuthorizedAttemptScope,
+    ) -> AgentRunRequest | PermanentTaskFailure:
         request = _task_request(
             capability_id=self.handler_id,
             payload=validated_input.model_dump(mode="json"),
@@ -314,7 +318,7 @@ class InstalledPreparePhase:
         outcome = await self._handler.execute(request, _task_context(scope))  # type: ignore[attr-defined]
         failure = _outcome_failure(outcome)
         if failure is not None:
-            raise ValueError(failure.message)
+            return failure
         return AgentRunRequest.model_validate(outcome.output)
 
 
@@ -328,7 +332,7 @@ class InstalledRuntimePhase:
         self,
         prepared: AgentRunRequest,
         scope: AuthorizedAttemptScope,
-    ) -> RawAgentRuntimeOutcome:
+    ) -> RawAgentRuntimeOutcome | PermanentTaskFailure:
         request = _task_request(
             capability_id=self.handler_id,
             payload=prepared.model_dump(mode="json"),
@@ -343,7 +347,7 @@ class InstalledRuntimePhase:
         outcome = await self._handler.execute(request, _task_context(scope))  # type: ignore[attr-defined]
         failure = _outcome_failure(outcome)
         if failure is not None:
-            raise ValueError(failure.message)
+            return failure
         run_result = AgentRunResult.model_validate(outcome.output)
         return RawAgentRuntimeOutcome(
             run_result=run_result,
@@ -364,7 +368,7 @@ class InstalledFinalizePhase:
         self,
         bundle: RawFinalizeBundle[Any, Any, Any],
         scope: AuthorizedAttemptScope,
-    ) -> BaseModel:
+    ) -> BaseModel | PermanentTaskFailure:
         payload = {
             "agent_result": bundle.run_evidence.model_dump(mode="json"),
             "prepared": (
@@ -383,7 +387,7 @@ class InstalledFinalizePhase:
         outcome = await self._handler.execute(request, _task_context(scope))  # type: ignore[attr-defined]
         failure = _outcome_failure(outcome)
         if failure is not None:
-            raise ValueError(failure.message)
+            return failure
         if isinstance(outcome.output, self._output_model):
             return outcome.output
         return self._output_model.model_validate(outcome.output)

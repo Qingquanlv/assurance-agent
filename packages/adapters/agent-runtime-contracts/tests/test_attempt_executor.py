@@ -14,6 +14,8 @@ from graph_engine.attempts import (
     AttemptTimeoutPolicy,
     AuthorizedAttemptScope,
     ExecutedAttemptResult,
+    ExecutorStepResult,
+    PermanentTaskFailure,
     resolve_contract,
 )
 from graph_engine.plugin_api import (
@@ -488,7 +490,7 @@ class _RawExecutorFixture:
         self.runtime_delta: set[str] = set()
         self.finalize_delta: set[str] = set()
 
-    async def execute(self) -> ExecutedAttemptResult[CaseDesignOutput]:
+    async def execute(self) -> ExecutorStepResult[CaseDesignOutput]:
         result = await self.executor.execute(self.validated_input, self.scope)
         self.phase_log = list(self.executor.phase_log)
         deltas = self.executor.phase_deltas
@@ -574,3 +576,128 @@ def test_raw_workspace_hides_public_path(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     assert not hasattr(workspace, "root")
     assert workspace.read_text("qa/proposal.md") == "design"
+
+
+class _FailingPrepare:
+    async def execute(
+        self,
+        validated_input: CaseDesignInput,
+        scope: AuthorizedAttemptScope,
+    ) -> PermanentTaskFailure:
+        del validated_input, scope
+        return PermanentTaskFailure(kind="invalid_output", message="prepare rejected")
+
+
+class _FailingRuntime:
+    async def execute(
+        self,
+        prepared: CaseDesignPrepared,
+        scope: AuthorizedAttemptScope,
+    ) -> PermanentTaskFailure:
+        del prepared, scope
+        return PermanentTaskFailure(kind="invalid_output", message="runtime rejected")
+
+
+class _FailingFinalize:
+    async def execute(
+        self,
+        bundle: RawFinalizeBundle[CaseDesignInput, CaseDesignPrepared, CaseDesignAgentResult],
+        scope: AuthorizedAttemptScope,
+    ) -> PermanentTaskFailure:
+        del bundle, scope
+        return PermanentTaskFailure(kind="invalid_output", message="finalize rejected")
+
+
+def _success_output() -> CaseDesignOutput:
+    return CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary")
+
+
+def test_prepare_phase_failure_is_returned_not_raised(tmp_path: Path) -> None:
+    order: list[str] = []
+    executor = ResolvedRawAgentExecutor(
+        _contract(),
+        prepare=_FailingPrepare(),
+        runtime=RecordingRuntime(
+            CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+            _workspace(tmp_path),
+            order,
+        ),
+        finalize=RecordingFinalize(_success_output(), order),
+    )
+
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert result.message == "prepare rejected"
+    assert order == []
+
+
+def test_runtime_phase_failure_is_returned_not_raised(tmp_path: Path) -> None:
+    order: list[str] = []
+    executor = ResolvedRawAgentExecutor(
+        _contract(),
+        prepare=RecordingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"),
+            order,
+        ),
+        runtime=_FailingRuntime(),
+        finalize=RecordingFinalize(_success_output(), order),
+    )
+
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert result.message == "runtime rejected"
+    assert order == ["prepare"]
+
+
+def test_finalize_phase_failure_is_returned_not_raised(tmp_path: Path) -> None:
+    order: list[str] = []
+    executor = ResolvedRawAgentExecutor(
+        _contract(),
+        prepare=RecordingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"),
+            order,
+        ),
+        runtime=RecordingRuntime(
+            CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+            _workspace(tmp_path),
+            order,
+        ),
+        finalize=_FailingFinalize(),
+    )
+
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert result.message == "finalize rejected"
+    assert order == ["prepare", "runtime"]
+
+
+def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path) -> None:
+    order: list[str] = []
+    executor = ResolvedRawAgentExecutor(
+        _contract(),
+        prepare=_WritingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"),
+            order,
+            "qa/undeclared.txt",
+            b"secret\n",
+        ),
+        runtime=RecordingRuntime(
+            CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+            _workspace(tmp_path),
+            order,
+        ),
+        finalize=RecordingFinalize(_success_output(), order),
+    )
+
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert "undeclared" in result.message
+    assert order == ["prepare"]
