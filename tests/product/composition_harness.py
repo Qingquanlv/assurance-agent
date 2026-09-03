@@ -10,8 +10,6 @@ import sys
 from typing import Literal, cast
 import zipfile
 
-from graph_engine.graph.compiler import CompiledWorkflow
-
 import pytest
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
@@ -51,12 +49,6 @@ class InstalledSources:
     configuration_tree: ConfigTreePluginSource
     wheels: dict[str, Path]
     extract_roots: dict[str, Path]
-
-
-@dataclass(frozen=True)
-class CompiledProduct:
-    workflow: CompiledWorkflow
-    composition: FrozenComposition
 
 
 def evict_generated_binding_modules() -> None:
@@ -198,21 +190,3 @@ def installed_sources(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Inst
             extract = str(extract_root)
             while extract in sys.path:
                 sys.path.remove(extract)
-
-
-@pytest.fixture
-def compiled_product_workflow(installed_sources: InstalledSources) -> CompiledWorkflow:
-    from assurance_product.product import resolve_assurance_composition
-
-    return resolve_assurance_composition(request_for("opencode", installed_sources)).workflow
-
-
-@pytest.fixture
-def compiled_for(installed_sources: InstalledSources):
-    from assurance_product.product import resolve_assurance_composition
-
-    def factory(adapter: str) -> CompiledProduct:
-        composition = resolve_assurance_composition(request_for(adapter, installed_sources))
-        return CompiledProduct(workflow=composition.workflow, composition=composition)
-
-    return factory

@@ -13,7 +13,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition import FrozenComposition
 from graph_engine.plugin_api import TaskActivitySnapshot, TaskHandler, TaskOutcome
 from graph_engine.attempts.activity import LedgerTaskActivityPort
-from tests.product.product_runner import Engine
+from assurance_product.application import Engine, empty_invocation_seed
 from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostCallResult,
@@ -27,8 +27,6 @@ from graph_engine.attempts.secret_sources import (
     SecretSourceBinding,
     runtime_authorization_digest,
 )
-from tests.product.product_runner import empty_invocation_seed
-
 from tests.product.composition_harness import InstalledSources, request_for
 from tests.product.product_runner import _ScriptedTaskHost
 from tests.product.test_product_input import valid_product_input

@@ -29,6 +29,7 @@ from graph_engine.composition.models import (
     SourceRole,
     TaskHandlerEntry,
 )
+from graph_engine.composition.semantic_agent_ids import is_semantic_agent_contract_id
 from graph_engine.errors import GraphEngineError
 from graph_engine.frozen_json import FrozenJSONValue, freeze_json, thaw_json
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
@@ -156,10 +157,8 @@ def validate_contribution_values(
         for binding in contribution.bindings:
             if not isinstance(binding, CapabilityBindingContribution):
                 raise ContributionValueError(f"plugin {owner_id} contributed an invalid binding entry")
-            if (
-                binding.capability_id.startswith(f"{owner_id}.")
-                or (binding.contract_id and binding.capability_id == binding.contract_id)
-                or (".agent." in binding.capability_id and binding.capability_id.endswith(".v1"))
+            if binding.capability_id.startswith(f"{owner_id}.") or is_semantic_agent_contract_id(
+                binding.capability_id
             ):
                 _qualified_id(binding.capability_id, "binding id")
             else:
@@ -348,7 +347,7 @@ class ContributionProjection(FrozenModel):
         )
         seen: dict[str, str] = {}
         for entry_id, kind in category_ids:
-            if kind == "binding" and ".agent." in entry_id and entry_id.endswith(".v1"):
+            if kind == "binding" and is_semantic_agent_contract_id(entry_id):
                 _qualified_id(entry_id, "binding id")
             else:
                 _owned_id(entry_id, self.owner_id, kind)
@@ -768,7 +767,10 @@ def validate_contribution_projection_set(
         )
         for entry_id, kind in categories:
             previous = all_ids.get(entry_id)
-            if previous is not None and {previous, kind} != {"attempt contract", "binding"}:
+            if previous is not None and not (
+                is_semantic_agent_contract_id(entry_id)
+                and {previous, kind} == {"attempt contract", "binding"}
+            ):
                 raise ValueError(f"cross-kind contribution id: {entry_id} is both {previous} and {kind}")
             all_ids[entry_id] = kind if previous is None else previous
         for effect in projection.effects:

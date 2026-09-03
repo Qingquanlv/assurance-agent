@@ -7,7 +7,7 @@ from graph_engine.frozen_json import freeze_json, thaw_json
 from tests.product.product_runner import project_subgraph_output
 from graph_engine.attempts.activity import InvocationProjection
 
-from tests.product.product_runner import ProductRun, _product_alias
+from tests.product.product_runner import ProductRun
 
 PUBLIC_CLOSURE_GOLDEN = Path(__file__).resolve().parent / "goldens" / "public-closure.json"
 
@@ -158,7 +158,7 @@ def _task_dispatches(projection: InvocationProjection, composition) -> tuple[str
             continue
         if not activation.attempts:
             continue
-        dispatches.append(_product_alias(node.definition.capability))
+        dispatches.append(node.definition.capability)
     return tuple(dispatches)
 
 

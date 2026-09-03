@@ -12,20 +12,14 @@ from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS, _buil
 from tests.product.test_raw_agent_checkpoint import _CASE_DESIGN_ID
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_PRODUCT_ROOT = (
-    _REPO_ROOT / "packages" / "products" / "assurance-product" / "assurance_product"
-)
+_PRODUCT_ROOT = _REPO_ROOT / "packages" / "products" / "assurance-product" / "assurance_product"
 _CAPABILITY_ROOTS = (
     _REPO_ROOT / "packages" / "capabilities" / "assurance-intake" / "assurance_intake",
     _REPO_ROOT / "packages" / "capabilities" / "assurance-generation" / "assurance_generation",
     _REPO_ROOT / "packages" / "capabilities" / "assurance-execution" / "assurance_execution",
     _REPO_ROOT / "packages" / "capabilities" / "assurance-quality" / "assurance_quality",
     _REPO_ROOT / "packages" / "capabilities" / "assurance-healing" / "assurance_healing",
-    _REPO_ROOT
-    / "packages"
-    / "capabilities"
-    / "assurance-improvement"
-    / "assurance_improvement",
+    _REPO_ROOT / "packages" / "capabilities" / "assurance-improvement" / "assurance_improvement",
 )
 _FORBIDDEN_WHEEL_RESOURCES = (
     "resources/workflow/module.yaml",
@@ -36,14 +30,7 @@ _OBSOLETE_GOLDENS = (
     _REPO_ROOT / "tests" / "product" / "fixtures" / "workflow-module-ownership.yaml",
     _REPO_ROOT / "tests" / "fixtures" / "workflow-v2-minimal.yaml",
 )
-_PLUGIN_KIT = (
-    _REPO_ROOT
-    / "packages"
-    / "framework"
-    / "graph-engine"
-    / "graph_engine"
-    / "plugin_kit.py"
-)
+_PLUGIN_KIT = _REPO_ROOT / "packages" / "framework" / "graph-engine" / "graph_engine" / "plugin_kit.py"
 _WORKFLOW_MODULE_MARKERS = (
     "_WORKFLOW_MODULE_MIME",
     "application/vnd.graph-engine.workflow-module+yaml",
@@ -169,9 +156,7 @@ def compiled_artifacts(installed_sources):
 def test_production_wheels_have_no_workflow_topology_resources(
     wheel_contents: tuple[str, ...],
 ) -> None:
-    assert not any(
-        any(name.endswith(item) for item in _FORBIDDEN_WHEEL_RESOURCES) for name in wheel_contents
-    )
+    assert not any(any(name.endswith(item) for item in _FORBIDDEN_WHEEL_RESOURCES) for name in wheel_contents)
 
 
 def test_obsolete_workflow_goldens_are_gone() -> None:
@@ -221,17 +206,33 @@ def test_task8_inventory_rows_are_gone() -> None:
 
     allowlist = load_explicit_allowlist()
     hits = scan_legacy_imports()
-    task8_only = allowlist.task8_consumers - allowlist.retained_implementations
-    yaml_markers = (
-        "WorkflowModuleDef",
-        "compile_workflow",
-        "assemble_product_workflow",
-        "parse_workflow_module",
+    former_task8 = allowlist.task8_consumers - (
+        allowlist.retained_implementations | allowlist.task9_characterization
     )
-    task8_hits = tuple(
-        hit
-        for hit in hits
-        if hit.path in task8_only
-        and (hit.kind == "parse-error" or any(marker in hit.name for marker in yaml_markers))
-    )
+    task8_hits = tuple(hit for hit in hits if hit.path in former_task8)
     assert task8_hits == ()
+    remaining_paths = {hit.path for hit in hits if hit.kind != "parse-error"}
+    allowed_remaining = allowlist.retained_implementations | allowlist.task9_characterization
+    unexpected = tuple(sorted(path for path in remaining_paths if path not in allowed_remaining))
+    assert unexpected == ()
+
+
+def test_product_runner_does_not_mint_phase_aliases() -> None:
+    source = (_REPO_ROOT / "tests" / "product" / "product_runner.py").read_text(encoding="utf-8")
+    assert "_product_alias" not in source
+    assert "assurance.product.agent." not in source
+
+
+def test_composition_harness_is_factory_product_lock() -> None:
+    source = (_REPO_ROOT / "tests" / "product" / "composition_harness.py").read_text(encoding="utf-8")
+    assert "CompiledWorkflow" not in source
+    assert "compiled_product_workflow" not in source
+
+
+def test_semantic_agent_ids_match_product_contracts() -> None:
+    from graph_engine.composition.semantic_agent_ids import SEMANTIC_AGENT_CONTRACT_IDS
+
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+
+    assert SEMANTIC_AGENT_CONTRACT_IDS == frozenset(AGENT_EXECUTION_CONTRACTS)
+    assert len(SEMANTIC_AGENT_CONTRACT_IDS) == 33

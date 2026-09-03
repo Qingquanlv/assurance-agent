@@ -16,6 +16,7 @@ from graph_engine.runtime.engine import Engine, RunResult
 from graph_engine.runtime.events import InvocationStarted
 from graph_engine.runtime.ledger import Ledger
 from graph_engine.runtime.models import InvocationProjection, fold_events
+from graph_engine.runtime.seed import empty_invocation_seed
 from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
 from assurance_product.binding_builder import build_deployment_wheel
@@ -576,8 +577,6 @@ class AssuranceProductApplication:
         entrypoint: str,
         root_input: JSONValue,
     ) -> str:
-        from graph_engine.runtime.seed import empty_invocation_seed
-
         factory = self._engine_factory
         if factory is None:
             from graph_engine.runtime.engine import Engine as ProductionEngine

@@ -37,6 +37,7 @@ from graph_engine.composition.models import (
     ExecutableAuthority,
 )
 from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.contributions import ContributionValueError, validate_contribution_values
 from graph_engine.composition.lock import compute_registry_projections
 from graph_engine.composition.registries import (
     _build_registries as _build_authenticated_registries,
@@ -718,6 +719,83 @@ def test_registry_rejects_ids_not_owned_by_the_contributing_plugin() -> None:
             (contribution,),
             ("toy.flow",),
         )
+
+
+def test_unlisted_agent_binding_id_requires_owner_prefix() -> None:
+    contribution = PluginContribution(
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="assurance.intake.agent.unknown.v1",
+                target_capability_id="toy.runtime.execute",
+                contract_id="assurance.intake.agent.unknown.v1",
+            ),
+        )
+    )
+    with pytest.raises(RegistryConflict, match="binding id is not owned by"):
+        build_registries(
+            (
+                _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
+                _source("assurance.product.agent"),
+            ),
+            (_runtime_contribution(), contribution),
+            ("toy.runtime", "assurance.product.agent"),
+        )
+
+
+def test_unlisted_equal_contract_binding_id_requires_owner_prefix() -> None:
+    runtime = _authenticated(
+        _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
+        _runtime_contribution(),
+    )
+    descriptor = PluginDescriptor(
+        schema_version="1",
+        source=None,
+        plugin_id="assurance.product.agent",
+        plugin_version="1.0.0",
+        engine_api="1.0.0",
+        task_handlers=(),
+        commit_validators=(),
+        bindings=("toy.feature.shared.v1",),
+    )
+    contribution = PluginContribution(
+        bindings=(
+            CapabilityBindingContribution(
+                capability_id="toy.feature.shared.v1",
+                target_capability_id="toy.runtime.execute",
+                contract_id="toy.feature.shared.v1",
+            ),
+        )
+    )
+    with pytest.raises(ContributionValueError, match="binding id is not owned by"):
+        validate_contribution_values(
+            (
+                (runtime.owner_id, runtime.descriptor, runtime.contribution),
+                ("assurance.product.agent", descriptor, contribution),
+            )
+        )
+
+
+def test_semantic_agent_contract_binding_may_be_registered_by_product() -> None:
+    resolved = build_registries(
+        (
+            _source("toy.runtime", kind=SourceKind.WHEEL_PLUGIN),
+            _source("assurance.product.agent"),
+        ),
+        (
+            _runtime_contribution(),
+            PluginContribution(
+                bindings=(
+                    CapabilityBindingContribution(
+                        capability_id="assurance.intake.agent.intake.v1",
+                        target_capability_id="toy.runtime.execute",
+                        contract_id="assurance.intake.agent.intake.v1",
+                    ),
+                )
+            ),
+        ),
+        ("toy.runtime", "assurance.product.agent"),
+    )
+    assert "assurance.intake.agent.intake.v1" in resolved.capabilities.bindings
 
 
 def test_registry_rejects_alias_cycles_before_target_resolution() -> None:

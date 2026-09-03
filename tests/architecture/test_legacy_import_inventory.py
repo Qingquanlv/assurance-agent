@@ -18,8 +18,13 @@ def test_allowlist_is_generated_from_explicit_task_inventories() -> None:
     assert "packages/products/assurance-product/assurance_product/application.py" in (
         allowlist.retained_implementations
     )
-    assert "packages/products/assurance-product/assurance_product/cli.py" in allowlist.retained_implementations
-    assert "packages/products/assurance-product/assurance_product/status.py" in allowlist.retained_implementations
+    assert (
+        "packages/products/assurance-product/assurance_product/cli.py" in allowlist.retained_implementations
+    )
+    assert (
+        "packages/products/assurance-product/assurance_product/status.py"
+        in allowlist.retained_implementations
+    )
     assert "packages/framework/graph-engine/graph_engine/graph/compiler.py" in (
         allowlist.retained_implementations
     )
@@ -29,6 +34,9 @@ def test_allowlist_is_generated_from_explicit_task_inventories() -> None:
     assert "packages/framework/graph-engine/graph_engine/runtime/engine.py" in (
         allowlist.task9_characterization
     )
+    assert "tests/product/product_runner.py" in allowlist.task8_consumers
+    assert "tests/product/product_runner.py" not in allowlist.paths
+    assert "tests/product/composition_harness.py" not in allowlist.paths
     assert not any("*" in path for path in allowlist.paths)
 
 
@@ -37,6 +45,7 @@ def test_scanner_enumerates_required_compiler_and_runtime_symbols() -> None:
         "WorkflowModuleDef",
         "GraphDef",
         "NodeDef",
+        "CompiledWorkflow",
         "compile_workflow",
         "assemble_product_workflow",
     }

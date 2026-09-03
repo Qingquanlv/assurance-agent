@@ -27,10 +27,7 @@ from tests.product.product_runner import empty_invocation_seed
 
 from tests.product.product_runner import (
     _PUBLIC_DIGEST,
-    _install_public_shaped_end_output,
-    _product_alias,
     _product_input,
-    _restore_end_output,
     _scripted_authorization,
     modular_product_composition,
 )
@@ -141,7 +138,6 @@ def drive_execution_loop(
 
         workspace = prepare_change_workspace(project, "CH-DEMO-001")
         engine = Engine(workspace.paths.runtime_root, host=host)
-        _install_public_shaped_end_output()
         try:
             handle = engine.start(
                 composition,
@@ -162,7 +158,6 @@ def drive_execution_loop(
                 projection=projection,
             )
         finally:
-            _restore_end_output()
             engine.close()
 
 
@@ -236,8 +231,7 @@ class _ExecutionLoopHost:
                 self.advance_outputs.append(cast(dict[str, int | str], dict(outcome.output)))
             return TaskHostCallResult(operation="execute", outcome=outcome)
         outcome = self._scripted(capability_id, call.request.input)
-        aliased = _product_alias(capability_id)
-        if aliased.endswith(".prepare"):
+        if capability_id.startswith("assurance.") and ".agent." in capability_id:
             input_value = call.request.input
             change_id = "CH-DEMO-001"
             if isinstance(input_value, Mapping) and isinstance(input_value.get("change_id"), str):
@@ -262,8 +256,10 @@ class _ExecutionLoopHost:
                 rounds_used = request_input["rounds_used"]
             if isinstance(request_input.get("rounds_budget"), int):
                 rounds_budget = request_input["rounds_budget"]
-        aliased = _product_alias(capability_id)
-        if aliased.endswith("execution.execute.finalize") or aliased.endswith("execution.run.finalize"):
+        if capability_id in {
+            "assurance.execution.agent.execute.v1",
+            "assurance.execution.agent.run.v1",
+        }:
             status = (
                 self._execution_sequence[self._execution_index]
                 if self._execution_index < len(self._execution_sequence)
@@ -279,7 +275,7 @@ class _ExecutionLoopHost:
                     "status": status,
                 }
             )
-        if aliased.endswith("quality.issue-analysis.finalize"):
+        if capability_id == "assurance.quality.agent.issue-analysis.v1":
             index = min(self._analysis_index, max(len(self._classifications) - 1, 0))
             classification = self._classifications[index] if self._classifications else "test"
             eligible = self._fix_eligible[index] if self._fix_eligible else False
@@ -294,7 +290,7 @@ class _ExecutionLoopHost:
                     "rounds_used": rounds_used,
                 }
             )
-        if aliased.endswith("quality.inspect.finalize"):
+        if capability_id == "assurance.quality.agent.inspect.v1":
             measured = (
                 self._measured_sequence[min(self._coverage_index, len(self._measured_sequence) - 1)]
                 if self._measured_sequence
@@ -321,7 +317,7 @@ class _ExecutionLoopHost:
                     },
                 }
             )
-        if aliased.endswith("healing.fix-proposal.finalize"):
+        if capability_id == "assurance.healing.agent.fix-proposal.v1":
             return TaskOutcome.succeeded(
                 {
                     "change_id": change_id,
@@ -332,7 +328,7 @@ class _ExecutionLoopHost:
                     "status": "repaired",
                 }
             )
-        if aliased.endswith("healing.coverage-repair.finalize"):
+        if capability_id == "assurance.healing.agent.coverage-repair.v1":
             status = (
                 self._repair_statuses[min(self._repair_index, len(self._repair_statuses) - 1)]
                 if self._repair_statuses
@@ -349,7 +345,7 @@ class _ExecutionLoopHost:
                     "status": status,
                 }
             )
-        if aliased.endswith("quality.report.finalize"):
+        if capability_id == "assurance.quality.agent.report.v1":
             output: dict[str, object] = {
                 "change_id": change_id,
                 "report_refs": [
@@ -359,7 +355,7 @@ class _ExecutionLoopHost:
             if isinstance(request_input, Mapping) and isinstance(request_input.get("coverage_state"), str):
                 output["coverage_state"] = request_input["coverage_state"]
             return TaskOutcome.succeeded(cast(JSONValue, output))
-        if aliased.endswith("apply-improvement-auto-review"):
+        if capability_id.endswith("apply-improvement-auto-review"):
             decision = "pass"
             if isinstance(request_input, Mapping) and isinstance(request_input.get("decision"), str):
                 decision = request_input["decision"]
@@ -383,7 +379,7 @@ class _ExecutionLoopHost:
                     },
                 )
             )
-        if aliased.endswith("evaluate-memory-improvement"):
+        if capability_id.endswith("evaluate-memory-improvement"):
             return TaskOutcome.succeeded(
                 cast(
                     JSONValue,

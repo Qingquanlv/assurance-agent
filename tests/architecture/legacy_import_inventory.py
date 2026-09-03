@@ -16,6 +16,7 @@ FORBIDDEN_SYMBOLS = frozenset(
         "WorkflowModuleDef",
         "GraphDef",
         "NodeDef",
+        "CompiledWorkflow",
         "compile_workflow",
         "assemble_product_workflow",
     }
@@ -51,6 +52,7 @@ _DISPOSITION_RE = re.compile(
     r"Create): `(?P<path>[^`]+)`"
 )
 
+
 @dataclass(frozen=True, slots=True)
 class InventoryHit:
     path: str
@@ -67,7 +69,7 @@ class InventoryAllowlist:
 
     @property
     def paths(self) -> frozenset[str]:
-        return self.retained_implementations | self.task8_consumers | self.task9_characterization
+        return self.retained_implementations | self.task9_characterization
 
 
 def repo_root() -> Path:
@@ -154,7 +156,9 @@ def load_explicit_allowlist(plan_text: str | None = None) -> InventoryAllowlist:
             retained.add(path)
 
     task8_paths = {
-        path for disposition, path in _iter_disposition_paths(_files_block(task8)) if _task8_counted(disposition)
+        path
+        for disposition, path in _iter_disposition_paths(_files_block(task8))
+        if _task8_counted(disposition)
     }
     task9_paths: set[str] = set()
     for disposition, path in _iter_disposition_paths(_files_block(task9)):
@@ -200,9 +204,7 @@ def _hits_from_module(path: str, tree: ast.AST) -> tuple[InventoryHit, ...]:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if _is_runtime_authority(alias.name) or alias.name in FORBIDDEN_MODULES:
-                    hits.append(
-                        InventoryHit(path=path, kind="import", name=alias.name, line=node.lineno)
-                    )
+                    hits.append(InventoryHit(path=path, kind="import", name=alias.name, line=node.lineno))
         elif isinstance(node, ast.ImportFrom) and node.module:
             module = node.module
             if _is_runtime_authority(module) or module in FORBIDDEN_MODULES:

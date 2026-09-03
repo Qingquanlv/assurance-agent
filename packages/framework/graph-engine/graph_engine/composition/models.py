@@ -29,6 +29,7 @@ from graph_engine.graph.schema import WorkflowDef
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.json_schema import assert_closed_json_schema
 from graph_engine.composition.provenance import StandardLoader
+from graph_engine.composition.semantic_agent_ids import is_semantic_agent_contract_id
 from graph_engine.plugin_api import (
     AttemptContractRef,
     CommitValidator,
@@ -754,10 +755,8 @@ class CapabilityBindingEntry:
     contract_id: str | None = None
 
     def __post_init__(self) -> None:
-        if (
-            self.capability_id.startswith(f"{self.owner_id}.")
-            or (self.contract_id and self.capability_id == self.contract_id)
-            or (".agent." in self.capability_id and self.capability_id.endswith(".v1"))
+        if self.capability_id.startswith(f"{self.owner_id}.") or is_semantic_agent_contract_id(
+            self.capability_id
         ):
             _validate_registry_id(self.capability_id, "binding id")
         else:
