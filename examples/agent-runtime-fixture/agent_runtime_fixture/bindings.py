@@ -29,15 +29,6 @@ _OPENCODE_SOURCE = ProviderSource(
     declaration_path="agent_runtime_fixture/opencode-binding-declaration.json",
     import_roots=("", "agent_runtime_fixture"),
 )
-_CURSOR_SOURCE = ProviderSource(
-    distribution="agent-runtime-fixture",
-    version="1.0.0",
-    entrypoint_group="graph_engine.plugins",
-    entrypoint_name="cursor-binding",
-    entrypoint_value="agent_runtime_fixture.bindings:CursorBindingPlugin",
-    declaration_path="agent_runtime_fixture/cursor-binding-declaration.json",
-    import_roots=("", "agent_runtime_fixture"),
-)
 
 
 def _result_schema() -> dict[str, JSONValue]:
@@ -105,28 +96,6 @@ class OpenCodeBindingPlugin:
                 "distribution": "agent-runtime-opencode",
                 "entrypoint_name": "opencode",
                 "protocol_profile": "opencode-http-v1",
-            },
-        )
-
-    published_attempt_contracts = staticmethod(published_attempt_contracts)
-    bind_attempt_executors = staticmethod(bind_attempt_executors)
-
-
-class CursorBindingPlugin:
-    @staticmethod
-    def descriptor() -> PluginDescriptor:
-        return _descriptor(_CURSOR_SOURCE, "runtime.cursor")
-
-    @staticmethod
-    def contribute(ports: RegistryPorts) -> PluginContribution:
-        if ports.engine_api != ENGINE_API_VERSION:
-            raise ValueError(f"unsupported engine API: {ports.engine_api!r}")
-        return _contribute(
-            "runtime.cursor.execute",
-            {
-                "distribution": "agent-runtime-cursor",
-                "entrypoint_name": "cursor",
-                "protocol_profile": "confined_process",
             },
         )
 

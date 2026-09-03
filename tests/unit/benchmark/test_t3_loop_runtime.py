@@ -9,11 +9,10 @@ from pathlib import Path
 
 _ROOT = Path(__file__).parents[3]
 _BENCHMARK = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark"
-_HELPERS = _BENCHMARK / "cursor-loop-helpers.sh"
+_HELPERS = _BENCHMARK / "loop-helpers.sh"
 _OPENCODE_LOOP = _BENCHMARK / "run-workflow-loop.sh"
 _OPENAI_LOOP = _BENCHMARK / "run-workflow-loop-opencode-openai.sh"
-_CURSOR_LOOP = _BENCHMARK / "run-workflow-loop-cursor.sh"
-_LOOPS = (_OPENCODE_LOOP, _OPENAI_LOOP, _CURSOR_LOOP)
+_LOOPS = (_OPENCODE_LOOP, _OPENAI_LOOP)
 
 
 def _chmod_exec(path: Path) -> None:

@@ -27,4 +27,3 @@ depends_on:
     - assurance.improvement==0.2.0
   runtime:
     - runtime.opencode==0.1.0
-    - runtime.cursor==0.1.0

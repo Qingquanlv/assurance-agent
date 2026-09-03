@@ -14,7 +14,22 @@ from tests.product.conformance import ALL_BINDING_IDS, PREPARE_IDS, load_yaml
 
 _FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "deployment"
 _OPENCODE_MANIFEST = _FIXTURE_DIR / "opencode.yaml"
-_CURSOR_MANIFEST = _FIXTURE_DIR / "cursor.yaml"
+
+
+def valid_deployment_document() -> dict[str, object]:
+    return deepcopy(load_yaml(_OPENCODE_MANIFEST))
+
+
+def test_deployment_rejects_cursor_binding() -> None:
+    from pydantic import ValidationError
+
+    from assurance_product.models import DeploymentBindingsV1
+
+    document = valid_deployment_document()
+    document["runtime_plugin_id"] = "runtime.cursor"
+    document["adapter_binding"] = {"schema_version": "1"}
+    with pytest.raises(ValidationError):
+        DeploymentBindingsV1.model_validate(document)
 
 
 @pytest.fixture
@@ -23,18 +38,8 @@ def opencode_manifest() -> Path:
 
 
 @pytest.fixture
-def cursor_manifest() -> Path:
-    return _CURSOR_MANIFEST
-
-
-@pytest.fixture
 def opencode_document() -> dict[str, object]:
     return deepcopy(load_yaml(_OPENCODE_MANIFEST))
-
-
-@pytest.fixture
-def cursor_document() -> dict[str, object]:
-    return deepcopy(load_yaml(_CURSOR_MANIFEST))
 
 
 def _write_manifest(path: Path, document: dict[str, object]) -> Path:
@@ -427,27 +432,6 @@ def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_man
         assert binding.target_capability_id == "runtime.opencode.execute"
         assert binding.secret_handles == ("opencode.token",)
         AgentBindingDataV1.model_validate(binding.data)
-
-
-def test_cursor_wheel_keeps_confined_secret_handle(tmp_path, cursor_manifest):
-    from graph_engine.plugin_api import RegistryPorts
-
-    from assurance_product.binding_builder import build_deployment_wheel
-
-    built = build_deployment_wheel(cursor_manifest, tmp_path / "out")
-    installed = _install_wheel(built.wheel, tmp_path / "installed")
-    sys.path.insert(0, str(installed))
-    try:
-        module = __import__(f"{built.import_package}.provider", fromlist=["DeploymentPlugin"])
-        contribution = module.DeploymentPlugin.contribute(RegistryPorts("2.0"))
-    finally:
-        evict_generated_binding_modules()
-        sys.path.remove(str(installed))
-    binding = next(iter(contribution.bindings))
-    assert binding.secret_handles == ("cursor.api-key",)
-    assert binding.target_capability_id == "runtime.cursor.execute"
-    assert binding.capability_id == binding.contract_id
-    assert all(item.secret_handles == ("cursor.api-key",) for item in contribution.bindings)
 
 
 class _EntryPointConfigParser(ConfigParser):

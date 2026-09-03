@@ -3,11 +3,11 @@
 group (not just the top-level process) when the deadline is hit.
 
 Why this exists:
-  `cursor-agent` (and the headless driver that spawns it per phase) sometimes
-  starts background SUT processes (frontend/backend dev servers) as children.
-  In headless `--print` mode, cursor-agent may not exit while those children
-  are still running, so a plain `timeout <n> cursor-agent ...` only kills
-  cursor-agent itself and leaves the servers alive — or, on systems without
+  The headless driver that spawns per-phase work sometimes starts background
+  SUT processes (frontend/backend dev servers) as children. In headless
+  `--print` mode, the child may not exit while those servers are still
+  running, so a plain `timeout <n> ...` only kills the top-level process
+  and leaves the servers alive — or, on systems without
   `timeout`/`gtimeout`/`setsid` (e.g. this macOS box), the step hangs with
   no wall-clock cap.
 
@@ -19,7 +19,7 @@ subprocess machinery:
   - On timeout: SIGTERM the process group, wait a grace period, then
     SIGKILL any stragglers.
   - Even on a clean exit, we sweep the process group once more, since
-    cursor-agent may have exited "successfully" while leaving background
+    the child may have exited "successfully" while leaving background
     dev servers behind in the same group.
 
 Usage:
@@ -29,7 +29,7 @@ Usage:
 it is spawned. This lets an external supervisor (e.g. a bash loop polling a
 separate readiness signal such as `aa status`) kill the whole group early -
 before the hard timeout - once it independently determines the underlying
-task is actually done, without needing to wait for cursor-agent's own
+task is actually done, without needing to wait for the child's own
 process to exit on its own.
 
 Exit codes:

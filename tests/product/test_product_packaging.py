@@ -60,12 +60,11 @@ def built_product_wheel(tmp_path: Path) -> Path:
     return wheels[0]
 
 
-def test_product_metadata_exposes_only_two_product_entry_points(built_product_wheel):
+def test_product_metadata_exposes_only_the_opencode_product_entry_point(built_product_wheel):
     metadata = read_wheel_metadata(built_product_wheel)
     assert metadata.name == "assurance-product"
     assert metadata.entry_points["graph_engine.products"] == {
         "assurance-opencode": "assurance_product.product:AssuranceOpenCodeProductProvider",
-        "assurance-cursor": "assurance_product.product:AssuranceCursorProductProvider",
     }
     assert metadata.entry_points["console_scripts"] == {"aa": "assurance_product.cli:main"}
     assert "aa-next" not in metadata.entry_points["console_scripts"]

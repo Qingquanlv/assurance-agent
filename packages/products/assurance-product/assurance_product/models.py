@@ -49,7 +49,6 @@ PUBLIC_WORKFLOW_IMPORT_ALIASES: tuple[str, ...] = (
     "quality.report",
 )
 
-AdapterName = Literal["opencode", "cursor"]
 PLUGIN_ID = "assurance.product.agent"
 PLUGIN_VERSION = "1.1.0"
 CONFIGURATION_PLUGIN_ID = "assurance.product.configuration"
@@ -58,27 +57,6 @@ CONFIGURATION_PLUGIN_VERSION = "1.0.0"
 _SHA256 = r"^[0-9a-f]{64}$"
 _ROUTING_MARKERS = (",", ";", "|", "->", "fallback", "route:", "candidates")
 _TEMPLATE_OR_GLOB = ("{", "}", "*", "?", "[", "]", "\\", "`", "$", "<", ">")
-_CURSOR_ENVIRONMENT_NAMES = frozenset({"PATH", "CURSOR_API_KEY"})
-_SHELL_FRAGMENTS = (
-    ";",
-    "|",
-    "&",
-    "$",
-    "`",
-    "(",
-    ")",
-    "<",
-    ">",
-    "*",
-    "?",
-    "[",
-    "]",
-    "{",
-    "}",
-    "~",
-    "\n",
-    "\r",
-)
 
 
 def _qualified_id(value: str, label: str) -> str:
@@ -209,72 +187,11 @@ class OpenCodeBindingV1(FrozenModel):
         return value
 
 
-class CursorBindingV1(FrozenModel):
-    schema_version: Literal["1"]
-    executable: str
-    executable_digest: str = Field(pattern=_SHA256)
-    expected_version: str = Field(min_length=1)
-    protocol_profile: Literal["confined_process"]
-    secret_handle: str | None = None
-    environment_names: tuple[str, ...]
-    graceful_cancel_seconds: float = Field(gt=0, le=60)
-    forced_cancel_seconds: float = Field(gt=0, le=60)
-    max_output_bytes: int = Field(gt=0, le=16_000_000)
-    max_line_bytes: int = Field(gt=0, le=1_000_000)
-    adapter_configuration_digest: str = Field(pattern=_SHA256)
-
-    @field_validator("executable")
-    @classmethod
-    def _executable(cls, value: str) -> str:
-        if value != value.strip() or any(character.isspace() for character in value):
-            raise ValueError("executable must be a single token")
-        if any(fragment in value for fragment in _SHELL_FRAGMENTS):
-            raise ValueError("executable must not contain shell fragments")
-        if value.startswith("\\\\") or not value.startswith("/"):
-            raise ValueError("executable must be an exact absolute path")
-        if any(part in {".", ".."} for part in value.split("/") if part):
-            raise ValueError("executable must not contain relative path segments")
-        return value
-
-    @field_validator("expected_version")
-    @classmethod
-    def _expected_version(cls, value: str) -> str:
-        if value != value.strip() or any(character.isspace() for character in value):
-            raise ValueError("expected_version must be a single token")
-        if any(fragment in value for fragment in _SHELL_FRAGMENTS):
-            raise ValueError("expected_version must not contain shell fragments")
-        return value
-
-    @field_validator("secret_handle")
-    @classmethod
-    def _secret_handle(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _secret_handle_name(value)
-
-    @field_validator("environment_names")
-    @classmethod
-    def _environment_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(value)) != len(value):
-            raise ValueError("environment_names must be unique")
-        unknown = [name for name in value if name not in _CURSOR_ENVIRONMENT_NAMES]
-        if unknown:
-            raise ValueError("environment_names must be the closed PATH/CURSOR_API_KEY allowlist")
-        return value
-
-    @model_validator(mode="after")
-    def _authenticate_secret_injection(self) -> CursorBindingV1:
-        injects_key = "CURSOR_API_KEY" in self.environment_names
-        if injects_key != (self.secret_handle is not None):
-            raise ValueError("CURSOR_API_KEY injection requires secret_handle and nothing else")
-        return self
-
-
 class DeploymentBindingsV1(FrozenModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["1"]
-    runtime_plugin_id: Literal["runtime.opencode", "runtime.cursor"]
-    adapter_binding: OpenCodeBindingV1 | CursorBindingV1
+    runtime_plugin_id: Literal["runtime.opencode"]
+    adapter_binding: OpenCodeBindingV1
     routes: Mapping[str, RouteAssignmentV1]
     permission_profiles: Mapping[str, PermissionProfileV1]
     request_policies: Mapping[str, RequestPolicyV1]
@@ -285,15 +202,11 @@ class DeploymentBindingsV1(FrozenModel):
     def _validate_adapter_schema(cls, value: object) -> object:
         if not isinstance(value, dict):
             return value
-        runtime = value.get("runtime_plugin_id")
         adapter = value.get("adapter_binding")
         if not isinstance(adapter, dict):
             return value
         copied = dict(value)
-        if runtime == "runtime.opencode":
-            copied["adapter_binding"] = OpenCodeBindingV1.model_validate(adapter)
-        elif runtime == "runtime.cursor":
-            copied["adapter_binding"] = CursorBindingV1.model_validate(adapter)
+        copied["adapter_binding"] = OpenCodeBindingV1.model_validate(adapter)
         return copied
 
     @field_validator("permission_profiles")
@@ -335,14 +248,8 @@ class DeploymentBindingsV1(FrozenModel):
                 raise ValueError("permission_profile_id must resolve in permission_profiles")
             if assignment.request_policy_id not in self.request_policies:
                 raise ValueError("request_policy_id must resolve in request_policies")
-        if self.runtime_plugin_id == "runtime.opencode" and not isinstance(
-            self.adapter_binding, OpenCodeBindingV1
-        ):
+        if not isinstance(self.adapter_binding, OpenCodeBindingV1):
             raise ValueError("runtime.opencode requires OpenCodeBindingV1")
-        if self.runtime_plugin_id == "runtime.cursor" and not isinstance(
-            self.adapter_binding, CursorBindingV1
-        ):
-            raise ValueError("runtime.cursor requires CursorBindingV1")
         expected_handles = adapter_secret_handles(self.adapter_binding)
         if tuple(self.secret_handles) != expected_handles:
             raise ValueError("secret_handles must equal the adapter binding handle union")
@@ -395,7 +302,7 @@ class BuiltDeploymentWheel(FrozenModel):
     plugin_version: Literal["1.1.0"]
 
 
-def adapter_secret_handles(binding: OpenCodeBindingV1 | CursorBindingV1) -> tuple[str, ...]:
+def adapter_secret_handles(binding: OpenCodeBindingV1) -> tuple[str, ...]:
     handle = binding.secret_handle
     if handle is None:
         return ()

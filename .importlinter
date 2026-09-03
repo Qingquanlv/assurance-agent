@@ -11,7 +11,6 @@ root_packages =
     graph_engine_toy_b
     agent_runtime_contracts
     agent_runtime_opencode
-    agent_runtime_cursor
     agent_runtime_fixture
     assurance_product
 
@@ -176,7 +175,6 @@ source_modules =
     assurance_improvement
 forbidden_modules =
     agent_runtime_opencode
-    agent_runtime_cursor
     assurance_product
 
 [importlinter:contract:graph-engine-independent]
@@ -187,7 +185,6 @@ source_modules =
 forbidden_modules =
     agent_runtime_contracts
     agent_runtime_opencode
-    agent_runtime_cursor
     assurance_intake
     assurance_generation
     assurance_execution
@@ -207,7 +204,6 @@ source_modules =
 forbidden_modules =
     agent_runtime_contracts
     agent_runtime_opencode
-    agent_runtime_cursor
 
 [importlinter:contract:clients-downward]
 name = clients must not import features or products
@@ -215,7 +211,6 @@ type = forbidden
 source_modules =
     agent_runtime_contracts
     agent_runtime_opencode
-    agent_runtime_cursor
 forbidden_modules =
     assurance_intake
     assurance_generation
@@ -225,13 +220,6 @@ forbidden_modules =
     assurance_improvement
     assurance_product
 
-[importlinter:contract:adapter-independence]
-name = runtime adapters are independent
-type = independence
-modules =
-    agent_runtime_opencode
-    agent_runtime_cursor
-
 [importlinter:contract:contracts-wheel-independence]
 name = contracts must not import adapters or fixture
 type = forbidden
@@ -239,7 +227,6 @@ source_modules =
     agent_runtime_contracts
 forbidden_modules =
     agent_runtime_opencode
-    agent_runtime_cursor
     agent_runtime_fixture
 
 [importlinter:contract:fixture-downward-only]
@@ -249,7 +236,6 @@ source_modules =
     agent_runtime_fixture
 forbidden_modules =
     agent_runtime_opencode
-    agent_runtime_cursor
 
 [importlinter:contract:product-composition-layer]
 name = product is the only top-level composition layer
@@ -258,7 +244,6 @@ source_modules =
     graph_engine
     agent_runtime_contracts
     agent_runtime_opencode
-    agent_runtime_cursor
     assurance_intake
     assurance_generation
     assurance_execution

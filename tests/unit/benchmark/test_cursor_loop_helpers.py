@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).parents[3]
-_HELPERS = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "cursor-loop-helpers.sh"
-_CURSOR_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop-cursor.sh"
+_HELPERS = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "loop-helpers.sh"
+_CURSOR_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
 _OPENCODE_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
 _BENCHMARK_ENV = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark.env"
 _DELETED_PACKAGE_LEFTOVER = "specialty leftover after deleted-package cutover"

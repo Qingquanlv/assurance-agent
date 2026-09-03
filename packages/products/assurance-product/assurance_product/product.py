@@ -38,11 +38,9 @@ from assurance_product.models import (
     PLUGIN_ID,
     PLUGIN_VERSION,
     PRODUCT_ENTRYPOINTS,
-    AdapterName,
     all_binding_ids,
 )
 from assurance_product.source_catalog import (
-    adapter_for_entrypoint,
     product_source_catalog,
     wheel_plugin_source,
 )
@@ -57,22 +55,19 @@ _CAPABILITY_PLUGIN_IDS: tuple[str, ...] = (
     "assurance.quality",
     "assurance.improvement",
 )
-_RUNTIME_PLUGIN_IDS: dict[AdapterName, str] = {
-    "opencode": "runtime.opencode",
-    "cursor": "runtime.cursor",
-}
+_RUNTIME_PLUGIN_ID = "runtime.opencode"
+_PRODUCT_ENTRYPOINT = "assurance-opencode"
+_DECLARATION_FILENAME = "product-declaration-opencode.json"
+_DECLARATION_PATH = f"assurance_product/{_DECLARATION_FILENAME}"
+_PROVIDER_SYMBOL = "AssuranceOpenCodeProductProvider"
 _PLUGIN_VERSIONS: dict[str, str] = {
     **{plugin_id: "==0.2.0" for plugin_id in _CAPABILITY_PLUGIN_IDS},
-    **{plugin_id: "==0.1.0" for plugin_id in _RUNTIME_PLUGIN_IDS.values()},
+    _RUNTIME_PLUGIN_ID: "==0.1.0",
     PLUGIN_ID: f"=={PLUGIN_VERSION}",
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",
 }
 _PRODUCT_FACTORY_SYMBOL = "assurance_product.graphs.factory:build_product_graphs"
 _ENTRYPOINTS = {name: name for name in sorted(PRODUCT_ENTRYPOINTS)}
-_PROVIDERS: dict[AdapterName, str] = {
-    "opencode": "AssuranceOpenCodeProductProvider",
-    "cursor": "AssuranceCursorProductProvider",
-}
 
 
 def prepare_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspace:
@@ -111,45 +106,37 @@ class AssuranceComposition(FrozenComposition):
 
 
 class AssuranceCompositionRequest(FrozenModel):
-    product_entrypoint: Literal["assurance-opencode", "assurance-cursor"]
+    product_entrypoint: Literal["assurance-opencode"]
     deployment_source: WheelPluginSource
     configuration_tree: ConfigTreePluginSource
 
 
-def _declaration_filename(adapter: AdapterName) -> str:
-    return f"product-declaration-{adapter}.json"
-
-
-def _declaration_path(adapter: AdapterName) -> str:
-    return f"assurance_product/{_declaration_filename(adapter)}"
-
-
-def _product_source(adapter: AdapterName) -> ProviderSource:
+def _product_source() -> ProviderSource:
     return ProviderSource(
         distribution="assurance-product",
         version=_PRODUCT_VERSION,
         entrypoint_group="graph_engine.products",
-        entrypoint_name=f"assurance-{adapter}",
-        entrypoint_value=f"assurance_product.product:{_PROVIDERS[adapter]}",
-        declaration_path=_declaration_path(adapter),
+        entrypoint_name=_PRODUCT_ENTRYPOINT,
+        entrypoint_value=f"assurance_product.product:{_PROVIDER_SYMBOL}",
+        declaration_path=_DECLARATION_PATH,
         import_roots=("", "assurance_product"),
     )
 
 
-def _wheel_product_source(adapter: AdapterName, entrypoint: str) -> WheelProductSource:
+def _wheel_product_source() -> WheelProductSource:
     return WheelProductSource(
         distribution="assurance-product",
-        entrypoint_name=entrypoint,
-        declaration_path=_declaration_path(adapter),
+        entrypoint_name=_PRODUCT_ENTRYPOINT,
+        declaration_path=_DECLARATION_PATH,
     )
 
 
-def _required_plugin_ids(adapter: AdapterName) -> tuple[str, ...]:
+def _required_plugin_ids() -> tuple[str, ...]:
     return tuple(
         sorted(
             (
                 *_CAPABILITY_PLUGIN_IDS,
-                _RUNTIME_PLUGIN_IDS[adapter],
+                _RUNTIME_PLUGIN_ID,
                 PLUGIN_ID,
                 CONFIGURATION_PLUGIN_ID,
             )
@@ -158,18 +145,17 @@ def _required_plugin_ids(adapter: AdapterName) -> tuple[str, ...]:
 
 
 def _build_manifest(
-    adapter: AdapterName,
     config_plugin_paths: tuple[str, ...] = (),
 ) -> ProductManifest:
     return ProductManifest(
         schema_version="1",
-        source=_product_source(adapter),
+        source=_product_source(),
         product_id=_MANIFEST_PRODUCT_ID,
         product_version=_PRODUCT_VERSION,
         engine_api=ENGINE_API,
         plugins=tuple(
             PluginRequirement(plugin_id=plugin_id, version_specifier=_PLUGIN_VERSIONS[plugin_id])
-            for plugin_id in _required_plugin_ids(adapter)
+            for plugin_id in _required_plugin_ids()
         ),
         entrypoints=dict(_ENTRYPOINTS),
         configuration={},
@@ -179,11 +165,10 @@ def _build_manifest(
 
 
 def product_declaration_document(
-    adapter: AdapterName,
     config_plugin_paths: tuple[str, ...] = (),
 ) -> dict[str, JSONValue]:
-    source = _product_source(adapter).model_dump(mode="json")
-    manifest = _build_manifest(adapter, config_plugin_paths).model_dump(mode="json", exclude_none=True)
+    source = _product_source().model_dump(mode="json")
+    manifest = _build_manifest(config_plugin_paths).model_dump(mode="json", exclude_none=True)
     manifest.pop("workflow", None)
     manifest.pop("workflow_resource_id", None)
     manifest.pop("workflow_module", None)
@@ -197,8 +182,8 @@ def product_declaration_document(
     }
 
 
-def _load_declared_manifest(adapter: AdapterName) -> ProductManifest:
-    path = Path(__file__).resolve().parent / _declaration_filename(adapter)
+def _load_declared_manifest() -> ProductManifest:
+    path = Path(__file__).resolve().parent / _DECLARATION_FILENAME
     document = json.loads(path.read_bytes())
     declaration = WheelProductDeclaration.model_validate(document)
     return declaration.manifest
@@ -207,13 +192,7 @@ def _load_declared_manifest(adapter: AdapterName) -> ProductManifest:
 class AssuranceOpenCodeProductProvider:
     @staticmethod
     def manifest() -> ProductManifest:
-        return _load_declared_manifest("opencode")
-
-
-class AssuranceCursorProductProvider:
-    @staticmethod
-    def manifest() -> ProductManifest:
-        return _load_declared_manifest("cursor")
+        return _load_declared_manifest()
 
 
 def _capability_bindings(composition: FrozenComposition) -> dict[str, CapabilityBindingEntry]:
@@ -251,9 +230,8 @@ def _assignment_data_is_closed(value: object) -> bool:
 
 def _authenticate_assurance_composition(
     composition: FrozenComposition,
-    adapter: AdapterName,
 ) -> FrozenComposition:
-    expected_plugins = set(_required_plugin_ids(adapter))
+    expected_plugins = set(_required_plugin_ids())
     expected_bindings = set(all_binding_ids())
     descriptor_ids = {descriptor.plugin_id for descriptor in composition.descriptors}
     manifest_ids = set(composition.manifest.required_plugin_ids)
@@ -279,11 +257,11 @@ def _authenticate_assurance_composition(
         raise AssuranceCompositionError("composition bindings drifted from semantic Agent contracts")
 
     source = composition.manifest.source
-    if source is None or source.entrypoint_name != f"assurance-{adapter}":
-        raise AssuranceCompositionError("product entry-point coordinate does not match the selected adapter")
+    if source is None or source.entrypoint_name != _PRODUCT_ENTRYPOINT:
+        raise AssuranceCompositionError("product entry-point coordinate is not the OpenCode product")
     if source.distribution != "assurance-product" or source.version != _PRODUCT_VERSION:
         raise AssuranceCompositionError("product distribution identity drifted")
-    if source.declaration_path != _declaration_path(adapter):
+    if source.declaration_path != _DECLARATION_PATH:
         raise AssuranceCompositionError("product declaration path drifted")
     product_entry = composition.registries.sources.entries.get(
         SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)
@@ -294,8 +272,8 @@ def _authenticate_assurance_composition(
     if (
         identity.distribution != "assurance-product"
         or identity.version != _PRODUCT_VERSION
-        or identity.entrypoint_name != f"assurance-{adapter}"
-        or identity.declaration_path != _declaration_path(adapter)
+        or identity.entrypoint_name != _PRODUCT_ENTRYPOINT
+        or identity.declaration_path != _DECLARATION_PATH
         or not identity.import_roots
     ):
         raise AssuranceCompositionError("product snapshot identity drifted")
@@ -327,8 +305,8 @@ def _authenticate_assurance_composition(
         if entry.sha256 != hashlib.sha256(entry.content).hexdigest():
             raise AssuranceCompositionError(f"resource digest drifted: {resource.resource_id}")
 
-    runtime_execute = f"{_RUNTIME_PLUGIN_IDS[adapter]}.execute"
-    expected_secrets = ("opencode.token",) if adapter == "opencode" else ("cursor.api-key",)
+    runtime_execute = f"{_RUNTIME_PLUGIN_ID}.execute"
+    expected_secrets = ("opencode.token",)
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         binding = bindings[contract_id]
         if binding.contract_id != contract.contract_id:
@@ -369,20 +347,21 @@ def _with_semantic_attempt_contracts(
 def resolve_assurance_composition(request: AssuranceCompositionRequest) -> AssuranceComposition:
     from assurance_product.runtime_bindings import boot_semantic_attempt_contracts
 
-    adapter = adapter_for_entrypoint(request.product_entrypoint)
+    if request.product_entrypoint != _PRODUCT_ENTRYPOINT:
+        raise AssuranceCompositionError("product entry-point is not the OpenCode product")
     if not request.configuration_tree.path.is_dir():
         raise AssuranceCompositionError("configuration tree is not an explicit existing path")
     composition = RegistryPlatform().resolve(
         ResolutionRequest(
-            product=_wheel_product_source(adapter, request.product_entrypoint),
+            product=_wheel_product_source(),
             plugins=(
-                *(wheel_plugin_source(source) for source in product_source_catalog(adapter)),
+                *(wheel_plugin_source(source) for source in product_source_catalog()),
                 request.deployment_source,
                 request.configuration_tree,
             ),
         )
     )
-    composition = _authenticate_assurance_composition(composition, adapter)
+    composition = _authenticate_assurance_composition(composition)
     return _with_semantic_attempt_contracts(
         composition,
         boot_semantic_attempt_contracts(composition),
@@ -466,13 +445,8 @@ def coexistence_graph_manifest(
     )
 
 
-def write_committed_product_declarations(package_root: Path | None = None) -> tuple[Path, Path]:
+def write_committed_product_declarations(package_root: Path | None = None) -> Path:
     root = package_root or Path(__file__).resolve().parent
-    written: list[Path] = []
-    for adapter in ("opencode", "cursor"):
-        path = root / _declaration_filename(cast(AdapterName, adapter))
-        path.write_bytes(
-            canonical_json_bytes(product_declaration_document(cast(AdapterName, adapter))) + b"\n"
-        )
-        written.append(path)
-    return (written[0], written[1])
+    path = root / _DECLARATION_FILENAME
+    path.write_bytes(canonical_json_bytes(product_declaration_document()) + b"\n")
+    return path

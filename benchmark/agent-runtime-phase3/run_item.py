@@ -10,7 +10,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from contextlib import ExitStack
@@ -22,7 +21,6 @@ from urllib.request import Request, urlopen
 
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.schema import canonical_digest
-from agent_runtime_cursor.config import CursorAdapterConfig
 from agent_runtime_opencode.config import OpenCodeAdapterConfig
 from graph_engine.canonical import canonical_digest as engine_digest
 from graph_engine.composition import (
@@ -49,8 +47,6 @@ _AMBIENT_OVERRIDE_VARS = frozenset(
     {
         "OPENCODE_ENDPOINT",
         "OPENCODE_MODEL",
-        "CURSOR_EXECUTABLE",
-        "CURSOR_MODEL",
         "AA_MODEL",
         "PROVIDER_MODEL",
     }
@@ -61,7 +57,6 @@ _CREDENTIAL_PATTERN = re.compile(
 _WORKSPACE_PACKAGES = {
     "agent-runtime-fixture": ("examples/agent-runtime-fixture", "agent_runtime_fixture"),
     "agent-runtime-opencode": ("packages/adapters/agent-runtime-opencode", "agent_runtime_opencode"),
-    "agent-runtime-cursor": ("packages/adapters/agent-runtime-cursor", "agent_runtime_cursor"),
 }
 
 
@@ -188,13 +183,12 @@ def _locked_binding(item: ManifestItem, *, project_scope: str | None, model: str
     for key in forbidden:
         if key in os.environ:
             raise SystemExit(f"ambient override via environment for {key!r} is forbidden")
-    if item.adapter == "opencode":
-        if project_scope is None:
-            raise SystemExit("OpenCode project_scope is required")
-        binding["project_scope"] = project_scope
-        OpenCodeAdapterConfig.model_validate(binding)
-    else:
-        CursorAdapterConfig.model_validate(binding)
+    if item.adapter != "opencode":
+        raise SystemExit(f"unsupported adapter {item.adapter!r}")
+    if project_scope is None:
+        raise SystemExit("OpenCode project_scope is required")
+    binding["project_scope"] = project_scope
+    OpenCodeAdapterConfig.model_validate(binding)
     locked = dict(binding)
     locked["model"] = model
     return locked
@@ -265,7 +259,7 @@ def _activate_editable_imports(request: ResolutionRequest) -> None:
             roots.append(plugin.source_root)
     for root in reversed(roots):
         sys.path.insert(0, str(root))
-    prefixes = ("agent_runtime_fixture", "agent_runtime_opencode", "agent_runtime_cursor")
+    prefixes = ("agent_runtime_fixture", "agent_runtime_opencode")
     for name in tuple(sys.modules):
         if name in prefixes or name.startswith(tuple(f"{prefix}." for prefix in prefixes)):
             sys.modules.pop(name, None)
@@ -284,8 +278,10 @@ def _patch_copied_binding_plugin(
         raise SystemExit("fixture copy is required to patch locked binding data")
     root, _files = cached
     bindings_path = root / "agent_runtime_fixture" / "bindings.py"
-    target = "runtime.opencode.execute" if adapter == "opencode" else "runtime.cursor.execute"
-    plugin_class = "OpenCodeBindingPlugin" if adapter == "opencode" else "CursorBindingPlugin"
+    if adapter != "opencode":
+        raise SystemExit(f"unsupported adapter {adapter!r}")
+    target = "runtime.opencode.execute"
+    plugin_class = "OpenCodeBindingPlugin"
     payload = json.dumps(binding_data, indent=4, sort_keys=True)
     secret = json.dumps(secret_handle)
     appendix = f"""
@@ -367,22 +363,6 @@ def _fetch_json(url: str) -> Any:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _load_cursor_api_key_from_keychain() -> str | None:
-    try:
-        completed = subprocess.run(  # noqa: S603
-            ["security", "find-generic-password", "-s", "cursor-access-token", "-w"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return None
-    if completed.returncode != 0:
-        return None
-    token = completed.stdout.strip()
-    return token or None
-
-
 def _check_opencode(adapter: dict[str, Any]) -> int:
     endpoint = adapter["endpoint"].rstrip("/")
     try:
@@ -405,36 +385,6 @@ def _check_opencode(adapter: dict[str, Any]) -> int:
     secret_env = adapter["secret_env"]
     if not os.environ.get(secret_env):
         os.environ[secret_env] = ""
-    return 0
-
-
-def _check_cursor(adapter: dict[str, Any]) -> int:
-    executable = Path(adapter["executable"])
-    if executable.is_symlink() or not executable.is_file():
-        return _fail(f"pinned Cursor executable is missing or not a regular file: {executable}")
-    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-    if digest != adapter["executable_digest"]:
-        return _fail(
-            f"Cursor executable digest {digest} does not match pinned {adapter['executable_digest']}"
-        )
-    reported = subprocess.run(  # noqa: S603
-        [str(executable), "--version"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    version = (reported.stdout or reported.stderr).strip().splitlines()[0] if reported.returncode == 0 else ""
-    if version != adapter["external_tool_version"]:
-        return _fail(f"Cursor version {version!r} does not match pinned {adapter['external_tool_version']!r}")
-    secret_env = adapter["secret_env"]
-    if not os.environ.get(secret_env):
-        token = _load_cursor_api_key_from_keychain()
-        if not token:
-            return _fail(
-                f"Cursor secret {secret_env!r} is unset and keychain login is unavailable; "
-                "refusing to invent credentials"
-            )
-        os.environ[secret_env] = token
     return 0
 
 
@@ -518,7 +468,7 @@ def _validate_workspace_output(manifest: dict[str, Any], output: Path, item: Man
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    parser.add_argument("--adapter", choices=("opencode", "cursor"), required=True)
+    parser.add_argument("--adapter", choices=("opencode",), required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args(argv)
@@ -549,21 +499,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     frozen_request = _frozen_request(manifest)
-    project_scope = (
-        _attempt_project_scope(engine_root=engine_root, invocation_id=item.item_id)
-        if item.adapter == "opencode"
-        else None
-    )
+    project_scope = _attempt_project_scope(engine_root=engine_root, invocation_id=item.item_id)
     locked_binding = _locked_binding(
         item,
         project_scope=project_scope,
         model=frozen_request.execution.provider_model,
     )
 
-    if arguments.adapter == "opencode":
-        preflight = _check_opencode(adapter_meta)
-    else:
-        preflight = _check_cursor(adapter_meta)
+    preflight = _check_opencode(adapter_meta)
     if preflight != 0:
         return preflight
 

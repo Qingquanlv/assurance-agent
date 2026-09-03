@@ -2,7 +2,7 @@
 
 Private uv workspace for the installed Assurance graph product. The publishable
 wheels are `graph-engine`, six capability packages, `assurance-product`, and the
-OpenCode/Cursor adapter wheels. `aa` is owned by `assurance-product`.
+OpenCode adapter wheel. `aa` is owned by `assurance-product`.
 
 There is no long-running service. Develop and test through `uv run`.
 

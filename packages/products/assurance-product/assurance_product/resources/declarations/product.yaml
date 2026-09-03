@@ -19,9 +19,7 @@ plugins:
     version_specifier: "==0.2.0"
   - plugin_id: assurance.improvement
     version_specifier: "==0.2.0"
-runtime_plugins:
-  opencode: runtime.opencode
-  cursor: runtime.cursor
+runtime_plugin: runtime.opencode
 sources:
   capabilities:
     - distribution: assurance-intake
@@ -72,23 +70,13 @@ sources:
       declaration_path: assurance_improvement/plugin-declaration.json
       import_roots:
         - ""
-  runtimes:
-    opencode:
-      distribution: agent-runtime-opencode
-      version: "0.1.0"
-      entrypoint_group: graph_engine.plugins
-      entrypoint_name: opencode
-      entrypoint_value: agent_runtime_opencode.plugin:OpenCodePlugin
-      declaration_path: agent_runtime_opencode/plugin-declaration.json
-      import_roots:
-        - ""
-    cursor:
-      distribution: agent-runtime-cursor
-      version: "0.1.0"
-      entrypoint_group: graph_engine.plugins
-      entrypoint_name: cursor
-      entrypoint_value: agent_runtime_cursor.plugin:CursorPlugin
-      declaration_path: agent_runtime_cursor/plugin-declaration.json
-      import_roots:
-        - ""
+  runtime:
+    distribution: agent-runtime-opencode
+    version: "0.1.0"
+    entrypoint_group: graph_engine.plugins
+    entrypoint_name: opencode
+    entrypoint_value: agent_runtime_opencode.plugin:OpenCodePlugin
+    declaration_path: agent_runtime_opencode/plugin-declaration.json
+    import_roots:
+      - ""
 

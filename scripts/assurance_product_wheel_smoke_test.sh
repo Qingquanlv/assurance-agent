@@ -41,8 +41,7 @@ for package in \
   assurance-quality \
   assurance-improvement \
   assurance-product \
-  agent-runtime-opencode \
-  agent-runtime-cursor
+  agent-runtime-opencode
 do
   uv build \
     --offline \
@@ -81,9 +80,8 @@ quality_wheel="$(wheel_for 'assurance_quality-*.whl')"
 improvement_wheel="$(wheel_for 'assurance_improvement-*.whl')"
 product_wheel="$(wheel_for 'assurance_product-*.whl')"
 opencode_wheel="$(wheel_for 'agent_runtime_opencode-*.whl')"
-cursor_wheel="$(wheel_for 'agent_runtime_cursor-*.whl')"
 
-echo "PRODUCT_WHEEL_FILES=$(basename "$engine_wheel") $(basename "$contracts_wheel") $(basename "$intake_wheel") $(basename "$generation_wheel") $(basename "$execution_wheel") $(basename "$healing_wheel") $(basename "$quality_wheel") $(basename "$improvement_wheel") $(basename "$product_wheel") $(basename "$opencode_wheel") $(basename "$cursor_wheel")"
+echo "PRODUCT_WHEEL_FILES=$(basename "$engine_wheel") $(basename "$contracts_wheel") $(basename "$intake_wheel") $(basename "$generation_wheel") $(basename "$execution_wheel") $(basename "$healing_wheel") $(basename "$quality_wheel") $(basename "$improvement_wheel") $(basename "$product_wheel") $(basename "$opencode_wheel")"
 
 cat >"$smoke_root/check.py" <<'PY'
 from __future__ import annotations
@@ -108,7 +106,6 @@ CLOSED_NAMES = (
     "assurance-improvement",
     "assurance-product",
     "agent-runtime-opencode",
-    "agent-runtime-cursor",
 )
 SECRET_CANARIES = (
     b"sk-secret-canary-value",
@@ -124,7 +121,6 @@ LEGACY_MODULES = ("assurance_agent", "assurance_kernel")
 LEGACY_DISTS = ("assurance-agent", "assurance-kernel")
 PRODUCT_ENTRY_POINTS = {
     "assurance-opencode": "assurance_product.product:AssuranceOpenCodeProductProvider",
-    "assurance-cursor": "assurance_product.product:AssuranceCursorProductProvider",
 }
 
 
@@ -228,7 +224,6 @@ def check_archives(dist_root: Path) -> None:
         "assurance_improvement-*.whl",
         "assurance_product-*.whl",
         "agent_runtime_opencode-*.whl",
-        "agent_runtime_cursor-*.whl",
     }
     wheels = sorted(path for path in dist_root.glob("*.whl") if path.is_file())
     if len(wheels) != len(expected):
@@ -501,10 +496,8 @@ uv run \
 
 config_tree="$source_root/tests/product/fixtures/project-config"
 opencode_manifest="$source_root/tests/product/fixtures/deployment/opencode.yaml"
-cursor_manifest="$source_root/tests/product/fixtures/deployment/cursor.yaml"
 test -d "$config_tree"
 test -f "$opencode_manifest"
-test -f "$cursor_manifest"
 
 install_env() {
   local name="$1"
@@ -764,13 +757,11 @@ BASE_NAMES="graph-engine,agent-runtime-contracts,assurance-intake,assurance-gene
 BASE_EPS="execution,generation,healing,improvement,intake,quality"
 FORBIDDEN_BASE="agent-runtime-opencode,agent-runtime-cursor,assurance-agent,assurance-kernel"
 FORBIDDEN_OPENCODE="agent-runtime-cursor,assurance-agent,assurance-kernel"
-FORBIDDEN_CURSOR="agent-runtime-opencode,assurance-agent,assurance-kernel"
 
 install_env base-no-adapter "$product_wheel"
 inspect_prefix base-no-adapter "$BASE_NAMES" "$BASE_EPS" "$FORBIDDEN_BASE"
 
 build_deployment opencode "$opencode_manifest"
-build_deployment cursor "$cursor_manifest"
 uv run \
   --offline \
   --no-project \
@@ -778,24 +769,14 @@ uv run \
   --managed-python \
   --no-python-downloads \
   python "$smoke_root/check.py" deployment --dist "$bindings_root/opencode"
-uv run \
-  --offline \
-  --no-project \
-  --python 3.11 \
-  --managed-python \
-  --no-python-downloads \
-  python "$smoke_root/check.py" deployment --dist "$bindings_root/cursor"
 
 load_binding_env opencode
 opencode_binding_wheel="$binding_wheel"
 opencode_binding_distribution="$binding_distribution"
 opencode_binding_declaration="$binding_declaration"
-load_binding_env cursor
-cursor_binding_wheel="$binding_wheel"
-cursor_binding_distribution="$binding_distribution"
-cursor_binding_declaration="$binding_declaration"
 
 install_binding base-no-adapter "$opencode_binding_wheel"
+scenario missing-runtime
 expect_compile_fail base-no-adapter assurance-opencode \
   "$opencode_binding_distribution" "$opencode_binding_declaration" \
   "installed distribution not found: agent-runtime-opencode"
@@ -806,17 +787,9 @@ inspect_prefix opencode-product \
   "$BASE_EPS,opencode" \
   "$FORBIDDEN_OPENCODE"
 install_binding opencode-product "$opencode_binding_wheel"
+scenario opencode-product
 expect_compile_ok opencode-product assurance-opencode \
   "$opencode_binding_distribution" "$opencode_binding_declaration"
-
-install_env cursor-product "${product_wheel}[cursor]"
-inspect_prefix cursor-product \
-  "$BASE_NAMES,agent-runtime-cursor" \
-  "$BASE_EPS,cursor" \
-  "$FORBIDDEN_CURSOR"
-install_binding cursor-product "$cursor_binding_wheel"
-expect_compile_ok cursor-product assurance-cursor \
-  "$cursor_binding_distribution" "$cursor_binding_declaration"
 
 install_env missing-binding "${product_wheel}[opencode]"
 inspect_prefix missing-binding \
@@ -826,28 +799,6 @@ inspect_prefix missing-binding \
 expect_compile_fail missing-binding assurance-opencode \
   "$opencode_binding_distribution" "$opencode_binding_declaration" \
   "installed distribution not found: $opencode_binding_distribution"
-
-install_env both-adapters "${product_wheel}[opencode,cursor]"
-inspect_prefix both-adapters \
-  "$BASE_NAMES,agent-runtime-opencode,agent-runtime-cursor" \
-  "$BASE_EPS,opencode,cursor" \
-  "assurance-agent,assurance-kernel"
-install_binding both-adapters "$opencode_binding_wheel"
-install_binding both-adapters "$cursor_binding_wheel"
-scenario both-opencode
-expect_compile_ok both-adapters assurance-opencode \
-  "$opencode_binding_distribution" "$opencode_binding_declaration"
-scenario both-cursor
-expect_compile_ok both-adapters assurance-cursor \
-  "$cursor_binding_distribution" "$cursor_binding_declaration"
-
-scenario foreign-binding
-expect_compile_fail both-adapters assurance-opencode \
-  "$cursor_binding_distribution" "$cursor_binding_declaration" \
-  "missing selected plugin source"
-expect_compile_fail both-adapters assurance-cursor \
-  "$opencode_binding_distribution" "$opencode_binding_declaration" \
-  "missing selected plugin source"
 
 install_env deployment-drift "${product_wheel}[opencode]"
 inspect_prefix deployment-drift \

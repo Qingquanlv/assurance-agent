@@ -50,36 +50,30 @@ SET_FIELDS = frozenset(
 
 class EvalFindingV1(ProjectionModel):
     field: str
-    mode: Literal["exact", "set", "predicate", "intentionally-different"]
-    outcome: Literal["pass", "fail", "intentionally-different"]
+    mode: Literal["exact", "set", "predicate"]
+    outcome: Literal["pass", "fail"]
     evidence_digest: str
 
 
 class ExternalEvalV1(ProjectionModel):
     schema_version: Literal["1"]
-    opencode_export_digest: str
-    cursor_export_digest: str
+    export_digest: str
     findings: tuple[EvalFindingV1, ...]
     retro_input_digest: str
 
 
-def evaluate_complete_runs(opencode_export: Path, cursor_export: Path) -> ExternalEvalV1:
-    opencode = _completed_projection(opencode_export)
-    cursor = _completed_projection(cursor_export)
-    findings = tuple(
-        _finding(field, getattr(opencode, field), getattr(cursor, field)) for field in COMPARED_FIELDS
-    )
+def evaluate_complete_run(export_root: Path) -> ExternalEvalV1:
+    projection = _completed_projection(export_root)
+    findings = tuple(_finding(field, getattr(projection, field)) for field in COMPARED_FIELDS)
     payload = jsonable(
         {
-            "opencode_export_digest": digest_export(opencode_export),
-            "cursor_export_digest": digest_export(cursor_export),
+            "export_digest": digest_export(export_root),
             "findings": tuple(item.model_dump(mode="json") for item in findings),
         }
     )
     return ExternalEvalV1(
         schema_version="1",
-        opencode_export_digest=digest_export(opencode_export),
-        cursor_export_digest=digest_export(cursor_export),
+        export_digest=digest_export(export_root),
         findings=findings,
         retro_input_digest=_digest_json(payload),
     )
@@ -88,29 +82,23 @@ def evaluate_complete_runs(opencode_export: Path, cursor_export: Path) -> Extern
 def _completed_projection(export_root: Path) -> BehavioralProjectionV1:
     projection = project_new_export(export_root)
     if projection.terminal_class != "completed":
-        raise ProjectionError("evaluate_complete_runs requires completed exports")
+        raise ProjectionError("evaluate_complete_run requires a completed export")
     return projection
 
 
-def _finding(field: str, left: object, right: object) -> EvalFindingV1:
-    dumped_left = jsonable(left)
-    dumped_right = jsonable(right)
+def _finding(field: str, value: object) -> EvalFindingV1:
+    dumped = jsonable(value)
+    mode: Literal["exact", "set", "predicate"] = "set" if field in SET_FIELDS else "exact"
     if field == "runtime_identity":
-        mode: Literal["exact", "set", "predicate", "intentionally-different"] = "intentionally-different"
-        outcome: Literal["pass", "fail", "intentionally-different"] = (
-            "intentionally-different" if dumped_left != dumped_right else "fail"
-        )
-    elif field in SET_FIELDS:
-        mode = "set"
-        outcome = "pass" if dumped_left == dumped_right else "fail"
+        outcome: Literal["pass", "fail"] = "pass" if dumped == "assurance-opencode" else "fail"
+        mode = "predicate"
     else:
-        mode = "exact"
-        outcome = "pass" if dumped_left == dumped_right else "fail"
+        outcome = "pass" if dumped is not None else "fail"
     return EvalFindingV1(
         field=field,
         mode=mode,
         outcome=outcome,
-        evidence_digest=_digest_json({"field": field, "left": dumped_left, "right": dumped_right}),
+        evidence_digest=_digest_json({"field": field, "value": dumped}),
     )
 
 
