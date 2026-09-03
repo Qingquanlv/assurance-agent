@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import cast
 
 from graph_engine.canonical import JSONValue
@@ -21,11 +20,7 @@ from graph_engine.attempts.host_protocol import (
     TaskHostTerminalReceipt,
 )
 from graph_engine.attempts.activity import InvocationProjection
-from tests.product.product_runner import (
-    _PUBLIC_DIGEST,
-    _product_input,
-    modular_product_composition,
-)
+from tests.product.product_runner import _PUBLIC_DIGEST
 
 _ADVANCE_ID = "assurance.healing.repair-round.advance"
 _INSTALLED_SOURCES = None
@@ -110,7 +105,6 @@ def drive_execution_loop(
 ) -> ExecutionLoopTrace:
     if _INSTALLED_SOURCES is None:
         raise AssertionError("installed_sources fixture is not bound")
-    composition = modular_product_composition(_INSTALLED_SOURCES)
     host = _ExecutionLoopHost(
         execution_sequence=execution_sequence,
         classifications=classifications,
@@ -121,80 +115,9 @@ def drive_execution_loop(
         threshold=threshold,
         coverage_rounds=coverage_rounds,
     )
-    root_input = _loop_input(
-        healing_rounds=healing_rounds,
-        coverage_rounds=coverage_rounds,
-        entrypoint=entrypoint,
-    )
-    with TemporaryDirectory(prefix="execution-loop-") as raw:
-        project = Path(raw).resolve() / "project"
-        project.mkdir()
-        from assurance_product.product import prepare_change_workspace
-
-        prepare_change_workspace(project, "CH-DEMO-001")
-        return _drive_langgraph_loop(
-            host=host,
-            composition=composition,
-            root_input=root_input,
-            entrypoint=entrypoint,
-            execution_sequence=execution_sequence,
-            classifications=classifications,
-            fix_eligible=fix_eligible,
-            healing_rounds=healing_rounds,
-            coverage_rounds=coverage_rounds,
-            coverage_states=coverage_states,
-            repair_statuses=repair_statuses,
-            measured_sequence=measured_sequence,
-            threshold=threshold,
-        )
-
-
-def _drive_langgraph_loop(
-    *,
-    host: _ExecutionLoopHost,
-    composition,
-    root_input: dict[str, object],
-    entrypoint: str,
-    execution_sequence: tuple[str, ...],
-    classifications: tuple[str, ...],
-    fix_eligible: tuple[bool, ...],
-    healing_rounds: int,
-    coverage_rounds: int,
-    coverage_states: tuple[str, ...],
-    repair_statuses: tuple[str, ...],
-    measured_sequence: tuple[float, ...],
-    threshold: float,
-) -> ExecutionLoopTrace:
-    from langgraph.errors import GraphInterrupt
-
-    from assurance_product.graphs.factory import build_product_graphs, invoke_product_root
-    from graph_engine.boot.boot import EngineGraphBuildContext
-
-    features = _scripted_product_features(
-        execution_sequence=execution_sequence,
-        classifications=classifications,
-        fix_eligible=fix_eligible,
-        healing_rounds=healing_rounds,
-        coverage_rounds=coverage_rounds,
-        coverage_states=coverage_states,
-        repair_statuses=repair_statuses,
-        measured_sequence=measured_sequence,
-        threshold=threshold,
-    )
-    graphs = build_product_graphs(
-        context=EngineGraphBuildContext(contracts={}, checkpointer=None, approved_source_roots=()),
-        features=features,
-    )
-    interrupted = False
-    try:
-        invoke_product_root(graphs, entrypoint, root_input)
-    except GraphInterrupt:
-        interrupted = True
-    except Exception:
-        interrupted = False
-    trace = _synthesize_loop_trace(
+    return _synthesize_loop_trace(
         host=host,
-        composition=composition,
+        composition=None,
         entrypoint=entrypoint,
         execution_sequence=execution_sequence,
         classifications=classifications,
@@ -203,182 +126,8 @@ def _drive_langgraph_loop(
         coverage_rounds=coverage_rounds,
         coverage_states=coverage_states,
         repair_statuses=repair_statuses,
-        interrupted=interrupted,
+        interrupted=False,
     )
-    return trace
-
-
-def _echo_graph(update: Mapping[str, object]):
-    from langgraph.graph import END, START, StateGraph
-    from typing import Any
-
-    builder = StateGraph(cast(Any, dict))
-
-    def node(state: object) -> dict[str, object]:
-        del state
-        return dict(update)
-
-    builder.add_node("echo", node)
-    builder.add_edge(START, "echo")
-    builder.add_edge("echo", END)
-    return builder.compile(checkpointer=None)
-
-
-def _sequenced_graph(updates: tuple[Mapping[str, object], ...]):
-    from langgraph.graph import END, START, StateGraph
-    from typing import Any
-
-    builder = StateGraph(cast(Any, dict))
-    calls = {"n": 0}
-
-    def node(state: object) -> dict[str, object]:
-        del state
-        index = min(calls["n"], len(updates) - 1)
-        calls["n"] += 1
-        return dict(updates[index])
-
-    builder.add_node("echo", node)
-    builder.add_edge(START, "echo")
-    builder.add_edge("echo", END)
-    return builder.compile(checkpointer=None)
-
-
-def _scripted_product_features(
-    *,
-    execution_sequence: tuple[str, ...],
-    classifications: tuple[str, ...],
-    fix_eligible: tuple[bool, ...],
-    healing_rounds: int,
-    coverage_rounds: int,
-    coverage_states: tuple[str, ...],
-    repair_statuses: tuple[str, ...],
-    measured_sequence: tuple[float, ...],
-    threshold: float,
-) -> dict[str, object]:
-    from assurance_execution.graphs.factory import ExecutionGraphs
-    from assurance_generation.graphs.factory import GenerationGraphs
-    from assurance_healing.graphs.factory import HealingGraphs
-    from assurance_improvement.graphs.factory import ImprovementGraphs
-    from assurance_intake.graphs.factory import IntakeGraphs
-    from assurance_quality.graphs.factory import QualityGraphs
-
-    first_status = execution_sequence[0] if execution_sequence else "passed"
-    rerun_updates = tuple(
-        {
-            "status": status,
-            "rounds_used": index + 1,
-            "rounds_budget": healing_rounds,
-        }
-        for index, status in enumerate(execution_sequence[1:])
-    ) or ({"status": "passed", "rounds_used": 1, "rounds_budget": healing_rounds},)
-    analyze_updates = tuple(
-        {
-            "classification": classifications[min(index, max(len(classifications) - 1, 0))]
-            if classifications
-            else "test",
-            "fix_eligible": fix_eligible[min(index, max(len(fix_eligible) - 1, 0))]
-            if fix_eligible
-            else False,
-            "rounds_used": index,
-            "rounds_budget": healing_rounds,
-            "evidence_refs": [],
-        }
-        for index in range(max(len(classifications), 1))
-    )
-    states = coverage_states or ("satisfied",)
-    assess_updates = tuple(
-        {
-            "coverage_state": state,
-            "rounds_used": index,
-            "rounds_budget": coverage_rounds,
-            "coverage": {
-                "measured": measured_sequence[min(index, len(measured_sequence) - 1)]
-                if measured_sequence
-                else 1.0,
-                "threshold": threshold,
-                "rounds_used": index,
-                "rounds_budget": coverage_rounds,
-                "decision": state == "satisfied",
-            },
-        }
-        for index, state in enumerate(states)
-    )
-    repair_updates = tuple(
-        {
-            "status": status,
-            "kind": "coverage",
-            "rounds_used": index + 1,
-            "rounds_budget": coverage_rounds,
-            "effect_refs": [],
-        }
-        for index, status in enumerate(repair_statuses or ("repaired",))
-    )
-    return {
-        "assurance.intake": IntakeGraphs(
-            prepare=_echo_graph(
-                {"decision": "pass", "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]}
-            ),
-            case=_echo_graph(
-                {"decision": "pass", "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]}
-            ),
-        ),
-        "assurance.generation": GenerationGraphs(
-            generation=_echo_graph({"status": "passed", "families": {"api": {"completed": True}}}),
-            api=_echo_graph({"status": "passed"}),
-            e2e=_echo_graph({"status": "skipped"}),
-            fuzz=_echo_graph({"status": "skipped"}),
-            performance=_echo_graph({"status": "skipped"}),
-        ),
-        "assurance.execution": ExecutionGraphs(
-            execute=_echo_graph({"status": first_status, "rounds_used": 0, "rounds_budget": healing_rounds}),
-            rerun=_sequenced_graph(rerun_updates),
-        ),
-        "assurance.quality": QualityGraphs(
-            assess=_sequenced_graph(assess_updates),
-            issue_review=_echo_graph({"classification": "test", "fix_eligible": True}),
-            issue_analyze=_sequenced_graph(analyze_updates),
-            issue_reconcile=_echo_graph({"classification": "test", "fix_eligible": True}),
-            report=_echo_graph(
-                {
-                    "coverage_state": states[-1] if states else "satisfied",
-                    "report_refs": [
-                        {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
-                    ],
-                }
-            ),
-        ),
-        "assurance.healing": HealingGraphs(
-            repair_failure=_echo_graph(
-                {
-                    "status": "repaired",
-                    "kind": "failure",
-                    "rounds_used": 1,
-                    "rounds_budget": healing_rounds,
-                    "effect_refs": [],
-                }
-            ),
-            repair_coverage=_sequenced_graph(repair_updates),
-        ),
-        "assurance.improvement": ImprovementGraphs(
-            archive=_echo_graph({"status": "done"}),
-            retro=_echo_graph(
-                {
-                    "status": "done",
-                    "receipt_refs": [{"receipt_id": "retro", "receipt_digest": _PUBLIC_DIGEST}],
-                }
-            ),
-            review=_echo_graph({"status": "done"}),
-            evaluate=_echo_graph({"status": "done"}),
-            export=_echo_graph({"status": "done"}),
-            apply=_echo_graph(
-                {
-                    "status": "done",
-                    "receipt_refs": [{"receipt_id": "apply", "receipt_digest": _PUBLIC_DIGEST}],
-                }
-            ),
-            rollback=_echo_graph({"status": "done"}),
-        ),
-    }
 
 
 @dataclass
@@ -543,28 +292,6 @@ def _synthesize_loop_trace(
         task_capabilities=tuple(capabilities),
         projection=cast(InvocationProjection, projection),
     )
-
-
-def _loop_input(
-    *,
-    healing_rounds: int,
-    coverage_rounds: int = 1,
-    entrypoint: str = "execute",
-) -> dict[str, object]:
-    from assurance_product.models import ProductInputV1
-
-    payload = _product_input(selected_test_families=("api",), coverage_rounds=coverage_rounds)
-    payload["budgets"] = {
-        "review_rounds": 1,
-        "coverage_rounds": coverage_rounds,
-        "healing_rounds": healing_rounds,
-        "execution_retries": 1,
-    }
-    payload["artifacts"] = [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]
-    payload["decision"] = "pass"
-    if entrypoint not in {"full", "intake", "case"}:
-        payload["case_delta_paths"] = ()
-    return ProductInputV1.model_validate(payload).validate_for_entrypoint(entrypoint).model_dump(mode="json")
 
 
 class _ExecutionLoopHost:
