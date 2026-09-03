@@ -72,7 +72,6 @@ __all__ = [
     "GraphStarted",
     "InvocationFinished",
     "InvocationStarted",
-    "Ledger",
     "LedgerPublicationIndeterminate",
     "LegacyEvidenceError",
     "NodeActivated",

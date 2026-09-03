@@ -133,16 +133,16 @@ EXPECTED_FAULT_GATE_NODE_IDS = {
         "packages/adapters/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
     ),
     "stop_interrupt": (
-        "tests/product/test_stop_and_interrupts.py::test_business_stop_is_resumable_only_at_declared_interrupt",
+        "tests/product/test_stop_and_interrupts.py::test_revision_mismatch_rejects_drifted_resume",
         "tests/product/test_stop_and_interrupts.py::test_invalid_resume_input_fails",
-        "tests/product/test_stop_and_interrupts.py::test_healing_disallowed_is_business_stop_not_completion",
-        "tests/product/test_stop_and_interrupts.py::test_nested_stop_does_not_become_normal_completion",
+        "packages/framework/graph-engine/tests/application/test_application_interrupts.py::test_disallowed_human_action_raises_with_actual_value",
+        "tests/product/test_stop_and_interrupts.py::test_interrupt_runtime_lives_under_the_change_without_tree_store",
     ),
     "coverage_healing": (
-        "tests/product/test_coverage_loop.py::test_low_coverage_reenters_generation_until_policy_passes",
-        "tests/product/test_coverage_loop.py::test_coverage_repair_exhaustion_stops_with_a_report",
-        "tests/product/test_issue_healing_flow.py::test_issue_path_runs_analysis_and_fix_before_rerun",
-        "tests/product/test_issue_healing_flow.py::test_product_issue_never_runs_the_healing_chain",
+        "packages/capabilities/assurance-quality/tests/test_coverage.py::test_minimum_coverage_join_and_repair_need",
+        "packages/capabilities/assurance-quality/tests/test_coverage.py::test_coverage_gap_converts_to_healing_repair_brief",
+        "packages/capabilities/assurance-healing/tests/test_graph_routes.py::test_coverage_admit_routes_eligible_exhausted_and_not_eligible",
+        "packages/capabilities/assurance-healing/tests/test_graph_routes.py::test_failure_admit_routes_eligible_exhausted_and_not_eligible",
     ),
 }
 

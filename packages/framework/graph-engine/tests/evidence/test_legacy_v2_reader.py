@@ -85,9 +85,11 @@ def test_reader_module_exposes_no_append_or_scheduler_api() -> None:
     assert assigns
     names = {elt.value for assign in assigns for elt in assign.value.elts}  # type: ignore[union-attr]
     assert names.isdisjoint(_FORBIDDEN_NAMES)
+    assert "Ledger" not in names
     assert "authenticate_invocation_lock_v2" in names
     assert "read_legacy_ledger" in names
     assert "fold_legacy_events" in names
+    assert "LedgerPublicationIndeterminate" in names
 
 
 def test_golden_lock_authenticates_byte_exact_against_original() -> None:
