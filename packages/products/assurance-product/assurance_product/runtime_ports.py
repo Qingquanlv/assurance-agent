@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import pickle
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, cast
 
 from graph_engine.application.runtime_context import AssuranceRuntimeContext
@@ -16,14 +14,12 @@ from graph_engine.boot.graph_revision import BootArtifact
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 from graph_engine.persistence.checkpoint_observer import CheckpointAnchorObserverPort
 from graph_engine.composition import FrozenComposition
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.journal import (
     CheckpointAnchor,
     CheckpointAnchorState,
     CheckpointIntegrityError,
     InvocationStarted,
 )
-from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import (
     PreparedWorkspaceRef,
     PromotionReceipt,
@@ -34,7 +30,9 @@ from graph_engine.plugin_api import (
 
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.product import product_graph_manifest, product_lock_from_composition
+from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend, open_sqlite_checkpointer
+from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
 
 
 class ProductionObserverError(ValueError):
@@ -159,28 +157,6 @@ class _UnusedWorkspace:
         raise RuntimeError("workspace adapter is unused for this operation")
 
 
-class DurableAttemptJournal(MemoryAttemptJournal):
-    def __init__(self, path: Path) -> None:
-        super().__init__()
-        self._path = path
-        if path.exists() and path.is_file() and not path.is_symlink():
-            loaded = pickle.loads(path.read_bytes())
-            self._logs, self._durable = loaded
-
-    async def append_record(self, record, *, expected_revision: int, fencing_token: int):  # type: ignore[no-untyped-def]
-        snapshot = await super().append_record(
-            record, expected_revision=expected_revision, fencing_token=fencing_token
-        )
-        self._path.parent.mkdir(mode=0o700, exist_ok=True)
-        self._path.write_bytes(pickle.dumps((self._logs, self._durable)))
-        return snapshot
-
-    async def ensure_durable(self, attempt_key) -> None:  # type: ignore[no-untyped-def]
-        await super().ensure_durable(attempt_key)
-        self._path.parent.mkdir(mode=0o700, exist_ok=True)
-        self._path.write_bytes(pickle.dumps((self._logs, self._durable)))
-
-
 class ProductRuntimePorts:
     test_kernel_resolutions: list[object] | None = None
     _last_scripted_committed: object | None = None
@@ -194,7 +170,7 @@ class ProductRuntimePorts:
         workspace: ChangeWorkspace,
         composition: object,
         backend: AssuranceSqliteBackend,
-        journal: DurableAttemptJournal,
+        journal: SqliteAttemptJournal,
         observer: AttemptCheckpointObserver,
         kernel: AssuranceAttemptKernel,
         product_lock_digest: str,
@@ -222,16 +198,19 @@ class ProductRuntimePorts:
     ) -> AsyncIterator[ProductRuntimePorts]:
         product_lock = product_lock_from_composition(composition)  # type: ignore[arg-type]
         manifest = product_graph_manifest(composition, product_lock)  # type: ignore[arg-type]
-        journal = DurableAttemptJournal(workspace.paths.langgraph_leases / "attempts.pkl")
-        observer = AttemptCheckpointObserver(journal)
-        if observers is not None:
-            if not observers or any(not isinstance(item, AttemptCheckpointObserver) for item in observers):
-                raise ProductionObserverError("production observer registry cannot be fake-only or empty")
-            registered = cast(tuple[CheckpointAnchorObserverPort, ...], tuple(observers))
-        else:
-            registered = (observer,)
-        observer_ports: Sequence[CheckpointAnchorObserverPort] = registered
-        async with open_sqlite_checkpointer(workspace, observers=observer_ports) as backend:
+        async with open_sqlite_checkpointer(workspace) as backend:
+            journal = SqliteAttemptJournal(backend)
+            observer = AttemptCheckpointObserver(journal)
+            if observers is not None:
+                if not observers or any(
+                    not isinstance(item, AttemptCheckpointObserver) for item in observers
+                ):
+                    raise ProductionObserverError("production observer registry cannot be fake-only or empty")
+                registered = cast(tuple[CheckpointAnchorObserverPort, ...], tuple(observers))
+            else:
+                registered = (observer,)
+            backend.install_observers(registered)
+            backend.seal_observers()
             allow = getattr(backend.serializer, "with_msgpack_allowlist", None)
             if callable(allow):
                 backend.serializer = allow(
@@ -239,7 +218,7 @@ class ProductRuntimePorts:
                 )
             kernel = AssuranceAttemptKernel(
                 journal=journal,
-                arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
+                arbiter=ResourceArbiter(SqliteResourceAuthorizationStore(backend)),
                 workspace=_UnusedWorkspace(),
                 graph_revision=manifest.revision.revision_id,
             )
@@ -277,7 +256,7 @@ class ProductRuntimePorts:
             finally:
                 ports._close_log.append("observer_outbox_recovery")
                 await backend.recover_handshake("")
-                ports._publish_journal_snapshot()
+                await ports._publish_journal_snapshot()
                 ports._close_log.extend(("kernel", "attempt_journal", "sqlite"))
 
     def shutdown_order(self) -> tuple[str, ...]:
@@ -390,20 +369,18 @@ class ProductRuntimePorts:
         self.observer_registered_before_compile = True
         return artifact
 
-    def _publish_journal_snapshot(self) -> None:
+    async def _publish_journal_snapshot(self) -> None:
         from graph_engine.attempts.events import SystemInterruptIssued
 
         events: list[object] = []
         replayed: list[int] = []
-        for digest, records in self.attempt_journal._logs.items():
-            for record in records:
-                events.extend(record.events)
-                replayed.extend(
-                    getattr(event, "ordinal", 0)
-                    for event in record.events
-                    if type(event).__name__ == "SystemInterruptCompletionCheckpointed"
-                )
-            del digest
+        for record in await self.attempt_journal.read_records():
+            events.extend(record.events)
+            replayed.extend(
+                getattr(event, "ordinal", 0)
+                for event in record.events
+                if type(event).__name__ == "SystemInterruptCompletionCheckpointed"
+            )
         issued = [event for event in events if isinstance(event, SystemInterruptIssued)]
         completed = {
             getattr(event, "generation", None)

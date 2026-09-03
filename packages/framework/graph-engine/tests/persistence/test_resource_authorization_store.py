@@ -8,11 +8,13 @@ from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resource_arbiter import ResourceArbiter, ResourceAuthorization
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.resource_authorization import (
+    RESOURCE_AUTHORIZATION_SCHEMA_VERSION,
     MemoryResourceAuthorizationStore,
     ResourceAuthorizationAction,
     ResourceAuthorizationIntegrityError,
     ResourceAuthorizationRecord,
     ResourceAuthorizationStorePort,
+    decode_resource_authorization_record,
 )
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import ResourceClaims
@@ -76,6 +78,38 @@ def test_authorization_record_digest_is_canonical_projection() -> None:
     )
     drifted = _record(revision=0, action="acquire", fencing_token=5)
     assert drifted.record_digest != record.record_digest
+
+
+def test_current_schema_version_is_explicit() -> None:
+    assert RESOURCE_AUTHORIZATION_SCHEMA_VERSION == "1"
+
+
+def test_decode_authorization_record_rejects_unknown_schema_and_digest() -> None:
+    record = _record(revision=0, action="acquire", fencing_token=4)
+    decoded = decode_resource_authorization_record(
+        record.canonical_projection(),
+        schema_version=RESOURCE_AUTHORIZATION_SCHEMA_VERSION,
+        record_digest=record.record_digest,
+    )
+    assert decoded == record
+    with pytest.raises(ResourceAuthorizationIntegrityError, match="schema"):
+        decode_resource_authorization_record(
+            record.canonical_projection(),
+            schema_version="0",
+            record_digest=record.record_digest,
+        )
+    with pytest.raises(ResourceAuthorizationIntegrityError, match="digest"):
+        decode_resource_authorization_record(
+            record.canonical_projection(),
+            schema_version=RESOURCE_AUTHORIZATION_SCHEMA_VERSION,
+            record_digest=canonical_digest({"tampered": True}),
+        )
+    with pytest.raises(ResourceAuthorizationIntegrityError, match="field"):
+        decode_resource_authorization_record(
+            {**record.canonical_projection(), "legacy": True},
+            schema_version=RESOURCE_AUTHORIZATION_SCHEMA_VERSION,
+            record_digest=record.record_digest,
+        )
 
 
 async def test_identical_cas_append_is_idempotent() -> None:

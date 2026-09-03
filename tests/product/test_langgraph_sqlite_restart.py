@@ -111,6 +111,7 @@ async def _process_reopen_resumes_same_invocation_without_duplicating_prepare(tm
         )
         await first.journal.start_invocation(started, fencing_token=1)
         await first.remember_entrypoint("inv-1", "execute")
+        first.seal_observers()
         saver = first.checkpointer(started.anchor_state())
         artifact = _artifact(_graph(saver))
         application = AssuranceApplication(lease=first.lease, owner_id="runner-a")
@@ -138,6 +139,7 @@ async def _process_reopen_resumes_same_invocation_without_duplicating_prepare(tm
         assert recovered is not None
         assert recovered.thread_id == recovered.invocation_id == "inv-1"
         assert await second.read_entrypoint("inv-1") == "execute"
+        second.seal_observers()
         saver = second.checkpointer(recovered.anchor_state())
         await saver.arecover(thread_id="inv-1")
         artifact = _artifact(_graph(saver))
@@ -221,6 +223,7 @@ async def _second_application_start_cannot_rewrite_lock_input_revision_or_entryp
             fencing_token=1,
         )
         await backend.pin_start(started, "execute", fencing_token=1)
+        backend.seal_observers()
         saver = backend.checkpointer(started.anchor_state())
         artifact = _multi_artifact(_idle_graph(saver), _idle_graph(saver), revision=revision)
         application = AssuranceApplication(

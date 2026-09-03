@@ -657,7 +657,7 @@ class AssuranceProductApplication:
                 runtime_context=_context(ports, artifact),
             )
             snapshot = await _graph_snapshot(artifact, record.entrypoint, invocation_id)
-            ports._publish_journal_snapshot()
+            await ports._publish_journal_snapshot()
             return result.status, snapshot, ProductRuntimePorts.last_journal_events()
 
     async def _pending_interrupt_ids(

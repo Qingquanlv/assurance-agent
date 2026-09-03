@@ -142,6 +142,7 @@ async def _reopen_completes_matching_pair_after_checkpoint_outbox(tmp_path: Path
         assert recovered.root_input_digest == INPUT
         assert recovered.graph_revision == REVISION
         assert await second.read_entrypoint("inv-1") == "execute"
+        second.seal_observers()
         saver = second.checkpointer(recovered.anchor_state())
         await saver.arecover(thread_id="inv-1")
         loaded = await saver.aget_tuple(_config())
@@ -166,6 +167,7 @@ async def _reopen_fails_closed_after_invocation_started_without_checkpoint(tmp_p
         assert recovered is not None
         assert recovered == _started()
         assert await second.read_entrypoint("inv-1") == "execute"
+        second.seal_observers()
         saver = second.checkpointer(recovered.anchor_state())
         await saver.arecover(thread_id="inv-1")
         assert await saver.aget_tuple(_config()) is None
@@ -261,6 +263,7 @@ async def _lease_acquire_before_arecover_does_not_abandon_initial_handshake(tmp_
         recovered = await second.recover_handshake("inv-1")
         assert recovered is not None
         lease = await second.lease.acquire("inv-1", owner_id="runner-b")
+        second.seal_observers()
         saver = second.checkpointer(recovered.anchor_state())
         await saver.arecover(thread_id="inv-1")
         loaded = await saver.aget_tuple(_config())
@@ -294,6 +297,7 @@ async def _held_lease_then_recover_does_not_abandon_unanchored_initial_outbox(tm
         lease = await second.lease.acquire("inv-1", owner_id="runner-b")
         recovered = await second.recover_handshake("inv-1")
         assert recovered is not None
+        second.seal_observers()
         saver = second.checkpointer(recovered.anchor_state())
         await saver.arecover(thread_id="inv-1")
         loaded = await saver.aget_tuple(_config())

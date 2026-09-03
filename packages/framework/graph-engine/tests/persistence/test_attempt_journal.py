@@ -27,10 +27,13 @@ from graph_engine.attempts.events import (
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_journal import (
+    ATTEMPT_JOURNAL_SCHEMA_VERSION,
     AttemptJournalIntegrityError,
     AttemptJournalPort,
     AttemptJournalRecord,
     MemoryAttemptJournal,
+    decode_attempt_event,
+    decode_attempt_journal_record,
 )
 from graph_engine.persistence.runner_lease import StaleFencingToken
 
@@ -296,3 +299,48 @@ def test_journal_record_digest_is_canonical_projection() -> None:
         events=(_opened(),),
     )
     assert drifted.record_digest != record.record_digest
+
+
+def test_current_schema_version_is_explicit() -> None:
+    assert ATTEMPT_JOURNAL_SCHEMA_VERSION == "1"
+
+
+def test_decode_attempt_event_rejects_unknown_kind_and_fields() -> None:
+    event = decode_attempt_event(_opened().canonical_projection())
+    assert event == _opened()
+    with pytest.raises(AttemptJournalIntegrityError, match="kind"):
+        decode_attempt_event({"kind": "legacy_opened", "contract_digest": _digest("c")})
+    with pytest.raises(AttemptJournalIntegrityError, match="field"):
+        decode_attempt_event({**_opened().canonical_projection(), "legacy": True})
+    omitted = dict(_opened().canonical_projection())
+    del omitted["invocation_id"]
+    with pytest.raises(AttemptJournalIntegrityError, match="omitted"):
+        decode_attempt_event(omitted)
+
+
+def test_decode_attempt_journal_record_rejects_unknown_schema() -> None:
+    key = _attempt_key()
+    record = AttemptJournalRecord.build(
+        revision=0,
+        attempt_key=key,
+        fencing_token=4,
+        events=(_opened(),),
+    )
+    decoded = decode_attempt_journal_record(
+        record.canonical_projection(),
+        schema_version=ATTEMPT_JOURNAL_SCHEMA_VERSION,
+        record_digest=record.record_digest,
+    )
+    assert decoded == record
+    with pytest.raises(AttemptJournalIntegrityError, match="schema"):
+        decode_attempt_journal_record(
+            record.canonical_projection(),
+            schema_version="0",
+            record_digest=record.record_digest,
+        )
+    with pytest.raises(AttemptJournalIntegrityError, match="digest"):
+        decode_attempt_journal_record(
+            record.canonical_projection(),
+            schema_version=ATTEMPT_JOURNAL_SCHEMA_VERSION,
+            record_digest=_digest("tampered"),
+        )
