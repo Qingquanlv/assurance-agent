@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from pydantic import ValidationError
@@ -14,10 +14,12 @@ from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_b
 from assurance_healing.contracts import (
     CoverageRepairBrief,
     FixProposal,
+    HealApplyIntentV2,
     HealApplyReceiptV2,
     HealingAllocationIntentV2,
     HealingOverrideTokenV1,
     HealingStatusV1,
+    ProposalApprovedIntentV1,
     ProposalApprovedReceiptV1,
     SafetyCheck,
     TestChangePolicyV1,
@@ -240,6 +242,44 @@ def test_healing_product_lock_schema_mapping_is_current_only() -> None:
     assert _installed_schema_mapping() == _CURRENT_HEALING_SCHEMA_MAPPING
 
 
+def test_exclusive_document_versions_are_locked_on_models() -> None:
+    # SchemaContribution has no per-schema version field; exclusive document
+    # versions live on the Pydantic models themselves.
+    assert HealApplyIntentV2.model_fields["schema_version"].annotation == Literal["2"]
+    assert HealApplyReceiptV2.model_fields["schema_version"].annotation == Literal["2"]
+    assert ProposalApprovedIntentV1.model_fields["schema_version"].annotation == Literal["1"]
+    assert ProposalApprovedReceiptV1.model_fields["schema_version"].annotation == Literal["1"]
+    assert HealingAllocationIntentV2.model_fields["schema_version"].annotation == Literal["2"]
+
+
+def current_proposal_approved_event(*, seq: int = 1) -> dict[str, object]:
+    return {
+        "type": "fixer_proposal_approved",
+        "seq": seq,
+        "schema_version": "1",
+        "approval_id": "apr-1",
+        "change_id": "CH-DEMO-001",
+        "owner_id": "assurance.healing",
+        "root_invocation_id": "inv-1",
+        "interrupt_task_id": "task-1",
+        "source_gate_attempt_id": "gate-1",
+        "source_tree_id": "tree-src",
+        "target_tree_id": "tree-dst",
+        "proposal_digest": _HEX_A,
+        "fixer_authority_digest": _HEX_B,
+        "candidate_digest": _HEX_C,
+        "baseline_digest": _HEX_D,
+        "policy_digest": _HEX_E,
+        "targets": ["api"],
+        "paths": ["tests/api/test_users.py"],
+        "action": "approve_and_apply",
+    }
+
+
+def current_heal_apply_event(*, seq: int = 2) -> dict[str, object]:
+    return {"type": "heal_record_apply_v2", "seq": seq, **valid_heal_apply_receipt()}
+
+
 @pytest.mark.parametrize(
     "event_type",
     ["healing_attempt_allocated", "healing_entry_baseline_pinned", "heal_record_apply"],
@@ -282,13 +322,72 @@ def test_episode_rejects_former_approval_field_aliases() -> None:
                     "type": "fixer_proposal_approved",
                     "seq": 1,
                     "approval_id": "apr-1",
-                    "proposal_digest": _HEX_A,
-                    "fixer_authority_digest": _HEX_B,
-                    "baseline_digest": _HEX_C,
-                    "policy_digest": _HEX_D,
+                    "proposal_sha256": f"sha256:{_HEX_A}",
+                    "fixer_authority_sha256": f"sha256:{_HEX_B}",
+                    "entry_baseline_sha256": f"sha256:{_HEX_C}",
+                    "policy_sha256": f"sha256:{_HEX_D}",
                 }
             ]
         )
+
+
+def test_episode_rejects_former_apply_field_aliases() -> None:
+    with pytest.raises(ValueError, match="current schema"):
+        project_episode(
+            [
+                {
+                    "type": "heal_record_apply_v2",
+                    "seq": 2,
+                    "record_key": "heal-apply-CH-DEMO-001-api",
+                    "attempt_key": "legacy-key",
+                    "safety_payload_sha256": _HEX_E,
+                    "files_modified": ["tests/api/test_users.py"],
+                }
+            ]
+        )
+
+
+def test_episode_projects_current_proposal_approved_document() -> None:
+    event = current_proposal_approved_event()
+    document = {key: value for key, value in event.items() if key not in {"type", "seq"}}
+    ProposalApprovedIntentV1.model_validate(document)
+    projection = project_episode([event])
+    dumped = json.dumps(projection)
+    assert "legacy:" not in dumped
+    assert '"form": "legacy"' not in dumped
+    approvals = projection["approvals"]
+    assert isinstance(approvals, list) and len(approvals) == 1
+    approval = approvals[0]
+    assert isinstance(approval, dict)
+    assert approval["approval_id"] == "apr-1"
+    assert approval["proposal_digest"] == _HEX_A
+    assert approval["fixer_authority_digest"] == _HEX_B
+    assert approval["baseline_digest"] == _HEX_D
+    assert approval["policy_digest"] == _HEX_E
+    assert approval["targets"] == ["api"]
+    assert approval["paths"] == ["tests/api/test_users.py"]
+    assert approval.get("form") != "legacy"
+
+
+def test_episode_projects_current_heal_apply_document() -> None:
+    event = current_heal_apply_event()
+    document = {key: value for key, value in event.items() if key not in {"type", "seq"}}
+    HealApplyReceiptV2.model_validate(document)
+    projection = project_episode([event])
+    dumped = json.dumps(projection)
+    assert "legacy:" not in dumped
+    assert '"form": "legacy"' not in dumped
+    records = projection["records"]
+    assert isinstance(records, list) and len(records) == 1
+    record = records[0]
+    assert isinstance(record, dict)
+    assert record["record_key"] == document["record_key"]
+    assert record["safety_payload_digest"] == _HEX_E
+    assert record["intent_digest"] == document["intent_digest"]
+    assert record["write_set_id"] == "ws-1"
+    assert record["claimed_modified_paths"] == ["tests/api/test_users.py"]
+    assert record["form"] == "v2"
+    assert record.get("form") != "legacy"
 
 
 def test_override_token_is_bound_to_policy_and_candidate() -> None:

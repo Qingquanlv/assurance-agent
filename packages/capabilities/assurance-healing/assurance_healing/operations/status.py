@@ -179,13 +179,13 @@ _CURRENT_EVENT_KINDS = frozenset(
 )
 _FORMER_APPROVAL_FIELDS = frozenset(
     {
-        "proposal_digest",
-        "fixer_authority_digest",
-        "baseline_digest",
-        "policy_digest",
+        "proposal_sha256",
+        "fixer_authority_sha256",
+        "entry_baseline_sha256",
+        "policy_sha256",
     }
 )
-_FORMER_APPLY_FIELDS = frozenset({"attempt_key", "safety_payload_digest", "files_modified"})
+_FORMER_APPLY_FIELDS = frozenset({"attempt_key", "safety_payload_sha256", "files_modified"})
 
 
 def _require_current_event(event: Mapping[str, Any]) -> str:
@@ -234,10 +234,10 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "interrupt_task_id": event.get("interrupt_task_id"),
                     "source_gate_attempt_id": event.get("source_gate_attempt_id"),
                     "source_tree_id": event.get("source_tree_id"),
-                    "proposal_sha256": event.get("proposal_sha256"),
-                    "fixer_authority_sha256": event.get("fixer_authority_sha256"),
-                    "entry_baseline_sha256": event.get("entry_baseline_sha256"),
-                    "policy_sha256": event.get("policy_sha256"),
+                    "proposal_digest": event.get("proposal_digest"),
+                    "fixer_authority_digest": event.get("fixer_authority_digest"),
+                    "baseline_digest": event.get("baseline_digest"),
+                    "policy_digest": event.get("policy_digest"),
                     "targets": list(_as_tuple(event.get("targets"))),
                     "paths": list(_as_tuple(event.get("paths"))),
                     "target_tree_id": event.get("target_tree_id"),
@@ -257,9 +257,9 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "outcome": event.get("outcome"),
                     "proposal_ids": list(_as_tuple(event.get("proposal_ids"))),
                     "claimed_modified_paths": list(claimed),
-                    "intent_sha256": event.get("intent_sha256"),
+                    "intent_digest": event.get("intent_digest"),
                     "write_set_id": event.get("write_set_id"),
-                    "safety_payload_sha256": event.get("safety_payload_sha256"),
+                    "safety_payload_digest": event.get("safety_payload_digest"),
                     "files_modified": list(claimed),
                     "source_seq": _event_seq(event),
                     "form": "v2",

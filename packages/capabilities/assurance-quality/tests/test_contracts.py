@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 from pydantic import ValidationError
@@ -30,10 +30,12 @@ from assurance_quality.contracts import (
     QualityReport,
     QuarantineProjection,
     SufficiencyReportV2,
+    TraceProjectionDocument,
     TraceProjectionV2,
     TraceSufficiencyFacts,
 )
 from assurance_quality.contracts.issue_events import CHANGE_ISSUE_EVENT_ADAPTER
+from assurance_quality.contracts.issues import IssueReconcileStatusDocument, IssueReconcileStatusV2
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.plugin import QualityPlugin
 
@@ -293,6 +295,16 @@ def _installed_schema_mapping() -> dict[str, tuple[str, str]]:
 
 def test_quality_product_lock_schema_mapping_is_current_only() -> None:
     assert _installed_schema_mapping() == _CURRENT_QUALITY_SCHEMA_MAPPING
+
+
+def test_exclusive_document_versions_are_locked_on_models() -> None:
+    # SchemaContribution has no per-schema version field; exclusive document
+    # versions live on the Pydantic models themselves.
+    assert TraceProjectionV2.model_fields["schema_version"].annotation == Literal["2"]
+    assert TraceProjectionDocument.model_fields["root"].annotation is TraceProjectionV2
+    assert IssueReconcileStatusV2.model_fields["schema_version"].annotation == Literal["2.0"]
+    assert IssueReconcileStatusDocument.model_fields["root"].annotation is IssueReconcileStatusV2
+    assert QualityReport.model_fields["schema_version"].annotation == Literal["1.1"]
 
 
 def test_quality_descriptor_declares_exact_dependency_order() -> None:
