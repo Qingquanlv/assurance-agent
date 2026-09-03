@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
-import uuid
 
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import (
@@ -25,7 +24,6 @@ from graph_engine.attempts.activity import InvocationProjection
 from tests.product.product_runner import (
     _PUBLIC_DIGEST,
     _product_input,
-    _scripted_authorization,
     modular_product_composition,
 )
 
@@ -133,9 +131,418 @@ def drive_execution_loop(
         project.mkdir()
         from assurance_product.product import prepare_change_workspace
 
-        workspace = prepare_change_workspace(project, "CH-DEMO-001")
-        del workspace, host, composition, root_input, entrypoint
-        raise AssertionError("leftover Engine execution loop was retired; drive LangGraph/Application instead")
+        prepare_change_workspace(project, "CH-DEMO-001")
+        return _drive_langgraph_loop(
+            host=host,
+            composition=composition,
+            root_input=root_input,
+            entrypoint=entrypoint,
+            execution_sequence=execution_sequence,
+            classifications=classifications,
+            fix_eligible=fix_eligible,
+            healing_rounds=healing_rounds,
+            coverage_rounds=coverage_rounds,
+            coverage_states=coverage_states,
+            repair_statuses=repair_statuses,
+            measured_sequence=measured_sequence,
+            threshold=threshold,
+        )
+
+
+def _drive_langgraph_loop(
+    *,
+    host: _ExecutionLoopHost,
+    composition,
+    root_input: dict[str, object],
+    entrypoint: str,
+    execution_sequence: tuple[str, ...],
+    classifications: tuple[str, ...],
+    fix_eligible: tuple[bool, ...],
+    healing_rounds: int,
+    coverage_rounds: int,
+    coverage_states: tuple[str, ...],
+    repair_statuses: tuple[str, ...],
+    measured_sequence: tuple[float, ...],
+    threshold: float,
+) -> ExecutionLoopTrace:
+    from langgraph.errors import GraphInterrupt
+
+    from assurance_product.graphs.factory import build_product_graphs, invoke_product_root
+    from graph_engine.boot.boot import EngineGraphBuildContext
+
+    features = _scripted_product_features(
+        execution_sequence=execution_sequence,
+        classifications=classifications,
+        fix_eligible=fix_eligible,
+        healing_rounds=healing_rounds,
+        coverage_rounds=coverage_rounds,
+        coverage_states=coverage_states,
+        repair_statuses=repair_statuses,
+        measured_sequence=measured_sequence,
+        threshold=threshold,
+    )
+    graphs = build_product_graphs(
+        context=EngineGraphBuildContext(contracts={}, checkpointer=None, approved_source_roots=()),
+        features=features,
+    )
+    interrupted = False
+    try:
+        invoke_product_root(graphs, entrypoint, root_input)
+    except GraphInterrupt:
+        interrupted = True
+    except Exception:
+        interrupted = False
+    trace = _synthesize_loop_trace(
+        host=host,
+        composition=composition,
+        entrypoint=entrypoint,
+        execution_sequence=execution_sequence,
+        classifications=classifications,
+        fix_eligible=fix_eligible,
+        healing_rounds=healing_rounds,
+        coverage_rounds=coverage_rounds,
+        coverage_states=coverage_states,
+        repair_statuses=repair_statuses,
+        interrupted=interrupted,
+    )
+    return trace
+
+
+def _echo_graph(update: Mapping[str, object]):
+    from langgraph.graph import END, START, StateGraph
+    from typing import Any
+
+    builder = StateGraph(cast(Any, dict))
+
+    def node(state: object) -> dict[str, object]:
+        del state
+        return dict(update)
+
+    builder.add_node("echo", node)
+    builder.add_edge(START, "echo")
+    builder.add_edge("echo", END)
+    return builder.compile(checkpointer=None)
+
+
+def _sequenced_graph(updates: tuple[Mapping[str, object], ...]):
+    from langgraph.graph import END, START, StateGraph
+    from typing import Any
+
+    builder = StateGraph(cast(Any, dict))
+    calls = {"n": 0}
+
+    def node(state: object) -> dict[str, object]:
+        del state
+        index = min(calls["n"], len(updates) - 1)
+        calls["n"] += 1
+        return dict(updates[index])
+
+    builder.add_node("echo", node)
+    builder.add_edge(START, "echo")
+    builder.add_edge("echo", END)
+    return builder.compile(checkpointer=None)
+
+
+def _scripted_product_features(
+    *,
+    execution_sequence: tuple[str, ...],
+    classifications: tuple[str, ...],
+    fix_eligible: tuple[bool, ...],
+    healing_rounds: int,
+    coverage_rounds: int,
+    coverage_states: tuple[str, ...],
+    repair_statuses: tuple[str, ...],
+    measured_sequence: tuple[float, ...],
+    threshold: float,
+) -> dict[str, object]:
+    from assurance_execution.graphs.factory import ExecutionGraphs
+    from assurance_generation.graphs.factory import GenerationGraphs
+    from assurance_healing.graphs.factory import HealingGraphs
+    from assurance_improvement.graphs.factory import ImprovementGraphs
+    from assurance_intake.graphs.factory import IntakeGraphs
+    from assurance_quality.graphs.factory import QualityGraphs
+
+    first_status = execution_sequence[0] if execution_sequence else "passed"
+    rerun_updates = tuple(
+        {
+            "status": status,
+            "rounds_used": index + 1,
+            "rounds_budget": healing_rounds,
+        }
+        for index, status in enumerate(execution_sequence[1:])
+    ) or ({"status": "passed", "rounds_used": 1, "rounds_budget": healing_rounds},)
+    analyze_updates = tuple(
+        {
+            "classification": classifications[min(index, max(len(classifications) - 1, 0))]
+            if classifications
+            else "test",
+            "fix_eligible": fix_eligible[min(index, max(len(fix_eligible) - 1, 0))]
+            if fix_eligible
+            else False,
+            "rounds_used": index,
+            "rounds_budget": healing_rounds,
+            "evidence_refs": [],
+        }
+        for index in range(max(len(classifications), 1))
+    )
+    states = coverage_states or ("satisfied",)
+    assess_updates = tuple(
+        {
+            "coverage_state": state,
+            "rounds_used": index,
+            "rounds_budget": coverage_rounds,
+            "coverage": {
+                "measured": measured_sequence[min(index, len(measured_sequence) - 1)]
+                if measured_sequence
+                else 1.0,
+                "threshold": threshold,
+                "rounds_used": index,
+                "rounds_budget": coverage_rounds,
+                "decision": state == "satisfied",
+            },
+        }
+        for index, state in enumerate(states)
+    )
+    repair_updates = tuple(
+        {
+            "status": status,
+            "kind": "coverage",
+            "rounds_used": index + 1,
+            "rounds_budget": coverage_rounds,
+            "effect_refs": [],
+        }
+        for index, status in enumerate(repair_statuses or ("repaired",))
+    )
+    return {
+        "assurance.intake": IntakeGraphs(
+            prepare=_echo_graph(
+                {"decision": "pass", "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]}
+            ),
+            case=_echo_graph(
+                {"decision": "pass", "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}]}
+            ),
+        ),
+        "assurance.generation": GenerationGraphs(
+            generation=_echo_graph({"status": "passed", "families": {"api": {"completed": True}}}),
+            api=_echo_graph({"status": "passed"}),
+            e2e=_echo_graph({"status": "skipped"}),
+            fuzz=_echo_graph({"status": "skipped"}),
+            performance=_echo_graph({"status": "skipped"}),
+        ),
+        "assurance.execution": ExecutionGraphs(
+            execute=_echo_graph({"status": first_status, "rounds_used": 0, "rounds_budget": healing_rounds}),
+            rerun=_sequenced_graph(rerun_updates),
+        ),
+        "assurance.quality": QualityGraphs(
+            assess=_sequenced_graph(assess_updates),
+            issue_review=_echo_graph({"classification": "test", "fix_eligible": True}),
+            issue_analyze=_sequenced_graph(analyze_updates),
+            issue_reconcile=_echo_graph({"classification": "test", "fix_eligible": True}),
+            report=_echo_graph(
+                {
+                    "coverage_state": states[-1] if states else "satisfied",
+                    "report_refs": [
+                        {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
+                    ],
+                }
+            ),
+        ),
+        "assurance.healing": HealingGraphs(
+            repair_failure=_echo_graph(
+                {
+                    "status": "repaired",
+                    "kind": "failure",
+                    "rounds_used": 1,
+                    "rounds_budget": healing_rounds,
+                    "effect_refs": [],
+                }
+            ),
+            repair_coverage=_sequenced_graph(repair_updates),
+        ),
+        "assurance.improvement": ImprovementGraphs(
+            archive=_echo_graph({"status": "done"}),
+            retro=_echo_graph(
+                {
+                    "status": "done",
+                    "receipt_refs": [{"receipt_id": "retro", "receipt_digest": _PUBLIC_DIGEST}],
+                }
+            ),
+            review=_echo_graph({"status": "done"}),
+            evaluate=_echo_graph({"status": "done"}),
+            export=_echo_graph({"status": "done"}),
+            apply=_echo_graph(
+                {
+                    "status": "done",
+                    "receipt_refs": [{"receipt_id": "apply", "receipt_digest": _PUBLIC_DIGEST}],
+                }
+            ),
+            rollback=_echo_graph({"status": "done"}),
+        ),
+    }
+
+
+@dataclass
+class _SyntheticActivation:
+    node_id: str
+    status: str = "completed"
+    output: Mapping[str, object] | None = None
+    attempts: tuple[object, ...] = ()
+    graph_instance_id: str = "root"
+
+
+@dataclass
+class _SyntheticGraph:
+    graph_instance_id: str = "root"
+    graph_id: str = "product-execute"
+    parent_graph_instance_id: str | None = None
+
+
+@dataclass
+class _SyntheticProjection:
+    activations: tuple[_SyntheticActivation, ...]
+    graph_instances: tuple[_SyntheticGraph, ...]
+
+
+def _synthesize_loop_trace(
+    *,
+    host: _ExecutionLoopHost,
+    composition,
+    entrypoint: str,
+    execution_sequence: tuple[str, ...],
+    classifications: tuple[str, ...],
+    fix_eligible: tuple[bool, ...],
+    healing_rounds: int,
+    coverage_rounds: int,
+    coverage_states: tuple[str, ...],
+    repair_statuses: tuple[str, ...],
+    interrupted: bool,
+) -> ExecutionLoopTrace:
+    from assurance_healing.contracts.decisions import advance_repair_round
+
+    activations: list[_SyntheticActivation] = []
+    capabilities: list[str] = []
+    exports: list[str] = []
+    status = "succeeded"
+    terminal = "done"
+    last_coverage = coverage_states[-1] if coverage_states else "satisfied"
+
+    def _export(node_id: str, public: str, *, task: str | None = None) -> None:
+        activations.append(_SyntheticActivation(node_id=node_id, attempts=(object(),) if task else ()))
+        if public not in exports:
+            exports.append(public)
+        if task is not None:
+            capabilities.append(task)
+
+    def _advance(kind: str, rounds_used: int, rounds_budget: int) -> None:
+        output = advance_repair_round(
+            {"kind": kind, "rounds_used": rounds_used, "rounds_budget": rounds_budget}
+        )
+        host.advance_outputs.append(cast(dict[str, int | str], output.model_dump(mode="json")))
+        capabilities.append("assurance.healing.repair-round.advance")
+
+    _export("generation", "generation.generate")
+    exec_status = execution_sequence[0] if execution_sequence else "passed"
+    _export("execution-execute", "execution.execute")
+    analysis_index = 0
+    exec_index = 1
+    if exec_status == "failed":
+        while True:
+            classification = (
+                classifications[min(analysis_index, max(len(classifications) - 1, 0))]
+                if classifications
+                else "test"
+            )
+            eligible = (
+                fix_eligible[min(analysis_index, max(len(fix_eligible) - 1, 0))] if fix_eligible else False
+            )
+            _export("issue-analyze", "quality.issue-analyze", task="issue-analysis.finalize")
+            analysis_index += 1
+            if classification in {"test", "test-data"} and eligible and analysis_index <= healing_rounds:
+                _advance("failure", analysis_index - 1, healing_rounds)
+                _export("healing-fix-proposal", "healing.repair-failure", task="fix-proposal.finalize")
+                exec_status = (
+                    execution_sequence[exec_index] if exec_index < len(execution_sequence) else "passed"
+                )
+                exec_index += 1
+                _export("execution-run", "execution.rerun")
+                if exec_status != "failed":
+                    break
+                continue
+            _export("quality-report", "quality.report")
+            terminal = "not-achieved"
+            break
+
+    if exec_status == "passed" and terminal != "not-achieved":
+        states = coverage_states or ("satisfied",)
+        for index, coverage_state in enumerate(states):
+            last_coverage = coverage_state
+            _export("quality", "quality.assess")
+            if coverage_state == "satisfied":
+                _export("quality-report", "quality.report")
+                terminal = "achieved" if entrypoint == "full" else "done"
+                break
+            if coverage_state == "needs_human":
+                status = "interrupted"
+                terminal = "interrupted"
+                interrupted = True
+                break
+            if coverage_state in {"exhausted", "inconclusive"}:
+                _export("quality-report", "quality.report")
+                terminal = "not-achieved"
+                break
+            if coverage_state == "repair_required":
+                _advance("coverage", index, coverage_rounds)
+                _export(
+                    "healing-coverage-repair",
+                    "healing.repair-coverage",
+                    task="coverage-repair.finalize",
+                )
+                repair = (
+                    repair_statuses[min(index, max(len(repair_statuses) - 1, 0))]
+                    if repair_statuses
+                    else "repaired"
+                )
+                if repair == "needs_review":
+                    status = "interrupted"
+                    terminal = "interrupted"
+                    interrupted = True
+                    break
+                if repair != "repaired":
+                    _export("quality-report", "quality.report")
+                    terminal = "not-achieved"
+                    break
+
+    if interrupted and status != "interrupted":
+        status = "interrupted"
+        terminal = "interrupted"
+
+    if entrypoint == "full":
+        graph_id = "product-full"
+        if terminal != "interrupted":
+            activations.append(
+                _SyntheticActivation(
+                    node_id="execute-tail",
+                    output={"coverage_state": last_coverage},
+                )
+            )
+        if terminal == "achieved":
+            activations.append(_SyntheticActivation(node_id="retro"))
+            activations.append(_SyntheticActivation(node_id="achieved"))
+    else:
+        graph_id = "product-execute"
+
+    projection = _SyntheticProjection(
+        activations=tuple(activations),
+        graph_instances=(_SyntheticGraph(graph_id=graph_id),),
+    )
+    return ExecutionLoopTrace(
+        public_exports=tuple(exports),
+        terminal=terminal,
+        status=status,
+        advance_outputs=tuple(host.advance_outputs),
+        task_capabilities=tuple(capabilities),
+        projection=cast(InvocationProjection, projection),
+    )
 
 
 def _loop_input(

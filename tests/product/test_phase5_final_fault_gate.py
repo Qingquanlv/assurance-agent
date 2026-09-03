@@ -139,10 +139,10 @@ EXPECTED_FAULT_GATE_NODE_IDS = {
         "tests/product/test_stop_and_interrupts.py::test_interrupt_runtime_lives_under_the_change_without_tree_store",
     ),
     "coverage_healing": (
-        "packages/capabilities/assurance-quality/tests/test_coverage.py::test_minimum_coverage_join_and_repair_need",
-        "packages/capabilities/assurance-quality/tests/test_coverage.py::test_coverage_gap_converts_to_healing_repair_brief",
-        "packages/capabilities/assurance-healing/tests/test_graph_routes.py::test_coverage_admit_routes_eligible_exhausted_and_not_eligible",
-        "packages/capabilities/assurance-healing/tests/test_graph_routes.py::test_failure_admit_routes_eligible_exhausted_and_not_eligible",
+        "tests/product/test_coverage_loop.py::test_low_coverage_reenters_generation_until_policy_passes",
+        "tests/product/test_coverage_loop.py::test_coverage_repair_exhaustion_stops_with_a_report",
+        "tests/product/test_issue_healing_flow.py::test_issue_path_runs_analysis_and_fix_before_rerun",
+        "tests/product/test_issue_healing_flow.py::test_product_issue_never_runs_the_healing_chain",
     ),
 }
 

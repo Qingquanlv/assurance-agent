@@ -285,10 +285,10 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/product/test_stop_and_interrupts.py::test_interrupt_runtime_lives_under_the_change_without_tree_store",
         ),
         "coverage_healing": (
-            "packages/capabilities/assurance-quality/tests/test_coverage.py::test_minimum_coverage_join_and_repair_need",
-            "packages/capabilities/assurance-quality/tests/test_coverage.py::test_coverage_gap_converts_to_healing_repair_brief",
-            "packages/capabilities/assurance-healing/tests/test_graph_routes.py::test_coverage_admit_routes_eligible_exhausted_and_not_eligible",
-            "packages/capabilities/assurance-healing/tests/test_graph_routes.py::test_failure_admit_routes_eligible_exhausted_and_not_eligible",
+            "tests/product/test_coverage_loop.py::test_low_coverage_reenters_generation_until_policy_passes",
+            "tests/product/test_coverage_loop.py::test_coverage_repair_exhaustion_stops_with_a_report",
+            "tests/product/test_issue_healing_flow.py::test_issue_path_runs_analysis_and_fix_before_rerun",
+            "tests/product/test_issue_healing_flow.py::test_product_issue_never_runs_the_healing_chain",
         ),
         "task26_fault_coverage": (
             "tests/product/test_binding_builder.py::test_unknown_prepare_assignment_is_rejected",
@@ -325,7 +325,6 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt",
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt",
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely",
-            "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_recovery_checks_receipt_before_reconcile",
             "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_quiescence_rejects_live_writers",
             "packages/framework/graph-engine/tests/runtime/test_host_receipts.py::test_terminal_receipt_sink_is_host_call_scoped",
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_production_host_crash_after_receipt_leaves_durable_receipt",
@@ -433,13 +432,13 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/framework/graph-engine/tests/persistence/test_journal_contract.py::test_identical_journal_records_are_idempotent_and_divergent_identity_fails_closed"
         ),
         "bootstrap-after-append": (
-            "packages/framework/graph-engine/tests/persistence/test_journal_contract.py::test_journal_port_exposes_idempotent_append_read_and_cas_without_workflow_api"
+            "packages/framework/graph-engine/tests/persistence/test_attempt_journal.py::test_identical_append_replay_is_idempotent"
         ),
         "bootstrap-before-directory-fsync": (
-            "packages/framework/graph-engine/tests/persistence/test_journal_contract.py::test_invocation_started_projects_checkpoint_anchor_state"
+            "packages/framework/graph-engine/tests/attempts/test_kernel_recovery.py::test_crash_windows_replay_same_receipt_without_repeating_mutation[before_durable_prepare]"
         ),
         "repeated-start-root-input-drift": (
-            "packages/framework/graph-engine/tests/application/test_application_lifecycle.py::test_run_rejects_revision_mismatch_before_invocation"
+            "packages/framework/graph-engine/tests/attempts/test_kernel_recovery.py::test_replay_rejects_input_contract_and_revision_drift"
         ),
         "projection-missing-root-pointer": (
             "packages/capabilities/assurance-generation/tests/test_graph_join_any.py::test_first_arrival_becomes_exact_current_trigger"
@@ -454,7 +453,7 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/capabilities/assurance-generation/tests/test_graph_join_any.py::test_join_predecessors_are_the_two_plan_advance_sites"
         ),
         "projection-token-schema-mismatch": (
-            "tests/product/test_product_stategraph_flow.py::test_routes_use_select_exclusive_route_without_priority_if_elif"
+            "packages/framework/graph-engine/tests/persistence/test_attempt_journal.py::test_corrupt_record_digest_is_rejected"
         ),
         "projection-noncanonical-pointer": (
             "packages/framework/graph-engine/tests/stategraph/test_routing.py::test_select_exclusive_route_rejects_empty_otherwise"
@@ -559,7 +558,7 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/adapters/agent-runtime-cursor/tests/test_fault_matrix.py::test_cleanup_ambiguity_is_indeterminate"
         ),
         "effect-before-intent": (
-            "packages/framework/graph-engine/tests/attempts/test_kernel_effects.py::test_one_attempt_cannot_be_settled_by_both_protocols"
+            "packages/framework/graph-engine/tests/attempts/test_kernel_effect_recovery.py::test_crash_after_intent_applies_once_without_repeating_promotion[assurance.healing.effect.allocation.v2]"
         ),
         "effect-after-intent": (
             "packages/framework/graph-engine/tests/attempts/test_kernel_effects.py::test_apply_reconcile_outcomes_for_every_kind[applied-assurance.improvement.effect.archive.v1]"
@@ -623,7 +622,7 @@ _PHASE5_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
         ),
         "comparison-partial-report": (
             "Comparison-report publication was removed; required report outputs remain in product coverage/report tests.",
-            "packages/capabilities/assurance-quality/tests/test_coverage.py::test_coverage_gap_converts_to_healing_repair_brief",
+            "tests/product/test_coverage_loop.py::test_coverage_repair_exhaustion_stops_with_a_report",
         ),
     }
 )

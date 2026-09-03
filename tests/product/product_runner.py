@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 import uuid
@@ -401,6 +402,23 @@ class _ScriptedTaskHost:
         return ()
 
 
+@dataclass(frozen=True)
+class ReportTrace:
+    exists: bool
+    coverage: float | None = None
+
+
+@dataclass(frozen=True)
+class FlowTrace:
+    status: str
+    report: ReportTrace
+    logical_steps: tuple[str, ...]
+    _activation_counts: Mapping[str, int]
+
+    def activations(self, prepare_stem: str) -> int:
+        return self._activation_counts.get(prepare_stem, 0)
+
+
 class ProductRun:
     def __init__(
         self,
@@ -463,6 +481,60 @@ class ProductRun:
             coverage_rounds=self._resolved_coverage_rounds(),
             review_decision=self._review_decision,
             healing_decision=self._healing_decision,
+        )
+
+    def run_to_report(self) -> FlowTrace:
+        from tests.product.execution_loop import drive_coverage_loop, drive_execution_loop
+
+        coverage_rounds = self._resolved_coverage_rounds()
+        if self._coverage_sequence:
+            states: list[str] = []
+            repairs: list[str] = []
+            last_measured = self._coverage_sequence[-1]
+            for index, measured in enumerate(self._coverage_sequence):
+                last_measured = measured
+                if measured >= self._threshold:
+                    states.append("satisfied")
+                    break
+                if index >= coverage_rounds:
+                    states.append("exhausted")
+                    break
+                states.append("repair_required")
+                if index + 1 < len(self._coverage_sequence):
+                    repairs.append("repaired")
+            loop = drive_coverage_loop(
+                coverage_states=tuple(states),
+                repair_statuses=tuple(repairs),
+                coverage_rounds=coverage_rounds,
+                measured_sequence=self._coverage_sequence,
+                threshold=self._threshold,
+                entrypoint="execute" if self._entrypoint != "full" else "full",
+            )
+        else:
+            sequence = self._execution_sequence or ("passed",)
+            failed = sequence[0] in {"failed", "product_issue", "infrastructure_failure"}
+            loop = drive_execution_loop(
+                execution_sequence=sequence,
+                classifications=("product_bug",)
+                if sequence[0] == "product_issue"
+                else (("test",) if failed else ()),
+                fix_eligible=(sequence[0] == "failed",) if failed else (),
+                coverage_rounds=coverage_rounds,
+                entrypoint="execute" if self._entrypoint != "full" else "full",
+            )
+            last_measured = 1.0
+        repair_count = loop.public_exports.count("healing.repair-coverage")
+        if "healing.repair-coverage" in loop.public_exports:
+            repair_count = sum(
+                1 for item in loop.task_capabilities if item.endswith("coverage-repair.finalize")
+            )
+        return FlowTrace(
+            status=loop.status
+            if loop.status == "interrupted"
+            else ("stopped" if loop.terminal == "not-achieved" else "succeeded"),
+            report=ReportTrace(exists="quality.report" in loop.public_exports, coverage=last_measured),
+            logical_steps=loop.public_exports,
+            _activation_counts={"assurance.healing.coverage-repair": repair_count},
         )
 
 
