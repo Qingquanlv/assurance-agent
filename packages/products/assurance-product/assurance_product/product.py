@@ -4,12 +4,9 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from importlib.resources import files
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
-
-import yaml
 
 from graph_engine.attempts import ResolvedAttemptContract
 from graph_engine.canonical import JSONValue, canonical_json_bytes
@@ -28,18 +25,11 @@ from graph_engine.composition import (
     WheelProductSource,
 )
 from graph_engine.composition.sources import WheelProductDeclaration
-from graph_engine.composition.lock import ProductLock, build_invocation_lock
-from graph_engine.composition.workflow_assembler import assemble_product_workflow
+from graph_engine.composition.lock import ProductLock
 from graph_engine.frozen_json import thaw_json
-from graph_engine.graph.compiler import CompiledWorkflow, compile_workflow
-from graph_engine.graph.module_schema import WorkflowModuleDef, parse_workflow_module
 from graph_engine.plugin_api import FrozenModel, ProviderSource
 
-from assurance_product.agent_contracts import (
-    bind_agent_execution_contracts,
-    product_workflow_module_requirements,
-    product_workflow_slot_bindings,
-)
+from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.models import (
     CONFIGURATION_PLUGIN_ID,
@@ -47,12 +37,8 @@ from assurance_product.models import (
     ENGINE_API,
     PLUGIN_ID,
     PLUGIN_VERSION,
-    PREPARE_IDS,
+    PRODUCT_ENTRYPOINTS,
     AdapterName,
-    CursorBindingV1,
-    OpenCodeBindingV1,
-    adapter_secret_handles,
-    alias_ids_for_prepare,
     all_binding_ids,
 )
 from assurance_product.source_catalog import (
@@ -81,8 +67,12 @@ _PLUGIN_VERSIONS: dict[str, str] = {
     PLUGIN_ID: f"=={PLUGIN_VERSION}",
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",
 }
-_WORKFLOW_DIR = Path(__file__).resolve().parent / "resources" / "workflow"
-_PRODUCT_MODULE_PATH = _WORKFLOW_DIR / "main.yaml"
+_PRODUCT_FACTORY_SYMBOL = "assurance_product.graphs.factory:build_product_graphs"
+_ENTRYPOINTS = {name: name for name in sorted(PRODUCT_ENTRYPOINTS)}
+_PROVIDERS: dict[AdapterName, str] = {
+    "opencode": "AssuranceOpenCodeProductProvider",
+    "cursor": "AssuranceCursorProductProvider",
+}
 
 
 def prepare_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspace:
@@ -95,37 +85,11 @@ def reopen_change_workspace(project_root: Path, change_id: str) -> ChangeWorkspa
     return workspace
 
 
-def load_product_workflow_module() -> WorkflowModuleDef:
-    return parse_workflow_module(_PRODUCT_MODULE_PATH.read_text(encoding="utf-8"))
-
-
-_PRODUCT_MODULE = load_product_workflow_module()
-_ENTRYPOINTS = dict(_PRODUCT_MODULE.entrypoints)
-_PROVIDERS: dict[AdapterName, str] = {
-    "opencode": "AssuranceOpenCodeProductProvider",
-    "cursor": "AssuranceCursorProductProvider",
-}
 _PREPARE_DATA_FIELDS = frozenset(
     {"agent_profile", "execution", "request_policy_digest", "request_config_digest"}
 )
 _PREPARE_EXECUTION_FIELDS = frozenset(
     {"provider_model", "worker_profile", "permission_profile_digest", "limits"}
-)
-_FORBIDDEN_GRAPH_PREFIXES = (
-    "runtime.",
-    "test.",
-)
-_FEATURE_CAPABILITY_PREFIXES = (
-    "assurance.intake.",
-    "assurance.generation.",
-    "assurance.execution.",
-    "assurance.quality.",
-    "assurance.healing.",
-    "assurance.improvement.",
-)
-_TEST_ONLY_MARKERS = (".test.",)
-_INVENTORY_RELATIVE = Path(
-    "packages/products/assurance-product/assurance_product/resources/graph-inventory.yaml"
 )
 
 
@@ -168,7 +132,7 @@ def _product_source(adapter: AdapterName) -> ProviderSource:
         entrypoint_name=f"assurance-{adapter}",
         entrypoint_value=f"assurance_product.product:{_PROVIDERS[adapter]}",
         declaration_path=_declaration_path(adapter),
-        import_roots=("",),
+        import_roots=("", "assurance_product"),
     )
 
 
@@ -210,9 +174,7 @@ def _build_manifest(
         entrypoints=dict(_ENTRYPOINTS),
         configuration={},
         config_plugin_paths=config_plugin_paths,
-        workflow_module=_PRODUCT_MODULE,
-        workflow_module_resources=product_workflow_module_requirements(),
-        workflow_slot_bindings=product_workflow_slot_bindings(),
+        graph_factory_symbol=_PRODUCT_FACTORY_SYMBOL,
     )
 
 
@@ -224,12 +186,9 @@ def product_declaration_document(
     manifest = _build_manifest(adapter, config_plugin_paths).model_dump(mode="json", exclude_none=True)
     manifest.pop("workflow", None)
     manifest.pop("workflow_resource_id", None)
-    if _PRODUCT_MODULE is not None:
-        manifest["workflow_module"] = _PRODUCT_MODULE.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude_unset=True,
-        )
+    manifest.pop("workflow_module", None)
+    manifest.pop("workflow_module_resources", None)
+    manifest.pop("workflow_slot_bindings", None)
     return {
         "schema_version": "1",
         "kind": "product",
@@ -280,16 +239,7 @@ def _lock_binding_ids(composition: FrozenComposition) -> set[str]:
     return ids
 
 
-def _graph_binding_ids(composition: FrozenComposition) -> set[str]:
-    return {
-        node.definition.capability
-        for graph in composition.workflow.graphs.values()
-        for node in graph.nodes.values()
-        if node.definition.capability is not None
-    }
-
-
-def _prepare_data_is_assignment(value: object) -> bool:
+def _assignment_data_is_closed(value: object) -> bool:
     data = thaw_json(value)
     if not isinstance(data, Mapping):
         return False
@@ -297,15 +247,6 @@ def _prepare_data_is_assignment(value: object) -> bool:
         return False
     execution = data.get("execution")
     return isinstance(execution, Mapping) and _PREPARE_EXECUTION_FIELDS.issubset(execution)
-
-
-def _execute_secret_handles(adapter: AdapterName, data: object) -> tuple[str, ...]:
-    raw = thaw_json(data)
-    if adapter == "opencode":
-        binding = OpenCodeBindingV1.model_validate(raw)
-    else:
-        binding = CursorBindingV1.model_validate(raw)
-    return adapter_secret_handles(binding)
 
 
 def _authenticate_assurance_composition(
@@ -324,23 +265,22 @@ def _authenticate_assurance_composition(
     ):
         raise AssuranceCompositionError("composition plugin set is not the exact product closure")
 
+    if composition.manifest.graph_factory_symbol != _PRODUCT_FACTORY_SYMBOL:
+        raise AssuranceCompositionError("product graph factory symbol drifted")
+    if composition.manifest.workflow_module is not None:
+        raise AssuranceCompositionError("factory product must not carry a workflow module")
+    if composition.manifest.workflow_module_resources or composition.manifest.workflow_slot_bindings:
+        raise AssuranceCompositionError("factory product must not carry leftover slot bindings")
+    if not isinstance(composition.lock, ProductLock) or composition.lock.schema_version != "3":
+        raise AssuranceCompositionError("composition lock is not ProductLock v3")
+
     bindings = _capability_bindings(composition)
-    if set(bindings) != expected_bindings or len(bindings) != 99:
-        raise AssuranceCompositionError("composition binding set is not the exact 99 aliases")
+    if set(bindings) != expected_bindings or len(bindings) != 33:
+        raise AssuranceCompositionError("composition binding set is not the exact 33 semantic contracts")
     if _lock_binding_ids(composition) != expected_bindings:
-        raise AssuranceCompositionError("lock binding projection is not the exact 99 aliases")
-    graph_bindings = _graph_binding_ids(composition)
-    agent_bindings = {capability for capability in graph_bindings if capability.startswith(f"{PLUGIN_ID}.")}
-    feature_bindings = graph_bindings - agent_bindings
-    slot_aliases = {item.capability_id for item in composition.manifest.workflow_slot_bindings}
-    if slot_aliases != expected_bindings or len(slot_aliases) != 99:
-        raise AssuranceCompositionError("workflow slot bindings are not the exact 99 aliases")
-    if agent_bindings != expected_bindings:
-        raise AssuranceCompositionError("graph bindings are not the exact frozen 99 aliases")
-    if any(capability.startswith(_FORBIDDEN_GRAPH_PREFIXES) for capability in graph_bindings):
-        raise AssuranceCompositionError("graph referenced a direct runtime or Phase 4 capability")
-    if any(not capability.startswith(_FEATURE_CAPABILITY_PREFIXES) for capability in feature_bindings):
-        raise AssuranceCompositionError("graph referenced a non-product agent alias")
+        raise AssuranceCompositionError("lock binding projection is not the exact 33 semantic contracts")
+    if set(bindings) != set(AGENT_EXECUTION_CONTRACTS):
+        raise AssuranceCompositionError("composition bindings drifted from semantic Agent contracts")
 
     source = composition.manifest.source
     if source is None or source.entrypoint_name != f"assurance-{adapter}":
@@ -392,73 +332,23 @@ def _authenticate_assurance_composition(
             raise AssuranceCompositionError(f"resource digest drifted: {resource.resource_id}")
 
     runtime_execute = f"{_RUNTIME_PLUGIN_IDS[adapter]}.execute"
-    for prepare_id in PREPARE_IDS:
-        prepare_alias, execute_alias, finalize_alias = alias_ids_for_prepare(prepare_id)
-        prepare = bindings[prepare_alias]
-        execute = bindings[execute_alias]
-        finalize = bindings[finalize_alias]
-        resource_ids = (*prepare.resource_ids, *execute.resource_ids, *finalize.resource_ids)
-        if prepare.target_capability_id != prepare_id:
-            raise AssuranceCompositionError(f"prepare alias target drifted: {prepare_alias}")
-        if execute.target_capability_id != runtime_execute:
-            raise AssuranceCompositionError(f"execute alias target drifted: {execute_alias}")
-        if finalize.target_capability_id != f"{prepare_id.removesuffix('.prepare')}.finalize":
-            raise AssuranceCompositionError(f"finalize alias target drifted: {finalize_alias}")
-        if not _prepare_data_is_assignment(prepare.data) or prepare.secret_handles != ():
-            raise AssuranceCompositionError(
-                f"prepare alias is not an AgentBindingDataV1 assignment: {prepare_alias}"
-            )
-        if execute.data is None:
-            raise AssuranceCompositionError(f"execute alias is missing adapter binding data: {execute_alias}")
-        if tuple(execute.secret_handles) != _execute_secret_handles(adapter, execute.data):
-            raise AssuranceCompositionError(f"execute alias secret handles drifted: {execute_alias}")
-        if finalize.data is not None or finalize.secret_handles != ():
-            raise AssuranceCompositionError(f"finalize alias must be null with no secrets: {finalize_alias}")
-        for resource_id in resource_ids:
+    expected_secrets = ("opencode.token",) if adapter == "opencode" else ("cursor.api-key",)
+    for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
+        binding = bindings[contract_id]
+        if binding.contract_id != contract.contract_id:
+            raise AssuranceCompositionError(f"semantic binding contract drifted: {contract_id}")
+        if binding.target_capability_id != runtime_execute:
+            raise AssuranceCompositionError(f"semantic binding target drifted: {contract_id}")
+        if not _assignment_data_is_closed(binding.data):
+            raise AssuranceCompositionError(f"semantic binding is not a closed assignment: {contract_id}")
+        if tuple(binding.secret_handles) != expected_secrets:
+            raise AssuranceCompositionError(f"semantic binding secret handles drifted: {contract_id}")
+        for resource_id in binding.resource_ids:
             if resource_id not in composition.registries.resources.entries:
                 raise AssuranceCompositionError(f"binding resource is not registered: {resource_id}")
     if composition.lock.engine_api != ENGINE_API:
-        raise AssuranceCompositionError("invocation lock engine API drifted")
+        raise AssuranceCompositionError("product lock engine API drifted")
     return composition
-
-
-def _apply_agent_execution_contracts(composition: FrozenComposition) -> FrozenComposition:
-    descriptors = {descriptor.plugin_id: descriptor for descriptor in composition.descriptors}
-    assembled = assemble_product_workflow(
-        manifest=composition.manifest,
-        descriptors=descriptors,
-        registries=composition.registries,
-    )
-    workflow = compile_workflow(
-        bind_agent_execution_contracts(assembled),
-        composition.registries,
-    )
-    source_entries = composition.registries.sources.entries
-    engine_source = source_entries[SourceKey(SourceRole.ENGINE, "graph.engine")]
-    product_source = source_entries[SourceKey(SourceRole.PRODUCT, composition.manifest.product_id)]
-    lock = build_invocation_lock(
-        manifest=composition.manifest,
-        product_snapshot=product_source.snapshot,
-        descriptors=descriptors,
-        dependency_order=composition.lock.dependency_order,
-        registries=composition.registries,
-        configuration=composition.configuration,
-        workflow=workflow,
-        engine_snapshot=engine_source.snapshot,
-        contribution_authorities=composition.contribution_authorities,
-    )
-    return FrozenComposition.freeze(
-        composition.manifest,
-        composition.registries,
-        workflow,
-        lock,
-        descriptors=composition.descriptors,
-        configuration=composition.configuration,
-        contribution_authorities=composition.contribution_authorities,
-        providers=composition.providers,
-        product_provider=composition.product_provider,
-        declarative_sources=composition.declarative_sources,
-    )
 
 
 def _with_semantic_attempt_contracts(
@@ -497,7 +387,6 @@ def resolve_assurance_composition(request: AssuranceCompositionRequest) -> Assur
             ),
         )
     )
-    composition = _apply_agent_execution_contracts(composition)
     composition = _authenticate_assurance_composition(composition, adapter)
     return _with_semantic_attempt_contracts(
         composition,
@@ -505,126 +394,11 @@ def resolve_assurance_composition(request: AssuranceCompositionRequest) -> Assur
     )
 
 
-def _workflow_node_ids(workflow: CompiledWorkflow) -> set[str]:
-    return {f"{graph_id}/{node_id}" for graph_id, graph in workflow.graphs.items() for node_id in graph.nodes}
-
-
-def _reachable_node_ids(workflow: CompiledWorkflow) -> set[str]:
-    pending: list[tuple[str, str]] = []
-    for graph_id in workflow.entrypoints.values():
-        graph = workflow.graphs[graph_id]
-        pending.append((graph_id, graph.start))
-    seen: set[str] = set()
-    while pending:
-        graph_id, node_id = pending.pop()
-        key = f"{graph_id}/{node_id}"
-        if key in seen:
-            continue
-        seen.add(key)
-        graph = workflow.graphs[graph_id]
-        node = graph.nodes[node_id]
-        target = node.definition.graph
-        if target is not None:
-            pending.append((target, workflow.graphs[target].start))
-        for edge in node.outgoing:
-            pending.append((graph_id, edge.to))
-    return seen
-
-
-def _is_forbidden_graph_target(capability: str) -> bool:
-    if capability.startswith(_FORBIDDEN_GRAPH_PREFIXES):
-        return True
-    if capability.startswith("test.") or any(marker in capability for marker in _TEST_ONLY_MARKERS):
-        return True
-    if capability.startswith(f"{PLUGIN_ID}."):
-        return False
-    return not capability.startswith(_FEATURE_CAPABILITY_PREFIXES)
-
-
-def _inventory_path() -> Path | None:
-    candidates = (
-        Path.cwd() / _INVENTORY_RELATIVE,
-        Path(__file__).resolve().parents[4] / _INVENTORY_RELATIVE,
-    )
-    for path in candidates:
-        if path.is_file():
-            return path
-    return None
-
-
-def _load_inventory_nodes() -> set[str] | None:
-    raw: str | None = None
-    package = __package__
-    if package is not None:
-        packaged = files(package).joinpath("resources", "graph-inventory.yaml")
-        try:
-            raw = packaged.read_text(encoding="utf-8")
-        except (FileNotFoundError, IsADirectoryError, OSError):
-            raw = None
-    if raw is None:
-        path = _inventory_path()
-        if path is not None:
-            raw = path.read_text(encoding="utf-8")
-    if raw is None:
-        return None
-    document = yaml.safe_load(raw)
-    if not isinstance(document, Mapping):
-        return None
-    nodes = document.get("nodes")
-    if not isinstance(nodes, list):
-        return None
-    return {node for node in nodes if isinstance(node, str)}
-
-
-def audit_full_graph(workflow: CompiledWorkflow, composition: FrozenComposition) -> GraphAuditResult:
-    all_nodes = _workflow_node_ids(workflow)
-    reachable = _reachable_node_ids(workflow)
-    inventoried = _load_inventory_nodes()
-    capability_entries = composition.registries.capabilities.entries
-    forbidden: list[str] = []
-    missing: list[str] = []
-    for graph in workflow.graphs.values():
-        for node in graph.nodes.values():
-            capability = node.definition.capability
-            if capability is None:
-                continue
-            if _is_forbidden_graph_target(capability):
-                forbidden.append(f"{graph.graph_id}/{node.node_id}:{capability}")
-            if capability not in capability_entries:
-                missing.append(f"{graph.graph_id}/{node.node_id}:{capability}")
-    dead_ends = tuple(
-        sorted(
-            f"{graph.graph_id}/{node.node_id}"
-            for graph in workflow.graphs.values()
-            for node in graph.nodes.values()
-            if node.definition.kind not in {"end", "interrupt"} and not node.outgoing
-        )
-    )
-    return GraphAuditResult(
-        unreachable_nodes=tuple(sorted(all_nodes - reachable)),
-        dead_ends=dead_ends,
-        forbidden_direct_targets=tuple(sorted(forbidden)),
-        missing_bindings=tuple(sorted(missing)),
-        uninventoried_nodes=tuple(sorted(all_nodes if inventoried is None else all_nodes - inventoried)),
-    )
-
-
 def product_lock_from_composition(composition: FrozenComposition) -> ProductLock:
     lock = composition.lock
-    return ProductLock.create(
-        engine_api=lock.engine_api,
-        engine=lock.engine,
-        engine_digest=lock.engine_digest,
-        product=lock.product,
-        plugins=lock.plugins,
-        dependency_order=lock.dependency_order,
-        registry_projections=lock.registry_projections,
-        registry_digests=lock.registry_digests,
-        configuration=thaw_json(lock.configuration),
-        configuration_digest=lock.configuration_digest,
-        capability_bindings=thaw_json(lock.capability_bindings),
-        capability_bindings_digest=lock.capability_bindings_digest,
-    )
+    if isinstance(lock, ProductLock):
+        return lock
+    raise AssuranceCompositionError("composition lock is not ProductLock v3")
 
 
 def reject_organization_overrides(organization_root: Path | None) -> None:

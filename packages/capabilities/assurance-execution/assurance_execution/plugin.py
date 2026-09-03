@@ -37,7 +37,6 @@ EXECUTION_RESOURCE_FILES: dict[str, str] = {
     "assurance.execution.result.execution.v1": "result-contracts/execution.v1.schema.json",
     "assurance.execution.skill.aa-execute.v1": "skills/aa-execute/SKILL.md",
     "assurance.execution.skill.aa-run.v1": "skills/aa-run/SKILL.md",
-    "assurance.execution.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

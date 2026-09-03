@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_improvement.contracts.workflow import WORKFLOW_EXPORTS
 from assurance_improvement.graphs.factory import ImprovementGraphs, build_improvement_graphs
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
@@ -143,7 +142,7 @@ def test_improvement_factory_exports_seven_public_graphs(recording_context) -> N
         "apply",
         "rollback",
     )
-    assert tuple(WORKFLOW_EXPORTS) == (
+    assert tuple(ImprovementGraphs.__dataclass_fields__) == (
         "archive",
         "retro",
         "review",

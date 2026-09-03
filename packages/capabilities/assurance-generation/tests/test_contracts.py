@@ -207,7 +207,7 @@ def test_generation_contracts_import_only_intake_contracts() -> None:
 def test_generation_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "api.codegen-fix": (
@@ -359,7 +359,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
 def test_codegen_job_claims_cover_dynamic_change_local_mapping_targets() -> None:
     from graph_engine.plugin_api import ResourceClaimTemplate
 
-    from assurance_generation.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     for family in ("api", "e2e", "fuzz", "performance"):
         for suffix in ("codegen", "codegen-fix") if family in {"api", "e2e"} else ("codegen",):

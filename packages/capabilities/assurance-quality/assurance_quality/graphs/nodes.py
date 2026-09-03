@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from graph_engine.attempts.keys import BusinessActivation
 
 from assurance_quality.contracts.agent import QualitySkillInputV1
-from assurance_quality.contracts.workflow import CoverageAssessmentPublicV1, IssueAnalysisPublicV1
+from assurance_quality.contracts.decisions import CoverageAssessmentPublicV1, IssueAnalysisPublicV1
 from assurance_quality.graphs.state import (
     QualityAssessPublicV1,
     QualityIssuePublicV1,

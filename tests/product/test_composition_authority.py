@@ -227,7 +227,7 @@ def test_forged_alias_target_fails_closed(installed_sources, tmp_path: Path) -> 
         execute = next(
             binding
             for binding in bindings
-            if isinstance(binding, dict) and str(binding.get("capability_id", "")).endswith(".execute")
+            if isinstance(binding, dict) and str(binding.get("capability_id", "")).endswith(".v1")
         )
         execute["target_capability_id"] = "assurance.intake.intake.prepare"
 
@@ -239,7 +239,7 @@ def test_forged_alias_target_fails_closed(installed_sources, tmp_path: Path) -> 
     _swap_sys_path(original, mutated)
     _drop_modules_from_roots(original)
     try:
-        with pytest.raises(AssuranceCompositionError, match="execute alias target drifted"):
+        with pytest.raises(AssuranceCompositionError, match="semantic binding target drifted"):
             resolve_assurance_composition(request)
     finally:
         _swap_sys_path(mutated, original)

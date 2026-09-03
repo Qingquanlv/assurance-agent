@@ -118,15 +118,15 @@ def copy_config_tree(destination: Path) -> ConfigTreePluginSource:
 def project_binding_coverage(composition: FrozenComposition) -> dict[str, dict[str, JSONValue]]:
     entries = composition.registries.capabilities.entries
     bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
-    if set(bindings) != set(ALL_BINDING_IDS):
-        raise AssertionError("composition binding set is not the exact 99 aliases")
+    if set(bindings) != set(ALL_BINDING_IDS) or len(bindings) != 33:
+        raise AssertionError("composition binding set is not the exact 33 semantic contracts")
     projected: dict[str, dict[str, JSONValue]] = {}
     for binding_id in ALL_BINDING_IDS:
         entry = bindings[binding_id]
         projected[binding_id] = {
             "data": thaw_json(entry.data),
             "owner_id": entry.owner_id,
-            "phase": binding_id.rsplit(".", 1)[-1],
+            "contract_id": binding_id,
             "resource_ids": list(entry.resource_ids),
             "secret_handles": list(entry.secret_handles),
             "target_capability_id": entry.target_capability_id,

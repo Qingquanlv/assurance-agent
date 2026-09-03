@@ -100,7 +100,6 @@ def _candidate_sha() -> str:
 
 def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
     from assurance_product.agent_contracts import (
-        LEGACY_AGENT_PHASE_ALIASES,
         all_feature_agent_contracts,
         all_feature_task_contracts,
     )
@@ -117,7 +116,7 @@ def test_checkpoint_r_inventory_is_33_33_34_41_43() -> None:
     assert set(AGENT_RUNTIME_BINDINGS) == set(contracts)
     assert len(RAW_AGENT_RUNTIME_BINDING_ROWS) == 33
     assert len(contracts) + len(tasks) == 41
-    assert len(LEGACY_AGENT_PHASE_ALIASES) == 99
+    assert not any(item.startswith("assurance.product.agent.") for item in contracts)
     assert all("alias" not in row.schema_version for row in RAW_AGENT_RUNTIME_BINDING_ROWS)
 
     assert set(agent_bound) == set(contracts)

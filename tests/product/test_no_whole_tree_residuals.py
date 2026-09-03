@@ -14,8 +14,8 @@ import pytest
 
 from graph_engine.attempts.activity import RuntimeEvent
 
-from tests.product.cli_support import start_lifecycle_invocation
-from tests.product.composition_harness import InstalledSources
+from tests.product.cli_support import SECRET_ENV, SECRET_VALUE, common_lifecycle_args
+from tests.product.composition_harness import InstalledSources, request_for
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -205,29 +205,32 @@ def test_toy_and_assurance_invocation_creates_no_whole_tree_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     installed_sources: InstalledSources,
+    cli_runner,
 ) -> None:
-    invocation = start_lifecycle_invocation(
-        tmp_path / "assurance",
-        installed_sources,
+    from assurance_product.cli import app
+    from assurance_product.product import resolve_assurance_composition
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path / "assurance",
+        installed_sources=installed_sources,
+        composition=composition,
         invocation_id="inv-residual-001",
-        drive=True,
+        change_id="CH-RESIDUAL-001",
     )
-    try:
-        roots: Iterable[Path] = (
-            invocation.project_dir,
-            invocation.engine_root,
-            invocation.project_dir / "qa" / "changes" / invocation.change_id,
-        )
-        hits = set()
-        for root in roots:
-            hits.update(_forbidden_layout_hits(root))
-        assert not hits, hits
-        status_path = invocation.project_dir / "qa" / "changes" / invocation.change_id / "status.json"
-        if status_path.is_file():
-            status = json.loads(status_path.read_text(encoding="utf-8"))
-            assert set(status).isdisjoint(_TREE_ID_FIELD_NAMES)
-    finally:
-        invocation.engine.close()
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    change = project_dir / "qa" / "changes" / change_id
+    roots: Iterable[Path] = (project_dir, change)
+    hits = set()
+    for root in roots:
+        hits.update(_forbidden_layout_hits(root))
+    assert not hits, hits
+    status_path = change / "status.json"
+    if status_path.is_file():
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        assert set(status).isdisjoint(_TREE_ID_FIELD_NAMES)
 
     from graph_engine.boot.generic import (
         boot_factory_product,

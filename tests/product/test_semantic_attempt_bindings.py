@@ -27,14 +27,15 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract() -> None:
     assert len(AGENT_RUNTIME_BINDINGS) == 33
 
 
-def test_semantic_bindings_coexist_with_legacy_aliases_during_shadow(installed_sources) -> None:
-    from assurance_product.agent_contracts import LEGACY_AGENT_PHASE_ALIASES
+def test_semantic_bindings_are_the_only_live_agent_ids(installed_sources) -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.product import resolve_assurance_composition
 
     request = request_for("opencode", installed_sources)
     composition = resolve_assurance_composition(request)
     assert len(composition.semantic_attempt_contracts) == 41
-    assert len(LEGACY_AGENT_PHASE_ALIASES) == 99
+    assert len(AGENT_EXECUTION_CONTRACTS) == 33
+    assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
 
 @pytest.mark.parametrize(

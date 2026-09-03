@@ -56,7 +56,6 @@ GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.skill.aa-performance-codegen.v1": "skills/aa-performance-codegen/SKILL.md",
     "assurance.generation.skill.aa-performance-plan-reviewer.v1": "skills/aa-performance-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-performance-plan.v1": "skills/aa-performance-plan/SKILL.md",
-    "assurance.generation.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

@@ -16,231 +16,231 @@ adapter_binding:
   max_line_bytes: 4096
   adapter_configuration_digest: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 routes:
-  assurance.intake.case-design.prepare:
+  assurance.intake.agent.case-design.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.intake.case-review.prepare:
+  assurance.intake.agent.case-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.intake.explore.prepare:
+  assurance.intake.agent.explore.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.intake.intake.prepare:
+  assurance.intake.agent.intake.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.api.codegen-fix.prepare:
+  assurance.generation.agent.api.codegen-fix.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.api.codegen.prepare:
+  assurance.generation.agent.api.codegen.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.api.plan-review.prepare:
+  assurance.generation.agent.api.plan-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.api.plan.prepare:
+  assurance.generation.agent.api.plan.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.e2e.codegen-fix.prepare:
+  assurance.generation.agent.e2e.codegen-fix.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.e2e.codegen.prepare:
+  assurance.generation.agent.e2e.codegen.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.e2e.plan-review.prepare:
+  assurance.generation.agent.e2e.plan-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.e2e.plan.prepare:
+  assurance.generation.agent.e2e.plan.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.fuzz.codegen.prepare:
+  assurance.generation.agent.fuzz.codegen.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.fuzz.plan-review.prepare:
+  assurance.generation.agent.fuzz.plan-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.fuzz.plan.prepare:
+  assurance.generation.agent.fuzz.plan.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.performance.codegen.prepare:
+  assurance.generation.agent.performance.codegen.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.performance.plan-review.prepare:
+  assurance.generation.agent.performance.plan-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.performance.plan.prepare:
+  assurance.generation.agent.performance.plan.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.execution.execute.prepare:
+  assurance.execution.agent.execute.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.execution.run.prepare:
+  assurance.execution.agent.run.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.healing.coverage-repair.prepare:
+  assurance.healing.agent.coverage-repair.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.healing.fix-proposal.prepare:
+  assurance.healing.agent.fix-proposal.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.quality.fact-baseline.prepare:
+  assurance.quality.agent.fact-baseline.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.quality.inspect.prepare:
+  assurance.quality.agent.inspect.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.quality.issue-analysis.prepare:
+  assurance.quality.agent.issue-analysis.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.quality.issue-triage.prepare:
+  assurance.quality.agent.issue-triage.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.quality.report.prepare:
+  assurance.quality.agent.report.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.improvement.archive.prepare:
+  assurance.improvement.agent.archive.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.improvement.improvement-review.prepare:
+  assurance.improvement.agent.improvement-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.improvement.retro-eval-analysis.prepare:
+  assurance.improvement.agent.retro-eval-analysis.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.improvement.retro-issue-analysis.prepare:
+  assurance.improvement.agent.retro-issue-analysis.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.improvement.retro-workflow-analysis.prepare:
+  assurance.improvement.agent.retro-workflow-analysis.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.improvement.retro.prepare:
+  assurance.improvement.agent.retro.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default

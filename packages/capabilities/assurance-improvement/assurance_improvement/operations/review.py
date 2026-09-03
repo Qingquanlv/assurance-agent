@@ -25,7 +25,7 @@ from assurance_improvement.contracts.review import (
     ImprovementReviewSubject,
 )
 from assurance_improvement.contracts.delivery import artifact_digest
-from assurance_improvement.contracts.workflow import AUTO_REVIEW_DECISIONS
+from assurance_improvement.contracts.decisions import AUTO_REVIEW_DECISIONS
 from assurance_improvement.operations.common import InputError, failed_input, succeeded, validate_input
 from assurance_improvement.operations.keys import improvement_event_id
 

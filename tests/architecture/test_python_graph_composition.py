@@ -289,11 +289,10 @@ def test_authenticated_factory_symbols_exist_as_public_callables() -> None:
         assert factory.__name__ == attribute
 
 
-def test_yaml_workflow_modules_remain_for_legacy_coexistence() -> None:
+def test_yaml_workflow_modules_are_gone_after_v3_cutover() -> None:
     root = _repo_root()
     for _package_name, relative in FEATURE_SOURCE_TREES:
         module_yaml = root / relative / "resources" / "workflow" / "module.yaml"
         factory = root / relative / "graphs" / "factory.py"
-        assert module_yaml.is_file(), module_yaml
+        assert not module_yaml.exists(), module_yaml
         assert factory.is_file(), factory
-        assert module_yaml.stat().st_size > 0

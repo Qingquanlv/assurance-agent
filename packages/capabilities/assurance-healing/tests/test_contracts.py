@@ -325,7 +325,7 @@ def test_healing_contracts_import_only_upstream_public_contracts() -> None:
 def test_healing_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_healing.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "coverage-repair": (

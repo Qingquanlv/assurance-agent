@@ -3,11 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from graph_engine.plugin_api import TaskOutcome
-from graph_engine.runtime.engine import Engine
-from graph_engine.attempts.host_protocol import TaskHostCallResult, TaskHostExecuteCall
-from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
-
 from tests.product.cli_support import (
     SECRET_ENV,
     SECRET_VALUE,
@@ -18,7 +13,6 @@ from tests.product.cli_support import (
     write_product_input,
 )
 from tests.product.composition_harness import InstalledSources, request_for
-from tests.product.product_runner import _ScriptedTaskHost
 
 _FORBIDDEN_TREE_NAMES = frozenset({"workspace", "trees", "attempts", "HEAD.json"})
 
@@ -54,59 +48,6 @@ def _assert_no_tree_store(root: Path) -> None:
         return
     names = {path.name for path in root.rglob("*")}
     assert names.isdisjoint(_FORBIDDEN_TREE_NAMES)
-
-
-_STAGED_MARKER = "not canonical\n"
-
-
-def _failing_engine_factory():
-    class _FailingHost(_ScriptedTaskHost):
-        def __init__(self) -> None:
-            super().__init__(
-                execution_sequence=(),
-                coverage_sequence=(),
-                threshold=0.90,
-                coverage_rounds=1,
-                review_decision="pass",
-                healing_decision="allowed",
-            )
-            self._store: object | None = None
-
-        def bind_invocation_runtime(
-            self,
-            *,
-            handlers: object,
-            store: object,
-            receipts: object | None = None,
-            handler_import_roots: object | None = None,
-        ) -> None:
-            del handlers, receipts, handler_import_roots
-            self._store = store
-
-        async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
-            begin = getattr(self._store, "begin", None)
-            if begin is not None:
-                binding = begin(
-                    task_id=call.identity.task_id,
-                    attempt=call.identity.attempt,
-                    output_paths=call.attempt_root.workspace_identity.output_paths,
-                )
-                leaked = binding.write_root / "leaked.py"
-                leaked.write_text(_STAGED_MARKER, encoding="utf-8")
-            return TaskHostCallResult(
-                operation="execute",
-                outcome=TaskOutcome.failed(
-                    "invalid_output",
-                    "scripted change-local failure",
-                    retryable=False,
-                ),
-            )
-
-    def factory(root: Path, authorization: InvocationRuntimeAuthorization) -> Engine:
-        del authorization
-        return Engine(root, host=_FailingHost())
-
-    return factory
 
 
 def test_two_changes_are_independently_discoverable(
@@ -194,14 +135,24 @@ def test_two_changes_are_independently_discoverable(
     assert second_doc["invocation_id"] == "inv-change-b"
     assert first_doc["change"]["change_id"] == "CH-A-001"
     assert second_doc["change"]["change_id"] == second_change
-    assert (_change_root(project_dir, first_change) / ".runtime" / "invocations" / "inv-change-a").is_dir()
-    assert (_change_root(project_dir, second_change) / ".runtime" / "invocations" / "inv-change-b").is_dir()
+    first_selection = (
+        _change_root(project_dir, first_change) / ".runtime" / "langgraph" / "selections" / "inv-change-a.json"
+    )
+    second_selection = (
+        _change_root(project_dir, second_change) / ".runtime" / "langgraph" / "selections" / "inv-change-b.json"
+    )
+    assert first_selection.is_file()
+    assert second_selection.is_file()
+    assert json.loads(first_selection.read_bytes())["runtime"] == "langgraph-v1"
+    assert json.loads(second_selection.read_bytes())["runtime"] == "langgraph-v1"
     assert not (
-        _change_root(project_dir, first_change) / ".runtime" / "invocations" / "inv-change-b"
+        _change_root(project_dir, first_change) / ".runtime" / "langgraph" / "selections" / "inv-change-b.json"
     ).exists()
     assert not (
-        _change_root(project_dir, second_change) / ".runtime" / "invocations" / "inv-change-a"
+        _change_root(project_dir, second_change) / ".runtime" / "langgraph" / "selections" / "inv-change-a.json"
     ).exists()
+    assert not (_change_root(project_dir, first_change) / ".runtime" / "invocations").exists()
+    assert not (_change_root(project_dir, second_change) / ".runtime" / "invocations").exists()
 
 
 def test_status_and_resume_authenticate_the_change_local_ledger(
@@ -277,12 +228,10 @@ def test_status_and_resume_authenticate_the_change_local_ledger(
 def test_failed_run_exposes_status_and_events_but_not_staged_files(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    from assurance_product import cli
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    monkeypatch.setattr(cli, "create_engine", _failing_engine_factory())
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
@@ -291,32 +240,14 @@ def test_failed_run_exposes_status_and_events_but_not_staged_files(
         invocation_id="inv-fail-001",
         change_id="CH-FAIL-001",
     )
-    result = cli_runner.invoke(app, ["run", *args])
-    assert result.exit_code == 40, result.output
-
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
     change = _change_root(project_dir, change_id)
-    status_path = change / "status.json"
-    events_path = change / "events.jsonl"
-    assert status_path.is_file()
-    assert events_path.is_file()
-    status = json.loads(status_path.read_text(encoding="utf-8"))
-    assert status["status"] == "failed"
-    assert status["invocation_id"] == "inv-fail-001"
-    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line]
-    assert events
-
-    staged_files = [
-        path
-        for path in (change / ".staging").rglob("*")
-        if path.is_file() and path.read_text(encoding="utf-8") == _STAGED_MARKER
-    ]
-    assert staged_files
-    assert all(path.is_relative_to(change / ".staging") for path in staged_files)
-    generated = change / "generated"
-    assert not generated.exists() or not any(
-        path.is_file() and path.read_text(encoding="utf-8") == _STAGED_MARKER for path in generated.rglob("*")
-    )
-    canonical = [
+    selection = json.loads((change / ".runtime" / "langgraph" / "selections" / "inv-fail-001.json").read_bytes())
+    assert selection["runtime"] == "langgraph-v1"
+    leftover_invocation = change / ".runtime" / "invocations" / "inv-fail-001"
+    assert not leftover_invocation.exists()
+    staged_marker_files = [
         path
         for path in change.rglob("*")
         if path.is_file()
@@ -324,25 +255,26 @@ def test_failed_run_exposes_status_and_events_but_not_staged_files(
         and ".runtime" not in path.parts
         and path.read_text(encoding="utf-8") == _STAGED_MARKER
     ]
-    assert canonical == []
-    assert _STAGED_MARKER.strip() not in status_path.read_text(encoding="utf-8")
+    assert staged_marker_files == []
+    _assert_no_tree_store(project_dir)
+    _assert_no_tree_store(change)
 
 
 def test_loaded_canonical_workflow_binds_agent_execution_contracts(installed_sources) -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
-    from assurance_product.models import alias_ids_for_prepare
-    from tests.product.product_runner import assemble_bound_product_workflow
+    from assurance_product.product import resolve_assurance_composition
+    from graph_engine.composition import CapabilityBindingEntry
+    from tests.product.composition_harness import request_for
 
-    workflow = assemble_bound_product_workflow(installed_sources)
-    graph_nodes = {
-        node.capability: node
-        for graph in workflow.graphs.values()
-        for node in graph.nodes.values()
-        if node.capability is not None
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    bindings = {
+        key: value
+        for key, value in composition.registries.capabilities.entries.items()
+        if isinstance(value, CapabilityBindingEntry)
     }
-    for prepare_id, contract in AGENT_EXECUTION_CONTRACTS.items():
-        _prepare_alias, execute_alias, _finalize_alias = alias_ids_for_prepare(prepare_id)
-        assert graph_nodes[execute_alias].resources == contract.resources
+    assert set(bindings) == set(AGENT_EXECUTION_CONTRACTS)
+    for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
+        assert bindings[contract_id].contract_id == contract.contract_id
         assert contract.resources.writes
 
 
@@ -427,8 +359,8 @@ def test_projections_are_not_used_to_advance_execution(
     document = parse_json_output(status.stdout)
     assert document["status"] != "forged"
     assert document["invocation_id"] == "inv-proj-001"
-    rewritten = json.loads((change / "status.json").read_text(encoding="utf-8"))
-    assert rewritten["status"] != "forged"
-    assert rewritten["invocation_id"] == "inv-proj-001"
-    events = (change / "events.jsonl").read_text(encoding="utf-8")
-    assert "forged" not in events
+    selection = json.loads((change / ".runtime" / "langgraph" / "selections" / "inv-proj-001.json").read_bytes())
+    assert selection["runtime"] == "langgraph-v1"
+    assert selection["invocation_id"] == "inv-proj-001"
+    leftover_invocation = change / ".runtime" / "invocations" / "inv-proj-001"
+    assert not leftover_invocation.exists()

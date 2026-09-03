@@ -40,7 +40,7 @@ EVIDENCE_ROOT = Path(__file__).resolve().parents[2] / (
     ".superpowers/sdd/2026-08-22-pure-graph-engine-phase5-assurance-product-assembly"
 )
 
-PREPARE_IDS = (
+HISTORICAL_PREPARE_IDS = (
     "assurance.intake.case-design.prepare",
     "assurance.intake.case-review.prepare",
     "assurance.intake.explore.prepare",
@@ -76,6 +76,20 @@ PREPARE_IDS = (
     "assurance.improvement.retro.prepare",
 )
 
+
+def _semantic_contract_id(prepare_id: str) -> str:
+    rest = prepare_id.removeprefix("assurance.").removesuffix(".prepare")
+    feature, _, base = rest.partition(".")
+    return f"assurance.{feature}.agent.{base}.v1"
+
+
+PREPARE_IDS = tuple(_semantic_contract_id(item) for item in HISTORICAL_PREPARE_IDS)
+HISTORICAL_BINDING_IDS = tuple(
+    f"assurance.product.agent.{item.removeprefix('assurance.').removesuffix('.prepare')}.{phase}"
+    for item in HISTORICAL_PREPARE_IDS
+    for phase in ("prepare", "execute", "finalize")
+)
+
 PURE_DECISION_IDS = (
     "assurance.generation.complete",
     "assurance.generation.review-round.advance",
@@ -93,14 +107,7 @@ SEMANTIC_TRACE_IGNORED_FIELDS = frozenset(
     }
 )
 
-ALL_BINDING_IDS = tuple(
-    alias
-    for prepare_id in PREPARE_IDS
-    for alias in (
-        "assurance.product.agent." + prepare_id.removeprefix("assurance.").removesuffix(".prepare") + phase
-        for phase in (".prepare", ".execute", ".finalize")
-    )
-)
+ALL_BINDING_IDS = PREPARE_IDS
 
 EXPECTED_25_CASE_IDS = (
     "full-api-only-success",

@@ -67,7 +67,7 @@ def test_intake_plugin_does_not_discover_graph_factory() -> None:
     assert descriptor.source is not None
     assert descriptor.source.entrypoint_value == "assurance_intake.plugin:IntakePlugin"
     assert "graphs.factory" not in descriptor.source.entrypoint_value
-    assert "assurance.intake.workflow.module.v1" in descriptor.resources
+    assert "assurance.intake.workflow.module.v1" not in descriptor.resources
     assert not hasattr(contribution, "graph_factories")
     assert contribution.attempt_contracts
     assert all("graphs.factory" not in ref.contract_id for ref in contribution.attempt_contracts)

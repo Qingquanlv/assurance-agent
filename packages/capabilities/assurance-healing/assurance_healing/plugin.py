@@ -68,7 +68,6 @@ HEALING_RESOURCE_FILES: dict[str, str] = {
     "assurance.healing.result.fix-proposal.v1": "result-contracts/fix-proposal.v1.schema.json",
     "assurance.healing.skill.aa-coverage-repair.v1": "skills/aa-coverage-repair/SKILL.md",
     "assurance.healing.skill.aa-fix-proposal.v1": "skills/aa-fix-proposal/SKILL.md",
-    "assurance.healing.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

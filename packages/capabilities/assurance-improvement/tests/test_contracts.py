@@ -349,7 +349,7 @@ def test_improvement_contracts_import_only_upstream_public_contracts() -> None:
 def test_improvement_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_improvement.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "archive": (

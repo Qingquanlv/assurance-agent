@@ -13,7 +13,6 @@ from graph_engine.composition import FrozenComposition
 from graph_engine.frozen_json import freeze_json, thaw_json
 from graph_engine.graph.input_projection import project_task_input
 from graph_engine.graph.output_projection import project_subgraph_output
-from graph_engine.composition.workflow_assembler import assemble_product_workflow
 from graph_engine.graph.schema import WorkflowDef
 from graph_engine.runtime.invocation_lock import InvocationDrift
 from graph_engine.plugin_api import (
@@ -1030,33 +1029,8 @@ def _scripted_authorization() -> InvocationRuntimeAuthorization:
     )
 
 
-def resolve_product_workflow_composition(workflow: WorkflowDef) -> FrozenComposition:
-    from tests.product.runtime_composition import resolve_workflow_composition
-
-    handlers = {capability: _SuccessHandler() for capability in _workflow_capabilities(workflow)}
-    document = workflow.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    return resolve_workflow_composition(document, handlers)
-
-
-def assemble_bound_product_workflow(installed_sources) -> WorkflowDef:
-    from assurance_product.agent_contracts import bind_agent_execution_contracts
-    from assurance_product.product import resolve_assurance_composition
-    from tests.product.composition_harness import request_for
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    assembled = assemble_product_workflow(
-        manifest=composition.manifest,
-        descriptors={item.plugin_id: item for item in composition.descriptors},
-        registries=composition.registries,
-    )
-    try:
-        return bind_agent_execution_contracts(assembled)
-    except ValueError:
-        return assembled
-
-
 def modular_product_composition(installed_sources) -> FrozenComposition:
-    return resolve_product_workflow_composition(assemble_bound_product_workflow(installed_sources))
+    return adapter_product_composition(installed_sources, "opencode")
 
 
 def adapter_product_composition(installed_sources, adapter: str) -> FrozenComposition:

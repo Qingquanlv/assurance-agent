@@ -57,19 +57,11 @@ def test_python_roots_are_the_product_application_surface() -> None:
         assert contract.state_schema_digest
 
 
-def test_audit_result_fields_are_tuples(compiled_for) -> None:
-    from assurance_product.product import audit_full_graph
+def test_factory_composition_has_no_leftover_compiled_workflow(installed_sources) -> None:
+    from tests.product.composition_harness import request_for
+    from assurance_product.product import resolve_assurance_composition
 
-    try:
-        compiled = compiled_for("opencode")
-    except Exception:
-        pytest.skip("composition snapshot cannot preload an already-imported product module")
-    workflow = getattr(compiled, "workflow", None)
-    if workflow is None:
-        pytest.skip("factory composition has no leftover compiled workflow to audit")
-    audit = audit_full_graph(workflow, compiled.composition)
-    assert audit.unreachable_nodes == tuple(audit.unreachable_nodes)
-    assert audit.dead_ends == tuple(audit.dead_ends)
-    assert audit.forbidden_direct_targets == tuple(audit.forbidden_direct_targets)
-    assert audit.missing_bindings == tuple(audit.missing_bindings)
-    assert audit.uninventoried_nodes == tuple(audit.uninventoried_nodes)
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    assert composition.workflow is None
+    assert composition.lock.schema_version == "3"
+    assert not hasattr(composition, "audit_full_graph")

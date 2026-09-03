@@ -22,12 +22,9 @@ from assurance_product.models import (
     ENGINE_API,
     PLUGIN_ID,
     PLUGIN_VERSION,
-    PREPARE_IDS,
     BuiltDeploymentWheel,
     DeploymentBindingsV1,
     adapter_secret_handles,
-    alias_ids_for_prepare,
-    expected_finalize_ids,
 )
 
 _WHEEL_EPOCH = (1980, 1, 1, 0, 0, 0)
@@ -129,7 +126,7 @@ class DeploymentPlugin:
                 data=item["data"],
                 resource_ids=tuple(str(resource_id) for resource_id in item["resource_ids"]),
                 secret_handles=tuple(str(handle) for handle in item["secret_handles"]),
-                contract_id=item.get("contract_id"),
+                contract_id=str(item.get("contract_id") or item["capability_id"]),
             )
             for item in contribution_doc["bindings"]
         )
@@ -517,8 +514,16 @@ def _publication_cut(_fault_id: str) -> None:
 
 
 def _reject_capability_source_drift() -> None:
+    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
+
     live_prepares, live_finalizes = _live_prepare_and_finalize_ids()
-    if live_prepares != frozenset(PREPARE_IDS) or live_finalizes != expected_finalize_ids():
+    expected_prepares = frozenset(
+        contract.prepare_handler_id for contract in AGENT_EXECUTION_CONTRACTS.values()
+    )
+    expected_finalizes = frozenset(
+        contract.finalize_handler_id for contract in AGENT_EXECUTION_CONTRACTS.values()
+    )
+    if live_prepares != expected_prepares or live_finalizes != expected_finalizes:
         raise BindingBuildError("source drift: installed prepare/finalize closure")
 
 
@@ -656,17 +661,12 @@ def _resource_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, objec
 def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object], ...]:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
-    adapter_data = bindings.adapter_binding.model_dump(mode="json")
     execute_target = f"{bindings.runtime_plugin_id}.execute"
     secret_handles = list(adapter_secret_handles(bindings.adapter_binding))
     documents: list[dict[str, object]] = []
-    for prepare_id in PREPARE_IDS:
-        assignment = bindings.routes[prepare_id]
-        prepare_alias, execute_alias, finalize_alias = alias_ids_for_prepare(prepare_id)
-        stem = prepare_id.removesuffix(".prepare")
-        job = AGENT_EXECUTION_CONTRACTS[prepare_id]
+    for contract_id, job in AGENT_EXECUTION_CONTRACTS.items():
+        assignment = bindings.routes[contract_id]
         agent_profile = job.agent_profile
-        contract_id = job.contract_id
         permission_digest = canonical_digest(
             bindings.permission_profiles[assignment.permission_profile_id].model_dump(mode="json")
         )
@@ -682,13 +682,13 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
                 "worker_profile": assignment.worker_profile,
                 "permission_profile_digest": permission_digest,
                 "request_policy_digest": policy_digest,
-                "capability_binding_id": prepare_alias,
+                "capability_binding_id": contract_id,
             }
         )
         documents.append(
             {
-                "capability_id": prepare_alias,
-                "target_capability_id": prepare_id,
+                "capability_id": contract_id,
+                "target_capability_id": execute_target,
                 "data": {
                     "agent_profile": agent_profile,
                     "execution": {
@@ -704,27 +704,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
                     assignment.permission_profile_id,
                     assignment.request_policy_id,
                 ],
-                "secret_handles": [],
-                "contract_id": contract_id,
-            }
-        )
-        documents.append(
-            {
-                "capability_id": execute_alias,
-                "target_capability_id": execute_target,
-                "data": adapter_data,
-                "resource_ids": [],
                 "secret_handles": secret_handles,
-                "contract_id": contract_id,
-            }
-        )
-        documents.append(
-            {
-                "capability_id": finalize_alias,
-                "target_capability_id": f"{stem}.finalize",
-                "data": None,
-                "resource_ids": [],
-                "secret_handles": [],
                 "contract_id": contract_id,
             }
         )

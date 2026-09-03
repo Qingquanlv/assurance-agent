@@ -285,7 +285,7 @@ def test_quality_contracts_import_only_upstream_public_contracts() -> None:
 def test_quality_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_quality.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "fact-baseline": (

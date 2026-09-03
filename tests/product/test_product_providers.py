@@ -159,13 +159,17 @@ def test_providers_return_one_minimal_manifest_per_adapter():
     assert cursor.workflow is None
     assert opencode.workflow_resource_id is None
     assert cursor.workflow_resource_id is None
-    assert opencode.workflow_module is not None
-    assert cursor.workflow_module is not None
-    assert opencode.workflow_module == cursor.workflow_module
-    assert opencode.workflow_module_resources == cursor.workflow_module_resources
-    assert opencode.workflow_slot_bindings == cursor.workflow_slot_bindings
-    assert len(opencode.workflow_module_resources) == 6
-    assert len(opencode.workflow_slot_bindings) == 99
+    assert opencode.workflow_module is None
+    assert cursor.workflow_module is None
+    assert opencode.workflow_module_resources == ()
+    assert cursor.workflow_module_resources == ()
+    assert opencode.workflow_slot_bindings == ()
+    assert cursor.workflow_slot_bindings == ()
+    assert (
+        opencode.graph_factory_symbol
+        == cursor.graph_factory_symbol
+        == "assurance_product.graphs.factory:build_product_graphs"
+    )
 
 
 def test_committed_product_declaration_bytes_match_canonical_documents() -> None:
@@ -183,8 +187,7 @@ def test_committed_product_declaration_bytes_match_canonical_documents() -> None
 
 def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
-    from assurance_product.models import PREPARE_IDS, alias_ids_for_prepare
-    from assurance_product.output_routes import OutputRouteCatalog, execute_alias_for_prepare
+    from assurance_product.output_routes import OutputRouteCatalog
     from assurance_product.product import (
         AssuranceCursorProductProvider,
         AssuranceOpenCodeProductProvider,
@@ -192,24 +195,19 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
 
     change_id = "CH-CURRENT-001"
     catalog = OutputRouteCatalog()
+    assert len(AGENT_EXECUTION_CONTRACTS) == 33
     for provider in (AssuranceOpenCodeProductProvider, AssuranceCursorProductProvider):
         manifest = provider.manifest()
         assert manifest.workflow is None
-        assert manifest.workflow_module is not None
-        bound = {item.capability_id: item for item in manifest.workflow_slot_bindings}
-        for prepare_id in PREPARE_IDS:
-            prepare_alias, execute_capability, finalize_alias = alias_ids_for_prepare(prepare_id)
-            assert execute_capability in bound
-            assert bound[execute_capability].contract_id == AGENT_EXECUTION_CONTRACTS[prepare_id].contract_id
-            assert prepare_alias in bound
-            assert finalize_alias in bound
-            resources = AGENT_EXECUTION_CONTRACTS[prepare_id].resources
+        assert manifest.workflow_module is None
+        assert manifest.graph_factory_symbol == "assurance_product.graphs.factory:build_product_graphs"
+        for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
+            resources = contract.resources
             assert isinstance(resources, ResourceClaimTemplate)
             assert resources.parameters == {"change_id": "/workspace/scope_id"}
-            execute_alias = execute_alias_for_prepare(prepare_id)
             assert resources.resolve(
                 {"workspace": {"scope_id": change_id}}
-            ).writes == catalog.resource_claims(execute_alias, change_id)
+            ).writes == catalog.resource_claims(contract_id, change_id)
 
 
 def _runtime_source(adapter: str) -> ProviderSource:

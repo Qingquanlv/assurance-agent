@@ -63,17 +63,10 @@ def test_compile_authenticates_sources_and_prints_lock_identity(cli_runner, inst
     result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
     assert result.exit_code == 0, result.output
     document = json.loads(result.stdout)
-    assert document["lock_digest"] == composition.lock_digest
-    assert document["composition_digest"] == composition.digest
-    assert document["workflow_digest"] == composition.workflow.digest
-    assert document["product"] == "assurance-opencode"
-    assert document["engine_api"] == "2.0"
-    assert "intake" in document["entrypoints"]
-    assert document["audit"]["unreachable_nodes"] == []
-    assert document["audit"]["dead_ends"] == []
-    assert document["audit"]["forbidden_direct_targets"] == []
-    assert document["audit"]["missing_bindings"] == []
-    assert document["audit"]["uninventoried_nodes"] == []
+    assert set(document) == {"product_lock", "graph_manifest"}
+    assert document["product_lock"]["schema_version"] == "3"
+    assert document["product_lock"]["digest"] == composition.lock.digest
+    assert document["graph_manifest"]["revision"]["revision_id"]
 
 
 def test_installed_assurance_contributions_accept_rich_product_schemas(installed_sources):
@@ -139,8 +132,8 @@ def test_compile_does_not_start_an_invocation(cli_runner, installed_sources, tmp
     assert not (engine_root / "invocations").exists() or not any((engine_root / "invocations").iterdir())
 
 
-def test_compile_emits_coexistence_bundle_without_runtime_secrets(cli_runner, installed_sources):
-    from assurance_product.application import CoexistenceBuildArtifacts
+def test_compile_emits_v3_product_artifacts_without_runtime_secrets(cli_runner, installed_sources):
+    from assurance_product.application import ProductBuildArtifacts
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
 
@@ -148,24 +141,26 @@ def test_compile_emits_coexistence_bundle_without_runtime_secrets(cli_runner, in
     result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
     assert result.exit_code == 0, result.output
     document = json.loads(result.stdout)
-    bundle = CoexistenceBuildArtifacts.model_validate(document["coexistence"])
-    assert bundle.invocation_lock.schema_version == "2"
-    assert bundle.invocation_lock.digest == composition.lock.digest
-    assert bundle.product_lock.schema_version == "3"
-    dumped = bundle.product_lock.model_dump(mode="json")
+    artifacts = ProductBuildArtifacts(
+        product_lock=document["product_lock"],
+        graph_manifest=document["graph_manifest"],
+    )
+    assert artifacts.product_lock.schema_version == "3"
+    assert artifacts.product_lock.digest == composition.lock.digest
+    dumped = artifacts.product_lock.model_dump(mode="json")
     assert "compiled_workflow" not in dumped
     assert "compiled_workflow_digest" not in dumped
     assert "workflow_digest" not in dumped
     assert "execution_host" not in dumped
+    assert "legacy_invocation_lock" not in document
+    assert "invocation_lock" not in document
+    assert "coexistence" not in document
     encoded = json.dumps(document, sort_keys=True)
-    assert "workflow_digest" not in json.dumps(dumped)
     assert "saver" not in encoded
     assert "AssuranceAttemptKernel" not in encoded
     assert "secret" not in encoded.lower() or "secret_handles" in encoded
-    assert "/Users/" not in json.dumps(bundle.manifest.model_dump(mode="json"))
-    assert document["lock_digest"] == composition.lock_digest
-    assert document["product_lock_digest"] == bundle.product_lock.digest
-    assert document["revision_id"] == bundle.manifest.revision.revision_id
+    assert "/Users/" not in json.dumps(artifacts.graph_manifest.model_dump(mode="json"))
+    assert artifacts.graph_manifest.revision.revision_id
 
 
 def test_organization_config_change_alters_product_lock_not_topology(
@@ -184,15 +179,18 @@ def test_organization_config_change_alters_product_lock_not_topology(
     changed = cli_runner.invoke(app, ["compile", "--json", *args])
     assert changed.exit_code == 0, changed.output
     second = json.loads(changed.stdout)
-    assert second["product_lock_digest"] != first["product_lock_digest"]
-    assert second["revision_id"] != first["revision_id"]
+    assert second["product_lock"]["digest"] != first["product_lock"]["digest"]
     assert (
-        second["coexistence"]["manifest"]["revision"]["factory_symbols"]
-        == first["coexistence"]["manifest"]["revision"]["factory_symbols"]
+        second["graph_manifest"]["revision"]["revision_id"]
+        != first["graph_manifest"]["revision"]["revision_id"]
     )
     assert (
-        second["coexistence"]["manifest"]["entrypoint_contract_digests"]
-        == first["coexistence"]["manifest"]["entrypoint_contract_digests"]
+        second["graph_manifest"]["revision"]["factory_symbols"]
+        == first["graph_manifest"]["revision"]["factory_symbols"]
+    )
+    assert (
+        second["graph_manifest"]["entrypoint_contract_digests"]
+        == first["graph_manifest"]["entrypoint_contract_digests"]
     )
 
 

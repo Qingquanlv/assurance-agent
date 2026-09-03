@@ -419,7 +419,7 @@ def test_classify_coverage_state_table(
 
 def test_coverage_states_are_exactly_the_closed_set() -> None:
     from assurance_quality.contracts.coverage import COVERAGE_STATES
-    from assurance_quality.contracts.workflow import CoverageAssessmentPublicV1
+    from assurance_quality.contracts.decisions import CoverageAssessmentPublicV1
 
     assert set(COVERAGE_STATES) == {
         "satisfied",

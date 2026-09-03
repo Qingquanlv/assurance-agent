@@ -11,7 +11,7 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts import TaskAttemptContract
 from graph_engine.plugin_api import AttemptContractRef, TaskContext
 
-from agent_runtime_contracts import AgentExecutionContract, expand_agent_job_slots
+from agent_runtime_contracts import AgentExecutionContract
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOBS
 from assurance_execution.plugin import ExecutionPlugin
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_AGENT_JOBS
@@ -192,18 +192,16 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 
-def test_semantic_aliases_remain_ninety_nine() -> None:
-    expanded = expand_agent_job_slots(
-        (
-            AGENT_JOB_CONTRACTS,
-            GENERATION_AGENT_JOBS,
-            EXECUTION_AGENT_JOBS,
-            QUALITY_AGENT_JOBS,
-            HEALING_AGENT_JOBS,
-            IMPROVEMENT_AGENT_JOBS,
-        )
+def test_semantic_agent_contracts_are_thirty_three() -> None:
+    catalogs = (
+        AGENT_JOB_CONTRACTS,
+        GENERATION_AGENT_JOBS,
+        EXECUTION_AGENT_JOBS,
+        QUALITY_AGENT_JOBS,
+        HEALING_AGENT_JOBS,
+        IMPROVEMENT_AGENT_JOBS,
     )
-    assert len(expanded) == 99
+    assert sum(len(catalog) for catalog in catalogs) == 33
 
 
 def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:

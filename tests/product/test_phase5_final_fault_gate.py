@@ -225,7 +225,7 @@ def test_run_gate_nodes_isolates_cross_file_binding_pollution() -> None:
     result = conformance.run_gate_nodes(
         REPO_ROOT,
         (
-            "tests/product/test_binding_builder.py::test_generated_provider_contributes_exactly_99_aliases",
+            "tests/product/test_binding_builder.py::test_generated_provider_contributes_exactly_33_semantic_bindings",
             "tests/product/test_composition_authority.py::test_forged_alias_target_fails_closed",
         ),
     )

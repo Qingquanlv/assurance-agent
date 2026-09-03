@@ -5,6 +5,11 @@ from assurance_improvement.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS,
     attempt_contract_refs,
 )
+from assurance_improvement.contracts.decisions import (
+    APPLY_EVALUATION_OUTCOMES,
+    APPLY_HUMAN_ACTIONS,
+    AUTO_REVIEW_DECISIONS,
+)
 from assurance_improvement.contracts.declarations import (
     DECLARATION_EVIDENCE_KIND_ORDER,
     DECLARATION_PROPOSAL_DIR_REL,
@@ -89,6 +94,9 @@ from assurance_improvement.contracts.review import (
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
+    "APPLY_EVALUATION_OUTCOMES",
+    "APPLY_HUMAN_ACTIONS",
+    "AUTO_REVIEW_DECISIONS",
     "ALLOWED_DELIVERIES",
     "ApplyAttemptResult",
     "DECLARATION_EVIDENCE_KIND_ORDER",

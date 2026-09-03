@@ -193,7 +193,7 @@ def test_execution_contracts_import_only_intake_and_generation_contracts() -> No
 def test_execution_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_execution.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "execute": (

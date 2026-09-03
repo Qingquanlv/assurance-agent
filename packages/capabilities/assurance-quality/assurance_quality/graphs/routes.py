@@ -4,7 +4,7 @@ from collections.abc import Mapping
 
 from graph_engine.stategraph.routing import select_exclusive_route
 
-from assurance_quality.contracts.workflow import COVERAGE_STATES, FIX_ELIGIBLE_CLASSIFICATIONS
+from assurance_quality.contracts.decisions import COVERAGE_STATES, FIX_ELIGIBLE_CLASSIFICATIONS
 
 _COVERAGE_OTHERWISE = "failed"
 _FAILURE_OTHERWISE = "failed"

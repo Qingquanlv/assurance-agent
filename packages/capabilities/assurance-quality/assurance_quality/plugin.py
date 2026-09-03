@@ -52,7 +52,6 @@ QUALITY_RESOURCE_FILES: dict[str, str] = {
     "assurance.quality.skill.aa-issue-analyzer.v1": "skills/aa-issue-analyzer/SKILL.md",
     "assurance.quality.skill.aa-issue-triage-advisor.v1": "skills/aa-issue-triage-advisor/SKILL.md",
     "assurance.quality.skill.aa-report-generator.v1": "skills/aa-report-generator/SKILL.md",
-    "assurance.quality.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

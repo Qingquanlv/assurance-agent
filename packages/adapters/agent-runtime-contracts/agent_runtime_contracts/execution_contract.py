@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from types import MappingProxyType
-from typing import Any, Generic, TypeVar
+from typing import Generic, TypeVar
 
 from pydantic import BaseModel
 
@@ -94,33 +92,7 @@ class AgentExecutionContract(Generic[InputT, AgentResultT, OutputT]):
         )
 
 
-def _feature_and_base(contract: AgentExecutionContract[Any, Any, Any]) -> tuple[str, str]:
-    body = contract.contract_id.removeprefix("assurance.").removesuffix(".v1")
-    feature, marker, base = body.partition(".agent.")
-    if marker != ".agent." or not feature or not base:
-        raise ValueError(f"invalid agent job contract id: {contract.contract_id!r}")
-    return feature, base
-
-
-def expand_agent_job_slots(
-    catalogs: Sequence[Mapping[str, AgentExecutionContract[Any, Any, Any]]],
-) -> Mapping[str, AgentExecutionContract[Any, Any, Any]]:
-    expanded: dict[str, AgentExecutionContract[Any, Any, Any]] = {}
-    for catalog in catalogs:
-        for base, contract in catalog.items():
-            feature, contract_base = _feature_and_base(contract)
-            if contract_base != base:
-                raise ValueError(f"agent job catalog key drifted: {base!r} vs {contract.contract_id!r}")
-            for phase in ("prepare", "execute", "finalize"):
-                alias = f"assurance.product.agent.{feature}.{base}.{phase}"
-                if alias in expanded:
-                    raise ValueError(f"duplicate agent job alias: {alias}")
-                expanded[alias] = contract
-    return MappingProxyType(expanded)
-
-
 __all__ = [
     "AgentExecutionContract",
     "RAW_AGENT_CONTRACT_SCHEMA_VERSION",
-    "expand_agent_job_slots",
 ]

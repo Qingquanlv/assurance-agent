@@ -156,7 +156,14 @@ def validate_contribution_values(
         for binding in contribution.bindings:
             if not isinstance(binding, CapabilityBindingContribution):
                 raise ContributionValueError(f"plugin {owner_id} contributed an invalid binding entry")
-            _owned_id(binding.capability_id, owner_id, "binding")
+            if (
+                binding.capability_id.startswith(f"{owner_id}.")
+                or (binding.contract_id and binding.capability_id == binding.contract_id)
+                or (".agent." in binding.capability_id and binding.capability_id.endswith(".v1"))
+            ):
+                _qualified_id(binding.capability_id, "binding id")
+            else:
+                _owned_id(binding.capability_id, owner_id, "binding")
             reserve(binding.capability_id, "binding")
             try:
                 freeze_json(binding.data)
@@ -341,7 +348,10 @@ class ContributionProjection(FrozenModel):
         )
         seen: dict[str, str] = {}
         for entry_id, kind in category_ids:
-            _owned_id(entry_id, self.owner_id, kind)
+            if kind == "binding" and ".agent." in entry_id and entry_id.endswith(".v1"):
+                _qualified_id(entry_id, "binding id")
+            else:
+                _owned_id(entry_id, self.owner_id, kind)
             previous = seen.get(entry_id)
             if previous is not None:
                 raise ValueError(f"cross-kind contribution id: {entry_id} is both {previous} and {kind}")
@@ -758,9 +768,9 @@ def validate_contribution_projection_set(
         )
         for entry_id, kind in categories:
             previous = all_ids.get(entry_id)
-            if previous is not None:
+            if previous is not None and {previous, kind} != {"attempt contract", "binding"}:
                 raise ValueError(f"cross-kind contribution id: {entry_id} is both {previous} and {kind}")
-            all_ids[entry_id] = kind
+            all_ids[entry_id] = kind if previous is None else previous
         for effect in projection.effects:
             if effect.intent_schema_id not in schema_ids:
                 raise ValueError(f"unknown effect intent schema for {effect.kind}: {effect.intent_schema_id}")

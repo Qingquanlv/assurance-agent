@@ -12,7 +12,7 @@ from graph_engine.plugin_api import FrozenModel
 from assurance_healing.contracts.agent import CoverageRepairInputV1, FixProposalInputV1
 from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES, HealingRepairOutcome
 from assurance_healing.contracts.decisions import advance_repair_round
-from assurance_healing.contracts.workflow import RepairRoundKind
+from assurance_healing.contracts.status import RepairRoundKind
 from assurance_healing.graphs.state import HealingRepairPublicV1, HealingState
 
 COVERAGE_REVIEW_ACTIONS = ("approve", "reject")

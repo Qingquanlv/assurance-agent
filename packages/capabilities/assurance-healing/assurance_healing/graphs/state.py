@@ -6,7 +6,7 @@ from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
 from assurance_healing.contracts.coverage_repair import HealingRepairOutcome
-from assurance_healing.contracts.workflow import RepairRoundKind
+from assurance_healing.contracts.status import RepairRoundKind
 
 
 class HealingRepairPublicV1(FrozenModel):

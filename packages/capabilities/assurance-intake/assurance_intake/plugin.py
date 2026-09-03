@@ -54,7 +54,6 @@ INTAKE_RESOURCE_FILES: dict[str, str] = {
     "assurance.intake.skill.aa-case-reviewer.v1": "skills/aa-case-reviewer/SKILL.md",
     "assurance.intake.skill.aa-explore.v1": "skills/aa-explore/SKILL.md",
     "assurance.intake.skill.aa-intake.v1": "skills/aa-intake/SKILL.md",
-    "assurance.intake.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

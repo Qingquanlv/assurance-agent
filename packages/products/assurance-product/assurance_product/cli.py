@@ -39,8 +39,6 @@ from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1
 from assurance_product.product import (
     AssuranceCompositionError,
     AssuranceCompositionRequest,
-    GraphAuditResult,
-    audit_full_graph,
     prepare_change_workspace,
     reopen_change_workspace,
     resolve_assurance_composition,
@@ -132,19 +130,19 @@ def compile_command(
         from assurance_product.product import reject_organization_overrides
 
         reject_organization_overrides(Path(cast(str, config_tree)))
-        composition, audit = _resolve_and_audit(
+        composition, _audit = _resolve_and_audit(
             product=cast(str, product),
             binding_dist=cast(str, binding_dist),
             binding_entrypoint=cast(str, binding_entrypoint),
             binding_declaration=cast(str, binding_declaration),
             config_tree=cast(str, config_tree),
         )
-        document = AssuranceProductApplication().compile(
+        artifacts = AssuranceProductApplication().compile(
             composition,
-            audit,
             product=cast(str, product),
             config_tree=cast(str, config_tree),
         )
+        document = artifacts.model_dump()
     except CommandError as error:
         _fail(str(error), error.code)
     except Exception as error:
@@ -585,7 +583,7 @@ def _resolve_and_audit(
     binding_entrypoint: str,
     binding_declaration: str,
     config_tree: str,
-) -> tuple[FrozenComposition, GraphAuditResult]:
+) -> tuple[FrozenComposition, None]:
     if binding_entrypoint != "deployment":
         raise CommandError("binding entrypoint must be deployment")
     if product not in {"assurance-opencode", "assurance-cursor"}:
@@ -610,18 +608,7 @@ def _resolve_and_audit(
         OSError,
     ) as error:
         raise CommandError(str(error)) from error
-    audit = audit_full_graph(composition.workflow, composition)
-    if any(
-        (
-            audit.unreachable_nodes,
-            audit.dead_ends,
-            audit.forbidden_direct_targets,
-            audit.missing_bindings,
-            audit.uninventoried_nodes,
-        )
-    ):
-        raise CommandError(f"graph audit failed: {audit.model_dump(mode='json')}")
-    return composition, audit
+    return composition, None
 
 
 def _authorization(secrets: Sequence[str]) -> InvocationRuntimeAuthorization:

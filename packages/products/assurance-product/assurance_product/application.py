@@ -23,7 +23,6 @@ from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.export import publish_achieved, select_publish_change
 from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS, ProductInputV1, StatusV1
 from assurance_product.product import (
-    GraphAuditResult,
     coexistence_graph_manifest,
     product_lock_from_composition,
     reject_organization_overrides,
@@ -66,30 +65,23 @@ _LG_EXIT = {
 }
 
 
-class CoexistenceBuildArtifacts:
+class ProductBuildArtifacts:
     def __init__(
         self,
-        invocation_lock: InvocationLock | Mapping[str, object],
         product_lock: ProductLock | Mapping[str, object],
-        manifest: GraphBuildManifest | Mapping[str, object],
+        graph_manifest: GraphBuildManifest | Mapping[str, object],
     ) -> None:
-        self.invocation_lock = _LockView(invocation_lock)
-        self.product_lock = _LockView(product_lock)
-        self.manifest = _ManifestView(manifest)
-
-    @classmethod
-    def model_validate(cls, data: Mapping[str, object]) -> CoexistenceBuildArtifacts:
-        return cls(
-            invocation_lock=cast(Mapping[str, object], data["invocation_lock"]),
-            product_lock=cast(Mapping[str, object], data["product_lock"]),
-            manifest=cast(Mapping[str, object], data["manifest"]),
+        self.product_lock = product_lock if isinstance(product_lock, ProductLock) else _LockView(product_lock)
+        self.graph_manifest = (
+            graph_manifest
+            if isinstance(graph_manifest, GraphBuildManifest)
+            else _ManifestView(graph_manifest)
         )
 
     def model_dump(self) -> dict[str, object]:
         return {
-            "invocation_lock": self.invocation_lock.model_dump(mode="json"),
             "product_lock": self.product_lock.model_dump(mode="json"),
-            "manifest": self.manifest.model_dump(mode="json"),
+            "graph_manifest": self.graph_manifest.model_dump(mode="json"),
         }
 
 
@@ -181,29 +173,17 @@ class AssuranceProductApplication:
     def compile(
         self,
         composition: Any,
-        audit: GraphAuditResult,
         *,
         product: str,
         config_tree: str,
-    ) -> dict[str, object]:
+    ) -> ProductBuildArtifacts:
         reject_organization_overrides(Path(config_tree))
         validate_entrypoint_runtime_cutover(ENTRYPOINT_RUNTIME_CUTOVER)
         product_lock = product_lock_from_composition(composition)
+        if product_lock.schema_version != "3":
+            raise ValueError("aa compile emits only ProductLock v3")
         manifest = coexistence_graph_manifest(composition, product_lock)
-        bundle = CoexistenceBuildArtifacts(composition.lock, product_lock, manifest)
-        dumped = bundle.model_dump()
-        return {
-            "lock_digest": composition.lock_digest,
-            "composition_digest": composition.digest,
-            "workflow_digest": composition.workflow.digest,
-            "product": product,
-            "engine_api": composition.lock.engine_api,
-            "entrypoints": sorted(composition.workflow.entrypoints),
-            "audit": audit.model_dump(mode="json"),
-            "product_lock_digest": product_lock.digest,
-            "revision_id": manifest.revision.revision_id,
-            "coexistence": dumped,
-        }
+        return ProductBuildArtifacts(product_lock, manifest)
 
     def start(
         self,
@@ -1054,6 +1034,6 @@ async def _graph_snapshot(artifact: object, entrypoint: str, invocation_id: str)
 
 __all__ = [
     "AssuranceProductApplication",
-    "CoexistenceBuildArtifacts",
+    "ProductBuildArtifacts",
     "parse_resume_file",
 ]

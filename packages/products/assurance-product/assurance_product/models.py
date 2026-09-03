@@ -14,7 +14,7 @@ from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_product.agent_contracts import PREPARE_IDS
+from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
 PRODUCT_ID = "assurance"
 ENGINE_API = "2.0"
@@ -322,13 +322,13 @@ class DeploymentBindingsV1(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_closed_document(self) -> DeploymentBindingsV1:
-        expected = set(PREPARE_IDS)
+        expected = set(AGENT_EXECUTION_CONTRACTS)
         actual = set(self.routes)
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
         if missing or extra:
             raise ValueError(
-                f"routes must contain exactly the 33 prepare IDs; missing={missing!r} extra={extra!r}"
+                f"routes must contain exactly the 33 semantic Agent contract IDs; missing={missing!r} extra={extra!r}"
             )
         for assignment in self.routes.values():
             if assignment.permission_profile_id not in self.permission_profiles:
@@ -402,26 +402,8 @@ def adapter_secret_handles(binding: OpenCodeBindingV1 | CursorBindingV1) -> tupl
     return (handle,)
 
 
-def alias_ids_for_prepare(prepare_id: str) -> tuple[str, str, str]:
-    stem = prepare_id.removesuffix(".prepare")
-    key = stem.removeprefix("assurance.")
-    return (
-        f"assurance.product.agent.{key}.prepare",
-        f"assurance.product.agent.{key}.execute",
-        f"assurance.product.agent.{key}.finalize",
-    )
-
-
 def all_binding_ids() -> tuple[str, ...]:
-    return tuple(alias for prepare_id in PREPARE_IDS for alias in alias_ids_for_prepare(prepare_id))
-
-
-def finalize_aliases() -> tuple[str, ...]:
-    return tuple(alias_ids_for_prepare(prepare_id)[2] for prepare_id in PREPARE_IDS)
-
-
-def expected_finalize_ids() -> frozenset[str]:
-    return frozenset(prepare_id.removesuffix(".prepare") + ".finalize" for prepare_id in PREPARE_IDS)
+    return tuple(sorted(AGENT_EXECUTION_CONTRACTS))
 
 
 TEST_FAMILY_ORDER: tuple[Literal["api", "e2e", "fuzz", "performance"], ...] = (

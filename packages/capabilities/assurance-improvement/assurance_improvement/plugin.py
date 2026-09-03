@@ -81,7 +81,6 @@ IMPROVEMENT_RESOURCE_FILES: dict[str, str] = {
         "skills/aa-retro-workflow-analysis/SKILL.md"
     ),
     "assurance.improvement.skill.aa-retro.v1": "skills/aa-retro/SKILL.md",
-    "assurance.improvement.workflow.module.v1": "workflow/module.yaml",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

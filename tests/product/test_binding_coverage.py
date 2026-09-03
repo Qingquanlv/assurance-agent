@@ -1,22 +1,13 @@
 from __future__ import annotations
 
 from tests.product.composition_harness import (
-    COVERAGE_PATH,
     SHADOW_VALIDATOR_CLONE_ID,
     coverage_bytes,
     evict_generated_binding_modules,
     project_binding_coverage,
     request_for,
 )
-from tests.product.conformance import ALL_BINDING_IDS, load_json
-
-
-def _contract_id_for_alias(binding_id: str) -> str:
-    rest = binding_id.removeprefix("assurance.product.agent.")
-    phase = rest.rsplit(".", 1)[-1]
-    body = rest.removesuffix(f".{phase}")
-    feature, _, base = body.partition(".")
-    return f"assurance.{feature}.agent.{base}.v1"
+from tests.product.conformance import ALL_BINDING_IDS
 
 
 def test_repeated_resolution_is_byte_identical(installed_sources):
@@ -38,14 +29,16 @@ def test_binding_coverage_matches_authenticated_opencode_projection(installed_so
 
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     projection = project_binding_coverage(composition)
-    recorded = load_json(COVERAGE_PATH)
-    assert set(recorded) == set(ALL_BINDING_IDS) == set(projection)
-    assert all(recorded[item]["data"] is None for item in ALL_BINDING_IDS if item.endswith(".finalize"))
-    assert projection == recorded
-    assert COVERAGE_PATH.read_bytes() == coverage_bytes(projection)
+    assert set(projection) == set(ALL_BINDING_IDS)
+    assert len(projection) == 33
+    assert not any(item.endswith(".finalize") for item in projection)
+    assert not any(item.startswith("assurance.product.agent.") for item in projection)
+    for item in projection.values():
+        assert item["contract_id"] in ALL_BINDING_IDS
+        assert item["data"] is not None
 
 
-def test_resolved_aliases_carry_the_base_job_contract_id(installed_sources):
+def test_resolved_bindings_use_semantic_contract_ids(installed_sources):
     evict_generated_binding_modules()
     from graph_engine.composition import CapabilityBindingEntry
 
@@ -58,19 +51,21 @@ def test_resolved_aliases_carry_the_base_job_contract_id(installed_sources):
         if isinstance(value, CapabilityBindingEntry)
     }
     assert set(bindings) == set(ALL_BINDING_IDS)
+    assert len(bindings) == 33
     for binding_id, entry in bindings.items():
-        assert entry.contract_id == _contract_id_for_alias(binding_id)
+        assert entry.contract_id == binding_id
 
 
-def test_cursor_resolution_repeats_and_keeps_finalize_null(installed_sources):
+def test_cursor_resolution_repeats_semantic_bindings(installed_sources):
     evict_generated_binding_modules()
     from assurance_product.product import resolve_assurance_composition
 
     first = project_binding_coverage(resolve_assurance_composition(request_for("cursor", installed_sources)))
     second = project_binding_coverage(resolve_assurance_composition(request_for("cursor", installed_sources)))
     assert coverage_bytes(first) == coverage_bytes(second)
-    assert all(first[item]["data"] is None for item in ALL_BINDING_IDS if item.endswith(".finalize"))
-    assert all(first[item]["secret_handles"] == [] for item in ALL_BINDING_IDS if item.endswith(".finalize"))
+    assert set(first) == set(ALL_BINDING_IDS)
+    assert len(first) == 33
+    assert not any(item.endswith(".finalize") for item in first)
 
 
 def test_shadow_validator_clone_is_absent_from_binding_coverage(installed_sources):

@@ -8,7 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
 
-from assurance_quality.contracts.workflow import COVERAGE_STATES
+from assurance_quality.contracts.decisions import COVERAGE_STATES
 from assurance_quality.graphs.nodes import (
     activation_assess,
     publish_fact_baseline,

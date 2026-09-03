@@ -5,7 +5,7 @@ from typing import Literal
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
-from assurance_quality.contracts.workflow import CoverageState, FailureClassification
+from assurance_quality.contracts.decisions import CoverageState, FailureClassification
 
 
 class QualityAssessPublicV1(FrozenModel):

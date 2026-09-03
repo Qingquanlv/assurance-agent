@@ -18,7 +18,7 @@
       },
       "adapter_version": "0.1.0",
       "deployment_binding_routes": {
-        "assurance.execution.execute.prepare": {
+        "assurance.execution.agent.execute.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -27,7 +27,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.execution.run.prepare": {
+        "assurance.execution.agent.run.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -36,7 +36,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.codegen-fix.prepare": {
+        "assurance.generation.agent.api.codegen-fix.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -45,7 +45,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.codegen.prepare": {
+        "assurance.generation.agent.api.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -54,7 +54,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.plan-review.prepare": {
+        "assurance.generation.agent.api.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -63,7 +63,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.plan.prepare": {
+        "assurance.generation.agent.api.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -72,7 +72,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.codegen-fix.prepare": {
+        "assurance.generation.agent.e2e.codegen-fix.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -81,7 +81,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.codegen.prepare": {
+        "assurance.generation.agent.e2e.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -90,7 +90,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.plan-review.prepare": {
+        "assurance.generation.agent.e2e.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -99,7 +99,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.plan.prepare": {
+        "assurance.generation.agent.e2e.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -108,7 +108,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.fuzz.codegen.prepare": {
+        "assurance.generation.agent.fuzz.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -117,7 +117,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.fuzz.plan-review.prepare": {
+        "assurance.generation.agent.fuzz.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -126,7 +126,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.fuzz.plan.prepare": {
+        "assurance.generation.agent.fuzz.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -135,7 +135,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.performance.codegen.prepare": {
+        "assurance.generation.agent.performance.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -144,7 +144,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.performance.plan-review.prepare": {
+        "assurance.generation.agent.performance.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -153,7 +153,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.performance.plan.prepare": {
+        "assurance.generation.agent.performance.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -162,7 +162,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.healing.coverage-repair.prepare": {
+        "assurance.healing.agent.coverage-repair.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -171,7 +171,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.healing.fix-proposal.prepare": {
+        "assurance.healing.agent.fix-proposal.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -180,7 +180,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.archive.prepare": {
+        "assurance.improvement.agent.archive.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -189,7 +189,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.improvement-review.prepare": {
+        "assurance.improvement.agent.improvement-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -198,7 +198,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro-eval-analysis.prepare": {
+        "assurance.improvement.agent.retro-eval-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -207,7 +207,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro-issue-analysis.prepare": {
+        "assurance.improvement.agent.retro-issue-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -216,7 +216,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro-workflow-analysis.prepare": {
+        "assurance.improvement.agent.retro-workflow-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -225,7 +225,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro.prepare": {
+        "assurance.improvement.agent.retro.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -234,7 +234,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.case-design.prepare": {
+        "assurance.intake.agent.case-design.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -243,7 +243,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.case-review.prepare": {
+        "assurance.intake.agent.case-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -252,7 +252,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.explore.prepare": {
+        "assurance.intake.agent.explore.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -261,7 +261,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.intake.prepare": {
+        "assurance.intake.agent.intake.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -270,7 +270,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.fact-baseline.prepare": {
+        "assurance.quality.agent.fact-baseline.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -279,7 +279,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.inspect.prepare": {
+        "assurance.quality.agent.inspect.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -288,7 +288,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.issue-analysis.prepare": {
+        "assurance.quality.agent.issue-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -297,7 +297,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.issue-triage.prepare": {
+        "assurance.quality.agent.issue-triage.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -306,7 +306,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.report.prepare": {
+        "assurance.quality.agent.report.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -345,7 +345,7 @@
       ],
       "requirement_path": "benchmark/vue-fastapi-admin/benchmark/requirements/dept-management.md",
       "routing_assignments": {
-        "assurance.execution.execute.prepare": {
+        "assurance.execution.agent.execute.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -354,7 +354,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.execution.run.prepare": {
+        "assurance.execution.agent.run.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -363,7 +363,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.codegen-fix.prepare": {
+        "assurance.generation.agent.api.codegen-fix.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -372,7 +372,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.codegen.prepare": {
+        "assurance.generation.agent.api.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -381,7 +381,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.plan-review.prepare": {
+        "assurance.generation.agent.api.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -390,7 +390,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.api.plan.prepare": {
+        "assurance.generation.agent.api.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -399,7 +399,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.codegen-fix.prepare": {
+        "assurance.generation.agent.e2e.codegen-fix.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -408,7 +408,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.codegen.prepare": {
+        "assurance.generation.agent.e2e.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -417,7 +417,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.plan-review.prepare": {
+        "assurance.generation.agent.e2e.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -426,7 +426,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.e2e.plan.prepare": {
+        "assurance.generation.agent.e2e.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -435,7 +435,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.fuzz.codegen.prepare": {
+        "assurance.generation.agent.fuzz.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -444,7 +444,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.fuzz.plan-review.prepare": {
+        "assurance.generation.agent.fuzz.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -453,7 +453,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.fuzz.plan.prepare": {
+        "assurance.generation.agent.fuzz.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -462,7 +462,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.performance.codegen.prepare": {
+        "assurance.generation.agent.performance.codegen.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -471,7 +471,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.performance.plan-review.prepare": {
+        "assurance.generation.agent.performance.plan-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -480,7 +480,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.performance.plan.prepare": {
+        "assurance.generation.agent.performance.plan.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -489,7 +489,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.healing.coverage-repair.prepare": {
+        "assurance.healing.agent.coverage-repair.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -498,7 +498,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.healing.fix-proposal.prepare": {
+        "assurance.healing.agent.fix-proposal.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -507,7 +507,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.archive.prepare": {
+        "assurance.improvement.agent.archive.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -516,7 +516,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.improvement-review.prepare": {
+        "assurance.improvement.agent.improvement-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -525,7 +525,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro-eval-analysis.prepare": {
+        "assurance.improvement.agent.retro-eval-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -534,7 +534,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro-issue-analysis.prepare": {
+        "assurance.improvement.agent.retro-issue-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -543,7 +543,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro-workflow-analysis.prepare": {
+        "assurance.improvement.agent.retro-workflow-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -552,7 +552,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.improvement.retro.prepare": {
+        "assurance.improvement.agent.retro.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -561,7 +561,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.case-design.prepare": {
+        "assurance.intake.agent.case-design.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -570,7 +570,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.case-review.prepare": {
+        "assurance.intake.agent.case-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -579,7 +579,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.explore.prepare": {
+        "assurance.intake.agent.explore.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -588,7 +588,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.intake.intake.prepare": {
+        "assurance.intake.agent.intake.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -597,7 +597,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.fact-baseline.prepare": {
+        "assurance.quality.agent.fact-baseline.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -606,7 +606,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.inspect.prepare": {
+        "assurance.quality.agent.inspect.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -615,7 +615,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.issue-analysis.prepare": {
+        "assurance.quality.agent.issue-analysis.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -624,7 +624,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.issue-triage.prepare": {
+        "assurance.quality.agent.issue-triage.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -633,7 +633,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.quality.report.prepare": {
+        "assurance.quality.agent.report.v1": {
           "limits": {
             "max_seconds": 3600
           },

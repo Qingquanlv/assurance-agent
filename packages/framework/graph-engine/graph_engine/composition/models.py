@@ -754,7 +754,14 @@ class CapabilityBindingEntry:
     contract_id: str | None = None
 
     def __post_init__(self) -> None:
-        _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
+        if (
+            self.capability_id.startswith(f"{self.owner_id}.")
+            or (self.contract_id and self.capability_id == self.contract_id)
+            or (".agent." in self.capability_id and self.capability_id.endswith(".v1"))
+        ):
+            _validate_registry_id(self.capability_id, "binding id")
+        else:
+            _validate_owned_registry_id(self.capability_id, self.owner_id, "binding")
         _validate_registry_id(self.target_capability_id, "binding target capability id")
         if self.contract_id is not None:
             _validate_registry_id(self.contract_id, "binding contract id")

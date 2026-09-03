@@ -334,7 +334,7 @@ def test_intake_imports_no_legacy_package() -> None:
 def test_intake_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_intake.contracts.workflow import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
         "case-design": (

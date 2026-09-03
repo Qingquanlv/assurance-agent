@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS
-from assurance_quality.contracts.workflow import COVERAGE_STATES, FailureClassification
+from assurance_quality.contracts.decisions import COVERAGE_STATES, FailureClassification
 from assurance_quality.graphs.factory import build_quality_graphs
 from assurance_quality.graphs.routes import (
     coverage_named_matches,
