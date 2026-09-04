@@ -409,16 +409,26 @@ def check_compile_ok(
         all_feature_task_contracts,
     )
     from assurance_product.models import PRODUCT_ENTRYPOINTS
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS, RAW_AGENT_RUNTIME_BINDING_ROWS
+    from assurance_product.runtime_bindings import (
+        authenticate_raw_agent_runtime_bindings,
+        raw_agent_runtime_binding_rows,
+        runtime_bindings_from_composition,
+    )
 
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     if len(PRODUCT_ENTRYPOINTS) != 14:
         raise SystemExit(f"14 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
+    if len(contracts) != 33:
+        raise SystemExit(f"33 Agent contracts expected, found {len(contracts)}")
     if len(contracts) + len(tasks) != 41:
         raise SystemExit(f"41 Attempt contracts expected, found {len(contracts) + len(tasks)}")
-    if len(AGENT_RUNTIME_BINDINGS) != 33 or len(RAW_AGENT_RUNTIME_BINDING_ROWS) != 33:
-        raise SystemExit("33 semantic Raw Agent runtime bindings expected")
+    if not callable(runtime_bindings_from_composition):
+        raise SystemExit("runtime_bindings_from_composition is missing")
+    if not callable(raw_agent_runtime_binding_rows):
+        raise SystemExit("raw_agent_runtime_binding_rows is missing")
+    if not callable(authenticate_raw_agent_runtime_bindings):
+        raise SystemExit("authenticate_raw_agent_runtime_bindings is missing")
     binding_source = Path(sys.modules["assurance_product.runtime_bindings"].__file__ or "").read_text(
         encoding="utf-8"
     )
