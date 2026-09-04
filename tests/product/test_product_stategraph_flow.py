@@ -4,7 +4,6 @@ import ast
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -214,26 +213,21 @@ def test_build_product_graphs_merges_twelve_thin_roots_plus_execute_and_full() -
 
 
 def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return() -> None:
-    features = _real_features()
+    from assurance_product.graphs.factory import _closed_entrypoints
+
+    features = _flow_features()
     thin = build_thin_entrypoint_graphs(context=_build_context(), features=features)
+    placeholder = next(iter(thin.entrypoints.values()))
+    closed = {**dict(thin.entrypoints), "execute": placeholder, "full": placeholder}
 
-    def _missing(**_kwargs: object) -> object:
-        return type(
-            "Thin", (), {"entrypoints": {name: thin.entrypoints[name] for name in list(thin.entrypoints)[1:]}}
-        )()
+    missing = {name: graph for name, graph in closed.items() if name != "intake"}
+    with pytest.raises(ValueError, match="missing"):
+        _closed_entrypoints(missing)
 
-    with pytest.raises((TypeError, ValueError), match="missing|14|entrypoint"):
-        with patch("assurance_product.graphs.factory.build_thin_entrypoint_graphs", _missing):
-            build_product_graphs(context=_build_context(), features=features)
-
-    def _extra(**_kwargs: object) -> object:
-        extra = dict(thin.entrypoints)
-        extra["rogue"] = thin.entrypoints["intake"]
-        return type("Thin", (), {"entrypoints": extra})()
-
-    with pytest.raises((TypeError, ValueError), match="extra|14|entrypoint"):
-        with patch("assurance_product.graphs.factory.build_thin_entrypoint_graphs", _extra):
-            build_product_graphs(context=_build_context(), features=features)
+    extra = dict(closed)
+    extra["rogue"] = placeholder
+    with pytest.raises(ValueError, match="extra"):
+        _closed_entrypoints(extra)
 
     class _Duplicate(Mapping[str, object]):
         def __init__(self, items: tuple[tuple[str, object], ...]) -> None:
@@ -251,13 +245,8 @@ def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return(
         def __len__(self) -> int:
             return len(self._items)
 
-    def _duplicate(**_kwargs: object) -> object:
-        items = tuple(thin.entrypoints.items()) + (("intake", thin.entrypoints["intake"]),)
-        return type("Thin", (), {"entrypoints": _Duplicate(items)})()
-
-    with pytest.raises((TypeError, ValueError), match="duplicate|14|entrypoint"):
-        with patch("assurance_product.graphs.factory.build_thin_entrypoint_graphs", _duplicate):
-            build_product_graphs(context=_build_context(), features=features)
+    with pytest.raises(ValueError, match="duplicate"):
+        _closed_entrypoints(_Duplicate(tuple(closed.items()) + (("intake", placeholder),)))
 
 
 def test_execute_composes_generation_execution_quality_and_report() -> None:

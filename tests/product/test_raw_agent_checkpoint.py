@@ -15,7 +15,6 @@ from tests.product.checkpoint_r_support import (
     require_checkpoint_r_preflight,
     seed_change_workspace,
 )
-from tests.product.composition_harness import request_for
 
 _T5A_LANGGRAPH = frozenset(
     {
@@ -105,12 +104,11 @@ def test_all_fourteen_roots_select_langgraph() -> None:
 
 def test_checkpoint_r_records_candidate_lock_and_revision(
     candidate_inventory,
-    installed_sources,
+    opencode_composition,
 ) -> None:
     from assurance_product.product import (
         product_graph_manifest,
         product_lock_from_composition,
-        resolve_assurance_composition,
     )
     from assurance_product.agent_contracts import all_feature_agent_contracts
     from assurance_product.runtime_bindings import (
@@ -118,7 +116,7 @@ def test_checkpoint_r_records_candidate_lock_and_revision(
         raw_agent_runtime_binding_rows,
     )
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     product_lock = product_lock_from_composition(composition)
     manifest = product_graph_manifest(composition, product_lock)
     rows = raw_agent_runtime_binding_rows(composition)

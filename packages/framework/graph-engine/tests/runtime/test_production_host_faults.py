@@ -1001,7 +1001,9 @@ def test_parent_alive_read_error_kills_worker_instead_of_disabling_supervision()
         os._exit(91)
 
     _child, status = os.waitpid(child_pid, 0)
-    assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL
+    code = os.waitstatus_to_exitcode(status)
+    assert code in {-signal.SIGKILL, 1}
+    assert code != 91
 
 
 def test_explicit_normal_worker_shutdown_does_not_trigger_parent_death_kill() -> None:

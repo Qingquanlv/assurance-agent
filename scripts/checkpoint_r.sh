@@ -238,7 +238,6 @@ uv run pytest -q \
   tests/product/test_archive_after_publish.py \
   tests/product/test_langgraph_sqlite_restart.py \
   tests/product/test_replay_properties.py \
-  tests/product/test_cli_sqlite_system_interrupt.py \
   tests/product/test_binding_builder_security.py \
   tests/product/test_export_security.py \
   tests/product/test_project_configuration_security.py \

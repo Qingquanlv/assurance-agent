@@ -14,7 +14,7 @@ from tests.product.cli_support import (
     nested_command_names,
     source_args,
 )
-from tests.product.composition_harness import copy_config_tree, request_for
+from tests.product.composition_harness import copy_config_tree
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -58,35 +58,85 @@ def test_help_exposes_exact_command_tree(cli_runner):
     assert nested_command_names(cli_runner, app, "lock") == {"show"}
 
 
-def test_compile_authenticates_sources_and_prints_lock_identity(cli_runner, installed_sources):
+def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
+    cli_runner, installed_sources, opencode_composition, tmp_path: Path
+):
+    from assurance_product.application import ProductBuildArtifacts
     from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
+    from tests.product.test_python_native_cutover import (
+        count_agent_occurrences,
+        count_raw_agent_runtime_bindings,
+        count_semantic_agent_contracts,
+    )
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
+    engine_root = tmp_path / "engine-root"
+    engine_root.mkdir()
+    result = cli_runner.invoke(
+        app,
+        ["compile", "--json", *source_args(installed_sources), "--engine-root", str(engine_root)],
+    )
     assert result.exit_code == 0, result.output
+    assert not (engine_root / "invocations").exists() or not any((engine_root / "invocations").iterdir())
     document = json.loads(result.stdout)
     assert set(document) == {"product_lock", "graph_manifest"}
-    assert document["product_lock"]["schema_version"] == "3"
-    assert document["product_lock"]["digest"] == composition.lock.digest
-    assert document["graph_manifest"]["revision"]["revision_id"]
+    artifacts = ProductBuildArtifacts(
+        product_lock=document["product_lock"],
+        graph_manifest=document["graph_manifest"],
+    )
+    assert artifacts.product_lock.schema_version == "3"
+    assert artifacts.product_lock.digest == opencode_composition.lock.digest
+    assert artifacts.graph_manifest.revision.revision_id
+    dumped = artifacts.product_lock.model_dump(mode="json")
+    assert "compiled_workflow" not in dumped
+    assert "compiled_workflow_digest" not in dumped
+    assert "workflow_digest" not in dumped
+    assert "execution_host" not in dumped
+    assert "legacy_invocation_lock" not in document
+    assert "invocation_lock" not in document
+    assert "coexistence" not in document
+    encoded = json.dumps(document, sort_keys=True)
+    assert "saver" not in encoded
+    assert "AssuranceAttemptKernel" not in encoded
+    assert "secret" not in encoded.lower() or "secret_handles" in encoded
+    assert "/Users/" not in json.dumps(artifacts.graph_manifest.model_dump(mode="json"))
+    assert len(raw_agent_runtime_binding_rows(opencode_composition)) == 33
+    assert count_semantic_agent_contracts() == 33
+    assert count_raw_agent_runtime_bindings() == 33
+    assert count_agent_occurrences() == 35
+
+    tree = copy_config_tree(tmp_path / "org-config")
+    policy = tree.path / ".aa" / "policy.yaml"
+    policy.write_text(policy.read_text(encoding="utf-8") + "# organization-config\n", encoding="utf-8")
+    args = source_args(installed_sources)
+    args[args.index("--config-tree") + 1] = str(tree.path)
+    changed = cli_runner.invoke(app, ["compile", "--json", *args])
+    assert changed.exit_code == 0, changed.output
+    second = json.loads(changed.stdout)
+    assert second["product_lock"]["digest"] != document["product_lock"]["digest"]
+    assert (
+        second["graph_manifest"]["revision"]["revision_id"]
+        != document["graph_manifest"]["revision"]["revision_id"]
+    )
+    assert (
+        second["graph_manifest"]["revision"]["factory_symbols"]
+        == document["graph_manifest"]["revision"]["factory_symbols"]
+    )
+    assert (
+        second["graph_manifest"]["entrypoint_contract_digests"]
+        == document["graph_manifest"]["entrypoint_contract_digests"]
+    )
 
 
-def test_installed_assurance_contributions_accept_rich_product_schemas(installed_sources):
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-
-    schema = composition.registries.schemas.entries["assurance.intake.schema.case-authoring.v1"]
+def test_installed_assurance_contributions_accept_rich_product_schemas(opencode_composition):
+    schema = opencode_composition.registries.schemas.entries["assurance.intake.schema.case-authoring.v1"]
     assert schema.media_type == "application/schema+json"
 
 
 def test_installed_assurance_effect_schemas_use_the_audited_closed_keyword_set(
-    installed_sources,
+    opencode_composition,
 ):
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     schema_ids = {
         schema_id
         for effect in composition.registries.effects.entries.values()
@@ -122,81 +172,6 @@ def test_compile_fails_closed_on_forged_config(cli_runner, installed_sources, tm
     assert result.exit_code == 40, result.output
 
 
-def test_compile_does_not_start_an_invocation(cli_runner, installed_sources, tmp_path: Path):
-    from assurance_product.cli import app
-
-    engine_root = tmp_path / "engine-root"
-    engine_root.mkdir()
-    result = cli_runner.invoke(
-        app,
-        ["compile", "--json", *source_args(installed_sources), "--engine-root", str(engine_root)],
-    )
-    assert result.exit_code == 0, result.output
-    assert not (engine_root / "invocations").exists() or not any((engine_root / "invocations").iterdir())
-
-
-def test_compile_emits_v3_product_artifacts_without_runtime_secrets(cli_runner, installed_sources):
-    from assurance_product.application import ProductBuildArtifacts
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
-    assert result.exit_code == 0, result.output
-    document = json.loads(result.stdout)
-    artifacts = ProductBuildArtifacts(
-        product_lock=document["product_lock"],
-        graph_manifest=document["graph_manifest"],
-    )
-    assert artifacts.product_lock.schema_version == "3"
-    assert artifacts.product_lock.digest == composition.lock.digest
-    dumped = artifacts.product_lock.model_dump(mode="json")
-    assert "compiled_workflow" not in dumped
-    assert "compiled_workflow_digest" not in dumped
-    assert "workflow_digest" not in dumped
-    assert "execution_host" not in dumped
-    assert "legacy_invocation_lock" not in document
-    assert "invocation_lock" not in document
-    assert "coexistence" not in document
-    encoded = json.dumps(document, sort_keys=True)
-    assert "saver" not in encoded
-    assert "AssuranceAttemptKernel" not in encoded
-    assert "secret" not in encoded.lower() or "secret_handles" in encoded
-    assert "/Users/" not in json.dumps(artifacts.graph_manifest.model_dump(mode="json"))
-    assert getattr(artifacts.graph_manifest.revision, "revision_id", None)
-
-
-def test_organization_config_change_alters_product_lock_not_topology(
-    cli_runner, installed_sources, tmp_path: Path
-):
-    from assurance_product.cli import app
-
-    baseline = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
-    assert baseline.exit_code == 0, baseline.output
-    first = json.loads(baseline.stdout)
-    tree = copy_config_tree(tmp_path / "org-config")
-    policy = tree.path / ".aa" / "policy.yaml"
-    policy.write_text(policy.read_text(encoding="utf-8") + "# organization-config\n", encoding="utf-8")
-    args = source_args(installed_sources)
-    args[args.index("--config-tree") + 1] = str(tree.path)
-    changed = cli_runner.invoke(app, ["compile", "--json", *args])
-    assert changed.exit_code == 0, changed.output
-    second = json.loads(changed.stdout)
-    assert second["product_lock"]["digest"] != first["product_lock"]["digest"]
-    assert (
-        second["graph_manifest"]["revision"]["revision_id"]
-        != first["graph_manifest"]["revision"]["revision_id"]
-    )
-    assert (
-        second["graph_manifest"]["revision"]["factory_symbols"]
-        == first["graph_manifest"]["revision"]["factory_symbols"]
-    )
-    assert (
-        second["graph_manifest"]["entrypoint_contract_digests"]
-        == first["graph_manifest"]["entrypoint_contract_digests"]
-    )
-
-
 def test_runtime_selection_module_is_absent() -> None:
     assert importlib.util.find_spec("assurance_product.runtime_selection") is None
     product_root = Path(__file__).resolve().parents[2]
@@ -220,42 +195,6 @@ def test_new_invocations_are_langgraph_without_a_selection_branch() -> None:
     assert "ENTRYPOINT_RUNTIME_CUTOVER" not in source
     assert "InvocationIdentityRecord" in source
     assert set(PRODUCT_ENTRYPOINTS)
-
-
-def test_compile_keeps_v3_lock_and_both_33_row_raw_agent_tables(cli_runner, installed_sources) -> None:
-    from graph_engine.boot.graph_revision import GraphBuildManifest
-    from graph_engine.composition.lock import ProductLock
-
-    from assurance_product.application import AssuranceProductApplication
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
-    from tests.product.test_python_native_cutover import (
-        count_agent_occurrences,
-        count_raw_agent_runtime_bindings,
-        count_semantic_agent_contracts,
-    )
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    artifacts = AssuranceProductApplication().compile(
-        composition,
-        product="assurance-opencode",
-        config_tree=str(installed_sources.configuration_tree.path),
-    )
-    result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
-    assert result.exit_code == 0, result.output
-    document = json.loads(result.stdout)
-    assert isinstance(artifacts.product_lock, ProductLock)
-    assert artifacts.product_lock.schema_version == "3"
-    assert isinstance(artifacts.graph_manifest, GraphBuildManifest)
-    assert len(raw_agent_runtime_binding_rows(composition)) == 33
-    assert count_semantic_agent_contracts() == 33
-    assert count_raw_agent_runtime_bindings() == 33
-    assert count_agent_occurrences() == 35
-    assert document["product_lock"]["digest"] == artifacts.product_lock.digest
-    assert (
-        document["graph_manifest"]["revision"]["revision_id"] == artifacts.graph_manifest.revision.revision_id
-    )
 
 
 def test_removing_selectors_cannot_disable_bypass_downgrade_or_relabel_checkpoint_r() -> None:

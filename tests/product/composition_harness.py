@@ -186,3 +186,10 @@ def installed_sources(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Inst
             extract = str(extract_root)
             while extract in sys.path:
                 sys.path.remove(extract)
+
+
+@pytest.fixture(scope="session")
+def opencode_composition(installed_sources: InstalledSources) -> FrozenComposition:
+    from assurance_product.product import resolve_assurance_composition
+
+    return resolve_assurance_composition(request_for("opencode", installed_sources))

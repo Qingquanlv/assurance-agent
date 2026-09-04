@@ -13,7 +13,6 @@ from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import ResolvedAttemptContract
 from graph_engine.attempts.keys import AttemptKey
 from tests.product.cli_support import lifecycle_authorization, write_project_dir
-from tests.product.composition_harness import request_for
 
 if TYPE_CHECKING:
     from assurance_product.runtime_ports import ProductRuntimePorts
@@ -36,12 +35,12 @@ class _ProductPortsFixture:
 
 
 @pytest.fixture
-def product_ports_fixture(installed_sources, tmp_path: Path):
+def product_ports_fixture(opencode_composition, tmp_path: Path):
     from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
-    from assurance_product.product import prepare_change_workspace, resolve_assurance_composition
+    from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_ports import ProductRuntimePorts
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     project = write_project_dir(tmp_path / "project")
     workspace = prepare_change_workspace(project, "CH-PORTS-FENCE")
 
@@ -77,17 +76,16 @@ def test_missing_fence_fails_before_kernel(product_ports_fixture) -> None:
     assert product_ports_fixture.kernel_call_count == 0
 
 
-def test_product_runtime_ports_register_observer_before_boot(installed_sources, tmp_path: Path) -> None:
-    asyncio.run(_register_observer(installed_sources, tmp_path))
+def test_product_runtime_ports_register_observer_before_boot(opencode_composition, tmp_path: Path) -> None:
+    asyncio.run(_register_observer(opencode_composition, tmp_path))
 
 
-async def _register_observer(installed_sources, tmp_path: Path) -> None:
-    from assurance_product.product import prepare_change_workspace, resolve_assurance_composition
+async def _register_observer(composition, tmp_path: Path) -> None:
+    from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_ports import ProductRuntimePorts
     from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
     from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     project = write_project_dir(tmp_path / "project")
     workspace = prepare_change_workspace(project, "CH-PORTS-001")
     async with ProductRuntimePorts.open(workspace, composition) as ports:
@@ -119,15 +117,16 @@ async def _register_observer(installed_sources, tmp_path: Path) -> None:
         assert ports.observer_registered_before_compile is True
 
 
-def test_production_observer_registry_rejects_empty_and_fake_only(installed_sources, tmp_path: Path) -> None:
-    asyncio.run(_reject_observers(installed_sources, tmp_path))
+def test_production_observer_registry_rejects_empty_and_fake_only(
+    opencode_composition, tmp_path: Path
+) -> None:
+    asyncio.run(_reject_observers(opencode_composition, tmp_path))
 
 
-async def _reject_observers(installed_sources, tmp_path: Path) -> None:
-    from assurance_product.product import prepare_change_workspace, resolve_assurance_composition
+async def _reject_observers(composition, tmp_path: Path) -> None:
+    from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_ports import ProductRuntimePorts, ProductionObserverError
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     project = write_project_dir(tmp_path / "project")
     workspace = prepare_change_workspace(project, "CH-PORTS-002")
     with pytest.raises(ProductionObserverError):
@@ -146,15 +145,14 @@ async def _reject_observers(installed_sources, tmp_path: Path) -> None:
             raise AssertionError("fake-only observer registry must not enter")
 
 
-def test_ports_shutdown_closes_in_reverse_after_recovery(installed_sources, tmp_path: Path) -> None:
-    asyncio.run(_shutdown_order(installed_sources, tmp_path))
+def test_ports_shutdown_closes_in_reverse_after_recovery(opencode_composition, tmp_path: Path) -> None:
+    asyncio.run(_shutdown_order(opencode_composition, tmp_path))
 
 
-async def _shutdown_order(installed_sources, tmp_path: Path) -> None:
-    from assurance_product.product import prepare_change_workspace, resolve_assurance_composition
+async def _shutdown_order(composition, tmp_path: Path) -> None:
+    from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_ports import ProductRuntimePorts
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     project = write_project_dir(tmp_path / "project")
     workspace = prepare_change_workspace(project, "CH-PORTS-003")
     async with ProductRuntimePorts.open(workspace, composition) as ports:
@@ -202,17 +200,16 @@ def test_aa_compile_does_not_construct_invocation_runtime(cli_runner, installed_
     assert opened == {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
 
 
-def test_bound_agent_executors_carry_the_production_host(installed_sources, tmp_path: Path) -> None:
-    asyncio.run(_bound_agent_executors_carry_host(installed_sources, tmp_path))
+def test_bound_agent_executors_carry_the_production_host(opencode_composition, tmp_path: Path) -> None:
+    asyncio.run(_bound_agent_executors_carry_host(opencode_composition, tmp_path))
 
 
-async def _bound_agent_executors_carry_host(installed_sources, tmp_path: Path) -> None:
+async def _bound_agent_executors_carry_host(composition, tmp_path: Path) -> None:
     from agent_runtime_contracts import ResolvedRawAgentExecutor
     from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
-    from assurance_product.product import prepare_change_workspace, resolve_assurance_composition
+    from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_ports import ProductRuntimePorts
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     project = write_project_dir(tmp_path / "project")
     workspace = prepare_change_workspace(project, "CH-PORTS-HOST")
     async with ProductRuntimePorts.open(

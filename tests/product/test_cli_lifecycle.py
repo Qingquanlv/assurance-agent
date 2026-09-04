@@ -4,20 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.product.cli_support import (
-    SECRET_ENV,
-    SECRET_VALUE,
-    common_lifecycle_args,
-    parse_json_output,
-)
-from tests.product.composition_harness import request_for
+from tests.product.cli_support import parse_json_output
 from tests.product.test_result_export import CHANGE_ID, write_achieved
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
-
-
-def _change_runtime(project_dir: Path, change_id: str) -> Path:
-    return project_dir / "qa" / "changes" / change_id / ".runtime"
 
 
 def test_start_requires_explicit_product_deployment_config_and_input(cli_runner, tmp_path):
@@ -35,41 +25,6 @@ def test_start_requires_explicit_product_deployment_config_and_input(cli_runner,
     assert "--config-tree" in result.output
     assert "--entrypoint" in result.output
     assert "--input" in result.output
-
-
-def test_start_creates_invocation_without_driving(cli_runner, installed_sources, tmp_path: Path, monkeypatch):
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-start-001",
-    )
-    result = cli_runner.invoke(app, ["start", *args])
-    assert result.exit_code == 0, result.output
-    document = parse_json_output(result.stdout)
-    assert document["invocation_id"] == "inv-start-001"
-    assert document["lock_digest"] == composition.lock_digest
-    assert document["composition_digest"] == composition.digest
-    assert "seed_tree_id" not in document
-    assert len(document["root_input_digest"]) == 64
-    identity = (
-        project_dir
-        / "qa"
-        / "changes"
-        / change_id
-        / ".runtime"
-        / "langgraph"
-        / "identities"
-        / "inv-start-001.json"
-    )
-    assert identity.is_file()
-    invocation = _change_runtime(project_dir, change_id) / "invocations" / "inv-start-001"
-    assert not invocation.exists()
 
 
 def test_run_opens_or_starts_and_completes_with_scripted_host(
@@ -138,32 +93,6 @@ def test_export_uses_project_dir_and_change(cli_runner, tmp_path: Path):
     document = parse_json_output(result.stdout)
     assert document["change_id"] == CHANGE_ID
     assert document["files"]
-
-
-def test_start_writes_current_identity_record_by_default(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-):
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-langgraph-marker-001",
-        entrypoint="full",
-        families=("api",),
-    )
-    result = cli_runner.invoke(app, ["start", *args])
-    assert result.exit_code == 0, result.output
-    identity = (
-        _change_runtime(project_dir, change_id) / "langgraph" / "identities" / "inv-langgraph-marker-001.json"
-    )
-    document = parse_json_output(identity.read_text(encoding="utf-8"))
-    assert "runtime" not in document
-    assert document["phase"] == "initialized"
 
 
 def test_resume_file_is_mutually_exclusive_with_action_reason(cli_runner, tmp_path: Path):

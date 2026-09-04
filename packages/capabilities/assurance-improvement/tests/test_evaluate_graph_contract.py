@@ -352,9 +352,9 @@ async def test_kernel_settles_delivery_inside_same_attempt_before_receipt(tmp_pa
         assert isinstance(result.output, MemoryEvalReceipt)
         assert closed.dispatch_count == 1
         assert effect.apply_calls == 1
-        settle_at = trace.index("settle_effects")
-        publish_at = trace.index("publish_receipt")
-        assert settle_at < publish_at
+        assert "settle_effects" in trace
+        assert "publish_receipt" not in trace
+        assert trace.index("settle_effects") < trace.index("record_terminal")
         snapshot = await kernel.journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is not None

@@ -7,17 +7,12 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from tests.product.composition_harness import request_for
-
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @pytest.fixture
-def runtime_registry(installed_sources):
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    return composition.semantic_attempt_contracts
+def runtime_registry(opencode_composition):
+    return opencode_composition.semantic_attempt_contracts
 
 
 _PURE_FUNCTION_IDS = (
@@ -28,13 +23,12 @@ _PURE_FUNCTION_IDS = (
 )
 
 
-def test_product_has_exactly_one_runtime_binding_per_agent_contract(installed_sources) -> None:
+def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_composition) -> None:
     from assurance_product.agent_contracts import all_feature_agent_contracts
-    from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_bindings import runtime_bindings_from_composition
 
     contracts = all_feature_agent_contracts()
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     bindings = runtime_bindings_from_composition(composition)
     assert len(contracts) == 33
     assert set(bindings) == set(contracts)
@@ -52,12 +46,10 @@ def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) ->
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
 
-def test_semantic_bindings_are_the_only_live_agent_ids(installed_sources) -> None:
+def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
-    from assurance_product.product import resolve_assurance_composition
 
-    request = request_for("opencode", installed_sources)
-    composition = resolve_assurance_composition(request)
+    composition = opencode_composition
     assert len(composition.semantic_attempt_contracts) == 41
     assert len(AGENT_EXECUTION_CONTRACTS) == 33
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
@@ -72,30 +64,28 @@ def test_semantic_bindings_are_the_only_live_agent_ids(installed_sources) -> Non
     ],
 )
 def test_product_runtime_binding_rejects_feature_authority(
-    extra: dict[str, object], installed_sources
+    extra: dict[str, object], opencode_composition
 ) -> None:
     from agent_runtime_contracts import AgentRuntimeBinding
 
-    from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_bindings import runtime_bindings_from_composition
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     payload = next(iter(runtime_bindings_from_composition(composition).values())).model_dump()
     with pytest.raises(ValidationError, match="extra"):
         AgentRuntimeBinding.model_validate({**payload, **extra})
 
 
-def test_boot_rejects_runtime_handler_outside_product_closure(installed_sources) -> None:
+def test_boot_rejects_runtime_handler_outside_product_closure(opencode_composition) -> None:
     from agent_runtime_contracts import AgentRuntimeBinding
 
-    from assurance_product.product import AssuranceCompositionError, resolve_assurance_composition
+    from assurance_product.product import AssuranceCompositionError
     from assurance_product.runtime_bindings import (
         boot_semantic_attempt_contracts,
         runtime_bindings_from_composition,
     )
 
-    request = request_for("opencode", installed_sources)
-    composition = resolve_assurance_composition(request)
+    composition = opencode_composition
     catalog = next(iter(runtime_bindings_from_composition(composition).values()))
     foreign = AgentRuntimeBinding.model_validate(
         {
@@ -108,14 +98,11 @@ def test_boot_rejects_runtime_handler_outside_product_closure(installed_sources)
 
 
 def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
-    installed_sources,
+    opencode_composition,
 ) -> None:
     from graph_engine.attempts import ResolvedAttemptContract
 
-    from assurance_product.product import resolve_assurance_composition
-
-    request = request_for("opencode", installed_sources)
-    composition = resolve_assurance_composition(request)
+    composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
     assert len(resolved) == 41
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
@@ -123,16 +110,15 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
 
 
-def test_raw_runtime_rows_are_canonical_and_digest_locked(installed_sources) -> None:
+def test_raw_runtime_rows_are_canonical_and_digest_locked(opencode_composition) -> None:
     from agent_runtime_contracts import RawAgentRuntimeBindingProjectionV1
     from graph_engine.canonical import canonical_digest
 
     from assurance_product.agent_contracts import all_feature_agent_contracts
-    from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
 
     contracts = all_feature_agent_contracts()
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     rows = raw_agent_runtime_binding_rows(composition)
     assert len(rows) == 33
     assert tuple(row.contract_id for row in rows) == tuple(sorted(contracts))
@@ -155,14 +141,12 @@ def test_raw_bindings_do_not_resolve_through_legacy_aliases() -> None:
     assert "bindings[" not in source
 
 
-def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(installed_sources) -> None:
+def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_composition) -> None:
     from agent_runtime_contracts import ResolvedRawAgentExecutor
 
     from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
-    from assurance_product.product import resolve_assurance_composition
 
-    request = request_for("opencode", installed_sources)
-    composition = resolve_assurance_composition(request)
+    composition = opencode_composition
     agents = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
@@ -188,16 +172,15 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(installed_so
         ("contract-digest-drift", "contract-digest-drift"),
     ],
 )
-def test_raw_binding_rows_reject_invalid_catalog(mutate: str, match: str, installed_sources) -> None:
+def test_raw_binding_rows_reject_invalid_catalog(mutate: str, match: str, opencode_composition) -> None:
     from assurance_product.agent_contracts import all_feature_agent_contracts
-    from assurance_product.product import resolve_assurance_composition
     from assurance_product.runtime_bindings import (
         authenticate_raw_agent_runtime_bindings,
         raw_agent_runtime_binding_rows,
     )
 
     contracts = all_feature_agent_contracts()
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     rows = list(raw_agent_runtime_binding_rows(composition))
     if mutate == "missing":
         rows = rows[1:]

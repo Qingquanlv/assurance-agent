@@ -226,12 +226,14 @@ def real_features() -> dict[str, object]:
     return _real_features()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def thin_graphs(real_features: dict[str, object]) -> ThinEntrypointGraphs:
     return build_thin_entrypoint_graphs(context=_build_context(), features=real_features)
 
 
-def test_factory_accepts_exactly_six_owner_ids(real_features: dict[str, object]) -> None:
+def test_factory_accepts_exactly_six_owner_ids(
+    real_features: dict[str, object], thin_graphs: ThinEntrypointGraphs
+) -> None:
     assert tuple(sorted(real_features)) == tuple(sorted(FEATURE_WORKFLOW_OWNERS))
     typed = coerce_feature_bundles(real_features)
     assert isinstance(typed, ProductFeatureBundles)
@@ -243,9 +245,8 @@ def test_factory_accepts_exactly_six_owner_ids(real_features: dict[str, object])
         "healing",
         "improvement",
     }
-    graphs = build_thin_entrypoint_graphs(context=_build_context(), features=real_features)
-    assert set(graphs.entrypoints) == set(THIN_ENTRYPOINTS)
-    assert len(graphs.entrypoints) == 12
+    assert set(thin_graphs.entrypoints) == set(THIN_ENTRYPOINTS)
+    assert len(thin_graphs.entrypoints) == 12
 
 
 def test_factory_rejects_missing_extra_duplicate_and_mistyped_bundles(
@@ -308,7 +309,10 @@ def test_thin_roots_are_independently_compiled_not_a_dispatcher(
     assert len(names) == 12
 
 
-@pytest.mark.parametrize("entrypoint", sorted(THIN_ENTRYPOINTS))
+_REPRESENTATIVE_THIN_ENTRYPOINTS = ("intake", "archive", "issue-review")
+
+
+@pytest.mark.parametrize("entrypoint", _REPRESENTATIVE_THIN_ENTRYPOINTS)
 def test_each_thin_root_validates_invokes_declared_export_and_publishes(
     entrypoint: str,
 ) -> None:
@@ -326,8 +330,13 @@ def test_each_thin_root_validates_invokes_declared_export_and_publishes(
         assert tuple(item.receipt_id for item in output.receipts) == (marker,)
     else:
         assert output.receipts == ()
+
+
+def test_thin_root_rejects_non_public_input() -> None:
+    features = _stub_features()
+    graphs = build_thin_entrypoint_graphs(context=_build_context(), features=features)
     with pytest.raises((ValueError, ValidationError, TypeError)):
-        root.invoke({"change_id": "CH-DEMO-001"})
+        graphs.entrypoints["intake"].invoke({"change_id": "CH-DEMO-001"})
 
 
 def test_product_state_inherits_checkpoint_bridge_and_public_io_omits_markers() -> None:

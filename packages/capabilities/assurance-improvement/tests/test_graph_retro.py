@@ -20,6 +20,7 @@ from assurance_improvement.contracts.retro import (
     WorkflowEvidenceSlice,
 )
 from assurance_improvement.graphs.factory import build_improvement_graphs
+from assurance_improvement.graphs.nodes import select_reconcile, select_retro
 from assurance_improvement.graphs.state import (
     replace_eval_analysis,
     replace_issue_analysis,
@@ -266,8 +267,6 @@ def test_analysis_selects_receive_only_matching_authenticated_slices() -> None:
 
 
 def test_reconcile_and_retro_agent_receive_typed_values() -> None:
-    from assurance_improvement.graphs.nodes import select_reconcile, select_retro
-
     state = retro_graph_input(candidates=(candidate_payload(),))
     selected = select_reconcile(state)
     expected = select_retro_reconcile(

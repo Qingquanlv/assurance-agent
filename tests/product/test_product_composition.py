@@ -24,61 +24,50 @@ _FEATURE_OWNERS = (
 _PRODUCT_FACTORY = "assurance_product.graphs.factory:build_product_graphs"
 
 
-@pytest.mark.parametrize("adapter", ["opencode"])
-def test_composition_has_exact_provider_and_binding_closure(adapter, installed_sources):
-    from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
-    from assurance_product.product import resolve_assurance_composition
+def test_composition_has_exact_opencode_identity_and_binding_closure(opencode_composition):
+    from assurance_product.agent_contracts import (
+        AGENT_EXECUTION_CONTRACTS,
+        all_feature_agent_contracts,
+        all_feature_task_contracts,
+    )
+    from assurance_product.models import CONFIGURATION_PLUGIN_ID, PLUGIN_ID, PRODUCT_ENTRYPOINTS
 
-    composition = resolve_assurance_composition(request_for(adapter, installed_sources))
+    composition = opencode_composition
     assert composition.lock.engine_api == "2.0"
     entries = composition.registries.capabilities.entries
     bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
-    assert set(bindings) == set(ALL_BINDING_IDS)
+    assert set(bindings) == set(ALL_BINDING_IDS) == set(AGENT_EXECUTION_CONTRACTS)
     assert len(bindings) == 33
     assert not hasattr(composition, "workflow")
     assert composition.manifest.graph_factory_symbol == _PRODUCT_FACTORY
-    assert isinstance(composition.lock, type(composition.lock))
     assert composition.lock.schema_version == "3"
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     assert len(contracts) == 33
     assert len(contracts) + len(tasks) == 41
-
-
-@pytest.mark.parametrize("adapter", ["opencode"])
-def test_composition_binds_semantic_agent_contracts_not_phase_aliases(
-    adapter,
-    installed_sources,
-) -> None:
-    from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for(adapter, installed_sources))
-    entries = composition.registries.capabilities.entries
-    bindings = {key: value for key, value in entries.items() if isinstance(value, CapabilityBindingEntry)}
-    assert set(bindings) == set(AGENT_EXECUTION_CONTRACTS)
     assert not any(item.startswith("assurance.product.agent.") for item in bindings)
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         binding = bindings[contract_id]
         assert binding.contract_id == contract.contract_id
         assert binding.data is not None
-
-
-@pytest.mark.parametrize("adapter", ["opencode"])
-def test_composition_selects_exact_plugin_and_product_identity(adapter, installed_sources):
-    from assurance_product.models import CONFIGURATION_PLUGIN_ID, PLUGIN_ID
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for(adapter, installed_sources))
     descriptor_ids = tuple(descriptor.plugin_id for descriptor in composition.descriptors)
     assert PLUGIN_ID in descriptor_ids
     assert CONFIGURATION_PLUGIN_ID in descriptor_ids
-    assert f"runtime.{adapter}" in descriptor_ids
+    assert "runtime.opencode" in descriptor_ids
     assert composition.manifest.product_id == "assurance.product"
     assert composition.manifest.source is not None
-    assert composition.manifest.source.entrypoint_name == f"assurance-{adapter}"
+    assert composition.manifest.source.entrypoint_name == "assurance-opencode"
     assert composition.manifest.source.distribution == "assurance-product"
     assert composition.lock.product.source.kind.value == "wheel_product"
+    product_manifest = composition.manifest
+    assert getattr(product_manifest, "workflow", None) is None
+    assert getattr(product_manifest, "workflow_resource_id", None) is None
+    assert getattr(product_manifest, "workflow_module", None) is None
+    assert getattr(product_manifest, "workflow_module_resources", ()) == ()
+    assert getattr(product_manifest, "workflow_slot_bindings", ()) == ()
+    assert set(product_manifest.entrypoints) == set(PRODUCT_ENTRYPOINTS)
+    assert len(product_manifest.entrypoints) == 14
+    assert set(PUBLIC_BUNDLE_FIELDS) == set(_FEATURE_OWNERS)
 
 
 def test_wrong_runtime_deployment_fails_closed(installed_sources):
@@ -147,34 +136,10 @@ def test_unselected_adapter_source_is_rejected_before_provider_import(
     assert loaded_unselected_providers == []
 
 
-def test_resolve_accepts_already_imported_assurance_product(installed_sources):
+def test_resolve_accepts_already_imported_assurance_product(opencode_composition):
     import assurance_intake
     import assurance_product
-    from assurance_product.product import resolve_assurance_composition
 
     assert sys.modules["assurance_product"] is assurance_product
     assert sys.modules["assurance_intake"] is assurance_intake
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    assert composition.lock.product.source.kind.value == "wheel_product"
-
-
-@pytest.mark.parametrize("adapter", ["opencode"])
-def test_product_manifest_uses_only_the_graph_factory_form(adapter, installed_sources):
-    from assurance_product.models import PRODUCT_ENTRYPOINTS
-    from assurance_product.product import resolve_assurance_composition
-
-    resolved = resolve_assurance_composition(request_for(adapter, installed_sources))
-    product_manifest = resolved.manifest
-    assert not hasattr(product_manifest, "workflow")
-    assert getattr(product_manifest, "workflow", None) is None
-    assert getattr(product_manifest, "workflow_resource_id", None) is None
-    assert getattr(product_manifest, "workflow_module", None) is None
-    assert getattr(product_manifest, "workflow_module_resources", ()) == ()
-    assert getattr(product_manifest, "workflow_slot_bindings", ()) == ()
-    assert product_manifest.graph_factory_symbol == _PRODUCT_FACTORY
-    assert set(product_manifest.entrypoints) == set(PRODUCT_ENTRYPOINTS)
-    assert len(product_manifest.entrypoints) == 14
-    assert set(PUBLIC_BUNDLE_FIELDS) == set(_FEATURE_OWNERS)
-    assert not hasattr(resolved, "workflow")
-    assert getattr(resolved, "workflow", None) is None
-    assert resolved.lock.schema_version == "3"
+    assert opencode_composition.lock.product.source.kind.value == "wheel_product"

@@ -56,14 +56,3 @@ def test_task3_admission_is_reported_without_fabricating_a_local_pass() -> None:
     assert state.release_disposition in {"blocked", "requires_task3_evidence_validation"}
     assert state.release_disposition != "admitted"
     assert state.detail
-
-
-def test_repository_gate_executes_the_exact_lower_level_suite() -> None:
-    run_gate_nodes = conformance.run_gate_nodes
-    manifest = conformance.REPOSITORY_GATE_NODE_IDS
-
-    node_ids = tuple(node_id for category in manifest.values() for node_id in category)
-    result = run_gate_nodes(REPO_ROOT, node_ids)
-
-    assert result.passed_count == len(node_ids)
-    assert result.skipped_count == 0

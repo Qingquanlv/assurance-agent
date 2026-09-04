@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
@@ -146,13 +146,17 @@ def test_publish_case_review_keeps_graph_rounds_when_result_omits_or_nulls_them(
     assert published_authored["rounds_budget"] == 3
 
 
+def _patch_interrupt(node: Callable[..., Any], **kwargs: Any):
+    return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
+
+
 def test_both_interrupt_sites_accept_only_approve_reject_request_rework() -> None:
     assert HUMAN_REVIEW_ACTIONS == ("approve", "reject", "request_rework")
     for node in (human_review, human_review_retry):
-        with patch("assurance_intake.graphs.nodes.interrupt", return_value={"action": "supersede"}):
+        with _patch_interrupt(node, return_value={"action": "supersede"}):
             with pytest.raises(ValidationError):
                 node({"rounds_used": 0, "rounds_budget": 2})
-        with patch("assurance_intake.graphs.nodes.interrupt", return_value={"action": "hold"}):
+        with _patch_interrupt(node, return_value={"action": "hold"}):
             with pytest.raises(ValidationError):
                 node({"rounds_used": 0, "rounds_budget": 2})
 
@@ -164,7 +168,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
         seen.append(payload)
         raise RuntimeError("interrupt")
 
-    with patch("assurance_intake.graphs.nodes.interrupt", side_effect=_first):
+    with _patch_interrupt(human_review, side_effect=_first):
         with pytest.raises(RuntimeError, match="interrupt"):
             human_review({"rounds_used": 0, "rounds_budget": 2, "decision": "needs_human_review"})
     assert seen
@@ -172,7 +176,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
     assert isinstance(request, dict)
     assert set(request["actions"]) == {"approve", "reject", "request_rework"}
 
-    with patch("assurance_intake.graphs.nodes.interrupt", return_value={"action": "approve"}):
+    with _patch_interrupt(human_review, return_value={"action": "approve"}):
         update = human_review({"rounds_used": 0, "rounds_budget": 2, "decision": "needs_human_review"})
     assert update == {"human_action": "approve"}
     assert "decision" not in update

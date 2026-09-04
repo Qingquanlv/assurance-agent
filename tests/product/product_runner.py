@@ -605,8 +605,8 @@ def adapter_product_composition(installed_sources, adapter: str) -> FrozenCompos
 
 
 @pytest.fixture
-def product_runner(tmp_path_factory: pytest.TempPathFactory, installed_sources):
-    composition = modular_product_composition(installed_sources)
+def product_runner(tmp_path_factory: pytest.TempPathFactory, opencode_composition):
+    composition = opencode_composition
     engine_root = tmp_path_factory.mktemp("generation-runner")
 
     def factory(

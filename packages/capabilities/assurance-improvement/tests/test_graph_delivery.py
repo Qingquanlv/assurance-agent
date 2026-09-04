@@ -786,9 +786,10 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         assert snapshot.effects[0].receipt_digest
         receipt_model = MemoryEvalReceipt.model_validate(result.get("memory_eval") or published)
         assert receipt_model.outcome == "passed"
-        assert hybrid.traces["improvement.evaluate"].index("settle_effects") < hybrid.traces[
-            "improvement.evaluate"
-        ].index("publish_receipt")
+        evaluate_trace = hybrid.traces["improvement.evaluate"]
+        assert "settle_effects" in evaluate_trace
+        assert "publish_receipt" not in evaluate_trace
+        assert evaluate_trace.index("settle_effects") < evaluate_trace.index("record_terminal")
         intents = snapshot.effects
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND
@@ -836,7 +837,9 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
         receipt_model = MemoryEvalReceipt.model_validate(published.get("memory_eval") or published)
         assert receipt_model.outcome == "passed"
         trace = hybrid.traces["improvement.apply-evaluate"]
-        assert trace.index("settle_effects") < trace.index("publish_receipt")
+        assert "settle_effects" in trace
+        assert "publish_receipt" not in trace
+        assert trace.index("settle_effects") < trace.index("record_terminal")
         intents = snapshot.effects
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND

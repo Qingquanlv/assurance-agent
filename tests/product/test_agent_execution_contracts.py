@@ -539,14 +539,12 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
 
 
 def test_transient_agent_provider_failure_retries_the_skill_node(
-    installed_sources, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    opencode_composition, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
-    from assurance_product.product import resolve_assurance_composition
-    from tests.product.composition_harness import request_for
 
     del tmp_path, monkeypatch
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     assert not hasattr(composition, "workflow")
     leftover_alias = "assurance.product.agent.intake.intake.execute"
     contract_id = "assurance.intake.agent.intake.v1"

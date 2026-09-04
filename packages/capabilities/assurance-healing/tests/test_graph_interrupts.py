@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
@@ -46,18 +46,22 @@ def _config() -> RunnableConfig:
     }
 
 
+def _patch_interrupt(node, **kwargs):
+    return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
+
+
 def test_coverage_review_accepts_only_approve_reject() -> None:
     assert COVERAGE_REVIEW_ACTIONS == ("approve", "reject")
     state = {"kind": "coverage", "status": "needs_review", "rounds_used": 2, "rounds_budget": 4}
-    with patch("assurance_healing.graphs.nodes.interrupt", return_value={"action": "request_rework"}):
+    with _patch_interrupt(coverage_review, return_value={"action": "request_rework"}):
         with pytest.raises(ValidationError):
             coverage_review(state)
-    with patch("assurance_healing.graphs.nodes.interrupt", return_value={"action": "hold"}):
+    with _patch_interrupt(coverage_review, return_value={"action": "hold"}):
         with pytest.raises(ValidationError):
             coverage_review(state)
-    with patch("assurance_healing.graphs.nodes.interrupt", return_value={"action": "approve"}):
+    with _patch_interrupt(coverage_review, return_value={"action": "approve"}):
         assert coverage_review(state) == {"human_action": "approve"}
-    with patch("assurance_healing.graphs.nodes.interrupt", return_value={"action": "reject"}):
+    with _patch_interrupt(coverage_review, return_value={"action": "reject"}):
         assert coverage_review(state) == {"human_action": "reject"}
 
 
@@ -75,7 +79,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
         "rounds_budget": 4,
         "decision": "leftover",
     }
-    with patch("assurance_healing.graphs.nodes.interrupt", side_effect=_first):
+    with _patch_interrupt(coverage_review, side_effect=_first):
         with pytest.raises(RuntimeError, match="interrupt"):
             coverage_review(state)
     assert seen
@@ -86,7 +90,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
     assert request["ordinal"] == 0
     assert request["reason"] == _INTERRUPT_REASON
 
-    with patch("assurance_healing.graphs.nodes.interrupt", return_value={"action": "approve"}):
+    with _patch_interrupt(coverage_review, return_value={"action": "approve"}):
         update = coverage_review(state)
     assert update == {"human_action": "approve"}
     assert "decision" not in update
@@ -100,7 +104,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
         restart_seen.append(payload)
         raise RuntimeError("interrupt")
 
-    with patch("assurance_healing.graphs.nodes.interrupt", side_effect=_restart):
+    with _patch_interrupt(coverage_review, side_effect=_restart):
         with pytest.raises(RuntimeError, match="interrupt"):
             coverage_review(state)
     restart_request = restart_seen[0]

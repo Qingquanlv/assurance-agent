@@ -124,11 +124,10 @@ def boot_artifact() -> BootArtifact:
     return BootArtifact(attempt_contracts=contracts)
 
 
-@pytest.fixture
-def compiled_artifacts(installed_sources):
+@pytest.fixture(scope="session")
+def compiled_artifacts(installed_sources, opencode_composition):
     import assurance_product.application as application_module
     from assurance_product.application import AssuranceProductApplication
-    from tests.product.composition_harness import request_for
 
     coexistence = getattr(application_module, "CoexistenceBuildArtifacts", None)
     if coexistence is not None:
@@ -137,11 +136,8 @@ def compiled_artifacts(installed_sources):
             product_lock={"schema_version": "3", "digest": "y" * 64},
             manifest={"revision": {"revision_id": "z" * 64}},
         )
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     return AssuranceProductApplication().compile(
-        composition,
+        opencode_composition,
         product="assurance-opencode",
         config_tree=str(installed_sources.configuration_tree.path),
     )

@@ -11,8 +11,6 @@ from pydantic import ValidationError
 
 from graph_engine.composition import FrozenComposition
 
-from tests.product.composition_harness import request_for
-
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 _SHA = "a" * 64
@@ -294,11 +292,10 @@ def test_full_and_execute_require_non_empty_families(entrypoint: str):
         ).validate_for_entrypoint(entrypoint)
 
 
-def test_product_input_authenticates_resource_refs_against_composition(installed_sources):
+def test_product_input_authenticates_resource_refs_against_composition(opencode_composition):
     from assurance_product.models import ProductInputV1
-    from assurance_product.product import resolve_assurance_composition
 
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     refs = {
         "capability_catalog": _ref_from_composition(
             composition, "assurance.product.configuration.capability-catalog"

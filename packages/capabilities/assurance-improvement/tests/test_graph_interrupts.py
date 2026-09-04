@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
@@ -48,19 +48,23 @@ def _config() -> RunnableConfig:
     }
 
 
+def _patch_interrupt(node, **kwargs):
+    return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
+
+
 def test_apply_interrupt_accepts_exactly_the_four_human_actions() -> None:
     assert APPLY_HUMAN_ACTIONS == ("approve", "reject", "request_rework", "supersede")
     state = apply_graph_input(lifecycle_state="proposed")
-    with patch("assurance_improvement.graphs.nodes.interrupt", return_value={"action": "hold"}):
+    with _patch_interrupt(apply_human_interrupt, return_value={"action": "hold"}):
         with pytest.raises(ValidationError):
             apply_human_interrupt(state)
-    with patch("assurance_improvement.graphs.nodes.interrupt", return_value={"action": "approve"}):
+    with _patch_interrupt(apply_human_interrupt, return_value={"action": "approve"}):
         assert apply_human_interrupt(state) == {"human_action": "approve"}
-    with patch("assurance_improvement.graphs.nodes.interrupt", return_value={"action": "reject"}):
+    with _patch_interrupt(apply_human_interrupt, return_value={"action": "reject"}):
         assert apply_human_interrupt(state) == {"human_action": "reject"}
-    with patch("assurance_improvement.graphs.nodes.interrupt", return_value={"action": "request_rework"}):
+    with _patch_interrupt(apply_human_interrupt, return_value={"action": "request_rework"}):
         assert apply_human_interrupt(state) == {"human_action": "request_rework"}
-    with patch("assurance_improvement.graphs.nodes.interrupt", return_value={"action": "supersede"}):
+    with _patch_interrupt(apply_human_interrupt, return_value={"action": "supersede"}):
         assert apply_human_interrupt(state) == {"human_action": "supersede"}
 
 
@@ -72,7 +76,7 @@ def test_interrupt_validates_after_restart_and_preserves_identity() -> None:
         raise RuntimeError("interrupt")
 
     state = apply_graph_input(lifecycle_state="proposed", decision="leftover")
-    with patch("assurance_improvement.graphs.nodes.interrupt", side_effect=_first):
+    with _patch_interrupt(apply_human_interrupt, side_effect=_first):
         with pytest.raises(RuntimeError, match="interrupt"):
             apply_human_interrupt(state)
     request = seen[0]
@@ -82,7 +86,7 @@ def test_interrupt_validates_after_restart_and_preserves_identity() -> None:
     assert request["ordinal"] == 0
     assert request["reason"] == _INTERRUPT_REASON
 
-    with patch("assurance_improvement.graphs.nodes.interrupt", return_value={"action": "approve"}):
+    with _patch_interrupt(apply_human_interrupt, return_value={"action": "approve"}):
         update = apply_human_interrupt(state)
     assert update == {"human_action": "approve"}
     assert "decision" not in update
@@ -96,7 +100,7 @@ def test_interrupt_validates_after_restart_and_preserves_identity() -> None:
         restart_seen.append(payload)
         raise RuntimeError("interrupt")
 
-    with patch("assurance_improvement.graphs.nodes.interrupt", side_effect=_restart):
+    with _patch_interrupt(apply_human_interrupt, side_effect=_restart):
         with pytest.raises(RuntimeError, match="interrupt"):
             apply_human_interrupt(state)
     restart_request = restart_seen[0]

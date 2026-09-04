@@ -16,29 +16,30 @@ from graph_engine.composition.source_fs import SourceSnapshotError
 from tests.product.composition_harness import SHADOW_VALIDATOR_CLONE_ID, copy_config_tree, request_for
 
 
-def test_undeclared_installed_module_cannot_change_assembly(installed_sources, tmp_path: Path, monkeypatch):
+def test_undeclared_installed_module_cannot_change_assembly(
+    installed_sources, opencode_composition, tmp_path: Path, monkeypatch
+):
     from assurance_product.product import resolve_assurance_composition
 
-    def _lock_identity():
-        composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-        return (
-            type(composition.lock).__name__,
-            composition.lock.digest,
-            composition.manifest.graph_factory_symbol,
-        )
-
-    before = _lock_identity()
+    before = (
+        type(opencode_composition.lock).__name__,
+        opencode_composition.lock.digest,
+        opencode_composition.manifest.graph_factory_symbol,
+    )
     extra = tmp_path / "assurance_undeclared_feature"
     extra.mkdir()
     (extra / "__init__.py").write_text("PLUGIN = object()\n", encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
-    assert _lock_identity() == before
-
-
-def test_shadow_validator_clone_is_absent_from_authenticated_composition(installed_sources):
-    from assurance_product.product import resolve_assurance_composition
-
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    assert (
+        type(composition.lock).__name__,
+        composition.lock.digest,
+        composition.manifest.graph_factory_symbol,
+    ) == before
+
+
+def test_shadow_validator_clone_is_absent_from_authenticated_composition(opencode_composition):
+    composition = opencode_composition
     assert SHADOW_VALIDATOR_CLONE_ID not in composition.registries.capabilities.entries
     assert SHADOW_VALIDATOR_CLONE_ID not in json.dumps(composition.lock.model_dump(mode="json"))
 
@@ -126,10 +127,10 @@ def test_forged_deployment_declaration_fails_closed(installed_sources, tmp_path:
         _drop_modules_from_roots(forged)
 
 
-def test_mutated_config_tree_changes_lock(installed_sources, tmp_path: Path):
+def test_mutated_config_tree_changes_lock(installed_sources, opencode_composition, tmp_path: Path):
     from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
 
-    original = resolve_assurance_composition(request_for("opencode", installed_sources))
+    original = opencode_composition
     mutated = copy_config_tree(tmp_path / "mutated-config")
     policy = mutated.path / ".aa" / "policy.yaml"
     policy.write_text(policy.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")

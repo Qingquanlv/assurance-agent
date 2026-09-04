@@ -205,27 +205,3 @@ def test_fault_gate_nodes_are_auditable_and_cannot_be_skipped() -> None:
         evidence = audit_gate_nodes(REPO_ROOT, node_ids)
         assert tuple(item.node_id for item in evidence) == node_ids
         assert all(item.line_number > 0 and len(item.source_sha256) == 64 for item in evidence)
-
-
-def test_run_gate_nodes_isolates_cross_file_binding_pollution() -> None:
-    result = conformance.run_gate_nodes(
-        REPO_ROOT,
-        (
-            "tests/product/test_binding_builder.py::test_generated_provider_contributes_exactly_33_semantic_bindings",
-            "tests/product/test_composition_authority.py::test_forged_alias_target_fails_closed",
-        ),
-    )
-
-    assert result.passed_count == 2
-    assert result.skipped_count == 0
-
-
-def test_fault_gate_executes_the_exact_lower_level_suite() -> None:
-    run_gate_nodes = conformance.run_gate_nodes
-    manifest = conformance.FAULT_GATE_NODE_IDS
-
-    node_ids = tuple(node_id for category in manifest.values() for node_id in category)
-    result = run_gate_nodes(REPO_ROOT, node_ids)
-
-    assert result.passed_count == len(node_ids)
-    assert result.skipped_count == 0

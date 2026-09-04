@@ -1020,16 +1020,13 @@ def graph_bound_contract_ids() -> tuple[str, ...]:
     return _bound_contract_ids()
 
 
-@pytest.fixture
-def candidate_inventory(graph_bound_contract_ids, installed_sources) -> Iterator[CandidateInventory]:
-    from assurance_product.product import resolve_assurance_composition
-
+@pytest.fixture(scope="session")
+def candidate_inventory(graph_bound_contract_ids, opencode_composition) -> Iterator[CandidateInventory]:
     global _COMPOSITION
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     previous = _COMPOSITION
-    _COMPOSITION = composition
+    _COMPOSITION = opencode_composition
     try:
-        yield build_candidate_inventory(composition, graph_bound_contract_ids)
+        yield build_candidate_inventory(opencode_composition, graph_bound_contract_ids)
     finally:
         _COMPOSITION = previous
 
@@ -1078,11 +1075,6 @@ def protected_candidate(installed_sources, tmp_path: Path) -> ProtectedCandidate
         locked_model=str(preflight["model"]),
         preflight=preflight,
     )
-
-
-def pytest_sessionstart(session) -> None:
-    del session
-    _bound_contract_ids()
 
 
 def pytest_collection_modifyitems(config, items) -> None:

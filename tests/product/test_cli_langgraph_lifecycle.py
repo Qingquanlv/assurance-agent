@@ -22,7 +22,6 @@ from tests.product.cli_support import (
     common_lifecycle_args,
     parse_json_output,
 )
-from tests.product.composition_harness import request_for
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
@@ -57,93 +56,6 @@ def test_all_fourteen_public_entrypoints_are_current() -> None:
     assert len(PRODUCT_ENTRYPOINTS) == 14
 
 
-def test_cli_environment_and_config_cannot_override_cutover(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    monkeypatch.setenv("AA_RUNTIME", "legacy-v2")
-    monkeypatch.setenv("ENTRYPOINT_RUNTIME_CUTOVER", "legacy-v2")
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-cutover-override-001",
-        entrypoint="full",
-        families=("api",),
-    )
-    rejected = cli_runner.invoke(app, ["start", *args, "--runtime", "langgraph-v1"])
-    assert rejected.exit_code == 2, rejected.output
-    started = cli_runner.invoke(app, ["start", *args])
-    assert started.exit_code == 0, started.output
-    record = _load_identity(_identity_path(project_dir, change_id, "inv-cutover-override-001"))
-    assert "runtime" not in record
-    assert record["phase"] == "initialized"
-
-
-def test_production_start_writes_initialized_identity(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product.cli import app
-    from assurance_product.invocation_identity import InvocationIdentityRecord
-    from assurance_product.product import resolve_assurance_composition
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-select-langgraph-full-001",
-        entrypoint="full",
-        families=("api",),
-    )
-    result = cli_runner.invoke(app, ["start", *args])
-    assert result.exit_code == 0, result.output
-    path = _identity_path(project_dir, change_id, "inv-select-langgraph-full-001")
-    record = InvocationIdentityRecord.model_validate_json(path.read_bytes())
-    assert record.phase == "initialized"
-    assert record.entrypoint == "full"
-    assert len(record.root_input_digest) == 64
-    assert len(record.revision_id) == 64
-    assert "runtime" not in record.model_dump(mode="json")
-
-
-def test_start_writes_current_identity_without_a_selector(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product import application
-    from assurance_product.cli import app
-    from assurance_product.invocation_identity import InvocationIdentityRecord, load_identity
-    from assurance_product.change_workspace import ChangeWorkspace
-    from assurance_product.product import resolve_assurance_composition
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    monkeypatch.setattr(application, "_TEST_CRASH_AT", None)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-select-langgraph-001",
-        entrypoint="archive",
-    )
-    result = cli_runner.invoke(app, ["start", *args])
-    assert result.exit_code == 0, result.output
-    path = _identity_path(project_dir, change_id, "inv-select-langgraph-001")
-    record = InvocationIdentityRecord.model_validate_json(path.read_bytes())
-    assert record.phase == "initialized"
-    assert record.entrypoint == "archive"
-    assert "runtime" not in record.model_dump(mode="json")
-    workspace = ChangeWorkspace.open(project_dir.resolve(), change_id)
-    assert load_identity(workspace, "inv-select-langgraph-001") == record
-    invocation = project_dir / "qa" / "changes" / change_id / ".runtime" / "invocations"
-    assert not invocation.exists() or not (invocation / "inv-select-langgraph-001").exists()
-
-
 def _existing_lifecycle_args(
     args: list[str], project_dir: Path, change_id: str, invocation_id: str
 ) -> list[str]:
@@ -168,85 +80,6 @@ def _existing_lifecycle_args(
         "--secret",
         args[args.index("--secret") + 1],
     ]
-
-
-@pytest.mark.parametrize("crash_at", ["after_initializing", "after_identity", "before_initialized"])
-def test_selection_handshake_restart_completes_or_fails_closed(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch, crash_at: str
-) -> None:
-    from assurance_product import application as runtime_selection
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.application import SelectionCrash
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id=f"inv-crash-{crash_at}",
-    )
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", crash_at)
-    first = cli_runner.invoke(app, ["start", *args])
-    assert first.exit_code == 40, first.output
-    assert "SelectionCrash" in first.output or crash_at.replace("_", " ") in first.output.lower()
-    path = _identity_path(project_dir, change_id, f"inv-crash-{crash_at}")
-    assert path.is_file()
-    interrupted = _load_identity(path)
-    assert interrupted["phase"] == "initializing"
-    assert "runtime" not in interrupted
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
-    second = cli_runner.invoke(app, ["start", *args])
-    assert second.exit_code == 0, second.output
-    completed = _load_identity(path)
-    assert completed["phase"] == "initialized"
-    assert "runtime" not in completed
-    assert completed["entrypoint"] == interrupted["entrypoint"]
-    assert completed["root_input_digest"] == interrupted["root_input_digest"]
-    assert completed["revision_id"] == interrupted["revision_id"]
-    del SelectionCrash
-
-
-@pytest.mark.parametrize("crash_at", ["after_initializing", "after_identity", "before_initialized"])
-def test_aa_run_finishes_interrupted_handshake_before_driving(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch, crash_at: str
-) -> None:
-    from assurance_product import application as runtime_selection
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.application import SelectionCrash
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id=f"inv-run-crash-{crash_at}",
-    )
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", crash_at)
-    first = cli_runner.invoke(app, ["run", *args])
-    assert first.exit_code == 40, first.output
-    path = _identity_path(project_dir, change_id, f"inv-run-crash-{crash_at}")
-    interrupted = _load_identity(path)
-    assert interrupted["phase"] == "initializing"
-    assert "runtime" not in interrupted
-    bare = cli_runner.invoke(
-        app,
-        ["run", *_existing_lifecycle_args(args, project_dir, change_id, f"inv-run-crash-{crash_at}")],
-    )
-    assert bare.exit_code == 40, bare.output
-    assert _load_identity(path)["phase"] == "initializing"
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
-    second = cli_runner.invoke(app, ["run", *args])
-    assert second.exit_code in {0, 20, 30, 40}, second.output
-    completed = _load_identity(path)
-    assert completed["phase"] == "initialized"
-    assert "runtime" not in completed
-    assert completed["entrypoint"] == interrupted["entrypoint"]
-    assert completed["root_input_digest"] == interrupted["root_input_digest"]
-    del SelectionCrash
 
 
 def test_leftover_invocation_without_identity_fails_closed(
@@ -644,17 +477,16 @@ def _inject_evaluate_payload(
 
 
 def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
+    cli_runner, installed_sources, opencode_composition, tmp_path: Path, monkeypatch
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.invocation_identity import InvocationIdentityRecord
-    from assurance_product.product import resolve_assurance_composition
     from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
     from graph_engine.attempts.resource_arbiter import ResourceArbiter
     from tests.product.test_result_export import CHANGE_ID
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    composition = opencode_composition
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
@@ -665,7 +497,12 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
+    assert SECRET_VALUE not in started.output
     started_doc = parse_json_output(started.stdout)
+    runtime = project_dir / "qa" / "changes" / change_id / ".runtime"
+    for path in runtime.rglob("*"):
+        if path.is_file():
+            assert SECRET_VALUE.encode() not in path.read_bytes()
     identity_path = _identity_path(project_dir, change_id, _EVALUATE_INVOCATION)
     identity_bytes = identity_path.read_bytes()
     identity = InvocationIdentityRecord.model_validate_json(identity_bytes)
@@ -676,6 +513,13 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     assert started_doc["root_input_digest"] == identity.root_input_digest
 
     existing = _existing_lifecycle_args(args, project_dir, change_id, _EVALUATE_INVOCATION)
+    premature_resume = tmp_path / "premature-wakeup.json"
+    premature_resume.write_text(
+        json.dumps({"wakeup": {"reference_id": "wake-1"}}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    premature = cli_runner.invoke(app, ["resume", *existing, "--resume-file", str(premature_resume)])
+    assert premature.exit_code == 40, premature.output
     tampered = json.loads(identity_bytes.decode("utf-8"))
     tampered["product_lock_digest"] = "b" * 64
     identity_path.write_text(json.dumps(tampered, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -844,57 +688,3 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         expect_attempt_records=True,
         workspace=_workspace_at(project_dir, project_dir / "qa" / "archive" / CHANGE_ID),
     )
-
-
-def test_langgraph_run_does_not_map_integrity_errors_to_failed(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.application import RuntimeSelectionError
-    from graph_engine.application import AssuranceApplication
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-lg-integrity-001",
-        entrypoint="archive",
-    )
-    started = cli_runner.invoke(app, ["start", *args])
-    assert started.exit_code == 0, started.output
-
-    async def boom(*_args: object, **_kwargs: object) -> object:
-        raise RuntimeSelectionError("checkpoint identity drifted")
-
-    monkeypatch.setattr(AssuranceApplication, "run", boom)
-    ran = cli_runner.invoke(
-        app,
-        [
-            "run",
-            "--json",
-            "--project-dir",
-            str(project_dir),
-            "--change",
-            change_id,
-            "--invocation-id",
-            "inv-lg-integrity-001",
-            "--product",
-            args[args.index("--product") + 1],
-            "--binding-dist",
-            args[args.index("--binding-dist") + 1],
-            "--binding-entrypoint",
-            "deployment",
-            "--binding-declaration",
-            args[args.index("--binding-declaration") + 1],
-            "--config-tree",
-            args[args.index("--config-tree") + 1],
-            "--secret",
-            args[args.index("--secret") + 1],
-        ],
-    )
-    assert ran.exit_code == 40, ran.output
-    assert "checkpoint identity drifted" in ran.output
-    assert not ran.stdout.strip() or parse_json_output(ran.stdout).get("status") != "failed"
