@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import inspect
 import json
@@ -250,7 +251,7 @@ def test_compile_keeps_v3_lock_and_both_33_row_raw_agent_tables(cli_runner, inst
     assert len(raw_agent_runtime_binding_rows(composition)) == 33
     assert count_semantic_agent_contracts() == 33
     assert count_raw_agent_runtime_bindings() == 33
-    assert count_agent_occurrences() == 34
+    assert count_agent_occurrences() == 35
     assert document["product_lock"]["digest"] == artifacts.product_lock.digest
     assert (
         document["graph_manifest"]["revision"]["revision_id"] == artifacts.graph_manifest.revision.revision_id
@@ -261,18 +262,21 @@ def test_removing_selectors_cannot_disable_bypass_downgrade_or_relabel_checkpoin
     repo = Path(__file__).resolve().parents[2]
     checkpoint = (repo / "tests" / "product" / "test_raw_agent_checkpoint.py").read_text(encoding="utf-8")
     ci = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "test_checkpoint_r_inventory_is_33_33_34_41_43" in checkpoint
+    assert "test_candidate_inventory_is_exact" in checkpoint
     assert "test_checkpoint_r_records_candidate_lock_and_revision" in checkpoint
-    assert "test_live_opencode_cutover_binding_records_checkpoint_r" in checkpoint
+    defined = {node.name for node in ast.walk(ast.parse(checkpoint)) if isinstance(node, ast.FunctionDef)}
+    assert "test_live_opencode_cutover_binding_records_checkpoint_r" not in defined
+    assert "test_checkpoint_r_inventory_is_33_33_34_41_43" not in defined
     assert "Checkpoint R" in checkpoint or "checkpoint-r" in checkpoint
     assert "test_raw_agent_checkpoint.py" in ci
+    assert "not checkpoint_r_live" in ci
     assert "scripts/assurance_product_wheel_smoke_test.sh" in ci
     assert "scripts/graph_engine_smoke_test.sh" in ci
     assert "scripts/assurance_capability_wheel_smoke_test.sh" in ci
-    assert (
-        "legacy-v2" not in checkpoint.split("def test_checkpoint_r_inventory_is_33_33_34_41_43")[1][:400]
-        or "33" in checkpoint
-    )
+    assert "legacy-v2" not in checkpoint
+    workflow = (repo / ".github" / "workflows" / "checkpoint-r.yml").read_text(encoding="utf-8")
+    assert "Checkpoint R" in workflow
+    assert "exact candidate" in workflow
     assert "downgrade" not in ci.lower()
     assert "bypass checkpoint" not in ci.lower()
 

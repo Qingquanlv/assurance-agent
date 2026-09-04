@@ -8,8 +8,7 @@ import pytest
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.composition.lock import ProductLock
 
-from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS, _build_owner
-from tests.product.test_raw_agent_checkpoint import _CASE_DESIGN_ID
+from tests.product.checkpoint_r_support import count_exact_agent_occurrences
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRODUCT_ROOT = _REPO_ROOT / "packages" / "products" / "assurance-product" / "assurance_product"
@@ -56,14 +55,7 @@ def wheel_contents() -> tuple[str, ...]:
 
 
 def count_agent_occurrences() -> int:
-    from assurance_product.agent_contracts import all_feature_agent_contracts
-
-    contracts = all_feature_agent_contracts()
-    bound: list[str] = []
-    for owner_id in PUBLIC_BUNDLE_FIELDS:
-        _bundle, context, _digest = _build_owner(owner_id)
-        bound.extend(item for item in context.bound_contract_ids if item in contracts)
-    return len(set(bound)) + (bound.count(_CASE_DESIGN_ID) - 1)
+    return count_exact_agent_occurrences()
 
 
 def count_semantic_agent_contracts() -> int:
@@ -178,7 +170,7 @@ def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact: BootArtifact)
     import assurance_product.agent_contracts as agent_contracts
 
     assert len(boot_artifact.attempt_contracts) == 41
-    assert count_agent_occurrences() == 34
+    assert count_agent_occurrences() == 35
     assert count_semantic_agent_contracts() == 33
     assert count_raw_agent_runtime_bindings() == 33
     assert all_agent_contracts_resolve_with_raw_executor()
