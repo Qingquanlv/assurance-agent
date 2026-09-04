@@ -18,6 +18,7 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
     resolve_contract,
 )
+from graph_engine.attempts.events import CommitPrepared
 from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIntegrityError
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import (
@@ -300,11 +301,27 @@ async def test_rejected_terminal_replay_returns_same_rejection(tmp_path: Path) -
         assert first.reason == "policy rejected"
         assert first.writes_promoted is False
         await _assert_released(kernel, key, context.fencing_token)
+        first_snapshot = await kernel.journal.load(key)
+        assert first_snapshot is not None
+        assert first_snapshot.prepared_digest is None
+        assert not any(
+            isinstance(event, CommitPrepared)
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
         assert isinstance(replay, RejectedTaskResult)
         assert executor.calls == 1
         await _assert_released(kernel, key, context.fencing_token)
+        replay_snapshot = await kernel.journal.load(key)
+        assert replay_snapshot is not None
+        assert replay_snapshot.prepared_digest is None
+        assert not any(
+            isinstance(event, CommitPrepared)
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
     finally:
         store.close()
 
@@ -326,6 +343,12 @@ async def test_permanent_validator_terminal_replay_returns_same_failure(tmp_path
         assert first_snapshot is not None
         assert first_snapshot.terminal is not None
         assert first_snapshot.terminal.output == {"status": "ok"}
+        assert first_snapshot.prepared_digest is None
+        assert not any(
+            isinstance(event, CommitPrepared)
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
         assert isinstance(replay, PermanentTaskFailure)
@@ -333,6 +356,12 @@ async def test_permanent_validator_terminal_replay_returns_same_failure(tmp_path
         assert replay_snapshot is not None
         assert replay_snapshot.terminal is not None
         assert replay_snapshot.terminal.output == {"status": "ok"}
+        assert replay_snapshot.prepared_digest is None
+        assert not any(
+            isinstance(event, CommitPrepared)
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
         assert executor.calls == 1
     finally:
         store.close()

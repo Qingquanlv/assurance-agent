@@ -1,6 +1,7 @@
 # Attempt Kernel Internal Refactor Design Note
 
-> **Status:** deferred responsibility-boundary decision; no implementation shape is frozen.
+> **Status:** implemented private shape recorded; it is not a frozen public contract or prescribed
+> class/module count.
 >
 > **Date:** 2026-09-03. The requested historical filename is retained.
 >

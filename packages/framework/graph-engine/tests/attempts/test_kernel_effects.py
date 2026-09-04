@@ -17,6 +17,7 @@ from graph_engine.attempts.contracts import (
     TaskAttemptContract,
     resolve_contract,
 )
+from graph_engine.attempts.events import ActivityTerminalObserved, EffectIntentRecorded
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import (
@@ -488,6 +489,11 @@ async def test_effect_intent_validation_errors_are_exact(
         assert first_snapshot is not None
         assert first_snapshot.terminal is not None
         assert first_snapshot.terminal.output is None
+        assert not any(
+            isinstance(event, (ActivityTerminalObserved, EffectIntentRecorded))
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
 
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
@@ -495,6 +501,11 @@ async def test_effect_intent_validation_errors_are_exact(
         assert replay_snapshot is not None
         assert replay_snapshot.terminal is not None
         assert replay_snapshot.terminal.output is None
+        assert not any(
+            isinstance(event, (ActivityTerminalObserved, EffectIntentRecorded))
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
         assert writer.calls == 1
         assert workspace.promotions == 0
     finally:
