@@ -47,3 +47,5 @@ Task P11: complete (commit after 0aa0ea57, focused checks green)
 - Deleted `tests/product/test_cli_sqlite_system_interrupt.py`; replacement is lifecycle reopen plus premature wakeup resume fail-closed in `test_non_agent_root_survives_reopen_status_lock_resume_and_publication`
 - Pre-removal credential-free baseline on `9cc780a694b5f53a8191ee42324bd90695719c6b`: ruff / format / pyright / lint-imports green; full deterministic suite = 3862 passed, 23 skipped, 631.07s; three smoke scripts OK
 - 2026-09-04 decision: the former protected live-provider gate and queued run https://github.com/Qingquanlv/assurance-agent/actions/runs/33875311180 no longer block Phase I. I0 starts only after the gate-removal tranche is committed and its focused/full repository checks plus three smoke scripts are green.
+- Phase I accepted base: `b28125c2aba2b743eec5b279be434f68589542ba` (`phase-i-phase-p-base`); protected run URL: not applicable — gate removed 2026-09-04.
+- Accepted-base characterization: 229 focused tests passed; collected-node digest `20a64058af5b5588a90f361ebac6962c0a45367bc913f23aeb0976602262f95b`.

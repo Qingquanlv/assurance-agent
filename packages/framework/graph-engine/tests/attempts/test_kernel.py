@@ -27,18 +27,29 @@ from graph_engine.attempts.resolutions import (
     RejectedTaskResult,
 )
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
+from graph_engine.effects.state import MemoryEffectState
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.canonical import canonical_digest
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+from graph_engine.canonical import canonical_digest, canonical_json_bytes
+from graph_engine.persistence.attempt_journal import (
+    ATTEMPT_JOURNAL_SCHEMA_VERSION,
+    MemoryAttemptJournal,
+)
 from graph_engine.persistence.resource_authorization import (
     MemoryResourceAuthorizationStore,
     ResourceAuthorizationError,
 )
 from graph_engine.plugin_api import (
     CommitValidator,
+    DirectoryIdentity,
+    EffectApplyResult,
     EffectIntent,
+    PreparedWorkspaceRef,
+    PromotionReceipt,
     ResourceClaims,
+    SealedFile,
+    SealedWriteSet,
     TaskWorkspaceBinding,
+    TaskWorkspaceIdentity,
     ValidationResult,
 )
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
@@ -345,6 +356,93 @@ def valid_delivery_payload() -> dict[str, int]:
     return {"n": 1}
 
 
+_CANONICAL_DIRECTORY_IDENTITY = DirectoryIdentity(
+    path_digest="6" * 64,
+    device=0,
+    inode=0,
+    identity_digest="93e3d945e68bc3338d508b738c63cf143f5bfdc387eea44402610b82f924b72d",
+)
+_CANONICAL_WORKSPACE_IDENTITY = TaskWorkspaceIdentity(
+    task_id="canonical-attempt",
+    attempt=1,
+    attempt_id="canonical-attempt-1",
+    output_paths=("out.txt",),
+    project_digest="1" * 64,
+    write_root_digest="2" * 64,
+    identity_digest="a204dbac8c4dfc52a29b6f807859fd2cebb4e36c058005098aaa90b54666e801",
+)
+_CANONICAL_SEALED = SealedWriteSet(
+    files=(
+        SealedFile(
+            path="out.txt",
+            before_sha256=None,
+            before_mode=None,
+            after_sha256="7e65ad97e8760c641674fc508dfae789c0bd04930cc5d85125368ab1f101e63e",
+            after_mode=0o644,
+            content=b"canonical output\n",
+        ),
+    ),
+    sealed_digest="b5c8b4cc1bdf3d8f54cbe7aa967326cfda9f043c7489d15e8d18aefc0b188aa8",
+)
+_CANONICAL_PREPARED = PreparedWorkspaceRef(
+    identity=_CANONICAL_WORKSPACE_IDENTITY,
+    sealed=_CANONICAL_SEALED,
+    prepared_digest="da4757b715e099fcb5d0656a9a368218b930124ca987bf3e7b6f84c73fd7decf",
+)
+_CANONICAL_PROMOTION = PromotionReceipt(
+    identity_digest="5" * 64,
+    staged_digest="b5c8b4cc1bdf3d8f54cbe7aa967326cfda9f043c7489d15e8d18aefc0b188aa8",
+    receipt_digest="9d2991483107ab952ce587de62522d33875b8f609ea69a3e7cadd3e5909bcc62",
+)
+
+
+class _CanonicalJournalWorkspace:
+    def __init__(self) -> None:
+        self.binding = TaskWorkspaceBinding(
+            identity=_CANONICAL_WORKSPACE_IDENTITY,
+            project_root=Path("/canonical/project"),
+            write_root=Path("/canonical/write"),
+            project_root_identity=_CANONICAL_DIRECTORY_IDENTITY,
+            write_root_identity=_CANONICAL_DIRECTORY_IDENTITY,
+        )
+
+    async def open_or_create(self, attempt_key: AttemptKey, claims: ResourceClaims) -> TaskWorkspaceBinding:
+        del attempt_key, claims
+        return self.binding
+
+    async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet:
+        del binding
+        return _CANONICAL_SEALED
+
+    async def prepare(self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet) -> PreparedWorkspaceRef:
+        del binding
+        assert sealed == _CANONICAL_SEALED
+        return _CANONICAL_PREPARED
+
+    async def promote(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt:
+        assert prepared == _CANONICAL_PREPARED
+        return _CANONICAL_PROMOTION
+
+    async def recover_promotion(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt:
+        assert prepared == _CANONICAL_PREPARED
+        return _CANONICAL_PROMOTION
+
+
+class _CanonicalJournalExecutor:
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[ValidOutput]:
+        del validated_input, scope
+        return ExecutedAttemptResult(
+            output=ValidOutput(value="done"),
+            effects=(EffectIntent(kind=DELIVERY_KIND, payload=valid_delivery_payload()),),
+            source_terminal_receipt=TerminalReceiptRef(
+                identity_digest="a" * 64,
+                receipt_digest="b" * 64,
+            ),
+        )
+
+
 class _ConfigurableExecutor:
     def __init__(self) -> None:
         self.result: object | None = None
@@ -565,3 +663,110 @@ async def test_release_proof_with_active_grant_fails_integrity(kernel_fixture) -
     await kernel_fixture.install_impossible_release_state()
     with pytest.raises(AttemptIntegrityError, match="release proof"):
         await kernel_fixture.restart()
+
+
+def _canonical_journal_scenario() -> tuple[
+    AssuranceAttemptKernel,
+    MemoryAttemptJournal,
+    AttemptKey,
+    Any,
+    RunInput,
+    AttemptExecutionContext,
+]:
+    helpers = _effect_helpers()
+    handler = helpers.RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    effects, schemas = helpers.build_effect_registries(handler)
+    executor = _CanonicalJournalExecutor()
+    resolved = resolve_contract(
+        TaskAttemptContract(
+            contract_id="assurance.execution.run.v1",
+            owner_id="assurance.execution",
+            handler_id="assurance.execution.run",
+            input_model=RunInput,
+            output_model=ValidOutput,
+            resources=ResourceClaims(writes=("out.txt",)),
+            retry=AttemptRetryPolicy(max_attempts=1),
+            timeout=AttemptTimeoutPolicy(seconds=60),
+            validators=(),
+        ),
+        executor=executor,
+    )
+    journal = MemoryAttemptJournal()
+    kernel = AssuranceAttemptKernel(
+        journal=journal,
+        arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
+        workspace=_CanonicalJournalWorkspace(),
+        graph_revision=graph_revision(),
+        effects=effects,
+        schemas=schemas,
+        effect_state=MemoryEffectState(),
+    )
+    validated = RunInput(change_id="chg-1")
+    attempt_key = derive_attempt_key(
+        invocation_id="inv-1",
+        graph_revision=graph_revision(),
+        public_entrypoint="execute",
+        semantic_node_id="execution.run",
+        business_activation=BusinessActivation.one_shot(),
+        contract_id=resolved.contract.contract_id,
+        validated_input=validated,
+    )
+    context = AttemptExecutionContext(
+        invocation_id="inv-1",
+        public_entrypoint="execute",
+        semantic_node_id="execution.run",
+        attempt_key=attempt_key,
+        fencing_token=4,
+    )
+    return kernel, journal, attempt_key, resolved, validated, context
+
+
+def _canonical_journal_bytes(journal: MemoryAttemptJournal, attempt_key: AttemptKey) -> bytes:
+    return canonical_json_bytes(
+        [
+            {
+                "schema_version": ATTEMPT_JOURNAL_SCHEMA_VERSION,
+                "record_digest": record.record_digest,
+                "payload": record.canonical_projection(),
+            }
+            for record in journal.records(attempt_key)
+        ]
+    )
+
+
+async def _run_canonical_journal_scenario(*, replay_prepared_state: bool) -> bytes:
+    kernel, journal, attempt_key, resolved, validated, context = _canonical_journal_scenario()
+
+    if replay_prepared_state:
+
+        def cut(name: str) -> None:
+            if name == "after_prepare_before_promotion":
+                raise TransactionCrash(name)
+
+        with pytest.raises(TransactionCrash, match="after_prepare_before_promotion"):
+            await kernel.execute_or_recover(
+                attempt_key,
+                resolved,
+                validated,
+                context,
+                transaction_cut=cut,
+            )
+
+    result = await kernel.execute_or_recover(
+        attempt_key,
+        resolved,
+        validated,
+        context,
+        transaction_cut=None,
+    )
+    assert isinstance(result, CommittedTaskResult)
+    return _canonical_journal_bytes(journal, attempt_key)
+
+
+async def test_effectful_attempt_journal_bytes_match_phase_p_golden() -> None:
+    fresh = await _run_canonical_journal_scenario(replay_prepared_state=False)
+    replay = await _run_canonical_journal_scenario(replay_prepared_state=True)
+
+    assert fresh == replay
+    golden = Path(__file__).with_name("attempt-kernel-phase-p.golden.json").read_bytes()
+    assert fresh == golden

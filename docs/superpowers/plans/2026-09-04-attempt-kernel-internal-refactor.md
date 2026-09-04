@@ -166,7 +166,7 @@ Keep the tag local. Protected CI remains the authority.
 
 **Produces:** An immutable, accepted-base byte oracle covering fresh execution and prepared-state replay.
 
-- [ ] **Step 1: Clarify the design note's caller and observation wording.**
+- [x] **Step 1: Clarify the design note's caller and observation wording.**
 
 Qualify the two unbounded “all callers” statements as “all graph execution callers.” State that dependency assembly may bind the same authoritative `AttemptJournalPort` to the Kernel and `AttemptNodeFactory`, but graph code may not call another concrete Kernel method.
 
@@ -177,7 +177,7 @@ Clarify the responsibility table:
 
 This changes no production API.
 
-- [ ] **Step 2: Add one deterministic effectful byte characterization.**
+- [x] **Step 2: Add one deterministic effectful byte characterization.**
 
 In `test_kernel.py`, reuse the fixed Attempt identity and Effect registry. Use a workspace double whose sealed, prepared, promotion, source, and Effect receipts contain only fixed canonical values.
 
@@ -203,7 +203,7 @@ canonical_json_bytes(
 
 Assert fresh bytes equal replay bytes and then equal the checked-in sidecar. Do not scrub paths or recompute expected bytes from candidate code.
 
-- [ ] **Step 3: Capture the sidecar from the accepted base only.**
+- [x] **Step 3: Capture the sidecar from the accepted base only.**
 
 Before changing production code, temporarily print the already-equal fresh/replay bytes, run the single test once, add those exact bytes to `attempt-kernel-phase-p.golden.json`, and remove the print branch. The committed test only reads the sidecar.
 
@@ -214,7 +214,7 @@ uv run pytest -q \
 git diff --exit-code HEAD -- packages/framework/graph-engine/graph_engine
 ```
 
-- [ ] **Step 4: Run focused regression and commit I0.**
+- [x] **Step 4: Run focused regression and commit I0.**
 
 ```bash
 uv run pytest -q \

@@ -25,7 +25,7 @@ create a private collaborator. No extraction is justified solely to make a diagr
 
 ## Stable public boundary
 
-Callers continue to use only:
+All graph execution callers continue to use only:
 
 ```python
 AssuranceAttemptKernel.execute_or_recover(
@@ -40,6 +40,9 @@ The refactor must not create another Workflow scheduler, LangGraph node, transac
 or public service API. LangGraph retains Workflow control; the Kernel retains one Attempt's
 transaction order and recovery decision.
 
+Dependency assembly may bind the same authoritative `AttemptJournalPort` to the Kernel and
+`AttemptNodeFactory`, but graph code may not call another concrete Kernel method.
+
 ## Responsibility boundaries
 
 The implementation must keep the following responsibilities identifiable and prevent authority
@@ -49,8 +52,8 @@ from leaking between them:
 | --- | --- | --- |
 | journal and replay | Attempt identity, snapshot folding, CAS append, durable replay and terminal proof | workspace promotion, external activity, Effect business logic |
 | authorization and fencing | grant acquisition/adoption, live-fence assertions, terminal release | output validation, graph routing, activity protocol |
-| activity | execute/adopt/reconcile/observe and source terminal receipt | seal, promotion, terminal publication |
-| commit | output and intent validation, seal, ordered Validators, durable prepare, promote/recover | OpenCode admission, external Effect application |
+| activity | external execute/adopt/reconcile and observation of the source host's terminal receipt | seal, promotion, terminal publication |
+| commit | final output/intent validation, seal, ordered Validators, durable prepare, promote/recover, and the canonical `ActivityTerminalObserved` + `EffectIntentRecorded` durability fallback | OpenCode admission, external Effect application |
 | Effect settlement | ordered apply/reconcile of persisted intents and Effect receipts | discovery of process-local intents, graph routing, workspace mutation |
 
 This table is normative; boxes drawn around the rows are not. Two rows may remain in one private
@@ -105,7 +108,7 @@ pre-approve four classes, the names from an earlier diagram, or a proposed file 
 
 ## Acceptance
 
-- all callers still depend only on `execute_or_recover`;
+- all graph execution callers still depend only on `execute_or_recover`;
 - the normative transaction trace and all crash/recovery outcomes are unchanged;
 - no serialized schema or public protocol changes merely to enable extraction;
 - responsibility ownership is evident in code and covered by focused tests;
