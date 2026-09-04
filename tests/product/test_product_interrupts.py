@@ -100,7 +100,9 @@ def test_coverage_interrupt_validates_after_restart_and_does_not_mutate_before_i
     except GraphInterrupt:
         pass
     request = _interrupt_payload(graph, config)
-    assert set(request["actions"]) == {"approve", "reject"}
+    actions = request["actions"]
+    assert isinstance(actions, list | tuple)
+    assert set(actions) == {"approve", "reject"}
     assert request["interrupt_id"] == _COVERAGE_INTERRUPT_ID
     assert request["reason"] == "coverage_needs_human"
     assert request["ordinal"] == 0
