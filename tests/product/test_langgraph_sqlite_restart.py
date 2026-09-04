@@ -20,7 +20,11 @@ from graph_engine.application import (
 from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
-from graph_engine.persistence.journal import CheckpointAnchorState, CheckpointIntegrityError, InvocationStarted
+from graph_engine.persistence.journal import (
+    CheckpointAnchorState,
+    CheckpointIntegrityError,
+    InvocationStarted,
+)
 from graph_engine.persistence.runner_lease import RunnerLease
 from assurance_product.runtime_ports import _FenceAdvancedReplayJournal
 

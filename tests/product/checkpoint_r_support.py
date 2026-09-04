@@ -443,9 +443,7 @@ def _reviewed_plan(family: str) -> dict[str, object]:
                 "required_capabilities": (_CAPABILITY_LEAF,),
             },
         ),
-        "output_files": tuple(
-            f"qa/changes/{_CHANGE_ID}/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]
-        ),
+        "output_files": tuple(f"qa/changes/{_CHANGE_ID}/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]),
     }
 
 
@@ -671,9 +669,7 @@ def installed_contract_input(contract: object) -> BaseModel:
             "artifact_paths": (artifact,),
         }
         if contract_id.endswith("codegen-fix.v1"):
-            family = contract_id.removeprefix("assurance.generation.agent.").removesuffix(
-                ".codegen-fix.v1"
-            )
+            family = contract_id.removeprefix("assurance.generation.agent.").removesuffix(".codegen-fix.v1")
             payload.update(
                 {
                     "allowed_paths": (f"qa/changes/{_CHANGE_ID}/generated/demo.py",),

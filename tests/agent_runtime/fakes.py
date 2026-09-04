@@ -1201,9 +1201,7 @@ class CursorRuntimeHarness(_AdapterHarness):
         path.chmod(0o755)
         return str(path), hashlib.sha256(path.read_bytes()).hexdigest()
 
-    def _fake_and_handler(
-        self, *, cut: str | None = None, status: str = "exited"
-    ) -> tuple[Any, Any]:
+    def _fake_and_handler(self, *, cut: str | None = None, status: str = "exited") -> tuple[Any, Any]:
         from agent_runtime_cursor import CursorHandler
 
         fake_mod = _load_adapter_test_module("agent-runtime-cursor", "fake_process_host")

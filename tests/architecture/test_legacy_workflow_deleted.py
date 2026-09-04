@@ -172,4 +172,3 @@ def test_permanent_modules_resolve_without_runtime_package() -> None:
         if "graph_engine.runtime" in source:
             failed.append(f"{name}:source-imports-graph_engine.runtime")
         assert failed == []
-

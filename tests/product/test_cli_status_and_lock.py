@@ -175,5 +175,3 @@ def test_status_after_run_is_authoritative_completed_projection(
     assert status.entrypoint == "archive"
     assert status.change.change_id == change_id
     assert status.status in {"completed", "initialized", "ready", "running", "interrupted", "blocked"}
-
-

@@ -31,7 +31,12 @@ def _sorted_unique_paths(paths: tuple[str, ...], *, kind: str) -> tuple[str, ...
     if len(set(paths)) != len(paths):
         raise ValueError(f"{kind} must be unique")
     for path in paths:
-        if not path or path != path.strip() or "\\" in path or any(part in {"", ".", ".."} for part in path.split("/")):
+        if (
+            not path
+            or path != path.strip()
+            or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+        ):
             raise ValueError(f"{kind} must contain canonical relative paths")
     return paths
 

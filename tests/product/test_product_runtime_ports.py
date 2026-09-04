@@ -63,7 +63,6 @@ def test_missing_fence_fails_before_kernel(product_ports_fixture) -> None:
     assert product_ports_fixture.kernel_call_count == 0
 
 
-
 def test_product_runtime_ports_register_observer_before_boot(installed_sources, tmp_path: Path) -> None:
     asyncio.run(_register_observer(installed_sources, tmp_path))
 
@@ -154,9 +153,7 @@ async def _shutdown_order(installed_sources, tmp_path: Path) -> None:
     assert "kernel" in order
 
 
-def test_aa_compile_does_not_construct_invocation_runtime(
-    cli_runner, installed_sources, monkeypatch
-) -> None:
+def test_aa_compile_does_not_construct_invocation_runtime(cli_runner, installed_sources, monkeypatch) -> None:
     from assurance_product.cli import app
     from assurance_product.runtime_ports import AuthorizedSecretResolver, ProductRuntimePorts
     from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease

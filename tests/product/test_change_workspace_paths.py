@@ -58,9 +58,7 @@ def test_initialize_creates_only_the_exact_change_workspace_directories(
     assert not workspace.paths.generated_root.exists()
 
 
-def test_initialize_rejects_unknown_control_entries_before_mutation(
-    tmp_path: Path, change_workspace
-) -> None:
+def test_initialize_rejects_unknown_control_entries_before_mutation(tmp_path: Path, change_workspace) -> None:
     workspace = change_workspace.ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
     workspace.initialize()
     leftover_ledger = workspace.paths.runtime_root / "ledger"

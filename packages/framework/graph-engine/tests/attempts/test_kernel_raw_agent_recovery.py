@@ -55,6 +55,7 @@ def _fencing_token(context: object) -> int:
         return nested
     raise AttributeError("fencing_token")
 
+
 _HELPER_SPEC = importlib.util.spec_from_file_location(
     "test_kernel_effects",
     Path(__file__).with_name("test_kernel_effects.py"),
