@@ -27,6 +27,11 @@ from graph_engine.persistence.journal import (
 )
 from graph_engine.persistence.runner_lease import RunnerLease
 from assurance_product.runtime_ports import _FenceAdvancedReplayJournal
+from tests.product.unused_runtime_ports import (
+    UNUSED_ATTEMPT_KERNEL,
+    UNUSED_SECRET_RESOLVER,
+    UNUSED_WORKSPACE_PROVIDER,
+)
 
 
 LOCK = "b" * 64
@@ -108,9 +113,9 @@ class _LeaseBoundSaverFactory:
             runtime_context=AssuranceRuntimeContext(
                 revision_id=artifact.manifest.revision.revision_id,
                 fencing_token=runner_lease.fencing_token,
-                attempt_kernel=object(),
-                secret_resolver=object(),
-                workspace_provider=object(),
+                attempt_kernel=UNUSED_ATTEMPT_KERNEL,
+                secret_resolver=UNUSED_SECRET_RESOLVER,
+                workspace_provider=UNUSED_WORKSPACE_PROVIDER,
             ),
         )
         self.last = bound

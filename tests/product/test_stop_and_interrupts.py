@@ -15,6 +15,7 @@ from graph_engine.application import (
 from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
+from tests.product.unused_runtime_ports import UNUSED_SECRET_RESOLVER, UNUSED_WORKSPACE_PROVIDER
 
 pytestmark = pytest.mark.usefixtures("product_runner")
 
@@ -47,8 +48,8 @@ def _factory(artifact: BootArtifact) -> FixedExecutionFactory:
     return FixedExecutionFactory(
         artifact=artifact,
         attempt_kernel=cast(Any, object()),
-        secret_resolver=object(),
-        workspace_provider=object(),
+        secret_resolver=UNUSED_SECRET_RESOLVER,
+        workspace_provider=UNUSED_WORKSPACE_PROVIDER,
     )
 
 

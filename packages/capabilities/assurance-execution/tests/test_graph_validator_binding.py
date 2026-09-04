@@ -19,6 +19,7 @@ from assurance_execution.plugin import ExecutionPlugin
 from assurance_product.agent_contracts import all_feature_agent_contracts
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.attempts.contracts import (
+    ExecutedAttemptResult,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
@@ -58,7 +59,7 @@ _OUTSIDE_REASON = "execution candidate may write only tests and change execution
 
 
 class _DeferredPhase:
-    async def execute(self, prepared: object, context: object) -> RawAgentRuntimeOutcome:
+    async def execute(self, prepared: object, scope: object) -> RawAgentRuntimeOutcome:
         raise RuntimeError("semantic attempt phase is not driven")
 
 
@@ -95,15 +96,17 @@ class _StagedWriteExecutor:
         self.output = output
         self.calls = 0
 
-    async def execute(self, validated_input: object, context: object) -> ExecutionManifest:
-        del validated_input, context
+    async def execute(
+        self, validated_input: object, scope: object
+    ) -> ExecutedAttemptResult[ExecutionManifest]:
+        del validated_input, scope
         self.calls += 1
         binding = self.workspace.binding
         assert binding is not None
         target = binding.write_root / self.relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        return self.output
+        return ExecutedAttemptResult(output=self.output)
 
 
 class _CountingValidator:

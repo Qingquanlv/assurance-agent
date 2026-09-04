@@ -9,6 +9,7 @@ from typing import Any, TypedDict, cast
 import pytest
 
 from tests.product.test_result_export import CHANGE_ID, TARGET_A, TARGET_B, write_achieved
+from tests.product.unused_runtime_ports import UNUSED_SECRET_RESOLVER, UNUSED_WORKSPACE_PROVIDER
 
 _CRASH_PHASES = ("prepared", "replacing", "committed")
 _ORDERED_CRASH_SUBSETS = tuple(
@@ -177,8 +178,8 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
         return FixedExecutionFactory(
             artifact=artifact,
             attempt_kernel=cast(Any, object()),
-            secret_resolver=object(),
-            workspace_provider=object(),
+            secret_resolver=UNUSED_SECRET_RESOLVER,
+            workspace_provider=UNUSED_WORKSPACE_PROVIDER,
         )
 
     async def _run() -> None:

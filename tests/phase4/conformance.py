@@ -13,6 +13,7 @@ import json
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
+from graph_engine.effects.state import EffectCallContext, EffectStateObservation
 from graph_engine.plugin_api import (
     CandidateFile,
     CandidateWriteSet,
@@ -136,17 +137,55 @@ def assert_validator_rejects(
     assert result.reason == reason
 
 
+class _UnusedEffectState:
+    async def commit(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        payload: JSONValue,
+        receipt: JSONValue,
+        fencing_token: int,
+    ) -> EffectStateObservation:
+        del effect_kind, settlement_key, business_key, intent_digest, payload, fencing_token
+        return EffectStateObservation(status="committed", receipt=receipt)
+
+    async def observe(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        fencing_token: int,
+    ) -> EffectStateObservation:
+        del effect_kind, settlement_key, business_key, intent_digest, fencing_token
+        return EffectStateObservation(status="absent")
+
+
+def _effect_context(idempotency_key: str, *, kind: str) -> EffectCallContext:
+    return EffectCallContext(
+        _UnusedEffectState(),
+        effect_kind=kind,
+        settlement_key=idempotency_key,
+        fencing_token=1,
+    )
+
+
 async def assert_effect_idempotent(
     handler: DurableEffectHandler,
     intent: EffectIntent,
     idempotency_key: str,
 ) -> None:
-    first = await handler.apply(intent, idempotency_key)
-    second = await handler.apply(intent, idempotency_key)
+    context = _effect_context(idempotency_key, kind=intent.kind)
+    first = await handler.apply(intent, context)
+    second = await handler.apply(intent, context)
     assert first.status == "applied"
     assert second.status == "applied"
     assert _receipt_bytes(first.receipt) == _receipt_bytes(second.receipt)
-    reconciled = await handler.reconcile(intent, idempotency_key)
+    reconciled = await handler.reconcile(intent, context)
     assert reconciled.status == "applied"
     assert _receipt_bytes(reconciled.receipt) == _receipt_bytes(first.receipt)
 

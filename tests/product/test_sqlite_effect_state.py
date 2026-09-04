@@ -8,6 +8,7 @@ import pytest
 from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
 from assurance_product.sqlite_effect_state import SQLiteEffectState
+from graph_engine.canonical import JSONValue
 from graph_engine.effects.state import bind_effect_call
 from graph_engine.persistence.runner_lease import StaleFencingToken
 
@@ -15,8 +16,10 @@ _KIND = "assurance.improvement.effect.delivery.v1"
 _SETTLEMENT = "a" * 64
 _DIGEST = "b" * 64
 _BUSINESS = "delivery:IMP-1"
-_PAYLOAD = {"kind": "memory_apply"}
-_RECEIPT = {"idempotency_key": _BUSINESS, "settlement_key": _SETTLEMENT}
+_PAYLOAD: JSONValue = {"kind": "memory_apply"}
+_RECEIPT: JSONValue = {"idempotency_key": _BUSINESS, "settlement_key": _SETTLEMENT}
+_ROLLBACK_PAYLOAD: JSONValue = {"kind": "memory_rollback"}
+_OTHER_RECEIPT: JSONValue = {"idempotency_key": _BUSINESS, "settlement_key": "c" * 64}
 
 
 @pytest.fixture
@@ -87,7 +90,7 @@ async def _sqlite_exact_reuse_and_conflicts(workspace) -> None:
             await context.commit(
                 business_key=_BUSINESS,
                 intent_digest="c" * 64,
-                payload={"kind": "memory_rollback"},
+                payload=_ROLLBACK_PAYLOAD,
                 receipt=_RECEIPT,
             )
         other = bind_effect_call(
@@ -101,7 +104,7 @@ async def _sqlite_exact_reuse_and_conflicts(workspace) -> None:
                 business_key=_BUSINESS,
                 intent_digest=_DIGEST,
                 payload=_PAYLOAD,
-                receipt={"idempotency_key": _BUSINESS, "settlement_key": "c" * 64},
+                receipt=_OTHER_RECEIPT,
             )
 
 

@@ -1202,7 +1202,7 @@ class CursorRuntimeHarness(_AdapterHarness):
         return str(path), hashlib.sha256(path.read_bytes()).hexdigest()
 
     def _fake_and_handler(self, *, cut: str | None = None, status: str = "exited") -> tuple[Any, Any]:
-        from agent_runtime_cursor import CursorHandler
+        from agent_runtime_cursor import CursorHandler  # type: ignore[reportMissingImports]
 
         fake_mod = _load_adapter_test_module("agent-runtime-cursor", "fake_process_host")
         root = self._temp()
@@ -1216,7 +1216,7 @@ class CursorRuntimeHarness(_AdapterHarness):
         return host, CursorHandler(host)
 
     def _adapter_binding_data(self) -> dict[str, Any]:
-        from agent_runtime_cursor import CursorAdapterConfig
+        from agent_runtime_cursor import CursorAdapterConfig  # type: ignore[reportMissingImports]
 
         executable, digest, _host = getattr(self, "_last_cursor")
         config = CursorAdapterConfig.model_validate(

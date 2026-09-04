@@ -108,7 +108,7 @@ _IMPROVEMENT_TASK_KEYS = (
 
 def adapt_improvement(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
-    extras = {key: state[key] for key in _IMPROVEMENT_TASK_KEYS if key in state}
+    extras = {key: state.get(key) for key in _IMPROVEMENT_TASK_KEYS if key in state}
     feature_input = {
         "change_id": payload.change_id,
         "capability_leafs": list(payload.capability_leafs),

@@ -8,6 +8,13 @@ from typing import Any
 
 import pytest
 
+from pydantic import BaseModel
+
+from assurance_product.change_workspace import ChangeWorkspace
+from assurance_product.invocation_identity import InvocationIdentityRecord
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.composition import FrozenComposition
+from graph_engine.plugin_api import ResourceClaimTemplate, ResourceClaims
 from tests.product.cli_support import (
     SECRET_ENV,
     SECRET_HANDLE,
@@ -334,8 +341,8 @@ def _evaluate_task_payload() -> dict[str, object]:
     }
 
 
-def _workspace_at(project_root: Path, change_root: Path) -> object:
-    from assurance_product.change_workspace import ChangePaths, ChangeWorkspace
+def _workspace_at(project_root: Path, change_root: Path) -> ChangeWorkspace:
+    from assurance_product.change_workspace import ChangePaths
 
     runtime = change_root / ".runtime"
     langgraph = runtime / "langgraph"
@@ -360,12 +367,11 @@ def _durable_chain(
     project_dir: Path,
     change_id: str,
     invocation_id: str,
-    composition: object,
-    identity: object,
+    composition: FrozenComposition,
+    identity: InvocationIdentityRecord,
     expect_attempt_records: bool,
-    workspace: object | None = None,
+    workspace: ChangeWorkspace | None = None,
 ) -> object:
-    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import _authorization
     from assurance_product.runtime_ports import ProductRuntimePorts
 
@@ -542,11 +548,10 @@ def _authenticate_reopen(
     cli_runner,
     app: object,
     existing: list[str],
-    identity: object,
-    composition: object,
+    identity: InvocationIdentityRecord,
+    composition: FrozenComposition,
     expected_status: str | None = None,
 ) -> dict[str, Any]:
-    from assurance_product.invocation_identity import InvocationIdentityRecord
 
     statused = cli_runner.invoke(app, ["status", *existing])
     assert statused.exit_code == 0, statused.output
@@ -593,10 +598,9 @@ def _inject_evaluate_payload(
     project_dir: Path,
     change_id: str,
     invocation_id: str,
-    composition: object,
-    identity: object,
+    composition: FrozenComposition,
+    identity: InvocationIdentityRecord,
 ) -> None:
-    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import _authorization
     from assurance_product.runtime_ports import ProductRuntimePorts
 
@@ -726,11 +730,11 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
 
     async def interrupt_once(
         self: ResourceArbiter,
-        attempt_key: object,
-        claims: object,
+        attempt_key: AttemptKey,
+        claims: ResourceClaims | ResourceClaimTemplate,
         *,
         fencing_token: int,
-        validated_input: object | None = None,
+        validated_input: BaseModel | None = None,
     ) -> object:
         if not issued["pending"]:
             issued["pending"] = True

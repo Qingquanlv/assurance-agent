@@ -3,18 +3,27 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from pydantic import BaseModel
+
+from graph_engine.attempts.context import AttemptExecutionContext
+from graph_engine.attempts.contracts import ResolvedAttemptContract
+from graph_engine.attempts.keys import AttemptKey
 from tests.product.cli_support import lifecycle_authorization, write_project_dir
 from tests.product.composition_harness import request_for
+
+if TYPE_CHECKING:
+    from assurance_product.runtime_ports import ProductRuntimePorts
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
 @dataclass
 class _ProductPortsFixture:
-    ports: object
+    ports: ProductRuntimePorts
     kernel_call_count: int = 0
 
     async def bind_without_runner_lease(self) -> object:
@@ -23,7 +32,7 @@ class _ProductPortsFixture:
             entrypoint="improvement-apply",
             root_input_digest="c" * 64,
         )
-        return factory.bind(None)
+        return factory.bind(None)  # type: ignore[arg-type]
 
 
 @pytest.fixture
@@ -47,9 +56,14 @@ def product_ports_fixture(installed_sources, tmp_path: Path):
             fixture = _ProductPortsFixture(ports=ports)
             original = ports.kernel.execute_or_recover
 
-            async def _count(*args: object, **kwargs: object) -> object:
+            async def _count(
+                attempt_key: AttemptKey,
+                contract: ResolvedAttemptContract[Any, Any],
+                validated_input: BaseModel,
+                context: AttemptExecutionContext,
+            ) -> object:
                 fixture.kernel_call_count += 1
-                return await original(*args, **kwargs)
+                return await original(attempt_key, contract, validated_input, context)
 
             ports.kernel.execute_or_recover = _count  # type: ignore[method-assign]
             return fixture

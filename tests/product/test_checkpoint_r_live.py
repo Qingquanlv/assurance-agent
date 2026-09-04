@@ -44,16 +44,17 @@ def test_checkpoint_r_live_module_keeps_credential_free_inventory() -> None:
 def test_codegen_fix_fixtures_validate_as_plan_and_cases() -> None:
     from assurance_generation.contracts.plans import PlanResultV1
     from assurance_generation.operations.codegen import validate_codegen_fix_input
-    from assurance_generation.operations.planning import leafs_of
+    from assurance_generation.operations.planning import Family, leafs_of
     from assurance_intake.contracts import CaseYamlAuthoring
     from assurance_product.agent_contracts import all_feature_agent_contracts
     from tests.product.checkpoint_r_support import installed_contract_input
 
     contracts = all_feature_agent_contracts()
-    for contract_id, family in (
+    pairs: tuple[tuple[str, Family], ...] = (
         ("assurance.generation.agent.api.codegen-fix.v1", "api"),
         ("assurance.generation.agent.e2e.codegen-fix.v1", "e2e"),
-    ):
+    )
+    for contract_id, family in pairs:
         payload = installed_contract_input(contracts[contract_id]).model_dump(mode="json")
         leafs = leafs_of(tuple(payload["capability_leafs"]))
         PlanResultV1.model_validate(payload["reviewed_plan"], context={"capability_leafs": leafs})

@@ -13,7 +13,12 @@ from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
 from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract, resolve_contract
+from graph_engine.attempts.contracts import (
+    ExecutedAttemptResult,
+    ResolvedAttemptContract,
+    TaskAttemptContract,
+    resolve_contract,
+)
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.node_factory import AttemptNodeFactory
@@ -207,19 +212,21 @@ class _WritingExecutor:
         self.output = output
         self.calls = 0
 
-    async def execute(self, validated_input: BaseModel, context: object) -> ExecutionManifest:
-        del validated_input, context
+    async def execute(
+        self, validated_input: BaseModel, scope: object
+    ) -> ExecutedAttemptResult[ExecutionManifest]:
+        del validated_input, scope
         self.calls += 1
         binding = self.workspace.binding
         assert binding is not None
         target = binding.write_root / "tests" / "a.py"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        return self.output
+        return ExecutedAttemptResult(output=self.output)
 
 
 class _DeferredPhase:
-    async def execute(self, prepared: object, context: object) -> RawAgentRuntimeOutcome:
+    async def execute(self, prepared: object, scope: object) -> RawAgentRuntimeOutcome:
         raise RuntimeError("semantic attempt phase is not driven")
 
 

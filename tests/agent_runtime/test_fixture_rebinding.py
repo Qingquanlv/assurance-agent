@@ -18,7 +18,7 @@ import pytest
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes, thaw_json
-from agent_runtime_cursor import CursorAdapterConfig, CursorHandler
+from agent_runtime_cursor import CursorAdapterConfig, CursorHandler  # type: ignore[reportMissingImports]
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
 from graph_engine.composition import (
     EditableWheelPluginSource,

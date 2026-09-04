@@ -348,8 +348,10 @@ def test_installed_runtime_returns_permanent_failure_on_invalid_outcome(tmp_path
 
     from assurance_product.runtime_bindings import InstalledRuntimePhase
 
+    from agent_runtime_fixture.contracts import frozen_run_request
+
     phase = InstalledRuntimePhase("runtime.opencode.execute", _FailingHandler(), _runtime_binding())
-    result = asyncio.run(phase.execute(_PhasePrepared(), _phase_scope(tmp_path)))
+    result = asyncio.run(phase.execute(frozen_run_request(), _phase_scope(tmp_path)))
     assert isinstance(result, PermanentTaskFailure)
     assert result.kind == "invalid_output"
     assert result.message == "phase rejected"

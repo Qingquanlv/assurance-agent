@@ -22,11 +22,13 @@ import asyncio
 
 from agent_runtime_contracts import AgentRunRequest, InstructionPart
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes
-from graph_engine.application import AssuranceApplication
+from graph_engine.application import AssuranceApplication, InvocationBoundExecutionFactory
 from graph_engine.application.status import InvocationStatus
+from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    ExecutedAttemptResult,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
@@ -356,8 +358,10 @@ class _RecordingExecuteExecutor:
     def __init__(self, host: "SixWheelTaskHost") -> None:
         self.host = host
 
-    async def execute(self, validated_input: _Phase4NodeInput, context: object) -> _Phase4NodeOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: _Phase4NodeInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_Phase4NodeOutput]:
+        del validated_input, scope
         request = _fixture_agent_request()
         self.host.recorded_request_bytes = request.canonical_bytes()
         self.host.provider_state_dir.mkdir(parents=True, exist_ok=True)
@@ -369,13 +373,15 @@ class _RecordingExecuteExecutor:
             adapter_id=self.host.adapter_id,
             adapter_version="1.0.0",
         ).execute_request(request)
-        return _Phase4NodeOutput()
+        return ExecutedAttemptResult(output=_Phase4NodeOutput())
 
 
 class _PassExecutor:
-    async def execute(self, validated_input: _Phase4NodeInput, context: object) -> _Phase4NodeOutput:
-        del validated_input, context
-        return _Phase4NodeOutput()
+    async def execute(
+        self, validated_input: _Phase4NodeInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_Phase4NodeOutput]:
+        del validated_input, scope
+        return ExecutedAttemptResult(output=_Phase4NodeOutput())
 
 
 class _CallableExecutor:
@@ -384,11 +390,15 @@ class _CallableExecutor:
     def __init__(self, fn: object) -> None:
         self._fn = fn
 
-    async def execute(self, validated_input: _Phase4NodeInput, context: object) -> object:
-        result = self._fn(validated_input, context)  # type: ignore[operator]
+    async def execute(
+        self, validated_input: _Phase4NodeInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_Phase4NodeOutput]:
+        result = self._fn(validated_input, scope)  # type: ignore[operator]
         if hasattr(result, "__await__"):
-            return await result  # type: ignore[misc]
-        return result
+            result = await result  # type: ignore[misc]
+        if isinstance(result, ExecutedAttemptResult):
+            return result
+        return ExecutedAttemptResult(output=cast(_Phase4NodeOutput, result))
 
 
 def _as_executor(value: object | None, default: object) -> object:
@@ -538,7 +548,7 @@ def _boot_application(
     checkpointer: MemoryCheckpointer | None = None,
     execute: object | None = None,
     finalize: object | None = None,
-) -> tuple[AssuranceApplication, BootArtifact, object, MemoryCheckpointer, Path]:
+) -> tuple[AssuranceApplication, BootArtifact, InvocationBoundExecutionFactory, MemoryCheckpointer, Path]:
     workspace, project_root = _workspace_binding(engine_root)
     saver = MemoryCheckpointer() if checkpointer is None else checkpointer
     artifact, kernel = boot_factory_product(

@@ -10,6 +10,7 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.composition import ProductFileSource, load_product_file
 from graph_engine.frozen_json import thaw_json
+from graph_engine.effects.state import EffectCallContext
 from graph_engine.plugin_api import (
     CandidateFile,
     EffectApplyResult,
@@ -206,16 +207,14 @@ class _IdempotentEffect:
     def __init__(self) -> None:
         self._receipts: dict[str, JSONValue] = {}
 
-    async def apply(self, intent: EffectIntent, idempotency_key: str) -> EffectApplyResult:
-        receipt = self._receipts.setdefault(
-            idempotency_key,
-            {"kind": intent.kind, "key": idempotency_key},
-        )
+    async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult:
+        key = context.settlement_key
+        receipt = self._receipts.setdefault(key, {"kind": intent.kind, "key": key})
         return EffectApplyResult.applied(receipt)
 
-    async def reconcile(self, intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult:
+    async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult:
         del intent
-        return EffectReconcileResult.applied(self._receipts[idempotency_key])
+        return EffectReconcileResult.applied(self._receipts[context.settlement_key])
 
 
 def test_plugin_conformance_accepts_toy_a() -> None:
