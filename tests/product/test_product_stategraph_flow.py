@@ -229,11 +229,11 @@ def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return(
     with pytest.raises(ValueError, match="extra"):
         _closed_entrypoints(extra)
 
-    class _Duplicate(Mapping[str, object]):
-        def __init__(self, items: tuple[tuple[str, object], ...]) -> None:
+    class _Duplicate(Mapping[str, Any]):
+        def __init__(self, items: tuple[tuple[str, Any], ...]) -> None:
             self._items = items
 
-        def __getitem__(self, key: str) -> object:
+        def __getitem__(self, key: str) -> Any:
             for name, value in self._items:
                 if name == key:
                     return value
