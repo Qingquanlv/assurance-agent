@@ -14,7 +14,6 @@ from graph_engine.attempts.contracts import (
 from graph_engine.attempts.events import (
     ActivityPrepared,
     ActivityTerminalObserved,
-    AttemptEvent,
     AttemptOpened,
     AttemptSnapshot,
     AttemptTerminated,
@@ -37,10 +36,10 @@ from graph_engine.attempts.resolutions import (
     RejectedTaskResult,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiterPort, ResourceAuthorization
+from graph_engine.persistence.resource_authorization import ResourceAuthorizationError
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
-from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.effects.apply import AttemptEffectSettler, recorded_effect_intent_events
 from graph_engine.effects.state import EffectStatePort
@@ -63,6 +62,10 @@ from graph_engine.attempts import workspace as task_workspace_runtime
 
 class AttemptIdentityDrift(GraphEngineError):
     """Raised when replay identity does not match the opened Attempt."""
+
+
+class AttemptIntegrityError(GraphEngineError):
+    """Raised when durable terminal/release proof contradicts the authorization store."""
 
 
 def _noop_cut(_name: str) -> None:
@@ -148,6 +151,11 @@ class AssuranceAttemptKernel:
             )
         _assert_identity(snapshot, identity)
         if snapshot.terminal is not None or snapshot.released:
+            if snapshot.authorization_id is not None:
+                try:
+                    await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
+                except ResourceAuthorizationError:
+                    pass
             return snapshot
         if snapshot.authorization_id is not None:
             await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
@@ -195,7 +203,8 @@ class AssuranceAttemptKernel:
         snapshot = await self.adopt_or_create(attempt_key, contract, validated_input, context)
         trace.append("adopt_or_create")
         if snapshot.terminal is not None:
-            await self._release_if_held(attempt_key, context)
+            snapshot = await self._complete_terminal_release(attempt_key, context, snapshot, cut)
+            assert snapshot.terminal is not None
             return _resolution_from_terminal(snapshot.terminal, contract)
 
         claims = _resolved_claims(contract, validated_input)
@@ -358,7 +367,7 @@ class AssuranceAttemptKernel:
             ),
             cut,
         )
-        trace.append("publish_receipt")
+        trace.extend(["record_terminal", "release_resources", "record_release_proof"])
         assert snapshot.terminal is not None
         return _resolution_from_terminal(snapshot.terminal, contract)
 
@@ -511,18 +520,55 @@ class AssuranceAttemptKernel:
         terminal: AttemptTerminated,
         cut: Callable[[str], None],
     ) -> AttemptSnapshot:
-        await self._assert_fence(attempt_key, context, "terminal_receipt", cut)
-        events: list[AttemptEvent] = [terminal]
-        if not snapshot.released:
-            events.append(ResourcesReleased(authorization_id=authorization.authorization_id))
+        if snapshot.terminal is None:
+            await self._assert_fence(attempt_key, context, "terminal_receipt", cut)
+            snapshot = await self.journal.append(
+                attempt_key,
+                (terminal,),
+                expected_revision=snapshot.revision,
+                fencing_token=context.fencing_token,
+            )
+            await self.journal.ensure_durable(attempt_key)
+            cut("terminal_durable")
+        return await self._complete_terminal_release(
+            attempt_key,
+            context,
+            snapshot,
+            cut,
+            authorization_id=authorization.authorization_id,
+        )
+
+    async def _complete_terminal_release(
+        self,
+        attempt_key: AttemptKey,
+        context: AttemptExecutionContext,
+        snapshot: AttemptSnapshot,
+        cut: Callable[[str], None],
+        *,
+        authorization_id: str | None = None,
+    ) -> AttemptSnapshot:
+        grant_id = authorization_id or snapshot.authorization_id
+        active = await self.arbiter.is_active(attempt_key)
+        if snapshot.released and active:
+            raise AttemptIntegrityError("release proof contradicts an active grant")
+        if snapshot.released:
+            return snapshot
+        if active:
+            await self._assert_fence(attempt_key, context, "resource_release", cut)
+            await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
+            cut("authorization_released")
+        if await self.arbiter.is_active(attempt_key):
+            raise AttemptIntegrityError("release proof")
+        if grant_id is None:
+            raise AttemptIntegrityError("release proof requires the authorization id")
         snapshot = await self.journal.append(
             attempt_key,
-            tuple(events),
+            (ResourcesReleased(authorization_id=grant_id),),
             expected_revision=snapshot.revision,
             fencing_token=context.fencing_token,
         )
-        await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
         await self.journal.ensure_durable(attempt_key)
+        cut("release_proof")
         return snapshot
 
     async def _fail_closed(
@@ -560,16 +606,6 @@ class AssuranceAttemptKernel:
     async def _reload(self, attempt_key: AttemptKey, snapshot: AttemptSnapshot) -> AttemptSnapshot:
         latest = await self.journal.load(attempt_key)
         return latest if latest is not None else snapshot
-
-    async def _release_if_held(
-        self,
-        attempt_key: AttemptKey,
-        context: AttemptExecutionContext,
-    ) -> None:
-        try:
-            await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
-        except StaleFencingToken:
-            return
 
 
 _RESOLUTION_TYPES = (
@@ -730,4 +766,5 @@ def _committed_from_terminal(
 __all__ = [
     "AssuranceAttemptKernel",
     "AttemptIdentityDrift",
+    "AttemptIntegrityError",
 ]

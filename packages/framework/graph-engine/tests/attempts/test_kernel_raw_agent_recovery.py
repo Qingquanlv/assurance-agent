@@ -44,6 +44,17 @@ from graph_engine.attempts.workspace import (
     TaskWorkspaceViolation,
 )
 
+
+def _fencing_token(context: object) -> int:
+    token = getattr(context, "fencing_token", None)
+    if isinstance(token, int):
+        return token
+    execution = getattr(context, "execution", None)
+    nested = getattr(execution, "fencing_token", None)
+    if isinstance(nested, int):
+        return nested
+    raise AttributeError("fencing_token")
+
 _HELPER_SPEC = importlib.util.spec_from_file_location(
     "test_kernel_effects",
     Path(__file__).with_name("test_kernel_effects.py"),
@@ -229,7 +240,7 @@ class LiveRawRuntime:
                 ),
             ),
             expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
+            fencing_token=_fencing_token(context),
         )
 
     def _write_authorized(self) -> None:

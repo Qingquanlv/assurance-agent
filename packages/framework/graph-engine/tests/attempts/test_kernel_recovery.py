@@ -170,6 +170,9 @@ class _ReleaseOnceCrashArbiter:
     async def assert_usable(self, *args, **kwargs):
         return await self.inner.assert_usable(*args, **kwargs)
 
+    async def is_active(self, *args, **kwargs):
+        return await self.inner.is_active(*args, **kwargs)
+
 
 class _RecoverableExecutor:
     def __init__(self) -> None:
@@ -276,6 +279,9 @@ def _build(
         "after_prepare_before_promotion",
         "during_multi_file_promotion",
         "after_promotion_before_receipt",
+        "terminal_durable",
+        "authorization_released",
+        "release_proof",
         "after_receipt_before_graph_checkpoint",
     ],
 )
@@ -425,6 +431,7 @@ async def test_fence_is_checked_at_irreversible_boundaries(tmp_path: Path) -> No
             "fence:promotion",
             "fence:effect_application",
             "fence:terminal_receipt",
+            "fence:resource_release",
         ]
     finally:
         store.close()
@@ -551,10 +558,13 @@ async def test_terminal_replay_releases_held_grant(tmp_path: Path) -> None:
         snapshot = await kernel.journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is not None
-        assert snapshot.released is True
+        assert snapshot.released is False
         await kernel.arbiter.assert_usable(key, fencing_token=context.fencing_token)
         result = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(result, CommittedTaskResult)
+        snapshot = await kernel.journal.load(key)
+        assert snapshot is not None
+        assert snapshot.released is True
         with pytest.raises(ResourceAuthorizationError, match="no active authorization"):
             await kernel.arbiter.assert_usable(key, fencing_token=context.fencing_token)
         assert executor.calls == 1

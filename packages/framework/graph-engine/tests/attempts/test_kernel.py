@@ -18,9 +18,14 @@ from graph_engine.attempts.contracts import (
     TerminalReceiptRef,
     resolve_contract,
 )
-from graph_engine.attempts.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIntegrityError
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure, RejectedTaskResult
+from graph_engine.attempts.resolutions import (
+    CommittedTaskResult,
+    PendingTaskResult,
+    PermanentTaskFailure,
+    RejectedTaskResult,
+)
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
@@ -203,7 +208,9 @@ async def test_happy_path_trace_commits_receipt(tmp_path: Path) -> None:
             "durable_prepare",
             "promote",
             "settle_effects",
-            "publish_receipt",
+            "record_terminal",
+            "release_resources",
+            "record_release_proof",
         ]
         assert isinstance(result, CommittedTaskResult)
         assert result.output == RunOutput(status="ok")
@@ -353,6 +360,14 @@ class _ConfigurableExecutor:
         return self.result
 
 
+class _AuthorizationStoreView:
+    def __init__(self, arbiter: ResourceArbiter) -> None:
+        self._arbiter = arbiter
+
+    async def is_active(self, attempt_key: AttemptKey) -> bool:
+        return await self._arbiter.is_active(attempt_key)
+
+
 class _KernelFixture:
     def __init__(
         self,
@@ -373,8 +388,15 @@ class _KernelFixture:
         self.context = context
         self.executor = executor
         self.store = store
+        self.authorization_store = _AuthorizationStoreView(kernel.arbiter)
+
+    def _ensure_success_result(self) -> None:
+        if self.executor.result is None:
+            self.executor.result = ExecutedAttemptResult(output=ValidOutput(value="done"))
 
     async def run_until_cut(self, name: str) -> None:
+        self._ensure_success_result()
+
         def cut(cut_name: str) -> None:
             if cut_name == name:
                 raise TransactionCrash(name)
@@ -387,6 +409,41 @@ class _KernelFixture:
                 self.context,
                 transaction_cut=cut,
             )
+
+    async def crash_after(self, name: str) -> None:
+        await self.run_until_cut(name)
+
+    async def restart(self) -> object:
+        self._ensure_success_result()
+        return await self.kernel.execute_or_recover(
+            self.attempt_key,
+            self.resolved,
+            self.validated,
+            self.context,
+            transaction_cut=None,
+        )
+
+    async def snapshot(self) -> object:
+        loaded = await self.journal.load(self.attempt_key)
+        assert loaded is not None
+        return loaded
+
+    async def install_impossible_release_state(self) -> None:
+        self._ensure_success_result()
+        result = await self.kernel.execute_or_recover(
+            self.attempt_key,
+            self.resolved,
+            self.validated,
+            self.context,
+        )
+        assert isinstance(result, CommittedTaskResult)
+        granted = await self.kernel.arbiter.acquire(
+            self.attempt_key,
+            ResourceClaims(writes=("out.txt",)),
+            fencing_token=self.context.fencing_token,
+            validated_input=self.validated,
+        )
+        assert not isinstance(granted, PendingTaskResult)
 
 
 def _effect_helpers() -> Any:
@@ -486,3 +543,25 @@ async def test_output_and_effect_intents_share_one_journal_revision(kernel_fixtu
         "activity_terminal_observed",
         "effect_intent_recorded",
     ]
+
+
+async def test_terminal_state_with_active_grant_is_cleaned_before_replay(kernel_fixture) -> None:
+    await kernel_fixture.crash_after("terminal_durable")
+    assert await kernel_fixture.authorization_store.is_active(kernel_fixture.attempt_key)
+    result = await kernel_fixture.restart()
+    assert isinstance(result, CommittedTaskResult)
+    assert not await kernel_fixture.authorization_store.is_active(kernel_fixture.attempt_key)
+    assert (await kernel_fixture.snapshot()).released is True
+
+
+async def test_released_grant_without_proof_appends_proof_on_restart(kernel_fixture) -> None:
+    await kernel_fixture.crash_after("authorization_released")
+    result = await kernel_fixture.restart()
+    assert isinstance(result, CommittedTaskResult)
+    assert (await kernel_fixture.snapshot()).released is True
+
+
+async def test_release_proof_with_active_grant_fails_integrity(kernel_fixture) -> None:
+    await kernel_fixture.install_impossible_release_state()
+    with pytest.raises(AttemptIntegrityError, match="release proof"):
+        await kernel_fixture.restart()
