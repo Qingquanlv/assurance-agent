@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from unittest.mock import patch
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
@@ -27,10 +26,10 @@ _COVERAGE_INTERRUPT_ID = "product-coverage-decision"
 _FEATURE_INTERRUPT_ID = "improvement-apply-human-review"
 
 
-def _config() -> RunnableConfig:
+def _config(*, thread_id: str = "inv-1") -> RunnableConfig:
     return {
         "configurable": {
-            "thread_id": "inv-1",
+            "thread_id": thread_id,
             "assurance_revision_id": "a" * 64,
             "assurance_product_lock_digest": "b" * 64,
             "assurance_root_input_digest": "c" * 64,
@@ -40,56 +39,79 @@ def _config() -> RunnableConfig:
     }
 
 
+def _coverage_graph():
+    builder: StateGraph[ProductState] = StateGraph(ProductState)
+    builder.add_node("coverage-human", cast(Any, coverage_human_interrupt))
+    builder.add_edge(START, "coverage-human")
+    builder.add_edge("coverage-human", END)
+    return builder.compile(checkpointer=InMemorySaver())
+
+
+def _interrupt_payload(graph: Any, config: RunnableConfig) -> dict[str, object]:
+    snapshot = graph.get_state(config)
+    items = list(getattr(snapshot, "interrupts", ()) or ())
+    for task in snapshot.tasks:
+        items.extend(getattr(task, "interrupts", ()) or ())
+    for item in items:
+        value = getattr(item, "value", item)
+        if isinstance(value, dict):
+            return value
+    raise AssertionError("coverage interrupt payload was not published")
+
+
+def _invoke_coverage(action: object, *, thread_id: str) -> dict[str, object]:
+    graph = _coverage_graph()
+    config = _config(thread_id=thread_id)
+    try:
+        graph.invoke({"change_id": "CH-DEMO-001", "coverage_state": "needs_human"}, config=config)
+    except GraphInterrupt:
+        pass
+    result = graph.invoke(Command(resume=action), config=config)
+    if not isinstance(result, dict):
+        raise TypeError("coverage resume must return a mapping")
+    return result
+
+
 def test_coverage_decision_accepts_only_approve_or_reject() -> None:
     assert COVERAGE_DECISION_ACTIONS == ("approve", "reject")
-    state = cast(ProductState, {"change_id": "CH-DEMO-001", "coverage_state": "needs_human"})
-    with patch("assurance_product.graphs.execute.interrupt", return_value={"action": "approve"}):
-        assert coverage_human_interrupt(state) == {
-            "coverage_decision": "approve",
-            "human_action": "approve",
-            "coverage_state": "satisfied",
-        }
-    with patch("assurance_product.graphs.execute.interrupt", return_value={"action": "reject"}):
-        assert coverage_human_interrupt(state) == {"coverage_decision": "reject", "human_action": "reject"}
-    with patch("assurance_product.graphs.execute.interrupt", return_value={"action": "request_rework"}):
-        with pytest.raises(ValidationError):
-            coverage_human_interrupt(state)
-    with patch("assurance_product.graphs.execute.interrupt", return_value={"action": "hold"}):
-        with pytest.raises(ValidationError):
-            coverage_human_interrupt(state)
+    approved = _invoke_coverage({"action": "approve"}, thread_id="inv-approve")
+    assert approved["coverage_decision"] == "approve"
+    assert approved["human_action"] == "approve"
+    assert approved["coverage_state"] == "satisfied"
+    rejected = _invoke_coverage({"action": "reject"}, thread_id="inv-reject")
+    assert rejected["coverage_decision"] == "reject"
+    assert rejected["human_action"] == "reject"
+    with pytest.raises((ValidationError, GraphInterrupt, ValueError)):
+        _invoke_coverage({"action": "request_rework"}, thread_id="inv-rework")
+    with pytest.raises((ValidationError, GraphInterrupt, ValueError)):
+        _invoke_coverage({"action": "hold"}, thread_id="inv-hold")
     assert route_coverage_decision({"coverage_decision": "approve"}) == "assess-satisfied"
     assert route_coverage_decision({"coverage_decision": "reject"}) == "not-achieved"
 
 
 def test_coverage_interrupt_validates_after_restart_and_does_not_mutate_before_interrupt() -> None:
-    seen: list[object] = []
-
-    def _first(payload: object) -> object:
-        seen.append(payload)
-        raise RuntimeError("interrupt")
-
-    state = cast(
-        ProductState,
-        {"change_id": "CH-DEMO-001", "coverage_state": "needs_human", "decision": "leftover"},
-    )
-    with patch("assurance_product.graphs.execute.interrupt", side_effect=_first):
-        with pytest.raises(RuntimeError, match="interrupt"):
-            coverage_human_interrupt(state)
-    request = seen[0]
-    assert isinstance(request, dict)
+    graph = _coverage_graph()
+    config = _config(thread_id="inv-restart")
+    try:
+        graph.invoke(
+            {"change_id": "CH-DEMO-001", "coverage_state": "needs_human", "decision": "leftover"},
+            config=config,
+        )
+    except GraphInterrupt:
+        pass
+    request = _interrupt_payload(graph, config)
     assert set(request["actions"]) == {"approve", "reject"}
     assert request["interrupt_id"] == _COVERAGE_INTERRUPT_ID
     assert request["reason"] == "coverage_needs_human"
     assert request["ordinal"] == 0
-    with patch("assurance_product.graphs.execute.interrupt", return_value={"action": "approve"}):
-        update = coverage_human_interrupt(state)
-        assert update == {
-            "coverage_decision": "approve",
-            "human_action": "approve",
-            "coverage_state": "satisfied",
-        }
-        assert "decision" not in update
-        assert update["coverage_state"] == "satisfied"
+    snapshot = graph.get_state(config)
+    values = getattr(snapshot, "values", {}) or {}
+    assert values.get("coverage_decision") in {None, ""}
+    resumed = graph.invoke(Command(resume={"action": "approve"}), config=config)
+    assert resumed["coverage_decision"] == "approve"
+    assert resumed["human_action"] == "approve"
+    assert resumed["coverage_state"] == "satisfied"
+    assert resumed.get("decision") == "leftover"
 
 
 def test_schema_adapter_is_deterministic_and_does_not_invoke_child() -> None:

@@ -566,7 +566,7 @@ def _authenticate_reopen(
             str(existing[existing.index("--invocation-id") + 1]),
         ).read_bytes()
     )
-    assert reopened == identity
+    assert reopened.model_dump(mode="json") == identity.model_dump(mode="json")
     assert status_doc["invocation_id"] == reopened.invocation_id
     assert status_doc["lock_digest"] == reopened.product_lock_digest
     assert status_doc["root_input_digest"] == reopened.root_input_digest
