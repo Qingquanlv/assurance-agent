@@ -46,7 +46,8 @@ async def test_effect_crash_cuts_are_at_most_once_and_typed(kind: str, cut: str)
         assert result.external_mutation_count == 0
         assert result.apply_returned_applied is False
     elif cut == "after_mutation":
-        assert result.status == "pending"
+        assert result.status == "applied"
+        assert result.receipt == result.expected_receipt
         assert result.external_mutation_count == 1
         assert result.apply_returned_applied is False
     elif cut == "before_receipt":

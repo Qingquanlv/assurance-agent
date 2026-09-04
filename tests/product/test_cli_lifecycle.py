@@ -57,10 +57,19 @@ def test_start_creates_invocation_without_driving(cli_runner, installed_sources,
     assert document["composition_digest"] == composition.digest
     assert "seed_tree_id" not in document
     assert len(document["root_input_digest"]) == 64
+    identity = (
+        project_dir
+        / "qa"
+        / "changes"
+        / change_id
+        / ".runtime"
+        / "langgraph"
+        / "identities"
+        / "inv-start-001.json"
+    )
+    assert identity.is_file()
     invocation = _change_runtime(project_dir, change_id) / "invocations" / "inv-start-001"
-    assert invocation.is_dir()
-    ledger_events = list((invocation / "ledger").rglob("*"))
-    assert ledger_events
+    assert not invocation.exists()
 
 
 def test_run_opens_or_starts_and_completes_with_scripted_host(

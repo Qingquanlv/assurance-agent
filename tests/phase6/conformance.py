@@ -293,7 +293,8 @@ def deletion_proof(item: Mapping[str, object]) -> str:
     if isinstance(verification, str) and (
         verification.startswith("tests/") or verification.startswith("packages/")
     ):
-        return verification.split("::", 1)[0]
+        proof = verification.split("::", 1)[0]
+        return proof.replace("packages/features/", "packages/capabilities/", 1)
     disposition = item.get("disposition")
     if disposition in {"delete_phase6", "retain_harness"}:
         return "obsolete"

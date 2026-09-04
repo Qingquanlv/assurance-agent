@@ -21,7 +21,7 @@ def repo_root() -> Path:
 
 def test_phase3_live_manifest_has_one_locked_fixture_per_adapter(repo_root: Path) -> None:
     manifest = json.loads((repo_root / "benchmark/agent-runtime-phase3/manifest.json").read_text())
-    assert {item["adapter"] for item in manifest["items"]} == {"opencode", "cursor"}
+    assert {item["adapter"] for item in manifest["items"]} == {"opencode"}
     for item in manifest["items"]:
         assert item["adapter_version"] == "0.1.0"
         assert "binding_manifest" in item

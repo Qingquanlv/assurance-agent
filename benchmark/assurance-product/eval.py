@@ -46,6 +46,14 @@ SET_FIELDS = frozenset(
         "skipped_families",
     }
 )
+OPTIONAL_ABSENT_FIELDS = frozenset(
+    {
+        "terminal_reason_category",
+        "retro",
+        "improvement",
+        "archive",
+    }
+)
 
 
 class EvalFindingV1(ProjectionModel):
@@ -92,6 +100,8 @@ def _finding(field: str, value: object) -> EvalFindingV1:
     if field == "runtime_identity":
         outcome: Literal["pass", "fail"] = "pass" if dumped == "assurance-opencode" else "fail"
         mode = "predicate"
+    elif field in OPTIONAL_ABSENT_FIELDS:
+        outcome = "pass"
     else:
         outcome = "pass" if dumped is not None else "fail"
     return EvalFindingV1(

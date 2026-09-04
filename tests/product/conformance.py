@@ -646,7 +646,7 @@ REPOSITORY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/product/test_behavioral_projection.py::test_harness_modules_do_not_import_runtime_packages",
             "tests/product/test_product_packaging.py::test_wheels_omit_whole_tree_modules_and_result_export_schema",
             "tests/product/test_wheel_smoke_contract.py::test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix",
-            "tests/product/test_product_providers.py::test_source_catalogs_are_six_wheels_plus_selected_adapter",
+            "tests/product/test_product_providers.py::test_source_catalog_is_six_wheels_plus_opencode",
         ),
     }
 )

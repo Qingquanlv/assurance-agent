@@ -153,10 +153,14 @@ def test_wrong_runtime_is_rejected_before_fallback(installed_sources):
 
     request = AssuranceCompositionRequest(
         product_entrypoint="assurance-opencode",
-        deployment_source=installed_sources.deployments["cursor"],
+        deployment_source=WheelPluginSource(
+            distribution="agent-runtime-unknown",
+            entrypoint_name="deployment",
+            declaration_path=installed_sources.deployments["opencode"].declaration_path,
+        ),
         configuration_tree=installed_sources.configuration_tree,
     )
-    with pytest.raises((DependencyConflict, ResolutionError, AssuranceCompositionError)):
+    with pytest.raises((DependencyConflict, ResolutionError, AssuranceCompositionError, SourceSnapshotError)):
         resolve_assurance_composition(request)
 
 
