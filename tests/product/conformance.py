@@ -198,18 +198,6 @@ PHASE5_FAULT_IDS = (
     "opencode-cancel-result-race",
     "opencode-terminal-before-restart",
     "opencode-provider-state-deleted-after-receipt",
-    "cursor-confinement-unavailable",
-    "cursor-executable-drift",
-    "cursor-version-drift",
-    "cursor-before-spawn",
-    "cursor-after-spawn",
-    "cursor-partial-ndjson",
-    "cursor-output-overflow",
-    "cursor-terminal-exit-mismatch",
-    "cursor-unknown-process-ownership",
-    "cursor-host-boot-change",
-    "cursor-cancel-race",
-    "cursor-descendant-cleanup-failure",
     "effect-before-intent",
     "effect-after-intent",
     "effect-receipt-publication",
@@ -505,30 +493,6 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
         ),
         "opencode-cancel-result-race": (
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins"
-        ),
-        "cursor-confinement-unavailable": (
-        ),
-        "cursor-executable-drift": (
-        ),
-        "cursor-version-drift": (
-        ),
-        "cursor-before-spawn": (
-        ),
-        "cursor-after-spawn": (
-        ),
-        "cursor-partial-ndjson": (
-        ),
-        "cursor-output-overflow": (
-        ),
-        "cursor-terminal-exit-mismatch": (
-        ),
-        "cursor-unknown-process-ownership": (
-        ),
-        "cursor-host-boot-change": (
-        ),
-        "cursor-cancel-race": (
-        ),
-        "cursor-descendant-cleanup-failure": (
         ),
         "effect-before-intent": (
             "packages/framework/graph-engine/tests/attempts/test_kernel_effect_recovery.py::test_crash_after_intent_applies_once_without_repeating_promotion[assurance.healing.effect.allocation.v2]"

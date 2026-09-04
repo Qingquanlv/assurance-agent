@@ -429,6 +429,29 @@ def check_compile_ok(
         raise SystemExit("raw_agent_runtime_binding_rows is missing")
     if not callable(authenticate_raw_agent_runtime_bindings):
         raise SystemExit("authenticate_raw_agent_runtime_bindings is missing")
+    from assurance_product.product import (
+        AssuranceCompositionRequest,
+        resolve_assurance_composition,
+    )
+    from graph_engine.composition import ConfigTreePluginSource, WheelPluginSource
+
+    composition = resolve_assurance_composition(
+        AssuranceCompositionRequest(
+            product_entrypoint=product,
+            deployment_source=WheelPluginSource(
+                distribution=binding_distribution,
+                entrypoint_name="deployment",
+                declaration_path=binding_declaration,
+            ),
+            configuration_tree=ConfigTreePluginSource(path=Path(config_tree).resolve()),
+        )
+    )
+    rows = raw_agent_runtime_binding_rows(composition)
+    if len(rows) != 33:
+        raise SystemExit(f"33 runtime binding rows expected, found {len(rows)}")
+    authenticated = authenticate_raw_agent_runtime_bindings(rows, contracts, adapter="opencode")
+    if len(authenticated) != 33:
+        raise SystemExit(f"33 authenticated bindings expected, found {len(authenticated)}")
     binding_source = Path(sys.modules["assurance_product.runtime_bindings"].__file__ or "").read_text(
         encoding="utf-8"
     )

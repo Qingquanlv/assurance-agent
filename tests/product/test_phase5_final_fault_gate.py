@@ -70,18 +70,6 @@ EXPECTED_PHASE5_FAULT_IDS = (
     "opencode-cancel-result-race",
     "opencode-terminal-before-restart",
     "opencode-provider-state-deleted-after-receipt",
-    "cursor-confinement-unavailable",
-    "cursor-executable-drift",
-    "cursor-version-drift",
-    "cursor-before-spawn",
-    "cursor-after-spawn",
-    "cursor-partial-ndjson",
-    "cursor-output-overflow",
-    "cursor-terminal-exit-mismatch",
-    "cursor-unknown-process-ownership",
-    "cursor-host-boot-change",
-    "cursor-cancel-race",
-    "cursor-descendant-cleanup-failure",
     "effect-before-intent",
     "effect-after-intent",
     "effect-receipt-publication",
@@ -174,7 +162,7 @@ def test_original_task26_fault_rows_have_an_exact_closed_node_mapping() -> None:
         for fault_id in EXPECTED_PHASE5_FAULT_IDS
         if conformance.PHASE5_FAULT_EVIDENCE[fault_id].evidence_kind == "direct"
     )
-    assert len(coverage) == len(set(coverage)) == 75
+    assert len(coverage) == len(set(coverage)) == 63
     selected_nodes = {node_id for category in manifest.values() for node_id in category}
     assert set(coverage.values()) <= selected_nodes
     evidence = conformance.audit_gate_nodes(REPO_ROOT, tuple(dict.fromkeys(coverage.values())))
@@ -189,7 +177,7 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     direct = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "direct")
     superseded = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "superseded")
     gaps = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "gap")
-    assert len(direct) == 75
+    assert len(direct) == 63
     assert superseded == EXPECTED_SUPERSEDED_FAULT_IDS
     assert gaps == EXPECTED_GAP_FAULT_IDS
     assert all(
@@ -203,7 +191,7 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     assert state.release_complete is False
     assert state.superseded_fault_ids == EXPECTED_SUPERSEDED_FAULT_IDS
     assert state.gap_fault_ids == EXPECTED_GAP_FAULT_IDS
-    assert state.direct_count == 75
+    assert state.direct_count == 63
     assert state.superseded_count == 8
     assert state.gap_count == 2
     assert "blocked" in state.detail.lower()

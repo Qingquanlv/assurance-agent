@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
@@ -73,9 +73,8 @@ CONTRACT_REFS = tuple(
 )
 
 
-def _attempt_key(context: AttemptExecutionContext | AuthorizedAttemptScope) -> AttemptKey:
-    execution = context.execution if isinstance(context, AuthorizedAttemptScope) else context
-    return execution.attempt_key
+def _attempt_key(scope: AuthorizedAttemptScope) -> AttemptKey:
+    return scope.execution.attempt_key
 
 
 class SeedExecutor:
@@ -83,10 +82,10 @@ class SeedExecutor:
         self._workspace = workspace
 
     async def execute(
-        self, validated_input: EmptyInput, context: AttemptExecutionContext | AuthorizedAttemptScope
+        self, validated_input: EmptyInput, scope: AuthorizedAttemptScope
     ) -> ExecutedAttemptResult[SeedOutput]:
         del validated_input
-        await self._workspace.open_or_create(_attempt_key(context), SEED_CONTRACT.resources)
+        await self._workspace.open_or_create(_attempt_key(scope), SEED_CONTRACT.resources)
         return ExecutedAttemptResult(output=SeedOutput())
 
 
@@ -98,13 +97,13 @@ class LeftExecutor:
     async def execute(
         self,
         validated_input: EmptyInput,
-        context: AttemptExecutionContext | AuthorizedAttemptScope,
+        scope: AuthorizedAttemptScope,
     ) -> ExecutedAttemptResult[LeftOutput] | PermanentTaskFailure:
         del validated_input
         self.executions += 1
         if self.executions == 1:
             return PermanentTaskFailure(kind="transient", message="retry the left branch")
-        binding = await self._workspace.open_or_create(_attempt_key(context), LEFT_CONTRACT.resources)
+        binding = await self._workspace.open_or_create(_attempt_key(scope), LEFT_CONTRACT.resources)
         (binding.write_root / "left.txt").write_text("left\n", encoding="utf-8")
         return ExecutedAttemptResult(output=LeftOutput())
 
@@ -114,10 +113,10 @@ class ChildExecutor:
         self._workspace = workspace
 
     async def execute(
-        self, validated_input: EmptyInput, context: AttemptExecutionContext | AuthorizedAttemptScope
+        self, validated_input: EmptyInput, scope: AuthorizedAttemptScope
     ) -> ExecutedAttemptResult[ChildOutput]:
         del validated_input
-        binding = await self._workspace.open_or_create(_attempt_key(context), CHILD_CONTRACT.resources)
+        binding = await self._workspace.open_or_create(_attempt_key(scope), CHILD_CONTRACT.resources)
         (binding.write_root / "child.txt").write_text("child\n", encoding="utf-8")
         return ExecutedAttemptResult(output=ChildOutput())
 
@@ -127,10 +126,10 @@ class CombineExecutor:
         self._workspace = workspace
 
     async def execute(
-        self, validated_input: EmptyInput, context: AttemptExecutionContext | AuthorizedAttemptScope
+        self, validated_input: EmptyInput, scope: AuthorizedAttemptScope
     ) -> ExecutedAttemptResult[CombineOutput]:
         del validated_input
-        await self._workspace.open_or_create(_attempt_key(context), COMBINE_CONTRACT.resources)
+        await self._workspace.open_or_create(_attempt_key(scope), COMBINE_CONTRACT.resources)
         return ExecutedAttemptResult(output=CombineOutput())
 
 

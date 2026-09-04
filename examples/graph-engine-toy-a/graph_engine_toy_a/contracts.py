@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
@@ -42,9 +42,8 @@ GREET_CONTRACT_REF = AttemptContractRef(
 )
 
 
-def _attempt_key(context: AttemptExecutionContext | AuthorizedAttemptScope) -> AttemptKey:
-    execution = context.execution if isinstance(context, AuthorizedAttemptScope) else context
-    return execution.attempt_key
+def _attempt_key(scope: AuthorizedAttemptScope) -> AttemptKey:
+    return scope.execution.attempt_key
 
 
 class GreetExecutor:
@@ -56,13 +55,13 @@ class GreetExecutor:
     async def execute(
         self,
         validated_input: GreetInput,
-        context: AttemptExecutionContext | AuthorizedAttemptScope,
+        scope: AuthorizedAttemptScope,
     ) -> ExecutedAttemptResult[GreetOutput] | PermanentTaskFailure:
         self.executions += 1
         if self._fail_first and self.executions == 1:
             return PermanentTaskFailure(kind="transient", message="retry the toy greeting")
         binding = await self._workspace.open_or_create(
-            _attempt_key(context),
+            _attempt_key(scope),
             GREET_CONTRACT.resources,
         )
         message = f"hello {validated_input.name}"

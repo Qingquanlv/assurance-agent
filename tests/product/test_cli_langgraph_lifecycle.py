@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tests.product.cli_support import (
     SECRET_ENV,
+    SECRET_HANDLE,
     SECRET_VALUE,
     common_lifecycle_args,
     parse_json_output,
@@ -285,13 +289,150 @@ def test_leftover_invocation_without_identity_fails_closed(
     assert leftover.is_dir()
 
 
+_EVALUATE_WAKE = "wake-evaluate-1"
+_EVALUATE_INVOCATION = "inv-evaluate-reopen-001"
+
+
+def _evaluate_task_payload() -> dict[str, object]:
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    projection = ImprovementProjection.model_validate(
+        {
+            "improvement_id": "IMP-1",
+            "fingerprint": "f" * 64,
+            "kind": "prompt_improvement",
+            "delivery": "memory_patch",
+            "source_refs": {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]},
+            "target": ".aa/memory/aa-api-plan.md",
+            "rationale": "gap",
+            "proposed_change": "register adapters",
+            "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
+            "risk": "low",
+            "confidence": "high",
+            "state": "approved",
+            "version": 1,
+            "proposed_by_retro_ids": ["RET-1"],
+            "last_event_id": "IMPEVT-1",
+            "approval_source": "automatic",
+            "last_auto_review": {
+                "review_id": "REV-1",
+                "subject_sha256": f"sha256:{'a' * 64}",
+                "assessment_sha256": f"sha256:{'a' * 64}",
+                "policy_version": "1",
+                "verdict": "auto_approved",
+            },
+        }
+    )
+    return {
+        "projection": projection.model_dump(mode="json"),
+        "eval_run_id": "eval-1",
+        "outcome": "passed",
+        "report_sha256": "r",
+        "staged_sha256": "s",
+        "baseline_sha256": None,
+        "target_digest": "a" * 64,
+    }
+
+
+def _authenticate_reopen(
+    *,
+    cli_runner,
+    app: object,
+    existing: list[str],
+    identity: object,
+    composition: object,
+    expected_status: str | None = None,
+) -> dict[str, Any]:
+    from assurance_product.invocation_identity import InvocationIdentityRecord
+
+    statused = cli_runner.invoke(app, ["status", *existing])
+    assert statused.exit_code == 0, statused.output
+    status_doc = parse_json_output(statused.stdout)
+    locked = cli_runner.invoke(app, ["lock", "show", *existing])
+    assert locked.exit_code == 0, locked.output
+    lock_doc = parse_json_output(locked.stdout)
+    reopened = InvocationIdentityRecord.model_validate_json(
+        _identity_path(
+            Path(existing[existing.index("--project-dir") + 1]),
+            str(existing[existing.index("--change") + 1]),
+            str(existing[existing.index("--invocation-id") + 1]),
+        ).read_bytes()
+    )
+    assert reopened == identity
+    assert status_doc["invocation_id"] == reopened.invocation_id
+    assert status_doc["lock_digest"] == reopened.product_lock_digest
+    assert status_doc["root_input_digest"] == reopened.root_input_digest
+    assert status_doc["entrypoint"] == "improvement-evaluate"
+    assert lock_doc["lock_digest"] == reopened.product_lock_digest
+    assert lock_doc["lock"]["schema_version"] == "3"
+    assert lock_doc["revision"]["revision_id"] == reopened.revision_id
+    assert lock_doc["revision"]["product_lock_digest"] == reopened.product_lock_digest
+    assert lock_doc["lock"]["digest"] == composition.lock_digest
+    assert "compiled_workflow" not in lock_doc["lock"]
+    if expected_status is not None:
+        assert status_doc["status"] == expected_status
+    return status_doc
+
+
+def _inject_evaluate_payload(
+    *,
+    project_dir: Path,
+    change_id: str,
+    invocation_id: str,
+    composition: object,
+    identity: object,
+) -> None:
+    from assurance_product.change_workspace import ChangeWorkspace
+    from assurance_product.cli import _authorization
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    async def _update() -> None:
+        workspace = ChangeWorkspace.open(project_dir.resolve(), change_id)
+        authorization = _authorization([f"{SECRET_HANDLE}=env:{SECRET_ENV}"])
+        async with ProductRuntimePorts.open(
+            workspace,
+            composition,
+            invocation=invocation_id,
+            authorization=authorization,
+        ) as ports:
+            started = await ports.backend.journal.read_invocation_started(invocation_id)
+            assert started is not None
+            assert started.product_lock_digest == identity.product_lock_digest
+            assert started.root_input_digest == identity.root_input_digest
+            assert started.graph_revision == identity.revision_id
+            assert started.fencing_token >= 1
+            artifact = ports._compile_bound(
+                invocation_id=invocation_id,
+                root_input_digest=identity.root_input_digest,
+                fencing_token=started.fencing_token,
+            )
+            graph = artifact.entrypoints["improvement-evaluate"]
+            await graph.aupdate_state(
+                {
+                    "configurable": {
+                        "thread_id": invocation_id,
+                        "assurance_revision_id": artifact.manifest.revision.revision_id,
+                        "assurance_product_lock_digest": artifact.manifest.revision.product_lock_digest,
+                        "assurance_root_input_digest": identity.root_input_digest,
+                        "assurance_fencing_token": started.fencing_token,
+                        "assurance_initial_checkpoint": False,
+                    }
+                },
+                _evaluate_task_payload(),
+                as_node="validate",
+            )
+
+    asyncio.run(_update())
+
+
 def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.invocation_identity import InvocationIdentityRecord
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.status import archive_published
+    from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
+    from graph_engine.attempts.resource_arbiter import ResourceArbiter
     from tests.product.test_result_export import CHANGE_ID, write_achieved
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
@@ -300,70 +441,145 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         tmp_path=tmp_path,
         installed_sources=installed_sources,
         composition=composition,
-        invocation_id="inv-evaluate-reopen-001",
+        invocation_id=_EVALUATE_INVOCATION,
         entrypoint="improvement-evaluate",
         change_id=CHANGE_ID,
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
     started_doc = parse_json_output(started.stdout)
-    identity = InvocationIdentityRecord.model_validate_json(
-        _identity_path(project_dir, change_id, "inv-evaluate-reopen-001").read_bytes()
-    )
+    identity_path = _identity_path(project_dir, change_id, _EVALUATE_INVOCATION)
+    identity_bytes = identity_path.read_bytes()
+    identity = InvocationIdentityRecord.model_validate_json(identity_bytes)
     assert identity.phase == "initialized"
     assert identity.entrypoint == "improvement-evaluate"
     assert "runtime" not in identity.model_dump(mode="json")
-    assert started_doc["lock_digest"] == composition.lock_digest
+    assert started_doc["lock_digest"] == composition.lock_digest == identity.product_lock_digest
     assert started_doc["root_input_digest"] == identity.root_input_digest
 
-    existing = _existing_lifecycle_args(args, project_dir, change_id, "inv-evaluate-reopen-001")
-    ran = cli_runner.invoke(app, ["run", *existing])
-    assert ran.exit_code in {0, 20, 30, 40}, ran.output
-    if ran.stdout.strip():
-        run_doc = parse_json_output(ran.stdout)
-        assert run_doc["status"] != "forged"
-        assert run_doc.get("lock_digest", composition.lock_digest) == composition.lock_digest
+    existing = _existing_lifecycle_args(args, project_dir, change_id, _EVALUATE_INVOCATION)
+    tampered = json.loads(identity_bytes.decode("utf-8"))
+    tampered["product_lock_digest"] = "b" * 64
+    identity_path.write_text(json.dumps(tampered, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rejected = cli_runner.invoke(app, ["run", *existing])
+    assert rejected.exit_code == 40, rejected.output
+    identity_path.write_bytes(identity_bytes)
 
-    statused = cli_runner.invoke(app, ["status", *existing])
-    assert statused.exit_code == 0, statused.output
-    status_doc = parse_json_output(statused.stdout)
-    assert status_doc["invocation_id"] == "inv-evaluate-reopen-001"
-    assert status_doc["lock_digest"] == identity.product_lock_digest
-    assert status_doc["root_input_digest"] == identity.root_input_digest
-    assert status_doc["entrypoint"] == "improvement-evaluate"
+    _inject_evaluate_payload(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=_EVALUATE_INVOCATION,
+        composition=composition,
+        identity=identity,
+    )
 
-    locked = cli_runner.invoke(app, ["lock", "show", *existing])
-    assert locked.exit_code == 0, locked.output
-    lock_doc = parse_json_output(locked.stdout)
-    assert lock_doc["lock_digest"] == identity.product_lock_digest
-    assert lock_doc["lock"]["schema_version"] == "3"
-    assert lock_doc["revision"]["revision_id"] == identity.revision_id
-    assert "compiled_workflow" not in lock_doc["lock"]
+    original_acquire = ResourceArbiter.acquire
+    issued = {"pending": False}
 
+    async def interrupt_once(
+        self: ResourceArbiter,
+        attempt_key: object,
+        claims: object,
+        *,
+        fencing_token: int,
+        validated_input: object | None = None,
+    ) -> object:
+        if not issued["pending"]:
+            issued["pending"] = True
+            return PendingTaskResult(wakeup=SystemReference(reference_id=_EVALUATE_WAKE))
+        return await original_acquire(
+            self,
+            attempt_key,
+            claims,
+            fencing_token=fencing_token,
+            validated_input=validated_input,
+        )
+
+    monkeypatch.setattr(ResourceArbiter, "acquire", interrupt_once)
+    interrupted = cli_runner.invoke(app, ["run", *existing])
+    assert interrupted.exit_code in {20, 30}, interrupted.output
+    interrupted_doc = parse_json_output(interrupted.stdout)
+    assert interrupted_doc["status"] in {"blocked", "interrupted"}
+    pending = _authenticate_reopen(
+        cli_runner=cli_runner,
+        app=app,
+        existing=existing,
+        identity=identity,
+        composition=composition,
+        expected_status=str(interrupted_doc["status"]),
+    )
+    assert pending["pending_interrupt"] is not None
+    assert pending["change"]["state"] in {"blocked", "interrupted"}
+
+    monkeypatch.setattr(ResourceArbiter, "acquire", original_acquire)
     resume_file = tmp_path / "system-wakeup.json"
     resume_file.write_text(
-        json.dumps({"wakeup": {"reference_id": "wake-evaluate-1"}}, sort_keys=True) + "\n",
+        json.dumps({"wakeup": {"reference_id": _EVALUATE_WAKE}}, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     resumed = cli_runner.invoke(app, ["resume", *existing, "--resume-file", str(resume_file)])
-    assert resumed.exit_code == 40, resumed.output
-    reopened = InvocationIdentityRecord.model_validate_json(
-        _identity_path(project_dir, change_id, "inv-evaluate-reopen-001").read_bytes()
+    assert resumed.exit_code == 0, resumed.output
+    resumed_doc = parse_json_output(resumed.stdout)
+    assert resumed_doc["status"] == "completed"
+    achieved = _authenticate_reopen(
+        cli_runner=cli_runner,
+        app=app,
+        existing=existing,
+        identity=identity,
+        composition=composition,
+        expected_status="completed",
     )
-    assert reopened == identity
+    assert achieved["change"]["state"] == "achieved"
+    assert achieved["pending_interrupt"] is None
+    assert achieved["entrypoint"] == "improvement-evaluate"
 
     write_achieved(tmp_path, project=project_dir, change_id=CHANGE_ID)
+    change_root = project_dir / "qa" / "changes" / CHANGE_ID
+    planted = json.loads((change_root / "status.json").read_text(encoding="utf-8"))
+    graph_status = {
+        **achieved,
+        "change": {"change_id": CHANGE_ID, "state": "achieved"},
+        "apply": planted["apply"],
+        "publication": {"status": "ready"},
+    }
+    (change_root / "status.json").write_text(
+        json.dumps(graph_status, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
     exported = cli_runner.invoke(
         app, ["export", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID]
     )
     assert exported.exit_code == 0, exported.output
-    first_archive = cli_runner.invoke(
-        app, ["archive", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID]
+    export_doc = parse_json_output(exported.stdout)
+    assert export_doc["change_id"] == CHANGE_ID
+
+    from assurance_product import status as status_mod
+
+    real_rename = os.rename
+
+    def crash_after_rename(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        real_rename(source, destination)
+        os._exit(91)
+
+    process_id = os.fork()
+    if process_id == 0:
+        monkeypatch.setattr(status_mod.os, "rename", crash_after_rename)
+        status_mod.archive_published(project_dir, CHANGE_ID)
+        os._exit(90)
+    _child, wait_status = os.waitpid(process_id, 0)
+    assert os.waitstatus_to_exitcode(wait_status) == 91
+    assert not (project_dir / "qa" / "changes" / CHANGE_ID).exists()
+    assert (project_dir / "qa" / "archive" / CHANGE_ID).is_dir()
+
+    fresh = type(cli_runner)()
+    recovered = fresh.invoke(
+        app,
+        ["archive", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID],
     )
-    assert first_archive.exit_code == 0, first_archive.output
-    recovered = archive_published(project_dir, CHANGE_ID)
-    assert recovered["change_id"] == CHANGE_ID
-    assert recovered["archive_root"] == f"qa/archive/{CHANGE_ID}"
+    assert recovered.exit_code == 0, recovered.output
+    recovered_doc = parse_json_output(recovered.stdout)
+    assert recovered_doc["change_id"] == CHANGE_ID
+    assert recovered_doc["archive_root"] == f"qa/archive/{CHANGE_ID}"
 
 
 def test_langgraph_run_does_not_map_integrity_errors_to_failed(

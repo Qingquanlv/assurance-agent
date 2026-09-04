@@ -7,6 +7,7 @@ import pytest
 from graph_engine.composition import CapabilityBindingEntry
 from graph_engine.composition.dependencies import DependencyConflict
 from graph_engine.composition.resolver import ResolutionError
+from graph_engine.composition.source_fs import SourceSnapshotError
 
 from tests.product.composition_harness import request_for
 from tests.product.conformance import ALL_BINDING_IDS
@@ -23,7 +24,7 @@ _FEATURE_OWNERS = (
 _PRODUCT_FACTORY = "assurance_product.graphs.factory:build_product_graphs"
 
 
-@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
+@pytest.mark.parametrize("adapter", ["opencode"])
 def test_composition_has_exact_provider_and_binding_closure(adapter, installed_sources):
     from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
     from assurance_product.product import resolve_assurance_composition
@@ -44,7 +45,7 @@ def test_composition_has_exact_provider_and_binding_closure(adapter, installed_s
     assert len(contracts) + len(tasks) == 41
 
 
-@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
+@pytest.mark.parametrize("adapter", ["opencode"])
 def test_composition_binds_semantic_agent_contracts_not_phase_aliases(
     adapter,
     installed_sources,
@@ -63,7 +64,7 @@ def test_composition_binds_semantic_agent_contracts_not_phase_aliases(
         assert binding.data is not None
 
 
-@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
+@pytest.mark.parametrize("adapter", ["opencode"])
 def test_composition_selects_exact_plugin_and_product_identity(adapter, installed_sources):
     from assurance_product.models import CONFIGURATION_PLUGIN_ID, PLUGIN_ID
     from assurance_product.product import resolve_assurance_composition
@@ -87,7 +88,7 @@ def test_wrong_runtime_deployment_fails_closed(installed_sources):
         resolve_assurance_composition,
     )
 
-    request = AssuranceCompositionRequest(
+    request = AssuranceCompositionRequest.model_construct(
         product_entrypoint="assurance-cursor",
         deployment_source=installed_sources.deployments["opencode"],
         configuration_tree=installed_sources.configuration_tree,
@@ -104,10 +105,19 @@ def test_unselected_adapter_source_is_rejected_before_provider_import(
 
     import assurance_product.product as product_module
     from assurance_product.product import resolve_assurance_composition
+    from graph_engine.plugin_api import ProviderSource
     from assurance_product.source_catalog import product_source_catalog
 
-    selected_sources = product_source_catalog("opencode")
-    unselected_source = product_source_catalog("cursor")[-1]
+    selected_sources = product_source_catalog()
+    unselected_source = ProviderSource(
+        distribution="agent-runtime-cursor",
+        version="0.1.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name="cursor",
+        entrypoint_value="agent_runtime_cursor.plugin:CursorPlugin",
+        declaration_path="agent_runtime_cursor/plugin-declaration.json",
+        import_roots=("",),
+    )
     assert unselected_source.entrypoint_name == "cursor"
     loaded_unselected_providers: list[str] = []
     original_load = resolver_module._load_snapshotted_entrypoint_binding
@@ -120,7 +130,7 @@ def test_unselected_adapter_source_is_rejected_before_provider_import(
     monkeypatch.setattr(
         product_module,
         "product_source_catalog",
-        lambda _adapter: (*selected_sources, unselected_source),
+        lambda: (*selected_sources, unselected_source),
     )
     monkeypatch.setattr(
         resolver_module,
@@ -128,7 +138,10 @@ def test_unselected_adapter_source_is_rejected_before_provider_import(
         track_provider_load,
     )
 
-    with pytest.raises(DependencyConflict, match="unexpected selected plugin source: runtime.cursor"):
+    with pytest.raises(
+        (DependencyConflict, SourceSnapshotError),
+        match="runtime.cursor|agent-runtime-cursor",
+    ):
         resolve_assurance_composition(request_for("opencode", installed_sources))
 
     assert loaded_unselected_providers == []
@@ -145,7 +158,7 @@ def test_resolve_accepts_already_imported_assurance_product(installed_sources):
     assert composition.lock.product.source.kind.value == "wheel_product"
 
 
-@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
+@pytest.mark.parametrize("adapter", ["opencode"])
 def test_product_manifest_uses_only_the_graph_factory_form(adapter, installed_sources):
     from assurance_product.models import PRODUCT_ENTRYPOINTS
     from assurance_product.product import resolve_assurance_composition

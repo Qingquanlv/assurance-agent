@@ -58,16 +58,14 @@ class _ProductionRepository:
                     continue
                 names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
                 names.update(
-                    node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                    node.name
+                    for node in ast.walk(tree)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                 )
                 names.update(node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute))
                 for symbol in forbidden:
-                    if symbol in names or (not symbol.startswith("_") and symbol in text):
-                        if symbol in names or symbol in text:
-                            if symbol in names or (
-                                symbol == "fixture-model" and "fixture-model" in text
-                            ):
-                                hits[symbol].append(relative)
+                    if symbol in names or symbol in text:
+                        hits[symbol].append(relative)
             elif any(symbol in text for symbol in forbidden):
                 for symbol in forbidden:
                     if symbol in text:

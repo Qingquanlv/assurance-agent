@@ -95,15 +95,28 @@ def adapt_quality(state: ProductState) -> dict[str, object]:
     return {**feature_input, "feature_input": feature_input}
 
 
+_IMPROVEMENT_TASK_KEYS = (
+    "projection",
+    "eval_run_id",
+    "outcome",
+    "report_sha256",
+    "staged_sha256",
+    "baseline_sha256",
+    "target_digest",
+)
+
+
 def adapt_improvement(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
+    extras = {key: state[key] for key in _IMPROVEMENT_TASK_KEYS if key in state}
     feature_input = {
         "change_id": payload.change_id,
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
         "artifact_paths": list(payload.allowed_artifact_paths),
+        **extras,
     }
-    return {**feature_input, "feature_input": feature_input}
+    return {**feature_input, **extras, "feature_input": feature_input}
 
 
 def adapt_feature_status(status: object) -> ProductStatus:
