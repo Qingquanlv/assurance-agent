@@ -1,0 +1,47 @@
+name: Checkpoint R
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Immutable candidate SHA
+        required: true
+        type: string
+
+concurrency:
+  group: checkpoint-r-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  exact-candidate:
+    name: exact candidate
+    runs-on: [self-hosted, checkpoint-r]
+    environment: checkpoint-r
+    env:
+      GITHUB_SHA: ${{ inputs.candidate_sha }}
+      CHECKPOINT_R_OPENCODE_AUTH_JSON: ${{ secrets.CHECKPOINT_R_OPENCODE_AUTH_JSON }}
+      CHECKPOINT_R_OPENCODE_PROVIDER_JSON: ${{ secrets.CHECKPOINT_R_OPENCODE_PROVIDER_JSON }}
+      CHECKPOINT_R_OPENCODE_BINARY_SHA256: ${{ secrets.CHECKPOINT_R_OPENCODE_BINARY_SHA256 }}
+      CHECKPOINT_R_SERVER_SECRET: ${{ secrets.CHECKPOINT_R_SERVER_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --dev
+      - name: Run exact candidate
+        run: AA_CHECKPOINT_R_LIVE=1 bash scripts/checkpoint_r.sh
+      - name: Upload evidence manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkpoint-r-${{ inputs.candidate_sha }}
+          path: ${{ runner.temp }}/checkpoint-r-${{ inputs.candidate_sha }}.json
+          if-no-files-found: error
