@@ -240,7 +240,7 @@ artifact, kernel = boot_factory_product(
     workspace=workspace,
     contract_resolver=resolver,
 )
-application, context = factory_application(
+application, factory = factory_application(
     artifact,
     kernel=kernel,
     workspace=workspace,
@@ -249,17 +249,15 @@ application, context = factory_application(
 
 async def _run():
     blocked = await application.start_and_run(
-        artifact=artifact,
         invocation_id="smoke-b",
         entrypoint="review",
         graph_input={},
-        runtime_context=context,
+        execution_factory=factory,
     )
     assert blocked.status == "interrupted", blocked
     completed = await application.resume(
-        artifact=artifact,
         invocation_id="smoke-b",
-        runtime_context=context,
+        execution_factory=factory,
         resume="approve",
     )
     assert completed.status == "completed", completed
