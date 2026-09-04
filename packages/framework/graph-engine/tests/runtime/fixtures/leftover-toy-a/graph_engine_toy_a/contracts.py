@@ -7,6 +7,7 @@ from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    ExecutedAttemptResult,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
@@ -56,7 +57,7 @@ class GreetExecutor:
         self,
         validated_input: GreetInput,
         context: AttemptExecutionContext | AuthorizedAttemptScope,
-    ) -> GreetOutput | PermanentTaskFailure:
+    ) -> ExecutedAttemptResult[GreetOutput] | PermanentTaskFailure:
         self.executions += 1
         if self._fail_first and self.executions == 1:
             return PermanentTaskFailure(kind="transient", message="retry the toy greeting")
@@ -66,7 +67,7 @@ class GreetExecutor:
         )
         message = f"hello {validated_input.name}"
         (binding.write_root / "greeting.txt").write_text(f"{message}\n", encoding="utf-8")
-        return GreetOutput(message=message)
+        return ExecutedAttemptResult(output=GreetOutput(message=message))
 
 
 def greet_contract_ref() -> AttemptContractRef:
