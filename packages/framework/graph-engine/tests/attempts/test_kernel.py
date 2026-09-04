@@ -104,6 +104,10 @@ class _OtherOutput(BaseModel):
     unexpected: str
 
 
+class _NonCanonicalOutput(BaseModel):
+    score: float
+
+
 class _InvalidOutputExecutor:
     def __init__(self) -> None:
         self.workspace: _RecordingWorkspace | None = None
@@ -116,6 +120,20 @@ class _InvalidOutputExecutor:
         self.calls += 1
         (scope.workspace.write_root / "out.txt").write_bytes(b"invalid")
         return ExecutedAttemptResult(output=_OtherOutput(unexpected="nope"))
+
+
+class _NonCanonicalOutputExecutor:
+    def __init__(self) -> None:
+        self.workspace: _RecordingWorkspace | None = None
+        self.calls = 0
+
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_NonCanonicalOutput]:
+        del validated_input
+        self.calls += 1
+        (scope.workspace.write_root / "out.txt").write_bytes(b"non-canonical")
+        return ExecutedAttemptResult(output=_NonCanonicalOutput(score=float("nan")))
 
 
 class _CrashWithoutReconcile:
@@ -146,13 +164,17 @@ def graph_revision() -> str:
     return canonical_digest({"revision": "kernel-test"})
 
 
-def contract(*, validators: tuple[str, ...] = ()) -> TaskAttemptContract[RunInput, RunOutput]:
+def contract(
+    *,
+    validators: tuple[str, ...] = (),
+    output_model: type[BaseModel] = RunOutput,
+) -> TaskAttemptContract[RunInput, Any]:
     return TaskAttemptContract(
         contract_id="assurance.execution.run.v1",
         owner_id="assurance.execution",
         handler_id="assurance.execution.run",
         input_model=RunInput,
-        output_model=RunOutput,
+        output_model=output_model,
         resources=ResourceClaims(writes=("out.txt",)),
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
@@ -167,6 +189,7 @@ def make_kernel(
     transaction_cut=None,
     validators: Mapping[str, CommitValidator] | None = None,
     validator_ids: tuple[str, ...] = (),
+    output_model: type[BaseModel] = RunOutput,
 ):
     project = tmp_path / "project"
     project.mkdir()
@@ -174,7 +197,10 @@ def make_kernel(
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
     writer = executor if executor is not None else _WritingExecutor(workspace)
     writer.workspace = workspace
-    resolved = resolve_contract(contract(validators=validator_ids), executor=writer)
+    resolved = resolve_contract(
+        contract(validators=validator_ids, output_model=output_model),
+        executor=writer,
+    )
     kernel = AssuranceAttemptKernel(
         journal=MemoryAttemptJournal(),
         arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
@@ -326,6 +352,43 @@ async def test_invalid_output_terminates_releases_and_replays(tmp_path: Path) ->
         assert first_snapshot is not None
         assert first_snapshot.terminal is not None
         assert first_snapshot.terminal.output is None
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert replay == first
+        replay_snapshot = await kernel.journal.load(key)
+        assert replay_snapshot is not None
+        assert replay_snapshot.terminal is not None
+        assert replay_snapshot.terminal.output is None
+        assert executor.calls == 1
+    finally:
+        store.close()
+
+
+async def test_noncanonical_valid_output_terminates_releases_and_replays(tmp_path: Path) -> None:
+    kernel, key, resolved, validated, context, executor, _project, store = make_kernel(
+        tmp_path,
+        executor=_NonCanonicalOutputExecutor(),
+        output_model=_NonCanonicalOutput,
+    )
+    try:
+        trace: list[str] = []
+        first = await kernel.execute_or_recover(
+            key,
+            resolved,
+            validated,
+            context,
+            trace=trace,
+        )
+        assert first == PermanentTaskFailure(
+            kind="configuration",
+            message="Out of range float values are not JSON compliant",
+        )
+        assert trace == ["adopt_or_create", "authorize_resources", "begin_workspace", "execute"]
+        await _assert_released(kernel, key, context.fencing_token)
+        first_snapshot = await kernel.journal.load(key)
+        assert first_snapshot is not None
+        assert first_snapshot.terminal is not None
+        assert first_snapshot.terminal.output is None
+
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
         replay_snapshot = await kernel.journal.load(key)

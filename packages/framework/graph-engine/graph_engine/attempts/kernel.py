@@ -392,6 +392,15 @@ class AssuranceAttemptKernel:
                 )
             else:
                 intent_events = ()
+            output: JSONValue = validated_output.model_dump(mode="json")
+            source_receipt = step.source_terminal_receipt
+            observed = ActivityTerminalObserved(
+                activity_id=snapshot.activity_id or attempt_key.digest,
+                outcome=output,
+                outcome_digest=canonical_digest(output),
+                source_identity_digest=(source_receipt.identity_digest if source_receipt is not None else ""),
+                source_receipt_digest=(source_receipt.receipt_digest if source_receipt is not None else ""),
+            )
         except ValidationError as error:
             return _CommitRejected(
                 snapshot=snapshot,
@@ -403,24 +412,12 @@ class AssuranceAttemptKernel:
                 resolution=PermanentTaskFailure(kind="configuration", message=str(error)),
             )
 
-        output: JSONValue = validated_output.model_dump(mode="json")
         trace.append("validate_output")
         if snapshot.activity_state != "terminal_observed":
-            source_receipt = step.source_terminal_receipt
             snapshot = await self.journal.append(
                 attempt_key,
                 (
-                    ActivityTerminalObserved(
-                        activity_id=snapshot.activity_id or attempt_key.digest,
-                        outcome=output,
-                        outcome_digest=canonical_digest(output),
-                        source_identity_digest=(
-                            source_receipt.identity_digest if source_receipt is not None else ""
-                        ),
-                        source_receipt_digest=(
-                            source_receipt.receipt_digest if source_receipt is not None else ""
-                        ),
-                    ),
+                    observed,
                     *intent_events,
                 ),
                 expected_revision=snapshot.revision,
