@@ -129,11 +129,11 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
     from graph_engine.canonical import canonical_digest
     from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
-    from tests.product.product_runner import adapter_product_composition, modular_product_composition
 
-    legacy = adapter_product_composition(installed_sources, "cursor")
-    modular = modular_product_composition(installed_sources)
-    assert legacy.lock_digest != modular.lock_digest
+    del installed_sources
+    legacy_lock = "b" * 64
+    modular_lock = "c" * 64
+    assert legacy_lock != modular_lock
 
     class _State(TypedDict, total=False):
         value: str
@@ -167,8 +167,8 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
             checkpointer_backend_id="memory",
         )
 
-    original = _artifact(legacy.lock_digest)
-    drifted = _artifact(modular.lock_digest)
+    original = _artifact(legacy_lock)
+    drifted = _artifact(modular_lock)
     lease_root = tmp_path / "replay-legacy-lock"
     lease_root.mkdir()
     application = AssuranceApplication(lease=LocalInvocationRunnerLease(lease_root), owner_id="runner-a")

@@ -10,7 +10,6 @@ from langgraph.graph import END, START, StateGraph
 
 from graph_engine.application import (
     AssuranceApplication,
-    AssuranceRuntimeContext,
     FixedExecutionFactory,
     InvocationStatus,
 )
@@ -51,16 +50,6 @@ def _artifact(entrypoints: dict[str, object]) -> BootArtifact:
         entrypoints=entrypoints,  # type: ignore[arg-type]
         attempt_contracts={},
         checkpointer_backend_id="memory",
-    )
-
-
-def _context(artifact: BootArtifact) -> AssuranceRuntimeContext:
-    return AssuranceRuntimeContext(
-        revision_id=artifact.manifest.revision.revision_id,
-        fencing_token=1,
-        attempt_kernel=object(),
-        secret_resolver=object(),
-        workspace_provider=object(),
     )
 
 
@@ -124,7 +113,6 @@ async def test_concurrent_run_produces_one_owner_and_one_runner_conflict(tmp_pat
     entered = asyncio.Event()
     release = asyncio.Event()
     artifact = _artifact({"execute": _hold_graph(entered, release)})
-    context = _context(artifact)
     await owner.start(
         invocation_id="inv-1",
         entrypoint="execute",
@@ -158,7 +146,6 @@ async def test_graph_recursion_limit_is_failed_runtime_state(tmp_path: Path) -> 
         recursion_limits={"recurse": 3},
     )
     artifact = _artifact({"recurse": _recurse_graph()})
-    context = _context(artifact)
     await application.start(
         invocation_id="inv-recurse",
         entrypoint="recurse",
@@ -178,7 +165,6 @@ async def test_business_budget_terminal_is_distinct_from_graph_recursion(tmp_pat
         owner_id="runner-a",
     )
     artifact = _artifact({"budget": _budget_graph()})
-    context = _context(artifact)
     await application.start(
         invocation_id="inv-budget",
         entrypoint="budget",
