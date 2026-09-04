@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
@@ -40,14 +41,17 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from graph_engine.composition.models import EffectRegistry, SchemaRegistry
-from graph_engine.effects.apply import AttemptEffectSettler, recorded_effect_intent_events
-from graph_engine.effects.state import EffectStatePort
+from graph_engine.effects.apply import AttemptEffectSettler
+from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
+from graph_engine.effects.state import EffectStatePort, effect_intent_digest
+from graph_engine.frozen_json import thaw_json
+from graph_engine.json_schema import validate_json_schema
 from graph_engine.plugin_api import (
     CommitValidator,
     EffectIntent,
-    PreparedWorkspaceRef,
     PromotionReceipt,
     ResourceClaims,
+    TaskWorkspaceBinding,
     ValidationContext,
     WorkspaceProvider,
     run_validators,
@@ -72,6 +76,20 @@ def _noop_cut(_name: str) -> None:
 
 
 _MISSING_CUT = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _CommitRejected:
+    snapshot: AttemptSnapshot
+    resolution: RejectedTaskResult | PermanentTaskFailure
+    terminal_output: JSONValue = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PromotedCommit:
+    snapshot: AttemptSnapshot
+    output: JSONValue
+    receipt: PromotionReceipt
 
 
 class AssuranceAttemptKernel:
@@ -203,112 +221,36 @@ class AssuranceAttemptKernel:
             return await self._fail_closed(attempt_key, context, snapshot, authorization, step, cut)
         if _is_resolution(step):
             return cast(AttemptResolution, step)
-        if not isinstance(step, ExecutedAttemptResult):
-            return await self._fail_closed(
-                attempt_key,
-                context,
-                snapshot,
-                authorization,
-                PermanentTaskFailure(
-                    kind="invalid_output",
-                    message="executor did not return ExecutedAttemptResult",
-                ),
-                cut,
-            )
-        trace.append("execute")
 
-        try:
-            validated_output, intent_events, observed = _validated_observed_batch(
-                contract,
-                step,
-                self.effects,
-                self.schemas,
-                snapshot.activity_id or attempt_key.digest,
-            )
-        except ValidationError as error:
+        commit = await self._commit_or_recover(
+            attempt_key=attempt_key,
+            contract=contract,
+            validated_input=validated_input,
+            context=context,
+            claims=claims,
+            binding=binding,
+            step=step,
+            snapshot=snapshot,
+            trace=trace,
+            cut=cut,
+        )
+        if isinstance(commit, _CommitRejected):
             return await self._fail_closed(
                 attempt_key,
                 context,
-                snapshot,
+                commit.snapshot,
                 authorization,
-                PermanentTaskFailure(kind="invalid_output", message=str(error)),
+                commit.resolution,
                 cut,
+                output=commit.terminal_output,
             )
-        except (KeyError, ValueError) as error:
-            return await self._fail_closed(
-                attempt_key,
-                context,
-                snapshot,
-                authorization,
-                PermanentTaskFailure(kind="configuration", message=str(error)),
-                cut,
-            )
-        trace.append("validate_output")
-        if snapshot.activity_state != "terminal_observed":
-            snapshot = await self.journal.append(
-                attempt_key,
-                (observed, *intent_events),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-        cut("after_observed_result")
-        cut("after_finalize_before_seal")
-
-        if snapshot.prepared_digest is None:
-            sealed = await self.workspace.seal(binding)
-            trace.append("seal_candidate")
-            rejected = run_validators(
-                contract.contract.validators,
-                self.validators,
-                sealed,
-                ValidationContext(
-                    invocation_id=context.invocation_id,
-                    task_id=attempt_key.digest,
-                    graph_instance_id=context.invocation_id,
-                    node_id=context.semantic_node_id,
-                    resources=claims,
-                    task_input=validated_input.model_dump(mode="json"),
-                    task_output=validated_output.model_dump(mode="json"),
-                    write_set=sealed,
-                ),
-            )
-            trace.append("run_validators")
-            if rejected is not None:
-                return await self._fail_closed(
-                    attempt_key,
-                    context,
-                    snapshot,
-                    authorization,
-                    rejected,
-                    cut,
-                    output=validated_output.model_dump(mode="json"),
-                )
-            cut("before_durable_prepare")
-            await self._assert_fence(attempt_key, context, "durable_prepare", cut)
-            prepared = await self.workspace.prepare(binding, sealed)
-            snapshot = await self.journal.append(
-                attempt_key,
-                (CommitPrepared(prepared_digest=prepared.prepared_digest),),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-            await self.journal.ensure_durable(attempt_key)
-            trace.append("durable_prepare")
-            cut("after_prepare_before_promotion")
-            receipt, snapshot = await self._promote(attempt_key, context, snapshot, prepared, cut)
-        else:
-            trace.extend(["seal_candidate", "run_validators", "durable_prepare"])
-            prepared = await self._recover_prepared(binding, snapshot)
-            receipt, snapshot = await self._promote(attempt_key, context, snapshot, prepared, cut)
-        trace.append("promote")
-        cut("after_promotion_before_receipt")
 
         await self._assert_fence(attempt_key, context, "effect_application", cut)
         settled, snapshot = await self._settle_effects(
             attempt_key,
             context,
-            snapshot,
-            receipt,
+            commit.snapshot,
+            commit.receipt,
             cut,
         )
         trace.append("settle_effects")
@@ -322,8 +264,8 @@ class AssuranceAttemptKernel:
                 authorization,
                 AttemptTerminated(
                     resolution_kind="committed_effect_failure",
-                    receipt_id=receipt.identity_digest,
-                    receipt_digest=receipt.receipt_digest,
+                    receipt_id=commit.receipt.identity_digest,
+                    receipt_digest=commit.receipt.receipt_digest,
                     reason=settled.reason,
                 ),
                 cut,
@@ -338,9 +280,9 @@ class AssuranceAttemptKernel:
             authorization,
             AttemptTerminated(
                 resolution_kind="committed",
-                output=validated_output.model_dump(mode="json"),
-                receipt_id=receipt.identity_digest,
-                receipt_digest=receipt.receipt_digest,
+                output=commit.output,
+                receipt_id=commit.receipt.identity_digest,
+                receipt_digest=commit.receipt.receipt_digest,
             ),
             cut,
         )
@@ -412,59 +354,159 @@ class AssuranceAttemptKernel:
         snapshot = await self._reload(attempt_key, snapshot)
         return output, snapshot
 
-    async def _promote(
+    async def _commit_or_recover(
         self,
+        *,
         attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
         context: AttemptExecutionContext,
+        claims: ResourceClaims,
+        binding: TaskWorkspaceBinding,
+        step: object,
         snapshot: AttemptSnapshot,
-        prepared: PreparedWorkspaceRef,
+        trace: list[str],
         cut: Callable[[str], None],
-    ) -> tuple[PromotionReceipt, AttemptSnapshot]:
+    ) -> _CommitRejected | _PromotedCommit:
+        if not isinstance(step, ExecutedAttemptResult):
+            return _CommitRejected(
+                snapshot=snapshot,
+                resolution=PermanentTaskFailure(
+                    kind="invalid_output",
+                    message="executor did not return ExecutedAttemptResult",
+                ),
+            )
+        trace.append("execute")
+
+        try:
+            validated_output = contract.contract.output_model.model_validate(
+                step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output
+            )
+            if step.effects:
+                if self.effects is None or self.schemas is None:
+                    raise ValueError("declared effects require an effect registry")
+                intent_events = _recorded_effect_intent_events(
+                    self.effects,
+                    self.schemas,
+                    step.effects,
+                )
+            else:
+                intent_events = ()
+        except ValidationError as error:
+            return _CommitRejected(
+                snapshot=snapshot,
+                resolution=PermanentTaskFailure(kind="invalid_output", message=str(error)),
+            )
+        except (KeyError, ValueError) as error:
+            return _CommitRejected(
+                snapshot=snapshot,
+                resolution=PermanentTaskFailure(kind="configuration", message=str(error)),
+            )
+
+        output: JSONValue = validated_output.model_dump(mode="json")
+        trace.append("validate_output")
+        if snapshot.activity_state != "terminal_observed":
+            source_receipt = step.source_terminal_receipt
+            snapshot = await self.journal.append(
+                attempt_key,
+                (
+                    ActivityTerminalObserved(
+                        activity_id=snapshot.activity_id or attempt_key.digest,
+                        outcome=output,
+                        outcome_digest=canonical_digest(output),
+                        source_identity_digest=(
+                            source_receipt.identity_digest if source_receipt is not None else ""
+                        ),
+                        source_receipt_digest=(
+                            source_receipt.receipt_digest if source_receipt is not None else ""
+                        ),
+                    ),
+                    *intent_events,
+                ),
+                expected_revision=snapshot.revision,
+                fencing_token=context.fencing_token,
+            )
+        cut("after_observed_result")
+        cut("after_finalize_before_seal")
+
+        if snapshot.prepared_digest is None:
+            sealed = await self.workspace.seal(binding)
+            trace.append("seal_candidate")
+            rejected = run_validators(
+                contract.contract.validators,
+                self.validators,
+                sealed,
+                ValidationContext(
+                    invocation_id=context.invocation_id,
+                    task_id=attempt_key.digest,
+                    graph_instance_id=context.invocation_id,
+                    node_id=context.semantic_node_id,
+                    resources=claims,
+                    task_input=validated_input.model_dump(mode="json"),
+                    task_output=output,
+                    write_set=sealed,
+                ),
+            )
+            trace.append("run_validators")
+            if rejected is not None:
+                return _CommitRejected(
+                    snapshot=snapshot,
+                    resolution=rejected,
+                    terminal_output=output,
+                )
+            cut("before_durable_prepare")
+            await self._assert_fence(attempt_key, context, "durable_prepare", cut)
+            prepared = await self.workspace.prepare(binding, sealed)
+            snapshot = await self.journal.append(
+                attempt_key,
+                (CommitPrepared(prepared_digest=prepared.prepared_digest),),
+                expected_revision=snapshot.revision,
+                fencing_token=context.fencing_token,
+            )
+            await self.journal.ensure_durable(attempt_key)
+            trace.append("durable_prepare")
+            cut("after_prepare_before_promotion")
+        else:
+            trace.extend(["seal_candidate", "run_validators", "durable_prepare"])
+            sealed = await self.workspace.seal(binding)
+            prepared = await self.workspace.prepare(binding, sealed)
+            if prepared.prepared_digest != snapshot.prepared_digest:
+                raise AttemptIdentityDrift("prepared digest drifted")
+
         await self._assert_fence(attempt_key, context, "promotion", cut)
         if (
             snapshot.promotion_receipt_id is not None
             and snapshot.promotion_receipt_digest is not None
             and snapshot.promotion_staged_digest is not None
         ):
-            return (
-                PromotionReceipt(
-                    identity_digest=snapshot.promotion_receipt_id,
-                    staged_digest=snapshot.promotion_staged_digest,
-                    receipt_digest=snapshot.promotion_receipt_digest,
-                ),
-                snapshot,
+            receipt = PromotionReceipt(
+                identity_digest=snapshot.promotion_receipt_id,
+                staged_digest=snapshot.promotion_staged_digest,
+                receipt_digest=snapshot.promotion_receipt_digest,
             )
-        previous_cut = task_workspace_runtime._promotion_transaction_cut
-        task_workspace_runtime._promotion_transaction_cut = cut
-        try:
-            receipt = await self.workspace.promote(prepared)
-        finally:
-            task_workspace_runtime._promotion_transaction_cut = previous_cut
-        if snapshot.promotion_receipt_digest is None:
-            snapshot = await self.journal.append(
-                attempt_key,
-                (
-                    WorkspacePromoted(
-                        receipt_id=receipt.identity_digest,
-                        receipt_digest=receipt.receipt_digest,
-                        staged_digest=receipt.staged_digest,
+        else:
+            previous_cut = task_workspace_runtime._promotion_transaction_cut
+            task_workspace_runtime._promotion_transaction_cut = cut
+            try:
+                receipt = await self.workspace.promote(prepared)
+            finally:
+                task_workspace_runtime._promotion_transaction_cut = previous_cut
+            if snapshot.promotion_receipt_digest is None:
+                snapshot = await self.journal.append(
+                    attempt_key,
+                    (
+                        WorkspacePromoted(
+                            receipt_id=receipt.identity_digest,
+                            receipt_digest=receipt.receipt_digest,
+                            staged_digest=receipt.staged_digest,
+                        ),
                     ),
-                ),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-        return receipt, snapshot
-
-    async def _recover_prepared(
-        self,
-        binding: Any,
-        snapshot: AttemptSnapshot,
-    ) -> PreparedWorkspaceRef:
-        sealed = await self.workspace.seal(binding)
-        prepared = await self.workspace.prepare(binding, sealed)
-        if snapshot.prepared_digest is not None and prepared.prepared_digest != snapshot.prepared_digest:
-            raise AttemptIdentityDrift("prepared digest drifted")
-        return prepared
+                    expected_revision=snapshot.revision,
+                    fencing_token=context.fencing_token,
+                )
+        trace.append("promote")
+        cut("after_promotion_before_receipt")
+        return _PromotedCommit(snapshot=snapshot, output=output, receipt=receipt)
 
     async def _settle_effects(
         self,
@@ -644,32 +686,29 @@ def _executed_from_snapshot(
     )
 
 
-def _validated_observed_batch(
-    contract: ResolvedAttemptContract[Any, Any],
-    step: ExecutedAttemptResult[Any],
-    effects: EffectRegistry | None,
-    schemas: SchemaRegistry | None,
-    activity_id: str,
-) -> tuple[BaseModel, tuple[EffectIntentRecorded, ...], ActivityTerminalObserved]:
-    validated_output = contract.contract.output_model.model_validate(
-        step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output
-    )
-    if step.effects:
-        if effects is None or schemas is None:
-            raise ValueError("declared effects require an effect registry")
-        intent_events = recorded_effect_intent_events(effects, schemas, step.effects)
-    else:
-        intent_events = ()
-    payload: JSONValue = validated_output.model_dump(mode="json")
-    receipt = step.source_terminal_receipt
-    observed = ActivityTerminalObserved(
-        activity_id=activity_id,
-        outcome=payload,
-        outcome_digest=canonical_digest(payload),
-        source_identity_digest=receipt.identity_digest if receipt is not None else "",
-        source_receipt_digest=receipt.receipt_digest if receipt is not None else "",
-    )
-    return validated_output, intent_events, observed
+def _recorded_effect_intent_events(
+    effects: EffectRegistry,
+    schemas: SchemaRegistry,
+    intents: Sequence[EffectIntent],
+) -> tuple[EffectIntentRecorded, ...]:
+    events: list[EffectIntentRecorded] = []
+    for ordinal, intent in enumerate(intents, start=1):
+        if intent.kind not in effects.entries or intent.kind not in EXPECTED_EFFECT_KINDS:
+            raise KeyError(f"unknown effect kind: {intent.kind}")
+        registration = effects.require(intent.kind)
+        schema = schemas.entries.get(registration.intent_schema_id)
+        if schema is None:
+            raise ValueError(f"effect intent schema is not registered: {registration.intent_schema_id}")
+        validate_json_schema(thaw_json(intent.payload), schema.content)
+        events.append(
+            EffectIntentRecorded(
+                effect_ordinal=ordinal,
+                effect_kind=intent.kind,
+                intent_digest=effect_intent_digest(intent.kind, intent.payload),
+                payload=thaw_json(intent.payload),
+            )
+        )
+    return tuple(events)
 
 
 def _resolved_claims(

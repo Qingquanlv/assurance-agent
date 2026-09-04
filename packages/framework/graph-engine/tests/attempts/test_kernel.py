@@ -296,9 +296,17 @@ async def test_permanent_validator_terminal_replay_returns_same_failure(tmp_path
         assert first.kind == "internal"
         assert "validator crashed" in first.message
         await _assert_released(kernel, key, context.fencing_token)
+        first_snapshot = await kernel.journal.load(key)
+        assert first_snapshot is not None
+        assert first_snapshot.terminal is not None
+        assert first_snapshot.terminal.output == {"status": "ok"}
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
         assert isinstance(replay, PermanentTaskFailure)
+        replay_snapshot = await kernel.journal.load(key)
+        assert replay_snapshot is not None
+        assert replay_snapshot.terminal is not None
+        assert replay_snapshot.terminal.output == {"status": "ok"}
         assert executor.calls == 1
     finally:
         store.close()
@@ -314,8 +322,16 @@ async def test_invalid_output_terminates_releases_and_replays(tmp_path: Path) ->
         assert isinstance(first, PermanentTaskFailure)
         assert first.kind == "invalid_output"
         await _assert_released(kernel, key, context.fencing_token)
+        first_snapshot = await kernel.journal.load(key)
+        assert first_snapshot is not None
+        assert first_snapshot.terminal is not None
+        assert first_snapshot.terminal.output is None
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert replay == first
+        replay_snapshot = await kernel.journal.load(key)
+        assert replay_snapshot is not None
+        assert replay_snapshot.terminal is not None
+        assert replay_snapshot.terminal.output is None
         assert executor.calls == 1
     finally:
         store.close()

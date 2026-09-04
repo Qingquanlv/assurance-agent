@@ -106,6 +106,27 @@ Only after Phase P is complete, the implementation plan must inspect the current
 The resulting plan records the chosen code shape and the rejected alternatives. This note does not
 pre-approve four classes, the names from an earlier diagram, or a proposed file tree.
 
+## Implemented shape
+
+The accepted Phase P base is `b28125c2aba2b743eec5b279be434f68589542ba`; the literal journal-byte
+oracle added at `b8c532cd` remains the behavior-preservation authority for the refactor.
+
+The implemented private shape keeps `_run` as the linear Attempt coordinator and introduces only
+two private result values: `_CommitRejected` carries the advanced snapshot, typed failure, and
+optional validated terminal output; `_PromotedCommit` carries the persisted snapshot, validated
+output, and authenticated promotion receipt. `_commit_or_recover` directly owns output and Effect
+intent validation, the atomic observation/intent append, sealing, ordered Validators, durable
+prepare, prepared-workspace reconstruction and drift detection, and promotion or receipt
+reconstruction. Process-local Effect-intent discovery is a private Kernel helper;
+`AttemptEffectSettler` consumes only persisted `snapshot.effects`.
+
+Kernel retains authorization and fence checks, Activity dispatch/adoption, Effect settlement
+coordination, terminal publication, durable release, and the one graph-facing
+`execute_or_recover(...)` method. A one-method commit class, dependency wrapper, new protocol, and
+second coordinator were rejected because they would lengthen the call graph without hiding more
+state or behavior than the private method. Public protocols, resolution types, journal events and
+bytes, crash-cut names and positions, and all other persisted contracts are unchanged.
+
 ## Acceptance
 
 - all graph execution callers still depend only on `execute_or_recover`;

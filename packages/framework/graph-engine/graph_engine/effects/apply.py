@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.events import (
     AttemptEffectState,
     AttemptSnapshot,
     EffectApplied,
-    EffectIntentRecorded,
     EffectReceiptRecorded,
 )
 from graph_engine.attempts.keys import AttemptKey
@@ -22,13 +21,12 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import EffectEntry, EffectRegistry, SchemaRegistry
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, effect_idempotency_key
+from graph_engine.effects.contracts import effect_idempotency_key
 from graph_engine.effects.recovery import intent_from_state, next_effect_action
 from graph_engine.effects.state import (
     EffectCallContext,
     EffectStatePort,
     bind_effect_call,
-    effect_intent_digest,
 )
 from graph_engine.frozen_json import thaw_json
 from graph_engine.json_schema import validate_json_schema
@@ -342,29 +340,4 @@ class AttemptEffectSettler:
             return None
 
 
-def recorded_effect_intent_events(
-    effects: EffectRegistry,
-    schemas: SchemaRegistry,
-    intents: Sequence[EffectIntent],
-) -> tuple[EffectIntentRecorded, ...]:
-    events: list[EffectIntentRecorded] = []
-    for ordinal, intent in enumerate(intents, start=1):
-        if intent.kind not in effects.entries or intent.kind not in EXPECTED_EFFECT_KINDS:
-            raise KeyError(f"unknown effect kind: {intent.kind}")
-        registration = effects.require(intent.kind)
-        schema = schemas.entries.get(registration.intent_schema_id)
-        if schema is None:
-            raise ValueError(f"effect intent schema is not registered: {registration.intent_schema_id}")
-        validate_json_schema(thaw_json(intent.payload), schema.content)
-        events.append(
-            EffectIntentRecorded(
-                effect_ordinal=ordinal,
-                effect_kind=intent.kind,
-                intent_digest=effect_intent_digest(intent.kind, intent.payload),
-                payload=thaw_json(intent.payload),
-            )
-        )
-    return tuple(events)
-
-
-__all__ = ["AttemptEffectSettler", "recorded_effect_intent_events"]
+__all__ = ["AttemptEffectSettler"]

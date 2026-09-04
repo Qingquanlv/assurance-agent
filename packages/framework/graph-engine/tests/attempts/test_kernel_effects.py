@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from graph_engine.attempts.resolutions import (
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
+    PermanentTaskFailure,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
@@ -445,6 +447,58 @@ def test_improvement_graph_names_are_not_effect_kinds() -> None:
     for name in GRAPH_NAMES:
         assert name not in EXPECTED_EFFECT_KINDS
         assert name not in effect_registry.entries
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_message"),
+    [
+        ("unknown_kind", "'unknown effect kind: assurance.unknown.effect.v1'"),
+        ("missing_schema", "effect intent schema is not registered: missing.intent.schema.v1"),
+        ("invalid_payload", "missing required property: remote_id"),
+    ],
+)
+async def test_effect_intent_validation_errors_are_exact(
+    tmp_path: Path,
+    case: str,
+    expected_message: str,
+) -> None:
+    known_kind = "assurance.improvement.effect.delivery.v1"
+    intent_kind = "assurance.unknown.effect.v1" if case == "unknown_kind" else known_kind
+    handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    kernel, key, resolved, validated, context, writer, workspace, _project, store, effects, _schemas = (
+        make_effect_kernel(tmp_path, handler=handler, kind=intent_kind)
+    )
+    if case != "unknown_kind":
+        registration = effects.require(known_kind)
+        intent_schema_id = (
+            "missing.intent.schema.v1" if case == "missing_schema" else registration.receipt_schema_id
+        )
+        kernel.effects = EffectRegistry(
+            {
+                **effects.entries,
+                known_kind: replace(registration, intent_schema_id=intent_schema_id),
+            }
+        )
+    try:
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(first, PermanentTaskFailure)
+        assert first.kind == "configuration"
+        assert first.message == expected_message
+        first_snapshot = await kernel.journal.load(key)
+        assert first_snapshot is not None
+        assert first_snapshot.terminal is not None
+        assert first_snapshot.terminal.output is None
+
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert replay == first
+        replay_snapshot = await kernel.journal.load(key)
+        assert replay_snapshot is not None
+        assert replay_snapshot.terminal is not None
+        assert replay_snapshot.terminal.output is None
+        assert writer.calls == 1
+        assert workspace.promotions == 0
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("kind", sorted(EXPECTED_EFFECT_KINDS))
