@@ -17,7 +17,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    SerializerFunctionWrapHandler,
     field_serializer,
     field_validator,
     model_serializer,

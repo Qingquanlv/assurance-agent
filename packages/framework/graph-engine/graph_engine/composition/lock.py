@@ -26,7 +26,6 @@ from graph_engine.composition.models import (
     CapabilityBindingEntry,
     CommitValidatorEntry,
     ContributionAuthority,
-    PluginRequirement,
     ProductManifest,
     RegistrySet,
     SourceIdentity,
