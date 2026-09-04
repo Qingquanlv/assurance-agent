@@ -115,7 +115,6 @@ EXPECTED_GAP_FAULT_IDS = (
 
 EXPECTED_FAULT_GATE_NODE_IDS = {
     "provider_state_loss_replay": (
-        "packages/adapters/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
         "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
         "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
     ),
@@ -130,7 +129,6 @@ EXPECTED_FAULT_GATE_NODE_IDS = {
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[prepared]",
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[replacing]",
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[committed]",
-        "packages/adapters/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
     ),
     "stop_interrupt": (
         "tests/product/test_stop_and_interrupts.py::test_revision_mismatch_rejects_drifted_resume",

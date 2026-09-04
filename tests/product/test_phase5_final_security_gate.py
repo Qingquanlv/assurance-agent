@@ -28,7 +28,6 @@ EXPECTED_SECURITY_GATE_NODE_IDS = {
         "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[undeclared-write-root-execution]",
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_dual_root_workspace_identity_drift_is_fail_closed",
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity",
-        "packages/adapters/agent-runtime-cursor/tests/test_process_host_security.py::test_spawn_rejects_workspace_identity_drift",
     ),
     "secret_redaction": (
         "packages/adapters/agent-runtime-opencode/tests/test_credentials.py::test_success_durable_outputs_and_workspace_have_no_canary",

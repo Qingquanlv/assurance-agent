@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
+from ledger_activity_port import LedgerTaskActivityPort
 from graph_engine.attempts.activity import (
     GraphStarted,
     Ledger,
-    LedgerTaskActivityPort,
     NodeActivated,
     PlannedTask,
     TaskActivityCancelRequested,

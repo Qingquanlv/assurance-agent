@@ -11,7 +11,6 @@ import pytest
 CLIENT_DISTRIBUTIONS = (
     ("agent-runtime-contracts", "agent-runtime-contracts"),
     ("agent-runtime-opencode", "agent-runtime-opencode"),
-    ("agent-runtime-cursor", "agent-runtime-cursor"),
 )
 
 CLIENT_DOWNWARD_FORBIDDEN = frozenset(
@@ -29,13 +28,8 @@ CLIENT_DOWNWARD_FORBIDDEN = frozenset(
 CLIENT_SOURCE_TREES = (
     ("agent_runtime_contracts", "packages/adapters/agent-runtime-contracts/agent_runtime_contracts"),
     ("agent_runtime_opencode", "packages/adapters/agent-runtime-opencode/agent_runtime_opencode"),
-    ("agent_runtime_cursor", "packages/adapters/agent-runtime-cursor/agent_runtime_cursor"),
 )
 
-ADAPTER_PEERS = {
-    "agent_runtime_opencode": "agent_runtime_cursor",
-    "agent_runtime_cursor": "agent_runtime_opencode",
-}
 
 FEATURE_DISTRIBUTIONS = (
     "assurance-intake",
@@ -58,7 +52,6 @@ FEATURE_SOURCE_TREES = (
 FEATURE_DOWNWARD_FORBIDDEN = frozenset(
     {
         "agent_runtime_opencode",
-        "agent_runtime_cursor",
         "assurance_product",
     }
 )
@@ -70,7 +63,6 @@ FEATURE_IMPLEMENTATION_SUFFIXES = (
     "effects",
     "resource_loader",
     "resources",
-    "workflow",
     "graphs",
 )
 
@@ -79,7 +71,6 @@ FOUR_ROLE_ROOTS = frozenset(
         "graph_engine",
         "agent_runtime_contracts",
         "agent_runtime_opencode",
-        "agent_runtime_cursor",
         "assurance_intake",
         "assurance_generation",
         "assurance_execution",
@@ -103,13 +94,13 @@ PRODUCT_LOWER_PUBLIC_SURFACES = frozenset(
         "assurance_improvement",
         "agent_runtime_contracts",
         "agent_runtime_opencode",
-        "agent_runtime_cursor",
     }
 )
 
 
 ALLOWED_ROOTS = set(sys.stdlib_module_names) | {
     "graph_engine",
+    "langchain_core",
     "langgraph",
     "packaging",
     "pydantic",
@@ -121,7 +112,6 @@ FRAMEWORK_FORBIDDEN_ROOTS = frozenset(
     {
         "agent_runtime_contracts",
         "agent_runtime_opencode",
-        "agent_runtime_cursor",
         "assurance_intake",
         "assurance_generation",
         "assurance_execution",
@@ -160,9 +150,7 @@ def test_clients_import_no_features_or_product(repo_root: Path) -> None:
     for package_name, relative in CLIENT_SOURCE_TREES:
         forbidden = set(CLIENT_DOWNWARD_FORBIDDEN)
         if package_name == "agent_runtime_contracts":
-            forbidden.update({"agent_runtime_opencode", "agent_runtime_cursor"})
-        else:
-            forbidden.add(ADAPTER_PEERS[package_name])
+            forbidden.add("agent_runtime_opencode")
         root = repo_root / relative
         for path in root.rglob("*.py"):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -251,7 +239,6 @@ def test_import_linter_encodes_four_role_matrix(repo_root: Path) -> None:
     assert {
         "agent_runtime_contracts",
         "agent_runtime_opencode",
-        "agent_runtime_cursor",
         "assurance_intake",
         "assurance_generation",
         "assurance_execution",
@@ -322,7 +309,7 @@ def test_product_may_import_lower_public_surfaces(repo_root: Path) -> None:
         PRODUCT_LOWER_PUBLIC_SURFACES
         | {"assurance_product"}
         | set(sys.stdlib_module_names)
-        | {"click", "langgraph", "packaging", "pydantic", "pydantic_core", "yaml"}
+        | {"click", "langchain_core", "langgraph", "packaging", "pydantic", "pydantic_core", "yaml"}
     )
 
 

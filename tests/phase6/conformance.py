@@ -24,7 +24,6 @@ PRODUCTION_METADATA_FILES = (
     "packages/framework/graph-engine/pyproject.toml",
     "packages/adapters/agent-runtime-contracts/pyproject.toml",
     "packages/adapters/agent-runtime-opencode/pyproject.toml",
-    "packages/adapters/agent-runtime-cursor/pyproject.toml",
 )
 
 PRODUCTION_PACKAGE_ROOTS = (
@@ -38,7 +37,6 @@ PRODUCTION_PACKAGE_ROOTS = (
     "packages/framework/graph-engine/graph_engine",
     "packages/adapters/agent-runtime-contracts/agent_runtime_contracts",
     "packages/adapters/agent-runtime-opencode/agent_runtime_opencode",
-    "packages/adapters/agent-runtime-cursor/agent_runtime_cursor",
 )
 
 OWNER_REPLACEMENT_TESTS = {

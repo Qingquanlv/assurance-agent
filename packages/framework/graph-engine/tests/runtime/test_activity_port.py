@@ -9,9 +9,9 @@ import pytest
 
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import TaskActivityPort, TaskOutcome, TaskWorkspaceIdentity
+from ledger_activity_port import LedgerTaskActivityPort
 from graph_engine.attempts.activity import (
     JournalBackedTaskActivityPort,
-    LedgerTaskActivityPort,
     MAX_ACTIVITY_VALUE_BYTES,
     TaskActivityConflict,
     TaskActivityIndeterminate,

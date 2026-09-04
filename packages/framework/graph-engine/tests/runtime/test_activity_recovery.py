@@ -6,11 +6,11 @@ from typing import Literal
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
+from ledger_activity_port import LedgerTaskActivityPort
 from graph_engine.attempts.activity import (
     EffectIntentCommitted,
     GraphStarted,
     Ledger,
-    LedgerTaskActivityPort,
     NodeActivated,
     ProjectionError,
     TaskActivityCancelRequested,

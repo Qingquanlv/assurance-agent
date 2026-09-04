@@ -1,4 +1,4 @@
-"""Test-only six-wheel composition and OpenCode/Cursor rebinding harness."""
+"""Test-only six-wheel composition and OpenCode rebinding harness."""
 
 from __future__ import annotations
 
@@ -107,12 +107,6 @@ WHEEL_PLUGINS: tuple[tuple[str, str, str, str], ...] = (
         "agent_runtime_opencode",
         "opencode",
         "agent_runtime_opencode/plugin-declaration.json",
-    ),
-    (
-        "agent-runtime-cursor",
-        "agent_runtime_cursor",
-        "cursor",
-        "agent_runtime_cursor/plugin-declaration.json",
     ),
 )
 FIXTURE_PERMISSION_BYTES = b'{"profile":"fixture-v1","writes":["review.json"]}\n'
@@ -316,10 +310,8 @@ def resolve_fixture(
         _scrub_generated(product_root)
         bindings_root = _bindings_for(product_name, fixtures)
     overlay = _product_metadata(workspace)
-    if product_name == "phase4-opencode":
-        plugins = tuple(plugin for plugin in plugins if plugin.distribution != "agent-runtime-cursor")
-    else:
-        plugins = tuple(plugin for plugin in plugins if plugin.distribution != "agent-runtime-opencode")
+    if product_name != "phase4-opencode":
+        raise ValueError(f"unsupported phase4 product: {product_name}")
     with _import_activation(product_root, workspace):
         composition = RegistryPlatform(metadata_provider=overlay).resolve(
             ResolutionRequest(

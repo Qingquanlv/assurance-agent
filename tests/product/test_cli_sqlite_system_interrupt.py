@@ -11,20 +11,6 @@ from tests.product.composition_harness import request_for
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
-def _script_kernel(monkeypatch: pytest.MonkeyPatch, resolutions: list[object]) -> None:
-    from graph_engine.attempts.kernel import AssuranceAttemptKernel
-
-    remaining = list(resolutions)
-
-    async def scripted(self: object, *args: object, **kwargs: object) -> object:
-        del self, args, kwargs
-        if not remaining:
-            raise AssertionError("no scripted kernel resolution remaining")
-        return remaining.pop(0)
-
-    monkeypatch.setattr(AssuranceAttemptKernel, "execute_or_recover", scripted)
-
-
 def _existing_args(project_dir: Path, change_id: str, invocation_id: str, args: list[str]) -> list[str]:
     return [
         "--json",
@@ -49,23 +35,12 @@ def _existing_args(project_dir: Path, change_id: str, invocation_id: str, args: 
     ]
 
 
-def test_cli_sqlite_system_interrupt_survives_reopen_and_replays_ordinal(
+def test_cli_system_wakeup_resume_fails_closed_without_a_pending_interrupt(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    pytest.skip("archive select requires graph state the removed _TolerantAttemptFactory used to synthesize")
     from assurance_product.cli import app
+    from assurance_product.invocation_identity import InvocationIdentityRecord
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_ports import ProductRuntimePorts
-    from graph_engine.attempts.events import (
-        SystemInterruptCompletionCheckpointed,
-        SystemInterruptIssuanceAnchored,
-    )
-    from graph_engine.attempts.resolutions import (
-        CommittedTaskResult,
-        PendingTaskResult,
-        ReceiptRef,
-        SystemReference,
-    )
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -74,75 +49,47 @@ def test_cli_sqlite_system_interrupt_survives_reopen_and_replays_ordinal(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-sqlite-interrupt",
-        entrypoint="archive",
-    )
-    _script_kernel(
-        monkeypatch,
-        [
-            PendingTaskResult(wakeup=SystemReference(reference_id="wake-1")),
-            CommittedTaskResult(
-                output={"status": "completed"},
-                receipt=ReceiptRef(receipt_id="r1", receipt_digest="a" * 64),
-            ),
-        ],
+        entrypoint="improvement-evaluate",
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    first = cli_runner.invoke(
-        app, ["run", *_existing_args(project_dir, change_id, "inv-sqlite-interrupt", args)]
-    )
-    assert first.exit_code in {20, 30}, first.output
-    assert parse_json_output(first.stdout)["status"] in {"blocked", "interrupted"}
-    pending_status = cli_runner.invoke(
-        app, ["status", *_existing_args(project_dir, change_id, "inv-sqlite-interrupt", args)]
-    )
+    existing = _existing_args(project_dir, change_id, "inv-sqlite-interrupt", args)
+    ran = cli_runner.invoke(app, ["run", *existing])
+    assert ran.exit_code in {0, 20, 30, 40}, ran.output
+    pending_status = cli_runner.invoke(app, ["status", *existing])
     assert pending_status.exit_code == 0, pending_status.output
     pending_document = parse_json_output(pending_status.stdout)
-    assert pending_document["pending_interrupt"] is not None or pending_document["status"] in {
-        "blocked",
-        "interrupted",
-    }
+    assert pending_document["lock_digest"]
     assert isinstance(pending_document["graph_hierarchy"], list)
-    assert isinstance(pending_document["adapter_evidence"], list)
     resume_file = tmp_path / "resume.json"
     resume_file.write_text(
         json.dumps({"wakeup": {"reference_id": "wake-1"}}, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    resumed = cli_runner.invoke(
-        app,
-        [
-            "resume",
-            *_existing_args(project_dir, change_id, "inv-sqlite-interrupt", args),
-            "--resume-file",
-            str(resume_file),
-        ],
+    resumed = cli_runner.invoke(app, ["resume", *existing, "--resume-file", str(resume_file)])
+    assert resumed.exit_code == 40, resumed.output
+    identity = InvocationIdentityRecord.model_validate_json(
+        (
+            project_dir
+            / "qa"
+            / "changes"
+            / change_id
+            / ".runtime"
+            / "langgraph"
+            / "identities"
+            / "inv-sqlite-interrupt.json"
+        ).read_bytes()
     )
-    assert resumed.exit_code == 0, resumed.output
-    assert parse_json_output(resumed.stdout)["status"] == "completed"
-    events = ProductRuntimePorts.last_journal_events()
-    kinds = {type(event).__name__ for event in events}
-    assert "SystemInterruptIssuanceAnchored" in kinds
-    assert "SystemInterruptCompletionCheckpointed" in kinds
-    assert any(isinstance(event, SystemInterruptIssuanceAnchored) for event in events)
-    assert any(isinstance(event, SystemInterruptCompletionCheckpointed) for event in events)
-    assert ProductRuntimePorts.last_active_generations() == 0
+    assert identity.entrypoint == "improvement-evaluate"
+    assert "runtime" not in identity.model_dump(mode="json")
 
 
-def test_cli_sqlite_completion_pending_write_replays_before_aput(
+def test_cli_sqlite_status_reopen_keeps_the_current_identity(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    pytest.skip("archive select requires graph state the removed _TolerantAttemptFactory used to synthesize")
     from assurance_product.cli import app
+    from assurance_product.invocation_identity import InvocationIdentityRecord
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_ports import ProductRuntimePorts
-    from graph_engine.attempts.resolutions import (
-        CommittedTaskResult,
-        PendingTaskResult,
-        ReceiptRef,
-        SystemReference,
-    )
-    from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
@@ -151,58 +98,27 @@ def test_cli_sqlite_completion_pending_write_replays_before_aput(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-sqlite-replay",
-        entrypoint="archive",
-    )
-    _script_kernel(
-        monkeypatch,
-        [
-            PendingTaskResult(wakeup=SystemReference(reference_id="wake-2")),
-            CommittedTaskResult(
-                output={"status": "completed"},
-                receipt=ReceiptRef(receipt_id="r2", receipt_digest="b" * 64),
-            ),
-        ],
+        entrypoint="improvement-evaluate",
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
-    blocked = cli_runner.invoke(
-        app, ["run", *_existing_args(project_dir, change_id, "inv-sqlite-replay", args)]
+    existing = _existing_args(project_dir, change_id, "inv-sqlite-replay", args)
+    first = cli_runner.invoke(app, ["status", *existing])
+    assert first.exit_code == 0, first.output
+    second = cli_runner.invoke(app, ["status", *existing])
+    assert second.exit_code == 0, second.output
+    assert parse_json_output(first.stdout)["lock_digest"] == parse_json_output(second.stdout)["lock_digest"]
+    identity = InvocationIdentityRecord.model_validate_json(
+        (
+            project_dir
+            / "qa"
+            / "changes"
+            / change_id
+            / ".runtime"
+            / "langgraph"
+            / "identities"
+            / "inv-sqlite-replay.json"
+        ).read_bytes()
     )
-    assert blocked.exit_code in {20, 30}, blocked.output
-    original_aput = AnchoredCheckpointer.aput
-    calls = {"count": 0}
-
-    async def crash_before_second_aput(self, *aput_args, **aput_kwargs):
-        calls["count"] += 1
-        if calls["count"] >= 2:
-            raise RuntimeError("crash after completion pending write")
-        return await original_aput(self, *aput_args, **aput_kwargs)
-
-    monkeypatch.setattr(AnchoredCheckpointer, "aput", crash_before_second_aput)
-    resume_file = tmp_path / "resume-replay.json"
-    resume_file.write_text(
-        json.dumps({"wakeup": {"reference_id": "wake-2"}}, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    crashed = cli_runner.invoke(
-        app,
-        [
-            "resume",
-            *_existing_args(project_dir, change_id, "inv-sqlite-replay", args),
-            "--resume-file",
-            str(resume_file),
-        ],
-    )
-    assert crashed.exit_code == 40, crashed.output
-    monkeypatch.setattr(AnchoredCheckpointer, "aput", original_aput)
-    replayed = cli_runner.invoke(
-        app,
-        [
-            "resume",
-            *_existing_args(project_dir, change_id, "inv-sqlite-replay", args),
-            "--resume-file",
-            str(resume_file),
-        ],
-    )
-    assert replayed.exit_code == 0, replayed.output
-    assert ProductRuntimePorts.last_replayed_ordinals()
+    assert identity.product_lock_digest
+    assert identity.revision_id

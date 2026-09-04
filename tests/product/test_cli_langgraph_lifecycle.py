@@ -285,11 +285,85 @@ def test_leftover_invocation_without_identity_fails_closed(
     assert leftover.is_dir()
 
 
-def test_langgraph_run_maps_six_statuses_and_survives_reopen(
+def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
-    del cli_runner, installed_sources, tmp_path, monkeypatch
-    pytest.skip("leftover Engine create_engine hook was retired")
+    from assurance_product.cli import app
+    from assurance_product.invocation_identity import InvocationIdentityRecord
+    from assurance_product.product import resolve_assurance_composition
+    from assurance_product.status import archive_published
+    from tests.product.test_result_export import CHANGE_ID, write_achieved
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id="inv-evaluate-reopen-001",
+        entrypoint="improvement-evaluate",
+        change_id=CHANGE_ID,
+    )
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    started_doc = parse_json_output(started.stdout)
+    identity = InvocationIdentityRecord.model_validate_json(
+        _identity_path(project_dir, change_id, "inv-evaluate-reopen-001").read_bytes()
+    )
+    assert identity.phase == "initialized"
+    assert identity.entrypoint == "improvement-evaluate"
+    assert "runtime" not in identity.model_dump(mode="json")
+    assert started_doc["lock_digest"] == composition.lock_digest
+    assert started_doc["root_input_digest"] == identity.root_input_digest
+
+    existing = _existing_lifecycle_args(args, project_dir, change_id, "inv-evaluate-reopen-001")
+    ran = cli_runner.invoke(app, ["run", *existing])
+    assert ran.exit_code in {0, 20, 30, 40}, ran.output
+    if ran.stdout.strip():
+        run_doc = parse_json_output(ran.stdout)
+        assert run_doc["status"] != "forged"
+        assert run_doc.get("lock_digest", composition.lock_digest) == composition.lock_digest
+
+    statused = cli_runner.invoke(app, ["status", *existing])
+    assert statused.exit_code == 0, statused.output
+    status_doc = parse_json_output(statused.stdout)
+    assert status_doc["invocation_id"] == "inv-evaluate-reopen-001"
+    assert status_doc["lock_digest"] == identity.product_lock_digest
+    assert status_doc["root_input_digest"] == identity.root_input_digest
+    assert status_doc["entrypoint"] == "improvement-evaluate"
+
+    locked = cli_runner.invoke(app, ["lock", "show", *existing])
+    assert locked.exit_code == 0, locked.output
+    lock_doc = parse_json_output(locked.stdout)
+    assert lock_doc["lock_digest"] == identity.product_lock_digest
+    assert lock_doc["lock"]["schema_version"] == "3"
+    assert lock_doc["revision"]["revision_id"] == identity.revision_id
+    assert "compiled_workflow" not in lock_doc["lock"]
+
+    resume_file = tmp_path / "system-wakeup.json"
+    resume_file.write_text(
+        json.dumps({"wakeup": {"reference_id": "wake-evaluate-1"}}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    resumed = cli_runner.invoke(app, ["resume", *existing, "--resume-file", str(resume_file)])
+    assert resumed.exit_code == 40, resumed.output
+    reopened = InvocationIdentityRecord.model_validate_json(
+        _identity_path(project_dir, change_id, "inv-evaluate-reopen-001").read_bytes()
+    )
+    assert reopened == identity
+
+    write_achieved(tmp_path, project=project_dir, change_id=CHANGE_ID)
+    exported = cli_runner.invoke(
+        app, ["export", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID]
+    )
+    assert exported.exit_code == 0, exported.output
+    first_archive = cli_runner.invoke(
+        app, ["archive", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID]
+    )
+    assert first_archive.exit_code == 0, first_archive.output
+    recovered = archive_published(project_dir, CHANGE_ID)
+    assert recovered["change_id"] == CHANGE_ID
+    assert recovered["archive_root"] == f"qa/archive/{CHANGE_ID}"
 
 
 def test_langgraph_run_does_not_map_integrity_errors_to_failed(

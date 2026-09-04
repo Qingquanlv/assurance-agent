@@ -134,36 +134,36 @@ def test_two_changes_are_independently_discoverable(
     assert second_doc["invocation_id"] == "inv-change-b"
     assert first_doc["change"]["change_id"] == "CH-A-001"
     assert second_doc["change"]["change_id"] == second_change
-    first_selection = (
+    first_identity = (
         _change_root(project_dir, first_change)
         / ".runtime"
         / "langgraph"
-        / "selections"
+        / "identities"
         / "inv-change-a.json"
     )
-    second_selection = (
+    second_identity = (
         _change_root(project_dir, second_change)
         / ".runtime"
         / "langgraph"
-        / "selections"
+        / "identities"
         / "inv-change-b.json"
     )
-    assert first_selection.is_file()
-    assert second_selection.is_file()
-    assert json.loads(first_selection.read_bytes())["runtime"] == "langgraph-v1"
-    assert json.loads(second_selection.read_bytes())["runtime"] == "langgraph-v1"
+    assert first_identity.is_file()
+    assert second_identity.is_file()
+    assert "runtime" not in json.loads(first_identity.read_bytes())
+    assert "runtime" not in json.loads(second_identity.read_bytes())
     assert not (
         _change_root(project_dir, first_change)
         / ".runtime"
         / "langgraph"
-        / "selections"
+        / "identities"
         / "inv-change-b.json"
     ).exists()
     assert not (
         _change_root(project_dir, second_change)
         / ".runtime"
         / "langgraph"
-        / "selections"
+        / "identities"
         / "inv-change-a.json"
     ).exists()
     assert not (_change_root(project_dir, first_change) / ".runtime" / "invocations").exists()
@@ -258,10 +258,11 @@ def test_failed_run_exposes_status_and_events_but_not_staged_files(
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
     change = _change_root(project_dir, change_id)
-    selection = json.loads(
-        (change / ".runtime" / "langgraph" / "selections" / "inv-fail-001.json").read_bytes()
+    identity = json.loads(
+        (change / ".runtime" / "langgraph" / "identities" / "inv-fail-001.json").read_bytes()
     )
-    assert selection["runtime"] == "langgraph-v1"
+    assert "runtime" not in identity
+    assert identity["invocation_id"] == "inv-fail-001"
     leftover_invocation = change / ".runtime" / "invocations" / "inv-fail-001"
     assert not leftover_invocation.exists()
     _assert_no_tree_store(project_dir)
@@ -310,12 +311,13 @@ def test_start_does_not_create_tree_store_directories(
     runtime = change / ".runtime"
     assert runtime.is_dir()
     langgraph = runtime / "langgraph"
-    selection = json.loads((langgraph / "selections" / "inv-layout-001.json").read_bytes())
+    identity = json.loads((langgraph / "identities" / "inv-layout-001.json").read_bytes())
     binding = json.loads(
         (langgraph / "leases" / "revisions" / "bindings" / "inv-layout-001.json").read_bytes()
     )
-    assert selection["runtime"] == "langgraph-v1"
-    assert binding["runtime"] == "langgraph-v1"
+    assert "runtime" not in identity
+    assert set(binding) == {"invocation_id", "revision_id"}
+    assert binding["invocation_id"] == "inv-layout-001"
     assert (langgraph / "checkpoints.sqlite3").is_file()
     assert (change / ".staging").is_dir()
     leftover_invocation = runtime / "invocations" / "inv-layout-001"
@@ -363,10 +365,10 @@ def test_projections_are_not_used_to_advance_execution(
     document = parse_json_output(status.stdout)
     assert document["status"] != "forged"
     assert document["invocation_id"] == "inv-proj-001"
-    selection = json.loads(
-        (change / ".runtime" / "langgraph" / "selections" / "inv-proj-001.json").read_bytes()
+    identity = json.loads(
+        (change / ".runtime" / "langgraph" / "identities" / "inv-proj-001.json").read_bytes()
     )
-    assert selection["runtime"] == "langgraph-v1"
-    assert selection["invocation_id"] == "inv-proj-001"
+    assert "runtime" not in identity
+    assert identity["invocation_id"] == "inv-proj-001"
     leftover_invocation = change / ".runtime" / "invocations" / "inv-proj-001"
     assert not leftover_invocation.exists()
