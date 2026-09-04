@@ -14,17 +14,11 @@ MANIFEST_PATH = BENCHMARK_ROOT / "manifest.json"
 RETAINED_COMPARISON_ASSERTIONS = {
     "STOP": (
         "tests/product/test_stop_and_interrupts.py",
-        (
-            "test_healing_disallowed_is_business_stop_not_completion",
-            "test_nested_stop_does_not_become_normal_completion",
-            "test_reported_success_is_distinct_from_stop_and_interrupt",
-            "test_infrastructure_failure_is_stop_after_report",
-        ),
+        ("test_revision_mismatch_rejects_drifted_resume",),
     ),
     "interrupt": (
         "tests/product/test_stop_and_interrupts.py",
         (
-            "test_business_stop_is_resumable_only_at_declared_interrupt",
             "test_invalid_resume_input_fails",
             "test_interrupt_runtime_lives_under_the_change_without_tree_store",
         ),

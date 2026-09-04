@@ -3,7 +3,7 @@
 # Helpers kept side-effect free until explicitly called so unit tests can source
 # this file without launching the benchmark loop.
 
-resolve_cursor_project_root() {
+resolve_benchmark_project_root() {
   local script_dir="$1" override="$2" candidate resolved
   candidate="${override:-$script_dir/..}"
   [ -d "$candidate" ] || return 1

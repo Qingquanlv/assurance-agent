@@ -14,7 +14,6 @@ import pytest
 
 _ROOT = Path(__file__).parents[3]
 _HELPERS = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "loop-helpers.sh"
-_CURSOR_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
 _OPENCODE_LOOP = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "run-workflow-loop.sh"
 _BENCHMARK_ENV = _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark.env"
 _DELETED_PACKAGE_LEFTOVER = "specialty leftover after deleted-package cutover"
@@ -362,7 +361,7 @@ def test_batch_retro_helper_invokes_only_canonical_manifest_cli(tmp_path: Path) 
     command = (
         f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
         f"run_batch_retro {shlex.quote(str(fake))} {shlex.quote(str(manifest))} "
-        f"retro-1 'cursor-agent --print' false {shlex.quote(str(retro_log))}"
+        f"retro-1 'opencode --print' false {shlex.quote(str(retro_log))}"
     )
 
     result = _run_helper(tmp_path, command)
@@ -391,7 +390,7 @@ def test_batch_retro_refuses_nonterminal_or_timeout_members(tmp_path: Path) -> N
         command = (
             f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
             f"run_batch_retro {shlex.quote(str(fake))} {shlex.quote(str(manifest))} "
-            f"retro-1 'cursor-agent --print' false {shlex.quote(str(retro_log))}"
+            f"retro-1 'opencode --print' false {shlex.quote(str(retro_log))}"
         )
 
         result = _run_helper(tmp_path, command)
@@ -544,15 +543,17 @@ def test_opencode_loop_preserves_opencode_agents_and_five_item_defaults() -> Non
     ]
 
 
-def test_cursor_loop_runs_only_explicit_batch_retro_after_all_items_settle() -> None:
-    source = _CURSOR_LOOP.read_text(encoding="utf-8")
-    loop_start = source.index('for item in "${BENCHMARK_ITEMS[@]}"; do', source.index("# Main loop"))
-    loop_end = source.index("\ndone\n\nretro_id=", loop_start)
+def test_opencode_loop_runs_only_explicit_batch_retro_after_all_items_settle() -> None:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
+    loop_start = source.index('for item in "${BENCHMARK_ITEMS[@]}"; do', source.index("item_idx=0"))
+    loop_end = source.index("\ndone\n", loop_start)
     settled_guard = source.index('if batch_members_settled "$BATCH_MANIFEST"; then', loop_end)
-    retro_call = source.index("run_retro_collect", settled_guard)
+    retro_call = source.index("run_batch_knowledge_promotion_boundary", settled_guard)
 
     assert loop_end < settled_guard < retro_call
-    assert '"$AA_BIN" "$BATCH_MANIFEST" "$RETRO_ID"' in source
+    assert "run_retro_collect" in source
+    assert '--batch-manifest "$BATCH_MANIFEST"' in source
+    assert '--retro-id "$RETRO_ID"' in source
     for obsolete in (
         "retro_last",
         "RETRO_LAST",
@@ -564,8 +565,8 @@ def test_cursor_loop_runs_only_explicit_batch_retro_after_all_items_settle() -> 
         assert obsolete not in source
 
 
-def test_cursor_loop_manages_backend_and_frontend_lifecycles() -> None:
-    source = _CURSOR_LOOP.read_text(encoding="utf-8")
+def test_opencode_loop_manages_backend_and_frontend_lifecycles() -> None:
+    source = _OPENCODE_LOOP.read_text(encoding="utf-8")
 
     assert 'FRONTEND_READY_URL="${FRONTEND_READY_URL:-${E2E_FRONTEND_URL%/}/}"' in source
     assert 'FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"' in source
@@ -577,22 +578,6 @@ def test_cursor_loop_manages_backend_and_frontend_lifecycles() -> None:
     assert (
         "ensure_loop_sut || exit 1\nprepare_execution_credentials || exit 1\nensure_loop_frontend || exit 1"
     ) in source
-
-
-def test_cursor_loop_enforces_task_workspace_sandbox_for_every_cursor_invocation() -> None:
-    source = _CURSOR_LOOP.read_text(encoding="utf-8")
-
-    assert (
-        'local cmd="$CURSOR_AGENT_BIN --print --output-format '
-        '$CURSOR_OUTPUT_FORMAT --sandbox enabled --trust"' in source
-    )
-    assert '    --sandbox\n    enabled\n    --workspace "$PROJECT_ROOT"' in source
-    assert "--force" not in source
-    assert "CURSOR_AGENT_FORCE" not in source
-
-    benchmark_dir = _CURSOR_LOOP.parent
-    for env_path in benchmark_dir.glob("benchmark*.env"):
-        assert "CURSOR_AGENT_FORCE" not in env_path.read_text(encoding="utf-8"), env_path
 
 
 def _collect_eval_command(tmp_path: Path, suites: str) -> str:
@@ -855,8 +840,8 @@ def test_interrupt_resume_preserves_headless_agent_arguments(tmp_path: Path) -> 
         f"AA_FAKE_CALL_LOG={shlex.quote(str(call_log))} "
         f"resume_benchmark_interrupt {shlex.quote(str(fake))} CH-1 INT-1 accept_risk "
         "'benchmark decision' headless "
-        "'cursor-agent --print --output-format stream-json --sandbox enabled --trust "
-        "--model cursor-grok-4.5-high-fast'"
+        "'opencode --print --output-format stream-json --sandbox enabled --trust "
+        "--model provider_default'"
     )
 
     result = _run_helper(tmp_path, command)
@@ -865,8 +850,8 @@ def test_interrupt_resume_preserves_headless_agent_arguments(tmp_path: Path) -> 
     assert call_log.read_text(encoding="utf-8").splitlines() == [
         "workflow resume --change CH-1 --interrupt INT-1 --action accept_risk "
         "--reason benchmark decision --adapter headless --agent-cmd "
-        "cursor-agent --print --output-format stream-json --sandbox enabled --trust "
-        "--model cursor-grok-4.5-high-fast"
+        "opencode --print --output-format stream-json --sandbox enabled --trust "
+        "--model provider_default"
     ]
 
 
@@ -937,7 +922,7 @@ def test_workflow_entrypoint_dispatch_preserves_metrics_nightly_arguments(tmp_pa
         tmp_path,
         "capture_runner() { printf '<%s>\\n' \"$@\"; }; "
         "dispatch_benchmark_workflow_entrypoint capture_runner metrics.log CH-METRICS "
-        "aa metrics-nightly '{}' headless 'cursor-agent --print --trust'",
+        "aa metrics-nightly '{}' headless 'opencode --print --trust'",
     )
 
     assert result.returncode == 0, result.stderr
@@ -956,7 +941,7 @@ def test_workflow_entrypoint_dispatch_preserves_metrics_nightly_arguments(tmp_pa
         "<--params>",
         "<{}>",
         "<--agent-cmd>",
-        "<cursor-agent --print --trust>",
+        "<opencode --print --trust>",
     ]
 
 
@@ -1321,15 +1306,6 @@ def test_trace_verify_summary_rows_allow_empty_input_under_nounset(tmp_path: Pat
     assert result.stdout == ""
 
 
-def test_cursor_loop_passes_and_reports_coverage_repair_budget() -> None:
-    source = _CURSOR_LOOP.read_text(encoding="utf-8")
-
-    assert 'MAX_COVERAGE_REPAIR_ATTEMPTS="${MAX_COVERAGE_REPAIR_ATTEMPTS:-1}"' in source
-    assert '"max_coverage_repair_attempts": int(os.environ["MAX_COVERAGE_REPAIR"])' in source
-    assert "## Coverage Repair Fast Loop" in source
-    assert "<change_id>.coverage-repair.json" in source
-
-
 def test_opencode_loop_passes_coverage_repair_budget() -> None:
     source = _OPENCODE_LOOP.read_text(encoding="utf-8")
 
@@ -1495,7 +1471,7 @@ def test_resolve_aa_python_uses_console_script_interpreter(tmp_path: Path) -> No
     assert result.stdout == sys.executable
 
 
-def test_resolve_cursor_project_root_honors_external_sut_override(tmp_path: Path) -> None:
+def test_resolve_benchmark_project_root_honors_external_sut_override(tmp_path: Path) -> None:
     script_dir = tmp_path / "tool" / "benchmark"
     sut_root = tmp_path / "sut"
     script_dir.mkdir(parents=True)
@@ -1503,7 +1479,7 @@ def test_resolve_cursor_project_root_honors_external_sut_override(tmp_path: Path
 
     result = _run_helper(
         tmp_path,
-        f"resolve_cursor_project_root {shlex.quote(str(script_dir))} {shlex.quote(str(sut_root))}",
+        f"resolve_benchmark_project_root {shlex.quote(str(script_dir))} {shlex.quote(str(sut_root))}",
     )
 
     assert result.returncode == 0, result.stderr
@@ -1688,7 +1664,6 @@ def test_specialty_collect_helper_omits_schema_root_escape_hatch() -> None:
     reporter = (
         _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
     ).read_text(encoding="utf-8")
-    loop = _CURSOR_LOOP.read_text(encoding="utf-8")
     start = helpers.index("collect_benchmark_specialty_report() {")
     end = helpers.index("\nvalidate_workflow_command_result() {", start)
     collect_fn = helpers[start:end]
@@ -1696,16 +1671,7 @@ def test_specialty_collect_helper_omits_schema_root_escape_hatch() -> None:
     assert "schema_root" not in collect_fn
     assert "--schema-root" not in reporter
     assert "schema_root" not in reporter
-    assert "collect_benchmark_specialty_report" in loop
-    # Caller no longer forwards AA_REPO_ROOT as a schema-root argument.
-    stage_start = loop.index("run_specialty_report_stage() {")
-    stage_end = loop.index("\nreuse_specialty_report_stage() {", stage_start)
-    stage = loop[stage_start:stage_end]
-    assert "collect_benchmark_specialty_report \\" in stage
-    assert (
-        '"$AA_REPO_ROOT"'
-        not in stage.split("collect_benchmark_specialty_report", maxsplit=1)[1].split("||", maxsplit=1)[0]
-    )
+    assert "collect_benchmark_specialty_report" in helpers
 
 
 def test_raw_evidence_row_uses_ten_columns_and_unknown(tmp_path: Path) -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import sys
 import tempfile
@@ -847,7 +846,7 @@ class _AdapterHarness:
             OpenCodeDispatchIncomplete | TimeoutError | asyncio.TimeoutError | httpx.TransportError,
         ):
             return True
-        return error.__class__.__name__ in {"CursorDispatchIncomplete", "ProcessDispatchCut"}
+        return error.__class__.__name__ in {"ProcessDispatchCut"}
 
     def _execute_call(self, scenario: _Scenario) -> TaskHostExecuteCall:
         return TaskHostExecuteCall(
@@ -1187,106 +1186,3 @@ class OpenCodeRuntimeHarness(_AdapterHarness):
 
     async def recover_from_dead_host(self) -> RecoveryOutcome:
         raise AssertionError("OpenCode recovery_profile does not use dead-host process semantics")
-
-
-class CursorRuntimeHarness(_AdapterHarness):
-    recovery_profile: RecoveryProfile = "confined_process"
-    plugin_id = "runtime.cursor"
-    capability_id = "runtime.cursor.execute"
-    secret_handle = "cursor.api-key"
-
-    def _cursor_bin(self, root: Path) -> tuple[str, str]:
-        path = (root / "cursor").resolve()
-        path.write_bytes(b"cursor-binary")
-        path.chmod(0o755)
-        return str(path), hashlib.sha256(path.read_bytes()).hexdigest()
-
-    def _fake_and_handler(self, *, cut: str | None = None, status: str = "exited") -> tuple[Any, Any]:
-        from agent_runtime_cursor import CursorHandler  # type: ignore[reportMissingImports]
-
-        fake_mod = _load_adapter_test_module("agent-runtime-cursor", "fake_process_host")
-        root = self._temp()
-        executable, digest = self._cursor_bin(root)
-        host = fake_mod.FakeConfinedProcessHost(
-            cut=cut,
-            status=status,
-            exit_code=None if status == "running" else 0,
-        )
-        self._last_cursor = (executable, digest, host)
-        return host, CursorHandler(host)
-
-    def _adapter_binding_data(self) -> dict[str, Any]:
-        from agent_runtime_cursor import CursorAdapterConfig  # type: ignore[reportMissingImports]
-
-        executable, digest, _host = getattr(self, "_last_cursor")
-        config = CursorAdapterConfig.model_validate(
-            {
-                "schema_version": "1",
-                "executable": executable,
-                "executable_digest": digest,
-                "expected_version": "1.0.0",
-                "secret_handle": self.secret_handle,
-                "environment_names": ["PATH", "CURSOR_API_KEY"],
-                "graceful_cancel_seconds": 5,
-                "forced_cancel_seconds": 10,
-                "max_output_bytes": 65536,
-                "max_line_bytes": 4096,
-                "adapter_configuration_digest": _SHA,
-            }
-        )
-        return config.model_dump(mode="json")
-
-    async def _fresh_prepared(self) -> _Scenario:
-        fake, handler = self._fake_and_handler()
-        scenario = await self._open_scenario(
-            invocation_id="cursor-prepared",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-        return scenario
-
-    async def _open_bind_scenario(self) -> _Scenario:
-        fake, handler = self._fake_and_handler(cut="after_bind", status="running")
-        return await self._open_scenario(
-            invocation_id="cursor-bind",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-
-    async def _open_success_scenario(self) -> _Scenario:
-        fake, handler = self._fake_and_handler()
-        return await self._open_scenario(
-            invocation_id="cursor-success",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-
-    async def _open_receipt_scenario(self) -> _Scenario:
-        fake, handler = self._fake_and_handler()
-        return await self._open_scenario(
-            invocation_id="cursor-receipt",
-            handler=handler,
-            provider=fake,
-            host_cut="after_terminal_receipt",
-            secrets={self.secret_handle: CANARY},
-        )
-
-    async def recover_live_activity(self) -> RecoveryOutcome:
-        raise AssertionError("Cursor recovery_profile does not claim durable live adoption")
-
-    async def recover_from_dead_host(self) -> RecoveryOutcome:
-        fake, handler = self._fake_and_handler(cut="after_bind", status="running")
-        scenario = await self._open_scenario(
-            invocation_id="cursor-dead",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-        await self._drive_wave(scenario, allow_incomplete=True)
-        fake.alive = False
-        result = await self._drive_recover(scenario)
-        status = result.reconcile_status or "indeterminate"
-        return RecoveryOutcome(status=status, attempt=result.attempt, reason=None)

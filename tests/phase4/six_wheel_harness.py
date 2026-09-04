@@ -62,25 +62,20 @@ PRODUCT_ROOT = FIXTURE_ROOT / "six-wheel-product"
 PRODUCT_PACKAGE = PRODUCT_ROOT / "test_assurance_phase4_product"
 BINDINGS_ROOTS = {
     "phase4-opencode": FIXTURE_ROOT / "bindings-opencode",
-    "phase4-cursor": FIXTURE_ROOT / "bindings-cursor",
 }
 PRODUCT_NAMES = frozenset(BINDINGS_ROOTS)
 PRODUCT_DISTRIBUTION = "test-assurance-phase4-product"
 PRODUCT_ENTRYPOINTS = {
     "phase4-opencode": "test_assurance_phase4_product.product:Phase4OpenCodeProduct",
-    "phase4-cursor": "test_assurance_phase4_product.product:Phase4CursorProduct",
 }
 PRODUCT_DECLARATIONS = {
     "phase4-opencode": "test_assurance_phase4_product/product-opencode-declaration.json",
-    "phase4-cursor": "test_assurance_phase4_product/product-cursor-declaration.json",
 }
 RUNTIME_EXECUTE = {
     "phase4-opencode": "runtime.opencode.execute",
-    "phase4-cursor": "runtime.cursor.execute",
 }
 ADAPTER_IDS = {
     "phase4-opencode": "runtime.opencode",
-    "phase4-cursor": "runtime.cursor",
 }
 WHEEL_PLUGINS: tuple[tuple[str, str, str, str], ...] = (
     ("assurance-intake", "assurance_intake", "intake", "assurance_intake/plugin-declaration.json"),
@@ -142,11 +137,8 @@ _REQUIRED_PATHS = (
     PRODUCT_ROOT / "pyproject.toml",
     PRODUCT_PACKAGE / "product.py",
     PRODUCT_PACKAGE / "product-opencode-declaration.json",
-    PRODUCT_PACKAGE / "product-cursor-declaration.json",
     FIXTURE_ROOT / "bindings-opencode" / "plugin.yaml",
     FIXTURE_ROOT / "bindings-opencode" / "model-policy.json",
-    FIXTURE_ROOT / "bindings-cursor" / "plugin.yaml",
-    FIXTURE_ROOT / "bindings-cursor" / "model-policy.json",
 )
 _IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".DS_Store", "*.egg-info")
 _KEEP: list[Any] = []
@@ -194,10 +186,7 @@ def refresh_product_declarations(product_root: Path) -> None:
                 sys.modules.pop(name, None)
         importlib.invalidate_caches()
         module = importlib.import_module("test_assurance_phase4_product.product")
-        for cls, filename in (
-            (module.Phase4OpenCodeProduct, "product-opencode-declaration.json"),
-            (module.Phase4CursorProduct, "product-cursor-declaration.json"),
-        ):
+        for cls, filename in ((module.Phase4OpenCodeProduct, "product-opencode-declaration.json"),):
             manifest = cls.manifest()
             source = manifest.source
             if source is None:
@@ -729,7 +718,9 @@ def _materialize_fixture_distribution(workspace: Path) -> tuple[Path, Path, Path
 
 
 def _bindings_for(product_name: str, fixtures: Path) -> Path:
-    return fixtures / ("bindings-opencode" if product_name == "phase4-opencode" else "bindings-cursor")
+    if product_name != "phase4-opencode":
+        raise ValueError(f"unsupported phase4 product: {product_name}")
+    return fixtures / "bindings-opencode"
 
 
 def _activate_product_imports(product_root: Path) -> None:
@@ -749,8 +740,7 @@ def _product_metadata(workspace: Path) -> _OverlayMetadata:
     )
     (dist_info / "entry_points.txt").write_text(
         "[graph_engine.products]\n"
-        "phase4-opencode = test_assurance_phase4_product.product:Phase4OpenCodeProduct\n"
-        "phase4-cursor = test_assurance_phase4_product.product:Phase4CursorProduct\n",
+        "phase4-opencode = test_assurance_phase4_product.product:Phase4OpenCodeProduct\n",
         encoding="utf-8",
     )
     return _OverlayMetadata({PRODUCT_DISTRIBUTION: metadata.Distribution.at(dist_info)})

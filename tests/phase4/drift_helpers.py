@@ -52,19 +52,19 @@ def assert_open_rejects_drift_without_ledger_append(
         provider_state_dir=original.workspace / "drift-open-provider",
     )
     with _import_activation(original.product_root, original.workspace):
-        _drifted_app, drifted_artifact, _drifted_context, _saver, _project = _boot_application(
+        _drifted_app, drifted_artifact, drifted_context, _saver, _project = _boot_application(
             drifted.composition,
             host,
             original.workspace / "drift-open-engine",
         )
-        del _drifted_app, _drifted_context
+        del _drifted_app
         with pytest.raises((RevisionMismatch, ValueError)):
             _application_call(
                 _run_drifted,
                 application,
                 drifted_artifact,
                 invocation_id,
-                context,
+                drifted_context,
             )
     assert _durable_snapshot(engine_root, invocation_root) == before
 

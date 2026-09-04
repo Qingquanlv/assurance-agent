@@ -459,12 +459,8 @@ def test_preflight_uses_product_locked_profiles_and_does_not_install(
 
 def test_run_scripts_drive_real_adapter_entrypoints() -> None:
     opencode = RUNNER_PATH.parent / "run-opencode.sh"
-    cursor = RUNNER_PATH.parent / "run-cursor.sh"
     assert opencode.is_file()
-    assert cursor.is_file()
+    assert not (RUNNER_PATH.parent / "run-cursor.sh").exists()
     opencode_text = opencode.read_text(encoding="utf-8")
-    cursor_text = cursor.read_text(encoding="utf-8")
     assert "--adapter opencode" in opencode_text
-    assert "--adapter cursor" in cursor_text
     assert "run_item.py" in opencode_text
-    assert "run_item.py" in cursor_text
