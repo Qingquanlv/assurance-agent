@@ -418,6 +418,37 @@ def _family_case(family: str) -> dict[str, object]:
     return case
 
 
+def _reviewed_cases(family: str) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "added": [_family_case(family)],
+        "modified": [],
+        "removed": [],
+    }
+
+
+def _reviewed_plan(family: str) -> dict[str, object]:
+    case_id = f"TC_{family.upper()}_001"
+    return {
+        "schema_version": "1",
+        "family": family,
+        "change_id": _CHANGE_ID,
+        "case_ids": (case_id,),
+        "required_capabilities": (_CAPABILITY_LEAF,),
+        "coverage": (
+            {
+                "case_id": case_id,
+                "operation": "write",
+                "risk": "low",
+                "required_capabilities": (_CAPABILITY_LEAF,),
+            },
+        ),
+        "output_files": tuple(
+            f"qa/changes/{_CHANGE_ID}/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]
+        ),
+    }
+
+
 def required_change_files(change_id: str = _CHANGE_ID) -> tuple[str, ...]:
     change = f"qa/changes/{change_id}"
     plan_files = tuple(
@@ -640,12 +671,15 @@ def installed_contract_input(contract: object) -> BaseModel:
             "artifact_paths": (artifact,),
         }
         if contract_id.endswith("codegen-fix.v1"):
+            family = contract_id.removeprefix("assurance.generation.agent.").removesuffix(
+                ".codegen-fix.v1"
+            )
             payload.update(
                 {
                     "allowed_paths": (f"qa/changes/{_CHANGE_ID}/generated/demo.py",),
                     "approved_proposal": {"status": "approved", "id": "proposal-1"},
-                    "reviewed_plan": {"status": "reviewed"},
-                    "reviewed_cases": {"status": "reviewed"},
+                    "reviewed_plan": _reviewed_plan(family),
+                    "reviewed_cases": _reviewed_cases(family),
                     "family_constraints": {
                         "write_roots": (f"qa/changes/{_CHANGE_ID}/generated",),
                         "operations": ("write",),

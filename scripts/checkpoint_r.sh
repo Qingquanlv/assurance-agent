@@ -132,7 +132,7 @@ serve_log="$state_root/serve.log"
   HOME="$state_root/home" \
   XDG_CONFIG_HOME="$state_root/xdg-config" \
   XDG_DATA_HOME="$state_root/xdg-data" \
-    "$binary" serve --port "$sock_port" --hostname 127.0.0.1 \
+    exec "$binary" serve --port "$sock_port" --hostname 127.0.0.1 \
     >"$serve_log" 2>&1
 ) &
 serve_pid=$!
