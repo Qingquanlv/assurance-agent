@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import fields
 from pathlib import Path
@@ -194,6 +195,32 @@ def _build_owner(owner_id: str) -> tuple[object, RecordingCapabilityBuildContext
     bundle = _FACTORY_BUILDERS[owner_id](context)
     projection = _bundle_projection(bundle, context)
     return bundle, context, canonical_digest(projection)
+
+
+def test_agent_contract_occurrence_inventory_is_exact() -> None:
+    from assurance_product.agent_contracts import all_feature_agent_contracts
+
+    agent_contract_ids = set(all_feature_agent_contracts())
+    occurrences = tuple(
+        contract_id
+        for owner_id in PUBLIC_BUNDLE_FIELDS
+        for contract_id in _build_owner(owner_id)[1].bound_contract_ids
+        if contract_id in agent_contract_ids
+    )
+
+    duplicated_contract_ids = {
+        "assurance.intake.agent.case-design.v1",
+        "assurance.quality.agent.issue-analysis.v1",
+    }
+    expected = Counter(
+        {
+            contract_id: 2 if contract_id in duplicated_contract_ids else 1
+            for contract_id in agent_contract_ids
+        }
+    )
+
+    assert Counter(occurrences) == expected
+    assert expected.total() == 35
 
 
 def test_product_allowlist_pairs_match_the_six_factory_builders() -> None:

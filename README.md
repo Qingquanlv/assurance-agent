@@ -16,7 +16,6 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pyright
 uv run lint-imports
-uv run pytest -q tests/product/test_raw_agent_checkpoint.py
 bash scripts/graph_engine_smoke_test.sh
 bash scripts/assurance_capability_wheel_smoke_test.sh
 bash scripts/assurance_product_wheel_smoke_test.sh
@@ -29,8 +28,8 @@ product plus an explicit binding wheel and project configuration tree.
 Delivery is `aa run` to achieved, then `aa export`, then optional `aa archive`.
 
 Product tests live in `tests/product/`. The live OpenCode benchmark lives in
-`benchmark/assurance-product/`. Checkpoint R remains a required CI/release
-check on the Python-native Raw Agent path.
+`benchmark/assurance-product/`; it is an optional operator/research tool, not a
+merge or release gate.
 
 ## Python wheels own topology
 
@@ -39,7 +38,7 @@ writes authorized raw workspace files and returns one locally validated JSON
 result. The Kernel seals and commits the actual bytes. Product explicitly
 composes six Feature bundles; `.aa/` contains closed organization data only;
 changing nodes, edges, contracts, bindings, schemas, or runtime policy requires
-code review, tests, wheel rebuild, Checkpoint R, and authenticated deployment.
+code review, the repository gate, wheel rebuild, and authenticated deployment.
 
 The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.

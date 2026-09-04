@@ -25,6 +25,29 @@ from tests.product.cli_support import (
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
+_NON_AGENT_ENTRYPOINTS = frozenset(
+    {
+        "improvement-apply",
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-rollback",
+    }
+)
+_AGENT_ENTRYPOINTS = frozenset(
+    {
+        "archive",
+        "case",
+        "execute",
+        "full",
+        "improvement-review",
+        "intake",
+        "issue-analyze",
+        "issue-reconcile",
+        "issue-review",
+        "retro",
+    }
+)
+
 
 def _identity_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
     return (
@@ -54,6 +77,9 @@ def test_all_fourteen_public_entrypoints_are_current() -> None:
     assert not hasattr(models, "ENTRYPOINT_RUNTIME_CUTOVER")
     assert set(ENTRYPOINT_AGENT_CONTRACT_IDS) == set(PRODUCT_ENTRYPOINTS)
     assert len(PRODUCT_ENTRYPOINTS) == 14
+    assert set(PRODUCT_ENTRYPOINTS) == _NON_AGENT_ENTRYPOINTS | _AGENT_ENTRYPOINTS
+    assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] == () for name in _NON_AGENT_ENTRYPOINTS)
+    assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] for name in _AGENT_ENTRYPOINTS)
 
 
 def _existing_lifecycle_args(

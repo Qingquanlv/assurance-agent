@@ -2,13 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship one current-version, OpenCode-only Product runtime in which all 41 semantic contracts execute through the durable Attempt transaction and pass an exact-candidate protected Checkpoint R.
+**Goal:** Ship one current-version, OpenCode-only Product runtime in which all 41 semantic contracts execute through the durable Attempt transaction.
 
 **Architecture:** Python LangGraph remains the sole Workflow authority and `AssuranceAttemptKernel.execute_or_recover(...)` remains the sole Attempt transaction boundary. Product constructs current SQLite persistence, workspace, activity, raw Agent/Task executors, and one Effect state port under the live runner fence; old Runtime/data readers and Cursor are deleted rather than routed or disabled. Effect composition keeps one authenticated static `EffectRegistry` and injects a bound call context at settlement time.
 
-**Tech Stack:** Python 3.11, Pydantic v2, LangGraph 1.2.11, SQLite/aiosqlite, uv workspace, pytest, Ruff, Pyright, import-linter, official OpenCode binary for protected live tests.
+**Tech Stack:** Python 3.11, Pydantic v2, LangGraph 1.2.11, SQLite/aiosqlite, uv workspace, pytest, Ruff, Pyright, and import-linter.
 
 **Spec:** `docs/superpowers/specs/2026-09-03-attempt-runtime-production-closure-design.md`
+
+**2026-09-04 amendment:** Phase P is implemented. The former P14 protected live-provider gate was
+cancelled and removed by `docs/superpowers/specs/2026-09-04-checkpoint-r-removal-design.md`. P1–P13
+remain implementation history; no task below authorizes recreating P14.
 
 **Deferred companion spec:** `docs/superpowers/specs/2026-09-02-attempt-kernel-internal-refactor-design.md` constrains the later behavior-preserving Phase I plan; by its own decision point, it does not authorize a pre-Phase-P code decomposition here.
 
@@ -41,8 +45,7 @@ P6 ─> P8 executed-result contract ─> P9 journal-backed activity
 P7 + P8 + P9 ─> P10 real Agent/Task executors
 P6 + P7 + P10 ─> P11 lease-bound Product assembly
 P11 ─> P12 Kernel recovery/terminal release
-P12 ─> P13 lifecycle and packaging closure
-P13 ─> P14 protected Checkpoint R
+P12 ─> P13 lifecycle and packaging closure ─> ordinary repository gate
 ```
 
 ## Target File Ownership
@@ -1075,97 +1078,37 @@ git add -A
 git commit -m "refactor: close current product runtime surfaces"
 ```
 
-### Task P14: Enforce exact-candidate protected Checkpoint R
+### Task P14: Historical protected Checkpoint R implementation — removed 2026-09-04
 
-**Files:**
+> **Archival snapshot:** P14 was implemented before the project cancelled Checkpoint R. The design
+> and assets summarized below record what existed; they are not executable instructions and must not
+> be recreated.
 
-- Create: `.github/workflows/checkpoint-r.yml`
-- Create: `scripts/checkpoint_r.sh`
-- Create: `tests/product/checkpoint_r_support.py`
-- Create: `tests/product/test_checkpoint_r_live.py`
-- Modify: `pyproject.toml`
-- Rewrite: `tests/product/test_raw_agent_checkpoint.py`
-- Modify: `.github/workflows/ci.yml`
+P14 created `.github/workflows/checkpoint-r.yml`, `scripts/checkpoint_r.sh`, the Product checkpoint
+support/live suites, the deployment fixture, the `checkpoint_r_live` marker, and a candidate-bound CI
+evidence manifest. Its implemented contract was:
 
-**Interfaces:**
+1. freeze exact inventories of 33 Agent contracts, 33 bindings, 35 Agent occurrences, 41 semantic
+   contracts, and 44 Attempt occurrences;
+2. preflight a clean `GITHUB_SHA`, official OpenCode binary/version/digest, protected provider auth,
+   locked provider/model, Product secret handles, and all 33 matrix rows;
+3. execute every Agent row through `ProductRuntimePorts`, a real runner lease, installed contracts,
+   the raw executor, and the real Attempt Kernel—never through a direct adapter shortcut;
+4. record source/wheel and binding digests, OpenCode/provider/model identity, ProductLock,
+   GraphRevision, policy/resources/secrets, Attempt/source-host/promotion/Effect receipts, release
+   proof, and CI identity;
+5. reject missing, duplicate, skipped, xfailed, cancelled, waived, timed-out, cross-candidate, or
+   stale evidence;
+6. add deterministic Task, recovery, security, lifecycle, packaging, and all three wheel-smoke proofs
+   to the same immutable candidate; and
+7. keep credential-free CI separate from the protected self-hosted live-provider job.
 
-- Produces: a protected `checkpoint-r` GitHub environment job bound to the checked-out candidate SHA and a machine-readable evidence manifest stored only as a CI artifact.
-- Produces: a `checkpoint_r_live` pytest marker whose tests are deselected from credential-free CI execution; the protected job preflights every required input and then runs every row with no skip/xfail/waiver path.
-- Removes: direct-adapter live probing, `fixture-model`, `OPENCODE_MODEL` override, source-authored released-SHA constants, representative-row selection, and readiness-based `skipif`.
-
-- [ ] **Step 1: Replace the old count-only/direct-adapter tests with failing exact inventories.**
-
-```python
-def test_candidate_inventory_is_exact(candidate_inventory) -> None:
-    assert len(candidate_inventory.agent_contracts) == 33
-    assert len(candidate_inventory.agent_occurrences) == 35
-    assert len(candidate_inventory.semantic_contracts) == 41
-    assert len(candidate_inventory.attempt_occurrences) == 44
-    assert candidate_inventory.agent_contract_ids == installed_agent_contract_ids()
-    assert candidate_inventory.runtime_binding_digests == locked_runtime_binding_digests()
-
-
-@pytest.mark.checkpoint_r_live
-@pytest.mark.parametrize("row", installed_live_agent_rows(), ids=lambda row: row.contract_id)
-def test_live_agent_contract_through_product_ports(row, protected_candidate) -> None:
-    result = protected_candidate.execute_agent_attempt(row)
-    assert result.receipt.attempt_key_digest == row.attempt_key_digest
-    assert result.receipt.contract_digest == row.contract_digest
-    assert result.receipt.source_terminal_receipt_digest
-```
-
-The live row fixture must enter through `ProductRuntimePorts` under a real runner lease, resolve the installed prepare/result Schema/finalizer/OpenCode binding, and call the real Kernel. It may supply installed contract-specific input fixtures, but it may not call `OpenCodeHandler` directly, replace the result Schema, script a Kernel result, or override the locked model.
-
-- [ ] **Step 2: Run credential-free inventory tests and expose the old checkpoint helper's 34/43 undercount and placeholder bindings.**
-
-Run: `uv run pytest -q tests/product/test_raw_agent_checkpoint.py`
-
-Expected: exact occurrence counts, binding digests, and absence checks fail because the old checkpoint helper reports 34/43 instead of the graph's exact 35/44 inventory and still uses cutover-era fixture bindings.
-
-- [ ] **Step 3: Build the exact candidate and protected preflight.**
-
-`scripts/checkpoint_r.sh` must fail unless all of these are present: clean checkout at `GITHUB_SHA`, official OpenCode binary at or above the locked minimum version, expected binary digest, protected provider configuration, protected auth file, exact locked provider/model, all Product secret handles, and all 33 matrix rows. Use protected environment names `CHECKPOINT_R_OPENCODE_AUTH_JSON`, `CHECKPOINT_R_OPENCODE_PROVIDER_JSON`, `CHECKPOINT_R_OPENCODE_BINARY_SHA256`, and `CHECKPOINT_R_SERVER_SECRET`; materialize them under `$RUNNER_TEMP`, never under the repository. The deployment package built for the run supplies the provider/model and becomes part of ProductLock; no environment model override is accepted.
-
-- [ ] **Step 4: Run the protected 33-row matrix through production ports.**
-
-For every row, record candidate SHA, source/wheel digests, OpenCode version/digest, provider/model and binding digest, Agent contract/result-Schema/finalizer digests, ProductLock, GraphRevision, policy/resource/secret-handle digests, Attempt key, source host receipt, promotion receipt, Effect receipts, resource-release proof, and CI run identity. Assert one prompt, installed local result validation, phase write claims, no direct project write, and restart-safe host-receipt reuse.
-
-- [ ] **Step 5: Add deterministic Task, recovery, security, lifecycle, and packaging proofs to the same candidate job.**
-
-Run the eight Task contracts and verify durable Effect-intent capture, all six Effects against SQLite state, every P12 crash/security cut, current-only rejection suites, lifecycle reopen, and the three wheel-smoke scripts. Merge these results with the 33 Agent rows into one canonical evidence manifest; fail if any expected row is missing, duplicated, skipped, xfailed, cancelled, waived, or timed out.
-
-- [ ] **Step 6: Keep credential-free CI explicit and separate.**
-
-Register the marker and run normal CI as `uv run pytest -m "not checkpoint_r_live"`. The protected workflow uses a pinned self-hosted runner labelled `checkpoint-r`, GitHub environment `checkpoint-r`, concurrency keyed by candidate SHA, read-only repository permissions, no pull-request-secret exposure, and uploads the evidence manifest named with that SHA. Its required check name is `Checkpoint R / exact candidate`.
-
-- [ ] **Step 7: Commit the final candidate before running either release gate.**
-
-```bash
-git add .github/workflows/checkpoint-r.yml .github/workflows/ci.yml \
-  scripts/checkpoint_r.sh pyproject.toml tests/product
-git commit -m "test: enforce protected checkpoint r"
-test -z "$(git status --porcelain)"
-git rev-parse HEAD
-```
-
-After this commit, do not edit source, tests, documentation, locks, declarations, or workflow files. Any edit creates a new candidate and requires repeating this step and both gates.
-
-- [ ] **Step 8: Run the complete credential-free repository gate on the final SHA.**
-
-```bash
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run lint-imports
-uv run pytest -m "not checkpoint_r_live"
-bash scripts/graph_engine_smoke_test.sh
-bash scripts/assurance_capability_wheel_smoke_test.sh
-bash scripts/assurance_product_wheel_smoke_test.sh
-```
-
-- [ ] **Step 9: Run Checkpoint R last and accept only a green result for the same SHA.**
-
-Dispatch `.github/workflows/checkpoint-r.yml` for the exact SHA from Step 7. The job runs `AA_CHECKPOINT_R_LIVE=1 bash scripts/checkpoint_r.sh`, uploads the canonical manifest, and verifies its embedded SHA equals both `GITHUB_SHA` and `git rev-parse HEAD`. A missing protected input or any non-passing row fails the job; there is no skip or waiver branch.
+The former release rule required both the ordinary repository gate and `Checkpoint R / exact
+candidate` to pass on one unchanged commit. On 2026-09-04 the protected workflow, script, support
+harness, marker, fixture, and candidate manifest were removed. Phase P source acceptance now uses
+Ruff, format, Pyright, import-lint, full pytest, the three wheel smoke tests, and focused deterministic
+production-port/recovery suites. These checks intentionally do not certify an external
+OpenCode/provider/model combination.
 
 ## Completion Criteria
 
@@ -1177,5 +1120,6 @@ Dispatch `.github/workflows/checkpoint-r.yml` for the exact SHA from Step 7. The
 - [ ] SQLite is authoritative for checkpoints, Attempt events, resource authorization, and Effect state; restart duplicates no external or irreversible action.
 - [ ] One static authenticated `EffectRegistry` serves six stateless handlers through bound `EffectCallContext`; no store/factory/runtime-registry chain exists.
 - [ ] Current old-shape rejection, path/write/security, interrupt, lifecycle, packaging, lint, format, type, import, test, and three wheel-smoke checks pass.
-- [ ] The protected 33-row Checkpoint R and complete deterministic matrix are green for the unchanged final candidate SHA.
+- [ ] The full repository gate, three wheel smoke tests, and focused deterministic production-port,
+  recovery, security, and lifecycle suites are green.
 - [ ] Phase I Kernel internal refactoring remains unimplemented; its separate design note is reconsidered only after this plan's Phase P gate passes.

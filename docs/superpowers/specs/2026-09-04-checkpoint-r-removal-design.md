@@ -1,6 +1,6 @@
 # Checkpoint R Removal Design
 
-> **Status:** accepted design; implementation pending.
+> **Status:** implemented 2026-09-04.
 >
 > **Date:** 2026-09-04.
 >

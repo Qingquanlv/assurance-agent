@@ -8,8 +8,6 @@ import pytest
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.composition.lock import ProductLock
 
-from tests.product.checkpoint_r_support import count_exact_agent_occurrences
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRODUCT_ROOT = _REPO_ROOT / "packages" / "products" / "assurance-product" / "assurance_product"
 _CAPABILITY_ROOTS = (
@@ -52,10 +50,6 @@ def _packaged_file_names() -> tuple[str, ...]:
 @pytest.fixture
 def wheel_contents() -> tuple[str, ...]:
     return _packaged_file_names()
-
-
-def count_agent_occurrences() -> int:
-    return count_exact_agent_occurrences()
 
 
 def count_semantic_agent_contracts() -> int:
@@ -166,7 +160,6 @@ def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact: BootArtifact)
     import assurance_product.agent_contracts as agent_contracts
 
     assert len(boot_artifact.attempt_contracts) == 41
-    assert count_agent_occurrences() == 35
     assert count_semantic_agent_contracts() == 33
     assert count_raw_agent_runtime_bindings() == 33
     assert all_agent_contracts_resolve_with_raw_executor()

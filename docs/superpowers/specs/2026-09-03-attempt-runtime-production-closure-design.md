@@ -1,11 +1,15 @@
 # Attempt Runtime Production Closure Design
 
-> **Status:** active design; implementation has not started.
+> **Status:** implemented architecture; amended 2026-09-04.
 >
 > **Date:** 2026-09-03.
 >
 > **Companion:** [Attempt Kernel Internal Refactor Design Note](./2026-09-02-attempt-kernel-internal-refactor-design.md)
-> is a later, behavior-preserving cleanup. It is not part of this release gate.
+> is a later, behavior-preserving cleanup.
+>
+> **Amendment:** [Checkpoint R Removal Design](./2026-09-04-checkpoint-r-removal-design.md)
+> removes the former protected live-provider gate. The ordinary repository gate and focused
+> deterministic production-port/recovery suites are the only source-level acceptance requirements.
 
 ## 1. Decision
 
@@ -24,7 +28,7 @@ drain protocol, backfill, quarantine path, or historical-data export path.
 
 This work introduces no LangGraph node or edge. One semantic Attempt node still invokes one
 `execute_or_recover(...)` transaction. The later internal refactor may reorganize private code only
-after this design passes its exact-candidate release gate.
+after this production closure is implemented on a clean, repository-gate-green base.
 
 ## 2. Audited baseline
 
@@ -51,7 +55,6 @@ The release path is incomplete:
 | raw phase writes | prepare/runtime/finalize do not yet enforce disjoint installed staging claims end to end |
 | deterministic Tasks | Effect intents can remain in process-local executor memory after output observation |
 | Effects | static handlers capture in-memory stores; settlement and business idempotency identities are conflated |
-| release gate | the live row does not prove all 33 contracts through real Product ports for one immutable candidate |
 | obsolete surfaces | Cursor packaging and old runtime/data readers remain in source despite having no place in the target Product |
 
 ## 3. Scope
@@ -69,8 +72,7 @@ Phase P must:
 - enforce authenticated workspace, resource, secret, network, Validator, Schema, and Effect ports;
 - persist observed output and Effect intents before commit processing can continue;
 - preserve seal, ordered Validators, durable prepare, atomic promote/recover, Effect settlement,
-  terminal receipt, and durable resource release;
-- replace the placeholder live probe with a protected candidate-bound release gate.
+  terminal receipt, and durable resource release.
 
 ### 3.2 Direct deletion
 
@@ -117,7 +119,7 @@ old-version compatibility and remain.
 | journal and resource protocols | `graph_engine.persistence` |
 | staging, seal, prepare, promote/recover | `graph_engine.attempts.workspace` |
 | Effect state machine | `AttemptEffectSettler`, installed handler, Product Effect state port |
-| release admission | protected external Checkpoint R job |
+| source acceptance | ordinary repository gate plus focused deterministic runtime/recovery suites |
 
 The following are non-negotiable:
 
@@ -524,55 +526,6 @@ proven-running activity are pending. Unprovable prompt admission, promotion publ
 publication is indeterminate. A permanent Effect failure after promotion is
 `CommittedEffectFailure`, not a synthetic rollback.
 
-## 9. Checkpoint R
-
-Checkpoint R is a protected external CI/release result for one immutable candidate. It is not a
-runtime service, source constant, status flag, migration certificate, or deployment registry.
-Product source neither manufactures nor consumes a “released SHA.”
-
-### 9.1 Candidate identity
-
-One result binds:
-
-- CI candidate SHA and exact source/wheel digests;
-- official OpenCode binary version/digest and adapter source digest;
-- exact provider/model, binding, limits, policies, resources, and secret handles;
-- all 33 Agent contract IDs/digests/result-schema digests and runtime binding digests;
-- the exact 35-Agent-occurrence multiset;
-- all 41 semantic contracts and 44 Attempt occurrences;
-- ProductLock, GraphRevision, workspace/security/network policy digests;
-- protected workflow and CI run identity.
-
-Any source, documentation, wheel, binding, ProductLock, GraphRevision, OpenCode, provider, model,
-policy, or protected-workflow change creates a new candidate and invalidates the result.
-
-### 9.2 Required proof
-
-Checkpoint R includes:
-
-1. exact inventory and digest equality, not count-only checks;
-2. all 33 Agent contracts through real Product ports, installed prepare, locked OpenCode binding,
-   local result validation, installed finalizer, Kernel commit, and receipt;
-3. all eight deterministic Tasks and durable capture of their Effect intents;
-4. real SQLite journal/authorization/Effect state, workspace, host/worker, terminal receipts,
-   Validators, prepare/promote, and all six Effects;
-5. every recovery and security cut in section 8, one-prompt proof, fencing, write/link/path/mode/size
-   rejection, secret canaries, network policy, interrupt anchoring, and lifecycle reopening;
-6. create/admit/read/observe/reconcile/cancel OpenCode protocol paths using the same Product route;
-7. strict rejection of representative old control records and old Capability artifacts;
-8. packaging proof that Cursor, legacy readers, placeholders, pickle, factory registries, and
-   in-memory production Effect stores are absent;
-9. the complete repository lint, type, import, test, and wheel-smoke gate.
-
-The 33 live rows use the official OpenCode binary and exact locked provider/model. A direct adapter
-call, ad hoc result schema, representative subset, environment model override, scripted Kernel
-result, or fixture model does not satisfy the matrix.
-
-The protected job fails preflight when binary, credentials, provider configuration, model, or a
-matrix row is absent. Skipped, xfailed, waived, cancelled, timed-out, or partially selected rows
-make the gate red. Credential-free CI may explicitly omit the external matrix, but is not called
-Checkpoint R.
-
 ## 10. Implementation sequence
 
 1. Add failing architecture and Product tests for the direct deletion/current-only boundary and
@@ -591,8 +544,7 @@ Checkpoint R.
 7. Replace captured Effect stores with the single static registration plus call-context seam; add
    Product SQLite Effect state and migrate all six handlers to settlement/business-key semantics.
 8. Pass deterministic transaction, crash, security, lifecycle, packaging, and full repository
-   tests. Freeze the complete source/documentation candidate.
-9. Run protected Checkpoint R last. Any subsequent repository edit requires a fresh run.
+   tests plus all three wheel smoke tests on the clean implementation candidate.
 
 Phase I is deliberately absent from this sequence. It receives a separate implementation plan only
 after Phase P is accepted and after reviewers can inspect the resulting Kernel shape.
@@ -645,7 +597,7 @@ Minimum focused proofs are:
 | current-only artifacts | old control and Capability shapes reject before mutation; no compatibility decoder or alias remains |
 | lifecycle | start/run/resume/status/lock/export/archive after restart with current pinned identities |
 | packaging | no Cursor wheel/provider/declaration/fixture, legacy reader, pickle path, placeholder, or factory registry |
-| release | exact-candidate protected 33-row matrix with zero skipped or waived row |
+| repository gate | Ruff, format, Pyright, import-lint, full pytest, and all three wheel smokes |
 
 Phase P is accepted only when:
 
@@ -665,9 +617,9 @@ Phase P is accepted only when:
   runtime bindings, CLI choices, fixtures, benchmarks, smoke tests, and release documentation;
 - executable boot fails before graph mutation when a required current production port is missing,
   while offline compile and non-Agent roots do not require live OpenCode;
-- full credential-free CI passes and the protected exact-candidate Checkpoint R passes every live
-  row with no skip, waiver, partial selection, or fixture shortcut.
+- focused production-port, journal, crash/replay, security, and lifecycle suites pass;
+- the full repository gate and all three wheel smoke tests pass on a clean candidate.
 
-Only that exact candidate may be described as production-ready. This acceptance makes no claim
-about data or integrations from an older release and does not imply completion of the separate
-Kernel internal refactor.
+This acceptance makes no claim that a real OpenCode release, provider, or model currently satisfies
+the repository's protocol assumptions. It makes no claim about data or integrations from an older
+release and does not imply completion of the separate Kernel internal refactor.

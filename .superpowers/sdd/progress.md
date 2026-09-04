@@ -35,3 +35,15 @@ Task P11: complete (commit after 0aa0ea57, focused checks green)
 - ProductRuntimePorts compiles the 14-root artifact only after bind(lease)
 - Status stays read-only and does not acquire a fence
 - Remaining: host-receipt persistence of Agent phase deltas (P10 leftover)
+
+# SDD Progress — Attempt Kernel Internal Refactor
+
+**Plan:** docs/superpowers/plans/2026-09-04-attempt-kernel-internal-refactor.md
+**Branch:** codex/attempt-kernel-internal-refactor
+**Worktree:** /Users/lvqingquan/agent/assurance-agent/.worktrees/attempt-kernel-internal-refactor
+
+## Execution Gate
+- Dirty test tranche committed separately: `afd1e604` then pyright follow-up `9cc780a6`
+- Deleted `tests/product/test_cli_sqlite_system_interrupt.py`; replacement is lifecycle reopen plus premature wakeup resume fail-closed in `test_non_agent_root_survives_reopen_status_lock_resume_and_publication`
+- Pre-removal credential-free baseline on `9cc780a694b5f53a8191ee42324bd90695719c6b`: ruff / format / pyright / lint-imports green; full deterministic suite = 3862 passed, 23 skipped, 631.07s; three smoke scripts OK
+- 2026-09-04 decision: the former protected live-provider gate and queued run https://github.com/Qingquanlv/assurance-agent/actions/runs/33875311180 no longer block Phase I. I0 starts only after the gate-removal tranche is committed and its focused/full repository checks plus three smoke scripts are green.

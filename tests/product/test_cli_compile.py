@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import importlib.util
 import inspect
 import json
@@ -65,7 +64,6 @@ def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
     from assurance_product.cli import app
     from assurance_product.runtime_bindings import raw_agent_runtime_binding_rows
     from tests.product.test_python_native_cutover import (
-        count_agent_occurrences,
         count_raw_agent_runtime_bindings,
         count_semantic_agent_contracts,
     )
@@ -103,7 +101,6 @@ def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
     assert len(raw_agent_runtime_binding_rows(opencode_composition)) == 33
     assert count_semantic_agent_contracts() == 33
     assert count_raw_agent_runtime_bindings() == 33
-    assert count_agent_occurrences() == 35
 
     tree = copy_config_tree(tmp_path / "org-config")
     policy = tree.path / ".aa" / "policy.yaml"
@@ -195,29 +192,6 @@ def test_new_invocations_are_langgraph_without_a_selection_branch() -> None:
     assert "ENTRYPOINT_RUNTIME_CUTOVER" not in source
     assert "InvocationIdentityRecord" in source
     assert set(PRODUCT_ENTRYPOINTS)
-
-
-def test_removing_selectors_cannot_disable_bypass_downgrade_or_relabel_checkpoint_r() -> None:
-    repo = Path(__file__).resolve().parents[2]
-    checkpoint = (repo / "tests" / "product" / "test_raw_agent_checkpoint.py").read_text(encoding="utf-8")
-    ci = (repo / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "test_candidate_inventory_is_exact" in checkpoint
-    assert "test_checkpoint_r_records_candidate_lock_and_revision" in checkpoint
-    defined = {node.name for node in ast.walk(ast.parse(checkpoint)) if isinstance(node, ast.FunctionDef)}
-    assert "test_live_opencode_cutover_binding_records_checkpoint_r" not in defined
-    assert "test_checkpoint_r_inventory_is_33_33_34_41_43" not in defined
-    assert "Checkpoint R" in checkpoint or "checkpoint-r" in checkpoint
-    assert "test_raw_agent_checkpoint.py" in ci
-    assert "not checkpoint_r_live" in ci
-    assert "scripts/assurance_product_wheel_smoke_test.sh" in ci
-    assert "scripts/graph_engine_smoke_test.sh" in ci
-    assert "scripts/assurance_capability_wheel_smoke_test.sh" in ci
-    assert "legacy-v2" not in checkpoint
-    workflow = (repo / ".github" / "workflows" / "checkpoint-r.yml").read_text(encoding="utf-8")
-    assert "Checkpoint R" in workflow
-    assert "exact candidate" in workflow
-    assert "downgrade" not in ci.lower()
-    assert "bypass checkpoint" not in ci.lower()
 
 
 def test_application_uses_invocation_identity_for_lifecycle() -> None:

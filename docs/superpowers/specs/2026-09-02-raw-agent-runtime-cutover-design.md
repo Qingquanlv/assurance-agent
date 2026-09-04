@@ -1,6 +1,6 @@
 # Permanent Raw Agent Runtime Cutover
 
-**Status:** Accepted design amendment
+**Status:** Accepted design amendment; amended 2026-09-04
 
 **Date:** 2026-09-02
 
@@ -8,7 +8,11 @@
 
 **Supersedes:** [Structured Artifact Pipeline](./2026-09-01-structured-artifact-pipeline-design.md)
 
-**Scope:** OpenCode Agent-result transport, semantic Agent execution, `AssuranceAttemptKernel`, Product cutover, legacy Workflow deletion, recovery, release certification, and permanent CI
+**Scope:** OpenCode Agent-result transport, semantic Agent execution, `AssuranceAttemptKernel`, Product cutover, legacy Workflow deletion, recovery, and ordinary repository CI
+
+**2026-09-04 amendment:** [Checkpoint R Removal Design](./2026-09-04-checkpoint-r-removal-design.md)
+removes the former protected live-provider certification and every dependency on it. This document
+remains authoritative for Raw Agent runtime semantics, not external-provider release proof.
 
 ## 1. Executive Summary
 
@@ -38,7 +42,8 @@ The Agent-result JSON Schema is generated from installed contract code and appen
 
 This design does not add a LangGraph node or edge. LangGraph remains the sole Workflow-control authority. `AssuranceAttemptKernel.execute_or_recover(...)` remains the sole transaction entrypoint, and `AttemptNodeFactory.attempt(...)` remains the sole effectful graph-node seam.
 
-The existing four Product T5a roots remain accepted. Before the ten Agent-dependent roots may cut over, the implementation must close a new **Checkpoint R: Raw Agent Production Gate**. Checkpoint R replaces Checkpoint S0 and Checkpoint S in the Python-native migration dependency graph.
+The existing four Product T5a roots remain accepted. The ten Agent-dependent roots may cut over
+after production runtime closure and their focused deterministic and ordinary repository tests pass.
 
 ## 2. Normative Decision and Supersession
 
@@ -58,7 +63,10 @@ The following proposed features are permanently outside the target architecture:
 
 The cancelled Structured design and implementation plans remain in the repository as historical decision records. Each receives an explicit `CANCELLED / SUPERSEDED` banner and is removed from every active dependency graph, completion gate, CI claim, and release requirement.
 
-The completed OpenCode Structured eligibility probe is historical research evidence only. It cannot block Raw Agent implementation, satisfy Checkpoint R, advertise a runtime capability, or remain a required CI check. Product code dedicated only to the cancelled capability is removed by the implementation plan after its research record is preserved.
+The completed OpenCode Structured eligibility probe is historical research evidence only. It cannot
+block Raw Agent implementation, advertise a runtime capability, or remain a required CI check.
+Product code dedicated only to the cancelled capability is removed after its research record is
+preserved.
 
 ## 3. Relationship to the Existing Python-native Design
 
@@ -78,7 +86,8 @@ The following accepted behavior is unchanged:
   Workflow/execution-contract replacements remain available only to legacy Invocations until Product
   T8 removes that replacement surface with the Workflow compiler.
 
-This amendment replaces only the Agent production path and its cutover gate. It does not reopen completed Foundation Tasks 1–10, Semantic Attempt Tasks 1–10, Feature Tasks 1–9, Product Tasks 1–4, or Product T5a.
+This amendment replaces only the Agent production path. It does not reopen completed Foundation
+Tasks 1–10, Semantic Attempt Tasks 1–10, Feature Tasks 1–9, Product Tasks 1–4, or Product T5a.
 
 ## 4. Current Baseline and Required Closure
 
@@ -111,7 +120,8 @@ That code is not yet a production LangGraph Agent path. The current baseline als
 - runtime binding still derives important facts through 99 legacy phase aliases and Workflow composition;
 - the permissive JSON parser may search mixed prose or completed tool inputs for a candidate object.
 
-Checkpoint R exists to close these production gaps. It is not a waiver for them.
+Production code and deterministic integration tests must close these gaps. Ordinary CI is not
+represented as proof of a live external provider/model.
 
 ## 5. Goals
 
@@ -123,9 +133,9 @@ Checkpoint R exists to close these production gaps. It is not a waiver for them.
 6. Remove dependency on the 99 legacy phase aliases before those aliases and Workflow YAML are deleted.
 7. Replace every production placeholder port with durable, fenced implementations.
 8. Preserve the existing Kernel commit, effect, and receipt guarantees.
-9. Certify the exact raw OpenCode binding and all 33 contracts before Agent-root cutover.
+9. Verify the exact raw binding inventory and all 33 local result contracts before Agent-root cutover.
 10. Continue through T5b, T5c, T5d, drain, and physical deletion of the custom Workflow Runtime.
-11. Keep the permanent Raw Agent gate in CI after migration switches disappear.
+11. Keep Raw Agent parser, binding, runtime, recovery, and lifecycle tests in ordinary CI.
 
 ## 6. Non-goals
 
@@ -472,52 +482,16 @@ File suffixes do not create typed ownership. JSON/YAML parsing and file-level Py
 
 Human interrupts remain pure graph nodes. System interrupts may originate from the Attempt node and rely on stable AttemptKey replay and Kernel idempotency.
 
-## 16. Checkpoint R: Raw Agent Production Gate
+## 16. Repository Qualification
 
-Checkpoint R is the only Agent-runtime production gate for this architecture. It is permanent and non-waivable.
+Raw Agent source changes use the ordinary repository gate plus focused deterministic tests for the
+affected parser, binding, Product port, Attempt transaction, crash/replay, security, and lifecycle
+paths. The exact 33 semantic contracts, 33 runtime bindings, and 35 graph occurrences remain local
+inventory invariants.
 
-### 16.1 Release identity
-
-The gate binds one immutable candidate revision to:
-
-- exact OpenCode official release/binary identity;
-- adapter source and version;
-- provider/model matrix;
-- 33 semantic contracts and their schema digests;
-- 33 runtime binding digests;
-- 34 live StateGraph Agent occurrences;
-- ProductLock and GraphRevision;
-- workspace/security policy digests;
-- candidate SHA and protected workflow identity.
-
-The raw OpenCode probe sends no structured `format` field. It proves create, prompt admission, message list/single read, terminal observation, exact assistant JSON, restart adoption, repeated read, error reduction, and cancellation/reconcile semantics for the permanent raw protocol.
-
-### 16.2 Contract matrix
-
-All 33 contracts must pass the exact selected adapter/provider/model/result-schema binding within declared prompt, result, file, and time bounds. A passing source-level feature or a representative subset cannot certify a missing row.
-
-### 16.3 Transaction closure
-
-The gate proves:
-
-- real Product runtime ports, not scripted Kernel resolutions;
-- one prompt per AttemptKey across crashes and restarts;
-- prepare/runtime/finalize projection correctness;
-- strict result parsing and local schema validation;
-- exact raw write authorization and mutation-set equality;
-- seal, ordered validator, prepare, promotion, all-six-effect, and receipt behavior;
-- system interrupt issuance/completion anchoring;
-- revision-pinned restart, status, export, and archive;
-- secret/canary, symlink/hardlink, traversal, size, and network-target rejection;
-- absence of structured-output capability, typed materialization, and materialization receipts.
-
-### 16.4 Invalidation
-
-Checkpoint R evidence is invalidated by a relevant change to the adapter, OpenCode release, provider/model selection, Agent contract/schema, parser, executor, prepare/finalize projection, Kernel, runtime binding, workspace/security port, Feature factory, Product composition, or protected release workflow.
-
-The gate reruns after each T5b, T5c, or T5d candidate is built but before that candidate's selector
-is released to create future starts. It also reruns after any T7–T10 change that touches these
-authorities.
+The repository does not maintain a protected live-provider matrix, candidate evidence manifest,
+OpenCode binary certification, or external model release claim. Manual live benchmarks may inform
+operators but do not block merge, cutover, or release.
 
 ## 17. Product Cutover and Deletion Sequence
 
@@ -527,22 +501,15 @@ The authoritative continuation order becomes:
 completed Foundation / Attempt / Feature / Product T1–T4
 → completed T5a: four non-Agent roots on langgraph-v1
 → Raw Agent Runtime Closure
-→ re-certify T5a on real production ports
-→ initial Checkpoint R, including the T5a real-port evidence
-→ build T5b candidate: eight Agent-dependent thin roots
-→ Checkpoint R for that exact candidate
-→ release T5b selector for future starts
-→ build T5c candidate: execute
-→ Checkpoint R for that exact candidate
-→ release T5c selector for future starts
-→ build T5d candidate: full
-→ Checkpoint R for that exact candidate
-→ release T5d selector for future starts
+→ verify real production ports with focused deterministic tests and ordinary CI
+→ implement and verify T5b: eight Agent-dependent thin roots
+→ implement and verify T5c: execute
+→ implement and verify T5d: full
 → T6: disable legacy starts and prove zero-active drain
 → T7: migrate every retained production primitive and consumer
 → T8: switch compile to ProductLock v3-only and delete Workflow YAML/module/99 aliases
-→ T9: delete Workflow compiler and custom Runtime after post-deletion Checkpoint R
-→ T10: remove migration selectors; retain permanent revision registry and Checkpoint R
+→ T9: delete Workflow compiler and custom Runtime after focused deletion tests and ordinary CI
+→ T10: remove migration selectors; retain the permanent revision registry
 ```
 
 Checkpoint S0 and Checkpoint S are removed rather than moved. A failed cancelled Structured probe has no effect on Product Boot or Raw Agent cutover.
@@ -561,7 +528,7 @@ Product T8 and T9 delete legacy topology and runtime authority but retain:
 - durable Attempt/activity/workspace/effect ports in permanent modules;
 - the six Feature factories, Product composer, and 14 root contracts;
 - ProductLock v3, GraphRevision, GraphBuildManifest, and deployment-artifact retention;
-- Checkpoint R tests, protected release workflow, and CI check;
+- focused deterministic Raw Agent and Product lifecycle tests in ordinary CI;
 - read-only historical v2 evidence support required by retention policy.
 
 They delete:
@@ -606,13 +573,13 @@ They delete:
 | Product migration | 14 public roots, live legacy/LangGraph shadow parity before drain, lifecycle and cutover evidence |
 | Product permanent | Raw Agent E2E, lifecycle, status, export, archive, revision retention; no live legacy import |
 | Deletion | No Workflow YAML, phase alias, compiler, or custom Runtime authority; Raw Agent E2E still passes |
-| Release | Exact candidate SHA, ProductLock, GraphRevision, OpenCode identity, binding and evidence closure |
+| Repository gate | Ruff, format, Pyright, import-lint, full pytest, and all three wheel smokes |
 
 Production validator inventory remains 25 registered and zero bound. A test-only authenticated clone continues to prove accept/promote and reject/no-promote parity without changing shipped contracts.
 
 Live cross-runtime shadow is migration evidence and is removed with the legacy Runtime. Permanent
-Checkpoint R verifies the authenticated retained parity record plus current Raw Agent E2E; it never
-imports or executes deleted legacy authority.
+ordinary tests retain current Raw Agent protocol, binding, recovery, and lifecycle coverage without
+importing or executing deleted legacy authority.
 
 ## 21. Required Plan and Documentation Changes
 
@@ -626,9 +593,7 @@ Active documents to rewrite:
 4. `2026-08-31-feature-stategraph-migration.md`;
 5. `2026-08-31-python-native-langgraph-assurance-design.md`.
 
-New implementation planning artifact:
-
-- Raw Agent Runtime Closure child plan with Checkpoint R and permanent CI tasks.
+The Raw Agent Runtime Closure child plan retains only implementation and deterministic CI tasks.
 
 Documents to retain with `CANCELLED / SUPERSEDED` status and no active checkboxes:
 
@@ -659,10 +624,12 @@ Research about OpenCode Structured Output remains historical and must state that
 - [ ] Every production executor and runtime port is real, durable, authenticated, and fenced.
 - [ ] Recovery adopts the same OpenCode root session and never knowingly emits a second prompt for the same Attempt.
 - [ ] Finalizers validate actual raw files; seal and promotion authenticate the resulting real bytes.
-- [ ] Checkpoint R passes for the exact candidate before each Agent cutover selector is released.
+- [ ] Focused Raw Agent/Product suites and the ordinary repository gate pass before each remaining
+  Agent cutover tranche is accepted.
 - [ ] All 14 roots route future starts to LangGraph before legacy drain begins.
 - [ ] Workflow YAML, phase aliases, compiler, planner, scheduler, and custom Runtime are physically absent at completion.
-- [ ] Checkpoint R remains a permanent required CI/release gate after migration switches disappear.
+- [ ] Raw Agent parser, binding, recovery, and lifecycle coverage remains in ordinary CI after
+  migration switches disappear.
 - [ ] Existing Invocations reopen only through their recorded revision and retained deployment artifact.
 - [ ] No target documentation promises Structured Output, typed slots, Kernel materialization, or materialization receipts.
 
@@ -680,9 +647,11 @@ Capability finalizers continue to read, parse, and validate JSON/YAML files. Thi
 
 The design compensates with closed resource claims, sandboxing, exact mutation scans, link/path checks, finalizer validation, sealing, validators, and promotion from durable sealed bytes.
 
-### Checkpoint R remains dependent on an external OpenCode release
+### External OpenCode compatibility is not repository-certified
 
-Structured-output support is no longer required, but the exact raw create/admit/read/observe/reconcile protocol must still pass. If no official release passes Checkpoint R, production Agent-root cutover remains blocked; the implementation cannot claim success by using mocks or falsely advertising a capability.
+Structured-output support is not required. Deterministic tests preserve the project's raw
+create/admit/read/observe/reconcile assumptions, but they cannot prove a current OpenCode release or
+provider/model honors them. That compatibility check is an operator/deployment responsibility.
 
 ### Historical plans increase documentation volume
 
@@ -697,7 +666,6 @@ six authenticated Python Feature factories
 + fourteen Product LangGraph roots
 + thirty-three recoverable Raw Agent contracts
 + one reliable AssuranceAttemptKernel transaction
-+ one permanent Checkpoint R
 + revision-pinned restart and deployment retention
 + zero Workflow YAML topology
 + zero phase aliases

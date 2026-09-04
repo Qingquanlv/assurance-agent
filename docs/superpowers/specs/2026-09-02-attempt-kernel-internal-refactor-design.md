@@ -5,7 +5,11 @@
 > **Date:** 2026-09-03. The requested historical filename is retained.
 >
 > **Starts after:** [Attempt Runtime Production Closure](./2026-09-03-attempt-runtime-production-closure-design.md)
-> has passed its release gate for the exact implementation candidate.
+> is implemented and the ordinary repository gate is green on a clean base.
+>
+> **Amended 2026-09-04:** candidate-bound live certification was removed by
+> [Checkpoint R Removal Design](./2026-09-04-checkpoint-r-removal-design.md). It is not a Phase I
+> dependency and must not be recreated under another name.
 
 ## Decision
 
@@ -69,8 +73,8 @@ The refactor preserves, byte-for-byte where serialized, all Phase P behavior:
 10. every crash cut resumes the same Attempt without duplicate prompt, promotion, Effect, or
     terminal result.
 
-The event schema, persisted record schema, resolution types, transaction trace, ProductLock,
-GraphRevision, and release-gate semantics are not redesigned in this phase.
+The event schema, persisted record schema, resolution types, transaction trace, ProductLock, and
+GraphRevision are not redesigned in this phase.
 
 ## Extraction rules
 
@@ -106,7 +110,8 @@ pre-approve four classes, the names from an earlier diagram, or a proposed file 
 - no serialized schema or public protocol changes merely to enable extraction;
 - responsibility ownership is evident in code and covered by focused tests;
 - no new LangGraph node, scheduler, factory registry, or service-locator abstraction appears;
-- the full repository gate and the protected production gate pass for the refactor candidate;
+- focused characterization, journal-byte, crash/replay, the full repository gate, and all wheel
+  smoke tests pass for the clean refactor candidate;
 - review judges the resulting code shape, not compliance with an arbitrary class or line count.
 
 Phase I is complete only when the refactor is behavior-preserving. Production closure does not wait

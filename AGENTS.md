@@ -20,7 +20,7 @@ Non-obvious notes:
 - Run everything through `uv run ...` (e.g. `uv run aa --help`, `uv run pytest -v`,
   `uv run ruff check .`, `uv run pyright`, `uv run lint-imports`).
 - The full CI gate is: `ruff check .`, `ruff format --check .`, `pyright`, `lint-imports`,
-  `pytest`, focused Raw Agent checks, and the three smoke scripts
+  full `pytest`, and the three smoke scripts
   (`scripts/graph_engine_smoke_test.sh`,
   `scripts/assurance_capability_wheel_smoke_test.sh`,
   `scripts/assurance_product_wheel_smoke_test.sh`).
@@ -39,7 +39,7 @@ writes authorized raw workspace files and returns one locally validated JSON
 result. The Kernel seals and commits the actual bytes. Product explicitly
 composes six Feature bundles; `.aa/` contains closed organization data only;
 changing nodes, edges, contracts, bindings, schemas, or runtime policy requires
-code review, tests, wheel rebuild, Checkpoint R, and authenticated deployment.
+code review, the repository gate, wheel rebuild, and authenticated deployment.
 
 The engine loads only installed wheel products and does not scan the SUT for
 graphs, handlers, schemas, validators, or runtime bindings. Organization

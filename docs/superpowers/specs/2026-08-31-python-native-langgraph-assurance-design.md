@@ -5,7 +5,9 @@
 > Where the historical baseline below mentions provider-schema negotiation, Structured Output,
 > `CompositeAttemptExecutor`, or Checkpoint S0/S, the Raw amendment controls. It uses prompt-carried
 > result Schema, strict local validation, authorized raw files, `ResolvedRawAgentExecutor`, and
-> Checkpoint R without adding LangGraph nodes or a Structured Artifact Pipeline.
+> no Structured Artifact Pipeline. The former protected live-provider gate was removed by
+> [Checkpoint R Removal Design](./2026-09-04-checkpoint-r-removal-design.md); ordinary repository CI
+> is the only source-level gate.
 
 - **Status:** Accepted
 - **Date:** 2026-08-31

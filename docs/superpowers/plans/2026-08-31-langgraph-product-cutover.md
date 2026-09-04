@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Compose the six Feature bundles into 14 revision-pinned Product `StateGraph` roots, close the permanent Raw Agent production path, move the `aa` lifecycle to `AssuranceApplication`, prove semantic parity through isolated shadow Invocations, cut over every entrypoint behind Checkpoint R, drain legacy revisions, and physically delete Workflow YAML plus the custom Graph Runtime.
+**Goal:** Compose the six Feature bundles into 14 revision-pinned Product `StateGraph` roots, close the permanent Raw Agent production path, move the `aa` lifecycle to `AssuranceApplication`, prove semantic parity through isolated shadow Invocations, cut over every entrypoint, drain legacy revisions, and physically delete Workflow YAML plus the custom Graph Runtime.
 
-**Architecture:** `assurance-product` owns the fixed Feature factory allowlist, exact 14 public entrypoint contracts, Product-level state/adapters/routes, 33 authenticated semantic Raw Agent runtime bindings, local SQLite backend, and CLI assembly. Each Raw Agent Attempt uses one recoverable OpenCode root session, one exact assistant JSON result validated locally against the installed contract, Feature-owned finalization over authorized raw workspace files, and the existing Kernel transaction from seal through receipt. Each Invocation is immutably marked `legacy-v2` or `langgraph-v1` and pinned to that runtime's authenticated build artifact: `InvocationLock` v2 for legacy or GraphRevision/ProductLock v3 for LangGraph. Temporary code-owned entrypoint switches control only new Invocation creation. After Checkpoint R, parity/cutover, and a zero-active-legacy drain proof, deletion removes YAML assembly/compiler/projection/planner/token/scheduler authority; LangGraph remains the only Workflow engine and the focused Raw Agent tests remain in normal CI.
+**Architecture:** `assurance-product` owns the fixed Feature factory allowlist, exact 14 public entrypoint contracts, Product-level state/adapters/routes, 33 authenticated semantic Raw Agent runtime bindings, local SQLite backend, and CLI assembly. Each Raw Agent Attempt uses one recoverable OpenCode root session, one exact assistant JSON result validated locally against the installed contract, Feature-owned finalization over authorized raw workspace files, and the existing Kernel transaction from seal through receipt. Each Invocation is immutably marked `legacy-v2` or `langgraph-v1` and pinned to that runtime's authenticated build artifact: `InvocationLock` v2 for legacy or GraphRevision/ProductLock v3 for LangGraph. Temporary code-owned entrypoint switches control only new Invocation creation. After parity/cutover and a zero-active-legacy drain proof, deletion removes YAML assembly/compiler/projection/planner/token/scheduler authority; LangGraph remains the only Workflow engine and focused Raw Agent tests remain in ordinary CI.
 
 **Tech Stack:** Python 3.11, LangGraph `1.2.11`, Async SQLite checkpointer `3.1.1`, Pydantic v2, Click, pytest, existing Product lock/source authentication/export/archive contracts and wheel smoke script.
 
-**Spec:** `docs/superpowers/specs/2026-08-31-python-native-langgraph-assurance-design.md`, sections 8, 16–27, Product/revision/persistence tests, acceptance criteria, and explicit deletion target; amended by the accepted `docs/superpowers/specs/2026-09-02-raw-agent-runtime-cutover-design.md`, which is authoritative for Agent transport, runtime closure, Checkpoint R, and cutover order.
+**Spec:** `docs/superpowers/specs/2026-08-31-python-native-langgraph-assurance-design.md`, sections 8, 16–27, Product/revision/persistence tests, acceptance criteria, and explicit deletion target; amended by the accepted `docs/superpowers/specs/2026-09-02-raw-agent-runtime-cutover-design.md`, which is authoritative for Agent transport, runtime closure, and cutover order. `docs/superpowers/specs/2026-09-04-checkpoint-r-removal-design.md` removes the former protected live-provider gate.
 
 ---
 
@@ -16,7 +16,12 @@
 
 - Foundation, Attempt Kernel and all six Feature graph plans are complete and reviewed. Product Tasks 1–4 and T5a are also complete at continuation baseline `4a9cd197`. Execute remaining work in a clean continuation worktree; preserve the original dirty worktree and do not replay completed tasks.
 - Every Product root state inherits `CheckpointBridgeState`; public input/output and semantic parity projections exclude `assurance_checkpoint_markers`, while restart tests retain checkpoint-integrity coverage for it.
-- Remaining work executes in this order: T5b candidate → Checkpoint R → release; T5c candidate → Checkpoint R → release; T5d candidate → Checkpoint R → release; then Tasks 6–10. Raw Agent Runtime Closure, T5a verification, and the initial Checkpoint R are already closed. Task 8 deletes Assurance YAML and all 99 phase aliases while retaining the 33 semantic Raw Agent contracts, bindings, and executor; Task 9 deletes the compiler/Runtime after the normal post-deletion gate; Task 10 removes migration switches while retaining the focused Raw Agent checks in CI.
+- Remaining work executes in this order: T5b → T5c → T5d → Tasks 6–10. Each tranche passes its
+  focused deterministic tests and ordinary repository gate before the next begins. Raw Agent Runtime
+  Closure and T5a verification are complete. Task 8 deletes Assurance YAML and all 99 phase aliases
+  while retaining the 33 semantic Raw Agent contracts, bindings, and executor; Task 9 deletes the
+  compiler/Runtime after focused deletion tests; Task 10 removes migration switches while retaining
+  focused Raw Agent tests in CI.
 - Keep public entrypoint names and public input/output/Status schemas stable. Internal graph/node/token IDs are not parity contracts.
 - Product imports exactly six authenticated factory symbols and is the only cross-Feature graph composer. Boot remains generic: it consumes Product-provided owner-keyed factories/bundles and does not hard-code Assurance keyword arguments.
 - Feature subgraphs are compiled with `checkpointer=None`. Product roots alone receive the anchored saver. Schema-different child invocation goes through a pure adapter; no side effect runs before an interrupting child call.
@@ -26,8 +31,10 @@
 - Raw Agent local result validation is unconditional, not a negotiable runtime capability. Runtime appends the installed contract's immutable JSON Schema and digest to prompt text, sends no OpenCode response-format field, accepts only one exact terminal assistant JSON object, validates it locally, and then invokes the Feature finalizer over the authorized raw workspace. Skills, project files, environment variables, and the SUT cannot replace result schemas, handlers, validators, paths, or runtime bindings.
 - SQLite is local single-host only. A multi-worker deployment requires a separately qualified transactional anchored backend, not SQLite mounted on shared storage.
 - The nine-site `join:any` migration has zero semantic waivers. A Feature current-trigger regression blocks every not-yet-cut reachable root plus T5b–T10, drain, and deletion; it does not roll back the four accepted T5a roots or switch any existing Invocation away from its recorded runtime/revision. Product's typed assessment-trigger optimization is accepted only after predecessor exclusion and no-late-reactivation are proven; falling back to the same typed inbox/cursor is an equivalent implementation, not an exception. Never embed a point-level legacy join, discard a late arrival, or substitute predecessor-map/last-write-wins state.
-- Legacy drain starts only after Checkpoint R is green for the exact released T5d candidate, all 14 selectors are `langgraph-v1` for future starts, all 14 cutover records pass, no active legacy Invocation can resume, original revision artifacts have satisfied retention policy, and replacement crash/interrupt/export/archive tests are green. Legacy drain and old LangGraph revision retention are independent gates.
-- Checkpoint R is a normal candidate-bound CI result. It records the candidate SHA, ProductLock, GraphRevision, adapter/provider/model, 33 contracts, 33 bindings, and 34 Agent occurrences; then proves strict result parsing, raw write authority, one prompt per AttemptKey, and the existing Kernel recovery path. It creates no separate certification or deployment authority.
+- Legacy drain starts only after all 14 selectors are `langgraph-v1` for future starts, all 14 cutover
+  records pass, no active legacy Invocation can resume, original revision artifacts have satisfied
+  retention policy, and replacement crash/interrupt/export/archive tests plus ordinary CI are green.
+  Legacy drain and old LangGraph revision retention are independent gates.
 
 ## Exact Product contract table
 
@@ -410,21 +417,24 @@ git commit -m "test: prove semantic LangGraph parity"
 
 The accepted Raw Agent amendment adds one child plan before the unfinished Product Task 5 tranches. That child plan owns the implementation and focused integration tests; this Product plan consumes, and must not duplicate or weaken, these outputs:
 
-- exactly 33 installed `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 matching `RawAgentRuntimeBindingProjectionV1` records, covering 34 live Agent occurrences without phase-alias lookup;
+- exactly 33 installed `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 matching `RawAgentRuntimeBindingProjectionV1` records, covering 35 Agent graph occurrences without phase-alias lookup;
 - one unconditional `assistant_json_local_v1` result contract, one `ResolvedRawAgentExecutor`, and one closed finalizer bundle for every Agent contract;
 - prompt composition that appends the installed result schema last, sends no OpenCode `format`, and validates one exact assistant JSON object locally;
 - one recoverable OpenCode root session and at most one prompt per AttemptKey using the existing journal, activity, workspace, secret, fencing, and effect primitives;
 - Feature finalization over actual authorized raw files followed by the unchanged Kernel transaction;
 - unchanged LangGraph topology: Raw Agent closure adds no node or edge and preserves the nine `join:any`, seven SCC-anchor, three `min_matches`, 50 exclusive-route, interrupt, budget, revision, and public-schema gates;
-- T5a verification followed by a normal candidate-bound Checkpoint R result.
+- T5a verification through production composition and ordinary deterministic tests.
 
-Any earlier provider-result eligibility probe is historical research only: it is absent from active dependencies and required CI, cannot advertise a Product capability, and cannot satisfy or block Checkpoint R. Raw Closure R5 deleted the executable eligibility-probe script and test after preserving the research record; cancelled Structured plans remain non-executable history.
-
-Checkpoint R is a prerequisite, not a replacement for closure. A partial contract sample or permissive JSON parsing cannot satisfy it.
+Any earlier provider-result eligibility probe is historical research only: it is absent from active
+dependencies and required CI and cannot advertise a Product capability. Raw Closure deleted the
+executable eligibility-probe script and test after preserving the research record; cancelled
+Structured plans remain non-executable history.
 
 ### Task 5: Cut over entrypoints without switching existing Invocations
 
-**Continuation status:** Task 5 is partial. T5a is complete at `4a9cd197`; Raw Agent Runtime Closure and the initial Checkpoint R are closed. T5b–T5d remain unexecuted. The four accepted T5a roots stay `langgraph-v1`; the other ten stay `legacy-v2` until their Product task is released.
+**Continuation status:** Task 5 is partial. T5a and Raw Agent Runtime Closure are complete;
+T5b–T5d remain unexecuted. The four accepted T5a roots stay `langgraph-v1`; the other ten stay
+`legacy-v2` until their Product task is released.
 
 **Files:**
 
@@ -445,7 +455,7 @@ First start records runtime kind/revision with the Task 3 `initializing → back
 
 Only Product code/release data can change new-start selection. `.aa/`, SUT, environment variables and CLI flags cannot select runtime/factory/revision. Switch keys equal the exact 14 public names; missing/extra values fail Boot.
 
-- [x] **Step 3: Close Raw Agent production and establish the initial Checkpoint R.**
+- [x] **Step 3: Close Raw Agent production and verify T5a.**
 
 The authoritative sequence is:
 
@@ -462,34 +472,37 @@ T5a verification — complete
   The four accepted roots remain langgraph-v1 on the unchanged production
   composition; the other ten remain legacy-v2.
 
-Initial Checkpoint R — closed
-  ProductLock 13cae4215ac53a9d1ff8d9d34a54920fe0bd77a4135486cf591fbd48cd14ac93
-  GraphRevision 4d7e7d4e44adc737d8a1f3fc230cb524d22a7026d7f0de1a9ef7c454011f6704
-  adapter/provider/model opencode/opencode/fixture-model
-  inventory 33/33/34/41/43
-  live OpenCode row skip-gated on official binary + operator env
-
 T5b — next: 8 Agent-dependent thin roots
   intake, case, archive, retro,
   issue-review, issue-analyze, issue-reconcile,
   improvement-review
 
-  build candidate → Checkpoint R for that SHA → release selector
+  implement → focused tests + ordinary CI → release selector
 
 T5c — pending: execute
-  build candidate → Checkpoint R for that SHA → release selector
+  implement → focused tests + ordinary CI → release selector
 
 T5d — pending: full
-  build candidate → Checkpoint R for that SHA → release selector
+  implement → focused tests + ordinary CI → release selector
 ```
 
-T5a is not a completed twelve-root Wave A. The four roots stay on LangGraph because their reachable Agent-contract set is empty. An incomplete Raw Agent closure or a red Checkpoint R blocks T5b–T5d and downstream drain/deletion; neither condition rolls back T5a or globally fails direct/non-Agent Product Boot. After each pending cutover tranche, run its public behavior, restart, interrupt, status, export, and archive prerequisites. Rollback changes only the switch for future starts; already-started LangGraph Invocations remain on their recorded revision.
+T5a is not a completed twelve-root Wave A. The four roots stay on LangGraph because their reachable
+Agent-contract set is empty. An incomplete Raw Agent closure or failing focused/repository test blocks
+T5b–T5d and downstream drain/deletion; neither condition rolls back T5a or globally fails
+direct/non-Agent Product Boot. After each pending cutover tranche, run its public behavior, restart,
+interrupt, status, export, and archive prerequisites. Rollback changes only the switch for future
+starts; already-started LangGraph Invocations remain on their recorded revision.
 
 - [ ] **Step 4: Build, verify, then release each remaining candidate.**
 
-Each T5b/T5c/T5d selector change is first built as an unreleased candidate. Run the normal Checkpoint R CI gate for that exact candidate SHA; only the passing candidate may switch future starts. The focused live OpenCode row may be reused only when the adapter/provider/model and result contract are unchanged and the CI record proves that identity.
+Each T5b/T5c/T5d selector change is built and verified before it switches future starts. Run the
+focused Product, Raw Agent, recovery, and lifecycle suites plus ordinary CI; no live-provider result
+is required or represented as release evidence.
 
-Each cutover record binds `candidate_sha`, `graph_revision_id`, `product_lock_digest`, the 33 contract/binding rows, 34-occurrence inventory, adapter/provider/model, entrypoint/runtime, and passing focused CI rows. A missing, failed, skipped, waived, cross-candidate, or stale row blocks the tranche. The gate also asserts that the request carries no provider response-format field and the result is one exact locally validated assistant JSON object.
+Each tranche's ordinary tests authenticate `graph_revision_id`, `product_lock_digest`, the 33
+contract/binding rows, 35-occurrence inventory, and entrypoint/runtime selection. A missing or failing
+row blocks the tranche. The adapter tests also assert that the request carries no provider
+response-format field and the result is one exact locally validated assistant JSON object.
 
 T5a's post-closure regression record retains the cross-runtime test-only Validator evidence and standalone/apply `evaluate-memory-improvement` committed/pending/publication-indeterminate evidence; no production contract gains a Validator binding to satisfy it. Releasing a candidate changes only future-start selection. Existing Invocations never change runtime, ProductLock, GraphRevision, checkpoint, journal, receipt, or deployment artifact in place.
 
@@ -499,7 +512,7 @@ Raw Agent contract/schema/binding/executor closure changes authenticated wheel s
 
 The current conservative binding-file counts protect artifacts from premature removal but do not prove an Invocation is terminal. Task 6 adds the authenticated resumable/terminal scan required for retirement and drain authorization.
 
-- [ ] **Step 6: Verify, create the immutable candidate, pass Checkpoint R, and release each tranche.**
+- [ ] **Step 6: Verify and release each tranche.**
 
 For each remaining tranche run:
 
@@ -512,7 +525,8 @@ uv run pytest -q \
   tests/product/test_runtime_selection_security.py
 ```
 
-Use one explicit candidate commit per remaining tranche. The Checkpoint R CI check for that exact SHA must succeed before deployment exposes its selector to future starts:
+Use one explicit candidate commit per remaining tranche. Focused tests and ordinary CI must succeed
+before deployment exposes its selector to future starts:
 
 ```text
 feat: cut over raw Agent thin Product entrypoints
@@ -536,7 +550,9 @@ git diff --cached --name-only
 
 ### Task 6: Stop legacy starts and prove the drain gate
 
-**Dependency:** Raw Agent Runtime Closure is complete, Checkpoint R is green for the exact released T5d candidate, T5b/T5c/T5d are released, and the authenticated selector is already `14/14 langgraph-v1` for future starts. Task 6 must not begin from T5a partial state, an unreleased candidate, stale Checkpoint R evidence, or a partial 14-root selector.
+**Dependency:** Raw Agent Runtime Closure and T5b/T5c/T5d are complete, their focused and ordinary
+repository tests are green, and the authenticated selector is already `14/14 langgraph-v1` for
+future starts. Task 6 must not begin from T5a partial state or a partial 14-root selector.
 
 **Files:**
 
@@ -555,7 +571,11 @@ git diff --cached --name-only
 
 Deletion authorization fails when any legacy Invocation is running, blocked, interrupted, stopped-but-resumable, publication-indeterminate, or has unreadable identity. It succeeds only at zero active legacy, with every nonterminal old Invocation explicitly resumed to terminal or terminated by an authenticated operator record.
 
-Authorization also fails if Checkpoint R does not bind the exact released candidate, ProductLock, GraphRevision, adapter/provider/model, 33 semantic contracts, 33 raw bindings, and 34 Agent occurrences; if any of the exact nine `join:any` rows is missing, failed, xfailed, or carries a semantic waiver; if the exact seven loop-SCC anchor inventory no longer matches; if any of the three `min_matches` sites is implemented outside the frozen one-`Send`/two-Composite mapping; or if cross-runtime test-only Validator accept/reject parity is absent. These are migration evidence gates even when active legacy count is zero.
+Authorization also fails if any of the exact nine `join:any` rows is missing, failed, xfailed, or
+carries a semantic waiver; if the exact seven loop-SCC anchor inventory no longer matches; if any of
+the three `min_matches` sites is implemented outside the frozen one-`Send`/two-Composite mapping; or
+if cross-runtime test-only Validator accept/reject parity is absent. These are migration evidence
+gates even when active legacy count is zero.
 
 - [ ] **Step 2: Freeze the already-complete 14/14 new-start cutover.**
 
@@ -673,7 +693,7 @@ git commit -m "chore: close legacy Invocation creation"
 - Modify: `scripts/graph_engine_smoke_test.sh`
 - Modify: `.github/workflows/ci.yml`
 - Modify: `packages/products/assurance-product/assurance_product/runtime_ports.py`
-- Modify only to cover the remaining consumer migration; preserve the focused Checkpoint R runtime tests: `tests/product/test_product_runtime_ports.py`
+- Modify only to cover the remaining consumer migration; preserve the focused Raw Agent runtime tests: `tests/product/test_product_runtime_ports.py`
 - Retain as an explicitly allowlisted temporary legacy execution adapter until Task 9: `packages/products/assurance-product/assurance_product/application.py`
 - Retain as an explicitly allowlisted temporary legacy execution adapter until Task 9: `packages/products/assurance-product/assurance_product/cli.py`
 - Retain as an explicitly allowlisted temporary legacy execution adapter until Task 9: `packages/products/assurance-product/assurance_product/status.py`
@@ -702,7 +722,7 @@ Convert both `graph-engine-toy-a`/`toy-b` and `agent-runtime-fixture` from embed
 
 Pin `langgraph==1.2.11` directly in all three example `pyproject.toml` files and the Phase 4 six-wheel fixture, then regenerate `uv.lock`. Migrate the four composition tests, Product composition-authority test and full-graph audit listed in `Files` to the Python Product/Application surface before compatibility modules disappear.
 
-- [ ] **Step 4: Verify, create the compatibility-migration candidate, and re-run Checkpoint R when invalidated.**
+- [ ] **Step 4: Verify the compatibility-migration change.**
 
 ```bash
 uv run pytest -q tests/architecture/test_legacy_workflow_deleted.py \
@@ -725,11 +745,13 @@ Stage every modified/created/deleted Task 7 `Files` path except the lines explic
 git commit -m "refactor: prepare atomic Workflow Runtime deletion"
 ```
 
-If this candidate changes the adapter, parser, executor, result contract, binding, Kernel, Feature factory, or Product composition, run Checkpoint R for the exact SHA before release. A consumer-only refactor runs the normal affected CI suites.
+Run the affected focused suites plus the ordinary repository gate. Changes to the adapter, parser,
+executor, result contract, binding, Kernel, Feature factory, or Product composition receive their
+existing deterministic contract/recovery coverage; no live-provider gate is introduced.
 
 ### Task 8: Atomically switch compile to v3-only and delete Workflow YAML, module packaging, and phase aliases
 
-**Dependency:** Task 6 has authenticated zero active legacy Invocations, Task 7 has released its Checkpoint-R-qualified Python Product/example/consumer migration, and the legacy import inventory is clean outside explicitly retained implementation/compatibility modules. Do not execute Task 8 unless all gates are green. The v3-only compile transition and removal of the YAML inputs needed by v2 compilation are one candidate; neither half may land or release alone.
+**Dependency:** Task 6 has authenticated zero active legacy Invocations, Task 7 has released its Python Product/example/consumer migration after focused deterministic tests and the ordinary repository gate, and the legacy import inventory is clean outside explicitly retained implementation/compatibility modules. Do not execute Task 8 unless all gates are green. The v3-only compile transition and removal of the YAML inputs needed by v2 compilation are one candidate; neither half may land or release alone.
 
 **Files:**
 
@@ -828,7 +850,7 @@ If this candidate changes the adapter, parser, executor, result contract, bindin
 - Modify: `tests/product/test_composition_authority.py`
 - Modify: `tests/product/test_full_graph_audit.py`
 
-**Interfaces:** Python factories are the only topology source; 33 `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 matching `RawAgentRuntimeBindingProjectionV1` records serve 34 Agent occurrences through one `ResolvedRawAgentExecutor`; eight direct Attempt contracts serve nine occurrences; four pure functions serve 16 occurrences; zero aliases/phase slots/YAML resources.
+**Interfaces:** Python factories are the only topology source; 33 `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 matching `RawAgentRuntimeBindingProjectionV1` records serve 35 Agent occurrences through one `ResolvedRawAgentExecutor`; eight direct Attempt contracts serve nine occurrences; four pure functions serve 16 occurrences; zero aliases/phase slots/YAML resources.
 
 Raw Agent Runtime Closure's 33 semantic contracts, local result schemas, 33 Product runtime bindings, prepare/finalize handlers, `RawFinalizeBundle`, `ResolvedRawAgentExecutor`, raw path/resource authority, validators, ProductLock projection tables, and Attempt-site catalog are permanent Python-native authority. Task 8 removes only legacy YAML/module/99-alias representations and their consumers. It must not redefine, flatten, or delete the Raw Agent closure, add an alternate result channel, loosen exact-object parsing, or make local validation optional.
 
@@ -844,7 +866,7 @@ def test_production_wheels_have_no_workflow_topology_resources(wheel_contents) -
 
 def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact) -> None:
     assert len(boot_artifact.attempt_contracts) == 41
-    assert count_agent_occurrences() == 34
+    assert count_agent_occurrences() == 35
     assert count_semantic_agent_contracts() == 33
     assert count_raw_agent_runtime_bindings() == 33
     assert all_agent_contracts_resolve_with_raw_executor()
@@ -930,11 +952,17 @@ Stage the exact `Files` paths above (including eight production resource deletio
 git commit -m "refactor: remove Workflow YAML and phase aliases"
 ```
 
-Run Checkpoint R for the Task 8 SHA because Product composition, runtime bindings, and ProductLock changed. The report covers 33 contracts, 33 bindings, 34 Agent occurrences, local result/file validation, recovery, the Kernel transaction, and 14-root lifecycle. Deleting legacy aliases is not evidence that semantic binding remained intact.
+Run the focused contract/binding inventory, local result/file validation, recovery, Kernel
+transaction, 14-root lifecycle, and ordinary repository tests after Task 8. Deleting legacy aliases
+is not evidence that semantic binding remained intact.
 
 ### Task 9: Atomically delete the Workflow compiler and custom Runtime
 
-**Dependency and release rule:** Task 8's v3-only/YAML/99-alias deletion candidate has passed Checkpoint R and been released, Task 6's zero-resumable-legacy authorization is still valid, and Task 7's consumer inventory is clean outside the exact implementation/wrapper/characterization rows deleted here. Task 9 first builds an immutable candidate in which the compiler and Runtime are physically absent, then runs a **post-deletion Checkpoint R** against that exact SHA. The deletion candidate cannot be merged or deployed until the post-deletion gate is green.
+**Dependency and release rule:** Task 8's v3-only/YAML/99-alias deletion is complete with focused and
+ordinary repository tests green, Task 6's zero-resumable-legacy authorization is still valid, and
+Task 7's consumer inventory is clean outside the exact implementation/wrapper/characterization rows
+deleted here. Task 9 cannot merge or deploy until its focused negative import/deletion, recovery,
+Kernel, lifecycle, full repository, and wheel-smoke tests are green.
 
 **Files:**
 
@@ -1082,15 +1110,20 @@ Stage every exact Task 9 `Files` path and every path in the retained-consumer mi
 git commit -m "refactor: remove the custom Workflow Runtime"
 ```
 
-- [ ] **Step 5: Pass post-deletion Checkpoint R before release.**
+- [ ] **Step 5: Pass focused deletion and ordinary repository tests before release.**
 
-Run Checkpoint R on the Task 9 SHA after the compiler, planner, scheduler, settle loop, compatibility wrappers, and `graph_engine.runtime` package are absent. Rebuild ProductLock/GraphRevision, run the focused OpenCode integration, cover 33 contracts/33 bindings/34 Agent occurrences, rerun recovery/Kernel/lifecycle tests, and run the negative import/deletion scan. Any fallback to deleted authority or failed required row blocks release.
-
-Only the exact green candidate may be merged/deployed. A fix after the gate produces a new SHA and must rerun the post-deletion Checkpoint R.
+After the compiler, planner, scheduler, settle loop, compatibility wrappers, and
+`graph_engine.runtime` package are absent, rebuild ProductLock/GraphRevision, cover 33 contracts/33
+bindings/35 Agent occurrences, rerun recovery/Kernel/lifecycle tests, run the negative
+import/deletion scan, and run all three wheel smokes. Any fallback to deleted authority or failed
+required test blocks release.
 
 ### Task 10: Remove migration switches and update docs/packaging/smoke tests
 
-**Dependency and release rule:** Task 9's physical-deletion candidate has passed post-deletion Checkpoint R and is the released base. Task 10 may remove only migration selectors/coexistence scaffolding; it must retain revision-pinned deployment history, the permanent Raw Agent production path, and Checkpoint R as a required CI/release check.
+**Dependency and release rule:** Task 9's physical-deletion candidate has passed focused deletion
+tests, the ordinary repository gate, and all wheel smokes. Task 10 may remove only migration
+selectors/coexistence scaffolding; it must retain revision-pinned deployment history and the
+permanent Raw Agent production path.
 
 **Files:**
 
@@ -1114,15 +1147,28 @@ Only the exact green candidate may be merged/deployed. A fix after the gate prod
 - Modify: `examples/minimal-product/aa_sample/product.py`
 - Modify: `tests/phase6/test_final_wheel_metadata.py`
 
-**Interfaces:** permanent Python-native and Raw Agent rule; no runtime switch, YAML override promise, CLI graph authority, alternate Agent-result channel, or migration-only gate; wheels contain factories, 33 semantic Raw Agent contracts/bindings, and no topology YAML; Checkpoint R remains permanent.
+**Interfaces:** permanent Python-native and Raw Agent rule; no runtime switch, YAML override promise,
+CLI graph authority, alternate Agent-result channel, or migration-only gate; wheels contain
+factories, 33 semantic Raw Agent contracts/bindings, and no topology YAML.
 
 - [ ] **Step 1: Make migration controls fail the deletion gate.**
 
-Add assertions that all new Invocations are LangGraph without a selection branch and `runtime_selection` is absent. Keep graph revision registry/retention because pinned resume is permanent, not migration-only. Assert that the ProductLock v3 plus `GraphBuildManifest` compile surface introduced in Task 8 is unchanged, including both ordered 33-row Raw Agent projection tables, while the temporary coexistence selector/records are removed. Historical legacy evidence remains readable only through archive/evidence tooling retained by policy. Assert that removing selectors cannot disable, bypass, downgrade, or relabel Checkpoint R.
+Add assertions that all new Invocations are LangGraph without a selection branch and
+`runtime_selection` is absent. Keep graph revision registry/retention because pinned resume is
+permanent, not migration-only. Assert that the ProductLock v3 plus `GraphBuildManifest` compile
+surface introduced in Task 8 is unchanged, including both ordered 33-row Raw Agent projection
+tables, while the temporary coexistence selector/records are removed. Historical legacy evidence
+remains readable only through archive/evidence tooling retained by policy.
 
 - [ ] **Step 2: Rewrite repository guidance.**
 
-State: “Python wheels own `StateGraph` topology and semantic Agent contracts. OpenCode writes authorized raw workspace files and returns one locally validated JSON result. The Kernel seals and commits the actual bytes. Product explicitly composes six Feature bundles; `.aa/` contains closed organization data only; changing nodes, edges, contracts, bindings, schemas, or runtime policy requires code review, tests, wheel rebuild, Checkpoint R, and authenticated deployment.” Remove promises for `.aa/workflow-schema.yaml`, `.aa/execution-contracts.yaml`, `workflow/module.yaml`, YAML graph replacement, provider-enforced Agent results, typed slots, or Kernel-generated document files.
+State: “Python wheels own `StateGraph` topology and semantic Agent contracts. OpenCode writes
+authorized raw workspace files and returns one locally validated JSON result. The Kernel seals and
+commits the actual bytes. Product explicitly composes six Feature bundles; `.aa/` contains closed
+organization data only; changing nodes, edges, contracts, bindings, schemas, or runtime policy
+requires code review, the repository gate, wheel rebuild, and authenticated deployment.” Remove
+promises for `.aa/workflow-schema.yaml`, `.aa/execution-contracts.yaml`, `workflow/module.yaml`, YAML
+graph replacement, provider-enforced Agent results, typed slots, or Kernel-generated document files.
 
 The non-loadable `examples/minimal-product` packaging fixture is not exempt from the final wheel-content rule. Delete both `_resources/schemas/workflow-schema.yaml` and `execution-contracts.yaml`, remove their package-data declaration/placeholder references, and update final wheel-metadata tests to prove no workspace wheel ships either obsolete orchestration contract.
 
@@ -1173,11 +1219,11 @@ Stage only the migration-switch deletion, revision-registry/Application/import-l
 git commit -m "docs: make Python StateGraphs the sole workflow source"
 ```
 
-- [ ] **Step 7: Prove Checkpoint R is permanent and release only the green candidate.**
+- [ ] **Step 7: Keep permanent Raw Agent coverage in ordinary CI.**
 
-Run Checkpoint R for the Task 10 SHA after migration selectors are absent. Require the same 33-contract/33-binding/34-occurrence inventory, focused transaction/recovery/lifecycle tests, ProductLock, GraphRevision, and negative legacy scan as Task 9. Keep these commands in the normal CI workflow after migration.
-
-Only after that report is green may the Task 10 candidate release. Later changes rerun their normal affected CI rows; adapter/provider/model integration changes also rerun the live OpenCode row.
+After migration selectors are absent, require the 33-contract/33-binding/35-occurrence inventory,
+focused transaction/recovery/lifecycle tests, ProductLock, GraphRevision, negative legacy scan, full
+repository gate, and wheel smokes. Later changes rerun their normal affected CI rows.
 
 ## Product cutover completion gate
 
@@ -1186,14 +1232,15 @@ Only after that report is green may the Task 10 candidate release. Later changes
 - [ ] All nine Feature/Product `join:any` rows are present and green with zero xfails or semantic waivers. Any failure blocks each not-yet-cut reachable root plus drain/deletion; it never switches an existing Invocation in place. The Product inbox fallback is an equivalent implementation, not an exception.
 - [ ] The loop inventory still equals the exact seven `(graph_id, join:any node_id)` anchors derived from assembled `CompiledGraph.sccs`, with passing current-trigger evidence attached and full SCC membership available in failure diagnostics.
 - [ ] Exactly one Generation `min_matches` site uses four-value `Send`; exactly two Intake sites are Feature-owned prepare/finalize two-consumer dataflow behind `ResolvedRawAgentExecutor`; no extra `Send`, generic fanout helper, compatibility executor, or phase shim exists.
-- [ ] Exactly 33 `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 digest-matched `RawAgentRuntimeBindingProjectionV1` records cover the exact 34 live Agent occurrences without any prepare/execute/finalize phase-alias resolution; every finalizer accepts one closed `RawFinalizeBundle`.
+- [ ] Exactly 33 `AgentExecutionContract[InputT, AgentResultT, OutputT]` projections and 33 digest-matched `RawAgentRuntimeBindingProjectionV1` records cover the exact 35 Agent graph occurrences without any prepare/execute/finalize phase-alias resolution; every finalizer accepts one closed `RawFinalizeBundle`.
 - [ ] The raw request appends the installed immutable result schema last, sends no provider response-format field, and accepts only one exact terminal assistant JSON object. Fence, prose, multiple-object, tool-input, error, truncation, ambiguity, secret/canary, and size cases fail closed before finalization or promotion.
 - [ ] `ResolvedRawAgentExecutor` creates or adopts one OpenCode root session and never knowingly admits a second prompt for one AttemptKey. Session create/bind, prompt admission, terminal observation, deadline/cancel, runner takeover, finalize, seal, prepare, promote, all-six-effect, and checkpoint crash cuts recover through durable evidence or resolve indeterminate.
 - [ ] The authenticated test-only evidence Validator accepts/promotes and rejects/blocks promotion exactly once on both legacy and LangGraph paths, while shipped production contracts remain 25 registered / 0 bound.
 - [ ] Standalone `improvement-evaluate` and the evaluate occurrence inside apply both emit `assurance.improvement.effect.delivery.v1` with payload discriminator `memory_eval`; committed/pending/publication-indeterminate recovery parity proves no early success or duplicate evaluator dispatch.
 - [ ] The exact 50-site exclusive-route migration inventory is complete; every route's declared-fallback/multiple-match parameterization passes and no route uses first-match priority.
 - [ ] All 13 human interrupts and system interrupt replay pass restart tests; multiple pending human interrupts require ID mapping.
-- [ ] Checkpoint R is green for the released candidate: candidate SHA, ProductLock, GraphRevision, adapter/provider/model, 33 contracts, 33 bindings, 34 Agent occurrences, focused transaction/recovery/lifecycle evidence, and the negative legacy scan all match.
+- [ ] ProductLock, GraphRevision, 33 contracts, 33 bindings, 35 Agent occurrences, focused
+  transaction/recovery/lifecycle tests, and the negative legacy scan remain green in ordinary CI.
 - [ ] Semantic shadow and crash matrix pass for all 14 entrypoints; no Invocation was dual-driven.
 - [ ] Zero resumable legacy Invocations is authenticated before deletion, and every still-resumable pre-closure LangGraph revision retains its original deployment artifact independently of the legacy drain result.
 - [ ] No Workflow YAML, phase alias, compiler/projection DSL, planner/token scheduler, custom Workflow checkpoint authority or engine settle loop remains.
