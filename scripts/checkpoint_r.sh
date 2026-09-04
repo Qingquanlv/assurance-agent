@@ -230,6 +230,7 @@ uv run pytest -q \
 
 uv run pytest -q \
   tests/product/test_raw_agent_checkpoint.py \
+  tests/product/test_semantic_attempt_bindings.py \
   tests/architecture/test_attempt_runtime_production_closure.py \
   tests/product/test_python_native_cutover.py \
   tests/product/test_cli_langgraph_lifecycle.py \

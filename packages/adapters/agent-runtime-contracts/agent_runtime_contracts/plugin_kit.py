@@ -1,6 +1,6 @@
 """Convention-driven authoring kit for runtime adapter plugins.
 
-Every runtime adapter (OpenCode, Cursor, ...) ships the same provider shape: one
+The shipped OpenCode runtime adapter uses one provider shape: one
 ``runtime.<name>.execute`` task handler plus the provider-neutral
 ``runtime.<name>.request`` / ``runtime.<name>.result`` schemas. The two shipped
 adapters previously hand-wrote byte-identical descriptors, contributions, and
@@ -8,8 +8,8 @@ schema documents that differed only by the adapter name. This kit collapses each
 adapter to a single :class:`RuntimeAdapterSpec`; the descriptor is derived from
 the same data the contribution realizes, so the two can never disagree.
 
-The kit lives in the shared contracts wheel (which both adapters already depend
-on) and depends only on the engine's plugin API. It stays adapter-independent:
+The kit lives in the shared contracts wheel (which the OpenCode adapter already
+depends on) and depends only on the engine's plugin API. It stays adapter-independent:
 it holds the common request/result schema shape and the ``runtime.<name>.*`` id
 convention, and knows nothing about any concrete adapter.
 """
