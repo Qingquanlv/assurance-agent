@@ -7,9 +7,13 @@ import pytest
 
 from tests.product.checkpoint_r_support import (
     CheckpointRPreflightError,
+    LIVE_OBSERVATION_HORIZON_SECONDS,
+    count_exact_agent_occurrences,
     installed_agent_contract_ids,
     locked_runtime_binding_digests,
+    required_change_files,
     require_checkpoint_r_preflight,
+    seed_change_workspace,
 )
 from tests.product.composition_harness import request_for
 
@@ -187,5 +191,62 @@ def test_cutover_live_helpers_are_absent() -> None:
     assert "CHECKPOINT_R_SERVER_SECRET" in script
     assert "checkpoint_r_live" in live
     assert "ProductRuntimePorts" in support
+    assert "len(agents) + len(extras)" not in support
+    assert "len(agents)+2" not in support.replace(" ", "")
+    assert "tests/product/fixtures/deployment/checkpoint-r-opencode.yaml" in script
+    assert "tests/product/fixtures/deployment/opencode.yaml" not in script
+    assert 'cd "$project_root"' in script
+    assert "AA_CHECKPOINT_R_PROJECT_ROOT" in script
+    assert "apply_live_deployment_overrides" in script
     assert "runs-on:" in workflow and "checkpoint-r" in workflow
     assert "environment:" in workflow and "checkpoint-r" in workflow
+
+
+def test_count_exact_agent_occurrences_uses_graph_bound_multiset(
+    graph_bound_contract_ids,
+) -> None:
+    assert count_exact_agent_occurrences(graph_bound_contract_ids) == 35
+    assert count_exact_agent_occurrences() == 35
+    source = (_REPO_ROOT / "tests" / "product" / "checkpoint_r_support.py").read_text(encoding="utf-8")
+    assert "return len(agents) + len(extras)" not in source
+
+
+def test_checkpoint_r_live_package_is_not_the_30s_fixture() -> None:
+    import yaml
+
+    live = yaml.safe_load(
+        (
+            _REPO_ROOT / "tests" / "product" / "fixtures" / "deployment" / "checkpoint-r-opencode.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    fixture = yaml.safe_load(
+        (_REPO_ROOT / "tests" / "product" / "fixtures" / "deployment" / "opencode.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    binding = live["adapter_binding"]
+    assert binding["observation_horizon_seconds"] == LIVE_OBSERVATION_HORIZON_SECONDS
+    assert binding["request_timeout_seconds"] == 300
+    assert binding["max_response_bytes"] == 4_000_000
+    assert binding["observation_horizon_seconds"] > fixture["adapter_binding"]["observation_horizon_seconds"]
+    assert (
+        live["request_policies"]["assurance.product.agent.request.default"]["max_output_bytes"] == 4_000_000
+    )
+
+
+def test_seed_change_workspace_writes_required_files_and_fails_closed(tmp_path: Path) -> None:
+    from tests.product.checkpoint_r_support import require_seeded_workspace
+    from tests.product.cli_support import write_project_dir
+
+    project = write_project_dir(tmp_path / "project")
+    written = seed_change_workspace(project)
+    assert set(written) == set(required_change_files())
+    require_seeded_workspace(project)
+    for relative in written:
+        path = project.joinpath(*relative.split("/"))
+        assert path.is_file()
+        assert not path.is_symlink()
+    missing = project / "qa" / "changes" / "CH-R-001" / "cases" / "demo" / "case.yaml"
+    missing.unlink()
+    with pytest.raises(CheckpointRPreflightError, match="missing required change-local files"):
+        require_seeded_workspace(project)

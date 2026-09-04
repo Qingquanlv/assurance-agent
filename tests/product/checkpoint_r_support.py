@@ -24,13 +24,58 @@ PROTECTED_ENV_NAMES = (
     "CHECKPOINT_R_SERVER_SECRET",
 )
 MIN_OPENCODE_VERSION = (1, 18, 26)
+LIVE_REQUEST_TIMEOUT_SECONDS = 300
+LIVE_OBSERVATION_HORIZON_SECONDS = 3600
+LIVE_PROGRESS_TIMEOUT_SECONDS = 1800
+LIVE_POLL_INTERVAL_SECONDS = 1.0
+LIVE_CANCEL_TIMEOUT_SECONDS = 30
+LIVE_MAX_RESPONSE_BYTES = 4_000_000
+LIVE_MAX_OUTPUT_BYTES = 4_000_000
+LIVE_ROUTE_MAX_SECONDS = 3600
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHANGE_ID = "CH-R-001"
 _DIGEST = "a" * 64
+_CAPABILITY_LEAF = "demo_capability"
 _ISSUE_ANALYSIS_ID = "assurance.quality.agent.issue-analysis.v1"
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _EVALUATE_ID = "assurance.improvement.task.evaluate-memory-improvement"
 _COMPOSITION: Any = None
+_FAMILIES = ("api", "e2e", "fuzz", "performance")
+_CASE_TYPES = {"api": "API", "e2e": "E2E", "fuzz": "Fuzz", "performance": "Performance"}
+_FRAMEWORKS = {
+    "api": "pytest",
+    "e2e": "pytest-playwright",
+    "fuzz": "schemathesis",
+    "performance": "locust",
+}
+_PLAN_OUTPUT_NAMES = {
+    "api": (
+        "api-plan.md",
+        "api-test-data-plan.md",
+        "api-codegen-plan.md",
+        "api-codegen-mapping.json",
+        "m3-review-summary.md",
+    ),
+    "e2e": (
+        "e2e-plan.md",
+        "e2e-test-data-plan.md",
+        "e2e-codegen-plan.md",
+        "e2e-codegen-mapping.json",
+        "m4-review-summary.md",
+    ),
+    "fuzz": (
+        "fuzz-plan.md",
+        "fuzz-codegen-plan.md",
+        "fuzz-codegen-mapping.json",
+        "fuzz-review-summary.md",
+    ),
+    "performance": (
+        "performance-plan.md",
+        "performance-codegen-plan.md",
+        "performance-codegen-mapping.json",
+        "performance-review-summary.md",
+    ),
+}
 
 
 class CheckpointRPreflightError(RuntimeError):
@@ -142,12 +187,6 @@ def exact_occurrences(bound: Sequence[str]) -> tuple[tuple[str, ...], tuple[str,
 
 
 def count_exact_agent_occurrences(bound: Sequence[str] | None = None) -> int:
-    if bound is None and _BOUND_CACHE is None:
-        agents = installed_agent_contract_ids()
-        extras = (_CASE_DESIGN_ID, _ISSUE_ANALYSIS_ID)
-        if any(item not in agents for item in extras):
-            raise AssertionError("exact Agent extras are missing from installed contracts")
-        return len(agents) + len(extras)
     occurrences, _attempts = exact_occurrences(bound if bound is not None else _bound_contract_ids())
     return len(occurrences)
 
@@ -285,6 +324,284 @@ def materialize_protected_inputs(preflight: Mapping[str, object]) -> dict[str, P
     auth_path.chmod(0o600)
     provider_path.chmod(0o600)
     return {"auth_path": auth_path, "provider_path": provider_path}
+
+
+def apply_live_deployment_overrides(
+    document: dict[str, Any],
+    *,
+    endpoint: str,
+    model: str,
+    project_scope: str,
+) -> dict[str, Any]:
+    binding = document["adapter_binding"]
+    binding["endpoint"] = endpoint
+    binding["project_scope"] = project_scope
+    binding["request_timeout_seconds"] = LIVE_REQUEST_TIMEOUT_SECONDS
+    binding["observation_horizon_seconds"] = LIVE_OBSERVATION_HORIZON_SECONDS
+    binding["progress_timeout_seconds"] = LIVE_PROGRESS_TIMEOUT_SECONDS
+    binding["poll_interval_seconds"] = LIVE_POLL_INTERVAL_SECONDS
+    binding["cancel_timeout_seconds"] = LIVE_CANCEL_TIMEOUT_SECONDS
+    binding["max_response_bytes"] = LIVE_MAX_RESPONSE_BYTES
+    if float(binding["observation_horizon_seconds"]) <= 30:
+        raise CheckpointRPreflightError("live package must not lock the 30s fixture horizon")
+    for route in document["routes"].values():
+        route["provider_model"] = model
+        route.setdefault("limits", {})["max_seconds"] = LIVE_ROUTE_MAX_SECONDS
+    for policy in document.get("request_policies", {}).values():
+        policy["max_output_bytes"] = LIVE_MAX_OUTPUT_BYTES
+    return document
+
+
+def _family_case(family: str) -> dict[str, object]:
+    case: dict[str, object] = {
+        "case_id": f"TC_{family.upper()}_001",
+        "title": f"{family} happy path",
+        "status": "active",
+        "priority": "P1",
+        "severity": "major",
+        "type": _CASE_TYPES[family],
+        "module": "demo",
+        "requirement_id": "REQ-1",
+        "feature_name": "demo-capability",
+        "test_condition_id": "COND-1",
+        "design_technique": "use_case",
+        "objective": f"verify the {family} behavior",
+        "summary": f"exercise and assert the {family} behavior",
+        "preconditions": [],
+        "test_data": [],
+        "steps": ["perform the operation"],
+        "assertions": ["the operation succeeds"],
+        "postconditions": [],
+        "edge_cases": [],
+        "related_cases": ["TC_API_001"] if family == "fuzz" else [],
+        "risk": {
+            "level": "high",
+            "likelihood": 3,
+            "impact": 4,
+            "rationale": "important administration path",
+        },
+        "automation": {
+            "required": True,
+            "framework": _FRAMEWORKS[family],
+            "status": "planned",
+        },
+        "regression": {
+            "candidate": True,
+            "tier": "smoke",
+            "rationale": "protect the administration path",
+            "selection_reason": ["critical_user_journey"],
+            "maintenance_rule": "keep_until_feature_deprecated",
+        },
+        "trace": {_CAPABILITY_LEAF: {"covered": True}},
+    }
+    if family == "fuzz":
+        automation = cast(dict[str, object], case["automation"])
+        automation["fuzz"] = {
+            "endpoints": [{"method": "POST", "path": "/items"}],
+            "property": "item.create.payload",
+            "expectations": ["never returns 5xx", "valid payloads remain schema-conformant"],
+        }
+    if family == "performance":
+        automation = cast(dict[str, object], case["automation"])
+        automation["performance"] = {
+            "scenario": {
+                "capability": _CAPABILITY_LEAF,
+                "endpoint": "POST /items",
+                "load": {
+                    "concurrency": 10,
+                    "spawn_rate_per_second": 2,
+                    "duration_seconds": 60,
+                },
+                "thresholds": {"p95_ms": 200, "error_rate_max": 0.01},
+            }
+        }
+    return case
+
+
+def required_change_files(change_id: str = _CHANGE_ID) -> tuple[str, ...]:
+    change = f"qa/changes/{change_id}"
+    plan_files = tuple(
+        f"{change}/plans/{name}" for family in _FAMILIES for name in _PLAN_OUTPUT_NAMES[family]
+    )
+    return (
+        f"{change}/.qa.yaml",
+        f"{change}/artifact.json",
+        f"{change}/proposal.md",
+        f"{change}/requirement.md",
+        f"{change}/cases/demo/case.yaml",
+        f"{change}/trace/minimum-coverage-matrix.json",
+        f"{change}/generated/demo.py",
+        f"{change}/mapping.json",
+        f"{change}/repair.py",
+        "tests/demo/test_demo.py",
+        *plan_files,
+    )
+
+
+def seed_change_workspace(project: Path, change_id: str = _CHANGE_ID) -> tuple[str, ...]:
+    import json
+
+    import yaml
+
+    change = project / "qa" / "changes" / change_id
+    required = required_change_files(change_id)
+    case_document = {
+        "schema_version": "1.0",
+        "added": [_family_case(family) for family in _FAMILIES],
+        "modified": [],
+        "removed": [],
+    }
+    files: dict[str, str] = {
+        f"qa/changes/{change_id}/.qa.yaml": f"schema_version: '1.0'\nchange_id: {change_id}\n",
+        f"qa/changes/{change_id}/artifact.json": json.dumps({"change_id": change_id}, indent=2) + "\n",
+        f"qa/changes/{change_id}/proposal.md": "# Checkpoint R proposal\n",
+        f"qa/changes/{change_id}/requirement.md": "# Checkpoint R requirement\n",
+        f"qa/changes/{change_id}/cases/demo/case.yaml": yaml.safe_dump(case_document, sort_keys=False),
+        f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json": json.dumps(
+            [
+                {
+                    "mrc_id": "MRC-1",
+                    "key": _CAPABILITY_LEAF,
+                    "required": True,
+                    "covered_by_cases": ["TC_API_001"],
+                    "status": "covered",
+                    "skip_reason": None,
+                    "category": "api",
+                    "layer": "api",
+                }
+            ],
+            indent=2,
+        )
+        + "\n",
+        f"qa/changes/{change_id}/generated/demo.py": "def demo() -> None:\n    return None\n",
+        f"qa/changes/{change_id}/mapping.json": json.dumps({"change_id": change_id}, indent=2) + "\n",
+        f"qa/changes/{change_id}/repair.py": "def repair() -> None:\n    return None\n",
+        "tests/demo/test_demo.py": "def test_ok() -> None:\n    assert True\n",
+    }
+    for family in _FAMILIES:
+        for name in _PLAN_OUTPUT_NAMES[family]:
+            relative = f"qa/changes/{change_id}/plans/{name}"
+            if name.endswith("-codegen-mapping.json"):
+                files[relative] = (
+                    json.dumps(
+                        {
+                            "schema_version": "1",
+                            "layer": family,
+                            "entries": [
+                                {
+                                    "case_id": f"TC_{family.upper()}_001",
+                                    "symbol": f"test_tc_{family}_001__happy_path",
+                                    "target_file": f"tests/{family}/test_demo.py",
+                                }
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+            else:
+                files[relative] = f"# {family} plan\n"
+    for relative, content in files.items():
+        path = project.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    missing = [
+        relative
+        for relative in required
+        if not project.joinpath(*relative.split("/")).is_file()
+        or project.joinpath(*relative.split("/")).is_symlink()
+    ]
+    if missing:
+        raise CheckpointRPreflightError(f"missing required change-local files: {missing}")
+    del change
+    return required
+
+
+def require_seeded_workspace(project: Path, change_id: str = _CHANGE_ID) -> None:
+    missing = [
+        relative
+        for relative in required_change_files(change_id)
+        if not project.joinpath(*relative.split("/")).is_file()
+        or project.joinpath(*relative.split("/")).is_symlink()
+    ]
+    if missing:
+        raise CheckpointRPreflightError(f"missing required change-local files: {missing}")
+
+
+def ci_run_identity() -> dict[str, str]:
+    names = (
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_WORKFLOW",
+        "GITHUB_JOB",
+        "GITHUB_SHA",
+        "RUNNER_NAME",
+        "RUNNER_OS",
+    )
+    return {name.lower(): os.environ.get(name, "") for name in names}
+
+
+def _project_file_digests(root: Path) -> dict[str, str]:
+    files: dict[str, str] = {}
+    for path in root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if "/.runtime/" in f"/{relative}/" or "/.staging/" in f"/{relative}/":
+            continue
+        files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
+
+
+def _claimed_write_paths(contract: object, change_id: str) -> set[str]:
+    claims = contract.phase_write_claims  # type: ignore[attr-defined]
+    raw = (*claims.prepare, *claims.runtime, *claims.finalize)
+    return {item.replace("{change_id}", change_id) for item in raw}
+
+
+def _undeclared_project_writes(
+    before: Mapping[str, str],
+    after: Mapping[str, str],
+    claimed: set[str],
+) -> tuple[str, ...]:
+    undeclared: list[str] = []
+    for relative, digest in after.items():
+        if before.get(relative) == digest:
+            continue
+        if relative in claimed or any(
+            relative == claim or relative.startswith(f"{claim.rstrip('/')}/") for claim in claimed
+        ):
+            continue
+        undeclared.append(relative)
+    return tuple(sorted(undeclared))
+
+
+def _measure_prompt_count(events: Sequence[object]) -> int:
+    from graph_engine.attempts.events import ActivityBound
+
+    digests: set[str] = set()
+    for event in events:
+        if not isinstance(event, ActivityBound):
+            continue
+        reference = event.reference
+        if not isinstance(reference, Mapping):
+            continue
+        token = reference.get("prompt_body_digest") or reference.get("expected_message_id")
+        if isinstance(token, str) and token.strip():
+            digests.add(token)
+    return len(digests)
+
+
+def _source_and_wheel_digests(product_lock: object) -> dict[str, object]:
+    plugins = {
+        plugin.plugin_id: plugin.source.digest
+        for plugin in product_lock.plugins  # type: ignore[attr-defined]
+    }
+    return {
+        "engine": product_lock.engine.digest,  # type: ignore[attr-defined]
+        "product": product_lock.product.source.digest,  # type: ignore[attr-defined]
+        "plugins": plugins,
+    }
 
 
 def _entrypoint_for(contract_id: str) -> str:
@@ -494,9 +811,11 @@ class ProtectedCandidate:
     composition: Any
     authorization: Any
     invocation_id: str
+    product_lock: Any
     product_lock_digest: str
     graph_revision: str
     locked_model: str
+    preflight: Mapping[str, object]
 
     def bind_row(self, row: LiveAgentRow) -> LiveAgentRow:
         from graph_engine.attempts.keys import BusinessActivation, derive_attempt_key
@@ -521,6 +840,8 @@ class ProtectedCandidate:
         return asyncio.run(self._execute(row))
 
     async def _execute(self, row: LiveAgentRow) -> CheckpointRResult:
+        from agent_runtime_contracts.schema import thaw_json as thaw_result
+        from agent_runtime_contracts.schema import validate_local_agent_result
         from graph_engine.attempts.context import AttemptExecutionContext
         from graph_engine.attempts.keys import AttemptKey
         from graph_engine.attempts.resolutions import CommittedTaskResult
@@ -532,11 +853,14 @@ class ProtectedCandidate:
 
         self.bind_row(row)
         contracts = all_feature_agent_contracts()
-        validated = installed_contract_input(contracts[row.contract_id])
+        contract = contracts[row.contract_id]
+        validated = installed_contract_input(contract)
         binding_rows = {item.contract_id: item for item in raw_agent_runtime_binding_rows(self.composition)}
         binding = binding_rows[row.contract_id]
         if binding.model != self.locked_model:
             raise CheckpointRPreflightError(f"locked model drifted for {row.contract_id}")
+        require_seeded_workspace(self.workspace.paths.project_root, _CHANGE_ID)
+        before = _project_file_digests(self.workspace.paths.project_root)
         root_input_digest = canonical_digest({"contract_id": row.contract_id})
         async with ProductRuntimePorts.open(
             self.workspace,
@@ -560,19 +884,59 @@ class ProtectedCandidate:
                     attempt_key=AttemptKey(digest=row.attempt_key_digest),
                     fencing_token=lease.fencing_token,
                 )
-                resolution = await ports.kernel.execute_or_recover(
-                    AttemptKey(digest=row.attempt_key_digest),
-                    resolved,
-                    validated,
-                    context,
-                )
+                key = AttemptKey(digest=row.attempt_key_digest)
+                resolution = await ports.kernel.execute_or_recover(key, resolved, validated, context)
                 if not isinstance(resolution, CommittedTaskResult):
                     raise AssertionError(f"{row.contract_id} did not commit: {resolution}")
-                snapshot = await ports.attempt_journal.load(AttemptKey(digest=row.attempt_key_digest))
+                snapshot = await ports.attempt_journal.load(key)
+                reused = await ports.kernel.execute_or_recover(key, resolved, validated, context)
+                if not isinstance(reused, CommittedTaskResult):
+                    raise AssertionError(f"{row.contract_id} reuse did not commit: {reused}")
+                reused_snapshot = await ports.attempt_journal.load(key)
+                records = await ports.attempt_journal._load_records(key.digest)
             finally:
                 await ports.backend.lease.release(lease)
         if snapshot is None or not snapshot.source_receipt_digest:
             raise AssertionError(f"{row.contract_id} is missing a source terminal receipt")
+        if reused_snapshot is None or reused_snapshot.source_receipt_digest != snapshot.source_receipt_digest:
+            raise AssertionError(f"{row.contract_id} did not reuse the source host receipt")
+        events = tuple(event for record in records for event in record.events)
+        prompt_count = _measure_prompt_count(events)
+        if prompt_count != 1:
+            raise AssertionError(f"{row.contract_id} admitted {prompt_count} prompts, expected 1")
+        exact_payload = thaw_result(snapshot.activity_outcome)
+        contract.output_model.model_validate(exact_payload)
+        validate_local_agent_result(exact_payload, result_model=contract.output_model)
+        after = _project_file_digests(self.workspace.paths.project_root)
+        undeclared = _undeclared_project_writes(
+            before,
+            after,
+            _claimed_write_paths(contract, _CHANGE_ID),
+        )
+        if undeclared:
+            raise AssertionError(f"{row.contract_id} wrote undeclared project paths: {undeclared}")
+        if not snapshot.released:
+            raise AssertionError(f"{row.contract_id} is missing resource-release proof")
+        phase_write_claims = contract.phase_write_claims.as_projection()
+        result_schema_digest = contract.agent_result_schema_digest()
+        finalizer_digest = canonical_digest({"finalize_handler_id": contract.finalize_handler_id})
+        secret_handle_digest = canonical_digest([item.handle for item in self.authorization.secret_sources])
+        policy_digest = canonical_digest(
+            {
+                "request_policy_handle": binding.policy.request_policy_handle,
+                "request_config_handle": binding.policy.request_config_handle,
+            }
+        )
+        resource_digest = self.product_lock.registry_digests.resources
+        effect_receipts = [
+            {
+                "ordinal": item.ordinal,
+                "kind": item.kind,
+                "intent_digest": item.intent_digest,
+                "receipt_digest": item.receipt_digest,
+            }
+            for item in snapshot.effects
+        ]
         receipt = CheckpointRReceipt(
             attempt_key_digest=row.attempt_key_digest,
             contract_digest=row.contract_digest,
@@ -582,23 +946,40 @@ class ProtectedCandidate:
             graph_revision=self.graph_revision,
             binding_digest=_row_digest(binding),
         )
+        binary_version = self.preflight["binary_version"]
         evidence = {
             "kind": "agent",
+            "status": "passed",
             "contract_id": row.contract_id,
             "candidate_sha": candidate_sha(),
-            "attempt_key_digest": receipt.attempt_key_digest,
-            "contract_digest": receipt.contract_digest,
-            "result_schema_digest": binding.contract_digest,
-            "runtime_binding_digest": receipt.binding_digest,
-            "adapter": binding.adapter,
+            "source_digests": _source_and_wheel_digests(self.product_lock),
+            "wheel_digests": _source_and_wheel_digests(self.product_lock),
+            "opencode_version": ".".join(str(part) for part in cast(tuple[int, ...], binary_version)),
+            "opencode_binary_digest": self.preflight["binary_digest"],
             "provider": binding.provider,
             "model": binding.model,
+            "runtime_binding_digest": receipt.binding_digest,
+            "contract_digest": receipt.contract_digest,
+            "result_schema_digest": result_schema_digest,
+            "finalizer_digest": finalizer_digest,
             "product_lock_digest": receipt.product_lock_digest,
             "graph_revision": receipt.graph_revision,
+            "policy_digest": policy_digest,
+            "resource_digest": resource_digest,
+            "secret_handle_digest": secret_handle_digest,
+            "attempt_key_digest": receipt.attempt_key_digest,
             "source_terminal_receipt_digest": receipt.source_terminal_receipt_digest,
             "promotion_receipt_digest": receipt.promotion_receipt_digest,
-            "prompt_count": 1,
-            "status": "passed",
+            "effect_receipts": effect_receipts,
+            "resources_released": snapshot.released,
+            "authorization_id": snapshot.authorization_id,
+            "ci_run_identity": ci_run_identity(),
+            "prompt_count": prompt_count,
+            "local_result_validated": True,
+            "phase_write_claims": phase_write_claims,
+            "no_direct_project_write": True,
+            "host_receipt_reused": True,
+            "adapter": binding.adapter,
         }
         _append_evidence(evidence)
         return CheckpointRResult(receipt=receipt, evidence=evidence)
@@ -626,6 +1007,7 @@ def candidate_inventory(graph_bound_contract_ids, installed_sources) -> Iterator
 @pytest.fixture
 def protected_candidate(installed_sources, tmp_path: Path) -> ProtectedCandidate:
     preflight = require_checkpoint_r_preflight()
+    materialize_protected_inputs(preflight)
     locator = os.environ.get("AA_CHECKPOINT_R_SECRET_ENV") or SECRET_ENV
     os.environ[locator] = str(preflight["server_secret"])
     composition = _live_composition(installed_sources)
@@ -642,7 +1024,16 @@ def protected_candidate(installed_sources, tmp_path: Path) -> ProtectedCandidate
     rows = raw_agent_runtime_binding_rows(typed)
     if {row.model for row in rows} != {str(preflight["model"])}:
         raise CheckpointRPreflightError("deployment package model is not the locked provider model")
-    project = write_project_dir(tmp_path / "project")
+    configured = os.environ.get("AA_CHECKPOINT_R_PROJECT_ROOT")
+    if configured:
+        project = Path(configured).resolve()
+        if not project.is_dir():
+            raise CheckpointRPreflightError("AA_CHECKPOINT_R_PROJECT_ROOT must be an existing directory")
+        write_project_dir(project)
+    else:
+        project = write_project_dir(tmp_path / "project")
+    seed_change_workspace(project, _CHANGE_ID)
+    require_seeded_workspace(project, _CHANGE_ID)
     workspace = prepare_change_workspace(project, _CHANGE_ID)
     product_lock = product_lock_from_composition(typed)
     manifest = product_graph_manifest(typed, product_lock)
@@ -651,7 +1042,23 @@ def protected_candidate(installed_sources, tmp_path: Path) -> ProtectedCandidate
         composition=composition,
         authorization=_live_authorization(),
         invocation_id="inv-checkpoint-r",
+        product_lock=product_lock,
         product_lock_digest=product_lock.digest,
         graph_revision=manifest.revision.revision_id,
         locked_model=str(preflight["model"]),
+        preflight=preflight,
     )
+
+
+def pytest_sessionstart(session) -> None:
+    del session
+    _bound_contract_ids()
+
+
+def pytest_collection_modifyitems(config, items) -> None:
+    if os.environ.get("AA_CHECKPOINT_R_LIVE") == "1":
+        return
+    markexpr = (getattr(config.option, "markexpr", None) or "").replace(" ", "")
+    if "checkpoint_r_live" in markexpr and "notcheckpoint_r_live" not in markexpr:
+        return
+    items[:] = [item for item in items if item.get_closest_marker("checkpoint_r_live") is None]

@@ -75,8 +75,17 @@ if [[ "$actual_digest" != "$expected_digest" ]]; then
 fi
 
 state_root="$work/opencode-state"
-project_root="$work/opencode-project"
+project_root="$work/live-project"
 mkdir -p "$state_root/home" "$state_root/xdg-config/opencode" "$state_root/xdg-data/opencode" "$project_root"
+uv run python - "$project_root" <<'PY'
+from pathlib import Path
+import sys
+from tests.product.checkpoint_r_support import seed_change_workspace
+from tests.product.cli_support import write_project_dir
+root = write_project_dir(Path(sys.argv[1]))
+seed_change_workspace(root)
+print(root)
+PY
 uv run python - "$provider_path" "$state_root/xdg-config/opencode/opencode.json" "$project_root/opencode.json" <<'PY'
 import json, sys
 from pathlib import Path
@@ -118,11 +127,14 @@ PY
 )"
 endpoint="http://127.0.0.1:${sock_port}"
 serve_log="$state_root/serve.log"
-HOME="$state_root/home" \
-XDG_CONFIG_HOME="$state_root/xdg-config" \
-XDG_DATA_HOME="$state_root/xdg-data" \
-  "$binary" serve --port "$sock_port" --hostname 127.0.0.1 \
-  >"$serve_log" 2>&1 &
+(
+  cd "$project_root"
+  HOME="$state_root/home" \
+  XDG_CONFIG_HOME="$state_root/xdg-config" \
+  XDG_DATA_HOME="$state_root/xdg-data" \
+    "$binary" serve --port "$sock_port" --hostname 127.0.0.1 \
+    >"$serve_log" 2>&1
+) &
 serve_pid=$!
 cleanup() {
   if [[ -n "${serve_pid:-}" ]] && kill -0 "$serve_pid" 2>/dev/null; then
@@ -147,15 +159,21 @@ raise SystemExit(f"official OpenCode serve did not become healthy; see {log_path
 PY
 
 deployment_yaml="$work/deployment.yaml"
-uv run python - "$repo_root/tests/product/fixtures/deployment/opencode.yaml" "$deployment_yaml" "$endpoint" "$locked_model" <<'PY'
+uv run python - "$repo_root/tests/product/fixtures/deployment/checkpoint-r-opencode.yaml" "$deployment_yaml" "$endpoint" "$locked_model" "$project_root" <<'PY'
 import sys
 from pathlib import Path
 import yaml
-source, destination, endpoint, model = sys.argv[1:5]
+from tests.product.checkpoint_r_support import apply_live_deployment_overrides
+source, destination, endpoint, model, project_scope = sys.argv[1:6]
 document = yaml.safe_load(Path(source).read_text(encoding="utf-8"))
-document["adapter_binding"]["endpoint"] = endpoint
-for route in document["routes"].values():
-    route["provider_model"] = model
+apply_live_deployment_overrides(
+    document,
+    endpoint=endpoint,
+    model=model,
+    project_scope=project_scope,
+)
+if float(document["adapter_binding"]["observation_horizon_seconds"]) <= 30:
+    raise SystemExit("live package must not lock the 30s fixture horizon")
 Path(destination).write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 PY
 
@@ -200,6 +218,7 @@ export AA_CHECKPOINT_R_SECRET_ENV="CHECKPOINT_R_MATERIALIZED_TOKEN"
 export CHECKPOINT_R_MATERIALIZED_TOKEN="$CHECKPOINT_R_SERVER_SECRET"
 export AA_CHECKPOINT_R_EVIDENCE="$work/agent-rows.jsonl"
 export AA_CHECKPOINT_R_OPENCODE_BINARY="$binary"
+export AA_CHECKPOINT_R_PROJECT_ROOT="$project_root"
 
 live_junit="$work/live-junit.xml"
 det_junit="$work/deterministic-junit.xml"
