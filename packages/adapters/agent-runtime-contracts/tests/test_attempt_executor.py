@@ -16,6 +16,7 @@ from graph_engine.attempts import (
     ExecutedAttemptResult,
     ExecutorStepResult,
     PermanentTaskFailure,
+    TerminalReceiptRef,
     resolve_contract,
 )
 from graph_engine.plugin_api import (
@@ -95,6 +96,8 @@ class RecordingPrepare:
 
 
 class RecordingRuntime:
+    handler_id = "assurance.intake.runtime.opencode.execute"
+
     def __init__(
         self,
         result: object,
@@ -140,17 +143,30 @@ class RecordingFinalize:
         )
 
 
-def _context() -> AttemptExecutionContext:
+def _context(*, authorization_id: str | None = None) -> AttemptExecutionContext:
     return AttemptExecutionContext(
         invocation_id="inv-1",
         public_entrypoint="intake",
         semantic_node_id="case-design",
         attempt_key=AttemptKey(digest="a" * 64),
         fencing_token=1,
+        authorization_id=authorization_id,
     )
 
 
-def _scope(tmp_path: Path) -> AuthorizedAttemptScope:
+class _RecordingHost:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def persist_phase_delta(self, **kwargs: object) -> TerminalReceiptRef:
+        self.calls.append(kwargs)
+        staged = kwargs["staged_paths"]
+        paths = list(staged) if isinstance(staged, (list, tuple)) else []
+        digest = canonical_digest({"phase": kwargs["phase"], "paths": paths})
+        return TerminalReceiptRef(identity_digest=digest, receipt_digest=digest)
+
+
+def _scope(tmp_path: Path, *, authorization_id: str | None = None) -> AuthorizedAttemptScope:
     project = tmp_path / "project"
     write = tmp_path / "write"
     project.mkdir(exist_ok=True)
@@ -174,7 +190,7 @@ def _scope(tmp_path: Path) -> AuthorizedAttemptScope:
         identity_digest=digest,
     )
     return AuthorizedAttemptScope(
-        execution=_context(),
+        execution=_context(authorization_id=authorization_id),
         workspace=TaskWorkspaceBinding(
             identity=identity,
             project_root=project,
@@ -569,6 +585,35 @@ def test_raw_executor_uses_three_disjoint_staging_phases(raw_executor_fixture) -
         raw_executor_fixture.prepare_delta & raw_executor_fixture.runtime_delta
         | raw_executor_fixture.prepare_delta & raw_executor_fixture.finalize_delta
         | raw_executor_fixture.runtime_delta & raw_executor_fixture.finalize_delta
+    )
+
+
+def test_raw_executor_persists_phase_deltas_into_host_receipt(
+    raw_executor_fixture: _RawExecutorFixture,
+) -> None:
+    host = _RecordingHost()
+    raw_executor_fixture.scope = _scope(
+        raw_executor_fixture.scope.workspace.project_root.parent,
+        authorization_id="b" * 64,
+    )
+    raw_executor_fixture.scope.workspace.write_root.mkdir(parents=True, exist_ok=True)
+    executor = raw_executor_fixture.executor.with_host(
+        host,
+        graph_revision="c" * 64,
+        product_lock_digest="d" * 64,
+    )
+    raw_executor_fixture.executor = executor
+    result = asyncio.run(raw_executor_fixture.execute())
+    assert isinstance(result, ExecutedAttemptResult)
+    assert result.source_terminal_receipt is not None
+    assert [call["phase"] for call in host.calls] == ["prepare", "runtime", "finalize"]
+    assert host.calls[0]["staged_paths"] == tuple(sorted(raw_executor_fixture.prepare_delta))
+    assert host.calls[1]["staged_paths"] == tuple(sorted(raw_executor_fixture.runtime_delta))
+    assert host.calls[2]["staged_paths"] == tuple(sorted(raw_executor_fixture.finalize_delta))
+    runtime_paths = host.calls[1]["staged_paths"]
+    assert isinstance(runtime_paths, tuple)
+    assert result.source_terminal_receipt.identity_digest == canonical_digest(
+        {"phase": "runtime", "paths": list(runtime_paths)}
     )
 
 

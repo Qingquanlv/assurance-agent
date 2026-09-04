@@ -338,6 +338,7 @@ def test_resume_file_rejects_unknown_and_duplicate_ids(cli_runner, tmp_path: Pat
 def test_application_resume_file_rejects_unknown_interrupt_id(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
+    from assurance_product.application import AssuranceProductApplication
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
 
@@ -348,10 +349,15 @@ def test_application_resume_file_rejects_unknown_interrupt_id(
         installed_sources=installed_sources,
         composition=composition,
         invocation_id="inv-resume-unknown",
-        entrypoint="archive",
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
+
+    async def planted_pending(self: object, **kwargs: object) -> tuple[str, ...]:
+        del self, kwargs
+        return ("known-interrupt",)
+
+    monkeypatch.setattr(AssuranceProductApplication, "_pending_interrupt_ids", planted_pending)
     resume_file = tmp_path / "unknown-resume.json"
     resume_file.write_text('{"interrupt_id":"unknown","action":"approve"}\n', encoding="utf-8")
     resumed = cli_runner.invoke(
@@ -382,7 +388,4 @@ def test_application_resume_file_rejects_unknown_interrupt_id(
         ],
     )
     assert resumed.exit_code == 40, resumed.output
-    assert any(
-        token in resumed.output.lower()
-        for token in ("unknown", "missing", "pending", "interrupt")
-    )
+    assert "unknown interrupt id" in resumed.output.lower()

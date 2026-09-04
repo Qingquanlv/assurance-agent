@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 from graph_engine.application.application import InvocationBoundExecution
 from graph_engine.application.runtime_context import AssuranceRuntimeContext
@@ -30,6 +30,11 @@ from graph_engine.attempts.secret_sources import (
     resolve_secret_source,
 )
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.contracts import (
+    AttemptExecutor,
+    ResolvedAttemptContract,
+    resolve_contract,
+)
 from graph_engine.boot.boot import EngineGraphBuildContext, RuntimePorts, bind_attempt_factory
 from graph_engine.boot.graph_revision import BootArtifact
 from graph_engine.canonical import JSONValue, canonical_digest
@@ -435,10 +440,18 @@ class ProductRuntimePorts:
             isinstance(item, AttemptCheckpointObserver) for item in checkpointer._observers
         ):
             raise ProductionObserverError("observer must be registered before Boot compiles any root")
-        semantic = dict(getattr(self.composition, "semantic_attempt_contracts", {}))
-        data_contracts = {
-            contract_id: getattr(resolved, "contract", resolved) for contract_id, resolved in semantic.items()
+        semantic = {
+            contract_id: _bind_executor_host(
+                cast(ResolvedAttemptContract[Any, Any], resolved),
+                host=self.host,
+                graph_revision=self.revision_id,
+                product_lock_digest=self.product_lock_digest,
+            )
+            for contract_id, resolved in dict(
+                getattr(self.composition, "semantic_attempt_contracts", {})
+            ).items()
         }
+        data_contracts = {contract_id: resolved.contract for contract_id, resolved in semantic.items()}
         factory = bind_attempt_factory(self.kernel)
         context = EngineGraphBuildContext(
             contracts=data_contracts,
@@ -463,7 +476,7 @@ class ProductRuntimePorts:
         artifact = BootArtifact(
             manifest=manifest,
             entrypoints=graphs.entrypoints,
-            attempt_contracts=getattr(self.composition, "semantic_attempt_contracts", {}),
+            attempt_contracts=semantic,
             checkpointer_backend_id=checkpointer.backend_id,
         )
         self._artifact = artifact
@@ -524,6 +537,29 @@ class ProductRuntimePorts:
     @classmethod
     def last_replayed_ordinals(cls) -> tuple[int, ...]:
         return cls._last_replayed
+
+
+def _bind_executor_host(
+    resolved: ResolvedAttemptContract[Any, Any],
+    *,
+    host: object,
+    graph_revision: str,
+    product_lock_digest: str,
+) -> ResolvedAttemptContract[Any, Any]:
+    bind = getattr(resolved.executor, "with_host", None)
+    if not callable(bind):
+        return resolved
+    return resolve_contract(
+        resolved.contract,
+        executor=cast(
+            AttemptExecutor[Any, Any],
+            bind(
+                host,
+                graph_revision=graph_revision,
+                product_lock_digest=product_lock_digest,
+            ),
+        ),
+    )
 
 
 def _preflight_selected_root(

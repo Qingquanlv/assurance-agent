@@ -20,9 +20,10 @@ from graph_engine.attempts import (
     ResolvedAttemptContract,
     SystemReference,
     TaskAttemptContract,
+    TerminalReceiptRef,
     resolve_contract,
 )
-from graph_engine.plugin_api import EffectIntent, ResourceClaimTemplate
+from graph_engine.plugin_api import EffectIntent, ResourceClaimTemplate, TaskOutcome
 
 from agent_runtime_contracts.schema import canonical_digest, thaw_json, validate_local_agent_result
 
@@ -193,12 +194,18 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         runtime: RuntimePhase[PreparedT],
         finalize: FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
         result_context: Mapping[str, object] | None = None,
+        host: object | None = None,
+        graph_revision: str = "",
+        product_lock_digest: str = "",
     ) -> None:
         self._contract = contract
         self._prepare = prepare
         self._runtime = runtime
         self._finalize = finalize
         self._result_context = None if result_context is None else dict(result_context)
+        self._host = host
+        self._graph_revision = graph_revision
+        self._product_lock_digest = product_lock_digest
         self.effects: tuple[EffectIntent, ...] = ()
         self.phase_log: list[str] = []
         self.phase_deltas: dict[str, set[str]] = {
@@ -207,6 +214,25 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
             "finalize": set(),
         }
         self.phase_task_ids: dict[str, str] = {}
+        self._phase_receipts: dict[str, TerminalReceiptRef] = {}
+
+    def with_host(
+        self,
+        host: object,
+        *,
+        graph_revision: str,
+        product_lock_digest: str,
+    ) -> ResolvedRawAgentExecutor[InputT, PreparedT, AgentResultT, OutputT]:
+        return ResolvedRawAgentExecutor(
+            self._contract,
+            prepare=self._prepare,
+            runtime=self._runtime,
+            finalize=self._finalize,
+            result_context=self._result_context,
+            host=host,
+            graph_revision=graph_revision,
+            product_lock_digest=product_lock_digest,
+        )
 
     @property
     def claims(self) -> AgentPhaseWriteClaims:
@@ -225,6 +251,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
     ) -> ExecutorStepResult[OutputT]:
         self.phase_log = []
         self.phase_deltas = {"prepare": set(), "runtime": set(), "finalize": set()}
+        self._phase_receipts = {}
         self.phase_task_ids = {
             "prepare": phase_task_id(
                 scope.execution.attempt_key, "prepare", self._contract.prepare_handler_id
@@ -262,7 +289,11 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         output_failure = _typed_failure(output)
         if output_failure is not None:
             return output_failure
-        return ExecutedAttemptResult(output=cast(OutputT, output), effects=self.effects)
+        return ExecutedAttemptResult(
+            output=cast(OutputT, output),
+            effects=self.effects,
+            source_terminal_receipt=self._phase_receipts.get("runtime"),
+        )
 
     async def reconcile(
         self,
@@ -316,7 +347,47 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         if failure is not None:
             return failure
         self.phase_deltas[phase] = delta
+        self._persist_phase_delta(phase, delta, scope, result)
         return result
+
+    def _phase_handler_id(self, phase: PhaseName) -> str:
+        if phase == "prepare":
+            return self._contract.prepare_handler_id
+        if phase == "finalize":
+            return self._contract.finalize_handler_id
+        handler_id = getattr(self._runtime, "handler_id", None)
+        if isinstance(handler_id, str) and handler_id:
+            return handler_id
+        raise ValueError("runtime phase requires a qualified handler id")
+
+    def _persist_phase_delta(
+        self,
+        phase: PhaseName,
+        delta: set[str],
+        scope: AuthorizedAttemptScope,
+        result: object,
+    ) -> None:
+        persist = getattr(self._host, "persist_phase_delta", None)
+        if self._host is None or not callable(persist):
+            return
+        if isinstance(result, RawAgentRuntimeOutcome):
+            payload = result.run_result.model_dump(mode="json")
+        elif isinstance(result, BaseModel):
+            payload = result.model_dump(mode="json")
+        else:
+            payload = None
+        receipt = persist(
+            scope=scope,
+            phase=phase,
+            task_id=self.phase_task_ids[phase],
+            handler_id=self._phase_handler_id(phase),
+            staged_paths=tuple(sorted(delta)),
+            outcome=TaskOutcome.succeeded(payload),
+            graph_revision=self._graph_revision,
+            product_lock_digest=self._product_lock_digest,
+        )
+        if isinstance(receipt, TerminalReceiptRef):
+            self._phase_receipts[phase] = receipt
 
     def _allowed_paths(self, phase: PhaseName, scope: AuthorizedAttemptScope) -> set[str]:
         claims = getattr(self._contract.phase_write_claims, phase)

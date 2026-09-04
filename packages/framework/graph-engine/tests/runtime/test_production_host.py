@@ -192,6 +192,69 @@ async def test_host_activity_rpc_uses_attempt_journal(production_host_fixture: P
     assert not production_host_fixture.legacy_ledger_path.exists()
 
 
+def test_host_persist_phase_delta_installs_receipt(
+    production_host_fixture: ProductionHostFixture,
+) -> None:
+    from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+    from graph_engine.canonical import canonical_digest
+    from graph_engine.plugin_api import TaskOutcome
+
+    host = production_host_fixture.host
+    workspace = host._bound.store.begin(  # type: ignore[attr-defined]
+        task_id="task-phase",
+        attempt=1,
+        output_paths=("qa/runtime.txt",),
+    )
+    (workspace.write_root / "qa").mkdir(parents=True, exist_ok=True)
+    (workspace.write_root / "qa" / "runtime.txt").write_text("delta\n", encoding="utf-8")
+    scope = AuthorizedAttemptScope(
+        execution=AttemptExecutionContext(
+            invocation_id="inv-1",
+            public_entrypoint="main",
+            semantic_node_id="run",
+            attempt_key=production_host_fixture.attempt_key,
+            fencing_token=1,
+            authorization_id="b" * 64,
+        ),
+        workspace=workspace,
+    )
+    persist = getattr(host, "persist_phase_delta")
+    ref = persist(
+        scope=scope,
+        phase="runtime",
+        task_id="e" * 64,
+        handler_id="runtime.opencode.execute",
+        staged_paths=("qa/runtime.txt",),
+        outcome=TaskOutcome.succeeded({"ok": True}),
+        graph_revision="c" * 64,
+        product_lock_digest="f" * 64,
+    )
+    identity = production_host_fixture.call.identity.model_copy(
+        update={
+            "task_id": "e" * 64,
+            "activation_id": "run",
+            "activity_id": "e" * 64,
+            "authorization_id": "b" * 64,
+            "phase": "runtime",
+            "graph_revision": "c" * 64,
+            "product_lock_digest": "f" * 64,
+            "handler_id": "runtime.opencode.execute",
+            "workspace_identity_digest": workspace.identity.identity_digest,
+            "request_digest": canonical_digest(
+                {
+                    "phase": "runtime",
+                    "task_id": "e" * 64,
+                    "staged_paths": ["qa/runtime.txt"],
+                }
+            ),
+        }
+    )
+    found = host.read_terminal_receipts(identity)
+    assert found
+    assert found[0].staged_write_set_digest == canonical_digest({"paths": ["qa/runtime.txt"]})
+    assert ref.receipt_digest == canonical_digest(found[0].model_dump(mode="json"))
+
+
 def test_production_host_rejects_windows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     with pytest.raises(UnsupportedProductionPlatform, match="Linux and macOS"):

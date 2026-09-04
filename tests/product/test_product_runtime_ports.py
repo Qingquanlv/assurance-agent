@@ -189,3 +189,41 @@ def test_aa_compile_does_not_construct_invocation_runtime(
     result = cli_runner.invoke(app, ["compile", "--json", *source_args(installed_sources)])
     assert result.exit_code == 0, result.output
     assert opened == {"sqlite": 0, "secret": 0, "host": 0, "lease": 0, "opencode": 0}
+
+
+def test_bound_agent_executors_carry_the_production_host(installed_sources, tmp_path: Path) -> None:
+    asyncio.run(_bound_agent_executors_carry_host(installed_sources, tmp_path))
+
+
+async def _bound_agent_executors_carry_host(installed_sources, tmp_path: Path) -> None:
+    from agent_runtime_contracts import ResolvedRawAgentExecutor
+    from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
+    from assurance_product.product import prepare_change_workspace, resolve_assurance_composition
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+    project = write_project_dir(tmp_path / "project")
+    workspace = prepare_change_workspace(project, "CH-PORTS-HOST")
+    async with ProductRuntimePorts.open(
+        workspace,
+        composition,
+        invocation="inv-host-bind",
+        authorization=lifecycle_authorization(),
+        reachable_contract_ids=ENTRYPOINT_AGENT_CONTRACT_IDS["intake"],
+    ) as ports:
+        lease = await ports.backend.lease.acquire("inv-host-bind", owner_id="ports-host")
+        try:
+            bound = ports.execution_factory(
+                invocation_id="inv-host-bind",
+                entrypoint="intake",
+                root_input_digest="c" * 64,
+            ).bind(lease)
+        finally:
+            await ports.backend.lease.release(lease)
+        agents = [
+            resolved.executor
+            for resolved in bound.artifact.attempt_contracts.values()
+            if isinstance(resolved.executor, ResolvedRawAgentExecutor)
+        ]
+        assert agents
+        assert all(executor._host is ports.host for executor in agents)

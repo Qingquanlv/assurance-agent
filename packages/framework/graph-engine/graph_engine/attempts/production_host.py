@@ -18,15 +18,20 @@ from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_b
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
+    ActivityPhase,
     TaskActivityCancelResult,
     TaskActivityPort,
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskHandler,
+    TaskOutcome,
     TaskWorkspaceBinding,
 )
+from graph_engine.attempts.context import AuthorizedAttemptScope
+from graph_engine.attempts.contracts import TerminalReceiptRef
 from graph_engine.attempts.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
+    AttemptRootDescriptor,
     HostOperation,
     TaskExecutionHost,
     TaskHostCallIdentity,
@@ -37,6 +42,7 @@ from graph_engine.attempts.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
     _MAX_STDERR_BYTES,
+    current_bound_identity,
     decode_authenticated_frame,
     derive_wire_session_key,
     encode_authenticated_frame,
@@ -188,6 +194,96 @@ class _ProductionTaskExecutionHost:
 
     def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
         return self._bound.receipts.authenticate(identity)
+
+    def persist_phase_delta(
+        self,
+        *,
+        scope: AuthorizedAttemptScope,
+        phase: ActivityPhase,
+        task_id: str,
+        handler_id: str,
+        staged_paths: tuple[str, ...],
+        outcome: TaskOutcome,
+        graph_revision: str,
+        product_lock_digest: str,
+    ) -> TerminalReceiptRef:
+        authorization_id = scope.execution.authorization_id
+        if authorization_id is None:
+            raise ProductionHostError("phase receipt requires an authorization id")
+        workspace = scope.workspace
+        staged_digest = canonical_digest({"paths": list(staged_paths)})
+        request_digest = canonical_digest(
+            {
+                "phase": phase,
+                "task_id": task_id,
+                "staged_paths": list(staged_paths),
+            }
+        )
+        bound = current_bound_identity(
+            attempt_key_digest=scope.execution.attempt_key.digest,
+            authorization_id=authorization_id,
+            workspace_identity_digest=workspace.identity.identity_digest,
+            request_digest=request_digest,
+            graph_revision=graph_revision,
+            product_lock_digest=product_lock_digest,
+            handler_id=handler_id,
+            fencing_token=scope.execution.fencing_token,
+            phase=phase,
+        )
+        identity = TaskHostCallIdentity(
+            invocation_id=scope.execution.invocation_id,
+            task_id=task_id,
+            activation_id=scope.execution.semantic_node_id,
+            attempt=workspace.identity.attempt,
+            activity_id=task_id,
+            operation="execute",
+            **bound,  # type: ignore[arg-type]
+        )
+        attempt_root = AttemptRootDescriptor(
+            workspace_identity=workspace.identity,
+            project_root_identity=workspace.project_root_identity,
+            write_root_identity=workspace.write_root_identity,
+            project_root_digest=workspace.identity.project_digest,
+            write_root_digest=workspace.identity.write_root_digest,
+            baseline_digest=canonical_digest(
+                [item.model_dump(mode="json") for item in workspace.identity.baseline_files]
+            ),
+        )
+        if identity.activity_id is None:
+            raise ProductionHostError("phase receipt requires an activity id")
+        sink = self._bound.receipts.sink_for(identity)
+        receipt = TaskHostTerminalReceipt(
+            host_implementation_digest=identity.host_implementation_digest,
+            wire_schema_version=identity.wire_schema_version,
+            invocation_id=identity.invocation_id,
+            task_id=identity.task_id,
+            activation_id=identity.activation_id,
+            attempt=identity.attempt,
+            activity_id=identity.activity_id,
+            operation=identity.operation,
+            attempt_key_digest=identity.attempt_key_digest,
+            authorization_id=identity.authorization_id,
+            fencing_token=identity.fencing_token,
+            phase=identity.phase,
+            graph_revision=identity.graph_revision,
+            product_lock_digest=identity.product_lock_digest,
+            handler_id=identity.handler_id,
+            request_digest=request_digest,
+            workspace_identity_digest=workspace.identity.identity_digest,
+            project_root_digest=attempt_root.project_root_digest,
+            write_root_digest=attempt_root.write_root_digest,
+            baseline_digest=attempt_root.baseline_digest,
+            staged_write_set_digest=staged_digest,
+            outcome=outcome,
+            outcome_digest=canonical_digest(cast(JSONValue, outcome.model_dump(mode="json"))),
+            quiescence_proof_digest=prove_call_quiescent(),
+            host_call_id=sink.host_call_id,
+        )
+        sink.install(receipt)
+        return TerminalReceiptRef(
+            identity_digest=canonical_digest(cast(JSONValue, identity.model_dump(mode="json"))),
+            receipt_digest=canonical_digest(cast(JSONValue, receipt.model_dump(mode="json"))),
+        )
 
     def _result_from_installed_receipt(self, identity: TaskHostCallIdentity) -> TaskHostCallResult | None:
         if identity.activity_id is None:
