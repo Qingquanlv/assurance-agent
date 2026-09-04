@@ -31,13 +31,17 @@ def test_report_on_test_failure(product_runner):
 
 def test_report_on_product_issue(product_runner):
     trace = product_runner(execution_sequence=("product_issue", "passed")).run_to_report()
-    assert trace.report.exists
+    assert trace.status == "succeeded"
+    assert trace.report.exists is False
+    assert "quality.report" not in trace.logical_steps
+    assert "healing.repair" not in trace.logical_steps
 
 
 def test_report_on_infrastructure_failure(product_runner):
     trace = product_runner(execution_sequence=("infrastructure_failure",)).run_to_report()
-    assert trace.report.exists
-    assert trace.status == "stopped"
+    assert trace.status == "succeeded"
+    assert trace.report.exists is False
+    assert "quality.report" not in trace.logical_steps
 
 
 def test_report_on_low_coverage_then_pass(product_runner):
