@@ -241,8 +241,9 @@ def _build(
     writer.workspace = workspace
     resolved = resolve_contract(_contract(writes=writes), executor=writer)
     revision = graph_revision or _revision()
+    owned_journal = journal if journal is not None else MemoryAttemptJournal()
     kernel = AssuranceAttemptKernel(
-        journal=journal if journal is not None else MemoryAttemptJournal(),
+        journal=owned_journal,
         arbiter=ResourceArbiter(
             authorization_store if authorization_store is not None else MemoryResourceAuthorizationStore()
         ),
@@ -268,7 +269,7 @@ def _build(
         attempt_key=key,
         fencing_token=fencing_token,
     )
-    return kernel, key, resolved, validated, context, writer, workspace, project, store
+    return kernel, key, resolved, validated, context, writer, workspace, project, store, owned_journal
 
 
 @pytest.mark.parametrize(
@@ -301,7 +302,7 @@ async def test_crash_windows_replay_same_receipt_without_repeating_mutation(
             hits["count"] += 1
             raise TransactionCrash(fault)
 
-    kernel, key, resolved, validated, context, executor, workspace, project, store = _build(
+    kernel, key, resolved, validated, context, executor, workspace, project, store, _journal = _build(
         tmp_path,
         writes=writes,
         files=files,
@@ -350,7 +351,9 @@ async def test_crash_windows_replay_same_receipt_without_repeating_mutation(
 
 
 async def test_replay_rejects_input_contract_and_revision_drift(tmp_path: Path) -> None:
-    kernel, key, resolved, validated, context, _executor, _workspace, _project, store = _build(tmp_path)
+    kernel, key, resolved, validated, context, _executor, _workspace, _project, store, journal = _build(
+        tmp_path
+    )
     try:
         first = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(first, CommittedTaskResult)
@@ -373,7 +376,7 @@ async def test_replay_rejects_input_contract_and_revision_drift(tmp_path: Path) 
         with pytest.raises(AttemptIdentityDrift, match="contract"):
             await kernel.execute_or_recover(key, other_contract, validated, context)
         drifted = AssuranceAttemptKernel(
-            journal=kernel.journal,
+            journal=journal,
             arbiter=kernel.arbiter,
             workspace=kernel.workspace,
             graph_revision=canonical_digest({"revision": "other"}),
@@ -387,7 +390,7 @@ async def test_replay_rejects_input_contract_and_revision_drift(tmp_path: Path) 
 
 async def test_in_flight_recoverable_handler_is_adopted_with_same_key(tmp_path: Path) -> None:
     recoverable = _RecoverableExecutor()
-    kernel, key, resolved, validated, context, executor, _workspace, project, store = _build(
+    kernel, key, resolved, validated, context, executor, _workspace, project, store, journal = _build(
         tmp_path,
         executor=recoverable,
     )
@@ -395,7 +398,7 @@ async def test_in_flight_recoverable_handler_is_adopted_with_same_key(tmp_path: 
     try:
         with pytest.raises(TransactionCrash, match="in-flight"):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.activity_state in {
             ActivityPrepared.kind,
@@ -419,7 +422,7 @@ async def test_fence_is_checked_at_irreversible_boundaries(tmp_path: Path) -> No
         if name.startswith("fence:"):
             seen.append(name)
 
-    kernel, key, resolved, validated, context, _executor, _workspace, _project, store = _build(
+    kernel, key, resolved, validated, context, _executor, _workspace, _project, store, _journal = _build(
         tmp_path, transaction_cut=cut
     )
     try:
@@ -482,9 +485,21 @@ async def test_stale_runner_can_observe_but_cannot_commit_after_lease_loss(tmp_p
         with pytest.raises(TransactionCrash, match="in-flight"):
             await old.execute_or_recover(key, resolved, validated, old_context)
         executor.crash_during_execute = False
-        observed = await old.observe_activity_completion(key, old_context)
+        observed = await journal.load(key)
         assert observed is not None
-        await old.adopt_or_create(key, resolved, validated, new_context)
+
+        def crash_after_adoption(name: str) -> None:
+            if name == "fence:external_dispatch":
+                raise TransactionCrash("after adoption")
+
+        with pytest.raises(TransactionCrash, match="after adoption"):
+            await old.execute_or_recover(
+                key,
+                resolved,
+                validated,
+                new_context,
+                transaction_cut=crash_after_adoption,
+            )
         with pytest.raises(StaleFencingToken):
             await old.execute_or_recover(key, resolved, validated, old_context)
         result = await old.execute_or_recover(key, resolved, validated, new_context)
@@ -497,7 +512,7 @@ async def test_stale_runner_can_observe_but_cannot_commit_after_lease_loss(tmp_p
 
 async def test_invalid_output_is_not_journaled_as_observed(tmp_path: Path) -> None:
     journal = _CrashAfterObserveJournal(MemoryAttemptJournal())
-    kernel, key, resolved, validated, context, executor, _workspace, _project, store = _build(
+    kernel, key, resolved, validated, context, executor, _workspace, _project, store, owned_journal = _build(
         tmp_path,
         executor=_InvalidOutputExecutor(),
         journal=journal,
@@ -506,7 +521,7 @@ async def test_invalid_output_is_not_journaled_as_observed(tmp_path: Path) -> No
         first = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(first, PermanentTaskFailure)
         assert first.kind == "invalid_output"
-        snapshot = await kernel.journal.load(key)
+        snapshot = await owned_journal.load(key)
         assert snapshot is not None
         assert snapshot.activity_state != "terminal_observed"
         assert snapshot.terminal is not None
@@ -522,7 +537,7 @@ async def test_invalid_output_is_not_journaled_as_observed(tmp_path: Path) -> No
 
 async def test_fail_closed_after_lease_loss_cannot_persist_terminal(tmp_path: Path) -> None:
     executor = _AdoptThenInvalidExecutor()
-    kernel, key, resolved, validated, context, _writer, _workspace, _project, store = _build(
+    kernel, key, resolved, validated, context, _writer, _workspace, _project, store, journal = _build(
         tmp_path,
         executor=executor,
         fencing_token=4,
@@ -532,7 +547,7 @@ async def test_fail_closed_after_lease_loss_cannot_persist_terminal(tmp_path: Pa
     try:
         with pytest.raises(StaleFencingToken):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is None
         successor = context.model_copy(update={"fencing_token": 5})
@@ -540,7 +555,7 @@ async def test_fail_closed_after_lease_loss_cannot_persist_terminal(tmp_path: Pa
         assert isinstance(result, PermanentTaskFailure)
         assert result.kind == "internal"
         assert "cannot be adopted" in result.message
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.released is True
@@ -550,19 +565,21 @@ async def test_fail_closed_after_lease_loss_cannot_persist_terminal(tmp_path: Pa
 
 
 async def test_terminal_replay_releases_held_grant(tmp_path: Path) -> None:
-    kernel, key, resolved, validated, context, executor, _workspace, _project, store = _build(tmp_path)
+    kernel, key, resolved, validated, context, executor, _workspace, _project, store, journal = _build(
+        tmp_path
+    )
     kernel.arbiter = _ReleaseOnceCrashArbiter(kernel.arbiter)
     try:
         with pytest.raises(TransactionCrash, match="after journaled release"):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.released is False
         await kernel.arbiter.assert_usable(key, fencing_token=context.fencing_token)
         result = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(result, CommittedTaskResult)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.released is True
         with pytest.raises(ResourceAuthorizationError, match="no active authorization"):

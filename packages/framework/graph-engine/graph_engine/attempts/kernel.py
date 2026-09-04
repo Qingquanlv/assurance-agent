@@ -21,7 +21,6 @@ from graph_engine.attempts.events import (
     EffectIntentRecorded,
     ResourcesAuthorized,
     ResourcesReleased,
-    SystemInterruptIssued,
     WorkspacePromoted,
 )
 from graph_engine.attempts.keys import AttemptKey
@@ -124,7 +123,7 @@ class AssuranceAttemptKernel:
             cut=cut,  # type: ignore[arg-type]
         )
 
-    async def adopt_or_create(
+    async def _adopt_or_create(
         self,
         attempt_key: AttemptKey,
         contract: ResolvedAttemptContract[Any, Any],
@@ -168,28 +167,6 @@ class AssuranceAttemptKernel:
                 )
         return snapshot
 
-    async def record_system_interrupt_issued(
-        self,
-        attempt_key: AttemptKey,
-        event: SystemInterruptIssued,
-        context: AttemptExecutionContext,
-    ) -> AttemptSnapshot:
-        snapshot = await self.journal.load(attempt_key)
-        return await self.journal.append(
-            attempt_key,
-            (event,),
-            expected_revision=0 if snapshot is None else snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
-
-    async def observe_activity_completion(
-        self,
-        attempt_key: AttemptKey,
-        context: AttemptExecutionContext,
-    ) -> AttemptSnapshot | None:
-        del context
-        return await self.journal.load(attempt_key)
-
     async def _run(
         self,
         attempt_key: AttemptKey,
@@ -200,7 +177,7 @@ class AssuranceAttemptKernel:
         trace: list[str],
         cut: Callable[[str], None],
     ) -> AttemptResolution:
-        snapshot = await self.adopt_or_create(attempt_key, contract, validated_input, context)
+        snapshot = await self._adopt_or_create(attempt_key, contract, validated_input, context)
         trace.append("adopt_or_create")
         if snapshot.terminal is not None:
             snapshot = await self._complete_terminal_release(attempt_key, context, snapshot, cut)

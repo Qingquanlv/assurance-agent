@@ -75,8 +75,6 @@ class ScriptedKernel:
         self.resolutions: list[object] = []
         self.seen_key: AttemptKey | None = None
         self.calls = 0
-        self.journal: MemoryAttemptJournal | None = None
-        self.issued_events: list[SystemInterruptIssued] = []
 
     def push(self, resolution: object) -> None:
         self.resolutions.append(resolution)
@@ -90,21 +88,6 @@ class ScriptedKernel:
         if not self.resolutions:
             raise AssertionError("scripted kernel has no queued resolution")
         return self.resolutions.pop(0)
-
-    async def record_system_interrupt_issued(
-        self, attempt_key: AttemptKey, event: SystemInterruptIssued, context: object
-    ) -> object:
-        self.issued_events.append(event)
-        journal = self.journal
-        if journal is None:
-            raise TypeError("scripted kernel has no journal")
-        snapshot = await journal.load(attempt_key)
-        return await journal.append(
-            attempt_key,
-            (event,),
-            expected_revision=0 if snapshot is None else snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
 
 
 class ScriptedJournal(MemoryAttemptJournal):
@@ -707,7 +690,6 @@ async def test_resumed_node_writes_completion_markers_in_ordinal_order(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
-    kernel.journal = journal
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),
@@ -766,7 +748,6 @@ async def test_later_reentry_after_completion_does_not_replay_stale_ordinal(
 ) -> None:
     kernel = ScriptedKernel()
     journal = ScriptedJournal(kernel)
-    kernel.journal = journal
     factory = AttemptNodeFactory(journal=journal, kernel=kernel, trace=[])
     node = factory.attempt(
         _resolved(),
@@ -825,8 +806,6 @@ async def test_invocation_wide_pending_barrier_keeps_sibling_write() -> None:
     right_kernel = ScriptedKernel()
     left_journal = ScriptedJournal(left_kernel)
     right_journal = ScriptedJournal(right_kernel)
-    left_kernel.journal = left_journal
-    right_kernel.journal = right_journal
     left = AttemptNodeFactory(journal=left_journal, kernel=left_kernel, trace=[]).attempt(
         _resolved(),
         semantic_node_id="execution.left",

@@ -49,3 +49,8 @@ Task P11: complete (commit after 0aa0ea57, focused checks green)
 - 2026-09-04 decision: the former protected live-provider gate and queued run https://github.com/Qingquanlv/assurance-agent/actions/runs/33875311180 no longer block Phase I. I0 starts only after the gate-removal tranche is committed and its focused/full repository checks plus three smoke scripts are green.
 - Phase I accepted base: `b28125c2aba2b743eec5b279be434f68589542ba` (`phase-i-phase-p-base`); protected run URL: not applicable — gate removed 2026-09-04.
 - Accepted-base characterization: 229 focused tests passed; collected-node digest `20a64058af5b5588a90f361ebac6962c0a45367bc913f23aeb0976602262f95b`.
+
+## Phase I
+- Task I0: complete (`b8c532cd`; Phase P journal-byte oracle is binding).
+- Task I1: complete (graph execution uses only `AttemptKernelPort.execute_or_recover`; focused graph-boundary regression 68 passed, Ruff clean, repository-configured Pyright clean).
+- I1 verification note: the plan's package-path Pyright invocation overrides the root include set and reports 445 pre-existing errors from excluded framework tests; the repository gate `uv run pyright` reports 0 errors.

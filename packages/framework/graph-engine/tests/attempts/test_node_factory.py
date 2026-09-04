@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -9,14 +10,17 @@ from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
 )
+from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.events import AttemptOpened, SystemInterruptIssued
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
+    AttemptResolution,
     CommittedEffectFailure,
     CommittedTaskResult,
     IndeterminateTaskResult,
@@ -59,20 +63,22 @@ OUTPUT = RunOutput(status="ok")
 
 
 class ScriptedKernel:
-    def __init__(self, resolution: object | None = None) -> None:
-        self.resolutions: list[object] = [] if resolution is None else [resolution]
+    def __init__(self, resolution: AttemptResolution | None = None) -> None:
+        self.resolutions: list[AttemptResolution] = [] if resolution is None else [resolution]
         self.seen_key: AttemptKey | None = None
         self.calls = 0
         self.seen_inputs: list[RunInput] = []
-        self.journal: MemoryAttemptJournal | None = None
-        self.issued_events: list[SystemInterruptIssued] = []
 
-    def push(self, resolution: object) -> None:
+    def push(self, resolution: AttemptResolution) -> None:
         self.resolutions.append(resolution)
 
     async def execute_or_recover(
-        self, attempt_key: AttemptKey, contract: object, validated_input: object, context: object
-    ) -> object:
+        self,
+        attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
+        context: AttemptExecutionContext,
+    ) -> AttemptResolution:
         del contract, context
         self.seen_key = attempt_key
         self.calls += 1
@@ -81,21 +87,6 @@ class ScriptedKernel:
         if not self.resolutions:
             raise AssertionError("scripted kernel has no queued resolution")
         return self.resolutions.pop(0)
-
-    async def record_system_interrupt_issued(
-        self, attempt_key: AttemptKey, event: SystemInterruptIssued, context: object
-    ) -> object:
-        self.issued_events.append(event)
-        journal = self.journal
-        if journal is None:
-            raise TypeError("scripted kernel has no journal")
-        snapshot = await journal.load(attempt_key)
-        return await journal.append(
-            attempt_key,
-            (event,),
-            expected_revision=0 if snapshot is None else snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
 
 
 class ScriptedJournal(MemoryAttemptJournal):
@@ -160,7 +151,7 @@ def publish_output(state: dict[str, object], output: RunOutput, receipt: Receipt
     return {"execution": output, "receipts": (receipt,)}
 
 
-def _runtime(kernel: ScriptedKernel) -> SimpleNamespace:
+def _runtime(kernel: object) -> SimpleNamespace:
     return SimpleNamespace(
         attempt_kernel=kernel,
         revision_id=REVISION,
@@ -184,7 +175,6 @@ def _expected_key(*, change_id: str = "chg-1", activation: BusinessActivation | 
 
 def _factory(kernel: ScriptedKernel, *, trace: list[str] | None = None) -> AttemptNodeFactory:
     journal = ScriptedJournal(kernel=kernel)
-    kernel.journal = journal
     return AttemptNodeFactory(journal=journal, kernel=kernel, trace=trace)
 
 
@@ -428,9 +418,85 @@ def test_observer_is_the_checkpoint_anchor_port() -> None:
     assert hasattr(observer, "on_anchored")
 
 
-async def test_factory_issues_interrupt_through_kernel_and_does_not_open_attempt() -> None:
+async def test_factory_persists_pending_interrupt_with_one_method_kernel() -> None:
     kernel = ScriptedKernel(PendingTaskResult(wakeup=SystemReference(reference_id="wake-1")))
-    factory = _factory(kernel)
+    journal = ScriptedJournal(kernel)
+    factory = AttemptNodeFactory(journal=journal, kernel=kernel)
+    node = factory.attempt(
+        _resolved(),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+    with pytest.raises(GraphInterrupt) as exc_info:
+        await node(_state(), runtime=_runtime(kernel))
+    key = _expected_key()
+    envelope_digest = canonical_digest(
+        {
+            "attempt_key": key.digest,
+            "generation": 1,
+            "interrupt_kind": "system_wake",
+            "ordinal": 0,
+            "reference_id": "wake-1",
+        }
+    )
+    records = journal._logs[key.digest]
+    assert len(records) == 1
+    assert records[0].events == (
+        SystemInterruptIssued(generation=1, ordinal=0, envelope_digest=envelope_digest),
+    )
+    assert exc_info.value.args[0][0].value == {
+        "kind": "system_wake",
+        "pending_generation": 1,
+        "ordinal": 0,
+        "attempt_key": key.digest,
+        "envelope_digest": envelope_digest,
+        CHECKPOINT_MARKERS_STATE_KEY: [
+            {
+                "kind": "system_interrupt_issued",
+                "attempt_key": key.digest,
+                "generation": 1,
+                "ordinal": 0,
+                "envelope_digest": envelope_digest,
+            }
+        ],
+        "reason": "wake-1",
+        "wakeup": {"reference_id": "wake-1"},
+    }
+
+
+async def test_factory_uses_snapshot_revision_produced_during_kernel_execution() -> None:
+    journal = MemoryAttemptJournal()
+
+    class OpeningPendingKernel:
+        async def execute_or_recover(
+            self,
+            attempt_key: AttemptKey,
+            contract: ResolvedAttemptContract[Any, Any],
+            validated_input: BaseModel,
+            context: AttemptExecutionContext,
+        ) -> AttemptResolution:
+            del contract, validated_input
+            await journal.append(
+                attempt_key,
+                (
+                    AttemptOpened(
+                        contract_digest=canonical_digest({"contract": "opened"}),
+                        input_digest=canonical_digest({"input": "opened"}),
+                        graph_revision=REVISION,
+                        invocation_id=context.invocation_id,
+                        public_entrypoint=context.public_entrypoint,
+                        semantic_node_id=context.semantic_node_id,
+                    ),
+                ),
+                expected_revision=0,
+                fencing_token=context.fencing_token,
+            )
+            return PendingTaskResult(wakeup=SystemReference(reference_id="wake-1"))
+
+    kernel = OpeningPendingKernel()
+    factory = AttemptNodeFactory(journal=journal, kernel=kernel)
     node = factory.attempt(
         _resolved(),
         semantic_node_id="execution.run",
@@ -440,13 +506,10 @@ async def test_factory_issues_interrupt_through_kernel_and_does_not_open_attempt
     )
     with pytest.raises(GraphInterrupt):
         await node(_state(), runtime=_runtime(kernel))
-    assert len(kernel.issued_events) == 1
-    assert isinstance(kernel.issued_events[0], SystemInterruptIssued)
-    key = _expected_key()
-    records = factory._journal._logs[key.digest]
-    kinds = [type(event).__name__ for record in records for event in record.events]
-    assert kinds == ["SystemInterruptIssued"]
-    assert AttemptOpened not in {type(event) for record in records for event in record.events}
+    snapshot = await journal.load(_expected_key())
+    assert snapshot is not None
+    assert snapshot.revision == 2
+    assert len(snapshot.active_interrupts) == 1
 
 
 async def test_completion_batch_goes_through_replace_checkpoint_marker_batch(

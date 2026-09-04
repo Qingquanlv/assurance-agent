@@ -31,7 +31,6 @@ from assurance_improvement.operations.keys import delivery_effect_key
 from assurance_improvement.resource_loader import resource_bytes
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import resolve_contract
-from graph_engine.attempts.events import SystemInterruptIssued
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.node_factory import AttemptNodeFactory
@@ -643,7 +642,6 @@ class _HybridAttemptKernel:
         self._scripted = scripted
         self.traces: dict[str, list[str]] = {}
         self.keys: dict[str, AttemptKey] = {}
-        self.journal = real.journal
 
     async def execute_or_recover(
         self,
@@ -662,14 +660,6 @@ class _HybridAttemptKernel:
             self.keys[node] = attempt_key
             return result
         return await self._scripted.execute_or_recover(attempt_key, contract, validated, context)
-
-    async def record_system_interrupt_issued(
-        self,
-        attempt_key: AttemptKey,
-        event: SystemInterruptIssued,
-        context: AttemptExecutionContext,
-    ) -> object:
-        return await self._real.record_system_interrupt_issued(attempt_key, event, context)
 
 
 def _kernel_effects_module() -> Any:
@@ -718,6 +708,7 @@ def _build_live_evaluate_bundle(
     CountingEffectState,
     RecordingCapabilityBuildContext,
     Any,
+    MemoryAttemptJournal,
 ]:
     closed = close_improvement_task(_EVALUATE_HANDLER)
     delivery_store = CountingEffectState()
@@ -744,7 +735,6 @@ def _build_live_evaluate_bundle(
         effect_state=delivery_store,
     )
     scripted = ScriptedAttempt()
-    scripted.journal = journal
     hybrid = _HybridAttemptKernel(real_kernel, scripted)
     factory = AttemptNodeFactory(journal=journal, kernel=hybrid)
     evaluate_contract = TASK_ATTEMPT_CONTRACTS[_EVALUATE_HANDLER]
@@ -765,11 +755,12 @@ def _build_live_evaluate_bundle(
         delivery_store,
         context,
         workspace_store,
+        journal,
     )
 
 
 async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: Path) -> None:
-    bundle, hybrid, closed, delivery_store, context, store = _build_live_evaluate_bundle(tmp_path)
+    bundle, hybrid, closed, delivery_store, context, store, journal = _build_live_evaluate_bundle(tmp_path)
     try:
         result = await bundle.evaluate.ainvoke(
             {**skill_graph_fields(), **complete_evaluate_payload()},
@@ -777,7 +768,7 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         )
         assert isinstance(result, dict)
         published = context.published_updates[-1] if context.published_updates else result
-        snapshot = await hybrid.journal.load(hybrid.keys["improvement.evaluate"])  # type: ignore[arg-type]
+        snapshot = await journal.load(hybrid.keys["improvement.evaluate"])
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.terminal.resolution_kind == "committed"
@@ -808,7 +799,7 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
 
 
 async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: Path) -> None:
-    bundle, hybrid, closed, delivery_store, context, store = _build_live_evaluate_bundle(tmp_path)
+    bundle, hybrid, closed, delivery_store, context, store, journal = _build_live_evaluate_bundle(tmp_path)
     try:
         hybrid._scripted.load_script(
             {
@@ -823,7 +814,7 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
             config=_live_evaluate_config(entrypoint="improvement-apply"),
         )
         assert isinstance(result, dict)
-        snapshot = await hybrid.journal.load(hybrid.keys["improvement.apply-evaluate"])  # type: ignore[arg-type]
+        snapshot = await journal.load(hybrid.keys["improvement.apply-evaluate"])
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.terminal.resolution_kind == "committed"
