@@ -1,24 +1,27 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import ResolvedAttemptContract
+from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.contracts import (
+    ExecutedAttemptResult,
+    ResolvedAttemptContract,
+    TerminalReceiptRef,
+)
 from graph_engine.attempts.events import (
-    ActivityDispatchStarted,
     ActivityPrepared,
     ActivityTerminalObserved,
-    AttemptEvent,
     AttemptOpened,
     AttemptSnapshot,
     AttemptTerminated,
     CommitPrepared,
+    EffectIntentRecorded,
     ResourcesAuthorized,
     ResourcesReleased,
-    SystemInterruptIssued,
     WorkspacePromoted,
 )
 from graph_engine.attempts.keys import AttemptKey
@@ -33,18 +36,22 @@ from graph_engine.attempts.resolutions import (
     RejectedTaskResult,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiterPort, ResourceAuthorization
+from graph_engine.persistence.resource_authorization import ResourceAuthorizationError
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
-from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.composition.models import EffectRegistry, SchemaRegistry
 from graph_engine.effects.apply import AttemptEffectSettler
+from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
+from graph_engine.effects.state import EffectStatePort, effect_intent_digest
+from graph_engine.frozen_json import thaw_json
+from graph_engine.json_schema import validate_json_schema
 from graph_engine.plugin_api import (
     CommitValidator,
     EffectIntent,
-    PreparedWorkspaceRef,
     PromotionReceipt,
     ResourceClaims,
+    TaskWorkspaceBinding,
     ValidationContext,
     WorkspaceProvider,
     run_validators,
@@ -52,7 +59,6 @@ from graph_engine.plugin_api import (
 from graph_engine.attempts.activity import (
     attempt_activity_in_flight,
     attempt_activity_is_terminal,
-    bounded_canonical_json,
 )
 from graph_engine.attempts import workspace as task_workspace_runtime
 
@@ -61,11 +67,29 @@ class AttemptIdentityDrift(GraphEngineError):
     """Raised when replay identity does not match the opened Attempt."""
 
 
+class AttemptIntegrityError(GraphEngineError):
+    """Raised when durable terminal/release proof contradicts the authorization store."""
+
+
 def _noop_cut(_name: str) -> None:
     return None
 
 
 _MISSING_CUT = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _CommitRejected:
+    snapshot: AttemptSnapshot
+    resolution: RejectedTaskResult | PermanentTaskFailure
+    terminal_output: JSONValue = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PromotedCommit:
+    snapshot: AttemptSnapshot
+    output: JSONValue
+    receipt: PromotionReceipt
 
 
 class AssuranceAttemptKernel:
@@ -79,6 +103,7 @@ class AssuranceAttemptKernel:
         validators: Mapping[str, CommitValidator] | None = None,
         effects: EffectRegistry | None = None,
         schemas: SchemaRegistry | None = None,
+        effect_state: EffectStatePort | None = None,
         transaction_cut: Callable[[str], None] | None = None,
     ) -> None:
         self.journal = journal
@@ -88,6 +113,7 @@ class AssuranceAttemptKernel:
         self.validators = dict(validators or {})
         self.effects = effects
         self.schemas = schemas
+        self.effect_state = effect_state
         self._transaction_cut = transaction_cut or _noop_cut
 
     async def execute_or_recover(
@@ -115,7 +141,7 @@ class AssuranceAttemptKernel:
             cut=cut,  # type: ignore[arg-type]
         )
 
-    async def adopt_or_create(
+    async def _adopt_or_create(
         self,
         attempt_key: AttemptKey,
         contract: ResolvedAttemptContract[Any, Any],
@@ -142,6 +168,11 @@ class AssuranceAttemptKernel:
             )
         _assert_identity(snapshot, identity)
         if snapshot.terminal is not None or snapshot.released:
+            if snapshot.authorization_id is not None:
+                try:
+                    await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
+                except ResourceAuthorizationError:
+                    pass
             return snapshot
         if snapshot.authorization_id is not None:
             await self.arbiter.adopt(attempt_key, fencing_token=context.fencing_token)
@@ -154,28 +185,6 @@ class AssuranceAttemptKernel:
                 )
         return snapshot
 
-    async def record_system_interrupt_issued(
-        self,
-        attempt_key: AttemptKey,
-        event: SystemInterruptIssued,
-        context: AttemptExecutionContext,
-    ) -> AttemptSnapshot:
-        snapshot = await self.journal.load(attempt_key)
-        return await self.journal.append(
-            attempt_key,
-            (event,),
-            expected_revision=0 if snapshot is None else snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
-
-    async def observe_activity_completion(
-        self,
-        attempt_key: AttemptKey,
-        context: AttemptExecutionContext,
-    ) -> AttemptSnapshot | None:
-        del context
-        return await self.journal.load(attempt_key)
-
     async def _run(
         self,
         attempt_key: AttemptKey,
@@ -186,10 +195,11 @@ class AssuranceAttemptKernel:
         trace: list[str],
         cut: Callable[[str], None],
     ) -> AttemptResolution:
-        snapshot = await self.adopt_or_create(attempt_key, contract, validated_input, context)
+        snapshot = await self._adopt_or_create(attempt_key, contract, validated_input, context)
         trace.append("adopt_or_create")
         if snapshot.terminal is not None:
-            await self._release_if_held(attempt_key, context)
+            snapshot = await self._complete_terminal_release(attempt_key, context, snapshot, cut)
+            assert snapshot.terminal is not None
             return _resolution_from_terminal(snapshot.terminal, contract)
 
         claims = _resolved_claims(contract, validated_input)
@@ -202,91 +212,45 @@ class AssuranceAttemptKernel:
 
         binding = await self.workspace.open_or_create(attempt_key, claims)
         trace.append("begin_workspace")
+        scope = AuthorizedAttemptScope(execution=context, workspace=binding)
 
-        output, snapshot = await self._execute_or_adopt(
-            attempt_key, contract, validated_input, context, snapshot, cut
+        step, snapshot = await self._execute_or_adopt(
+            attempt_key, contract, validated_input, scope, snapshot, cut
         )
-        if isinstance(output, (RejectedTaskResult, PermanentTaskFailure)):
-            return await self._fail_closed(attempt_key, context, snapshot, authorization, output, cut)
-        if _is_resolution(output):
-            return cast(AttemptResolution, output)
-        if not isinstance(output, BaseModel):
-            return output
-        trace.append("execute")
+        if isinstance(step, (RejectedTaskResult, PermanentTaskFailure)):
+            return await self._fail_closed(attempt_key, context, snapshot, authorization, step, cut)
+        if _is_resolution(step):
+            return cast(AttemptResolution, step)
 
-        try:
-            validated_output = contract.contract.output_model.model_validate(
-                output.model_dump(mode="json") if isinstance(output, BaseModel) else output
-            )
-        except ValidationError as error:
+        commit = await self._commit_or_recover(
+            attempt_key=attempt_key,
+            contract=contract,
+            validated_input=validated_input,
+            context=context,
+            claims=claims,
+            binding=binding,
+            step=step,
+            snapshot=snapshot,
+            trace=trace,
+            cut=cut,
+        )
+        if isinstance(commit, _CommitRejected):
             return await self._fail_closed(
                 attempt_key,
                 context,
-                snapshot,
+                commit.snapshot,
                 authorization,
-                PermanentTaskFailure(kind="invalid_output", message=str(error)),
+                commit.resolution,
                 cut,
+                output=commit.terminal_output,
             )
-        trace.append("validate_output")
-        cut("after_finalize_before_seal")
-
-        if snapshot.prepared_digest is None:
-            sealed = await self.workspace.seal(binding)
-            trace.append("seal_candidate")
-            rejected = run_validators(
-                contract.contract.validators,
-                self.validators,
-                sealed,
-                ValidationContext(
-                    invocation_id=context.invocation_id,
-                    task_id=attempt_key.digest,
-                    graph_instance_id=context.invocation_id,
-                    node_id=context.semantic_node_id,
-                    resources=claims,
-                    task_input=validated_input.model_dump(mode="json"),
-                    task_output=validated_output.model_dump(mode="json"),
-                    write_set=sealed,
-                ),
-            )
-            trace.append("run_validators")
-            if rejected is not None:
-                return await self._fail_closed(
-                    attempt_key,
-                    context,
-                    snapshot,
-                    authorization,
-                    rejected,
-                    cut,
-                    output=validated_output.model_dump(mode="json"),
-                )
-            cut("before_durable_prepare")
-            await self._assert_fence(attempt_key, context, "durable_prepare", cut)
-            prepared = await self.workspace.prepare(binding, sealed)
-            snapshot = await self.journal.append(
-                attempt_key,
-                (CommitPrepared(prepared_digest=prepared.prepared_digest),),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-            await self.journal.ensure_durable(attempt_key)
-            trace.append("durable_prepare")
-            cut("after_prepare_before_promotion")
-            receipt, snapshot = await self._promote(attempt_key, context, snapshot, prepared, cut)
-        else:
-            trace.extend(["seal_candidate", "run_validators", "durable_prepare"])
-            prepared = await self._recover_prepared(binding, snapshot)
-            receipt, snapshot = await self._promote(attempt_key, context, snapshot, prepared, cut)
-        trace.append("promote")
-        cut("after_promotion_before_receipt")
 
         await self._assert_fence(attempt_key, context, "effect_application", cut)
         settled, snapshot = await self._settle_effects(
             attempt_key,
-            contract,
             context,
-            snapshot,
-            receipt,
-            validated_output,
+            commit.snapshot,
+            commit.receipt,
             cut,
         )
         trace.append("settle_effects")
@@ -300,8 +264,8 @@ class AssuranceAttemptKernel:
                 authorization,
                 AttemptTerminated(
                     resolution_kind="committed_effect_failure",
-                    receipt_id=receipt.identity_digest,
-                    receipt_digest=receipt.receipt_digest,
+                    receipt_id=commit.receipt.identity_digest,
+                    receipt_digest=commit.receipt.receipt_digest,
                     reason=settled.reason,
                 ),
                 cut,
@@ -316,13 +280,13 @@ class AssuranceAttemptKernel:
             authorization,
             AttemptTerminated(
                 resolution_kind="committed",
-                output=validated_output.model_dump(mode="json"),
-                receipt_id=receipt.identity_digest,
-                receipt_digest=receipt.receipt_digest,
+                output=commit.output,
+                receipt_id=commit.receipt.identity_digest,
+                receipt_digest=commit.receipt.receipt_digest,
             ),
             cut,
         )
-        trace.append("publish_receipt")
+        trace.extend(["record_terminal", "release_resources", "record_release_proof"])
         assert snapshot.terminal is not None
         return _resolution_from_terminal(snapshot.terminal, contract)
 
@@ -360,16 +324,14 @@ class AssuranceAttemptKernel:
         attempt_key: AttemptKey,
         contract: ResolvedAttemptContract[Any, Any],
         validated_input: BaseModel,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
         snapshot: AttemptSnapshot,
         cut: Callable[[str], None],
-    ) -> tuple[BaseModel | AttemptResolution, AttemptSnapshot]:
+    ) -> tuple[object, AttemptSnapshot]:
+        context = scope.execution
         activity_id = snapshot.activity_id or attempt_key.digest
         if attempt_activity_is_terminal(snapshot.activity_state) and snapshot.activity_outcome is not None:
-            try:
-                return contract.contract.output_model.model_validate(snapshot.activity_outcome), snapshot
-            except ValidationError as error:
-                return PermanentTaskFailure(kind="invalid_output", message=str(error)), snapshot
+            return _executed_from_snapshot(contract, snapshot), snapshot
         if attempt_activity_in_flight(snapshot.activity_state):
             await self._assert_fence(attempt_key, context, "external_dispatch", cut)
             reconcile = getattr(contract.executor, "reconcile", None)
@@ -378,11 +340,9 @@ class AssuranceAttemptKernel:
                     PermanentTaskFailure(kind="internal", message="in-flight activity cannot be adopted"),
                     snapshot,
                 )
-            output = await reconcile(validated_input, context, snapshot)
+            output = await reconcile(validated_input, scope, snapshot)
             snapshot = await self._reload(attempt_key, snapshot)
-            if _is_resolution(output):
-                return output, snapshot
-            return await self._observe_terminal(attempt_key, context, snapshot, activity_id, output)
+            return output, snapshot
         snapshot = await self.journal.append(
             attempt_key,
             (ActivityPrepared(activity_id=activity_id),),
@@ -390,127 +350,179 @@ class AssuranceAttemptKernel:
             fencing_token=context.fencing_token,
         )
         await self._assert_fence(attempt_key, context, "external_dispatch", cut)
-        fingerprint = bounded_canonical_json(
-            {"attempt_key": attempt_key.digest, "contract_digest": contract.contract_digest},
-            limit=16 * 1024,
-        )
-        snapshot = await self.journal.append(
-            attempt_key,
-            (
-                ActivityDispatchStarted(
-                    activity_id=activity_id,
-                    dispatch_fingerprint=fingerprint.value,
-                    dispatch_fingerprint_digest=fingerprint.digest,
-                ),
-            ),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
-        output = await contract.executor.execute(validated_input, context)
+        output = await contract.executor.execute(validated_input, scope)
         snapshot = await self._reload(attempt_key, snapshot)
-        if _is_resolution(output):
-            return output, snapshot
-        return await self._observe_terminal(attempt_key, context, snapshot, activity_id, output)
-
-    async def _observe_terminal(
-        self,
-        attempt_key: AttemptKey,
-        context: AttemptExecutionContext,
-        snapshot: AttemptSnapshot,
-        activity_id: str,
-        output: BaseModel,
-    ) -> tuple[BaseModel, AttemptSnapshot]:
-        payload: JSONValue = output.model_dump(mode="json")
-        snapshot = await self.journal.append(
-            attempt_key,
-            (
-                ActivityTerminalObserved(
-                    activity_id=activity_id,
-                    outcome=payload,
-                    outcome_digest=canonical_digest(payload),
-                ),
-            ),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
         return output, snapshot
 
-    async def _promote(
+    async def _commit_or_recover(
         self,
+        *,
         attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
         context: AttemptExecutionContext,
+        claims: ResourceClaims,
+        binding: TaskWorkspaceBinding,
+        step: object,
         snapshot: AttemptSnapshot,
-        prepared: PreparedWorkspaceRef,
+        trace: list[str],
         cut: Callable[[str], None],
-    ) -> tuple[PromotionReceipt, AttemptSnapshot]:
+    ) -> _CommitRejected | _PromotedCommit:
+        if not isinstance(step, ExecutedAttemptResult):
+            return _CommitRejected(
+                snapshot=snapshot,
+                resolution=PermanentTaskFailure(
+                    kind="invalid_output",
+                    message="executor did not return ExecutedAttemptResult",
+                ),
+            )
+        trace.append("execute")
+
+        try:
+            validated_output = contract.contract.output_model.model_validate(
+                step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output
+            )
+            if step.effects:
+                if self.effects is None or self.schemas is None:
+                    raise ValueError("declared effects require an effect registry")
+                intent_events = _recorded_effect_intent_events(
+                    self.effects,
+                    self.schemas,
+                    step.effects,
+                )
+            else:
+                intent_events = ()
+            output: JSONValue = validated_output.model_dump(mode="json")
+            source_receipt = step.source_terminal_receipt
+            observed = ActivityTerminalObserved(
+                activity_id=snapshot.activity_id or attempt_key.digest,
+                outcome=output,
+                outcome_digest=canonical_digest(output),
+                source_identity_digest=(source_receipt.identity_digest if source_receipt is not None else ""),
+                source_receipt_digest=(source_receipt.receipt_digest if source_receipt is not None else ""),
+            )
+        except ValidationError as error:
+            return _CommitRejected(
+                snapshot=snapshot,
+                resolution=PermanentTaskFailure(kind="invalid_output", message=str(error)),
+            )
+        except (KeyError, ValueError) as error:
+            return _CommitRejected(
+                snapshot=snapshot,
+                resolution=PermanentTaskFailure(kind="configuration", message=str(error)),
+            )
+
+        trace.append("validate_output")
+        if snapshot.activity_state != "terminal_observed":
+            snapshot = await self.journal.append(
+                attempt_key,
+                (
+                    observed,
+                    *intent_events,
+                ),
+                expected_revision=snapshot.revision,
+                fencing_token=context.fencing_token,
+            )
+        cut("after_observed_result")
+        cut("after_finalize_before_seal")
+
+        if snapshot.prepared_digest is None:
+            sealed = await self.workspace.seal(binding)
+            trace.append("seal_candidate")
+            rejected = run_validators(
+                contract.contract.validators,
+                self.validators,
+                sealed,
+                ValidationContext(
+                    invocation_id=context.invocation_id,
+                    task_id=attempt_key.digest,
+                    graph_instance_id=context.invocation_id,
+                    node_id=context.semantic_node_id,
+                    resources=claims,
+                    task_input=validated_input.model_dump(mode="json"),
+                    task_output=output,
+                    write_set=sealed,
+                ),
+            )
+            trace.append("run_validators")
+            if rejected is not None:
+                return _CommitRejected(
+                    snapshot=snapshot,
+                    resolution=rejected,
+                    terminal_output=output,
+                )
+            cut("before_durable_prepare")
+            await self._assert_fence(attempt_key, context, "durable_prepare", cut)
+            prepared = await self.workspace.prepare(binding, sealed)
+            snapshot = await self.journal.append(
+                attempt_key,
+                (CommitPrepared(prepared_digest=prepared.prepared_digest),),
+                expected_revision=snapshot.revision,
+                fencing_token=context.fencing_token,
+            )
+            await self.journal.ensure_durable(attempt_key)
+            trace.append("durable_prepare")
+            cut("after_prepare_before_promotion")
+        else:
+            trace.extend(["seal_candidate", "run_validators", "durable_prepare"])
+            sealed = await self.workspace.seal(binding)
+            prepared = await self.workspace.prepare(binding, sealed)
+            if prepared.prepared_digest != snapshot.prepared_digest:
+                raise AttemptIdentityDrift("prepared digest drifted")
+
         await self._assert_fence(attempt_key, context, "promotion", cut)
         if (
             snapshot.promotion_receipt_id is not None
             and snapshot.promotion_receipt_digest is not None
             and snapshot.promotion_staged_digest is not None
         ):
-            return (
-                PromotionReceipt(
-                    identity_digest=snapshot.promotion_receipt_id,
-                    staged_digest=snapshot.promotion_staged_digest,
-                    receipt_digest=snapshot.promotion_receipt_digest,
-                ),
-                snapshot,
+            receipt = PromotionReceipt(
+                identity_digest=snapshot.promotion_receipt_id,
+                staged_digest=snapshot.promotion_staged_digest,
+                receipt_digest=snapshot.promotion_receipt_digest,
             )
-        previous_cut = task_workspace_runtime._promotion_transaction_cut
-        task_workspace_runtime._promotion_transaction_cut = cut
-        try:
-            receipt = await self.workspace.promote(prepared)
-        finally:
-            task_workspace_runtime._promotion_transaction_cut = previous_cut
-        if snapshot.promotion_receipt_digest is None:
-            snapshot = await self.journal.append(
-                attempt_key,
-                (
-                    WorkspacePromoted(
-                        receipt_id=receipt.identity_digest,
-                        receipt_digest=receipt.receipt_digest,
-                        staged_digest=receipt.staged_digest,
+        else:
+            previous_cut = task_workspace_runtime._promotion_transaction_cut
+            task_workspace_runtime._promotion_transaction_cut = cut
+            try:
+                receipt = await self.workspace.promote(prepared)
+            finally:
+                task_workspace_runtime._promotion_transaction_cut = previous_cut
+            if snapshot.promotion_receipt_digest is None:
+                snapshot = await self.journal.append(
+                    attempt_key,
+                    (
+                        WorkspacePromoted(
+                            receipt_id=receipt.identity_digest,
+                            receipt_digest=receipt.receipt_digest,
+                            staged_digest=receipt.staged_digest,
+                        ),
                     ),
-                ),
-                expected_revision=snapshot.revision,
-                fencing_token=context.fencing_token,
-            )
-        return receipt, snapshot
-
-    async def _recover_prepared(
-        self,
-        binding: Any,
-        snapshot: AttemptSnapshot,
-    ) -> PreparedWorkspaceRef:
-        sealed = await self.workspace.seal(binding)
-        prepared = await self.workspace.prepare(binding, sealed)
-        if snapshot.prepared_digest is not None and prepared.prepared_digest != snapshot.prepared_digest:
-            raise AttemptIdentityDrift("prepared digest drifted")
-        return prepared
+                    expected_revision=snapshot.revision,
+                    fencing_token=context.fencing_token,
+                )
+        trace.append("promote")
+        cut("after_promotion_before_receipt")
+        return _PromotedCommit(snapshot=snapshot, output=output, receipt=receipt)
 
     async def _settle_effects(
         self,
         attempt_key: AttemptKey,
-        contract: ResolvedAttemptContract[Any, Any],
         context: AttemptExecutionContext,
         snapshot: AttemptSnapshot,
         receipt: PromotionReceipt,
-        validated_output: BaseModel,
         cut: Callable[[str], None],
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
-        intents = _declared_intents(snapshot, contract.executor, validated_output)
-        if not intents:
+        if not snapshot.effects:
             return None, snapshot
-        if self.effects is None or self.schemas is None:
-            raise AttemptIdentityDrift("declared effects require an effect and schema registry")
-        settler = AttemptEffectSettler(self.effects, self.schemas)
+        if self.effects is None or self.schemas is None or self.effect_state is None:
+            raise AttemptIdentityDrift("declared effects require an effect registry and state port")
+        settler = AttemptEffectSettler(self.effects, self.schemas, self.effect_state)
         return await settler.settle(
             attempt_key=attempt_key,
             snapshot=snapshot,
             journal=self.journal,
             context=context,
-            intents=intents,
             promotion=receipt,
             cut=cut,
         )
@@ -524,18 +536,55 @@ class AssuranceAttemptKernel:
         terminal: AttemptTerminated,
         cut: Callable[[str], None],
     ) -> AttemptSnapshot:
-        await self._assert_fence(attempt_key, context, "terminal_receipt", cut)
-        events: list[AttemptEvent] = [terminal]
-        if not snapshot.released:
-            events.append(ResourcesReleased(authorization_id=authorization.authorization_id))
+        if snapshot.terminal is None:
+            await self._assert_fence(attempt_key, context, "terminal_receipt", cut)
+            snapshot = await self.journal.append(
+                attempt_key,
+                (terminal,),
+                expected_revision=snapshot.revision,
+                fencing_token=context.fencing_token,
+            )
+            await self.journal.ensure_durable(attempt_key)
+            cut("terminal_durable")
+        return await self._complete_terminal_release(
+            attempt_key,
+            context,
+            snapshot,
+            cut,
+            authorization_id=authorization.authorization_id,
+        )
+
+    async def _complete_terminal_release(
+        self,
+        attempt_key: AttemptKey,
+        context: AttemptExecutionContext,
+        snapshot: AttemptSnapshot,
+        cut: Callable[[str], None],
+        *,
+        authorization_id: str | None = None,
+    ) -> AttemptSnapshot:
+        grant_id = authorization_id or snapshot.authorization_id
+        active = await self.arbiter.is_active(attempt_key)
+        if snapshot.released and active:
+            raise AttemptIntegrityError("release proof contradicts an active grant")
+        if snapshot.released:
+            return snapshot
+        if active:
+            await self._assert_fence(attempt_key, context, "resource_release", cut)
+            await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
+            cut("authorization_released")
+        if await self.arbiter.is_active(attempt_key):
+            raise AttemptIntegrityError("release proof")
+        if grant_id is None:
+            raise AttemptIntegrityError("release proof requires the authorization id")
         snapshot = await self.journal.append(
             attempt_key,
-            tuple(events),
+            (ResourcesReleased(authorization_id=grant_id),),
             expected_revision=snapshot.revision,
             fencing_token=context.fencing_token,
         )
-        await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
         await self.journal.ensure_durable(attempt_key)
+        cut("release_proof")
         return snapshot
 
     async def _fail_closed(
@@ -573,16 +622,6 @@ class AssuranceAttemptKernel:
     async def _reload(self, attempt_key: AttemptKey, snapshot: AttemptSnapshot) -> AttemptSnapshot:
         latest = await self.journal.load(attempt_key)
         return latest if latest is not None else snapshot
-
-    async def _release_if_held(
-        self,
-        attempt_key: AttemptKey,
-        context: AttemptExecutionContext,
-    ) -> None:
-        try:
-            await self.arbiter.release(attempt_key, fencing_token=context.fencing_token)
-        except StaleFencingToken:
-            return
 
 
 _RESOLUTION_TYPES = (
@@ -623,17 +662,50 @@ def _assert_identity(snapshot: AttemptSnapshot, identity: Mapping[str, str]) -> 
         raise AttemptIdentityDrift("revision digest drifted")
 
 
-def _declared_intents(
+def _executed_from_snapshot(
+    contract: ResolvedAttemptContract[Any, Any],
     snapshot: AttemptSnapshot,
-    executor: object,
-    validated_output: BaseModel,
-) -> tuple[EffectIntent, ...]:
-    if snapshot.effects:
-        return tuple(EffectIntent(kind=item.kind, payload=item.payload) for item in snapshot.effects)
-    declared = getattr(executor, "declared_effects", ())
-    if callable(declared):
-        return tuple(cast(Sequence[EffectIntent], declared(validated_output)))
-    return tuple(cast(Sequence[EffectIntent], declared))
+) -> ExecutedAttemptResult[Any] | PermanentTaskFailure:
+    try:
+        output = contract.contract.output_model.model_validate(snapshot.activity_outcome)
+    except ValidationError as error:
+        return PermanentTaskFailure(kind="invalid_output", message=str(error))
+    receipt = None
+    if snapshot.source_identity_digest and snapshot.source_receipt_digest:
+        receipt = TerminalReceiptRef(
+            identity_digest=snapshot.source_identity_digest,
+            receipt_digest=snapshot.source_receipt_digest,
+        )
+    return ExecutedAttemptResult(
+        output=output,
+        effects=tuple(EffectIntent(kind=item.kind, payload=item.payload) for item in snapshot.effects),
+        source_terminal_receipt=receipt,
+    )
+
+
+def _recorded_effect_intent_events(
+    effects: EffectRegistry,
+    schemas: SchemaRegistry,
+    intents: Sequence[EffectIntent],
+) -> tuple[EffectIntentRecorded, ...]:
+    events: list[EffectIntentRecorded] = []
+    for ordinal, intent in enumerate(intents, start=1):
+        if intent.kind not in effects.entries or intent.kind not in EXPECTED_EFFECT_KINDS:
+            raise KeyError(f"unknown effect kind: {intent.kind}")
+        registration = effects.require(intent.kind)
+        schema = schemas.entries.get(registration.intent_schema_id)
+        if schema is None:
+            raise ValueError(f"effect intent schema is not registered: {registration.intent_schema_id}")
+        validate_json_schema(thaw_json(intent.payload), schema.content)
+        events.append(
+            EffectIntentRecorded(
+                effect_ordinal=ordinal,
+                effect_kind=intent.kind,
+                intent_digest=effect_intent_digest(intent.kind, intent.payload),
+                payload=thaw_json(intent.payload),
+            )
+        )
+    return tuple(events)
 
 
 def _resolved_claims(
@@ -707,4 +779,5 @@ def _committed_from_terminal(
 __all__ = [
     "AssuranceAttemptKernel",
     "AttemptIdentityDrift",
+    "AttemptIntegrityError",
 ]

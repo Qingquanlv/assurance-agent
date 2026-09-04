@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, cast
 
-from agent_runtime_contracts import AgentExecutionContract
+from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
@@ -40,6 +40,9 @@ def _job(
     outputs: tuple[str, ...],
     extra_claims: tuple[str, ...] = (),
 ) -> AgentExecutionContract[Any, Any, Any]:
+    prepare_suffixes = ("explore/context.json",) if base == "explore" else ()
+    prepare_paths = _paths(*prepare_suffixes) if prepare_suffixes else ()
+    writes = tuple(sorted(set(_paths(*outputs, *extra_claims)) | set(prepare_paths)))
     return AgentExecutionContract(
         contract_id=f"assurance.intake.agent.{base}.v1",
         owner_id="assurance.intake",
@@ -53,11 +56,16 @@ def _job(
         resources=ResourceClaimTemplate(
             parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
-            writes=_paths(*outputs, *extra_claims),
+            writes=writes,
         ),
         retry=_RETRY,
         timeout=_TIMEOUT,
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(
+            prepare=prepare_paths,
+            runtime=tuple(path for path in writes if path not in set(prepare_paths)),
+            finalize=(),
+        ),
     )
 
 

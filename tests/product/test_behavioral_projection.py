@@ -22,7 +22,7 @@ eval_mod = importlib.import_module("eval")
 projection = importlib.import_module("projection")
 
 BehavioralProjectionV1 = projection.BehavioralProjectionV1
-evaluate_complete_runs = eval_mod.evaluate_complete_runs
+evaluate_complete_run = eval_mod.evaluate_complete_run
 project_legacy_export = projection.project_legacy_export
 project_new_export = projection.project_new_export
 FORBIDDEN_HARNESS_IMPORTS = ("assurance_agent", "graph_engine", "assurance_product")
@@ -311,31 +311,23 @@ def test_evaluate_complete_runs_emits_external_eval(tmp_path: Path) -> None:
         runtime_identity="assurance-opencode",
         noise={"session_id": "opencode-session", "token_count": 11},
     )
-    cursor = make_export(
-        tmp_path / "cursor",
-        runtime_identity="assurance-cursor",
-        noise={"conversation": ["cursor chat"], "event_seq": 99},
-    )
-    evaluated = evaluate_complete_runs(opencode, cursor)
+    evaluated = evaluate_complete_run(opencode)
     assert evaluated.schema_version == "1"
-    assert evaluated.opencode_export_digest.startswith("sha256:")
-    assert evaluated.cursor_export_digest.startswith("sha256:")
-    assert evaluated.opencode_export_digest != evaluated.cursor_export_digest
+    assert evaluated.export_digest.startswith("sha256:")
     assert evaluated.retro_input_digest.startswith("sha256:")
     assert evaluated.findings
-    assert all(finding.outcome in {"pass", "intentionally-different"} for finding in evaluated.findings)
+    assert all(finding.outcome == "pass" for finding in evaluated.findings)
     assert "session_id" not in evaluated.model_dump_json()
 
 
 def test_evaluate_complete_runs_rejects_incomplete_export(tmp_path: Path) -> None:
-    opencode = make_export(tmp_path / "opencode", runtime_identity="assurance-opencode")
-    cursor = make_export(
-        tmp_path / "cursor",
-        runtime_identity="assurance-cursor",
+    failed = make_export(
+        tmp_path / "failed",
+        runtime_identity="assurance-opencode",
         terminal_class="failed",
     )
     with pytest.raises(ValueError, match="completed"):
-        evaluate_complete_runs(opencode, cursor)
+        evaluate_complete_run(failed)
 
 
 @pytest.mark.parametrize("field", ("artifact_contract", "gate_decisions"))

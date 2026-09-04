@@ -8,9 +8,6 @@ import pytest
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.composition.lock import ProductLock
 
-from tests.product.test_feature_graph_bundles import PUBLIC_BUNDLE_FIELDS, _build_owner
-from tests.product.test_raw_agent_checkpoint import _CASE_DESIGN_ID
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRODUCT_ROOT = _REPO_ROOT / "packages" / "products" / "assurance-product" / "assurance_product"
 _CAPABILITY_ROOTS = (
@@ -55,17 +52,6 @@ def wheel_contents() -> tuple[str, ...]:
     return _packaged_file_names()
 
 
-def count_agent_occurrences() -> int:
-    from assurance_product.agent_contracts import all_feature_agent_contracts
-
-    contracts = all_feature_agent_contracts()
-    bound: list[str] = []
-    for owner_id in PUBLIC_BUNDLE_FIELDS:
-        _bundle, context, _digest = _build_owner(owner_id)
-        bound.extend(item for item in context.bound_contract_ids if item in contracts)
-    return len(set(bound)) + (bound.count(_CASE_DESIGN_ID) - 1)
-
-
 def count_semantic_agent_contracts() -> int:
     from assurance_product.agent_contracts import all_feature_agent_contracts
 
@@ -73,19 +59,18 @@ def count_semantic_agent_contracts() -> int:
 
 
 def count_raw_agent_runtime_bindings() -> int:
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
+    from assurance_product.agent_contracts import all_feature_agent_contracts
 
-    return len(AGENT_RUNTIME_BINDINGS)
+    return len(all_feature_agent_contracts())
 
 
 def all_agent_contracts_resolve_with_raw_executor() -> bool:
     from agent_runtime_contracts import ResolvedRawAgentExecutor
 
     from assurance_product.agent_contracts import all_feature_agent_contracts
-    from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 
     contracts = all_feature_agent_contracts()
-    if set(AGENT_RUNTIME_BINDINGS) != set(contracts) or len(contracts) != 33:
+    if len(contracts) != 33:
         return False
     source = (
         _REPO_ROOT
@@ -133,11 +118,10 @@ def boot_artifact() -> BootArtifact:
     return BootArtifact(attempt_contracts=contracts)
 
 
-@pytest.fixture
-def compiled_artifacts(installed_sources):
+@pytest.fixture(scope="session")
+def compiled_artifacts(installed_sources, opencode_composition):
     import assurance_product.application as application_module
     from assurance_product.application import AssuranceProductApplication
-    from tests.product.composition_harness import request_for
 
     coexistence = getattr(application_module, "CoexistenceBuildArtifacts", None)
     if coexistence is not None:
@@ -146,11 +130,8 @@ def compiled_artifacts(installed_sources):
             product_lock={"schema_version": "3", "digest": "y" * 64},
             manifest={"revision": {"revision_id": "z" * 64}},
         )
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     return AssuranceProductApplication().compile(
-        composition,
+        opencode_composition,
         product="assurance-opencode",
         config_tree=str(installed_sources.configuration_tree.path),
     )
@@ -179,7 +160,6 @@ def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact: BootArtifact)
     import assurance_product.agent_contracts as agent_contracts
 
     assert len(boot_artifact.attempt_contracts) == 41
-    assert count_agent_occurrences() == 34
     assert count_semantic_agent_contracts() == 33
     assert count_raw_agent_runtime_bindings() == 33
     assert all_agent_contracts_resolve_with_raw_executor()

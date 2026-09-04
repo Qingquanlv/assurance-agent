@@ -19,7 +19,6 @@ CLOSED_WHEEL_PACKAGES = (
     "assurance-improvement",
     "assurance-product",
     "agent-runtime-opencode",
-    "agent-runtime-cursor",
 )
 
 

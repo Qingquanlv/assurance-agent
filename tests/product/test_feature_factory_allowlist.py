@@ -24,6 +24,11 @@ from graph_engine.boot.source_authentication import (
 )
 
 from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
+from tests.product.unused_runtime_ports import (
+    UNUSED_ATTEMPT_KERNEL,
+    UNUSED_SECRET_RESOLVER,
+    UNUSED_WORKSPACE_PROVIDER,
+)
 
 
 EXPECTED_FEATURE_GRAPH_FACTORIES = (
@@ -160,9 +165,9 @@ def test_allowlist_rejects_missing_extra_and_duplicate_owners(tmp_path: Path) ->
             missing_request,
             checkpointer=helpers.real_anchored_checkpointer(),
             runtime_ports=RuntimePorts(
-                attempt_kernel=object(),  # type: ignore[arg-type]
-                secret_resolver=object(),
-                workspace_provider=object(),
+                attempt_kernel=UNUSED_ATTEMPT_KERNEL,
+                secret_resolver=UNUSED_SECRET_RESOLVER,
+                workspace_provider=UNUSED_WORKSPACE_PROVIDER,
             ),
         )
 

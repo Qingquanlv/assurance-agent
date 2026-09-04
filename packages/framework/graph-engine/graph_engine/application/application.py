@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+import inspect
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
@@ -10,7 +11,12 @@ from langgraph.graph import START
 from langgraph.types import Command
 
 from graph_engine.application.revision_guard import require_revision
-from graph_engine.application.runtime_context import AssuranceRuntimeContext
+from graph_engine.application.runtime_context import (
+    AssuranceRuntimeContext,
+    AttemptKernelPort,
+    SecretResolverPort,
+    WorkspaceProviderPort,
+)
 from graph_engine.application.status import (
     GraphSnapshotEnvelope,
     InterruptEnvelope,
@@ -83,6 +89,39 @@ class StartedInvocation:
             raise ValueError("thread id must equal invocation id")
 
 
+@dataclass(frozen=True, slots=True)
+class InvocationBoundExecution:
+    artifact: BootArtifact
+    runtime_context: AssuranceRuntimeContext
+    recover_outbox: Callable[[], Awaitable[None]] | None = None
+
+
+class InvocationBoundExecutionFactory(Protocol):
+    def bind(self, runner_lease: RunnerLease) -> InvocationBoundExecution: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FixedExecutionFactory:
+    artifact: BootArtifact
+    attempt_kernel: AttemptKernelPort
+    secret_resolver: SecretResolverPort
+    workspace_provider: WorkspaceProviderPort
+
+    def bind(self, runner_lease: RunnerLease) -> InvocationBoundExecution:
+        if not isinstance(runner_lease, RunnerLease):
+            raise ValueError("fencing token")
+        return InvocationBoundExecution(
+            artifact=self.artifact,
+            runtime_context=AssuranceRuntimeContext(
+                revision_id=self.artifact.manifest.revision.revision_id,
+                fencing_token=runner_lease.fencing_token,
+                attempt_kernel=self.attempt_kernel,
+                secret_resolver=self.secret_resolver,
+                workspace_provider=self.workspace_provider,
+            ),
+        )
+
+
 class AssuranceApplication:
     def __init__(
         self,
@@ -103,44 +142,42 @@ class AssuranceApplication:
     async def start(
         self,
         *,
-        artifact: BootArtifact,
         invocation_id: str,
         entrypoint: str,
         graph_input: Mapping[str, JSONValue],
-        runtime_context: AssuranceRuntimeContext,
+        execution_factory: InvocationBoundExecutionFactory,
     ) -> StartedInvocation:
-        async with self._hold_lease(invocation_id) as lease:
+        async with self._hold_lease(invocation_id, execution_factory) as (lease, bound):
             return await self._start_locked(
-                artifact=artifact,
+                artifact=bound.artifact,
                 invocation_id=invocation_id,
                 entrypoint=entrypoint,
                 graph_input=graph_input,
-                runtime_context=runtime_context,
+                runtime_context=bound.runtime_context,
                 lease=lease,
             )
 
     async def start_and_run(
         self,
         *,
-        artifact: BootArtifact,
         invocation_id: str,
         entrypoint: str,
         graph_input: Mapping[str, JSONValue],
-        runtime_context: AssuranceRuntimeContext,
+        execution_factory: InvocationBoundExecutionFactory,
     ) -> InvocationStatus:
-        async with self._hold_lease(invocation_id) as lease:
+        async with self._hold_lease(invocation_id, execution_factory) as (lease, bound):
             await self._start_locked(
-                artifact=artifact,
+                artifact=bound.artifact,
                 invocation_id=invocation_id,
                 entrypoint=entrypoint,
                 graph_input=graph_input,
-                runtime_context=runtime_context,
+                runtime_context=bound.runtime_context,
                 lease=lease,
             )
             return await self._run_locked(
-                artifact=artifact,
+                artifact=bound.artifact,
                 invocation_id=invocation_id,
-                runtime_context=runtime_context,
+                runtime_context=bound.runtime_context,
                 lease=lease,
                 command=None,
             )
@@ -148,15 +185,14 @@ class AssuranceApplication:
     async def run(
         self,
         *,
-        artifact: BootArtifact,
         invocation_id: str,
-        runtime_context: AssuranceRuntimeContext,
+        execution_factory: InvocationBoundExecutionFactory,
     ) -> InvocationStatus:
-        async with self._hold_lease(invocation_id) as lease:
+        async with self._hold_lease(invocation_id, execution_factory) as (lease, bound):
             return await self._run_locked(
-                artifact=artifact,
+                artifact=bound.artifact,
                 invocation_id=invocation_id,
-                runtime_context=runtime_context,
+                runtime_context=bound.runtime_context,
                 lease=lease,
                 command=None,
             )
@@ -164,18 +200,17 @@ class AssuranceApplication:
     async def resume(
         self,
         *,
-        artifact: BootArtifact,
         invocation_id: str,
-        runtime_context: AssuranceRuntimeContext,
+        execution_factory: InvocationBoundExecutionFactory,
         resume: object,
     ) -> InvocationStatus:
-        async with self._hold_lease(invocation_id) as lease:
-            snapshot = await self._read_snapshot(artifact, invocation_id, runtime_context)
+        async with self._hold_lease(invocation_id, execution_factory) as (lease, bound):
+            snapshot = await self._read_snapshot(bound.artifact, invocation_id, bound.runtime_context)
             payload = _resume_payload(resume, tuple(getattr(snapshot, "interrupts", ())))
             return await self._run_locked(
-                artifact=artifact,
+                artifact=bound.artifact,
                 invocation_id=invocation_id,
-                runtime_context=runtime_context,
+                runtime_context=bound.runtime_context,
                 lease=lease,
                 command=Command(resume=payload),
                 snapshot=snapshot,
@@ -188,7 +223,11 @@ class AssuranceApplication:
         invocation_id: str,
         runtime_context: AssuranceRuntimeContext,
     ) -> InvocationStatus:
-        snapshot = await self._read_snapshot(artifact, invocation_id, runtime_context)
+        snapshot = await self._read_snapshot(
+            _read_only_artifact(artifact),
+            invocation_id,
+            runtime_context,
+        )
         return _status_from_snapshot(snapshot)
 
     async def _start_locked(
@@ -225,6 +264,13 @@ class AssuranceApplication:
             fencing_token=lease.fencing_token,
             initial_checkpoint=True,
         )
+        _require_matching_tokens(
+            lease,
+            runtime_context,
+            config_token=lease.fencing_token,
+            stored_token=None,
+            artifact=artifact,
+        )
         await graph.aupdate_state(config, dict(graph_input), as_node=START)
         started = StartedInvocation(
             thread_id=invocation_id,
@@ -259,6 +305,13 @@ class AssuranceApplication:
             root_input_digest=_required_metadata(snapshot, "assurance_root_input_digest"),
             fencing_token=lease.fencing_token,
             initial_checkpoint=False,
+        )
+        _require_matching_tokens(
+            lease,
+            runtime_context,
+            config_token=lease.fencing_token,
+            stored_token=None,
+            artifact=artifact,
         )
         try:
             await graph.ainvoke(command, config)
@@ -307,18 +360,110 @@ class AssuranceApplication:
         }
         if tuple(configurable) != CONFIGURABLE_KEYS:
             raise ValueError("application config keys drifted")
-        return {
+        config = {
             "recursion_limit": self._recursion_limits.get(entrypoint, DEFAULT_RECURSION_LIMIT),
             "configurable": configurable,
         }
+        if fencing_token < 1:
+            raise ValueError("fencing token")
+        return config
 
     @asynccontextmanager
-    async def _hold_lease(self, invocation_id: str) -> AsyncIterator[RunnerLease]:
+    async def _hold_lease(
+        self,
+        invocation_id: str,
+        factory: InvocationBoundExecutionFactory,
+    ) -> AsyncIterator[tuple[RunnerLease, InvocationBoundExecution]]:
         lease = await self._lease.acquire(invocation_id, owner_id=self._owner_id)
+        bound: InvocationBoundExecution | None = None
         try:
-            yield lease
+            bound = factory.bind(lease)
+            _require_bound_fence(lease, bound)
+            yield lease, bound
         finally:
+            if bound is not None:
+                await _recover_bound(bound, invocation_id)
             await self._lease.release(lease)
+
+
+def _require_bound_fence(lease: RunnerLease, bound: InvocationBoundExecution) -> None:
+    _require_matching_tokens(
+        lease,
+        bound.runtime_context,
+        config_token=bound.runtime_context.fencing_token,
+        stored_token=None,
+        artifact=bound.artifact,
+    )
+
+
+def _require_matching_tokens(
+    lease: RunnerLease,
+    runtime_context: AssuranceRuntimeContext,
+    *,
+    config_token: int,
+    stored_token: int | None,
+    artifact: BootArtifact,
+) -> None:
+    token = lease.fencing_token
+    if token < 1:
+        raise ValueError("fencing token")
+    if runtime_context.fencing_token != token:
+        raise ValueError("fencing token mismatch")
+    if config_token != token:
+        raise ValueError("fencing token mismatch")
+    identity = _checkpointer_identity(artifact)
+    if identity is not None and identity != token:
+        raise ValueError("fencing token mismatch")
+    if stored_token is not None and stored_token != token:
+        raise ValueError("fencing token mismatch")
+
+
+def _checkpointer_identity(artifact: BootArtifact) -> int | None:
+    for graph in artifact.entrypoints.values():
+        checkpointer = getattr(graph, "checkpointer", None)
+        identity = getattr(checkpointer, "_identity", None)
+        if identity is not None:
+            return int(identity.fencing_token)
+    return None
+
+
+async def _recover_bound(bound: InvocationBoundExecution, invocation_id: str) -> None:
+    if bound.recover_outbox is not None:
+        await bound.recover_outbox()
+        return
+    for graph in bound.artifact.entrypoints.values():
+        checkpointer = getattr(graph, "checkpointer", None)
+        recover = getattr(checkpointer, "arecover", None)
+        if callable(recover):
+            outcome = recover(thread_id=invocation_id)
+            if inspect.isawaitable(outcome):
+                await outcome
+            return
+
+
+class _ReadOnlyGraph:
+    def __init__(self, graph: object) -> None:
+        self._graph = graph
+
+    async def aget_state(self, config: object) -> object:
+        return await self._graph.aget_state(config)  # type: ignore[no-any-return]
+
+    async def aupdate_state(self, config: object, values: object, as_node: object) -> object:
+        del config, values, as_node
+        raise RuntimeError("read-only invocation view cannot mutate")
+
+    async def ainvoke(self, input: object, config: object) -> object:
+        del input, config
+        raise RuntimeError("read-only invocation view cannot mutate")
+
+
+def _read_only_artifact(artifact: BootArtifact) -> BootArtifact:
+    return BootArtifact(
+        manifest=artifact.manifest,
+        entrypoints={name: _ReadOnlyGraph(graph) for name, graph in artifact.entrypoints.items()},  # type: ignore[arg-type]
+        attempt_contracts=artifact.attempt_contracts,
+        checkpointer_backend_id=artifact.checkpointer_backend_id,
+    )
 
 
 def _graph(artifact: BootArtifact, entrypoint: str) -> _CompiledGraph:
@@ -440,8 +585,11 @@ __all__ = [
     "AmbiguousResume",
     "AssuranceApplication",
     "CONFIGURABLE_KEYS",
+    "FixedExecutionFactory",
     "HumanResumeAction",
     "InvalidResume",
+    "InvocationBoundExecution",
+    "InvocationBoundExecutionFactory",
     "InvocationStartPinPort",
     "StartedInvocation",
 ]

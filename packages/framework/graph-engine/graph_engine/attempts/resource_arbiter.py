@@ -49,6 +49,8 @@ class ResourceArbiterPort(Protocol):
         fencing_token: int,
     ) -> ResourceAuthorization: ...
 
+    async def is_active(self, attempt_key: AttemptKey) -> bool: ...
+
 
 @dataclass(frozen=True, slots=True)
 class _ActiveGrant:
@@ -170,6 +172,10 @@ class ResourceArbiter:
             raise StaleFencingToken("fencing token is stale")
         await self._store.assert_current_fence(existing.authorization_id, fencing_token)
         return _authorization(attempt_key, existing)
+
+    async def is_active(self, attempt_key: AttemptKey) -> bool:
+        existing = _grant_for_attempt(_active_grants(await self._store.read_records()), attempt_key)
+        return existing is not None
 
     async def _cas_append(
         self,

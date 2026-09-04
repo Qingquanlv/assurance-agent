@@ -45,7 +45,7 @@ _DISPOSITION_RE = re.compile(
     r"Modify only to add/use the coexistence Python branch; retain every leftover field/branch until Task 9|"
     r"Modify only to add/use the coexistence Python branch; retain every legacy field/branch until Task 9|"
     r"Modify as temporary re-export wrappers(?: only for modules actually moved above)?|"
-    r"Modify only to cover the remaining consumer migration; preserve the focused Checkpoint R runtime tests|"
+    r"Modify only to cover the remaining consumer migration; preserve the focused Raw Agent runtime tests|"
     r"Modify only if Task 7 import migration requires it|"
     r"Modify/regenerate|Modify|Delete/replace|Delete Task 7 compatibility wrapper|"
     r"Delete after all moves/import rewrites|Delete|Create in Task 7(?: only if retained consumers require them)?|"

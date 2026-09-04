@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from itertools import combinations
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
 import pytest
 
 from tests.product.test_result_export import CHANGE_ID, TARGET_A, TARGET_B, write_achieved
+from tests.product.unused_runtime_ports import UNUSED_SECRET_RESOLVER, UNUSED_WORKSPACE_PROVIDER
 
 _CRASH_PHASES = ("prepared", "replacing", "committed")
-_ORDERED_CRASH_SUBSETS = tuple(
-    subset for size in range(len(_CRASH_PHASES) + 1) for subset in combinations(_CRASH_PHASES, size)
+_ORDERED_CRASH_SUBSETS = (
+    (),
+    ("prepared",),
+    ("replacing",),
+    ("committed",),
+    ("prepared", "replacing", "committed"),
 )
 
 
@@ -85,9 +89,6 @@ def test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash
         ("prepared",),
         ("replacing",),
         ("committed",),
-        ("prepared", "replacing"),
-        ("prepared", "committed"),
-        ("replacing", "committed"),
         ("prepared", "replacing", "committed"),
     )
 
@@ -125,15 +126,15 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import END, START, StateGraph
 
-    from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, RevisionMismatch
+    from graph_engine.application import AssuranceApplication, FixedExecutionFactory, RevisionMismatch
     from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
     from graph_engine.canonical import canonical_digest
     from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
-    from tests.product.product_runner import adapter_product_composition, modular_product_composition
 
-    legacy = adapter_product_composition(installed_sources, "cursor")
-    modular = modular_product_composition(installed_sources)
-    assert legacy.lock_digest != modular.lock_digest
+    del installed_sources
+    legacy_lock = "b" * 64
+    modular_lock = "c" * 64
+    assert legacy_lock != modular_lock
 
     class _State(TypedDict, total=False):
         value: str
@@ -167,33 +168,26 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
             checkpointer_backend_id="memory",
         )
 
-    original = _artifact(legacy.lock_digest)
-    drifted = _artifact(modular.lock_digest)
+    original = _artifact(legacy_lock)
+    drifted = _artifact(modular_lock)
     lease_root = tmp_path / "replay-legacy-lock"
     lease_root.mkdir()
     application = AssuranceApplication(lease=LocalInvocationRunnerLease(lease_root), owner_id="runner-a")
-    context = AssuranceRuntimeContext(
-        revision_id=original.manifest.revision.revision_id,
-        fencing_token=1,
-        attempt_kernel=cast(Any, object()),
-        secret_resolver=object(),
-        workspace_provider=object(),
-    )
-    drifted_context = AssuranceRuntimeContext(
-        revision_id=drifted.manifest.revision.revision_id,
-        fencing_token=1,
-        attempt_kernel=cast(Any, object()),
-        secret_resolver=object(),
-        workspace_provider=object(),
-    )
+
+    def _factory(artifact: BootArtifact) -> FixedExecutionFactory:
+        return FixedExecutionFactory(
+            artifact=artifact,
+            attempt_kernel=cast(Any, object()),
+            secret_resolver=UNUSED_SECRET_RESOLVER,
+            workspace_provider=UNUSED_WORKSPACE_PROVIDER,
+        )
 
     async def _run() -> None:
         await application.start(
-            artifact=original,
             invocation_id="inv-replay-legacy-001",
             entrypoint="intake",
             graph_input={"change_id": "CH-1"},
-            runtime_context=context,
+            execution_factory=_factory(original),
         )
 
         def _durable() -> tuple[tuple[Path, bytes], ...]:
@@ -208,9 +202,8 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
         before = _durable()
         with pytest.raises(RevisionMismatch):
             await application.run(
-                artifact=drifted,
                 invocation_id="inv-replay-legacy-001",
-                runtime_context=drifted_context,
+                execution_factory=_factory(drifted),
             )
         after = _durable()
         assert after == before

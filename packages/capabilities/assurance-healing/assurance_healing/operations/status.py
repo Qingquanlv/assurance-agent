@@ -170,6 +170,32 @@ def _as_tuple(value: object) -> tuple[str, ...]:
     return tuple(str(item) for item in value)
 
 
+_CURRENT_EVENT_KINDS = frozenset(
+    {
+        "healing_attempt_allocated_v2",
+        "fixer_proposal_approved",
+        "heal_record_apply_v2",
+    }
+)
+_FORMER_APPROVAL_FIELDS = frozenset(
+    {
+        "proposal_sha256",
+        "fixer_authority_sha256",
+        "entry_baseline_sha256",
+        "policy_sha256",
+    }
+)
+_FORMER_APPLY_FIELDS = frozenset({"attempt_key", "safety_payload_sha256", "files_modified"})
+_FORMER_ALLOCATION_FIELDS = frozenset({"baseline_sha256"})
+
+
+def _require_current_event(event: Mapping[str, Any]) -> str:
+    event_type = event.get("type")
+    if not isinstance(event_type, str) or event_type not in _CURRENT_EVENT_KINDS:
+        raise ValueError("healing event is not a current schema")
+    return event_type
+
+
 def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
     ordered = sorted(events, key=_event_seq)
     allocations: list[dict[str, object]] = []
@@ -178,8 +204,10 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
     baseline: dict[str, object] | None = None
     allocation_floor = 0
     for event in ordered:
-        event_type = event.get("type")
+        event_type = _require_current_event(event)
         if event_type == "healing_attempt_allocated_v2":
+            if _FORMER_ALLOCATION_FIELDS.intersection(event):
+                raise ValueError("healing event is not a current schema")
             allocations.append(
                 {
                     "operation_id": event.get("operation_id"),
@@ -188,7 +216,7 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "attempt_number": event.get("attempt_number"),
                     "source_batch_id": event.get("source_batch_id"),
                     "entry_batch_id": event.get("entry_batch_id"),
-                    "baseline_sha256": event.get("baseline_sha256"),
+                    "baseline_digest": event.get("baseline_digest"),
                 }
             )
             allocation_floor = max(allocation_floor, _event_seq(event))
@@ -196,30 +224,12 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                 baseline = {
                     "episode_id": event.get("episode_id"),
                     "entry_batch_id": event.get("entry_batch_id"),
-                    "artifact_sha256": event.get("baseline_sha256"),
+                    "artifact_sha256": event.get("baseline_digest"),
                     "form": "v2",
                 }
-        elif event_type == "healing_attempt_allocated":
-            allocations.append(
-                {
-                    "operation_id": event.get("operation_id"),
-                    "episode_id": event.get("episode_id"),
-                    "attempt_id": event.get("attempt_id"),
-                    "attempt_number": event.get("attempt_number"),
-                    "source_batch_id": event.get("source_batch_id"),
-                    "entry_batch_id": event.get("entry_batch_id"),
-                    "baseline_sha256": event.get("baseline_sha256"),
-                }
-            )
-            allocation_floor = max(allocation_floor, _event_seq(event))
-        elif event_type == "healing_entry_baseline_pinned" and baseline is None:
-            baseline = {
-                "episode_id": event.get("episode_id"),
-                "entry_batch_id": event.get("entry_batch_id"),
-                "artifact_sha256": event.get("artifact_sha256"),
-                "form": "legacy",
-            }
         elif event_type == "fixer_proposal_approved":
+            if _FORMER_APPROVAL_FIELDS.intersection(event):
+                raise ValueError("healing event is not a current schema")
             approvals.append(
                 {
                     "approval_id": event.get("approval_id"),
@@ -227,19 +237,21 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "interrupt_task_id": event.get("interrupt_task_id"),
                     "source_gate_attempt_id": event.get("source_gate_attempt_id"),
                     "source_tree_id": event.get("source_tree_id"),
-                    "proposal_sha256": event.get("proposal_sha256") or event.get("proposal_digest"),
-                    "fixer_authority_sha256": event.get("fixer_authority_sha256")
-                    or event.get("fixer_authority_digest"),
-                    "entry_baseline_sha256": event.get("entry_baseline_sha256")
-                    or event.get("baseline_digest"),
-                    "policy_sha256": event.get("policy_sha256") or event.get("policy_digest"),
+                    "proposal_digest": event.get("proposal_digest"),
+                    "fixer_authority_digest": event.get("fixer_authority_digest"),
+                    "baseline_digest": event.get("baseline_digest"),
+                    "policy_digest": event.get("policy_digest"),
                     "targets": list(_as_tuple(event.get("targets"))),
                     "paths": list(_as_tuple(event.get("paths"))),
                     "target_tree_id": event.get("target_tree_id"),
                     "source_seq": _event_seq(event),
                 }
             )
-        elif event_type == "heal_record_apply_v2" and _event_seq(event) > allocation_floor:
+        elif event_type == "heal_record_apply_v2":
+            if not event.get("record_key") or _FORMER_APPLY_FIELDS.intersection(event):
+                raise ValueError("healing event is not a current schema")
+            if _event_seq(event) <= allocation_floor:
+                continue
             claimed = _as_tuple(event.get("claimed_modified_paths"))
             records.append(
                 {
@@ -248,30 +260,12 @@ def project_episode(events: Sequence[Mapping[str, Any]]) -> dict[str, object]:
                     "outcome": event.get("outcome"),
                     "proposal_ids": list(_as_tuple(event.get("proposal_ids"))),
                     "claimed_modified_paths": list(claimed),
-                    "intent_sha256": event.get("intent_sha256"),
+                    "intent_digest": event.get("intent_digest"),
                     "write_set_id": event.get("write_set_id"),
-                    "safety_payload_sha256": event.get("safety_payload_sha256")
-                    or event.get("safety_payload_digest"),
+                    "safety_payload_digest": event.get("safety_payload_digest"),
                     "files_modified": list(claimed),
                     "source_seq": _event_seq(event),
                     "form": "v2",
-                }
-            )
-        elif event_type == "heal_record_apply" and _event_seq(event) > allocation_floor:
-            modified = _as_tuple(event.get("files_modified"))
-            records.append(
-                {
-                    "record_key": event.get("attempt_key") or f"legacy:{_event_seq(event)}",
-                    "target": event.get("target"),
-                    "outcome": "applied" if modified else "no_op",
-                    "proposal_ids": [],
-                    "claimed_modified_paths": list(modified),
-                    "intent_sha256": None,
-                    "write_set_id": None,
-                    "safety_payload_sha256": None,
-                    "files_modified": list(modified),
-                    "source_seq": _event_seq(event),
-                    "form": "legacy",
                 }
             )
     episode_id = baseline.get("episode_id") if baseline is not None else None

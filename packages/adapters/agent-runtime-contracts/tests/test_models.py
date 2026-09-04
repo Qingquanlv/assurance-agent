@@ -8,6 +8,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from agent_runtime_contracts import (
+    AgentPhaseWriteClaims,
     AgentRunRequest,
     AgentRunResult,
     AgentWorkspaceV1,
@@ -564,6 +565,7 @@ def test_isolated_wheel_import_does_not_load_adapters_or_assurance(tmp_path: Pat
             "pydantic",
             "packaging",
             "pyyaml",
+            "langgraph",
         ],
         check=True,
     )
@@ -628,6 +630,7 @@ def test_agent_result_and_finalize_output_are_distinct_contracts() -> None:
         retry=retry,
         timeout=timeout,
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=(), finalize=()),
     )
     assert contract.agent_result_model is not contract.output_model
 
@@ -662,6 +665,7 @@ def _local_agent_contract():
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=(), finalize=()),
     )
 
 
@@ -688,6 +692,7 @@ def test_agent_execution_contract_projection_is_raw_agent_contract_v1() -> None:
     assert projection["agent_result_schema_digest"] == canonical_digest(
         contract.agent_result_model.model_json_schema()
     )
+    assert projection["phase_write_claims"] == {"prepare": [], "runtime": [], "finalize": []}
     assert "requires_provider_schema" not in projection
     assert "provider_schema" not in projection
 
@@ -750,6 +755,7 @@ def test_agent_result_validation_keeps_feature_owned_context() -> None:
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=(), finalize=()),
     )
     payload = {"leaf": "api"}
     with pytest.raises(ValidationError, match="capability leaf"):
@@ -851,6 +857,11 @@ def test_agent_execution_contract_is_provider_neutral() -> None:
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(
+            prepare=(),
+            runtime=("qa/changes/{change_id}/requirement.md",),
+            finalize=(),
+        ),
     )
     dumped = str(contract.canonical_projection()).lower()
     assert contract.contract_id == "assurance.intake.agent.intake.v1"

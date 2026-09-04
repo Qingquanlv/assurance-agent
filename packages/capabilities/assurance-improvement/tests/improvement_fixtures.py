@@ -568,6 +568,62 @@ class FaultingDeliveryStore:
         self.records[key] = StoreRecord(status="applied", receipt=receipt, payload=payload)
 
 
+class FaultingEffectState:
+    def __init__(self, cut: str) -> None:
+        from graph_engine.effects.state import MemoryEffectState
+
+        self.cut = cut
+        self._inner = MemoryEffectState()
+        self.delivery_count = 0
+        self._faulted = False
+
+    async def commit(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        payload: JSONValue,
+        receipt: JSONValue,
+        fencing_token: int,
+    ):
+        if self.cut == "before_mutation" and not self._faulted:
+            self._faulted = True
+            raise CrashCut("before_mutation")
+        result = await self._inner.commit(
+            effect_kind=effect_kind,
+            settlement_key=settlement_key,
+            business_key=business_key,
+            intent_digest=intent_digest,
+            payload=payload,
+            receipt=receipt,
+            fencing_token=fencing_token,
+        )
+        self.delivery_count += 1
+        if not self._faulted and self.cut in {"after_mutation", "before_receipt"}:
+            self._faulted = True
+            raise CrashCut(self.cut)
+        return result
+
+    async def observe(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        fencing_token: int,
+    ):
+        return await self._inner.observe(
+            effect_kind=effect_kind,
+            settlement_key=settlement_key,
+            business_key=business_key,
+            intent_digest=intent_digest,
+            fencing_token=fencing_token,
+        )
+
+
 def _intent_key(intent: EffectIntent) -> str:
     payload = intent.payload
     if not isinstance(payload, dict):
@@ -582,29 +638,30 @@ def _intent_key(intent: EffectIntent) -> str:
     )
 
 
-async def _attempt_and_reconcile(handler: object, intent: EffectIntent) -> EffectReconcileResult:
-    key = _intent_key(intent)
+async def _attempt_and_reconcile(
+    handler: object, intent: EffectIntent, context: object
+) -> EffectReconcileResult:
     apply = getattr(handler, "apply")
     reconcile = getattr(handler, "reconcile")
     try:
-        applied = await apply(intent, key)
+        applied = await apply(intent, context)
         if isinstance(applied, EffectApplyResult) and applied.status == "applied":
-            result = await reconcile(intent, key)
+            result = await reconcile(intent, context)
             if isinstance(result, EffectReconcileResult):
                 return result
     except CrashCut:
         pass
-    reconciled = await reconcile(intent, key)
+    reconciled = await reconcile(intent, context)
     if not isinstance(reconciled, EffectReconcileResult):
         raise TypeError("reconcile must return EffectReconcileResult")
     if reconciled.status == "not_applied":
         try:
-            applied = await apply(intent, key)
+            applied = await apply(intent, context)
         except CrashCut:
             applied = None
         if not isinstance(applied, EffectApplyResult) or applied.status != "applied":
             return EffectReconcileResult(status="pending")
-        retry = await reconcile(intent, key)
+        retry = await reconcile(intent, context)
         if not isinstance(retry, EffectReconcileResult):
             raise TypeError("reconcile must return EffectReconcileResult")
         return retry

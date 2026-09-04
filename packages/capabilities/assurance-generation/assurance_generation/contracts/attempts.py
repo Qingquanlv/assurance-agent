@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, cast
 
-from agent_runtime_contracts import AgentExecutionContract
+from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
@@ -80,6 +80,7 @@ def _job(
     claim_outputs = outputs
     if stage in {"codegen", "codegen-fix"}:
         claim_outputs = (*outputs, f"generated/{family}/files")
+    writes = _paths(*claim_outputs)
     return AgentExecutionContract(
         contract_id=f"assurance.generation.agent.{base}.v1",
         owner_id="assurance.generation",
@@ -93,11 +94,12 @@ def _job(
         resources=ResourceClaimTemplate(
             parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
-            writes=_paths(*claim_outputs),
+            writes=writes,
         ),
         retry=_RETRY,
         timeout=_TIMEOUT,
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=writes, finalize=()),
     )
 
 

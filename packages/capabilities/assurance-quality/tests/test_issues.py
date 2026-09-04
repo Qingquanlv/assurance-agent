@@ -8,6 +8,9 @@ from graph_engine.plugin_api import CandidateWriteSet
 
 from tests.phase4.conformance import execute_task
 
+from pydantic import ValidationError
+
+from assurance_quality.contracts.issues import IssueReconcileStatusDocument, ProblemFingerprint
 from assurance_quality.operations.issues import (
     ApplyProblemReviewHandler,
     CollectObservationsHandler,
@@ -29,6 +32,26 @@ from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     validation_context,
     write_set,
 )
+
+
+def issue_reconcile_v1_document() -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "status": "completed",
+        "evidence_bundle_digest": EVIDENCE_REF,
+    }
+
+
+def test_issue_reconcile_accepts_only_v2() -> None:
+    with pytest.raises(ValidationError):
+        IssueReconcileStatusDocument.model_validate(issue_reconcile_v1_document())
+
+
+def test_problem_fingerprint_requires_preimage() -> None:
+    with pytest.raises(ValidationError):
+        ProblemFingerprint.model_validate({"version": "1", "digest": "sha256:" + "a" * 64})
 
 
 @pytest.mark.asyncio

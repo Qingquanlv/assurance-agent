@@ -38,34 +38,14 @@ def test_six_wheel_product_resolves_exact_dependency_order() -> None:
     )
 
 
-def test_cursor_product_resolves_runtime_cursor_last_before_bindings() -> None:
-    composition = resolve_fixture("phase4-cursor")
-    assert composition.dependency_order == (
-        "assurance.intake",
-        "assurance.generation",
-        "assurance.execution",
-        "assurance.healing",
-        "assurance.quality",
-        "assurance.improvement",
-        "runtime.cursor",
-        "test.assurance.bindings",
-    )
-
-
-def test_adapter_selections_have_different_composition_and_lock_digests() -> None:
+def test_opencode_product_uses_graph_factory_without_workflow() -> None:
     opencode = resolve_fixture("phase4-opencode")
-    cursor = resolve_fixture("phase4-cursor")
-    assert opencode.digest != cursor.digest
-    assert opencode.lock_digest != cursor.lock_digest
     assert not hasattr(opencode.composition.manifest, "workflow")
-    assert not hasattr(cursor.composition.manifest, "workflow")
     assert (
         opencode.composition.manifest.graph_factory_symbol
-        == cursor.composition.manifest.graph_factory_symbol
         == "test_assurance_phase4_product.product:build_phase4_graphs"
     )
     assert opencode.composition.manifest.entrypoints == {"fixture": "root"}
-    assert cursor.composition.manifest.entrypoints == {"fixture": "root"}
 
 
 def test_binding_digests_recompute_from_checked_in_bytes() -> None:
@@ -83,21 +63,17 @@ def test_binding_digests_recompute_from_checked_in_bytes() -> None:
             assert binding["data"] == expected
 
 
-def test_checked_in_declarations_bind_distinct_entrypoints() -> None:
+def test_checked_in_declaration_binds_opencode_entrypoint() -> None:
     opencode = _load_json(
         PRODUCT_ROOT / "test_assurance_phase4_product" / "product-opencode-declaration.json"
     )
-    cursor = _load_json(PRODUCT_ROOT / "test_assurance_phase4_product" / "product-cursor-declaration.json")
     opencode_source = cast(dict[str, Any], opencode["source"])
-    cursor_source = cast(dict[str, Any], cursor["source"])
     opencode_manifest = cast(dict[str, Any], opencode["manifest"])
-    cursor_manifest = cast(dict[str, Any], cursor["manifest"])
     assert opencode_source["entrypoint_name"] == "phase4-opencode"
-    assert cursor_source["entrypoint_name"] == "phase4-cursor"
     assert str(opencode_source["entrypoint_value"]).endswith("Phase4OpenCodeProduct")
-    assert str(cursor_source["entrypoint_value"]).endswith("Phase4CursorProduct")
-    assert opencode_source["distribution"] == cursor_source["distribution"] == PRODUCT_DISTRIBUTION
-    assert opencode_manifest["entrypoints"] == cursor_manifest["entrypoints"] == {"fixture": "root"}
+    assert opencode_source["distribution"] == PRODUCT_DISTRIBUTION
+    assert opencode_manifest["entrypoints"] == {"fixture": "root"}
+    assert not (PRODUCT_ROOT / "test_assurance_phase4_product" / "product-cursor-declaration.json").exists()
 
 
 def test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints() -> None:

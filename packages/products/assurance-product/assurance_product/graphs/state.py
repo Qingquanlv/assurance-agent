@@ -397,6 +397,13 @@ class ProductStateDocument(FrozenModel):
     terminal: str
     families: dict[str, dict[str, bool]]
     selected_families: list[str]
+    projection: dict[str, Any]
+    eval_run_id: str
+    outcome: str
+    report_sha256: str
+    staged_sha256: str
+    baseline_sha256: str | None
+    target_digest: str
 
 
 class ProductState(CheckpointBridgeState, total=False):
@@ -439,6 +446,13 @@ class ProductState(CheckpointBridgeState, total=False):
     terminal: str
     families: dict[str, dict[str, bool]]
     selected_families: list[str]
+    projection: dict[str, object]
+    eval_run_id: str
+    outcome: str
+    report_sha256: str
+    staged_sha256: str
+    baseline_sha256: str | None
+    target_digest: str
 
 
 __all__ = [

@@ -34,10 +34,6 @@ class _CaseEntryBase(BaseModel):
     module: NonEmptyStr
 
 
-class CaseEntry(_CaseEntryBase):
-    risk: CaseRisk | None = None
-
-
 class CaseRemoval(BaseModel):
     case_id: CaseId
 
@@ -169,7 +165,7 @@ class MinimumCoverageMatrixAuthoring(RootModel[list[MinimumCoverageMatrixRowAuth
 
 
 class CaseEntryAuthoring(_CaseEntryBase):
-    """Fields required from newly authored cases, beyond legacy compatibility."""
+    """Fields required on every current-schema case document."""
 
     requirement_id: NonEmptyStr
     feature_name: NonEmptyStr
@@ -224,25 +220,20 @@ CaseEntryT = TypeVar("CaseEntryT", bound=_CaseEntryBase)
 
 
 class _CaseYamlBase(BaseModel, Generic[CaseEntryT]):
-    schema_version: NonEmptyStr
+    schema_version: Literal["1.0"]
     added: list[CaseEntryT]
     modified: list[CaseEntryT]
     removed: list[CaseRemoval]
 
 
-class CaseYaml(_CaseYamlBase[CaseEntry]):
-    pass
-
-
 class CaseYamlAuthoring(_CaseYamlBase[CaseEntryAuthoring]):
-    """New case output obligations that are stricter than historical reads."""
+    """Current case document; the read model equals this authoring contract."""
 
     model_config = ConfigDict(
         json_schema_extra={
             "prompt_notes": [
                 "Every added/modified case requires complete risk, automation, regression, "
-                "trace, steps, assertions, and test-design metadata; do not emit a minimal "
-                "legacy-compatible case",
+                "trace, steps, assertions, and test-design metadata",
                 "Set automation.required=true for every layer selected for automated execution; "
                 "otherwise applicability deterministically skips that layer",
                 "Performance entries require automation.performance.scenario.capability "
@@ -302,6 +293,10 @@ class CaseYamlAuthoring(_CaseYamlBase[CaseEntryAuthoring]):
         return self
 
 
+CaseEntry = CaseEntryAuthoring
+CaseYaml = CaseYamlAuthoring
+
+
 class QaChange(BaseModel):
     change_id: NonEmptyStr
     requirement_id: NonEmptyStr
@@ -336,7 +331,7 @@ class QaApproval(BaseModel):
 class QaYaml(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    schema_version: NonEmptyStr
+    schema_version: Literal["1.0"]
     schema_: NonEmptyStr = Field(alias="schema")
     created_at: NonEmptyStr
     change: QaChange

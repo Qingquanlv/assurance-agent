@@ -120,11 +120,20 @@ class ActivityTerminalObserved:
     activity_id: str = ""
     outcome: JSONValue = None
     outcome_digest: str = ""
+    source_identity_digest: str = ""
+    source_receipt_digest: str = ""
 
     def __post_init__(self) -> None:
         if not self.activity_id:
             raise ValueError("activity id must be nonempty")
         _sha256(self.outcome_digest, "activity outcome")
+        has_identity = bool(self.source_identity_digest)
+        has_receipt = bool(self.source_receipt_digest)
+        if has_identity != has_receipt:
+            raise ValueError("source host-receipt identity and digest must be present together")
+        if has_identity:
+            _sha256(self.source_identity_digest, "source identity")
+            _sha256(self.source_receipt_digest, "source receipt")
 
     def canonical_projection(self) -> dict[str, JSONValue]:
         return {
@@ -132,6 +141,8 @@ class ActivityTerminalObserved:
             "kind": self.kind,
             "outcome": self.outcome,
             "outcome_digest": self.outcome_digest,
+            "source_identity_digest": self.source_identity_digest,
+            "source_receipt_digest": self.source_receipt_digest,
         }
 
 
@@ -408,8 +419,12 @@ class AttemptSnapshot:
     activity_id: str | None = None
     activity_state: str | None = None
     activity_outcome: JSONValue = None
+    activity_dispatch_fingerprint: JSONValue = None
+    activity_dispatch_fingerprint_digest: str | None = None
     activity_reference: JSONValue = None
     activity_reference_digest: str | None = None
+    source_identity_digest: str | None = None
+    source_receipt_digest: str | None = None
     prepared_digest: str | None = None
     promotion_receipt_id: str | None = None
     promotion_receipt_digest: str | None = None
@@ -455,8 +470,12 @@ def fold_attempt_events(
                 activity_id=snapshot.activity_id,
                 activity_state=snapshot.activity_state,
                 activity_outcome=snapshot.activity_outcome,
+                activity_dispatch_fingerprint=snapshot.activity_dispatch_fingerprint,
+                activity_dispatch_fingerprint_digest=snapshot.activity_dispatch_fingerprint_digest,
                 activity_reference=snapshot.activity_reference,
                 activity_reference_digest=snapshot.activity_reference_digest,
+                source_identity_digest=snapshot.source_identity_digest,
+                source_receipt_digest=snapshot.source_receipt_digest,
                 prepared_digest=snapshot.prepared_digest,
                 promotion_receipt_id=snapshot.promotion_receipt_id,
                 promotion_receipt_digest=snapshot.promotion_receipt_digest,
@@ -478,18 +497,32 @@ def fold_attempt_events(
             outcome = (
                 event.outcome if isinstance(event, ActivityTerminalObserved) else snapshot.activity_outcome
             )
+            dispatch_fingerprint = snapshot.activity_dispatch_fingerprint
+            dispatch_digest = snapshot.activity_dispatch_fingerprint_digest
             reference = snapshot.activity_reference
             reference_digest = snapshot.activity_reference_digest
+            source_identity = snapshot.source_identity_digest
+            source_receipt = snapshot.source_receipt_digest
+            if isinstance(event, ActivityDispatchStarted):
+                dispatch_fingerprint = event.dispatch_fingerprint
+                dispatch_digest = event.dispatch_fingerprint_digest
             if isinstance(event, ActivityBound):
                 reference = event.reference
                 reference_digest = event.reference_digest
+            if isinstance(event, ActivityTerminalObserved):
+                source_identity = event.source_identity_digest or None
+                source_receipt = event.source_receipt_digest or None
             snapshot = _replace(
                 snapshot,
                 activity_id=event.activity_id,
                 activity_state=_ACTIVITY_STATES[event.kind],
                 activity_outcome=outcome,
+                activity_dispatch_fingerprint=dispatch_fingerprint,
+                activity_dispatch_fingerprint_digest=dispatch_digest,
                 activity_reference=reference,
                 activity_reference_digest=reference_digest,
+                source_identity_digest=source_identity,
+                source_receipt_digest=source_receipt,
             )
             continue
         if isinstance(event, CommitPrepared):
@@ -682,8 +715,12 @@ def _replace(snapshot: AttemptSnapshot, **changes: object) -> AttemptSnapshot:
         "activity_id": snapshot.activity_id,
         "activity_state": snapshot.activity_state,
         "activity_outcome": snapshot.activity_outcome,
+        "activity_dispatch_fingerprint": snapshot.activity_dispatch_fingerprint,
+        "activity_dispatch_fingerprint_digest": snapshot.activity_dispatch_fingerprint_digest,
         "activity_reference": snapshot.activity_reference,
         "activity_reference_digest": snapshot.activity_reference_digest,
+        "source_identity_digest": snapshot.source_identity_digest,
+        "source_receipt_digest": snapshot.source_receipt_digest,
         "prepared_digest": snapshot.prepared_digest,
         "promotion_receipt_id": snapshot.promotion_receipt_id,
         "promotion_receipt_digest": snapshot.promotion_receipt_digest,

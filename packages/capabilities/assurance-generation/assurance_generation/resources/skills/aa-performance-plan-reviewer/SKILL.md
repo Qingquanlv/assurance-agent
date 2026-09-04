@@ -87,8 +87,7 @@ Consume the same Task Mapping structure emitted by the planner:
 - Require the mapped method to be the primary executable load-test task under
   `tests/perf/**`.
 
-For an approved, codegen-ready plan, emit `"decision": "pass"`. Never emit
-`"approved"`.
+For a codegen-ready plan, emit `"decision": "pass"`.
 
 Required capability closure:
 

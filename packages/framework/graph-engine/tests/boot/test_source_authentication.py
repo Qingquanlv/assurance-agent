@@ -184,9 +184,6 @@ def test_product_factory_ref_authenticates_against_product_source(tmp_path: Path
 def test_product_manifest_accepts_graph_factory_symbol_form() -> None:
     manifest = ProductManifest.model_validate(_product_manifest_values())
     assert manifest.graph_factory_symbol == "assurance_product.graphs.factory:build_product_graphs"
-    assert manifest.workflow is None
-    assert manifest.workflow_resource_id is None
-    assert manifest.workflow_module is None
 
 
 @pytest.mark.parametrize(
@@ -208,7 +205,7 @@ def test_product_manifest_rejects_mixed_or_empty_graph_factory_forms(payload: di
     values = _product_manifest_values()
     values.pop("graph_factory_symbol")
     values.update(payload)
-    with pytest.raises(ValidationError, match="exactly one workflow form"):
+    with pytest.raises(ValidationError, match="Field required|Extra inputs are not permitted"):
         ProductManifest.model_validate(values)
 
 

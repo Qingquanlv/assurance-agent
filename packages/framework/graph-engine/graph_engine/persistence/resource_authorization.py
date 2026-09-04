@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 import re
 from typing import Literal, Protocol
@@ -9,6 +9,8 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import ResourceClaims
+
+RESOURCE_AUTHORIZATION_SCHEMA_VERSION = "1"
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -98,6 +100,86 @@ class ResourceAuthorizationRecord:
         return canonical_digest(self.canonical_projection())
 
 
+def decode_resource_authorization_record(
+    payload: object,
+    *,
+    schema_version: str,
+    record_digest: str,
+) -> ResourceAuthorizationRecord:
+    if schema_version != RESOURCE_AUTHORIZATION_SCHEMA_VERSION:
+        raise ResourceAuthorizationIntegrityError("unknown resource authorization schema version")
+    if not isinstance(payload, Mapping):
+        raise ResourceAuthorizationIntegrityError("authorization record is not an object")
+    expected = {
+        "action",
+        "attempt_key_digest",
+        "authorization_id",
+        "claims",
+        "fencing_token",
+        "revision",
+    }
+    extra = set(payload) - expected
+    missing = expected - set(payload)
+    if extra:
+        raise ResourceAuthorizationIntegrityError("unknown authorization record field")
+    if missing:
+        raise ResourceAuthorizationIntegrityError("omitted required authorization record field")
+    try:
+        claims = ResourceClaims.model_validate(payload["claims"])
+        record = ResourceAuthorizationRecord(
+            revision=payload["revision"],  # type: ignore[arg-type]
+            action=payload["action"],  # type: ignore[arg-type]
+            authorization_id=str(payload["authorization_id"]),
+            attempt_key_digest=str(payload["attempt_key_digest"]),
+            fencing_token=payload["fencing_token"],  # type: ignore[arg-type]
+            claims=claims,
+            record_digest=record_digest,
+        )
+    except (TypeError, ValueError) as error:
+        raise ResourceAuthorizationIntegrityError("authorization record fields drifted") from error
+    if record.record_digest != record.canonical_digest():
+        raise ResourceAuthorizationIntegrityError("resource authorization digest drifted")
+    return record
+
+
+def active_authorization_grant(
+    records: Sequence[ResourceAuthorizationRecord],
+    authorization_id: str,
+) -> ResourceAuthorizationRecord | None:
+    current: ResourceAuthorizationRecord | None = None
+    for record in records:
+        if record.authorization_id != authorization_id:
+            continue
+        if record.action in {"acquire", "adopt"}:
+            current = record
+        elif record.action == "release":
+            current = None
+    return current
+
+
+def assert_authorization_transition(
+    records: Sequence[ResourceAuthorizationRecord],
+    record: ResourceAuthorizationRecord,
+) -> None:
+    current = active_authorization_grant(records, record.authorization_id)
+    if record.action == "acquire":
+        if current is not None:
+            raise ResourceAuthorizationIntegrityError("authorization already active")
+        return
+    if record.action == "adopt":
+        if current is None:
+            raise ResourceAuthorizationIntegrityError("no authorization to adopt")
+        if record.attempt_key_digest != current.attempt_key_digest:
+            raise ResourceAuthorizationIntegrityError("adopt must keep the same attempt key")
+        if record.fencing_token <= current.fencing_token:
+            raise StaleFencingToken("fencing token is stale")
+        return
+    if current is None:
+        raise ResourceAuthorizationIntegrityError("no authorization to release")
+    if record.fencing_token != current.fencing_token:
+        raise StaleFencingToken("fencing token is stale")
+
+
 class ResourceAuthorizationStorePort(Protocol):
     async def append(
         self,
@@ -146,7 +228,7 @@ class MemoryResourceAuthorizationStore:
             raise ResourceAuthorizationIntegrityError("compare-and-swap conflict")
         if revision != len(self._records) or record.revision != revision:
             raise ResourceAuthorizationIntegrityError("revision gap")
-        self._assert_transition(record)
+        assert_authorization_transition(self._records, record)
         self._records.append(record)
 
     async def read_records(self) -> tuple[ResourceAuthorizationRecord, ...]:
@@ -154,46 +236,20 @@ class MemoryResourceAuthorizationStore:
 
     async def assert_current_fence(self, authorization_id: str, fencing_token: int) -> None:
         token = _fencing_token(fencing_token)
-        current = self._active_grant(authorization_id)
+        current = active_authorization_grant(self._records, authorization_id)
         if current is None or current.fencing_token != token:
-            raise StaleFencingToken("fencing token is stale")
-
-    def _active_grant(self, authorization_id: str) -> ResourceAuthorizationRecord | None:
-        current: ResourceAuthorizationRecord | None = None
-        for record in self._records:
-            if record.authorization_id != authorization_id:
-                continue
-            if record.action in {"acquire", "adopt"}:
-                current = record
-            elif record.action == "release":
-                current = None
-        return current
-
-    def _assert_transition(self, record: ResourceAuthorizationRecord) -> None:
-        current = self._active_grant(record.authorization_id)
-        if record.action == "acquire":
-            if current is not None:
-                raise ResourceAuthorizationIntegrityError("authorization already active")
-            return
-        if record.action == "adopt":
-            if current is None:
-                raise ResourceAuthorizationIntegrityError("no authorization to adopt")
-            if record.attempt_key_digest != current.attempt_key_digest:
-                raise ResourceAuthorizationIntegrityError("adopt must keep the same attempt key")
-            if record.fencing_token <= current.fencing_token:
-                raise StaleFencingToken("fencing token is stale")
-            return
-        if current is None:
-            raise ResourceAuthorizationIntegrityError("no authorization to release")
-        if record.fencing_token != current.fencing_token:
             raise StaleFencingToken("fencing token is stale")
 
 
 __all__ = [
+    "RESOURCE_AUTHORIZATION_SCHEMA_VERSION",
     "MemoryResourceAuthorizationStore",
     "ResourceAuthorizationAction",
     "ResourceAuthorizationError",
     "ResourceAuthorizationIntegrityError",
     "ResourceAuthorizationRecord",
     "ResourceAuthorizationStorePort",
+    "active_authorization_grant",
+    "assert_authorization_transition",
+    "decode_resource_authorization_record",
 ]

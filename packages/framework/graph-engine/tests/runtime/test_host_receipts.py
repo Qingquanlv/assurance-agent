@@ -5,14 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from graph_engine.attempts.host_protocol import TaskHostCallIdentity, TaskHostTerminalReceipt
+from graph_engine.attempts.host_protocol import (
+    TaskHostCallIdentity,
+    TaskHostTerminalReceipt,
+    current_bound_identity,
+)
 from graph_engine.attempts.host_receipts import (
     TerminalReceiptError,
     TerminalReceiptStore,
+    _identity_filename,
     prove_call_quiescent,
 )
 from graph_engine.canonical import canonical_digest
-from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import StagedWriteSet, TaskActivitySnapshot, TaskOutcome, TaskWorkspaceIdentity
 
 
@@ -29,8 +33,19 @@ def _identity(
     operation: str = "execute",
     activity_id: str = "activity-1",
     attempt: int = 1,
+    **overrides: object,
 ) -> TaskHostCallIdentity:
-    host = pinned_execution_host_lock()
+    workspace = _workspace_identity()
+    bound = current_bound_identity(
+        attempt_key_digest="a" * 64,
+        authorization_id="b" * 64,
+        workspace_identity_digest=workspace.identity_digest,
+        request_digest="0" * 64,
+        graph_revision="c" * 64,
+        product_lock_digest="a" * 64,
+        handler_id="test.echo.run",
+    )
+    bound.update(overrides)
     return TaskHostCallIdentity(
         invocation_id="inv-1",
         task_id="task-1",
@@ -38,8 +53,7 @@ def _identity(
         attempt=attempt,
         activity_id=activity_id,
         operation=operation,  # type: ignore[arg-type]
-        host_implementation_id=host.implementation_id,
-        host_implementation_digest=host.implementation_digest,
+        **bound,  # type: ignore[arg-type]
     )
 
 
@@ -94,6 +108,13 @@ def _receipt(
         attempt=identity.attempt,
         activity_id=identity.activity_id,
         operation=identity.operation,
+        attempt_key_digest=identity.attempt_key_digest,
+        authorization_id=identity.authorization_id,
+        fencing_token=identity.fencing_token,
+        phase=identity.phase,
+        graph_revision=identity.graph_revision,
+        product_lock_digest=identity.product_lock_digest,
+        handler_id=identity.handler_id,
         request_digest=activity.request_digest,
         workspace_identity_digest=workspace_identity.identity_digest,
         project_root_digest=workspace_identity.project_digest,
@@ -175,3 +196,53 @@ def test_prepare_receipt_is_not_promotable(tmp_path: Path) -> None:
 def test_quiescence_rejects_live_writers() -> None:
     with pytest.raises(TerminalReceiptError, match="quiescent"):
         prove_call_quiescent(writer_identities=("writer-1",))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("attempt_key_digest", "9" * 64),
+        ("authorization_id", "8" * 64),
+        ("fencing_token", 9),
+        ("phase", "prepare"),
+        ("workspace_identity_digest", "7" * 64),
+        ("request_digest", "6" * 64),
+        ("graph_revision", "5" * 64),
+        ("product_lock_digest", "4" * 64),
+        ("handler_id", "runtime.other.execute"),
+        ("host_implementation_digest", "3" * 64),
+    ],
+)
+def test_terminal_receipt_rejects_mismatched_identity_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    store = TerminalReceiptStore.create(tmp_path / "receipts")
+    identity = _identity()
+    activity = _prepared_snapshot()
+    outcome = _outcome()
+    sink = store.sink_for(identity)
+    sink.install(_receipt(identity, activity, outcome, prove_call_quiescent(), host_call_id=1))
+    mismatched = _identity(**{field: value})
+    with pytest.raises(TerminalReceiptError, match="foreign|stale"):
+        store.authenticate(mismatched)
+
+
+def test_terminal_receipt_rejects_stale_fence(tmp_path: Path) -> None:
+    store = TerminalReceiptStore.create(tmp_path / "receipts")
+    identity = _identity(fencing_token=2)
+    activity = _prepared_snapshot()
+    sink = store.sink_for(identity)
+    sink.install(_receipt(identity, activity, _outcome(), prove_call_quiescent(), host_call_id=1))
+    with pytest.raises(TerminalReceiptError, match="foreign|stale"):
+        store.authenticate(_identity(fencing_token=1))
+
+
+def test_prior_receipt_schema_is_not_parsed(tmp_path: Path) -> None:
+    store = TerminalReceiptStore.create(tmp_path / "receipts")
+    identity = _identity()
+    planted = store.root / _identity_filename(identity)
+    planted.write_text('{"schema_version":"2","wire_schema_version":"1"}', encoding="utf-8")
+    with pytest.raises(TerminalReceiptError, match="invalid"):
+        store.authenticate(identity)

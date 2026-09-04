@@ -5,10 +5,11 @@ import json
 from pydantic import BaseModel, Field
 
 from agent_runtime_contracts import AgentRunRequest
-from graph_engine.attempts.context import AttemptExecutionContext
+from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    ExecutedAttemptResult,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
@@ -48,16 +49,16 @@ class RunExecutor:
     async def execute(
         self,
         validated_input: AgentRunRequest,
-        context: AttemptExecutionContext,
-    ) -> RunOutput:
+        scope: AuthorizedAttemptScope,
+    ) -> ExecutedAttemptResult[RunOutput]:
         del validated_input
         claims = RUN_CONTRACT.resources
         if not isinstance(claims, ResourceClaims):
             raise TypeError("fixture run contract must use concrete resource claims")
-        binding = await self._workspace.open_or_create(context.attempt_key, claims)
+        binding = await self._workspace.open_or_create(scope.execution.attempt_key, claims)
         payload = {"artifact": "result.json", "status": "ok"}
         (binding.write_root / "result.json").write_text(json.dumps(payload), encoding="utf-8")
-        return RunOutput.model_validate(payload)
+        return ExecutedAttemptResult(output=RunOutput.model_validate(payload))
 
 
 def frozen_run_request() -> AgentRunRequest:

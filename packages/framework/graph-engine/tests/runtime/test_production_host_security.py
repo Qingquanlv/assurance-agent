@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from graph_engine.canonical import canonical_digest, canonical_json_bytes
-from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
     InvocationMetadata,
     ResourceClaims,
@@ -21,12 +20,15 @@ from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostExecuteCall,
     TaskHostProtocolError,
+    current_bound_identity,
     scan_for_secret_leaks,
 )
+from graph_engine.attempts.host_receipts import TerminalReceiptStore
 from graph_engine.attempts.production_host import (
     ProductionHostError,
     _ProcessSupervisor,
     _ProductionTaskExecutionHost,
+    create_production_task_execution_host,
 )
 from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
@@ -66,7 +68,35 @@ def _execute_call(
     *,
     secret_handles: tuple[str, ...] = ("test.secret",),
 ) -> TaskHostExecuteCall:
-    host = pinned_execution_host_lock()
+    request = TaskRequest(
+        invocation_id="inv-1",
+        task_id="task-1",
+        graph_instance_id="graph-1",
+        node_id="run",
+        capability_id="test.secret.run",
+        target_capability_id="test.secret.run",
+        binding_data={},
+        resource_ids=(),
+        resource_digests={},
+        resources=ResourceClaims(),
+        invocation=InvocationMetadata(
+            invocation_id="inv-1",
+            lock_digest="a" * 64,
+            composition_digest=canonical_digest({"lock_digest": "a" * 64}),
+            entrypoint="main",
+        ),
+        attempt=1,
+        input={},
+    )
+    bound = current_bound_identity(
+        attempt_key_digest="a" * 64,
+        authorization_id="b" * 64,
+        workspace_identity_digest=attempt_root.workspace_identity.identity_digest,
+        request_digest=canonical_digest(request.model_dump(mode="json")),
+        graph_revision="c" * 64,
+        product_lock_digest=request.invocation.lock_digest,
+        handler_id="test.secret.run",
+    )
     return TaskHostExecuteCall(
         identity=TaskHostCallIdentity(
             invocation_id="inv-1",
@@ -75,31 +105,11 @@ def _execute_call(
             attempt=1,
             activity_id=None,
             operation="execute",
-            host_implementation_id=host.implementation_id,
-            host_implementation_digest=host.implementation_digest,
+            **bound,  # type: ignore[arg-type]
         ),
         capability_id="test.secret.run",
         capability_entrypoint="tests.runtime.test_production_host_security:_SecretEchoHandler.execute",
-        request=TaskRequest(
-            invocation_id="inv-1",
-            task_id="task-1",
-            graph_instance_id="graph-1",
-            node_id="run",
-            capability_id="test.secret.run",
-            target_capability_id="test.secret.run",
-            binding_data={},
-            resource_ids=(),
-            resource_digests={},
-            resources=ResourceClaims(),
-            invocation=InvocationMetadata(
-                invocation_id="inv-1",
-                lock_digest="a" * 64,
-                composition_digest=canonical_digest({"lock_digest": "a" * 64}),
-                entrypoint="main",
-            ),
-            attempt=1,
-            input={},
-        ),
+        request=request,
         attempt_root=attempt_root,
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
@@ -107,8 +117,32 @@ def _execute_call(
             activation_id="activation-run",
             attempt=1,
             activity_id=None,
+            **bound,  # type: ignore[arg-type]
         ),
         authorized_secret_handles=secret_handles,
+    )
+
+
+def _sealed_host(
+    tmp_path: Path,
+    *,
+    store: TaskWorkspaceStore,
+    handlers: dict[str, object],
+    authorization: object | None = None,
+    handler_import_roots: dict[str, tuple[str, ...]] | None = None,
+):
+    def _unused(call: object, *, remaining_deadline: float) -> object:
+        del call, remaining_deadline
+        raise ProductionHostError("activity factory was not prepared")
+
+    return create_production_task_execution_host(
+        authorization=authorization or empty_runtime_authorization(),
+        handlers=handlers,  # type: ignore[arg-type]
+        store=store,
+        receipts=TerminalReceiptStore.create(tmp_path / "sealed-receipts"),
+        activity_factory=_unused,  # type: ignore[arg-type]
+        invocation_root=tmp_path,
+        handler_import_roots=handler_import_roots,
     )
 
 
@@ -196,8 +230,9 @@ class Handler:
     secret_path.write_bytes(_CANARY)
     authorization = _authorization(secret_path)
     store, attempt_root = _workspace_store(tmp_path)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=authorization)
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=authorization,
         handlers={"test.secret.run": _SecretEchoHandler()},
         store=store,
         handler_import_roots={"test.secret.run": (str(tmp_path),)},
@@ -213,8 +248,12 @@ class Handler:
 
 def test_production_host_rejects_unauthorized_secret_handle(tmp_path: Path) -> None:
     store, attempt_root = _workspace_store(tmp_path)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(handlers={"test.secret.run": _SecretEchoHandler()}, store=store)
+    host = _sealed_host(
+        tmp_path,
+        handlers={"test.secret.run": _SecretEchoHandler()},
+        store=store,
+        authorization=empty_runtime_authorization(),
+    )
     with pytest.raises(ProductionHostError, match="missing authorized secret handle"):
         asyncio.run(host.execute(_execute_call(attempt_root, secret_handles=("test.secret",))))
 
@@ -243,8 +282,9 @@ class Handler:
     secret_path.write_bytes(_CANARY)
     authorization = _authorization(secret_path)
     store, attempt_root = _workspace_store(tmp_path)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=authorization)
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=authorization,
         handlers={"test.secret.run": _SecretEchoHandler()},
         store=store,
         handler_import_roots={"test.secret.run": (str(tmp_path),)},
@@ -275,8 +315,12 @@ def test_spawn_failure_revokes_secrets_resolved_by_parent(
     secret_path = tmp_path / "secret.txt"
     secret_path.write_bytes(_CANARY)
     store, attempt_root = _workspace_store(tmp_path)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=_authorization(secret_path))
-    host.bind_invocation_runtime(handlers={"test.secret.run": _SecretEchoHandler()}, store=store)
+    host = _sealed_host(
+        tmp_path,
+        handlers={"test.secret.run": _SecretEchoHandler()},
+        store=store,
+        authorization=_authorization(secret_path),
+    )
     revoked_secrets: list[dict[str, bytes]] = []
     original_revoke = module._revoke_secrets
 
@@ -318,8 +362,9 @@ def test_secret_channel_disconnect_revokes_parent_material_and_cleans_worker(
     secret_path.write_bytes(_CANARY)
     authorization = _authorization(secret_path)
     store, attempt_root = _workspace_store(tmp_path)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=authorization)
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=authorization,
         handlers={"test.secret.run": _SecretEchoHandler()},
         store=store,
         handler_import_roots={"test.secret.run": (str(tmp_path),)},
@@ -375,8 +420,9 @@ def test_production_job_frame_excludes_parent_sys_path(
     store, attempt_root = _workspace_store(tmp_path)
     secret_path = tmp_path / "secret.txt"
     secret_path.write_bytes(_CANARY)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=_authorization(secret_path))
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=_authorization(secret_path),
         handlers={"test.secret.run": _SecretEchoHandler()},
         store=store,
         handler_import_roots={"test.secret.run": (str(tmp_path),)},

@@ -1,7 +1,7 @@
 [project]
 name = "test-assurance-phase4-product"
 version = "1.0.0"
-description = "Test-only six-wheel product for OpenCode/Cursor rebinding"
+description = "Test-only six-wheel product for OpenCode composition"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "graph-engine",
@@ -10,7 +10,6 @@ dependencies = [
 
 [project.entry-points."graph_engine.products"]
 phase4-opencode = "test_assurance_phase4_product.product:Phase4OpenCodeProduct"
-phase4-cursor = "test_assurance_phase4_product.product:Phase4CursorProduct"
 
 [build-system]
 requires = ["hatchling"]

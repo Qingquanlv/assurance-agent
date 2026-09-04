@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.events import (
     AttemptEffectState,
-    AttemptEvent,
     AttemptSnapshot,
     EffectApplied,
-    EffectIntentRecorded,
     EffectReceiptRecorded,
 )
 from graph_engine.attempts.keys import AttemptKey
@@ -23,8 +21,13 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.models import EffectEntry, EffectRegistry, SchemaRegistry
-from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, effect_idempotency_key
+from graph_engine.effects.contracts import effect_idempotency_key
 from graph_engine.effects.recovery import intent_from_state, next_effect_action
+from graph_engine.effects.state import (
+    EffectCallContext,
+    EffectStatePort,
+    bind_effect_call,
+)
 from graph_engine.frozen_json import thaw_json
 from graph_engine.json_schema import validate_json_schema
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
@@ -44,9 +47,11 @@ class AttemptEffectSettler:
         self,
         effects: EffectRegistry,
         schemas: SchemaRegistry,
+        state: EffectStatePort,
     ) -> None:
         self._effects = effects
         self._schemas = schemas
+        self._state = state
 
     async def settle(
         self,
@@ -55,12 +60,10 @@ class AttemptEffectSettler:
         snapshot: AttemptSnapshot,
         journal: AttemptJournalPort,
         context: AttemptExecutionContext,
-        intents: Sequence[EffectIntent],
         promotion: PromotionReceipt,
         cut: Callable[[str], None],
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
         cut("after_promotion_before_effect")
-        snapshot = await self._record_intents(attempt_key, snapshot, journal, context, tuple(intents))
         promotion_receipt = ReceiptRef(
             receipt_id=promotion.identity_digest,
             receipt_digest=promotion.receipt_digest,
@@ -71,7 +74,12 @@ class AttemptEffectSettler:
                 continue
             registration = self._effects.require(state.kind)
             intent = intent_from_state(state)
-            key = effect_idempotency_key(attempt_key, state.ordinal)
+            call = bind_effect_call(
+                state=self._state,
+                effect_kind=state.kind,
+                settlement_key=effect_idempotency_key(attempt_key, state.ordinal),
+                fencing_token=context.fencing_token,
+            )
             if action == "apply":
                 resolution, snapshot = await self._apply(
                     attempt_key,
@@ -81,7 +89,7 @@ class AttemptEffectSettler:
                     registration,
                     intent,
                     state,
-                    key,
+                    call,
                     promotion_receipt,
                 )
             else:
@@ -93,49 +101,12 @@ class AttemptEffectSettler:
                     registration,
                     intent,
                     state,
-                    key,
+                    call,
                     promotion_receipt,
                 )
             if resolution is not None:
                 return resolution, snapshot
         return None, snapshot
-
-    async def _record_intents(
-        self,
-        attempt_key: AttemptKey,
-        snapshot: AttemptSnapshot,
-        journal: AttemptJournalPort,
-        context: AttemptExecutionContext,
-        intents: tuple[EffectIntent, ...],
-    ) -> AttemptSnapshot:
-        recorded = {item.ordinal: item for item in snapshot.effects}
-        events: list[AttemptEvent] = []
-        for ordinal, intent in enumerate(intents, start=1):
-            if intent.kind not in self._effects.entries or intent.kind not in EXPECTED_EFFECT_KINDS:
-                raise KeyError(f"unknown effect kind: {intent.kind}")
-            self._validate_intent(self._effects.require(intent.kind), intent)
-            digest = _intent_digest(intent)
-            existing = recorded.get(ordinal)
-            if existing is not None:
-                if existing.kind != intent.kind or existing.intent_digest != digest:
-                    raise ValueError("declared effect intent drifted")
-                continue
-            events.append(
-                EffectIntentRecorded(
-                    effect_ordinal=ordinal,
-                    effect_kind=intent.kind,
-                    intent_digest=digest,
-                    payload=thaw_json(intent.payload),
-                )
-            )
-        if not events:
-            return snapshot
-        return await journal.append(
-            attempt_key,
-            tuple(events),
-            expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
 
     async def _apply(
         self,
@@ -146,11 +117,11 @@ class AttemptEffectSettler:
         registration: EffectEntry,
         intent: EffectIntent,
         state: AttemptEffectState,
-        key: str,
+        call: EffectCallContext,
         promotion_receipt: ReceiptRef,
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
         result = await self._invoke(
-            registration.handler.apply(intent, key),
+            registration.handler.apply(intent, call),
             registration.policy.timeout_seconds,
             "apply",
         )
@@ -212,11 +183,11 @@ class AttemptEffectSettler:
         registration: EffectEntry,
         intent: EffectIntent,
         state: AttemptEffectState,
-        key: str,
+        call: EffectCallContext,
         promotion_receipt: ReceiptRef,
     ) -> tuple[AttemptResolution | None, AttemptSnapshot]:
         result = await self._invoke(
-            registration.handler.reconcile(intent, key),
+            registration.handler.reconcile(intent, call),
             registration.policy.timeout_seconds,
             "reconcile",
         )
@@ -275,7 +246,7 @@ class AttemptEffectSettler:
                 registration,
                 intent,
                 state,
-                key,
+                call,
                 promotion_receipt,
             )
         return (
@@ -350,12 +321,6 @@ class AttemptEffectSettler:
             fencing_token=context.fencing_token,
         )
 
-    def _validate_intent(self, registration: EffectEntry, intent: EffectIntent) -> None:
-        schema = self._schemas.entries.get(registration.intent_schema_id)
-        if schema is None:
-            raise ValueError(f"effect intent schema is not registered: {registration.intent_schema_id}")
-        validate_json_schema(thaw_json(intent.payload), schema.content)
-
     def _validate_receipt(self, registration: EffectEntry, receipt: object) -> None:
         schema = self._schemas.entries.get(registration.receipt_schema_id)
         if schema is None:
@@ -373,11 +338,6 @@ class AttemptEffectSettler:
             return await asyncio.wait_for(awaitable, timeout=timeout_seconds)  # type: ignore[arg-type]
         except Exception:
             return None
-
-
-def _intent_digest(intent: EffectIntent) -> str:
-    payload: JSONValue = thaw_json(intent.payload)
-    return canonical_digest({"kind": intent.kind, "payload": payload})
 
 
 __all__ = ["AttemptEffectSettler"]

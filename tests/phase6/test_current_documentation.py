@@ -36,20 +36,29 @@ FORBIDDEN_FRAGMENTS = (
 
 DELIVERY_FLOW = "`aa run` to achieved, then `aa export`, then optional `aa archive`"
 OWNERSHIP = "`aa` is owned by `assurance-product`"
-YAML_RULES = ("YAML replaces graph", "YAML replaces the graph")
+YAML_RULES = (
+    "YAML replaces graph",
+    "YAML replaces the graph",
+    "Python wheels own `StateGraph` topology",
+    "Python wheels own topology",
+)
 WHEELS_RULES = (
     "Python wheels add installed capability",
     "Python wheels add capability",
+    "Python wheels own `StateGraph` topology",
+    "Python wheels own the graph",
 )
 ORG_CONFIGS = (
     "`.aa/` holds organization configuration only",
     "Organization configuration stays in the project's `.aa/`",
     "`.aa/` contains organization configuration",
+    "`.aa/` contains closed organization data only",
 )
 NO_SUT_PLUGINS = (
     "does not load executable plugins from the system under test",
     "does not scan the SUT",
     "does not scan a SUT",
+    "does not load executable plugins, graphs, handlers, schemas, validators, or runtime bindings from the system under test",
 )
 
 

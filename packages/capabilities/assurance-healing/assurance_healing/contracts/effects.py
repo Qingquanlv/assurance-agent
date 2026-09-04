@@ -36,6 +36,7 @@ class HealingAllocationReceiptV2(FrozenContract):
     schema_version: Literal["2"] = "2"
     operation_id: NonEmptyStr
     idempotency_key: NonEmptyStr
+    settlement_key: HexDigest
     episode_id: NonEmptyStr
     attempt_id: NonEmptyStr
     attempt_number: int = Field(ge=1)
@@ -90,6 +91,7 @@ class ProposalApprovedIntentV1(FrozenContract):
 
 class ProposalApprovedReceiptV1(ProposalApprovedIntentV1):
     idempotency_key: NonEmptyStr
+    settlement_key: HexDigest
 
     @model_validator(mode="after")
     def validate_idempotency_key(self) -> Self:
@@ -124,6 +126,7 @@ class HealApplyIntentV2(FrozenContract):
 class HealApplyReceiptV2(HealApplyIntentV2):
     idempotency_key: NonEmptyStr
     intent_digest: HexDigest
+    settlement_key: HexDigest
 
     @model_validator(mode="after")
     def validate_idempotency_key(self) -> Self:

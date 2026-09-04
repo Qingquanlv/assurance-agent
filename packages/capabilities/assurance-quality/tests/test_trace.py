@@ -4,10 +4,15 @@ from pathlib import Path
 
 import pytest
 from graph_engine.plugin_api import CandidateWriteSet
+from pydantic import ValidationError
 
 from tests.phase4.conformance import execute_task
 
-from assurance_quality.contracts.trace import TraceProjectionV2
+from assurance_quality.contracts.trace import (
+    TraceProjectionDocument,
+    TraceProjectionV2,
+    TraceTestRef,
+)
 from assurance_quality.operations.trace import MaterializeTraceHandler, TraceOperationInput, project_trace
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     BATCH_ID,
@@ -19,6 +24,74 @@ from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     validation_context,
     write_set,
 )
+
+
+def _trace_document(*, schema_version: str | None = "2") -> dict[str, object]:
+    payload: dict[str, object] = {
+        "change_id": CHANGE_ID,
+        "phase": "execution",
+        "authoritative_batch_id": BATCH_ID,
+        "sources": [],
+        "rows": [],
+        "unmapped_tests": [],
+        "gaps": [],
+        "integrity": "complete",
+    }
+    if schema_version is not None:
+        payload["schema_version"] = schema_version
+    return payload
+
+
+def trace_v1_document() -> dict[str, object]:
+    return _trace_document(schema_version="1")
+
+
+def trace_without_version() -> dict[str, object]:
+    return _trace_document(schema_version=None)
+
+
+@pytest.mark.parametrize("document", [trace_v1_document(), trace_without_version()])
+def test_trace_accepts_only_explicit_v2(document: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        TraceProjectionDocument.model_validate(document)
+
+
+def test_trace_test_ref_requires_test_name() -> None:
+    with pytest.raises(ValidationError):
+        TraceTestRef.model_validate({"file": "tests/api/test_menu.py", "function": "test_create"})
+
+
+def test_trace_rejects_legacy_integrity_and_timestamp_source() -> None:
+    leafs = {"capability_leafs": frozenset(catalog_leafs())}
+    degraded = _trace_document()
+    degraded["integrity"] = "degraded"
+    with pytest.raises(ValidationError):
+        TraceProjectionDocument.model_validate(degraded, context=leafs)
+    execution = {
+        "batch_id": BATCH_ID,
+        "target": "api",
+        "status": "passed",
+        "ts": "2026-08-22T00:00:00Z",
+        "ts_source": "batch_id_legacy_utc",
+    }
+    with pytest.raises(ValidationError):
+        TraceProjectionV2.model_validate(
+            {
+                **_trace_document(),
+                "rows": [
+                    {
+                        "case_id": "TC_A",
+                        "module": "menus",
+                        "case_type": "API",
+                        "automation_required": True,
+                        "coverage_state": "covered",
+                        "presence_in_current_batch": "executed",
+                        "latest_execution": execution,
+                    }
+                ],
+            },
+            context=leafs,
+        )
 
 
 @pytest.mark.asyncio

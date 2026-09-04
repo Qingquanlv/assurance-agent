@@ -37,6 +37,10 @@ def test_execution_owns_two_agent_contracts() -> None:
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
+        claims = contract.phase_write_claims
+        assert set(claims.finalize) == set(contract.resources.writes)
+        assert claims.prepare == ()
+        assert claims.runtime == ()
 
 
 def test_execution_plugin_projects_authenticated_attempt_contracts() -> None:

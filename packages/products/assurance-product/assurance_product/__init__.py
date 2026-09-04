@@ -3,7 +3,6 @@ from __future__ import annotations
 from assurance_product.models import ENGINE_API, PRODUCT_ID, ProductInputV1
 from assurance_product.product import (
     AssuranceCompositionRequest,
-    AssuranceCursorProductProvider,
     AssuranceOpenCodeProductProvider,
     resolve_assurance_composition,
 )
@@ -19,7 +18,6 @@ __all__ = [
     "PRODUCT_ID",
     "SQLITE_DEPLOYMENT_MODE",
     "AssuranceCompositionRequest",
-    "AssuranceCursorProductProvider",
     "AssuranceOpenCodeProductProvider",
     "ProductInputV1",
     "SqliteCheckpointStoreTransaction",

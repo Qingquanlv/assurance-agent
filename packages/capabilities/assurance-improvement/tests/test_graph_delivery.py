@@ -19,7 +19,7 @@ from assurance_improvement.contracts.delivery import MemoryEvalReceipt, artifact
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1, ImprovementEffectReceiptV1
 from assurance_improvement.contracts.improvements import ImprovementProjection
 from assurance_improvement.effects.delivery import ImprovementDeliveryEffect
-from assurance_improvement.effects.store import InMemoryImprovementStore
+from graph_engine.effects.state import EffectCallContext, MemoryEffectState
 from assurance_improvement.graphs.factory import build_improvement_graphs
 from assurance_improvement.graphs.routes import (
     route_apply_evaluate,
@@ -31,14 +31,13 @@ from assurance_improvement.operations.keys import delivery_effect_key
 from assurance_improvement.resource_loader import resource_bytes
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import resolve_contract
-from graph_engine.attempts.events import SystemInterruptIssued
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import ReceiptRef
 from pydantic import BaseModel
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, GRAPH_NAMES_NOT_EFFECT_KINDS
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
@@ -600,12 +599,41 @@ class _ObservedDeliveryEffect:
         self.inner = inner
         self.apply_calls = 0
 
-    async def apply(self, intent: object, idempotency_key: str) -> object:
+    async def apply(self, intent: object, context: EffectCallContext) -> object:
         self.apply_calls += 1
-        return await self.inner.apply(intent, idempotency_key)  # type: ignore[arg-type]
+        return await self.inner.apply(intent, context)  # type: ignore[arg-type]
 
-    async def reconcile(self, intent: object, idempotency_key: str) -> object:
-        return await self.inner.reconcile(intent, idempotency_key)  # type: ignore[arg-type]
+    async def reconcile(self, intent: object, context: EffectCallContext) -> object:
+        return await self.inner.reconcile(intent, context)  # type: ignore[arg-type]
+
+
+class CountingEffectState(MemoryEffectState):
+    def __init__(self) -> None:
+        super().__init__()
+        self.delivery_count = 0
+
+    async def commit(
+        self,
+        *,
+        effect_kind: str,
+        settlement_key: str,
+        business_key: str,
+        intent_digest: str,
+        payload: JSONValue,
+        receipt: JSONValue,
+        fencing_token: int,
+    ):
+        result = await super().commit(
+            effect_kind=effect_kind,
+            settlement_key=settlement_key,
+            business_key=business_key,
+            intent_digest=intent_digest,
+            payload=payload,
+            receipt=receipt,
+            fencing_token=fencing_token,
+        )
+        self.delivery_count += 1
+        return result
 
 
 class _HybridAttemptKernel:
@@ -614,7 +642,6 @@ class _HybridAttemptKernel:
         self._scripted = scripted
         self.traces: dict[str, list[str]] = {}
         self.keys: dict[str, AttemptKey] = {}
-        self.journal = real.journal
 
     async def execute_or_recover(
         self,
@@ -633,14 +660,6 @@ class _HybridAttemptKernel:
             self.keys[node] = attempt_key
             return result
         return await self._scripted.execute_or_recover(attempt_key, contract, validated, context)
-
-    async def record_system_interrupt_issued(
-        self,
-        attempt_key: AttemptKey,
-        event: SystemInterruptIssued,
-        context: AttemptExecutionContext,
-    ) -> object:
-        return await self._real.record_system_interrupt_issued(attempt_key, event, context)
 
 
 def _kernel_effects_module() -> Any:
@@ -686,13 +705,14 @@ def _build_live_evaluate_bundle(
     Any,
     _HybridAttemptKernel,
     Any,
-    InMemoryImprovementStore,
+    CountingEffectState,
     RecordingCapabilityBuildContext,
     Any,
+    MemoryAttemptJournal,
 ]:
     closed = close_improvement_task(_EVALUATE_HANDLER)
-    delivery_store = InMemoryImprovementStore()
-    effect = _ObservedDeliveryEffect(ImprovementDeliveryEffect(store=delivery_store))
+    delivery_store = CountingEffectState()
+    effect = _ObservedDeliveryEffect(ImprovementDeliveryEffect())
     helper = _kernel_effects_module()
     effects, schemas = helper.build_effect_registries(
         effect,
@@ -712,9 +732,9 @@ def _build_live_evaluate_bundle(
         graph_revision=_live_evaluate_revision(),
         effects=effects,
         schemas=schemas,
+        effect_state=delivery_store,
     )
     scripted = ScriptedAttempt()
-    scripted.journal = journal
     hybrid = _HybridAttemptKernel(real_kernel, scripted)
     factory = AttemptNodeFactory(journal=journal, kernel=hybrid)
     evaluate_contract = TASK_ATTEMPT_CONTRACTS[_EVALUATE_HANDLER]
@@ -735,11 +755,12 @@ def _build_live_evaluate_bundle(
         delivery_store,
         context,
         workspace_store,
+        journal,
     )
 
 
 async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: Path) -> None:
-    bundle, hybrid, closed, delivery_store, context, store = _build_live_evaluate_bundle(tmp_path)
+    bundle, hybrid, closed, delivery_store, context, store, journal = _build_live_evaluate_bundle(tmp_path)
     try:
         result = await bundle.evaluate.ainvoke(
             {**skill_graph_fields(), **complete_evaluate_payload()},
@@ -747,7 +768,7 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         )
         assert isinstance(result, dict)
         published = context.published_updates[-1] if context.published_updates else result
-        snapshot = await hybrid.journal.load(hybrid.keys["improvement.evaluate"])  # type: ignore[arg-type]
+        snapshot = await journal.load(hybrid.keys["improvement.evaluate"])
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.terminal.resolution_kind == "committed"
@@ -756,10 +777,11 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         assert snapshot.effects[0].receipt_digest
         receipt_model = MemoryEvalReceipt.model_validate(result.get("memory_eval") or published)
         assert receipt_model.outcome == "passed"
-        assert hybrid.traces["improvement.evaluate"].index("settle_effects") < hybrid.traces[
-            "improvement.evaluate"
-        ].index("publish_receipt")
-        intents = closed.declared_effects(receipt_model)
+        evaluate_trace = hybrid.traces["improvement.evaluate"]
+        assert "settle_effects" in evaluate_trace
+        assert "publish_receipt" not in evaluate_trace
+        assert evaluate_trace.index("settle_effects") < evaluate_trace.index("record_terminal")
+        intents = snapshot.effects
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND
         intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)
@@ -768,7 +790,7 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
         assert delivery_effect_key(intent) == f"{IMPROVEMENT_ID}:1:memory_eval:{HEX_A}"
         assert delivery_store.delivery_count == 1
         stored = ImprovementEffectReceiptV1.model_validate(
-            next(iter(delivery_store.records.values())).receipt
+            next(iter(delivery_store._by_settlement.values())).receipt
         )
         assert stored.kind == "memory_eval"
         assert closed.dispatch_count == 1
@@ -777,7 +799,7 @@ async def test_standalone_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_pa
 
 
 async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: Path) -> None:
-    bundle, hybrid, closed, delivery_store, context, store = _build_live_evaluate_bundle(tmp_path)
+    bundle, hybrid, closed, delivery_store, context, store, journal = _build_live_evaluate_bundle(tmp_path)
     try:
         hybrid._scripted.load_script(
             {
@@ -792,7 +814,7 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
             config=_live_evaluate_config(entrypoint="improvement-apply"),
         )
         assert isinstance(result, dict)
-        snapshot = await hybrid.journal.load(hybrid.keys["improvement.apply-evaluate"])  # type: ignore[arg-type]
+        snapshot = await journal.load(hybrid.keys["improvement.apply-evaluate"])
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.terminal.resolution_kind == "committed"
@@ -806,8 +828,10 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
         receipt_model = MemoryEvalReceipt.model_validate(published.get("memory_eval") or published)
         assert receipt_model.outcome == "passed"
         trace = hybrid.traces["improvement.apply-evaluate"]
-        assert trace.index("settle_effects") < trace.index("publish_receipt")
-        intents = closed.declared_effects(receipt_model)
+        assert "settle_effects" in trace
+        assert "publish_receipt" not in trace
+        assert trace.index("settle_effects") < trace.index("record_terminal")
+        intents = snapshot.effects
         assert len(intents) == 1
         assert intents[0].kind == _DELIVERY_KIND
         intent = ImprovementEffectIntentV1.model_validate(intents[0].payload)
@@ -816,7 +840,7 @@ async def test_apply_evaluate_kernel_settles_delivery_v1_memory_eval(tmp_path: P
         assert delivery_effect_key(intent) == f"{IMPROVEMENT_ID}:1:memory_eval:{HEX_A}"
         assert delivery_store.delivery_count == 1
         stored = ImprovementEffectReceiptV1.model_validate(
-            next(iter(delivery_store.records.values())).receipt
+            next(iter(delivery_store._by_settlement.values())).receipt
         )
         assert stored.kind == "memory_eval"
         assert closed.dispatch_count == 1

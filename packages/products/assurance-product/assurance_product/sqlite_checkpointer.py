@@ -120,6 +120,37 @@ CREATE TABLE IF NOT EXISTS assurance_entrypoints (
     invocation_id TEXT PRIMARY KEY,
     entrypoint TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS assurance_attempt_batches (
+    attempt_key_digest TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    schema_version TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    record_digest TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    PRIMARY KEY (attempt_key_digest, revision)
+);
+CREATE TABLE IF NOT EXISTS assurance_attempt_durable (
+    attempt_key_digest TEXT PRIMARY KEY,
+    durable_revision INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assurance_resource_authorizations (
+    revision INTEGER PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    record_digest TEXT NOT NULL,
+    payload BLOB NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assurance_effect_state (
+    effect_kind TEXT NOT NULL,
+    settlement_key TEXT NOT NULL,
+    business_key TEXT NOT NULL,
+    intent_digest TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    receipt BLOB NOT NULL,
+    PRIMARY KEY (effect_kind, settlement_key),
+    UNIQUE (effect_kind, business_key)
+);
 """
 
 
@@ -606,6 +637,9 @@ class _JournalLinkedLease:
     async def assert_current(self, invocation_id: str, fencing_token: int) -> None:
         await self._lease.assert_current(invocation_id, fencing_token)
 
+    def current(self, invocation_id: str) -> RunnerLease:
+        return self._lease.current(invocation_id)
+
 
 @dataclass(slots=True)
 class AssuranceSqliteBackend:
@@ -615,8 +649,19 @@ class AssuranceSqliteBackend:
     observers: tuple[CheckpointAnchorObserverPort, ...]
     lease: InvocationRunnerLeasePort
     _conn: Any
+    _observers_sealed: bool = False
+
+    def install_observers(self, observers: Sequence[CheckpointAnchorObserverPort]) -> None:
+        if self._observers_sealed:
+            raise RuntimeError("observers are sealed")
+        self.observers = tuple(observers)
+
+    def seal_observers(self) -> None:
+        self._observers_sealed = True
 
     def checkpointer(self, identity: CheckpointAnchorState) -> AnchoredCheckpointer:
+        if not self._observers_sealed:
+            raise RuntimeError("observers must be sealed before creating a checkpointer")
         return AnchoredCheckpointer(
             store=self.store,
             journal=self.journal,
@@ -751,8 +796,6 @@ class AssuranceSqliteBackend:
 @asynccontextmanager
 async def open_sqlite_checkpointer(
     workspace: ChangeWorkspace,
-    *,
-    observers: Sequence[CheckpointAnchorObserverPort] = (),
 ) -> AsyncIterator[AssuranceSqliteBackend]:
     paths = workspace.paths
     _prepare_control_tree(paths)
@@ -774,7 +817,7 @@ async def open_sqlite_checkpointer(
             store=store,
             journal=journal,
             serializer=strict_checkpoint_serializer(),
-            observers=tuple(observers),
+            observers=(),
             lease=linked_lease,
             _conn=upstream.conn,
         )
@@ -783,7 +826,7 @@ async def open_sqlite_checkpointer(
 
 
 def _prepare_control_tree(paths: ChangePaths) -> None:
-    for path in (paths.langgraph_root, paths.langgraph_leases, paths.langgraph_selections):
+    for path in (paths.langgraph_root, paths.langgraph_leases, paths.langgraph_identities):
         if path.exists():
             if path.is_symlink() or not path.is_dir():
                 raise ValueError("langgraph control path must be a real directory")

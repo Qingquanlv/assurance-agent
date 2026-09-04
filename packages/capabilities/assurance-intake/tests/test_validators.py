@@ -53,6 +53,34 @@ def test_case_validator_rejects_traversal_and_absolute_paths() -> None:
     assert validator.validate(candidate_with("/tmp/case.yaml"), context).accepted is False
 
 
+def test_case_validator_rejects_legacy_minimal_case_entry() -> None:
+    path = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    payload = yaml.safe_dump(
+        {
+            "schema_version": "1.0",
+            "added": [
+                {
+                    "case_id": "TC_MENU_001",
+                    "title": "create menu happy path",
+                    "status": "active",
+                    "priority": "P1",
+                    "severity": "major",
+                    "type": "API",
+                    "module": "menus",
+                }
+            ],
+            "modified": [],
+            "removed": [],
+        },
+        sort_keys=False,
+    ).encode("utf-8")
+    result = CaseCandidateValidator(
+        capability_leafs=frozenset({"entities.item.create"}),
+        file_bytes={path: payload},
+    ).validate(candidate_with(path), validation_context())
+    assert result.accepted is False
+
+
 def test_case_validator_accepts_change_case_yaml_with_exact_leaf() -> None:
     path = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
     payload = (_FIXTURES / "case-authoring-valid.yaml").read_bytes()

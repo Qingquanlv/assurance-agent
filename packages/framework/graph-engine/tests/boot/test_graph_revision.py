@@ -14,10 +14,10 @@ from graph_engine.boot.graph_revision import (
     GraphRevision,
 )
 from graph_engine.canonical import canonical_digest
-from graph_engine.composition.lock import InvocationLock, ProductLock
+from graph_engine.composition.lock import ProductLock
 
 
-def _invocation_lock() -> InvocationLock:
+def _product_lock() -> ProductLock:
     path = Path(__file__).resolve().parents[1] / "composition" / "test_lock_model.py"
     spec = importlib.util.spec_from_file_location("graph_engine_lock_model_helpers", path)
     assert spec is not None and spec.loader is not None
@@ -64,13 +64,6 @@ def test_product_lock_v3_has_no_compiled_workflow_or_execution_host(
     assert document["schema_version"] == "3"
     assert "compiled_workflow" not in document
     assert "execution_host" not in document
-
-
-def test_legacy_invocation_lock_v2_golden_is_unchanged(
-    invocation_lock_v2: InvocationLock,
-    legacy_golden_path: Path,
-) -> None:
-    assert invocation_lock_v2.model_dump_json() == legacy_golden_path.read_text(encoding="utf-8")
 
 
 def test_revision_validates_sha256_sorted_symbols_and_schema_versions() -> None:
@@ -192,29 +185,5 @@ def manifest(revision: GraphRevision) -> GraphBuildManifest:
 
 
 @pytest.fixture
-def invocation_lock_v2() -> InvocationLock:
-    return _invocation_lock()
-
-
-@pytest.fixture
 def product_lock() -> ProductLock:
-    lock = _invocation_lock()
-    return ProductLock.create(
-        engine_api=lock.engine_api,
-        engine=lock.engine,
-        engine_digest=lock.engine_digest,
-        product=lock.product,
-        plugins=lock.plugins,
-        dependency_order=lock.dependency_order,
-        registry_projections=lock.registry_projections,
-        registry_digests=lock.registry_digests,
-        configuration=lock.configuration,
-        configuration_digest=lock.configuration_digest,
-        capability_bindings=lock.capability_bindings,
-        capability_bindings_digest=lock.capability_bindings_digest,
-    )
-
-
-@pytest.fixture
-def legacy_golden_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "composition" / "invocation-lock-v2.golden.json"
+    return _product_lock()

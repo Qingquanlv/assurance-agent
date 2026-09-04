@@ -8,13 +8,13 @@ from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, mod
 
 from assurance_intake.contracts import NonEmptyStr, RiskTier
 
-ReviewDecision = Literal["pass", "approved", "needs_fix", "needs_human_review", "changes_requested", "reject"]
+ReviewDecision = Literal["pass", "needs_fix", "needs_human_review", "reject"]
 PublicReviewOutcome = Literal["pass", "needs_fix", "needs_human", "reject"]
 PUBLIC_REVIEW_OUTCOMES: tuple[PublicReviewOutcome, ...] = ("pass", "needs_fix", "needs_human", "reject")
 FindingSeverity = Literal["low", "medium", "high", "critical", "blocking"]
 
-_PASS_DECISIONS = frozenset({"pass", "approved"})
-_FIX_DECISIONS = frozenset({"needs_fix", "changes_requested"})
+_PASS_DECISIONS = frozenset({"pass"})
+_FIX_DECISIONS = frozenset({"needs_fix"})
 _HUMAN_DECISIONS = frozenset({"needs_human_review"})
 _REJECT_DECISIONS = frozenset({"reject"})
 
@@ -160,7 +160,7 @@ def _validate_plan_review_routing(
             raise ValueError(f"auto_fix_plan references unknown finding id: {finding_id}")
     if auto_fix_plan and not auto_fix_allowed:
         raise ValueError("auto_fix_plan requires auto_fix_allowed")
-    if decision in {"needs_fix", "changes_requested"}:
+    if decision in _FIX_DECISIONS:
         if auto_fix_allowed:
             if human_review_required:
                 raise ValueError("bounded automatic repair cannot also require human review")
@@ -171,14 +171,14 @@ def _validate_plan_review_routing(
     if decision == "needs_human_review":
         if auto_fix_allowed or auto_fix_plan or not human_review_required:
             raise ValueError("needs_human_review must route exclusively to human review")
-    if decision in {"pass", "approved"} and human_review_required:
+    if decision in _PASS_DECISIONS and human_review_required:
         raise ValueError("a passing plan review cannot require human review")
 
 
 class Review(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    schema_version: NonEmptyStr
+    schema_version: Literal["1.0"]
     decision: ReviewDecision
     findings: list[Any]
     review_type: str | None = None
@@ -272,7 +272,7 @@ class PlanReviewAuthoring(BaseModel):
         },
     )
 
-    schema_version: NonEmptyStr
+    schema_version: Literal["1.0"]
     review_type: Literal["api-plan", "e2e-plan", "fuzz-plan", "performance-plan"]
     change_id: NonEmptyStr
     decision: ReviewDecision
@@ -298,10 +298,6 @@ class PlanReviewAuthoring(BaseModel):
         _validate_nonblank_finding_ids(self.findings)
         _validate_fully_qualified_capabilities(list(self.required_capabilities))
         _require_exact_capability_leafs(list(self.required_capabilities), info)
-        if self.decision == "approved":
-            raise ValueError(
-                "new plan reviews must use decision 'pass'; 'approved' is read-only compatibility"
-            )
         _validate_plan_review_routing(
             decision=self.decision,
             findings=self.findings,

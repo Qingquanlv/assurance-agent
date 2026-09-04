@@ -10,7 +10,7 @@ to the intake wheel.
 
 - Produce only the declared family review outputs and return.
 - Validate the review against `assurance_generation.contracts.PlanReviewAuthoring`.
-- Use decision `pass`, never the read-only compatibility value `approved`.
+- Use decision `pass`, `needs_fix`, `needs_human_review`, or `reject`.
 - Finding severity is exactly `low`, `medium`, `high`, `critical`, or `blocking`.
 - A finding locator may contain only `artifact`, `case_id`, and `key`.
 - `required_capabilities` must be exact declared typed leaves. Prefix matches

@@ -2,9 +2,8 @@
 
 Transcribed from src/schema/quality_report.ts / src/schema/contracts.ts.
 
-Schema 1.1 adds an ``issues`` section that carries Issue risk separately from
-execution ``final_status``. A historical 1.0 report (no ``issues`` field) is
-accepted without any legacy Issue-file lookup.
+Schema 1.1 carries an ``issues`` section that holds Issue risk separately from
+execution ``final_status``.
 """
 
 from typing import Any, Literal
@@ -74,7 +73,7 @@ class IssueReport(BaseModel):
 
 
 class QualityReport(BaseModel):
-    schema_version: Literal["1.0", "1.1"]
+    schema_version: Literal["1.1"]
     change_id: str
     batch_id: str
     final_status: GateStatus
@@ -93,8 +92,7 @@ class QualityReport(BaseModel):
     human_decisions: list[Any] | None = None
     minimum_required_coverage: Any = None
     non_functional: Any = None
-    # Issue risk section (schema 1.1). Absent in historical 1.0 reports.
-    issues: IssueReport | None = None
+    issues: IssueReport
     # Verification metrics vector from ``inspect/metrics.json`` (Task 8). Combined
     # here for humans; never copied into ``final_status``. Absent when the
     # materialize step has not run (or the file is unreadable).

@@ -59,8 +59,6 @@ jobs:
       - run: uv sync --dev
       - name: pytest
         run: uv run pytest -v
-      - name: focused Raw Agent checks
-        run: uv run pytest -q tests/product/test_raw_agent_checkpoint.py
 
   packaging-smoke:
     runs-on: ubuntu-latest

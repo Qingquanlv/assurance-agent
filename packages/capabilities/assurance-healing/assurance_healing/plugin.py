@@ -34,7 +34,6 @@ from assurance_healing.effects.approval import (
     APPROVAL_RECEIPT_SCHEMA,
     ProposalApprovedEffect,
 )
-from assurance_healing.effects.store import InMemoryHealingStore
 from assurance_healing.operations import handlers as healing_task_handlers
 from assurance_healing.resource_loader import resource_bytes
 from assurance_healing.validators.override import OverrideValidator
@@ -112,21 +111,21 @@ def _effect_registrations() -> tuple[EffectRegistration, ...]:
             kind=ALLOCATION_KIND,
             intent_schema_id=ALLOCATION_INTENT_SCHEMA,
             receipt_schema_id=ALLOCATION_RECEIPT_SCHEMA,
-            handler=HealingAllocationEffect(store=InMemoryHealingStore()),
+            handler=HealingAllocationEffect(),
             policy=ALLOCATION_POLICY,
         ),
         EffectRegistration(
             kind=HEAL_APPLY_KIND,
             intent_schema_id=HEAL_APPLY_INTENT_SCHEMA,
             receipt_schema_id=HEAL_APPLY_RECEIPT_SCHEMA,
-            handler=HealApplyEffect(store=InMemoryHealingStore()),
+            handler=HealApplyEffect(),
             policy=HEAL_APPLY_POLICY,
         ),
         EffectRegistration(
             kind=APPROVAL_KIND,
             intent_schema_id=APPROVAL_INTENT_SCHEMA,
             receipt_schema_id=APPROVAL_RECEIPT_SCHEMA,
-            handler=ProposalApprovedEffect(store=InMemoryHealingStore()),
+            handler=ProposalApprovedEffect(),
             policy=APPROVAL_POLICY,
         ),
     )

@@ -2,7 +2,6 @@
 #
 # run-workflow-loop.sh - scheduled benchmark loop using OpenCode.
 #
-# OpenCode sibling of run-workflow-loop-cursor.sh. It shares the same
 # GraphRuntime lifecycle, while phases are dispatched to bounded aa-* agents
 # through a running OpenCode server.
 #
@@ -41,7 +40,7 @@ set -uo pipefail
 # Paths & config
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOOP_HELPERS="$SCRIPT_DIR/cursor-loop-helpers.sh"
+LOOP_HELPERS="$SCRIPT_DIR/loop-helpers.sh"
 if [ ! -f "$LOOP_HELPERS" ]; then
   printf 'ERROR: missing %s\n' "$LOOP_HELPERS" >&2
   exit 1

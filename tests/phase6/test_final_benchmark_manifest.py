@@ -14,17 +14,11 @@ MANIFEST_PATH = BENCHMARK_ROOT / "manifest.json"
 RETAINED_COMPARISON_ASSERTIONS = {
     "STOP": (
         "tests/product/test_stop_and_interrupts.py",
-        (
-            "test_healing_disallowed_is_business_stop_not_completion",
-            "test_nested_stop_does_not_become_normal_completion",
-            "test_reported_success_is_distinct_from_stop_and_interrupt",
-            "test_infrastructure_failure_is_stop_after_report",
-        ),
+        ("test_revision_mismatch_rejects_drifted_resume",),
     ),
     "interrupt": (
         "tests/product/test_stop_and_interrupts.py",
         (
-            "test_business_stop_is_resumable_only_at_declared_interrupt",
             "test_invalid_resume_input_fails",
             "test_interrupt_runtime_lives_under_the_change_without_tree_store",
         ),
@@ -130,25 +124,25 @@ def test_final_live_manifest_has_exactly_one_opencode_item(repo_root: Path) -> N
     assert all("cursor" not in json.dumps(entry).lower() for entry in items)
 
 
-def test_cursor_live_entries_are_absent_while_adapter_packaging_remains(repo_root: Path) -> None:
+def test_cursor_adapter_packaging_and_live_entries_are_absent(repo_root: Path) -> None:
     document = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     items = document["items"]
     assert all(entry.get("adapter_binding", {}).get("protocol_profile") != "cursor" for entry in items)
     assert all("cursor" not in str(entry.get("id", "")).lower() for entry in items)
-    assert (repo_root / "packages/adapters/agent-runtime-cursor").is_dir()
+    assert not (repo_root / "packages/adapters/agent-runtime-cursor").exists()
     packaging = repo_root / "tests/product/test_product_packaging.py"
     providers = repo_root / "tests/product/test_product_providers.py"
     cursor_fixture = repo_root / "tests/product/fixtures/deployment/cursor.yaml"
     assert packaging.is_file()
     assert providers.is_file()
-    assert cursor_fixture.is_file()
-    assert "assurance-cursor" in packaging.read_text(encoding="utf-8")
-    assert "agent-runtime-cursor" in providers.read_text(encoding="utf-8")
+    assert not cursor_fixture.exists()
+    assert "assurance-cursor" not in packaging.read_text(encoding="utf-8")
+    assert "agent-runtime-cursor" not in providers.read_text(encoding="utf-8")
 
 
 def test_final_benchmark_keeps_runner_and_projection_layout(repo_root: Path) -> None:
     assert (BENCHMARK_ROOT / "run-opencode.sh").is_file()
-    assert (BENCHMARK_ROOT / "run-cursor.sh").is_file()
+    assert not (BENCHMARK_ROOT / "run-cursor.sh").exists()
     assert (BENCHMARK_ROOT / "run_item.py").is_file()
     assert (BENCHMARK_ROOT / "eval.py").is_file()
     assert (BENCHMARK_ROOT / "projection.py").is_file()

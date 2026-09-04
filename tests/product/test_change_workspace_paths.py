@@ -32,7 +32,7 @@ def test_open_resolves_change_local_paths_without_creating_directories(
     assert workspace.paths.langgraph_root == workspace.paths.runtime_root / "langgraph"
     assert workspace.paths.langgraph_checkpoints == workspace.paths.langgraph_root / "checkpoints.sqlite3"
     assert workspace.paths.langgraph_leases == workspace.paths.langgraph_root / "leases"
-    assert workspace.paths.langgraph_selections == workspace.paths.langgraph_root / "selections"
+    assert workspace.paths.langgraph_identities == workspace.paths.langgraph_root / "identities"
     assert workspace.paths.generated_root == workspace.paths.change_root / "generated"
     assert workspace.paths.apply_manifest == workspace.paths.change_root / "apply-manifest.json"
     assert not workspace.paths.staging_root.exists()
@@ -58,21 +58,19 @@ def test_initialize_creates_only_the_exact_change_workspace_directories(
     assert not workspace.paths.generated_root.exists()
 
 
-def test_initialize_allows_leftover_ledger_and_engine_invocations(tmp_path: Path, change_workspace) -> None:
+def test_initialize_rejects_unknown_control_entries_before_mutation(tmp_path: Path, change_workspace) -> None:
     workspace = change_workspace.ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
     workspace.initialize()
-    (workspace.paths.runtime_root / "ledger").mkdir()
-    (workspace.paths.runtime_root / "invocations").mkdir()
+    leftover_ledger = workspace.paths.runtime_root / "ledger"
+    leftover_invocations = workspace.paths.runtime_root / "invocations"
+    leftover_ledger.mkdir()
+    leftover_invocations.mkdir()
 
-    workspace.initialize()
+    with pytest.raises(ValueError, match="incomplete layout"):
+        workspace.initialize()
 
-    assert {child.name for child in workspace.paths.runtime_root.iterdir()} == {
-        "activities",
-        "receipts",
-        "ledger",
-        "invocations",
-    }
-    assert not (workspace.paths.runtime_root / "invocations" / "ledger").exists()
+    assert leftover_ledger.is_dir()
+    assert leftover_invocations.is_dir()
 
 
 def test_initialize_allows_langgraph_control_subtree(tmp_path: Path, change_workspace) -> None:
@@ -80,7 +78,7 @@ def test_initialize_allows_langgraph_control_subtree(tmp_path: Path, change_work
     workspace.initialize()
     workspace.paths.langgraph_root.mkdir()
     workspace.paths.langgraph_leases.mkdir()
-    workspace.paths.langgraph_selections.mkdir()
+    workspace.paths.langgraph_identities.mkdir()
     workspace.paths.langgraph_checkpoints.write_bytes(b"")
 
     workspace.initialize()
@@ -88,7 +86,7 @@ def test_initialize_allows_langgraph_control_subtree(tmp_path: Path, change_work
     assert workspace.paths.langgraph_root.is_dir()
     assert not workspace.paths.langgraph_root.is_symlink()
     assert workspace.paths.langgraph_leases.is_dir()
-    assert workspace.paths.langgraph_selections.is_dir()
+    assert workspace.paths.langgraph_identities.is_dir()
     assert workspace.paths.langgraph_checkpoints.is_file()
     assert not workspace.paths.langgraph_checkpoints.is_symlink()
     assert {child.name for child in workspace.paths.runtime_root.iterdir()} == {
@@ -154,7 +152,6 @@ def test_initialize_rejects_symlinked_runtime_child_without_touching_target(
     workspace = change_workspace.ChangeWorkspace.open(make_project(tmp_path), "BENCH-dept-001")
     runtime = workspace.paths.runtime_root
     runtime.mkdir()
-    (runtime / "ledger").mkdir()
     target = tmp_path / "activities-target"
     target.mkdir()
     (runtime / "activities").symlink_to(target, target_is_directory=True)

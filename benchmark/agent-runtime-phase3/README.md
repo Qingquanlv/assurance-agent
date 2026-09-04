@@ -8,9 +8,8 @@ These scripts are release evidence for one already-frozen fixture item. They are
 
 ```bash
 bash benchmark/agent-runtime-phase3/run-opencode.sh
-bash benchmark/agent-runtime-phase3/run-cursor.sh
 ```
 
-Both scripts fail closed if the pinned OpenCode server or Cursor executable/secret is missing, drifted, or does not advertise the pinned protocol profile. A missing prerequisite is a non-zero exit, never a silent skip or fake success.
+The script fails closed if the pinned OpenCode server is missing, drifted, or does not advertise the pinned protocol profile. A missing prerequisite is a non-zero exit, never a silent skip or fake success.
 
 Deterministic fakes in `tests/agent_runtime` remain authoritative for ambiguous network and process cuts.

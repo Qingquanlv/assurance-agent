@@ -52,12 +52,11 @@ FORBIDDEN_FEATURE_IMPLEMENTATION = (
 FORBIDDEN_ADAPTERS = frozenset(
     {
         "agent_runtime_opencode",
-        "agent_runtime_cursor",
         "assurance_product",
     }
 )
 
-COEXISTENCE_SUFFIXES = ("workflow", "graphs")
+CROSS_FEATURE_FORBIDDEN_SUFFIXES = ("graphs",)
 
 
 def _repo_root() -> Path:
@@ -224,7 +223,6 @@ def test_architecture_scan_rejects_relative_and_from_import_forms() -> None:
         ("from assurance_generation.graphs import factory", "assurance_generation.graphs"),
         ("from assurance_product import cli", "assurance_product"),
         ("from agent_runtime_opencode import client", "agent_runtime_opencode"),
-        ("from agent_runtime_cursor import client", "agent_runtime_cursor"),
     )
     for source, expected in cases:
         imported = _imported_names(source, module_name)
@@ -244,7 +242,7 @@ def test_feature_graph_modules_reject_foreign_and_implementation_imports() -> No
     assert violations == []
 
 
-def test_importlinter_keeps_workflow_and_graphs_during_coexistence() -> None:
+def test_importlinter_keeps_graphs_forbidden_across_features() -> None:
     parser = ConfigParser()
     assert parser.read(_repo_root() / ".importlinter")
     peer_contracts = (
@@ -267,7 +265,7 @@ def test_importlinter_keeps_workflow_and_graphs_during_coexistence() -> None:
                 suffixes_by_package.setdefault(package_name, set()).add(remainder.split(".", 1)[0])
         assert suffixes_by_package
         for package_name, suffixes in suffixes_by_package.items():
-            for suffix in COEXISTENCE_SUFFIXES:
+            for suffix in CROSS_FEATURE_FORBIDDEN_SUFFIXES:
                 assert suffix in suffixes, f"{section}:{package_name}.{suffix}"
 
 

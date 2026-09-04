@@ -63,7 +63,6 @@ AffectedSurfaceKind = Literal[
 ]
 IssueAnalysisStatusValue = Literal["completed", "pending", "failed"]
 IssueAnalysisFailureReason = Literal["timeout", "transport", "invalid_output", "unavailable"]
-IssueReconcileStatusValue = Literal["completed", "failed"]
 IssueReconcileStatusV2Value = Literal["completed", "failed", "pending"]
 ProjectSyncStatus = Literal["completed", "pending"]
 
@@ -180,27 +179,12 @@ class IssueAnalysisStatus(BaseModel):
     candidate_digest: NonEmptyStr | None = None
 
 
-class IssueReconcileStatusV1(BaseModel):
-    """Legacy reconcile-status wire shape (schema 1.0)."""
-
-    model_config = _FROZEN
-
-    schema_version: Literal["1.0"]
-    change_id: NonEmptyStr
-    batch_id: NonEmptyStr
-    status: IssueReconcileStatusValue
-    evidence_bundle_digest: NonEmptyStr
-    candidate_digest: NonEmptyStr | None = None
-    occurrence_count: int | None = Field(default=None, ge=0)
-    error: NonEmptyStr | None = None
-
-
 class IssueReconcileStatusV2(BaseModel):
     """Digest-bound reconcile-status wire shape (schema 2.0)."""
 
     model_config = _FROZEN
 
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["2.0"]
     change_id: NonEmptyStr
     batch_id: NonEmptyStr
     status: IssueReconcileStatusV2Value
@@ -222,22 +206,14 @@ class IssueReconcileStatusV2(BaseModel):
         return self
 
 
-# Legacy alias — V1 only; never repoint to V2.
-IssueReconcileStatus = IssueReconcileStatusV1
-
-IssueReconcileStatusLike = IssueReconcileStatusV1 | IssueReconcileStatusV2
-
-IssueReconcileStatusVariant = Annotated[
-    IssueReconcileStatusV1 | IssueReconcileStatusV2,
-    Field(discriminator="schema_version"),
-]
+IssueReconcileStatus = IssueReconcileStatusV2
 
 
-class IssueReconcileStatusDocument(RootModel[IssueReconcileStatusVariant]):
+class IssueReconcileStatusDocument(RootModel[IssueReconcileStatusV2]):
     pass
 
 
-def load_issue_reconcile_status_document(raw: object) -> IssueReconcileStatusLike:
+def load_issue_reconcile_status_document(raw: object) -> IssueReconcileStatusV2:
     return IssueReconcileStatusDocument.model_validate(raw).root
 
 
@@ -288,12 +264,10 @@ class ProblemFingerprint(BaseModel):
 
     version: Literal["1"]
     digest: NonEmptyStr
-    preimage: ProblemFingerprintPreimage | None = None
+    preimage: ProblemFingerprintPreimage
 
     @model_validator(mode="after")
     def _preimage_must_match_digest(self) -> "ProblemFingerprint":
-        if self.preimage is None:
-            return self  # Legacy v1 ledger entries did not retain the preimage.
         if self.preimage.version != self.version:
             raise ValueError("fingerprint preimage version must match fingerprint version")
         canonical = json.dumps(

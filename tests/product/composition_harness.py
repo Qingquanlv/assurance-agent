@@ -38,7 +38,6 @@ _WORKSPACE_WHEELS: tuple[tuple[str, str], ...] = (
     ("assurance-quality", "packages/capabilities/assurance-quality"),
     ("assurance-improvement", "packages/capabilities/assurance-improvement"),
     ("agent-runtime-opencode", "packages/adapters/agent-runtime-opencode"),
-    ("agent-runtime-cursor", "packages/adapters/agent-runtime-cursor"),
 )
 COVERAGE_PATH = EVIDENCE_ROOT / "binding-coverage.json"
 
@@ -60,12 +59,9 @@ def evict_generated_binding_modules() -> None:
 def request_for(adapter: str, installed_sources: InstalledSources):
     from assurance_product.product import AssuranceCompositionRequest
 
-    if adapter == "opencode":
-        entrypoint: Literal["assurance-opencode", "assurance-cursor"] = "assurance-opencode"
-    elif adapter == "cursor":
-        entrypoint = "assurance-cursor"
-    else:
+    if adapter != "opencode":
         raise ValueError(f"unsupported adapter: {adapter!r}")
+    entrypoint: Literal["assurance-opencode"] = "assurance-opencode"
     return AssuranceCompositionRequest(
         product_entrypoint=entrypoint,
         deployment_source=installed_sources.deployments[adapter],
@@ -81,7 +77,7 @@ def build_installed_sources(root: Path) -> InstalledSources:
     _import_extracted_workspace_packages()
     from assurance_product.binding_builder import build_deployment_wheel
 
-    for adapter in ("opencode", "cursor"):
+    for adapter in ("opencode",):
         built = build_deployment_wheel(
             _DEPLOYMENT_FIXTURES / f"{adapter}.yaml",
             root / f"build-{adapter}",
@@ -190,3 +186,10 @@ def installed_sources(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Inst
             extract = str(extract_root)
             while extract in sys.path:
                 sys.path.remove(extract)
+
+
+@pytest.fixture(scope="session")
+def opencode_composition(installed_sources: InstalledSources) -> FrozenComposition:
+    from assurance_product.product import resolve_assurance_composition
+
+    return resolve_assurance_composition(request_for("opencode", installed_sources))

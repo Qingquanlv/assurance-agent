@@ -11,9 +11,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.graph import StateGraph
 from pydantic import BaseModel
 
-from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.events import SystemInterruptIssued
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import (
@@ -104,18 +102,15 @@ def committed(output: object, receipt: ReceiptRef) -> CommittedTaskResult[Any]:
 class ScriptedAttempt:
     def __init__(self) -> None:
         self._queues: dict[str, list[AttemptResolution]] = {}
-        self.journal: MemoryAttemptJournal | None = None
         self.semantic_calls: list[SemanticAttemptCall] = []
         self.validator_calls: list[str] = []
         self.promotion_decisions: list[str] = []
-        self.issued_events: list[SystemInterruptIssued] = []
 
     def load_script(self, script: Mapping[str, Sequence[AttemptResolution]]) -> None:
         self._queues = {str(node_id): list(resolutions) for node_id, resolutions in script.items()}
         self.semantic_calls.clear()
         self.validator_calls.clear()
         self.promotion_decisions.clear()
-        self.issued_events.clear()
 
     async def execute_or_recover(
         self,
@@ -146,27 +141,11 @@ class ScriptedAttempt:
         self.promotion_decisions.append(_promotion_decision(resolution))
         return resolution
 
-    async def record_system_interrupt_issued(
-        self, attempt_key: AttemptKey, event: SystemInterruptIssued, context: AttemptExecutionContext
-    ) -> object:
-        self.issued_events.append(event)
-        journal = self.journal
-        if journal is None:
-            raise TypeError("scripted attempt has no journal")
-        snapshot = await journal.load(attempt_key)
-        return await journal.append(
-            attempt_key,
-            (event,),
-            expected_revision=0 if snapshot is None else snapshot.revision,
-            fencing_token=context.fencing_token,
-        )
-
 
 class GraphHarness:
     def __init__(self) -> None:
         self._kernel = ScriptedAttempt()
         self._journal = MemoryAttemptJournal()
-        self._kernel.journal = self._journal
         self._factory = AttemptNodeFactory(journal=self._journal, kernel=self._kernel)
         self._recorder = _TraceRecorder()
         self._context: RecordingCapabilityBuildContext | None = None

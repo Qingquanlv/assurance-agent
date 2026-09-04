@@ -162,15 +162,3 @@ class Phase4OpenCodeProduct:
             entrypoint_value="test_assurance_phase4_product.product:Phase4OpenCodeProduct",
             declaration_path="test_assurance_phase4_product/product-opencode-declaration.json",
         )
-
-
-class Phase4CursorProduct:
-    @staticmethod
-    def manifest() -> ProductManifest:
-        return _manifest(
-            runtime_plugin_id="runtime.cursor",
-            bindings_kind="cursor",
-            entrypoint_name="phase4-cursor",
-            entrypoint_value="test_assurance_phase4_product.product:Phase4CursorProduct",
-            declaration_path="test_assurance_phase4_product/product-cursor-declaration.json",
-        )

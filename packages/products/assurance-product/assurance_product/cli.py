@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, NoReturn, cast
+from typing import NoReturn, cast
 
 import click
 from pydantic import ValidationError
@@ -572,12 +572,12 @@ def _resolve_and_audit(
 ) -> tuple[FrozenComposition, None]:
     if binding_entrypoint != "deployment":
         raise CommandError("binding entrypoint must be deployment")
-    if product not in {"assurance-opencode", "assurance-cursor"}:
+    if product != "assurance-opencode":
         raise CommandError(f"unknown product: {product}")
     try:
         composition = resolve_assurance_composition(
             AssuranceCompositionRequest(
-                product_entrypoint=cast(Literal["assurance-opencode", "assurance-cursor"], product),
+                product_entrypoint="assurance-opencode",
                 deployment_source=WheelPluginSource(
                     distribution=binding_dist,
                     entrypoint_name=binding_entrypoint,

@@ -6,11 +6,11 @@ from typing import Literal
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
+from ledger_activity_port import LedgerTaskActivityPort
 from graph_engine.attempts.activity import (
     EffectIntentCommitted,
     GraphStarted,
     Ledger,
-    LedgerTaskActivityPort,
     NodeActivated,
     ProjectionError,
     TaskActivityCancelRequested,
@@ -21,7 +21,7 @@ from graph_engine.attempts.activity import (
     fold_events,
     recovery_decision_for_status,
 )
-from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity
+from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity, current_bound_identity
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 from graph_engine.evidence.models import activity_id_for_attempt
 from graph_engine.plugin_api import (
@@ -118,6 +118,15 @@ def _prepare_activity(
                 activation_id="a1",
                 attempt=1,
                 activity_id=activity_id,
+                **current_bound_identity(  # type: ignore[arg-type]
+                    attempt_key_digest="a" * 64,
+                    authorization_id="b" * 64,
+                    workspace_identity_digest="c" * 64,
+                    request_digest="0" * 64,
+                    graph_revision="d" * 64,
+                    product_lock_digest=_LOCK,
+                    handler_id="test.echo.run",
+                ),
             ),
         )
         port.mark_dispatch_started({"endpoint": "https://127.0.0.1:1"})
@@ -230,6 +239,15 @@ def test_prepared_undispatched_resume_dispatches_same_attempt(tmp_path: Path) ->
             activation_id="a1",
             attempt=1,
             activity_id=activity_id,
+            **current_bound_identity(  # type: ignore[arg-type]
+                attempt_key_digest="a" * 64,
+                authorization_id="b" * 64,
+                workspace_identity_digest="c" * 64,
+                request_digest="0" * 64,
+                graph_revision="d" * 64,
+                product_lock_digest=_LOCK,
+                handler_id="test.echo.run",
+            ),
         ),
     )
     port.mark_dispatch_started({"endpoint": "https://127.0.0.1:1"})

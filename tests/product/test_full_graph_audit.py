@@ -57,11 +57,8 @@ def test_python_roots_are_the_product_application_surface() -> None:
         assert contract.state_schema_digest
 
 
-def test_factory_composition_has_no_leftover_compiled_workflow(installed_sources) -> None:
-    from tests.product.composition_harness import request_for
-    from assurance_product.product import resolve_assurance_composition
-
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
+def test_factory_composition_has_no_leftover_compiled_workflow(opencode_composition) -> None:
+    composition = opencode_composition
     assert composition.manifest.graph_factory_symbol
     assert composition.lock.schema_version == "3"
     assert not hasattr(composition, "audit_full_graph")

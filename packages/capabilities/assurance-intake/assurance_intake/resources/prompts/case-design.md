@@ -4,7 +4,7 @@ Author the change metadata, proposal, and semantic case delta for one change.
 
 Read the relevant product source directly before choosing cases. Explore evidence is context, not a substitute.
 Consume the graph-provided `exploration` object when it is present. Do not infer
-Explore state from `.qa.yaml` or a legacy `phases.explore` field.
+Explore state from `.qa.yaml`.
 
 Write:
 

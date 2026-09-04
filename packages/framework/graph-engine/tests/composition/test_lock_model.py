@@ -35,6 +35,33 @@ _C = "c" * 64
 _D = "d" * 64
 _E = "e" * 64
 _F = "f" * 64
+_EMPTY_ATTEMPT_CONTRACTS_DIGEST = canonical_digest([])
+
+
+def current_product_lock_document() -> dict[str, object]:
+    return json.loads(_lock().canonical_bytes)
+
+
+def load_old_invocation_lock_fixture() -> dict[str, object]:
+    return {
+        "schema_version": "2",
+        "digest_algorithm": "graph-engine-source-v1",
+        "engine_api": "2.0",
+        "registry_digests": {
+            "capabilities": "a" * 64,
+            "effects": "b" * 64,
+            "resources": "c" * 64,
+            "schemas": "d" * 64,
+            "sources": "e" * 64,
+        },
+        "registry_projections": {
+            "capabilities": [],
+            "effects": [],
+            "resources": [],
+            "schemas": [],
+            "sources": [],
+        },
+    }
 
 
 def _empty_contribution(plugin_id: str, source_digest: str) -> dict[str, object]:
@@ -233,6 +260,7 @@ def _lock(*, reverse_manifest: bool = False) -> ProductLock:
             }
         ],
         effects=[],
+        attempt_contracts=(),
     )
     registry_digests = RegistryDigests(
         sources=canonical_digest(
@@ -277,6 +305,7 @@ def _lock(*, reverse_manifest: bool = False) -> ProductLock:
             ]
         ),
         effects=canonical_digest([]),
+        attempt_contracts=_EMPTY_ATTEMPT_CONTRACTS_DIGEST,
     )
     configuration = {"toy.runtime": {"greeting": "你好"}}
     capability_bindings = [
@@ -649,6 +678,7 @@ def test_invocation_lock_rejects_self_consistent_missing_binding_target() -> Non
         schemas=thaw_json(lock.registry_projections.schemas),
         resources=thaw_json(lock.registry_projections.resources),
         effects=thaw_json(lock.registry_projections.effects),
+        attempt_contracts=thaw_json(lock.registry_projections.attempt_contracts),
     )
     digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
 
@@ -716,6 +746,7 @@ def test_lock_rejects_an_extra_unsupported_executable_projection_kind() -> None:
         schemas=lock.registry_projections.schemas,
         resources=lock.registry_projections.resources,
         effects=lock.registry_projections.effects,
+        attempt_contracts=lock.registry_projections.attempt_contracts,
     )
     digests = lock.registry_digests.model_copy(update={"capabilities": canonical_digest(capabilities)})
 
@@ -897,3 +928,60 @@ def test_attempt_projection_stays_stable_when_only_callables_swap() -> None:
     )
     assert first.digest == second.digest
     assert first.projection() == second.projection()
+
+
+def test_product_lock_requires_attempt_registry_fields() -> None:
+    document = current_product_lock_document()
+    document["registry_digests"].pop("attempt_contracts")
+    with pytest.raises(ValidationError):
+        ProductLock.model_validate(document)
+
+
+def test_product_lock_requires_attempt_registry_projections() -> None:
+    document = current_product_lock_document()
+    registry_projections = document["registry_projections"]
+    assert isinstance(registry_projections, dict)
+    registry_projections.pop("attempt_contracts")
+    with pytest.raises(ValidationError):
+        ProductLock.model_validate(document)
+
+
+def test_historical_invocation_lock_is_not_a_composition_lock() -> None:
+    from graph_engine.composition.lock import authenticate_composition_lock
+    from graph_engine.composition.models import (
+        CapabilityRegistry,
+        EffectRegistry,
+        ProductManifest,
+        RegistrySet,
+        ResourceRegistry,
+        SchemaRegistry,
+        SourceRegistry,
+    )
+
+    manifest = ProductManifest(
+        schema_version="1",
+        source=None,
+        product_id="toy.a",
+        product_version="1.0.0",
+        engine_api="2.0",
+        plugins=({"plugin_id": "toy.runtime", "version_specifier": "==1.0.0"},),
+        entrypoints={"default": "graph"},
+        configuration={},
+        graph_factory_symbol="toy:provider",
+    )
+    registries = RegistrySet(
+        sources=SourceRegistry({}),
+        capabilities=CapabilityRegistry.empty(),
+        schemas=SchemaRegistry({}),
+        resources=ResourceRegistry({}),
+        effects=EffectRegistry({}),
+    )
+    with pytest.raises(TypeError):
+        authenticate_composition_lock(
+            manifest,
+            (),
+            registries,
+            {},
+            load_old_invocation_lock_fixture(),
+            {},
+        )

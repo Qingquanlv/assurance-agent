@@ -81,7 +81,7 @@ authorization, credential, or safety decision.
 
 ## Domain Notes
 
-Use decision `pass`, never `approved`. Emit `codegen_readiness`,
+Use decision `pass` when the plan is codegen-ready. Emit `codegen_readiness`,
 `auto_fix_allowed`, `human_review_required`, and `risk_level`. Each finding
 must include `id`, `severity`, `category`, `message`, and `locator`. Point
 mapping defects at `plans/e2e-codegen-mapping.json`.

@@ -1,8 +1,12 @@
 # Raw Agent Runtime Closure Implementation Plan
 
-> **Status:** active amendment to the Python-native LangGraph migration.
+> **Status:** implemented historical plan; amended 2026-09-04.
 >
 > **Scope rule:** this plan closes the existing OpenCode/Attempt seam. It does not create a second artifact pipeline, deployment platform, or Workflow layer.
+>
+> **Amendment:** the former R5 live-provider gate was cancelled and removed by
+> [Checkpoint R Removal Design](../specs/2026-09-04-checkpoint-r-removal-design.md). R1–R4 remain
+> implementation history; no task below authorizes recreating that gate.
 
 **Goal:** make Raw Agent execution the permanent implementation for all 33 Agent contracts so Product cutover can continue from T5b without waiting for OpenCode provider-structured output.
 
@@ -181,40 +185,29 @@ uv run pytest packages/adapters/agent-runtime-opencode/tests -q
 
 ---
 
-### Task R5: Close Checkpoint R and resume Product T5b
+### Task R5: Historical Checkpoint R implementation — removed 2026-09-04
 
-**Files:**
+> **Archival snapshot:** R5 was implemented before the project cancelled Checkpoint R. The actions
+> below record what happened; they are not executable instructions and must not be recreated.
 
-- Modify: Product composition and cutover tests under `tests/product/`
-- Modify: `.github/workflows/ci.yml` only if the existing CI job cannot run the required commands
-- Delete: `scripts/opencode_structured_output_eligibility_probe.py`
-- Delete: `tests/agent_runtime/test_opencode_structured_output_eligibility_probe.py`
-- Modify: `docs/superpowers/plans/2026-08-31-python-native-langgraph-migration.md`
-- Modify: `docs/superpowers/plans/2026-08-31-langgraph-product-cutover.md`
+R5 added the Product inventory/cutover tests, CI integration, and candidate-bound live OpenCode
+check. At the time it recorded 33 contracts, 33 bindings, an undercounted 34 Agent occurrences, 41
+semantic contracts, and 43 Attempt occurrences; later graph-owned inventory corrected the counts to
+35 and 44. It also:
 
-**Steps:**
+1. ran the Raw adapter, six Capability contract, Attempt recovery/effect, Product composition, and
+   repository suites;
+2. reverified the four T5a non-Agent roots on `langgraph-v1` while leaving ten roots on `legacy-v2`;
+3. recorded candidate commit, ProductLock, GraphRevision, adapter/provider/model, local Schema
+   validation, raw-file validation, one-session recovery, and absence of Structured Artifact code;
+4. deleted the obsolete Structured Output eligibility probe while preserving its research note; and
+5. handed the migration to Product T5b with a candidate-specific live check planned for every later
+   tranche.
 
-1. Add one inventory test for 33 contracts, 33 bindings, 34 Agent occurrences, 41 semantic contracts, and 43 Attempt occurrences.
-2. Run the Raw adapter tests, six Capability contract suites, Attempt recovery/effect tests, Product composition tests, and the existing full CI gate. A live OpenCode integration test uses the exact adapter/provider/model intended for cutover and records the candidate commit, ProductLock, and GraphRevision.
-3. Re-run the four already-cut T5a non-Agent roots through the unchanged production composition and confirm their selector remains `langgraph-v1`; the other ten remain `legacy-v2` until their Product task is released.
-4. Record Checkpoint R as a normal candidate-bound CI result. It must prove local Schema validation, raw-file validation, one-session recovery, and absence of Structured Artifact code. Do not create a second certification or deployment registry.
-5. Delete the executable Structured Output eligibility probe and its executable test after confirming no active CI or production caller remains. Retain the research document as historical evidence.
-6. Hand off directly to Product T5b. Repeat the same focused Raw Agent integration test for T5b, T5c, and T5d candidates before switching their future-start selector; do not rerun this implementation plan.
-
-**Full verification:**
-
-```bash
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run lint-imports
-uv run pytest
-bash scripts/assurance_product_wheel_smoke_test.sh
-```
-
-**Exit:** Checkpoint R is green for the candidate, T5a remains accepted, and Product T5b is the next task.
-
-**Commit:** `docs: close raw agent runtime checkpoint`
+The former exit condition was a green Checkpoint R. On 2026-09-04 its workflow, script, support
+harness, marker, fixture, and manifest were removed. Product continuation now uses the ordinary
+repository gate and focused deterministic Raw Agent, Attempt recovery, and Product lifecycle tests.
+T5a remains accepted and Product T5b is next.
 
 ---
 
@@ -225,11 +218,11 @@ R1 local result contract
   -> R2 strict OpenCode adapter
   -> R3 33-contract integration
   -> R4 recovery/security proof
-  -> R5 Checkpoint R
   -> Product T5b -> T5c -> T5d -> T6-T10
 ```
 
-R1 tests and the non-overlapping parts of R2 may be developed together, but commits merge in the order above. R3–R5 are sequential because each consumes the preceding contract.
+R1 tests and the non-overlapping parts of R2 may be developed together, but commits merge in the
+order above. R3–R4 are sequential because each consumes the preceding contract.
 
 ## Completion criteria
 

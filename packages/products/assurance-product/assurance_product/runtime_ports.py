@@ -1,44 +1,81 @@
 from __future__ import annotations
 
-import pickle
-from collections.abc import AsyncIterator, Mapping, Sequence
+import asyncio
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, cast
 
+from graph_engine.application.application import InvocationBoundExecution
 from graph_engine.application.runtime_context import AssuranceRuntimeContext
+from graph_engine.attempts.activity import JournalBackedTaskActivityPort
 from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
+from graph_engine.attempts.host_protocol import (
+    TaskHostCancelCall,
+    TaskHostExecuteCall,
+    TaskHostReconcileCall,
+)
+from graph_engine.attempts.host_receipts import TerminalReceiptStore
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.production_host import (
+    create_production_task_execution_host,
+    invocation_activity_receipts_root,
+)
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
-from graph_engine.attempts.node_factory import AttemptNodeFactory
+from graph_engine.attempts.secret_sources import (
+    InvocationRuntimeAuthorization,
+    authorize_binding_secret_handles,
+    empty_runtime_authorization,
+    resolve_secret_source,
+)
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+from graph_engine.attempts.contracts import (
+    AttemptExecutor,
+    ResolvedAttemptContract,
+    resolve_contract,
+)
 from graph_engine.boot.boot import EngineGraphBuildContext, RuntimePorts, bind_attempt_factory
 from graph_engine.boot.graph_revision import BootArtifact
+from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.composition import FrozenComposition
 from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
 from graph_engine.persistence.checkpoint_observer import CheckpointAnchorObserverPort
-from graph_engine.composition import FrozenComposition
-from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.journal import (
     CheckpointAnchor,
     CheckpointAnchorState,
     CheckpointIntegrityError,
     InvocationStarted,
 )
-from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
-from graph_engine.plugin_api import (
-    PreparedWorkspaceRef,
-    PromotionReceipt,
-    ResourceClaims,
-    SealedWriteSet,
-    TaskWorkspaceBinding,
-)
+from graph_engine.persistence.runner_lease import RunnerLease
 
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.product import coexistence_graph_manifest, product_lock_from_composition
+from assurance_product.product import product_graph_manifest, product_lock_from_composition
+from assurance_product.runtime_bindings import runtime_bindings_from_composition
+from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend, open_sqlite_checkpointer
+from assurance_product.sqlite_effect_state import SQLiteEffectState
+from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
 
 
 class ProductionObserverError(ValueError):
     """Raised when production ports would compile with a fake or empty observer registry."""
+
+
+class AuthorizedSecretResolver:
+    def __init__(self, authorization: InvocationRuntimeAuthorization) -> None:
+        self._authorization = authorization
+
+    def resolve(self, handle: str) -> bytes:
+        for binding in self._authorization.secret_sources:
+            if binding.handle == handle:
+                return resolve_secret_source(binding)
+        raise ValueError(f"secret handle is not authorized: {handle}")
+
+
+@dataclass(frozen=True, slots=True)
+class NetworkPolicy:
+    allow_opencode: bool
 
 
 class _FenceAdvancedReplayJournal:
@@ -86,104 +123,66 @@ def _same_replay_payload(existing: CheckpointAnchor, incoming: CheckpointAnchor)
     )
 
 
-class _TolerantAttemptFactory(AttemptNodeFactory):
-    """Test-only factory: scripted Kernel resolutions still need a valid selected input."""
+def _invocation_id(invocation: object | None) -> str:
+    if invocation is None:
+        return "ports"
+    if isinstance(invocation, str):
+        if not invocation:
+            raise ValueError("invocation id must be nonempty")
+        return invocation
+    value = getattr(invocation, "invocation_id", None)
+    if not isinstance(value, str) or not value:
+        raise ValueError("invocation id must be nonempty")
+    return value
 
-    def attempt(self, contract, *, semantic_node_id, activation, select, publish):  # type: ignore[no-untyped-def]
-        task = getattr(contract, "contract", contract)
 
-        def _select(state: object) -> object:
-            try:
-                return select(state) if callable(select) else select
-            except Exception:
-                return _scripted_input(task, state)
+class _ProductExecutionFactory:
+    def __init__(
+        self,
+        ports: ProductRuntimePorts,
+        *,
+        invocation_id: str,
+        entrypoint: str,
+        root_input_digest: str,
+    ) -> None:
+        self._ports = ports
+        self._invocation_id = invocation_id
+        self._entrypoint = entrypoint
+        self._root_input_digest = root_input_digest
+        self._bound = False
 
-        return super().attempt(
-            contract,
-            semantic_node_id=semantic_node_id,
-            activation=activation,
-            select=_select,
-            publish=publish,
+    def bind(self, runner_lease: RunnerLease) -> InvocationBoundExecution:
+        if not isinstance(runner_lease, RunnerLease):
+            raise ValueError("fencing token")
+        if runner_lease.fencing_token < 1:
+            raise ValueError("fencing token")
+        if self._bound:
+            raise ValueError("execution factory already bound")
+        self._bound = True
+        artifact = self._ports._compile_bound(
+            invocation_id=self._invocation_id,
+            root_input_digest=self._root_input_digest,
+            fencing_token=runner_lease.fencing_token,
+        )
+        context = AssuranceRuntimeContext(
+            revision_id=self._ports.revision_id,
+            fencing_token=runner_lease.fencing_token,
+            attempt_kernel=self._ports.kernel,
+            secret_resolver=self._ports.secret_resolver,
+            workspace_provider=self._ports.workspace_provider,
         )
 
+        async def recover_outbox() -> None:
+            await self._ports.backend.recover_handshake(self._invocation_id)
 
-def _scripted_input(task: object, state: object) -> object:
-    digest = "a" * 64
-    mapping = dict(state) if isinstance(state, Mapping) else {}
-    payload = {
-        "change_id": mapping.get("change_id") or "CH-DEMO-001",
-        "retro_id": mapping.get("retro_id") or "RET-COEXIST-001",
-        "owned_evidence_ids": (),
-        "artifact_paths": mapping.get("artifact_paths") or mapping.get("allowed_artifact_paths") or (),
-        "source_manifest": {
-            "issue_slice_sha256": f"sha256:{digest}",
-            "workflow_slice_sha256": f"sha256:{digest}",
-            "eval_slice_sha256": f"sha256:{digest}",
-        },
-        "context_digest": digest,
-        "quality_report_digest": digest,
-        "metrics_digest": digest,
-        "issue_digest": digest,
-        "subject_digest": digest,
-        "expected_improvement_version": 1,
-        "improvement_id": mapping.get("improvement_id") or "IMP-COEXIST-001",
-        "invocation_id": mapping.get("invocation_id") or "inv-scripted",
-        "archive_digest": digest,
-        "locked_signal_ids": (),
-    }
-    model = getattr(task, "input_model", None)
-    if model is None:
-        return payload
-    return model.model_validate(payload)
-
-
-class _UnusedWorkspace:
-    async def open_or_create(self, attempt_key: object, claims: ResourceClaims) -> TaskWorkspaceBinding:
-        del attempt_key, claims
-        raise RuntimeError("workspace adapter is unused for this operation")
-
-    async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet:
-        del binding
-        raise RuntimeError("workspace adapter is unused for this operation")
-
-    async def prepare(self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet) -> PreparedWorkspaceRef:
-        del binding, sealed
-        raise RuntimeError("workspace adapter is unused for this operation")
-
-    async def promote(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt:
-        del prepared
-        raise RuntimeError("workspace adapter is unused for this operation")
-
-    async def recover_promotion(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt:
-        del prepared
-        raise RuntimeError("workspace adapter is unused for this operation")
-
-
-class DurableAttemptJournal(MemoryAttemptJournal):
-    def __init__(self, path: Path) -> None:
-        super().__init__()
-        self._path = path
-        if path.exists() and path.is_file() and not path.is_symlink():
-            loaded = pickle.loads(path.read_bytes())
-            self._logs, self._durable = loaded
-
-    async def append_record(self, record, *, expected_revision: int, fencing_token: int):  # type: ignore[no-untyped-def]
-        snapshot = await super().append_record(
-            record, expected_revision=expected_revision, fencing_token=fencing_token
+        return InvocationBoundExecution(
+            artifact=artifact,
+            runtime_context=context,
+            recover_outbox=recover_outbox,
         )
-        self._path.parent.mkdir(mode=0o700, exist_ok=True)
-        self._path.write_bytes(pickle.dumps((self._logs, self._durable)))
-        return snapshot
-
-    async def ensure_durable(self, attempt_key) -> None:  # type: ignore[no-untyped-def]
-        await super().ensure_durable(attempt_key)
-        self._path.parent.mkdir(mode=0o700, exist_ok=True)
-        self._path.write_bytes(pickle.dumps((self._logs, self._durable)))
 
 
 class ProductRuntimePorts:
-    test_kernel_resolutions: list[object] | None = None
-    _last_scripted_committed: object | None = None
     _last_events: tuple[object, ...] = ()
     _last_active: int = 0
     _last_replayed: tuple[int, ...] = ()
@@ -194,11 +193,19 @@ class ProductRuntimePorts:
         workspace: ChangeWorkspace,
         composition: object,
         backend: AssuranceSqliteBackend,
-        journal: DurableAttemptJournal,
+        journal: SqliteAttemptJournal,
         observer: AttemptCheckpointObserver,
         kernel: AssuranceAttemptKernel,
         product_lock_digest: str,
         revision_id: str,
+        secret_resolver: AuthorizedSecretResolver,
+        workspace_provider: TaskWorkspaceProvider,
+        effect_state: SQLiteEffectState,
+        host: object,
+        authorization: InvocationRuntimeAuthorization,
+        reachable_contract_ids: tuple[str, ...],
+        invocation_id: str,
+        network: NetworkPolicy,
     ) -> None:
         self.workspace = workspace
         self.composition = composition
@@ -208,6 +215,14 @@ class ProductRuntimePorts:
         self.kernel = kernel
         self.product_lock_digest = product_lock_digest
         self.revision_id = revision_id
+        self.secret_resolver = secret_resolver
+        self.workspace_provider = workspace_provider
+        self.effect_state = effect_state
+        self.host = host
+        self.authorization = authorization
+        self.reachable_contract_ids = reachable_contract_ids
+        self.invocation_id = invocation_id
+        self.network = network
         self.observer_registered_before_compile = False
         self._artifact: BootArtifact | None = None
         self._close_log: list[str] = []
@@ -218,47 +233,95 @@ class ProductRuntimePorts:
         cls,
         workspace: ChangeWorkspace,
         composition: object,
+        invocation: object | None = None,
+        authorization: InvocationRuntimeAuthorization | None = None,
+        reachable_contract_ids: Sequence[str] | None = None,
         observers: Sequence[object] | None = None,
     ) -> AsyncIterator[ProductRuntimePorts]:
-        product_lock = product_lock_from_composition(composition)  # type: ignore[arg-type]
-        manifest = coexistence_graph_manifest(composition, product_lock)  # type: ignore[arg-type]
-        journal = DurableAttemptJournal(workspace.paths.langgraph_leases / "attempts.pkl")
-        observer = AttemptCheckpointObserver(journal)
-        if observers is not None:
-            if not observers or any(not isinstance(item, AttemptCheckpointObserver) for item in observers):
-                raise ProductionObserverError("production observer registry cannot be fake-only or empty")
-            registered = cast(tuple[CheckpointAnchorObserverPort, ...], tuple(observers))
-        else:
-            registered = (observer,)
-        observer_ports: Sequence[CheckpointAnchorObserverPort] = registered
-        async with open_sqlite_checkpointer(workspace, observers=observer_ports) as backend:
+        typed_composition = cast(FrozenComposition, composition)
+        product_lock = product_lock_from_composition(typed_composition)
+        manifest = product_graph_manifest(typed_composition, product_lock)
+        invocation_id = _invocation_id(invocation)
+        auth = authorization if authorization is not None else empty_runtime_authorization()
+        reachable = tuple(reachable_contract_ids or ())
+        async with open_sqlite_checkpointer(workspace) as backend:
+            journal = SqliteAttemptJournal(backend)
+            observer = AttemptCheckpointObserver(journal)
+            if observers is not None:
+                if not observers or any(
+                    not isinstance(item, AttemptCheckpointObserver) for item in observers
+                ):
+                    raise ProductionObserverError("production observer registry cannot be fake-only or empty")
+                registered = cast(tuple[CheckpointAnchorObserverPort, ...], tuple(observers))
+            else:
+                registered = (observer,)
+            backend.install_observers(registered)
+            backend.seal_observers()
             allow = getattr(backend.serializer, "with_msgpack_allowlist", None)
             if callable(allow):
                 backend.serializer = allow(
                     (("graph_engine.stategraph.checkpoint_bridge", "CheckpointBridgeMarker"),)
                 )
+            binding = workspace.runtime_binding()
+            task_store = TaskWorkspaceStore(
+                binding.project_root,
+                binding.attempts_root,
+                binding.receipts_root,
+            )
+            workspace_provider = TaskWorkspaceProvider(task_store)
+            receipts_root = invocation_activity_receipts_root(workspace.paths.change_root, invocation_id)
+            receipts_root.parent.mkdir(parents=True, exist_ok=True)
+            receipts = TerminalReceiptStore.open_or_create(receipts_root)
+            secret_resolver = AuthorizedSecretResolver(auth)
+            effect_state = SQLiteEffectState(backend)
+            loop = asyncio.get_running_loop()
+
+            async def assert_live_fence() -> None:
+                current = backend.lease.current(invocation_id)  # type: ignore[attr-defined]
+                await backend.lease.assert_current(invocation_id, current.fencing_token)
+
+            def activity_factory(
+                call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+                *,
+                remaining_deadline: float,
+            ) -> JournalBackedTaskActivityPort:
+                return JournalBackedTaskActivityPort(
+                    journal=journal,
+                    attempt_key=AttemptKey(digest=call.identity.attempt_key_digest),
+                    identity=call.activity_rpc,
+                    workspace_identity=call.attempt_root.workspace_identity,
+                    assert_live_fence=assert_live_fence,
+                    owner_loop=loop,
+                    remaining_deadline=remaining_deadline,
+                    expected_request_digest=canonical_digest(
+                        cast(JSONValue, call.request.model_dump(mode="json"))
+                    ),
+                    expected_product_lock_digest=call.request.invocation.lock_digest,
+                    expected_handler_id=call.request.capability_id,
+                )
+
+            host = create_production_task_execution_host(
+                authorization=auth,
+                handlers=typed_composition.registries.capabilities.task_handlers,
+                store=task_store,
+                receipts=receipts,
+                activity_factory=activity_factory,
+                invocation_root=workspace.paths.change_root,
+            )
+            network = _preflight_selected_root(typed_composition, auth, reachable)
+            expected_allow = any(".agent." in contract_id for contract_id in reachable)
+            if network.allow_opencode != expected_allow:
+                raise ValueError("network policy does not match selected root")
             kernel = AssuranceAttemptKernel(
                 journal=journal,
-                arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
-                workspace=_UnusedWorkspace(),
+                arbiter=ResourceArbiter(SqliteResourceAuthorizationStore(backend)),
+                workspace=workspace_provider,
                 graph_revision=manifest.revision.revision_id,
+                validators=typed_composition.registries.capabilities.commit_validators,
+                effects=typed_composition.registries.effects,
+                schemas=typed_composition.registries.schemas,
+                effect_state=effect_state,
             )
-            if cls.test_kernel_resolutions is not None:
-                original = kernel.execute_or_recover
-
-                async def _scripted(*args: Any, **kwargs: Any) -> Any:
-                    remaining = cls.test_kernel_resolutions
-                    if remaining:
-                        resolution = remaining.pop(0)
-                        if type(resolution).__name__ == "CommittedTaskResult":
-                            cls._last_scripted_committed = resolution
-                        return resolution
-                    cached = getattr(cls, "_last_scripted_committed", None)
-                    if cached is not None:
-                        return cached
-                    return await original(*args, **kwargs)
-
-                kernel.execute_or_recover = _scripted  # type: ignore[method-assign]
             ports = cls(
                 workspace=workspace,
                 composition=composition,
@@ -268,6 +331,14 @@ class ProductRuntimePorts:
                 kernel=kernel,
                 product_lock_digest=product_lock.digest,
                 revision_id=manifest.revision.revision_id,
+                secret_resolver=secret_resolver,
+                workspace_provider=workspace_provider,
+                effect_state=effect_state,
+                host=host,
+                authorization=auth,
+                reachable_contract_ids=reachable,
+                invocation_id=invocation_id,
+                network=network,
             )
             ports.observer_registered_before_compile = any(
                 isinstance(item, AttemptCheckpointObserver) for item in backend.observers
@@ -277,11 +348,26 @@ class ProductRuntimePorts:
             finally:
                 ports._close_log.append("observer_outbox_recovery")
                 await backend.recover_handshake("")
-                ports._publish_journal_snapshot()
+                await ports._publish_journal_snapshot()
+                task_store.close()
                 ports._close_log.extend(("kernel", "attempt_journal", "sqlite"))
 
     def shutdown_order(self) -> tuple[str, ...]:
         return tuple(self._close_log)
+
+    def execution_factory(
+        self,
+        *,
+        invocation_id: str,
+        entrypoint: str,
+        root_input_digest: str,
+    ) -> _ProductExecutionFactory:
+        return _ProductExecutionFactory(
+            self,
+            invocation_id=invocation_id,
+            entrypoint=entrypoint,
+            root_input_digest=root_input_digest,
+        )
 
     def checkpointer_for(
         self,
@@ -292,6 +378,8 @@ class ProductRuntimePorts:
         root_input_digest: str,
         fencing_token: int,
     ) -> AnchoredCheckpointer:
+        if fencing_token < 1:
+            raise ValueError("fencing token")
         identity = CheckpointAnchorState(
             invocation_id=invocation_id,
             thread_id=invocation_id,
@@ -312,25 +400,27 @@ class ProductRuntimePorts:
     def runtime_ports(self) -> RuntimePorts:
         return RuntimePorts(
             attempt_kernel=self.kernel,
-            secret_resolver=object(),
-            workspace_provider=_UnusedWorkspace(),
+            secret_resolver=self.secret_resolver,
+            workspace_provider=self.workspace_provider,
         )
 
     def runtime_context(self, fencing_token: int) -> AssuranceRuntimeContext:
+        if fencing_token < 1:
+            raise ValueError("fencing token")
         return AssuranceRuntimeContext(
             revision_id=self.revision_id,
             fencing_token=fencing_token,
             attempt_kernel=self.kernel,
-            secret_resolver=object(),
-            workspace_provider=_UnusedWorkspace(),
+            secret_resolver=self.secret_resolver,
+            workspace_provider=self.workspace_provider,
         )
 
-    async def compile_roots(
+    def _compile_bound(
         self,
         *,
-        invocation_id: str = "compile",
-        root_input_digest: str | None = None,
-        fencing_token: int = 1,
+        invocation_id: str,
+        root_input_digest: str,
+        fencing_token: int,
     ) -> BootArtifact:
         from assurance_execution.graphs.factory import build_execution_graphs
         from assurance_generation.graphs.factory import build_generation_graphs
@@ -340,26 +430,32 @@ class ProductRuntimePorts:
         from assurance_product.graphs.factory import build_product_graphs
         from assurance_quality.graphs.factory import build_quality_graphs
 
+        if fencing_token < 1:
+            raise ValueError("fencing token")
         checkpointer = self.checkpointer_for(
             invocation_id=invocation_id,
             revision_id=self.revision_id,
             product_lock_digest=self.product_lock_digest,
-            root_input_digest=root_input_digest or "c" * 64,
+            root_input_digest=root_input_digest,
             fencing_token=fencing_token,
         )
         if self.observer not in checkpointer._observers and not any(
             isinstance(item, AttemptCheckpointObserver) for item in checkpointer._observers
         ):
             raise ProductionObserverError("observer must be registered before Boot compiles any root")
-        semantic = dict(getattr(self.composition, "semantic_attempt_contracts", {}))
-        data_contracts = {
-            contract_id: getattr(resolved, "contract", resolved) for contract_id, resolved in semantic.items()
+        semantic = {
+            contract_id: _bind_executor_host(
+                cast(ResolvedAttemptContract[Any, Any], resolved),
+                host=self.host,
+                graph_revision=self.revision_id,
+                product_lock_digest=self.product_lock_digest,
+            )
+            for contract_id, resolved in dict(
+                getattr(self.composition, "semantic_attempt_contracts", {})
+            ).items()
         }
-        factory = (
-            _TolerantAttemptFactory(journal=self.attempt_journal, kernel=self.kernel)
-            if type(self).test_kernel_resolutions
-            else bind_attempt_factory(self.kernel)
-        )
+        data_contracts = {contract_id: resolved.contract for contract_id, resolved in semantic.items()}
+        factory = bind_attempt_factory(self.kernel)
         context = EngineGraphBuildContext(
             contracts=data_contracts,
             checkpointer=checkpointer,
@@ -379,31 +475,50 @@ class ProductRuntimePorts:
         }
         graphs = build_product_graphs(context=context, features=features)
         composition = cast(FrozenComposition, self.composition)
-        manifest = coexistence_graph_manifest(composition, product_lock_from_composition(composition))
+        manifest = product_graph_manifest(composition, product_lock_from_composition(composition))
         artifact = BootArtifact(
             manifest=manifest,
             entrypoints=graphs.entrypoints,
-            attempt_contracts=getattr(self.composition, "semantic_attempt_contracts", {}),
+            attempt_contracts=semantic,
             checkpointer_backend_id=checkpointer.backend_id,
         )
         self._artifact = artifact
         self.observer_registered_before_compile = True
         return artifact
 
-    def _publish_journal_snapshot(self) -> None:
+    async def read_only_execution(
+        self,
+        *,
+        invocation_id: str,
+        root_input_digest: str,
+    ) -> InvocationBoundExecution:
+        from graph_engine.application.application import _read_only_artifact
+
+        started = await self.backend.journal.read_invocation_started(invocation_id)
+        if started is None:
+            raise ValueError("invocation has not started")
+        artifact = self._compile_bound(
+            invocation_id=invocation_id,
+            root_input_digest=root_input_digest or started.root_input_digest,
+            fencing_token=started.fencing_token,
+        )
+        return InvocationBoundExecution(
+            artifact=_read_only_artifact(artifact),
+            runtime_context=self.runtime_context(started.fencing_token),
+        )
+
+    async def _publish_journal_snapshot(self) -> None:
         from graph_engine.attempts.events import SystemInterruptIssued
 
         events: list[object] = []
         replayed: list[int] = []
-        for digest, records in self.attempt_journal._logs.items():
-            for record in records:
-                events.extend(record.events)
-                replayed.extend(
-                    getattr(event, "ordinal", 0)
-                    for event in record.events
-                    if type(event).__name__ == "SystemInterruptCompletionCheckpointed"
-                )
-            del digest
+        for record in await self.attempt_journal.read_records():
+            events.extend(record.events)
+            replayed.extend(
+                getattr(event, "ordinal", 0)
+                for event in record.events
+                if type(event).__name__ == "SystemInterruptCompletionCheckpointed"
+            )
         issued = [event for event in events if isinstance(event, SystemInterruptIssued)]
         completed = {
             getattr(event, "generation", None)
@@ -427,4 +542,56 @@ class ProductRuntimePorts:
         return cls._last_replayed
 
 
-__all__ = ["ProductRuntimePorts", "ProductionObserverError"]
+def _bind_executor_host(
+    resolved: ResolvedAttemptContract[Any, Any],
+    *,
+    host: object,
+    graph_revision: str,
+    product_lock_digest: str,
+) -> ResolvedAttemptContract[Any, Any]:
+    bind = getattr(resolved.executor, "with_host", None)
+    if not callable(bind):
+        return resolved
+    return resolve_contract(
+        resolved.contract,
+        executor=cast(
+            AttemptExecutor[Any, Any],
+            bind(
+                host,
+                graph_revision=graph_revision,
+                product_lock_digest=product_lock_digest,
+            ),
+        ),
+    )
+
+
+def _preflight_selected_root(
+    composition: FrozenComposition,
+    authorization: InvocationRuntimeAuthorization,
+    reachable: Sequence[str],
+) -> NetworkPolicy:
+    semantic = getattr(composition, "semantic_attempt_contracts", {})
+    if len(semantic) != 41:
+        raise ValueError("composition must resolve all 41 semantic contracts")
+    missing_reachable = tuple(contract_id for contract_id in reachable if contract_id not in semantic)
+    if missing_reachable:
+        raise ValueError(f"missing required port for contract {missing_reachable[0]}")
+    agents = tuple(contract_id for contract_id in reachable if ".agent." in contract_id)
+    policy = NetworkPolicy(allow_opencode=bool(agents))
+    if not agents:
+        return policy
+    bindings = runtime_bindings_from_composition(composition)
+    handles: list[str] = []
+    for contract_id in agents:
+        binding = bindings.get(contract_id)
+        if binding is None:
+            raise ValueError(f"missing required port for contract {contract_id}")
+        handles.extend(binding.secret_handles)
+    if handles:
+        authorize_binding_secret_handles(tuple(sorted(set(handles))), authorization)
+    if not authorization.secret_sources:
+        raise ValueError("missing required port: OpenCode credentials")
+    return policy
+
+
+__all__ = ["AuthorizedSecretResolver", "NetworkPolicy", "ProductRuntimePorts", "ProductionObserverError"]

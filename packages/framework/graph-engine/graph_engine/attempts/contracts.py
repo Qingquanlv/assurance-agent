@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeAlias, TypeVar
 
 from pydantic import BaseModel, Field
 
-from graph_engine.attempts.context import AttemptExecutionContext
+from graph_engine.attempts.context import AuthorizedAttemptScope
+from graph_engine.attempts.resolutions import (
+    IndeterminateTaskResult,
+    PendingTaskResult,
+    PermanentTaskFailure,
+    RejectedTaskResult,
+)
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.identifiers import validate_qualified_id
-from graph_engine.plugin_api import FrozenModel, ResourceClaims, ResourceClaimTemplate
+from graph_engine.plugin_api import EffectIntent, FrozenModel, ResourceClaims, ResourceClaimTemplate
 
 
 InputT = TypeVar("InputT", bound=BaseModel)
 OutputT = TypeVar("OutputT", bound=BaseModel)
 _InputT_contra = TypeVar("_InputT_contra", bound=BaseModel, contravariant=True)
-_OutputT_co = TypeVar("_OutputT_co", bound=BaseModel, covariant=True)
 
 
 class AttemptRetryPolicy(FrozenModel):
@@ -25,12 +30,29 @@ class AttemptTimeoutPolicy(FrozenModel):
     seconds: float = Field(gt=0)
 
 
-class AttemptExecutor(Protocol[_InputT_contra, _OutputT_co]):
+class TerminalReceiptRef(FrozenModel):
+    identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ExecutedAttemptResult(FrozenModel, Generic[OutputT]):
+    output: OutputT
+    effects: tuple[EffectIntent, ...] = ()
+    source_terminal_receipt: TerminalReceiptRef | None = None
+
+
+ExecutorResolution: TypeAlias = (
+    RejectedTaskResult | PermanentTaskFailure | PendingTaskResult | IndeterminateTaskResult
+)
+ExecutorStepResult: TypeAlias = ExecutedAttemptResult[OutputT] | ExecutorResolution
+
+
+class AttemptExecutor(Protocol[_InputT_contra, OutputT]):
     async def execute(
         self,
         validated_input: _InputT_contra,
-        context: AttemptExecutionContext,
-    ) -> _OutputT_co: ...
+        scope: AuthorizedAttemptScope,
+    ) -> ExecutorStepResult[OutputT]: ...
 
 
 def _model_symbol(model: type[BaseModel]) -> str:
@@ -112,7 +134,12 @@ __all__ = [
     "AttemptExecutor",
     "AttemptRetryPolicy",
     "AttemptTimeoutPolicy",
+    "AuthorizedAttemptScope",
+    "ExecutedAttemptResult",
+    "ExecutorResolution",
+    "ExecutorStepResult",
     "ResolvedAttemptContract",
     "TaskAttemptContract",
+    "TerminalReceiptRef",
     "resolve_contract",
 ]

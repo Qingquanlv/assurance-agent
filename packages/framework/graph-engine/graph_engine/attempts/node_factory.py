@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, cast
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from langgraph.config import get_config
 from langgraph.errors import GraphInterrupt
@@ -124,7 +124,6 @@ class AttemptNodeFactory:
         if isinstance(resolution, (PendingTaskResult, IndeterminateTaskResult)):
             await self._issue_interrupt(
                 key,
-                kernel=kernel,
                 context=context,
                 issued=issued,
                 resolution=resolution,
@@ -135,16 +134,12 @@ class AttemptNodeFactory:
         self,
         key: AttemptKey,
         *,
-        kernel: object,
         context: AttemptExecutionContext,
         issued: tuple[ActiveSystemInterrupt, ...],
         resolution: PendingTaskResult | IndeterminateTaskResult,
     ) -> None:
         if len(issued) >= MAX_ACTIVE_GENERATIONS:
             raise ValueError("checkpoint marker batch exceeds the active-generation bound")
-        record = getattr(kernel, "record_system_interrupt_issued", None)
-        if not callable(record):
-            raise TypeError("attempt kernel must record system interrupts")
         generation = max((item.generation for item in issued), default=0) + 1
         ordinal = max((item.ordinal for item in issued), default=-1) + 1
         kind = "system_wake" if isinstance(resolution, PendingTaskResult) else "system_block"
@@ -167,7 +162,13 @@ class AttemptNodeFactory:
             ordinal=ordinal,
             envelope_digest=envelope_digest,
         )
-        await cast(Callable[..., Awaitable[None]], record)(key, event, context)
+        snapshot = await self._journal.load(key)
+        await self._journal.append(
+            key,
+            (event,),
+            expected_revision=0 if snapshot is None else snapshot.revision,
+            fencing_token=context.fencing_token,
+        )
         payload = _interrupt_payload(
             key,
             ActiveSystemInterrupt(generation=generation, ordinal=ordinal, envelope_digest=envelope_digest),

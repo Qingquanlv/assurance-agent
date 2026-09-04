@@ -14,7 +14,7 @@ from agent_runtime_contracts import (
     ReadOnlyRawWorkspace,
     ResolvedRawAgentExecutor,
 )
-from agent_runtime_contracts.execution_contract import AgentExecutionContract
+from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
 from agent_runtime_opencode.observation import parse_closed_terminal_result
 from agent_runtime_opencode.redaction import reject_canaries_in_payload, scan_for_canaries
@@ -32,6 +32,7 @@ from graph_engine.attempts.resolutions import (
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS
+from graph_engine.effects.state import MemoryEffectState
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.persistence.runner_lease import StaleFencingToken
@@ -42,6 +43,18 @@ from graph_engine.attempts.workspace import (
     TaskWorkspaceStore,
     TaskWorkspaceViolation,
 )
+
+
+def _fencing_token(context: object) -> int:
+    token = getattr(context, "fencing_token", None)
+    if isinstance(token, int):
+        return token
+    execution = getattr(context, "execution", None)
+    nested = getattr(execution, "fencing_token", None)
+    if isinstance(nested, int):
+        return nested
+    raise AttributeError("fencing_token")
+
 
 _HELPER_SPEC = importlib.util.spec_from_file_location(
     "test_kernel_effects",
@@ -228,7 +241,7 @@ class LiveRawRuntime:
                 ),
             ),
             expected_revision=snapshot.revision,
-            fencing_token=context.fencing_token,
+            fencing_token=_fencing_token(context),
         )
 
     def _write_authorized(self) -> None:
@@ -358,6 +371,7 @@ def _contract() -> AgentExecutionContract[RawInput, RawAgentResult, RawOutput]:
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=("out.txt",), finalize=()),
     )
 
 
@@ -396,7 +410,7 @@ def _build(
         finalize=finalize,
     )
     if declared_effects:
-        executor.declared_effects = declared_effects  # type: ignore[attr-defined]
+        executor.effects = declared_effects
     resolved = executor.resolve()
     kernel = AssuranceAttemptKernel(
         journal=journal,
@@ -405,6 +419,7 @@ def _build(
         graph_revision=_revision(),
         effects=effects,
         schemas=schemas,
+        effect_state=MemoryEffectState() if effects is not None else None,
     )
     validated = RawInput(change_id="chg-1")
     key = derive_attempt_key(

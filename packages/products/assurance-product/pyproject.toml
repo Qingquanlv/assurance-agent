@@ -17,11 +17,9 @@ dependencies = [
 
 [project.optional-dependencies]
 opencode = ["agent-runtime-opencode==0.1.0"]
-cursor = ["agent-runtime-cursor==0.1.0"]
 
 [project.entry-points."graph_engine.products"]
 assurance-opencode = "assurance_product.product:AssuranceOpenCodeProductProvider"
-assurance-cursor = "assurance_product.product:AssuranceCursorProductProvider"
 
 [project.scripts]
 aa = "assurance_product.cli:main"
@@ -42,4 +40,3 @@ assurance-healing = { workspace = true }
 assurance-quality = { workspace = true }
 assurance-improvement = { workspace = true }
 agent-runtime-opencode = { workspace = true }
-agent-runtime-cursor = { workspace = true }

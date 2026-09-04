@@ -1,35 +1,55 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterator
+import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from pydantic import BaseModel
+
+from assurance_product.change_workspace import ChangeWorkspace
+from assurance_product.invocation_identity import InvocationIdentityRecord
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.composition import FrozenComposition
+from graph_engine.plugin_api import ResourceClaimTemplate, ResourceClaims
 from tests.product.cli_support import (
     SECRET_ENV,
+    SECRET_HANDLE,
     SECRET_VALUE,
     common_lifecycle_args,
     parse_json_output,
 )
-from tests.product.composition_harness import request_for
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
+_NON_AGENT_ENTRYPOINTS = frozenset(
+    {
+        "improvement-apply",
+        "improvement-evaluate",
+        "improvement-export",
+        "improvement-rollback",
+    }
+)
+_AGENT_ENTRYPOINTS = frozenset(
+    {
+        "archive",
+        "case",
+        "execute",
+        "full",
+        "improvement-review",
+        "intake",
+        "issue-analyze",
+        "issue-reconcile",
+        "issue-review",
+        "retro",
+    }
+)
 
-@pytest.fixture(autouse=True)
-def _reset_runtime_ports() -> Iterator[None]:
-    yield
-    try:
-        from assurance_product.runtime_ports import ProductRuntimePorts
 
-        ProductRuntimePorts.test_kernel_resolutions = None
-        ProductRuntimePorts._last_scripted_committed = None
-    except ImportError:
-        return
-
-
-def _selection_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
+def _identity_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
     return (
         project_dir
         / "qa"
@@ -37,112 +57,29 @@ def _selection_path(project_dir: Path, change_id: str, invocation_id: str) -> Pa
         / change_id
         / ".runtime"
         / "langgraph"
-        / "selections"
+        / "identities"
         / f"{invocation_id}.json"
     )
 
 
-def _load_selection(path: Path) -> dict[str, object]:
+def _load_identity(path: Path) -> dict[str, object]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise TypeError("selection record must be an object")
+        raise TypeError("identity record must be an object")
     return payload
 
 
-def test_entrypoint_runtime_cutover_flips_all_fourteen_names() -> None:
-    from assurance_product.models import ENTRYPOINT_RUNTIME_CUTOVER, PRODUCT_ENTRYPOINTS
+def test_all_fourteen_public_entrypoints_are_current() -> None:
+    from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
+    from assurance_product import models
+    from assurance_product.models import PRODUCT_ENTRYPOINTS
 
-    assert set(ENTRYPOINT_RUNTIME_CUTOVER) == set(PRODUCT_ENTRYPOINTS)
-    assert len(ENTRYPOINT_RUNTIME_CUTOVER) == 14
-    flipped = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "langgraph-v1"}
-    leftover = {name for name, kind in ENTRYPOINT_RUNTIME_CUTOVER.items() if kind == "legacy-v2"}
-    assert flipped == set(PRODUCT_ENTRYPOINTS)
-    assert leftover == set()
-
-
-def test_cli_environment_and_config_cannot_override_cutover(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    monkeypatch.setenv("AA_RUNTIME", "langgraph-v1")
-    monkeypatch.setenv("ENTRYPOINT_RUNTIME_CUTOVER", "langgraph-v1")
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-cutover-override-001",
-        entrypoint="full",
-        families=("api",),
-    )
-    rejected = cli_runner.invoke(app, ["start", *args, "--runtime", "langgraph-v1"])
-    assert rejected.exit_code == 2, rejected.output
-    started = cli_runner.invoke(app, ["start", *args])
-    assert started.exit_code == 0, started.output
-    record = _load_selection(_selection_path(project_dir, change_id, "inv-cutover-override-001"))
-    assert record["runtime"] == "langgraph-v1"
-    assert record["phase"] == "initialized"
-
-
-def test_production_start_writes_initialized_langgraph_selection(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.application import LangGraphRuntimeRecord
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-select-langgraph-full-001",
-        entrypoint="full",
-        families=("api",),
-    )
-    result = cli_runner.invoke(app, ["start", *args])
-    assert result.exit_code == 0, result.output
-    path = _selection_path(project_dir, change_id, "inv-select-langgraph-full-001")
-    record = LangGraphRuntimeRecord.model_validate_json(path.read_bytes())
-    assert record.phase == "initialized"
-    assert record.runtime == "langgraph-v1"
-    assert record.entrypoint == "full"
-    assert record.root_input_digest is not None and len(record.root_input_digest) == 64
-    assert record.identity_digest is not None and len(record.identity_digest) == 64
-
-
-def test_test_owned_selector_can_choose_langgraph(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product import application
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.application import LangGraphRuntimeRecord
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    monkeypatch.setattr(application, "_TEST_CRASH_AT", None)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-select-langgraph-001",
-        entrypoint="archive",
-    )
-    result = cli_runner.invoke(app, ["start", *args])
-    assert result.exit_code == 0, result.output
-    path = _selection_path(project_dir, change_id, "inv-select-langgraph-001")
-    record = LangGraphRuntimeRecord.model_validate_json(path.read_bytes())
-    assert record.phase == "initialized"
-    assert record.runtime == "langgraph-v1"
-    assert record.entrypoint == "archive"
-    assert record.identity_digest is not None and len(record.identity_digest) == 64
-    invocation = project_dir / "qa" / "changes" / change_id / ".runtime" / "invocations"
-    assert not invocation.exists() or not (invocation / "inv-select-langgraph-001").exists()
+    assert not hasattr(models, "ENTRYPOINT_RUNTIME_CUTOVER")
+    assert set(ENTRYPOINT_AGENT_CONTRACT_IDS) == set(PRODUCT_ENTRYPOINTS)
+    assert len(PRODUCT_ENTRYPOINTS) == 14
+    assert set(PRODUCT_ENTRYPOINTS) == _NON_AGENT_ENTRYPOINTS | _AGENT_ENTRYPOINTS
+    assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] == () for name in _NON_AGENT_ENTRYPOINTS)
+    assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] for name in _AGENT_ENTRYPOINTS)
 
 
 def _existing_lifecycle_args(
@@ -171,96 +108,22 @@ def _existing_lifecycle_args(
     ]
 
 
-@pytest.mark.parametrize("crash_at", ["after_initializing", "after_identity", "before_initialized"])
-def test_selection_handshake_restart_completes_or_fails_closed(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch, crash_at: str
-) -> None:
-    from assurance_product import application as runtime_selection
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.application import SelectionCrash
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id=f"inv-crash-{crash_at}",
-    )
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", crash_at)
-    first = cli_runner.invoke(app, ["start", *args])
-    assert first.exit_code == 40, first.output
-    assert "SelectionCrash" in first.output or crash_at.replace("_", " ") in first.output.lower()
-    path = _selection_path(project_dir, change_id, f"inv-crash-{crash_at}")
-    assert path.is_file()
-    interrupted = _load_selection(path)
-    assert interrupted["phase"] == "initializing"
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
-    second = cli_runner.invoke(app, ["start", *args])
-    assert second.exit_code == 0, second.output
-    completed = _load_selection(path)
-    assert completed["phase"] == "initialized"
-    assert completed["runtime"] == interrupted["runtime"]
-    assert completed["entrypoint"] == interrupted["entrypoint"]
-    assert completed["root_input_digest"] == interrupted["root_input_digest"]
-    assert completed["build_identity"] == interrupted["build_identity"]
-    del SelectionCrash
-
-
-@pytest.mark.parametrize("crash_at", ["after_initializing", "after_identity", "before_initialized"])
-def test_aa_run_finishes_interrupted_handshake_before_driving(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch, crash_at: str
-) -> None:
-    from assurance_product import application as runtime_selection
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.application import SelectionCrash
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id=f"inv-run-crash-{crash_at}",
-    )
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", crash_at)
-    first = cli_runner.invoke(app, ["run", *args])
-    assert first.exit_code == 40, first.output
-    path = _selection_path(project_dir, change_id, f"inv-run-crash-{crash_at}")
-    interrupted = _load_selection(path)
-    assert interrupted["phase"] == "initializing"
-    bare = cli_runner.invoke(
-        app,
-        ["run", *_existing_lifecycle_args(args, project_dir, change_id, f"inv-run-crash-{crash_at}")],
-    )
-    assert bare.exit_code == 40, bare.output
-    assert _load_selection(path)["phase"] == "initializing"
-    monkeypatch.setattr(runtime_selection, "_TEST_CRASH_AT", None)
-    second = cli_runner.invoke(app, ["run", *args])
-    assert second.exit_code in {0, 20, 30, 40}, second.output
-    completed = _load_selection(path)
-    assert completed["phase"] == "initialized"
-    assert completed["runtime"] == interrupted["runtime"]
-    assert completed["entrypoint"] == interrupted["entrypoint"]
-    assert completed["root_input_digest"] == interrupted["root_input_digest"]
-    del SelectionCrash
-
-
-def test_pre_migration_legacy_invocation_is_backfilled(
+def test_leftover_invocation_without_identity_fails_closed(
     cli_runner, installed_sources, tmp_path: Path, monkeypatch
 ) -> None:
+    from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import app
-    from tests.product.cli_support import start_lifecycle_invocation
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    invocation = start_lifecycle_invocation(
-        tmp_path,
-        installed_sources,
-        invocation_id="inv-pre-migration-001",
-    )
-    path = _selection_path(invocation.project_dir, invocation.change_id, invocation.id)
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "README.md").write_text("seed\n", encoding="utf-8")
+    change_id = "CH-LEFTOVER-001"
+    ChangeWorkspace.prepare(project_dir, change_id)
+    leftover = project_dir / "qa" / "changes" / change_id / ".runtime" / "invocations"
+    leftover.mkdir(parents=True, exist_ok=True)
+    (leftover / "inv-pre-migration-001").mkdir()
+    path = _identity_path(project_dir, change_id, "inv-pre-migration-001")
     assert not path.exists()
     result = cli_runner.invoke(
         app,
@@ -268,125 +131,586 @@ def test_pre_migration_legacy_invocation_is_backfilled(
             "status",
             "--json",
             "--project-dir",
-            str(invocation.project_dir),
-            "--change",
-            invocation.change_id,
-            "--invocation-id",
-            invocation.id,
-            "--product",
-            "assurance-opencode",
-            "--binding-dist",
-            installed_sources.deployments["opencode"].distribution,
-            "--binding-entrypoint",
-            "deployment",
-            "--binding-declaration",
-            installed_sources.deployments["opencode"].declaration_path,
-            "--config-tree",
-            str(installed_sources.configuration_tree.path),
-            "--secret",
-            f"opencode.token=env:{SECRET_ENV}",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    record = _load_selection(path)
-    assert record["phase"] == "initialized"
-    assert record["runtime"] == "legacy-v2"
-    second = cli_runner.invoke(
-        app,
-        [
-            "status",
-            "--json",
-            "--project-dir",
-            str(invocation.project_dir),
-            "--change",
-            invocation.change_id,
-            "--invocation-id",
-            invocation.id,
-            "--product",
-            "assurance-opencode",
-            "--binding-dist",
-            installed_sources.deployments["opencode"].distribution,
-            "--binding-entrypoint",
-            "deployment",
-            "--binding-declaration",
-            installed_sources.deployments["opencode"].declaration_path,
-            "--config-tree",
-            str(installed_sources.configuration_tree.path),
-            "--secret",
-            f"opencode.token=env:{SECRET_ENV}",
-        ],
-    )
-    assert second.exit_code == 0, second.output
-    assert _load_selection(path) == record
-    close = getattr(invocation.engine, "close", None)
-    if callable(close):
-        close()
-
-
-def test_langgraph_run_maps_six_statuses_and_survives_reopen(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    del cli_runner, installed_sources, tmp_path, monkeypatch
-    pytest.skip("leftover Engine create_engine hook was retired")
-
-
-def test_langgraph_run_does_not_map_integrity_errors_to_failed(
-    cli_runner, installed_sources, tmp_path: Path, monkeypatch
-) -> None:
-    from assurance_product.cli import app
-    from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_ports import ProductRuntimePorts
-    from assurance_product.application import RuntimeSelectionError
-    from graph_engine.application import AssuranceApplication
-    from graph_engine.attempts.resolutions import CommittedTaskResult, ReceiptRef
-
-    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    ProductRuntimePorts.test_kernel_resolutions = [
-        CommittedTaskResult(
-            output={"status": "completed"},
-            receipt=ReceiptRef(receipt_id="r-integrity", receipt_digest="d" * 64),
-        )
-    ]
-    composition = resolve_assurance_composition(request_for("opencode", installed_sources))
-    args, project_dir, change_id = common_lifecycle_args(
-        tmp_path=tmp_path,
-        installed_sources=installed_sources,
-        composition=composition,
-        invocation_id="inv-lg-integrity-001",
-        entrypoint="archive",
-    )
-    started = cli_runner.invoke(app, ["start", *args])
-    assert started.exit_code == 0, started.output
-
-    async def boom(*_args: object, **_kwargs: object) -> object:
-        raise RuntimeSelectionError("checkpoint identity drifted")
-
-    monkeypatch.setattr(AssuranceApplication, "run", boom)
-    ran = cli_runner.invoke(
-        app,
-        [
-            "run",
-            "--json",
-            "--project-dir",
             str(project_dir),
             "--change",
             change_id,
             "--invocation-id",
-            "inv-lg-integrity-001",
+            "inv-pre-migration-001",
             "--product",
-            args[args.index("--product") + 1],
+            "assurance-opencode",
             "--binding-dist",
-            args[args.index("--binding-dist") + 1],
+            installed_sources.deployments["opencode"].distribution,
             "--binding-entrypoint",
             "deployment",
             "--binding-declaration",
-            args[args.index("--binding-declaration") + 1],
+            installed_sources.deployments["opencode"].declaration_path,
             "--config-tree",
-            args[args.index("--config-tree") + 1],
+            str(installed_sources.configuration_tree.path),
             "--secret",
-            args[args.index("--secret") + 1],
+            f"opencode.token=env:{SECRET_ENV}",
         ],
     )
-    assert ran.exit_code == 40, ran.output
-    assert "checkpoint identity drifted" in ran.output
-    assert not ran.stdout.strip() or parse_json_output(ran.stdout).get("status") != "failed"
+    assert result.exit_code == 40, result.output
+    assert not path.exists()
+    assert leftover.is_dir()
+
+
+_EVALUATE_WAKE = "wake-evaluate-1"
+_EVALUATE_INVOCATION = "inv-evaluate-reopen-001"
+
+
+def _evaluate_task_payload() -> dict[str, object]:
+    from assurance_improvement.contracts.improvements import ImprovementProjection
+
+    projection = ImprovementProjection.model_validate(
+        {
+            "improvement_id": "IMP-1",
+            "fingerprint": "f" * 64,
+            "kind": "prompt_improvement",
+            "delivery": "memory_patch",
+            "source_refs": {"problem_ids": ["PROB-1"], "occurrence_ids": ["OCC-1"]},
+            "target": ".aa/memory/aa-api-plan.md",
+            "rationale": "gap",
+            "proposed_change": "register adapters",
+            "verification": {"suites": [], "required_cases": [], "success_criteria": "review"},
+            "risk": "low",
+            "confidence": "high",
+            "state": "approved",
+            "version": 1,
+            "proposed_by_retro_ids": ["RET-1"],
+            "last_event_id": "IMPEVT-1",
+            "approval_source": "automatic",
+            "last_auto_review": {
+                "review_id": "REV-1",
+                "subject_sha256": f"sha256:{'a' * 64}",
+                "assessment_sha256": f"sha256:{'a' * 64}",
+                "policy_version": "1",
+                "verdict": "auto_approved",
+            },
+        }
+    )
+    return {
+        "projection": projection.model_dump(mode="json"),
+        "eval_run_id": "eval-1",
+        "outcome": "passed",
+        "report_sha256": "r",
+        "staged_sha256": "s",
+        "baseline_sha256": None,
+        "target_digest": "a" * 64,
+    }
+
+
+def _workspace_at(project_root: Path, change_root: Path) -> ChangeWorkspace:
+    from assurance_product.change_workspace import ChangePaths
+
+    runtime = change_root / ".runtime"
+    langgraph = runtime / "langgraph"
+    return ChangeWorkspace(
+        ChangePaths(
+            project_root=project_root.resolve(),
+            change_root=change_root,
+            staging_root=change_root / ".staging",
+            runtime_root=runtime,
+            generated_root=change_root / "generated",
+            apply_manifest=change_root / "apply-manifest.json",
+            langgraph_root=langgraph,
+            langgraph_checkpoints=langgraph / "checkpoints.sqlite3",
+            langgraph_leases=langgraph / "leases",
+            langgraph_identities=langgraph / "identities",
+        )
+    )
+
+
+def _durable_chain(
+    *,
+    project_dir: Path,
+    change_id: str,
+    invocation_id: str,
+    composition: FrozenComposition,
+    identity: InvocationIdentityRecord,
+    expect_attempt_records: bool,
+    workspace: ChangeWorkspace | None = None,
+) -> object:
+    from assurance_product.cli import _authorization
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    async def _read() -> object:
+        opened = workspace or ChangeWorkspace.open(project_dir.resolve(), change_id)
+        authorization = _authorization([f"{SECRET_HANDLE}=env:{SECRET_ENV}"])
+        async with ProductRuntimePorts.open(
+            opened,
+            composition,
+            invocation=invocation_id,
+            authorization=authorization,
+        ) as ports:
+            started = await ports.backend.journal.read_invocation_started(invocation_id)
+            assert started is not None
+            assert started.invocation_id == identity.invocation_id
+            assert started.product_lock_digest == identity.product_lock_digest
+            assert started.root_input_digest == identity.root_input_digest
+            assert started.graph_revision == identity.revision_id
+            assert started.fencing_token >= 1
+            artifact = ports._compile_bound(
+                invocation_id=invocation_id,
+                root_input_digest=identity.root_input_digest,
+                fencing_token=started.fencing_token,
+            )
+            snapshot = await artifact.entrypoints["improvement-evaluate"].aget_state(
+                {
+                    "configurable": {
+                        "thread_id": invocation_id,
+                        "assurance_revision_id": artifact.manifest.revision.revision_id,
+                        "assurance_product_lock_digest": artifact.manifest.revision.product_lock_digest,
+                        "assurance_root_input_digest": identity.root_input_digest,
+                        "assurance_fencing_token": started.fencing_token,
+                        "assurance_initial_checkpoint": False,
+                    }
+                }
+            )
+            configurable = dict(getattr(snapshot, "config", {}) or {}).get("configurable") or {}
+            checkpoint_id = configurable.get("checkpoint_id")
+            assert isinstance(checkpoint_id, str) and checkpoint_id
+            anchor = await ports.backend.journal.read_checkpoint_anchor(invocation_id, checkpoint_id)
+            assert anchor is not None
+            assert anchor.product_lock_digest == identity.product_lock_digest
+            assert anchor.graph_revision == identity.revision_id
+            assert anchor.root_input_digest == identity.root_input_digest
+            assert started.fencing_token >= anchor.fencing_token >= 1
+            records = await ports.attempt_journal.read_records()
+            if expect_attempt_records:
+                assert records
+                assert any(
+                    getattr(event, "receipt_digest", None) or getattr(event, "envelope_digest", None)
+                    for record in records
+                    for event in record.events
+                )
+            assert ports.network.allow_opencode is False
+            return started
+
+    return asyncio.run(_read())
+
+
+def _reject_lifecycle_tampers(
+    *,
+    cli_runner,
+    app: object,
+    existing: list[str],
+    identity_path: Path,
+    identity_bytes: bytes,
+    project_dir: Path,
+    change_id: str,
+    monkeypatch,
+) -> None:
+    escaped = identity_path.with_name(f"{identity_path.name}.outside")
+    escaped.write_bytes(identity_bytes)
+    identity_path.unlink()
+    identity_path.symlink_to(escaped)
+    linked = cli_runner.invoke(app, ["run", *existing])
+    assert linked.exit_code == 40, linked.output
+    identity_path.unlink()
+    identity_path.write_bytes(identity_bytes)
+    escaped.unlink()
+
+    identity_path.chmod(0o000)
+    modest = cli_runner.invoke(app, ["run", *existing])
+    assert modest.exit_code == 40, modest.output
+    identity_path.chmod(0o644)
+
+    checkpoints = (
+        project_dir / "qa" / "changes" / change_id / ".runtime" / "langgraph" / "checkpoints.sqlite3"
+    )
+    if checkpoints.is_file():
+        real = checkpoints.with_name("checkpoints.sqlite3.real")
+        checkpoints.rename(real)
+        checkpoints.symlink_to(real)
+        escaped_db = cli_runner.invoke(app, ["run", *existing])
+        assert escaped_db.exit_code == 40, escaped_db.output
+        checkpoints.unlink()
+        real.rename(checkpoints)
+
+    escaped_root = project_dir.parent / "escaped-project"
+    if escaped_root.exists() or escaped_root.is_symlink():
+        escaped_root.unlink()
+    escaped_root.symlink_to(project_dir.resolve())
+    escaped_args = list(existing)
+    escaped_args[escaped_args.index("--project-dir") + 1] = str(escaped_root)
+    escaped_project = cli_runner.invoke(app, ["run", *escaped_args])
+    assert escaped_project.exit_code == 40, escaped_project.output
+    escaped_root.unlink()
+
+    from assurance_product import runtime_ports as ports_mod
+    from assurance_product.runtime_ports import NetworkPolicy
+
+    original_preflight = ports_mod._preflight_selected_root
+    monkeypatch.setattr(
+        ports_mod, "_preflight_selected_root", lambda *_a, **_k: NetworkPolicy(allow_opencode=True)
+    )
+    mutated_network = cli_runner.invoke(app, ["run", *existing])
+    assert mutated_network.exit_code == 40, mutated_network.output
+    monkeypatch.setattr(ports_mod, "_preflight_selected_root", original_preflight)
+
+
+def _materialize_publication_from_graph_status(
+    project_dir: Path,
+    change_id: str,
+    graph_status: dict[str, Any],
+) -> None:
+    from tests.product.test_result_export import TARGET_A, TARGET_B, _aggregate, _digest, _write
+
+    files = (
+        (TARGET_A, b"generated-a\n", b"original-a\n"),
+        (TARGET_B, b"generated-b\n", b"original-b\n"),
+    )
+    manifest_files = []
+    for target, source, baseline in files:
+        source_path = f"qa/changes/{change_id}/generated/api/files/{target}"
+        _write(project_dir, source_path, source)
+        _write(project_dir, target, baseline)
+        manifest_files.append(
+            {
+                "target_path": target,
+                "source_path": source_path,
+                "source_sha256": _digest(source),
+                "baseline_sha256": _digest(baseline),
+                "mode": 0o644,
+                "operation": "generated",
+            }
+        )
+    manifest_digest = _aggregate(
+        {"change_id": change_id, "files": [item["target_path"] for item in manifest_files]}
+    )
+    manifest = {
+        "schema_version": "1",
+        "change_id": change_id,
+        "digest": manifest_digest,
+        "files": manifest_files,
+    }
+    change_root = project_dir / "qa" / "changes" / change_id
+    _write(
+        project_dir,
+        f"qa/changes/{change_id}/apply-manifest.json",
+        json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
+    )
+    from assurance_product.models import StatusV1
+
+    persisted = StatusV1.model_validate(graph_status).model_dump(mode="json")
+    assert persisted["change"]["state"] == "achieved"
+    assert persisted["publication"]["status"] != "ready"
+    (change_root / "status.json").write_text(
+        json.dumps(persisted, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _authenticate_reopen(
+    *,
+    cli_runner,
+    app: object,
+    existing: list[str],
+    identity: InvocationIdentityRecord,
+    composition: FrozenComposition,
+    expected_status: str | None = None,
+) -> dict[str, Any]:
+
+    statused = cli_runner.invoke(app, ["status", *existing])
+    assert statused.exit_code == 0, statused.output
+    status_doc = parse_json_output(statused.stdout)
+    locked = cli_runner.invoke(app, ["lock", "show", *existing])
+    assert locked.exit_code == 0, locked.output
+    lock_doc = parse_json_output(locked.stdout)
+    reopened = InvocationIdentityRecord.model_validate_json(
+        _identity_path(
+            Path(existing[existing.index("--project-dir") + 1]),
+            str(existing[existing.index("--change") + 1]),
+            str(existing[existing.index("--invocation-id") + 1]),
+        ).read_bytes()
+    )
+    assert reopened.model_dump(mode="json") == identity.model_dump(mode="json")
+    assert status_doc["invocation_id"] == reopened.invocation_id
+    assert status_doc["lock_digest"] == reopened.product_lock_digest
+    assert status_doc["root_input_digest"] == reopened.root_input_digest
+    assert status_doc["entrypoint"] == "improvement-evaluate"
+    assert lock_doc["lock_digest"] == reopened.product_lock_digest
+    assert lock_doc["lock"]["schema_version"] == "3"
+    assert lock_doc["revision"]["revision_id"] == reopened.revision_id
+    assert lock_doc["revision"]["product_lock_digest"] == reopened.product_lock_digest
+    assert lock_doc["lock"]["digest"] == composition.lock_digest
+    assert "compiled_workflow" not in lock_doc["lock"]
+    if expected_status is not None:
+        assert status_doc["status"] == expected_status
+    project_dir = Path(existing[existing.index("--project-dir") + 1])
+    change_id = str(existing[existing.index("--change") + 1])
+    invocation_id = str(existing[existing.index("--invocation-id") + 1])
+    _durable_chain(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=invocation_id,
+        composition=composition,
+        identity=identity,
+        expect_attempt_records=expected_status == "completed",
+    )
+    return status_doc
+
+
+def _inject_evaluate_payload(
+    *,
+    project_dir: Path,
+    change_id: str,
+    invocation_id: str,
+    composition: FrozenComposition,
+    identity: InvocationIdentityRecord,
+) -> None:
+    from assurance_product.cli import _authorization
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    async def _update() -> None:
+        workspace = ChangeWorkspace.open(project_dir.resolve(), change_id)
+        authorization = _authorization([f"{SECRET_HANDLE}=env:{SECRET_ENV}"])
+        async with ProductRuntimePorts.open(
+            workspace,
+            composition,
+            invocation=invocation_id,
+            authorization=authorization,
+        ) as ports:
+            started = await ports.backend.journal.read_invocation_started(invocation_id)
+            assert started is not None
+            assert started.product_lock_digest == identity.product_lock_digest
+            assert started.root_input_digest == identity.root_input_digest
+            assert started.graph_revision == identity.revision_id
+            assert started.fencing_token >= 1
+            artifact = ports._compile_bound(
+                invocation_id=invocation_id,
+                root_input_digest=identity.root_input_digest,
+                fencing_token=started.fencing_token,
+            )
+            graph = artifact.entrypoints["improvement-evaluate"]
+            await graph.aupdate_state(
+                {
+                    "configurable": {
+                        "thread_id": invocation_id,
+                        "assurance_revision_id": artifact.manifest.revision.revision_id,
+                        "assurance_product_lock_digest": artifact.manifest.revision.product_lock_digest,
+                        "assurance_root_input_digest": identity.root_input_digest,
+                        "assurance_fencing_token": started.fencing_token,
+                        "assurance_initial_checkpoint": False,
+                    }
+                },
+                _evaluate_task_payload(),
+                as_node="validate",
+            )
+
+    asyncio.run(_update())
+
+
+def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
+    cli_runner, installed_sources, opencode_composition, tmp_path: Path, monkeypatch
+) -> None:
+    from assurance_product.cli import app
+    from assurance_product.invocation_identity import InvocationIdentityRecord
+    from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
+    from graph_engine.attempts.resource_arbiter import ResourceArbiter
+    from tests.product.test_result_export import CHANGE_ID
+
+    monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
+    composition = opencode_composition
+    args, project_dir, change_id = common_lifecycle_args(
+        tmp_path=tmp_path,
+        installed_sources=installed_sources,
+        composition=composition,
+        invocation_id=_EVALUATE_INVOCATION,
+        entrypoint="improvement-evaluate",
+        change_id=CHANGE_ID,
+    )
+    started = cli_runner.invoke(app, ["start", *args])
+    assert started.exit_code == 0, started.output
+    assert SECRET_VALUE not in started.output
+    started_doc = parse_json_output(started.stdout)
+    runtime = project_dir / "qa" / "changes" / change_id / ".runtime"
+    for path in runtime.rglob("*"):
+        if path.is_file():
+            assert SECRET_VALUE.encode() not in path.read_bytes()
+    identity_path = _identity_path(project_dir, change_id, _EVALUATE_INVOCATION)
+    identity_bytes = identity_path.read_bytes()
+    identity = InvocationIdentityRecord.model_validate_json(identity_bytes)
+    assert identity.phase == "initialized"
+    assert identity.entrypoint == "improvement-evaluate"
+    assert "runtime" not in identity.model_dump(mode="json")
+    assert started_doc["lock_digest"] == composition.lock_digest == identity.product_lock_digest
+    assert started_doc["root_input_digest"] == identity.root_input_digest
+
+    existing = _existing_lifecycle_args(args, project_dir, change_id, _EVALUATE_INVOCATION)
+    premature_resume = tmp_path / "premature-wakeup.json"
+    premature_resume.write_text(
+        json.dumps({"wakeup": {"reference_id": "wake-1"}}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    premature = cli_runner.invoke(app, ["resume", *existing, "--resume-file", str(premature_resume)])
+    assert premature.exit_code == 40, premature.output
+    tampered = json.loads(identity_bytes.decode("utf-8"))
+    tampered["product_lock_digest"] = "b" * 64
+    identity_path.write_text(json.dumps(tampered, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rejected = cli_runner.invoke(app, ["run", *existing])
+    assert rejected.exit_code == 40, rejected.output
+    identity_path.write_bytes(identity_bytes)
+    _reject_lifecycle_tampers(
+        cli_runner=cli_runner,
+        app=app,
+        existing=existing,
+        identity_path=identity_path,
+        identity_bytes=identity_bytes,
+        project_dir=project_dir,
+        change_id=change_id,
+        monkeypatch=monkeypatch,
+    )
+    _durable_chain(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=_EVALUATE_INVOCATION,
+        composition=composition,
+        identity=identity,
+        expect_attempt_records=False,
+    )
+
+    _inject_evaluate_payload(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=_EVALUATE_INVOCATION,
+        composition=composition,
+        identity=identity,
+    )
+    from types import MappingProxyType
+    from assurance_product import application as application_mod
+
+    original_reachable = application_mod.ENTRYPOINT_AGENT_CONTRACT_IDS
+    forced_reachable = dict(original_reachable)
+    forced_reachable["improvement-evaluate"] = ("assurance.intake.agent.intake.v1",)
+    monkeypatch.setattr(
+        application_mod,
+        "ENTRYPOINT_AGENT_CONTRACT_IDS",
+        MappingProxyType(forced_reachable),
+    )
+    secret_args = list(existing)
+    secret_args[secret_args.index("--secret") + 1] = "not-opencode.token=env:AA_OPENCODE_TOKEN"
+    denied_secret = cli_runner.invoke(app, ["run", *secret_args])
+    assert denied_secret.exit_code == 40, denied_secret.output
+    monkeypatch.setattr(application_mod, "ENTRYPOINT_AGENT_CONTRACT_IDS", original_reachable)
+
+    original_acquire = ResourceArbiter.acquire
+    issued = {"pending": False}
+
+    async def interrupt_once(
+        self: ResourceArbiter,
+        attempt_key: AttemptKey,
+        claims: ResourceClaims | ResourceClaimTemplate,
+        *,
+        fencing_token: int,
+        validated_input: BaseModel | None = None,
+    ) -> object:
+        if not issued["pending"]:
+            issued["pending"] = True
+            return PendingTaskResult(wakeup=SystemReference(reference_id=_EVALUATE_WAKE))
+        return await original_acquire(
+            self,
+            attempt_key,
+            claims,
+            fencing_token=fencing_token,
+            validated_input=validated_input,
+        )
+
+    monkeypatch.setattr(ResourceArbiter, "acquire", interrupt_once)
+    interrupted = cli_runner.invoke(app, ["run", *existing])
+    assert interrupted.exit_code in {20, 30}, interrupted.output
+    interrupted_doc = parse_json_output(interrupted.stdout)
+    assert interrupted_doc["status"] in {"blocked", "interrupted"}
+    pending = _authenticate_reopen(
+        cli_runner=cli_runner,
+        app=app,
+        existing=existing,
+        identity=identity,
+        composition=composition,
+        expected_status=str(interrupted_doc["status"]),
+    )
+    assert pending["pending_interrupt"] is not None
+    assert pending["change"]["state"] in {"blocked", "interrupted"}
+
+    monkeypatch.setattr(ResourceArbiter, "acquire", original_acquire)
+    resume_file = tmp_path / "system-wakeup.json"
+    resume_file.write_text(
+        json.dumps({"wakeup": {"reference_id": _EVALUATE_WAKE}}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    resumed = cli_runner.invoke(app, ["resume", *existing, "--resume-file", str(resume_file)])
+    assert resumed.exit_code == 0, resumed.output
+    resumed_doc = parse_json_output(resumed.stdout)
+    assert resumed_doc["status"] == "completed"
+    achieved = _authenticate_reopen(
+        cli_runner=cli_runner,
+        app=app,
+        existing=existing,
+        identity=identity,
+        composition=composition,
+        expected_status="completed",
+    )
+    assert achieved["change"]["state"] == "achieved"
+    assert achieved["pending_interrupt"] is None
+    assert achieved["entrypoint"] == "improvement-evaluate"
+
+    _materialize_publication_from_graph_status(project_dir, CHANGE_ID, achieved)
+    exported = cli_runner.invoke(
+        app, ["export", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID]
+    )
+    assert exported.exit_code == 0, exported.output
+    export_doc = parse_json_output(exported.stdout)
+    assert export_doc["change_id"] == CHANGE_ID
+    _durable_chain(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=_EVALUATE_INVOCATION,
+        composition=composition,
+        identity=identity,
+        expect_attempt_records=True,
+    )
+
+    from assurance_product import status as status_mod
+
+    real_rename = os.rename
+
+    def crash_after_rename(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+        real_rename(source, destination)
+        os._exit(91)
+
+    process_id = os.fork()
+    if process_id == 0:
+        monkeypatch.setattr(status_mod.os, "rename", crash_after_rename)
+        status_mod.archive_published(project_dir, CHANGE_ID)
+        os._exit(90)
+    _child, wait_status = os.waitpid(process_id, 0)
+    assert os.waitstatus_to_exitcode(wait_status) == 91
+    assert not (project_dir / "qa" / "changes" / CHANGE_ID).exists()
+    assert (project_dir / "qa" / "archive" / CHANGE_ID).is_dir()
+
+    fresh = type(cli_runner)()
+    recovered = fresh.invoke(
+        app,
+        ["archive", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID],
+    )
+    assert recovered.exit_code == 0, recovered.output
+    recovered_doc = parse_json_output(recovered.stdout)
+    assert recovered_doc["change_id"] == CHANGE_ID
+    assert recovered_doc["archive_root"] == f"qa/archive/{CHANGE_ID}"
+    archived_status = json.loads(
+        (project_dir / "qa" / "archive" / CHANGE_ID / "status.json").read_text(encoding="utf-8")
+    )
+    assert archived_status["entrypoint"] == "improvement-evaluate"
+    assert archived_status["lock_digest"] == identity.product_lock_digest
+    assert archived_status["root_input_digest"] == identity.root_input_digest
+    assert archived_status["invocation_id"] == _EVALUATE_INVOCATION
+    _durable_chain(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=_EVALUATE_INVOCATION,
+        composition=composition,
+        identity=identity,
+        expect_attempt_records=True,
+        workspace=_workspace_at(project_dir, project_dir / "qa" / "archive" / CHANGE_ID),
+    )

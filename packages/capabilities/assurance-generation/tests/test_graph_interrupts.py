@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain_core.runnables.config import RunnableConfig
@@ -119,15 +119,19 @@ def test_publish_plan_review_keeps_graph_rounds_when_result_omits_or_nulls_them(
     assert published_authored["rounds_budget"] == 3
 
 
+def _patch_interrupt(node: Callable[..., Any], **kwargs: Any):
+    return patch.dict(node.__globals__, {"interrupt": MagicMock(**kwargs)})
+
+
 @pytest.mark.parametrize("family", _FAMILIES)
 def test_both_interrupt_sites_accept_only_approve_reject_request_rework(family: str) -> None:
     assert HUMAN_REVIEW_ACTIONS == ("approve", "reject", "request_rework")
     state = {"family": family, "rounds_used": 0, "rounds_budget": 2}
     for node in (human_review, human_review_retry):
-        with patch("assurance_generation.graphs.nodes.interrupt", return_value={"action": "supersede"}):
+        with _patch_interrupt(node, return_value={"action": "supersede"}):
             with pytest.raises(ValidationError):
                 node(state)
-        with patch("assurance_generation.graphs.nodes.interrupt", return_value={"action": "hold"}):
+        with _patch_interrupt(node, return_value={"action": "hold"}):
             with pytest.raises(ValidationError):
                 node(state)
 
@@ -141,7 +145,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
         raise RuntimeError("interrupt")
 
     state = {"family": family, "rounds_used": 0, "rounds_budget": 2, "decision": "needs_human_review"}
-    with patch("assurance_generation.graphs.nodes.interrupt", side_effect=_first):
+    with _patch_interrupt(human_review, side_effect=_first):
         with pytest.raises(RuntimeError, match="interrupt"):
             human_review(state)
     assert seen
@@ -152,7 +156,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
     assert request["ordinal"] == 0
     assert request["reason"] == f"{family}_plan_needs_human_review"
 
-    with patch("assurance_generation.graphs.nodes.interrupt", return_value={"action": "approve"}):
+    with _patch_interrupt(human_review, return_value={"action": "approve"}):
         update = human_review(state)
     assert update == {"human_action": "approve"}
     assert "decision" not in update
@@ -164,7 +168,7 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
         retry_seen.append(payload)
         raise RuntimeError("interrupt")
 
-    with patch("assurance_generation.graphs.nodes.interrupt", side_effect=_retry):
+    with _patch_interrupt(human_review_retry, side_effect=_retry):
         with pytest.raises(RuntimeError, match="interrupt"):
             human_review_retry(state)
     retry_request = retry_seen[0]
@@ -204,7 +208,7 @@ async def test_pass_completes_without_advance(family: str) -> None:
     )
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 0
-    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") == "pass"
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
@@ -362,7 +366,7 @@ async def test_human_action_on_family_graph(family: str, action: str) -> None:
             f"generation.{family}.plan"
         ) == 2
     elif action == "approve":
-        assert resumed.get("status") in {"passed", "done"} or resumed.get("decision") in {"pass", "approved"}
+        assert resumed.get("status") in {"passed", "done"} or resumed.get("decision") == "pass"
     else:
         assert resumed.get("decision") == "reject" or resumed.get("status") == "rejected"
 

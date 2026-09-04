@@ -264,6 +264,10 @@ class GraphEngineBoot:
     ) -> BootArtifact:
         if runtime_ports is None:
             raise BootValidationError("runtime ports are required")
+        identity = getattr(checkpointer, "_identity", None)
+        token = getattr(identity, "fencing_token", None)
+        if token is not None and (not isinstance(token, int) or isinstance(token, bool) or token < 1):
+            raise BootValidationError("fencing token")
         assembled = self._assemble(request, checkpointer=checkpointer, runtime_ports=runtime_ports)
         if request.expected_manifest is not None and assembled.manifest != request.expected_manifest:
             raise BootValidationError("revision mismatch")

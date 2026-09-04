@@ -30,8 +30,8 @@ def closure_check(smoke_script: str) -> ClosureCheck:
     return module.__dict__["check_selected_closure"]
 
 
-def _selected_sources(adapter: str, binding_distribution: str) -> PluginSources:
-    sources = {
+def _selected_sources(binding_distribution: str) -> PluginSources:
+    return {
         "assurance.execution": ("wheel_plugin", "assurance-execution"),
         "assurance.generation": ("wheel_plugin", "assurance-generation"),
         "assurance.healing": ("wheel_plugin", "assurance-healing"),
@@ -40,32 +40,28 @@ def _selected_sources(adapter: str, binding_distribution: str) -> PluginSources:
         "assurance.product.agent": ("wheel_plugin", binding_distribution),
         "assurance.product.configuration": ("config_tree", None),
         "assurance.quality": ("wheel_plugin", "assurance-quality"),
+        "runtime.opencode": ("wheel_plugin", "agent-runtime-opencode"),
     }
-    sources[f"runtime.{adapter}"] = ("wheel_plugin", f"agent-runtime-{adapter}")
-    return sources
 
 
-@pytest.mark.parametrize("adapter", ["opencode", "cursor"])
-def test_success_checker_requires_the_exact_selected_plugin_source_closure(
+def test_success_checker_requires_the_exact_opencode_plugin_source_closure(
     closure_check: ClosureCheck,
-    adapter: str,
 ) -> None:
-    binding_distribution = f"assurance-product-bindings-{adapter}"
-    exact = _selected_sources(adapter, binding_distribution)
+    binding_distribution = "assurance-product-bindings-opencode"
+    exact = _selected_sources(binding_distribution)
 
-    closure_check(exact, adapter, binding_distribution)
+    closure_check(exact, "opencode", binding_distribution)
 
-    foreign_adapter = "cursor" if adapter == "opencode" else "opencode"
     with pytest.raises(SystemExit, match="selected plugin/source closure"):
         closure_check(
             exact
             | {
-                f"runtime.{foreign_adapter}": (
+                "runtime.cursor": (
                     "wheel_plugin",
-                    f"agent-runtime-{foreign_adapter}",
+                    "agent-runtime-cursor",
                 )
             },
-            adapter,
+            "opencode",
             binding_distribution,
         )
     with pytest.raises(SystemExit, match="selected plugin/source closure"):
@@ -77,7 +73,7 @@ def test_success_checker_requires_the_exact_selected_plugin_source_closure(
                     "assurance-product-bindings-foreign",
                 )
             },
-            adapter,
+            "opencode",
             binding_distribution,
         )
 
@@ -97,16 +93,13 @@ def test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix(
     assert "git archive HEAD" in smoke_script
     assert 'cd "$smoke_root"' in smoke_script
 
-    both_opencode = _scenario_block(smoke_script, "both-opencode")
-    assert "expect_compile_ok both-adapters assurance-opencode" in both_opencode
+    opencode_ok = _scenario_block(smoke_script, "opencode-product")
+    assert "expect_compile_ok opencode-product assurance-opencode" in opencode_ok
 
-    both_cursor = _scenario_block(smoke_script, "both-cursor")
-    assert "expect_compile_ok both-adapters assurance-cursor" in both_cursor
-
-    foreign = _scenario_block(smoke_script, "foreign-binding")
-    assert foreign.count("expect_compile_fail") == 2
-    assert "assurance-opencode" in foreign and "$cursor_binding_distribution" in foreign
-    assert "assurance-cursor" in foreign and "$opencode_binding_distribution" in foreign
+    missing_runtime = _scenario_block(smoke_script, "missing-runtime")
+    assert "expect_compile_fail" in missing_runtime
+    assert "assurance-opencode" in missing_runtime
+    assert "agent-runtime-opencode" in missing_runtime
 
     deployment_drift = _scenario_block(smoke_script, "deployment-drift")
     assert "tamper_installed_deployment" in deployment_drift

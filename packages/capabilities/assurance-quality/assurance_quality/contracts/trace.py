@@ -3,16 +3,8 @@
 Projection carries no policy judgment and no wall-clock freshness; consumers
 apply ``evaluate_sufficiency(projection, policy, *, as_of)`` at the use site.
 
-Wire boundary: V1 remains the legacy reader; V2 adds recovery gap codes and
-semantic validators. Registry-facing dispatch is ``TraceProjectionDocument``.
-
-Union notes (merge of assemble enrichments + V6 variants):
-- ``TraceRow.problem_facts`` carries the §9.4/§9.5 join facts next to
-  ``open_problem_ids`` (assemble/OURS).
-- ``TraceTestRef`` stores ``test_name`` (assemble/OURS tree scan) and accepts
-  the V6 ``function`` alias on input.
-- ``TraceIntegrity`` accepts both ``complete_with_gaps`` (assemble) and
-  ``degraded`` (V6) spellings.
+Wire boundary: only explicit schema version ``"2"``. Registry-facing dispatch
+is ``TraceProjectionDocument``.
 """
 
 from __future__ import annotations
@@ -21,7 +13,6 @@ from datetime import datetime
 from typing import Annotated, Literal, Self
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -42,7 +33,7 @@ StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
 TraceTarget = Literal["api", "e2e", "fuzz", "performance"]
 TraceCaseType = Literal["API", "E2E", "Fuzz", "Performance"]
 
-TraceGapCodeV1 = Literal[
+TraceGapCodeV2 = Literal[
     "result_missing",
     "result_corrupt",
     "batch_id_unparseable",
@@ -55,26 +46,17 @@ TraceGapCodeV1 = Literal[
     "tests_tree_digest_mismatch",
     "result_identity_mismatch",
     "problem_alias_invalid",
+    "failure_analysis_identity_mismatch",
+    "issues_snapshot_identity_mismatch",
+    "issue_analysis_failed",
+    "project_sync_pending",
+    "issue_reconcile_failed",
+    "issue_reconciliation_unavailable",
 ]
+TraceSummaryGapCode = TraceGapCodeV2
+TraceGapCode = TraceGapCodeV2
 
-TraceGapCodeV2 = (
-    TraceGapCodeV1
-    | Literal[
-        "failure_analysis_identity_mismatch",
-        "issues_snapshot_identity_mismatch",
-        "issue_analysis_failed",
-        "project_sync_pending",
-        "issue_reconcile_failed",
-        "issue_reconciliation_unavailable",
-    ]
-)
-TraceSummaryGapCode = TraceGapCodeV1 | TraceGapCodeV2
-
-# Legacy aliases — V1 only; never repoint to V2.
-TraceGapCode = TraceGapCodeV1
-
-# Accept both assemble (complete_with_gaps) and V6 (degraded) vocabularies.
-TraceIntegrity = Literal["complete", "complete_with_gaps", "degraded", "incomplete"]
+TraceIntegrity = Literal["complete", "complete_with_gaps", "incomplete"]
 
 _CASE_TYPE_TO_TARGET: dict[str, str] = {
     "API": "api",
@@ -92,7 +74,7 @@ class TraceExecution(BaseModel):
     target: TraceTarget
     status: Literal["passed", "failed", "skipped"]
     ts: datetime
-    ts_source: Literal["executed_at", "batch_id_legacy_utc"]
+    ts_source: Literal["executed_at"]
 
 
 class TraceFailure(BaseModel):
@@ -121,16 +103,6 @@ class TraceProblemFact(BaseModel):
     open_product_bug: bool
 
 
-class TraceGapV1(BaseModel):
-    model_config = _FROZEN
-
-    code: TraceGapCodeV1
-    source: str
-    batch_id: str | None = None
-    target: str | None = None
-    detail: str = ""
-
-
 class TraceGapV2(BaseModel):
     model_config = _FROZEN
 
@@ -141,21 +113,16 @@ class TraceGapV2(BaseModel):
     detail: str = ""
 
 
-TraceGap = TraceGapV1
+TraceGap = TraceGapV2
 
 
 class TraceTestRef(BaseModel):
     """One current-tree test function mapped to a case_id (spec §7 scan hit)."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+    model_config = _FROZEN
 
     file: str
-    test_name: str = Field(validation_alias=AliasChoices("test_name", "function"))
-
-    @property
-    def function(self) -> str:
-        """V6 alias for ``test_name``."""
-        return self.test_name
+    test_name: str
 
 
 class UnmappedTest(BaseModel):
@@ -204,7 +171,7 @@ class TraceSource(BaseModel):
     sha256: str | None = None
 
 
-def _gap_identity(gap: TraceGapV1 | TraceGapV2) -> tuple[str, str, str, str, str]:
+def _gap_identity(gap: TraceGapV2) -> tuple[str, str, str, str, str]:
     return (
         gap.code,
         gap.source,
@@ -230,7 +197,7 @@ def validate_unique_source_paths(sources: tuple[TraceSource, ...]) -> None:
         seen.add(source.path)
 
 
-def validate_unique_gaps(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
+def validate_unique_gaps(gaps: tuple[TraceGapV2, ...]) -> None:
     seen: set[tuple[str, str, str, str, str]] = set()
     for gap in gaps:
         key = _gap_identity(gap)
@@ -259,30 +226,16 @@ def validate_row_semantics(phase: Literal["execution", "reconciled"], rows: tupl
                 )
 
 
-def validate_gap_targets(gaps: tuple[TraceGapV1, ...] | tuple[TraceGapV2, ...]) -> None:
+def validate_gap_targets(gaps: tuple[TraceGapV2, ...]) -> None:
     for gap in gaps:
         if gap.target is not None and gap.target not in _ALLOWED_GAP_TARGETS:
             raise ValueError(f"gap target must be empty or one of {LAYER_NAMES}: {gap.target!r}")
 
 
-class TraceProjectionV1(BaseModel):
-    model_config = _FROZEN
-
-    schema_version: Literal["1"] = "1"
-    change_id: str
-    phase: Literal["execution", "reconciled"]
-    authoritative_batch_id: str
-    sources: tuple[TraceSource, ...] = ()
-    rows: tuple[TraceRow, ...] = ()
-    unmapped_tests: tuple[UnmappedTest, ...] = ()
-    gaps: tuple[TraceGapV1, ...] = ()
-    integrity: TraceIntegrity
-
-
 class TraceProjectionV2(BaseModel):
     model_config = _FROZEN
 
-    schema_version: Literal["2"] = "2"
+    schema_version: Literal["2"]
     change_id: str
     phase: Literal["execution", "reconciled"]
     authoritative_batch_id: str
@@ -339,26 +292,14 @@ class TraceProjectionV2(BaseModel):
         return self
 
 
-TraceProjection = TraceProjectionV1
-
-TraceProjectionLike = TraceProjectionV1 | TraceProjectionV2
-
-TraceProjectionVariant = Annotated[
-    TraceProjectionV1 | TraceProjectionV2,
-    Field(discriminator="schema_version"),
-]
+TraceProjection = TraceProjectionV2
 
 
-class TraceProjectionDocument(RootModel[TraceProjectionVariant]):
-    @model_validator(mode="before")
-    @classmethod
-    def _legacy_missing_version(cls, raw: object) -> object:
-        if isinstance(raw, dict) and "schema_version" not in raw:
-            return {**raw, "schema_version": "1"}
-        return raw
+class TraceProjectionDocument(RootModel[TraceProjectionV2]):
+    pass
 
 
-def load_trace_projection_document(raw: object) -> TraceProjectionLike:
+def load_trace_projection_document(raw: object) -> TraceProjectionV2:
     return TraceProjectionDocument.model_validate(raw).root
 
 
@@ -465,9 +406,7 @@ __all__ = [
     "TraceGap",
     "TraceGapAggregate",
     "TraceGapCode",
-    "TraceGapCodeV1",
     "TraceGapCodeV2",
-    "TraceGapV1",
     "TraceGapV2",
     "TraceIntegrity",
     "TraceLayerFactSummary",
@@ -475,10 +414,7 @@ __all__ = [
     "TraceProblemFact",
     "TraceProjection",
     "TraceProjectionDocument",
-    "TraceProjectionLike",
-    "TraceProjectionV1",
     "TraceProjectionV2",
-    "TraceProjectionVariant",
     "TraceRow",
     "TraceSource",
     "TraceSummaryGapCode",

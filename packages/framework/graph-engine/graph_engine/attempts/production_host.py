@@ -18,16 +18,22 @@ from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_b
 from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
+    ActivityPhase,
     TaskActivityCancelResult,
+    TaskActivityPort,
     TaskActivityReconcileResult,
     TaskActivitySnapshot,
     TaskHandler,
+    TaskOutcome,
     TaskWorkspaceBinding,
 )
-from graph_engine.attempts.activity import LedgerTaskActivityPort
+from graph_engine.attempts.context import AuthorizedAttemptScope
+from graph_engine.attempts.contracts import TerminalReceiptRef
 from graph_engine.attempts.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
+    AttemptRootDescriptor,
     HostOperation,
+    TaskExecutionHost,
     TaskHostCallIdentity,
     TaskHostCallResult,
     TaskHostCancelCall,
@@ -36,9 +42,11 @@ from graph_engine.attempts.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
     _MAX_STDERR_BYTES,
+    current_bound_identity,
     decode_authenticated_frame,
     derive_wire_session_key,
     encode_authenticated_frame,
+    identities_agree,
     scan_for_secret_leaks,
     write_all_bytes,
 )
@@ -47,7 +55,6 @@ from graph_engine.attempts.host_receipts import (
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.evidence.ledger import Ledger
 from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     resolve_secret_source,
@@ -96,11 +103,46 @@ class ProductionHostError(GraphEngineError):
     """Raised when the fixed production host cannot complete a call safely."""
 
 
+class TaskActivityPortFactory(Protocol):
+    def __call__(
+        self,
+        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+        *,
+        remaining_deadline: float,
+    ) -> TaskActivityPort: ...
+
+
+def invocation_activity_receipts_root(invocation_root: Path, invocation_id: str) -> Path:
+    return Path(invocation_root).absolute() / ".runtime" / "activities" / invocation_id / "receipts"
+
+
+def create_production_task_execution_host(
+    *,
+    authorization: InvocationRuntimeAuthorization,
+    handlers: Mapping[str, TaskHandler],
+    store: TaskWorkspaceStore,
+    receipts: TerminalReceiptStore,
+    activity_factory: TaskActivityPortFactory,
+    invocation_root: Path,
+    handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
+) -> TaskExecutionHost:
+    return _ProductionTaskExecutionHost(
+        authorization=authorization,
+        handlers=handlers,
+        store=store,
+        receipts=receipts,
+        activity_factory=activity_factory,
+        invocation_root=invocation_root,
+        handler_import_roots=handler_import_roots,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _BoundRuntime:
     handlers: Mapping[str, TaskHandler]
-    store: TaskWorkspaceStore | None
-    receipts: TerminalReceiptStore | None
+    store: TaskWorkspaceStore
+    receipts: TerminalReceiptStore
+    activity_factory: TaskActivityPortFactory
     handler_import_roots: Mapping[str, tuple[str, ...]]
 
 
@@ -110,33 +152,24 @@ class _ProductionTaskExecutionHost:
     def __init__(
         self,
         *,
-        root: Path,
         authorization: InvocationRuntimeAuthorization,
-    ) -> None:
-        self._root = Path(root).absolute()
-        self._authorization = authorization
-        self._bound = _BoundRuntime(
-            handlers={},
-            store=None,
-            receipts=None,
-            handler_import_roots={},
-        )
-        self._read_buffers: dict[int, bytes] = {}
-
-    def bind_invocation_runtime(
-        self,
-        *,
         handlers: Mapping[str, TaskHandler],
         store: TaskWorkspaceStore,
-        receipts: TerminalReceiptStore | None = None,
+        receipts: TerminalReceiptStore,
+        activity_factory: TaskActivityPortFactory,
+        invocation_root: Path,
         handler_import_roots: Mapping[str, tuple[str, ...]] | None = None,
     ) -> None:
+        self._root = Path(invocation_root).absolute()
+        self._authorization = authorization
         self._bound = _BoundRuntime(
             handlers=handlers,
             store=store,
             receipts=receipts,
+            activity_factory=activity_factory,
             handler_import_roots=dict(handler_import_roots or {}),
         )
+        self._read_buffers: dict[int, bytes] = {}
 
     async def execute(self, call: TaskHostExecuteCall) -> TaskHostCallResult:
         return await self._invoke("execute", call)
@@ -160,12 +193,100 @@ class _ProductionTaskExecutionHost:
         return await self._invoke("cancel", call)
 
     def read_terminal_receipts(self, identity: TaskHostCallIdentity) -> tuple[TaskHostTerminalReceipt, ...]:
-        if self._bound.receipts is None:
-            return ()
         return self._bound.receipts.authenticate(identity)
 
+    def persist_phase_delta(
+        self,
+        *,
+        scope: AuthorizedAttemptScope,
+        phase: ActivityPhase,
+        task_id: str,
+        handler_id: str,
+        staged_paths: tuple[str, ...],
+        outcome: TaskOutcome,
+        graph_revision: str,
+        product_lock_digest: str,
+    ) -> TerminalReceiptRef:
+        authorization_id = scope.execution.authorization_id
+        if authorization_id is None:
+            raise ProductionHostError("phase receipt requires an authorization id")
+        workspace = scope.workspace
+        staged_digest = canonical_digest({"paths": list(staged_paths)})
+        request_digest = canonical_digest(
+            {
+                "phase": phase,
+                "task_id": task_id,
+                "staged_paths": list(staged_paths),
+            }
+        )
+        bound = current_bound_identity(
+            attempt_key_digest=scope.execution.attempt_key.digest,
+            authorization_id=authorization_id,
+            workspace_identity_digest=workspace.identity.identity_digest,
+            request_digest=request_digest,
+            graph_revision=graph_revision,
+            product_lock_digest=product_lock_digest,
+            handler_id=handler_id,
+            fencing_token=scope.execution.fencing_token,
+            phase=phase,
+        )
+        identity = TaskHostCallIdentity(
+            invocation_id=scope.execution.invocation_id,
+            task_id=task_id,
+            activation_id=scope.execution.semantic_node_id,
+            attempt=workspace.identity.attempt,
+            activity_id=task_id,
+            operation="execute",
+            **bound,  # type: ignore[arg-type]
+        )
+        attempt_root = AttemptRootDescriptor(
+            workspace_identity=workspace.identity,
+            project_root_identity=workspace.project_root_identity,
+            write_root_identity=workspace.write_root_identity,
+            project_root_digest=workspace.identity.project_digest,
+            write_root_digest=workspace.identity.write_root_digest,
+            baseline_digest=canonical_digest(
+                [item.model_dump(mode="json") for item in workspace.identity.baseline_files]
+            ),
+        )
+        if identity.activity_id is None:
+            raise ProductionHostError("phase receipt requires an activity id")
+        sink = self._bound.receipts.sink_for(identity)
+        receipt = TaskHostTerminalReceipt(
+            host_implementation_digest=identity.host_implementation_digest,
+            wire_schema_version=identity.wire_schema_version,
+            invocation_id=identity.invocation_id,
+            task_id=identity.task_id,
+            activation_id=identity.activation_id,
+            attempt=identity.attempt,
+            activity_id=identity.activity_id,
+            operation=identity.operation,
+            attempt_key_digest=identity.attempt_key_digest,
+            authorization_id=identity.authorization_id,
+            fencing_token=identity.fencing_token,
+            phase=identity.phase,
+            graph_revision=identity.graph_revision,
+            product_lock_digest=identity.product_lock_digest,
+            handler_id=identity.handler_id,
+            request_digest=request_digest,
+            workspace_identity_digest=workspace.identity.identity_digest,
+            project_root_digest=attempt_root.project_root_digest,
+            write_root_digest=attempt_root.write_root_digest,
+            baseline_digest=attempt_root.baseline_digest,
+            staged_write_set_digest=staged_digest,
+            outcome=outcome,
+            outcome_digest=canonical_digest(cast(JSONValue, outcome.model_dump(mode="json"))),
+            quiescence_proof_digest=prove_call_quiescent(),
+            host_call_id=sink.host_call_id,
+        )
+        sink.install(receipt)
+        return TerminalReceiptRef(
+            identity_digest=canonical_digest(cast(JSONValue, identity.model_dump(mode="json"))),
+            receipt_digest=canonical_digest(cast(JSONValue, receipt.model_dump(mode="json"))),
+        )
+
     def _result_from_installed_receipt(self, identity: TaskHostCallIdentity) -> TaskHostCallResult | None:
-        if self._bound.receipts is None or identity.activity_id is None:
+        if identity.activity_id is None:
             return None
         for operation in ("execute", "reconcile", "cancel"):
             check = identity.model_copy(update={"operation": operation})
@@ -185,8 +306,7 @@ class _ProductionTaskExecutionHost:
         operation: HostOperation,
         call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
     ) -> TaskHostCallResult:
-        if self._bound.store is None:
-            raise ProductionHostError("production host is not bound to an invocation workspace")
+        self._authenticate_call_identities(call)
         pinned_host = pinned_execution_host_lock()
         if (
             call.identity.host_implementation_id != pinned_host.implementation_id
@@ -370,7 +490,7 @@ class _ProductionTaskExecutionHost:
                     raise ProductionHostError("activity rpc is missing a request id")
                 assert process.stdin is not None
                 try:
-                    response = self._handle_activity_rpc(call, frame)
+                    response = self._handle_activity_rpc(call, frame, deadline=deadline)
                 except Exception as error:
                     self._write_frame(
                         process.stdin,
@@ -437,13 +557,16 @@ class _ProductionTaskExecutionHost:
         self,
         call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall | None,
         frame: dict[str, JSONValue],
+        *,
+        deadline: float,
     ) -> dict[str, JSONValue]:
         if call is None:
             raise ProductionHostError("activity rpc received without call context")
         if call.activity_rpc.activity_id is None:
             raise ProductionHostError("activity rpc received without activity identity")
-        ledger = self._open_ledger(call.identity.invocation_id)
-        port = LedgerTaskActivityPort(ledger=ledger, identity=call.activity_rpc)
+        self._authenticate_call_identities(call)
+        remaining = deadline - time.monotonic()
+        port = self._bound.activity_factory(call, remaining_deadline=remaining)
         method = str(frame.get("method"))
         args = frame.get("args")
         if not isinstance(args, list):
@@ -470,9 +593,8 @@ class _ProductionTaskExecutionHost:
             return activity
         if call.identity.activity_id is None:
             return None
-        ledger = self._open_ledger(call.identity.invocation_id)
-        port = LedgerTaskActivityPort(ledger=ledger, identity=call.activity_rpc)
         try:
+            port = self._bound.activity_factory(call, remaining_deadline=_CALL_TIMEOUT_SECONDS)
             return port.snapshot
         except Exception:
             return None
@@ -485,8 +607,9 @@ class _ProductionTaskExecutionHost:
         workspace: TaskWorkspaceBinding,
         quiescence: str,
     ) -> None:
-        if self._bound.receipts is None or call.identity.activity_id is None:
+        if call.identity.activity_id is None:
             return
+        self._authenticate_call_identities(call)
         activity = self._activity_for_receipt(call)
         if activity is None:
             return
@@ -504,7 +627,6 @@ class _ProductionTaskExecutionHost:
             outcome = result.cancel_result.outcome
         else:
             return
-        assert self._bound.store is not None
         staged = self._bound.store.seal(workspace.identity)
         sink = self._bound.receipts.sink_for(call.identity)
         sink.install(
@@ -517,6 +639,13 @@ class _ProductionTaskExecutionHost:
                 attempt=call.identity.attempt,
                 activity_id=call.identity.activity_id,
                 operation=call.identity.operation,
+                attempt_key_digest=call.identity.attempt_key_digest,
+                authorization_id=call.identity.authorization_id,
+                fencing_token=call.identity.fencing_token,
+                phase=call.identity.phase,
+                graph_revision=call.identity.graph_revision,
+                product_lock_digest=call.identity.product_lock_digest,
+                handler_id=call.identity.handler_id,
                 request_digest=activity.request_digest,
                 workspace_identity_digest=workspace.identity.identity_digest,
                 project_root_digest=call.attempt_root.project_root_digest,
@@ -537,7 +666,6 @@ class _ProductionTaskExecutionHost:
         self,
         call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
     ) -> TaskWorkspaceBinding:
-        assert self._bound.store is not None
         identity = call.attempt_root.workspace_identity
         try:
             binding = self._bound.store.begin(
@@ -558,9 +686,42 @@ class _ProductionTaskExecutionHost:
             raise ProductionHostError("attempt workspace root identity is not authenticated")
         return binding
 
-    def _open_ledger(self, invocation_id: str) -> Ledger:
-        invocation_root = self._root / "invocations" / invocation_id
-        return Ledger(invocation_root / "ledger")
+    def _authenticate_call_identities(
+        self,
+        call: TaskHostExecuteCall | TaskHostReconcileCall | TaskHostCancelCall,
+    ) -> None:
+        rpc = call.activity_rpc
+        identity = call.identity
+        pinned = pinned_execution_host_lock()
+        if (
+            identity.host_implementation_id != pinned.implementation_id
+            or identity.host_implementation_digest != pinned.implementation_digest
+            or identity.wire_schema_version != pinned.wire_schema_version
+        ):
+            raise ProductionHostError("production host implementation identity drifted")
+        if rpc.wire_schema_version != TASK_HOST_WIRE_SCHEMA_VERSION:
+            raise ProductionHostError("activity rpc identity version is not current")
+        if identity.wire_schema_version != TASK_HOST_WIRE_SCHEMA_VERSION:
+            raise ProductionHostError("host call identity version is not current")
+        if not identities_agree(rpc, identity):
+            raise ProductionHostError("host and activity identities disagree")
+        workspace = call.attempt_root.workspace_identity
+        if workspace.identity_digest != rpc.workspace_identity_digest:
+            raise ProductionHostError("workspace identity mismatch")
+        request_digest = canonical_digest(cast(JSONValue, call.request.model_dump(mode="json")))
+        if request_digest != rpc.request_digest:
+            raise ProductionHostError("request digest mismatch")
+        if call.request.invocation.lock_digest != rpc.product_lock_digest:
+            raise ProductionHostError("product lock mismatch")
+        if rpc.handler_id not in {call.capability_id, call.request.capability_id}:
+            raise ProductionHostError("handler identity mismatch")
+        pinned = pinned_execution_host_lock()
+        if (
+            rpc.host_implementation_id != pinned.implementation_id
+            or rpc.host_implementation_digest != pinned.implementation_digest
+            or rpc.wire_schema_version != pinned.wire_schema_version
+        ):
+            raise ProductionHostError("production host implementation identity drifted")
 
     def _resolve_authorized_secrets(self, handles: tuple[str, ...]) -> dict[str, bytes]:
         resolved: dict[str, bytes] = {}
@@ -1082,7 +1243,9 @@ def _linux_workspace_writers(attempt_root: Path) -> set[str]:
 
 
 __all__ = [
-    "Ledger",
     "ProductionHostError",
+    "TaskActivityPortFactory",
     "UnsupportedProductionPlatform",
+    "create_production_task_execution_host",
+    "invocation_activity_receipts_root",
 ]

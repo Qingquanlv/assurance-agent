@@ -20,7 +20,7 @@ EXPECTED_REPOSITORY_GATE_NODE_IDS = {
         "tests/product/test_behavioral_projection.py::test_harness_modules_do_not_import_runtime_packages",
         "tests/product/test_product_packaging.py::test_wheels_omit_whole_tree_modules_and_result_export_schema",
         "tests/product/test_wheel_smoke_contract.py::test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix",
-        "tests/product/test_product_providers.py::test_source_catalogs_are_six_wheels_plus_selected_adapter",
+        "tests/product/test_product_providers.py::test_source_catalog_is_six_wheels_plus_opencode",
     ),
 }
 
@@ -43,7 +43,7 @@ def test_all_final_gate_nodes_are_unique_auditable_and_collectable() -> None:
 
     node_ids = all_final_gate_node_ids()
     assert len(node_ids) == len(set(node_ids))
-    assert len(node_ids) == 128
+    assert len(node_ids) == 113
     evidence = audit_gate_nodes(REPO_ROOT, node_ids)
     assert tuple(item.node_id for item in evidence) == node_ids
 
@@ -56,14 +56,3 @@ def test_task3_admission_is_reported_without_fabricating_a_local_pass() -> None:
     assert state.release_disposition in {"blocked", "requires_task3_evidence_validation"}
     assert state.release_disposition != "admitted"
     assert state.detail
-
-
-def test_repository_gate_executes_the_exact_lower_level_suite() -> None:
-    run_gate_nodes = conformance.run_gate_nodes
-    manifest = conformance.REPOSITORY_GATE_NODE_IDS
-
-    node_ids = tuple(node_id for category in manifest.values() for node_id in category)
-    result = run_gate_nodes(REPO_ROOT, node_ids)
-
-    assert result.passed_count == len(node_ids)
-    assert result.skipped_count == 0

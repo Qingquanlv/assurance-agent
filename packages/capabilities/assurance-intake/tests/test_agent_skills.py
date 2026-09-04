@@ -156,7 +156,7 @@ def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
     assert "case_delta_paths" in skill
     assert "phases.explore.status == done" not in skill
     assert "Emit a knowledge proposal" not in skill
-    assert "Never inspect `.qa.yaml` `phases.explore`" in skill
+    assert "Never inspect `.qa.yaml` for Explore state" in skill
     assert (
         '{"output_files":["qa/changes/<change-id>/.qa.yaml",'
         '"qa/changes/<change-id>/cases/<trusted-module>/case.yaml",'
@@ -430,7 +430,7 @@ async def test_case_design_prepare_builds_a_deterministic_review_repair_contract
 
 
 @pytest.mark.asyncio
-async def test_case_design_prepare_normalizes_single_action_repair_plan(tmp_path: Path) -> None:
+async def test_case_design_prepare_rejects_action_repair_alias(tmp_path: Path) -> None:
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     _write_case_design_outputs(tmp_path, authored)
     _write_fixable_case_review(tmp_path, allowed_key="title")
@@ -442,13 +442,9 @@ async def test_case_design_prepare_normalizes_single_action_repair_plan(tmp_path
 
     prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
 
-    assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
-    repair = cast(Mapping[str, object], business["review_repair"])
-    action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
-    assert action["case_id"] == "TC_MENU_001"
-    assert action["instructions"] == ("Update only title.",)
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert "edits" in (prepared.failure.message or "")
 
 
 @pytest.mark.asyncio
@@ -470,7 +466,7 @@ async def test_case_design_prepare_accepts_exact_document_section_repair_locator
         {
             "finding_id": "CR-001",
             "artifact": artifact,
-            "action": "Revise only the Test Conditions section.",
+            "edits": ["Revise only the Test Conditions section."],
         }
     ]
     review_path.write_text(json.dumps(review), encoding="utf-8")

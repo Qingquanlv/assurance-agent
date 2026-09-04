@@ -9,13 +9,14 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_generation.contracts import (
     CampaignSpec,
     CodegenMapping,
     GeneratedFilesV1,
     PlanCheckDocument,
+    PlanReview,
     PlanReviewAuthoring,
 )
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
@@ -32,6 +33,36 @@ _NON_CONTRACT_INTAKE = (
     "assurance_intake.validators",
     "assurance_intake.resource_loader",
 )
+_CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
+    "assurance.generation.schema.codegen-mapping.v1": (
+        "1",
+        "9d623c3f691070097c9d3f120877db09596ef1dbdd060814e82d16e9876a44d1",
+    ),
+    "assurance.generation.schema.discovery-campaign.v1": (
+        "1",
+        "2a7c580ae79697388b2e169c1c3c96d5200f23fbeec7080a24f53b8c500e1e31",
+    ),
+    "assurance.generation.schema.generated-files.v1": (
+        "1",
+        "01243f769b92aff0b396bf068ce606008565945e81593bb9940240bd7d497757",
+    ),
+    "assurance.generation.schema.plan-check.v1": (
+        "1",
+        "07e34ca9d819ec2679bbdc78906bdf298f364999ccf37c86870b88047ef548cd",
+    ),
+    "assurance.generation.schema.plan-review.v1": (
+        "1",
+        "bcb4a32846cfc04bc6c5f52347e05f06b36a96e1babd3c621711bc6fb0054918",
+    ),
+    "assurance.generation.workflow.generate.input.v1": (
+        "1",
+        "b82538a6f82fbc2d2facc46982b9bf6890839875ed584042600f44979c602632",
+    ),
+    "assurance.generation.workflow.generate.output.v1": (
+        "1",
+        "720afbd9e6cc36a4281851bd21eff27778919855b5fec0d98302d87b52599d78",
+    ),
+}
 
 
 def schema_bytes(schema_id: str) -> bytes:
@@ -94,6 +125,29 @@ def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _installed_schema_mapping() -> dict[str, tuple[str, str]]:
+    contribution = GenerationPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
+    return {
+        schema.schema_id: (
+            "1",
+            canonical_digest(cast(JSONValue, json.loads(schema.content))),
+        )
+        for schema in contribution.schemas
+    }
+
+
+def test_generation_product_lock_schema_mapping_is_current_only() -> None:
+    assert _installed_schema_mapping() == _CURRENT_GENERATION_SCHEMA_MAPPING
+
+
+def test_plan_review_rejects_approved() -> None:
+    with pytest.raises(ValidationError):
+        PlanReview.model_validate(
+            {**valid_plan_review(), "decision": "approved"},
+            context={"capability_leafs": VALID_LEAFS},
+        )
+
+
 def test_plan_review_rejects_prefix_valid_but_unknown_leaf() -> None:
     raw = valid_plan_review(required_capabilities=["capabilities.adapters.missing"])
     with pytest.raises(ValidationError, match="unknown capability leaf"):
@@ -110,11 +164,8 @@ def test_plan_review_rejects_prefix_leaf() -> None:
     ("decision", "auto_fix_allowed", "human_review_required", "expected"),
     [
         ("pass", False, False, "pass"),
-        ("approved", False, False, "pass"),
         ("needs_fix", True, False, "needs_fix"),
-        ("changes_requested", True, False, "needs_fix"),
         ("needs_fix", False, True, "needs_human"),
-        ("changes_requested", False, True, "needs_human"),
         ("needs_human_review", False, True, "needs_human"),
         ("reject", False, False, "reject"),
     ],
@@ -133,7 +184,6 @@ def test_plan_review_normalizes_public_outcomes(
     ("decision", "auto_fix_allowed", "human_review_required"),
     [
         ("pass", True, False),
-        ("approved", False, True),
         ("needs_fix", True, True),
         ("needs_fix", False, False),
         ("needs_human_review", True, True),

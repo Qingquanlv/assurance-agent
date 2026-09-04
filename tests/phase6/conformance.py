@@ -24,7 +24,6 @@ PRODUCTION_METADATA_FILES = (
     "packages/framework/graph-engine/pyproject.toml",
     "packages/adapters/agent-runtime-contracts/pyproject.toml",
     "packages/adapters/agent-runtime-opencode/pyproject.toml",
-    "packages/adapters/agent-runtime-cursor/pyproject.toml",
 )
 
 PRODUCTION_PACKAGE_ROOTS = (
@@ -38,7 +37,6 @@ PRODUCTION_PACKAGE_ROOTS = (
     "packages/framework/graph-engine/graph_engine",
     "packages/adapters/agent-runtime-contracts/agent_runtime_contracts",
     "packages/adapters/agent-runtime-opencode/agent_runtime_opencode",
-    "packages/adapters/agent-runtime-cursor/agent_runtime_cursor",
 )
 
 OWNER_REPLACEMENT_TESTS = {
@@ -295,7 +293,8 @@ def deletion_proof(item: Mapping[str, object]) -> str:
     if isinstance(verification, str) and (
         verification.startswith("tests/") or verification.startswith("packages/")
     ):
-        return verification.split("::", 1)[0]
+        proof = verification.split("::", 1)[0]
+        return proof.replace("packages/features/", "packages/capabilities/", 1)
     disposition = item.get("disposition")
     if disposition in {"delete_phase6", "retain_harness"}:
         return "obsolete"

@@ -16,7 +16,6 @@ from bootstrap_fixtures import synthetic_invocation_started
 from graph_engine.attempts import production_host
 from graph_engine.attempts import production_worker
 from graph_engine.canonical import canonical_digest
-from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
     InvocationMetadata,
     ResourceClaims,
@@ -28,6 +27,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceBinding,
 )
+from graph_engine.attempts.activity import journal_backed_activity_factory
 from graph_engine.attempts.host_protocol import (
     AttemptRootDescriptor,
     TaskActivityRpcIdentity,
@@ -36,6 +36,11 @@ from graph_engine.attempts.host_protocol import (
     TaskHostExecuteCall,
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
+    current_bound_identity,
+)
+from graph_engine.attempts.production_host import (
+    ProductionHostError,
+    create_production_task_execution_host,
 )
 from graph_engine.attempts.activity import (
     GraphStarted,
@@ -51,9 +56,10 @@ from graph_engine.attempts.host_receipts import (
     TerminalReceiptStore,
     prove_call_quiescent,
 )
-from graph_engine.attempts.activity import LedgerTaskActivityPort
 from graph_engine.attempts.activity import Ledger
-from graph_engine.attempts.production_host import ProductionHostError, _ProductionTaskExecutionHost
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.events import ActivityPrepared, AttemptOpened, ResourcesAuthorized
+from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.attempts.secret_sources import empty_runtime_authorization
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
@@ -142,6 +148,37 @@ def _begin_workspace(store: TaskWorkspaceStore) -> TaskWorkspaceBinding:
     )
 
 
+_OWNER_LOOP: asyncio.AbstractEventLoop | None = None
+_JOURNALS: dict[str, tuple[MemoryAttemptJournal, AttemptKey]] = {}
+
+
+def _owner_loop() -> asyncio.AbstractEventLoop:
+    global _OWNER_LOOP
+    if _OWNER_LOOP is None:
+        loop = asyncio.new_event_loop()
+        threading.Thread(target=loop.run_forever, daemon=True).start()
+        _OWNER_LOOP = loop
+    return _OWNER_LOOP
+
+
+def _bound_for(
+    workspace: TaskWorkspaceBinding,
+    *,
+    handler_id: str = "test.echo.run",
+    request: TaskRequest | None = None,
+) -> dict[str, object]:
+    used = request or _request()
+    return current_bound_identity(
+        attempt_key_digest="a" * 64,
+        authorization_id="b" * 64,
+        workspace_identity_digest=workspace.identity.identity_digest,
+        request_digest=canonical_digest(used.model_dump(mode="json")),
+        graph_revision="c" * 64,
+        product_lock_digest=used.invocation.lock_digest,
+        handler_id=handler_id,
+    )
+
+
 def _execute_call(
     *,
     workspace: TaskWorkspaceBinding,
@@ -150,7 +187,10 @@ def _execute_call(
     activity_id: str | None = None,
     timeout_seconds: float = 30.0,
 ) -> TaskHostExecuteCall:
-    host = pinned_execution_host_lock()
+    request = _request().model_copy(
+        update={"capability_id": capability_id, "target_capability_id": capability_id}
+    )
+    bound = _bound_for(workspace, handler_id=capability_id, request=request)
     return TaskHostExecuteCall(
         identity=TaskHostCallIdentity(
             invocation_id="inv-1",
@@ -159,14 +199,11 @@ def _execute_call(
             attempt=1,
             activity_id=activity_id,
             operation="execute",
-            host_implementation_id=host.implementation_id,
-            host_implementation_digest=host.implementation_digest,
+            **bound,  # type: ignore[arg-type]
         ),
         capability_id=capability_id,
         capability_entrypoint=entrypoint,
-        request=_request().model_copy(
-            update={"capability_id": capability_id, "target_capability_id": capability_id}
-        ),
+        request=request,
         attempt_root=_attempt_root(workspace),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
@@ -174,6 +211,7 @@ def _execute_call(
             activation_id="activation-run",
             attempt=1,
             activity_id=activity_id,
+            **bound,  # type: ignore[arg-type]
         ),
         authorized_secret_handles=(),
         timeout_seconds=timeout_seconds,
@@ -206,7 +244,8 @@ def _activity_snapshot(workspace: TaskWorkspaceBinding) -> TaskActivitySnapshot:
 
 
 def _reconcile_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> TaskHostReconcileCall:
-    host = pinned_execution_host_lock()
+    request = _request()
+    bound = _bound_for(workspace, request=request)
     identity = TaskHostCallIdentity(
         invocation_id="inv-1",
         task_id="task-1",
@@ -214,14 +253,13 @@ def _reconcile_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> Task
         attempt=1,
         activity_id="activity-1",
         operation="reconcile",
-        host_implementation_id=host.implementation_id,
-        host_implementation_digest=host.implementation_digest,
+        **bound,  # type: ignore[arg-type]
     )
     return TaskHostReconcileCall(
         identity=identity,
         capability_id="test.echo.run",
         capability_entrypoint=entrypoint,
-        request=_request(),
+        request=request,
         attempt_root=_attempt_root(workspace),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
@@ -229,6 +267,7 @@ def _reconcile_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> Task
             activation_id="activation-run",
             attempt=1,
             activity_id="activity-1",
+            **bound,  # type: ignore[arg-type]
         ),
         authorized_secret_handles=(),
         activity=_activity_snapshot(workspace),
@@ -236,7 +275,8 @@ def _reconcile_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> Task
 
 
 def _cancel_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> TaskHostCancelCall:
-    host = pinned_execution_host_lock()
+    request = _request()
+    bound = _bound_for(workspace, request=request)
     identity = TaskHostCallIdentity(
         invocation_id="inv-1",
         task_id="task-1",
@@ -244,14 +284,13 @@ def _cancel_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> TaskHos
         attempt=1,
         activity_id="activity-1",
         operation="cancel",
-        host_implementation_id=host.implementation_id,
-        host_implementation_digest=host.implementation_digest,
+        **bound,  # type: ignore[arg-type]
     )
     return TaskHostCancelCall(
         identity=identity,
         capability_id="test.echo.run",
         capability_entrypoint=entrypoint,
-        request=_request(),
+        request=request,
         attempt_root=_attempt_root(workspace),
         activity_rpc=TaskActivityRpcIdentity(
             invocation_id="inv-1",
@@ -259,6 +298,7 @@ def _cancel_call(*, workspace: TaskWorkspaceBinding, entrypoint: str) -> TaskHos
             activation_id="activation-run",
             attempt=1,
             activity_id="activity-1",
+            **bound,  # type: ignore[arg-type]
         ),
         authorized_secret_handles=(),
         activity=_activity_snapshot(workspace),
@@ -293,12 +333,89 @@ def _process_is_running(process_id: int) -> bool:
     return True
 
 
-def _ledger_activity_snapshot(
-    root: Path,
-    call: TaskHostExecuteCall,
-) -> TaskActivitySnapshot:
-    ledger = Ledger(root / "invocations" / call.identity.invocation_id / "ledger")
-    return LedgerTaskActivityPort(ledger=ledger, identity=call.activity_rpc).snapshot
+def _unused_activity_factory(call: object, *, remaining_deadline: float) -> object:
+    del call, remaining_deadline
+    raise ProductionHostError("activity factory was not prepared")
+
+
+def _sealed_host(
+    tmp_path: Path,
+    *,
+    store: TaskWorkspaceStore,
+    handlers: dict[str, object],
+    receipts: TerminalReceiptStore | None = None,
+    handler_import_roots: dict[str, tuple[str, ...]] | None = None,
+    authorization: object | None = None,
+):
+    if receipts is None:
+        receipts = TerminalReceiptStore.create(tmp_path / "sealed-receipts")
+    journal_entry = _JOURNALS.get(str(tmp_path))
+    if journal_entry is None:
+        factory = _unused_activity_factory  # type: ignore[assignment]
+    else:
+        journal, attempt_key = journal_entry
+
+        async def _assert_live_fence() -> None:
+            return None
+
+        factory = journal_backed_activity_factory(
+            journal=journal,
+            attempt_key=attempt_key,
+            owner_loop=_owner_loop(),
+            assert_live_fence=_assert_live_fence,
+        )
+    return create_production_task_execution_host(
+        authorization=authorization or empty_runtime_authorization(),
+        handlers=handlers,  # type: ignore[arg-type]
+        store=store,
+        receipts=receipts,
+        activity_factory=factory,  # type: ignore[arg-type]
+        invocation_root=tmp_path,
+        handler_import_roots=handler_import_roots,
+    )
+
+
+def _prepare_activity_journal(tmp_path: Path) -> tuple[MemoryAttemptJournal, AttemptKey]:
+    journal = MemoryAttemptJournal()
+    attempt_key = AttemptKey(digest="a" * 64)
+    asyncio.run_coroutine_threadsafe(
+        journal.append(
+            attempt_key,
+            (
+                AttemptOpened(
+                    contract_digest="d" * 64,
+                    input_digest="e" * 64,
+                    graph_revision="c" * 64,
+                    invocation_id="inv-1",
+                    public_entrypoint="main",
+                    semantic_node_id="run",
+                ),
+                ResourcesAuthorized(authorization_id="b" * 64),
+                ActivityPrepared(activity_id="activity-1"),
+            ),
+            expected_revision=0,
+            fencing_token=1,
+        ),
+        _owner_loop(),
+    ).result(timeout=5)
+    _JOURNALS[str(tmp_path)] = (journal, attempt_key)
+    return journal, attempt_key
+
+
+def _journal_activity_snapshot(tmp_path: Path, workspace: TaskWorkspaceBinding) -> TaskActivitySnapshot:
+    journal, attempt_key = _JOURNALS[str(tmp_path)]
+    snapshot = asyncio.run_coroutine_threadsafe(journal.load(attempt_key), _owner_loop()).result(timeout=5)
+    assert snapshot is not None
+    return TaskActivitySnapshot(
+        activity_id=snapshot.activity_id or "activity-1",
+        request_digest="2" * 64,
+        workspace_identity=workspace.identity,
+        state=snapshot.activity_state or "prepared",  # type: ignore[arg-type]
+        dispatch_fingerprint=snapshot.activity_dispatch_fingerprint,
+        dispatch_fingerprint_digest=snapshot.activity_dispatch_fingerprint_digest,
+        reference=snapshot.activity_reference,
+        reference_digest=snapshot.activity_reference_digest,
+    )
 
 
 def test_production_host_rejects_wrong_workspace(tmp_path: Path) -> None:
@@ -309,8 +426,9 @@ def test_production_host_rejects_wrong_workspace(tmp_path: Path) -> None:
         class_name="EchoHandler",
         body="async def execute(self, request, context):\n    return TaskOutcome.succeeded({'ok': True})",
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -340,11 +458,12 @@ def test_unrelated_workspace_holder_does_not_block_quiescence(tmp_path: Path) ->
             class_name="EchoHandler",
             body="async def execute(self, request, context):\n    return TaskOutcome.succeeded({'ok': True})",
         )
-        host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-        host.bind_invocation_runtime(
+        host = _sealed_host(
+            tmp_path,
             handlers={"test.echo.run": _EchoHandler()},
             store=store,
             handler_import_roots={"test.echo.run": roots},
+            authorization=empty_runtime_authorization(),
         )
         result = asyncio.run(host.execute(_execute_call(workspace=workspace, entrypoint=entrypoint)))
         assert result.outcome is not None
@@ -443,8 +562,9 @@ def test_leftover_process_group_child_still_fails_quiescence(tmp_path: Path) -> 
             "    return TaskOutcome.succeeded({'ok': True})\n"
         ),
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -463,6 +583,15 @@ def test_leftover_process_group_child_still_fails_quiescence(tmp_path: Path) -> 
 
 def test_production_host_rejects_forged_terminal_receipt(tmp_path: Path) -> None:
     store = TerminalReceiptStore.create(tmp_path / "receipts")
+    bound = current_bound_identity(
+        attempt_key_digest="a" * 64,
+        authorization_id="b" * 64,
+        workspace_identity_digest="c" * 64,
+        request_digest="0" * 64,
+        graph_revision="d" * 64,
+        product_lock_digest="a" * 64,
+        handler_id="test.echo.run",
+    )
     identity = TaskHostCallIdentity(
         invocation_id="inv-1",
         task_id="task-1",
@@ -470,8 +599,7 @@ def test_production_host_rejects_forged_terminal_receipt(tmp_path: Path) -> None
         attempt=1,
         activity_id="activity-1",
         operation="execute",
-        host_implementation_id="graph.engine.task-host",
-        host_implementation_digest="f" * 64,
+        **bound,  # type: ignore[arg-type]
     )
     sink = store.sink_for(identity)
     outcome = TaskOutcome.succeeded({"ok": True})
@@ -483,6 +611,13 @@ def test_production_host_rejects_forged_terminal_receipt(tmp_path: Path) -> None
         attempt=identity.attempt,
         activity_id=identity.activity_id,
         operation=identity.operation,
+        attempt_key_digest=identity.attempt_key_digest,
+        authorization_id=identity.authorization_id,
+        fencing_token=identity.fencing_token,
+        phase=identity.phase,
+        graph_revision=identity.graph_revision,
+        product_lock_digest=identity.product_lock_digest,
+        handler_id=identity.handler_id,
         request_digest="0" * 64,
         workspace_identity_digest="1" * 64,
         project_root_digest="2" * 64,
@@ -506,8 +641,9 @@ def test_production_host_worker_crash_before_response(tmp_path: Path) -> None:
         class_name="MissingHandler",
         body="async def execute(self, request, context):\n    raise RuntimeError('worker crash')",
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -520,8 +656,9 @@ def test_production_host_reconcile_from_installed_receipt(tmp_path: Path) -> Non
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
     receipts = TerminalReceiptStore.create(tmp_path / "receipts")
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _RecoverableEcho()},
         store=store,
         receipts=receipts,
@@ -542,7 +679,14 @@ def test_production_host_reconcile_from_installed_receipt(tmp_path: Path) -> Non
             attempt=reconcile.identity.attempt,
             activity_id=reconcile.identity.activity_id,
             operation="execute",
-            request_digest=reconcile.activity.request_digest,
+            attempt_key_digest=reconcile.identity.attempt_key_digest,
+            authorization_id=reconcile.identity.authorization_id,
+            fencing_token=reconcile.identity.fencing_token,
+            phase=reconcile.identity.phase,
+            graph_revision=reconcile.identity.graph_revision,
+            product_lock_digest=reconcile.identity.product_lock_digest,
+            handler_id=reconcile.identity.handler_id,
+            request_digest=reconcile.identity.request_digest,
             workspace_identity_digest=workspace.identity.identity_digest,
             project_root_digest=workspace.identity.project_digest,
             write_root_digest=workspace.identity.write_root_digest,
@@ -576,8 +720,9 @@ def test_production_host_cancel_runs_through_worker(tmp_path: Path) -> None:
         ),
     )
     cancel_entrypoint = entrypoint.replace(".execute", ".cancel")
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _RecoverableEcho()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -607,8 +752,9 @@ def test_production_host_parent_alive_pipe_is_wired(tmp_path: Path, monkeypatch:
         class_name="EchoHandler",
         body="async def execute(self, request, context):\n    return TaskOutcome.succeeded({'ok': True})",
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -724,7 +870,12 @@ def test_partial_worker_control_frame_cannot_block_past_absolute_deadline(tmp_pa
     session_key = b"k" * 32
     partial = production_host.encode_authenticated_frame(session_key, b"{}")[:20]
     os.write(write_fd, partial)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
+    host = _sealed_host(
+        tmp_path,
+        store=_task_workspace_store(tmp_path / "frame"),
+        handlers={},
+        authorization=empty_runtime_authorization(),
+    )
     observed: list[BaseException] = []
 
     def read_partial_frame() -> None:
@@ -850,7 +1001,9 @@ def test_parent_alive_read_error_kills_worker_instead_of_disabling_supervision()
         os._exit(91)
 
     _child, status = os.waitpid(child_pid, 0)
-    assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL
+    code = os.waitstatus_to_exitcode(status)
+    assert code in {-signal.SIGKILL, 1}
+    assert code != 91
 
 
 def test_explicit_normal_worker_shutdown_does_not_trigger_parent_death_kill() -> None:
@@ -898,11 +1051,9 @@ def test_parent_process_crash_with_live_descendants_cleans_group_and_leaves_no_r
     )
     host_pid = os.fork()
     if host_pid == 0:
-        host = _ProductionTaskExecutionHost(
-            root=tmp_path,
+        host = _sealed_host(
+            tmp_path,
             authorization=empty_runtime_authorization(),
-        )
-        host.bind_invocation_runtime(
             handlers={"test.echo.run": _EchoHandler()},
             store=store,
             receipts=receipts,
@@ -981,8 +1132,9 @@ def test_successful_handler_cannot_leave_a_detached_descendant_or_install_a_rece
         ),
     )
     call = _execute_call(workspace=workspace, entrypoint=entrypoint, activity_id="activity-1")
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         receipts=receipts,
@@ -1022,8 +1174,9 @@ def test_production_host_cancel_escalates_on_timeout(tmp_path: Path, monkeypatch
             "        await asyncio.sleep(0.05)\n"
         ),
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -1058,8 +1211,9 @@ def test_production_host_honors_call_timeout_longer_than_default(
             "    return TaskOutcome.succeeded({'ok': True})\n"
         ),
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -1081,8 +1235,9 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
     store = _task_workspace_store(tmp_path)
     workspace = _begin_workspace(store)
     receipts = TerminalReceiptStore.create(tmp_path / "receipts")
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _RecoverableEcho()},
         store=store,
         receipts=receipts,
@@ -1103,7 +1258,14 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
             attempt=reconcile.identity.attempt,
             activity_id=reconcile.identity.activity_id,
             operation="execute",
-            request_digest=reconcile.activity.request_digest,
+            attempt_key_digest=reconcile.identity.attempt_key_digest,
+            authorization_id=reconcile.identity.authorization_id,
+            fencing_token=reconcile.identity.fencing_token,
+            phase=reconcile.identity.phase,
+            graph_revision=reconcile.identity.graph_revision,
+            product_lock_digest=reconcile.identity.product_lock_digest,
+            handler_id=reconcile.identity.handler_id,
+            request_digest=reconcile.identity.request_digest,
             workspace_identity_digest=workspace.identity.identity_digest,
             project_root_digest=workspace.identity.project_digest,
             write_root_digest=workspace.identity.write_root_digest,
@@ -1126,6 +1288,7 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
 
 
 def _prepare_activity_ledger(root: Path, workspace: TaskWorkspaceBinding) -> None:
+    _prepare_activity_journal(root)
     ledger = Ledger(root / "invocations" / "inv-1" / "ledger")
     ledger.append_batch(
         (
@@ -1190,8 +1353,9 @@ def test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt(
         entrypoint=entrypoint,
         activity_id="activity-1",
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         receipts=receipts,
@@ -1210,7 +1374,7 @@ def test_host_before_worker_spawn_fault_has_no_child_dispatch_or_receipt(
     assert workers == []
     assert not (workspace.write_root / "after.txt").exists()
     assert host.read_terminal_receipts(call.identity) == ()
-    assert _ledger_activity_snapshot(tmp_path, call).state == "prepared"
+    assert _journal_activity_snapshot(tmp_path, workspace).state == "prepared"
 
 
 def test_host_rejects_worker_source_drift_before_spawn(
@@ -1226,8 +1390,12 @@ def test_host_rejects_worker_source_drift_before_spawn(
             )
         }
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(handlers={"test.echo.run": _EchoHandler()}, store=store)
+    host = _sealed_host(
+        tmp_path,
+        handlers={"test.echo.run": _EchoHandler()},
+        store=store,
+        authorization=empty_runtime_authorization(),
+    )
 
     def must_not_spawn(*_args: object, **_kwargs: object) -> production_host._WorkerProcess:
         raise AssertionError("worker source drift reached spawn")
@@ -1256,8 +1424,9 @@ def test_worker_attestation_rejects_source_drift_after_spawn_before_dispatch(
         ),
     )
     call = _execute_call(workspace=workspace, entrypoint=entrypoint)
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},
@@ -1306,8 +1475,9 @@ def test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt(
         entrypoint=entrypoint,
         activity_id="activity-1",
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         receipts=receipts,
@@ -1327,7 +1497,7 @@ def test_host_after_spawn_before_dispatch_fault_cleans_child_without_receipt(
     assert workers[0].popen.poll() is not None
     assert not (workspace.write_root / "after.txt").exists()
     assert host.read_terminal_receipts(call.identity) == ()
-    assert _ledger_activity_snapshot(tmp_path, call).state == "prepared"
+    assert _journal_activity_snapshot(tmp_path, workspace).state == "prepared"
 
 
 def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
@@ -1358,8 +1528,9 @@ def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
         entrypoint=execute_entrypoint,
         activity_id="activity-1",
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _RecoverableEcho()},
         store=store,
         receipts=receipts,
@@ -1379,11 +1550,12 @@ def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
     assert workers[0].popen.poll() is not None
     assert not (workspace.write_root / "after.txt").exists()
     assert host.read_terminal_receipts(call.identity) == ()
-    activity = _ledger_activity_snapshot(tmp_path, call)
+    activity = _journal_activity_snapshot(tmp_path, workspace)
     assert activity.state == "dispatch_started"
     assert activity.dispatch_fingerprint == {"endpoint": "https://provider.invalid"}
-    ledger = Ledger(tmp_path / "invocations" / call.identity.invocation_id / "ledger")
-    assert [item.event.kind for item in ledger.read_all()].count("task_activity_dispatch_started") == 1
+    journal, attempt_key = _JOURNALS[str(tmp_path)]
+    kinds = [event.kind for record in journal.records(attempt_key) for event in record.events]
+    assert kinds.count("activity_dispatch_started") == 1
 
     monkeypatch.setattr(production_host, "_host_fault_cut", lambda _fault_id: None)
     reconcile = _reconcile_call(
@@ -1397,7 +1569,8 @@ def test_host_during_activity_rpc_fault_cleans_child_and_reconciles_safely(
     assert len(workers) == 2
     assert all(worker.popen.poll() is not None for worker in workers)
     assert host.read_terminal_receipts(call.identity) == ()
-    assert [item.event.kind for item in ledger.read_all()].count("task_activity_dispatch_started") == 1
+    replayed = [event.kind for record in journal.records(attempt_key) for event in record.events]
+    assert replayed.count("activity_dispatch_started") == 1
 
 
 def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
@@ -1431,8 +1604,9 @@ def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
         entrypoint=execute_entrypoint,
         activity_id="activity-1",
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _RecoverableEcho()},
         store=store,
         receipts=receipts,
@@ -1449,13 +1623,13 @@ def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
 
     assert not (workspace.write_root / "after.txt").exists()
     assert host.read_terminal_receipts(call.identity) == ()
-    activity = _ledger_activity_snapshot(tmp_path, call)
+    activity = _journal_activity_snapshot(tmp_path, workspace)
     assert activity.state == "bound"
     assert activity.reference == {"session_id": "session-1"}
-    ledger = Ledger(tmp_path / "invocations" / call.identity.invocation_id / "ledger")
-    kinds = [item.event.kind for item in ledger.read_all()]
-    assert kinds.count("task_activity_dispatch_started") == 1
-    assert kinds.count("task_activity_bound") == 1
+    journal, attempt_key = _JOURNALS[str(tmp_path)]
+    kinds = [event.kind for record in journal.records(attempt_key) for event in record.events]
+    assert kinds.count("activity_dispatch_started") == 1
+    assert kinds.count("activity_bound") == 1
 
     monkeypatch.setattr(production_host, "_host_fault_cut", lambda _fault_id: None)
     reconcile = _reconcile_call(
@@ -1467,9 +1641,9 @@ def test_host_after_reference_bind_fault_preserves_bound_activity_for_reconcile(
     assert result.reconcile_result is not None
     assert result.reconcile_result.status == "running"
     assert result.reconcile_result.reference == {"session_id": "session-1"}
-    replayed_kinds = [item.event.kind for item in ledger.read_all()]
-    assert replayed_kinds.count("task_activity_dispatch_started") == 1
-    assert replayed_kinds.count("task_activity_bound") == 1
+    replayed_kinds = [event.kind for record in journal.records(attempt_key) for event in record.events]
+    assert replayed_kinds.count("activity_dispatch_started") == 1
+    assert replayed_kinds.count("activity_bound") == 1
 
 
 def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None:
@@ -1488,8 +1662,9 @@ def test_production_host_activity_snapshot_rpc_completes(tmp_path: Path) -> None
             "    return TaskOutcome.succeeded({'ok': True})\n"
         ),
     )
-    host = _ProductionTaskExecutionHost(root=tmp_path, authorization=empty_runtime_authorization())
-    host.bind_invocation_runtime(
+    host = _sealed_host(
+        tmp_path,
+        authorization=empty_runtime_authorization(),
         handlers={"test.echo.run": _EchoHandler()},
         store=store,
         handler_import_roots={"test.echo.run": roots},

@@ -616,13 +616,6 @@ class ContributionProjection(FrozenModel):
         if actual != expected:
             raise ValueError("contribution authority categories disagree with descriptor declarations")
 
-    @model_serializer(mode="wrap")
-    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
-        data = serializer(self)
-        if isinstance(data, dict) and not data.get("attempt_contracts"):
-            data.pop("attempt_contracts", None)
-        return data
-
     def model_json_projection(self) -> JSONValue:
         return cast(JSONValue, self.model_dump(mode="json"))
 

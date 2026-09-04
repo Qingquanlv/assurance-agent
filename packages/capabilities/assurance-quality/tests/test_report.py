@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import CandidateWriteSet, ValidationResult
+from pydantic import ValidationError
 from tests.product.test_change_local_output_routing import execute_task
 
+from assurance_quality.contracts.report import QualityReport
 from assurance_quality.operations.report import DashboardHandler, GenerateReportHandler
 from assurance_quality.validators.report import ReportValidator
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -121,6 +123,39 @@ def report_input(**overrides: JSONValue) -> JSONValue:
     }
     payload.update(overrides)
     return payload
+
+
+def report_v1_document() -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "final_status": "FAIL",
+        "quality_score": 0,
+        "score_breakdown": {"functional": 0, "coverage": 0, "fuzz": "N/A", "performance": "N/A"},
+        "scope": {"cases": 1, "requirements": ["REQ-1"]},
+        "functional": {
+            "status": "FAIL",
+            "api": {"total": 1, "passed": 0, "failed": 1},
+            "e2e": {"total": 0, "passed": 0, "failed": 0},
+        },
+        "coverage": {
+            "status": "SKIPPED",
+            "available": False,
+            "line_coverage": 0.0,
+            "branch_coverage": 0.0,
+            "threshold": {"line": 80.0, "branch": 0.0},
+        },
+        "defects": {"product": [], "test": [], "environment": []},
+        "risk_level": "HIGH",
+        "risk_rationale": "failures present",
+        "recommendation": "Do not release",
+    }
+
+
+def test_quality_report_accepts_only_schema_1_1() -> None:
+    with pytest.raises(ValidationError):
+        QualityReport.model_validate(report_v1_document())
 
 
 def test_report_validator_requires_exact_quality_inputs() -> None:

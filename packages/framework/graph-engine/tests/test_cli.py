@@ -99,7 +99,7 @@ def test_compile_emits_product_and_compiled_digests(tmp_path: Path) -> None:
     assert document["product_distribution"] == "graph-engine-toy-a"
     assert document["product_entrypoint"] == "toy-a"
     assert len(document["lock_digest"]) == 64
-    assert len(document["compiled_digest"]) == 64
+    assert len(document["composition_digest"]) == 64
 
 
 def test_run_executes_only_the_explicit_product_plugin_bundle(tmp_path: Path) -> None:
@@ -130,13 +130,12 @@ def test_run_executes_only_the_explicit_product_plugin_bundle(tmp_path: Path) ->
     assert document["plugin_distributions"] == ["graph-engine-toy-a"]
     assert document["plugin_entrypoints"] == ["toy-a"]
     assert document["invocation_id"] == "smoke"
-    assert document["status"] == "succeeded"
+    assert document["status"] == "completed"
     assert document["output"] == {"message": "hello Ada"}
-    assert len(document["compiled_digest"]) == 64
+    assert len(document["composition_digest"]) == 64
     assert len(document["lock_digest"]) == 64
-    assert len(document["ledger_digest"]) == 64
+    assert "compiled_digest" not in document
     assert "final_tree_id" not in document
-    assert (invocation_root / "invocations" / "smoke").is_dir()
 
     repeated = _run_cli(
         "run",

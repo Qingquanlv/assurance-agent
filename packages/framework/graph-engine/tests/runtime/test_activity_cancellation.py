@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 
 from bootstrap_fixtures import synthetic_invocation_started
+from ledger_activity_port import LedgerTaskActivityPort
 from graph_engine.attempts.activity import (
     GraphStarted,
     Ledger,
-    LedgerTaskActivityPort,
     NodeActivated,
     PlannedTask,
     TaskActivityCancelRequested,
@@ -22,7 +22,11 @@ from graph_engine.attempts.activity import (
     fold_events,
     recovery_decision_for_status,
 )
-from graph_engine.attempts.host_protocol import TaskActivityRpcIdentity, TaskHostCallResult
+from graph_engine.attempts.host_protocol import (
+    TaskActivityRpcIdentity,
+    TaskHostCallResult,
+    current_bound_identity,
+)
 from graph_engine.attempts.host_receipts import TerminalReceiptStore
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 from graph_engine.canonical import canonical_digest
@@ -214,6 +218,15 @@ class _ActivityRuntime:
                 activation_id=self.task.activation_id,
                 attempt=self.task.attempt,
                 activity_id=activity.activity_id,
+                **current_bound_identity(  # type: ignore[arg-type]
+                    attempt_key_digest="a" * 64,
+                    authorization_id="b" * 64,
+                    workspace_identity_digest="c" * 64,
+                    request_digest="0" * 64,
+                    graph_revision="d" * 64,
+                    product_lock_digest="a" * 64,
+                    handler_id="test.echo.run",
+                ),
             ),
         )
         port.mark_dispatch_started(_FINGERPRINT)
@@ -246,6 +259,15 @@ class _ActivityRuntime:
             activation_id=self.task.activation_id,
             attempt=self.task.attempt,
             activity_id=activity.activity_id,
+            **current_bound_identity(  # type: ignore[arg-type]
+                attempt_key_digest="a" * 64,
+                authorization_id="b" * 64,
+                workspace_identity_digest="c" * 64,
+                request_digest="0" * 64,
+                graph_revision="d" * 64,
+                product_lock_digest="a" * 64,
+                handler_id="test.echo.run",
+            ),
         )
         call = type("CancelCall", (), {"identity": identity, "activity": activity})()
         try:

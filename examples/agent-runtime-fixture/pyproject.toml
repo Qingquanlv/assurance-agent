@@ -15,7 +15,6 @@ fixture = "agent_runtime_fixture.product:FixtureProduct"
 [project.entry-points."graph_engine.plugins"]
 fixture = "agent_runtime_fixture.plugin:FixturePlugin"
 opencode-binding = "agent_runtime_fixture.bindings:OpenCodeBindingPlugin"
-cursor-binding = "agent_runtime_fixture.bindings:CursorBindingPlugin"
 
 [build-system]
 requires = ["hatchling"]

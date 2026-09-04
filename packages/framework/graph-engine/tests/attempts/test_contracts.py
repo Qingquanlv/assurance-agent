@@ -9,6 +9,8 @@ from graph_engine.attempts import (
     AttemptKey,
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
@@ -28,9 +30,11 @@ class _NamedExecutor:
     def __init__(self, name: str) -> None:
         self.name = name
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
-        del validated_input, context
-        return RunOutput(status=self.name)
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[RunOutput]:
+        del validated_input, scope
+        return ExecutedAttemptResult(output=RunOutput(status=self.name))
 
 
 def _contract(*, validators: tuple[str, ...] = ()) -> TaskAttemptContract[RunInput, RunOutput]:
@@ -128,3 +132,8 @@ def test_execution_context_is_frozen() -> None:
     )
     with pytest.raises(ValidationError):
         context.invocation_id = "other"
+
+
+def test_closed_result_contract_is_exported() -> None:
+    assert AuthorizedAttemptScope.__name__ == "AuthorizedAttemptScope"
+    assert ExecutedAttemptResult.__name__ == "ExecutedAttemptResult"

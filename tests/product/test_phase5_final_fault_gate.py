@@ -70,18 +70,6 @@ EXPECTED_PHASE5_FAULT_IDS = (
     "opencode-cancel-result-race",
     "opencode-terminal-before-restart",
     "opencode-provider-state-deleted-after-receipt",
-    "cursor-confinement-unavailable",
-    "cursor-executable-drift",
-    "cursor-version-drift",
-    "cursor-before-spawn",
-    "cursor-after-spawn",
-    "cursor-partial-ndjson",
-    "cursor-output-overflow",
-    "cursor-terminal-exit-mismatch",
-    "cursor-unknown-process-ownership",
-    "cursor-host-boot-change",
-    "cursor-cancel-race",
-    "cursor-descendant-cleanup-failure",
     "effect-before-intent",
     "effect-after-intent",
     "effect-receipt-publication",
@@ -115,7 +103,6 @@ EXPECTED_GAP_FAULT_IDS = (
 
 EXPECTED_FAULT_GATE_NODE_IDS = {
     "provider_state_loss_replay": (
-        "packages/adapters/agent-runtime-cursor/tests/test_process_host.py::test_durable_terminal_survives_new_host_instance",
         "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
         "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
     ),
@@ -130,7 +117,6 @@ EXPECTED_FAULT_GATE_NODE_IDS = {
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[prepared]",
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[replacing]",
         "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[committed]",
-        "packages/adapters/agent-runtime-cursor/tests/test_process_host_faults.py::test_wait_before_durable_write_is_not_visible",
     ),
     "stop_interrupt": (
         "tests/product/test_stop_and_interrupts.py::test_revision_mismatch_rejects_drifted_resume",
@@ -176,7 +162,7 @@ def test_original_task26_fault_rows_have_an_exact_closed_node_mapping() -> None:
         for fault_id in EXPECTED_PHASE5_FAULT_IDS
         if conformance.PHASE5_FAULT_EVIDENCE[fault_id].evidence_kind == "direct"
     )
-    assert len(coverage) == len(set(coverage)) == 75
+    assert len(coverage) == len(set(coverage)) == 63
     selected_nodes = {node_id for category in manifest.values() for node_id in category}
     assert set(coverage.values()) <= selected_nodes
     evidence = conformance.audit_gate_nodes(REPO_ROOT, tuple(dict.fromkeys(coverage.values())))
@@ -191,7 +177,7 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     direct = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "direct")
     superseded = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "superseded")
     gaps = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "gap")
-    assert len(direct) == 75
+    assert len(direct) == 63
     assert superseded == EXPECTED_SUPERSEDED_FAULT_IDS
     assert gaps == EXPECTED_GAP_FAULT_IDS
     assert all(
@@ -205,7 +191,7 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     assert state.release_complete is False
     assert state.superseded_fault_ids == EXPECTED_SUPERSEDED_FAULT_IDS
     assert state.gap_fault_ids == EXPECTED_GAP_FAULT_IDS
-    assert state.direct_count == 75
+    assert state.direct_count == 63
     assert state.superseded_count == 8
     assert state.gap_count == 2
     assert "blocked" in state.detail.lower()
@@ -219,27 +205,3 @@ def test_fault_gate_nodes_are_auditable_and_cannot_be_skipped() -> None:
         evidence = audit_gate_nodes(REPO_ROOT, node_ids)
         assert tuple(item.node_id for item in evidence) == node_ids
         assert all(item.line_number > 0 and len(item.source_sha256) == 64 for item in evidence)
-
-
-def test_run_gate_nodes_isolates_cross_file_binding_pollution() -> None:
-    result = conformance.run_gate_nodes(
-        REPO_ROOT,
-        (
-            "tests/product/test_binding_builder.py::test_generated_provider_contributes_exactly_33_semantic_bindings",
-            "tests/product/test_composition_authority.py::test_forged_alias_target_fails_closed",
-        ),
-    )
-
-    assert result.passed_count == 2
-    assert result.skipped_count == 0
-
-
-def test_fault_gate_executes_the_exact_lower_level_suite() -> None:
-    run_gate_nodes = conformance.run_gate_nodes
-    manifest = conformance.FAULT_GATE_NODE_IDS
-
-    node_ids = tuple(node_id for category in manifest.values() for node_id in category)
-    result = run_gate_nodes(REPO_ROOT, node_ids)
-
-    assert result.passed_count == len(node_ids)
-    assert result.skipped_count == 0

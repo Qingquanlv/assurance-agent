@@ -5,17 +5,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
-from agent_runtime_contracts import AgentExecutionContract
+from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
 from graph_engine.attempts import (
     AttemptExecutionContext,
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     TaskAttemptContract,
 )
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import (
     AttemptContractRef,
-    EffectIntent,
     InvocationMetadata,
     ResourceClaimTemplate,
     ResourceClaims,
@@ -94,6 +95,7 @@ def _job(
         retry=_RETRY,
         timeout=_TIMEOUT,
         validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=_paths(*outputs), finalize=()),
     )
 
 
@@ -259,23 +261,26 @@ class ClosedImprovementExecutor:
         self.handler_id = handler_id
         self._handler = handler
         self._output_model = output_model
-        self._effects: tuple[EffectIntent, ...] = ()
         self.dispatch_count = 0
 
-    async def execute(self, validated_input: BaseModel, context: AttemptExecutionContext) -> BaseModel:
+    async def execute(
+        self,
+        validated_input: BaseModel,
+        scope: AuthorizedAttemptScope | AttemptExecutionContext,
+    ) -> ExecutedAttemptResult[Any]:
         from assurance_improvement.operations.common import InputError
+        from graph_engine.attempts import AuthorizedAttemptScope as Scope
 
         self.dispatch_count += 1
+        context = scope.execution if isinstance(scope, Scope) else scope
         request = _synthetic_request(validated_input, context, self.handler_id)
         outcome = await self._handler.execute(request, _synthetic_context(context))  # type: ignore[attr-defined]
         if outcome.failure is not None:
             raise InputError(outcome.failure.message)
-        self._effects = tuple(outcome.effects)
-        return _coerce_output(self._output_model, outcome.output)
-
-    def declared_effects(self, output: BaseModel) -> tuple[EffectIntent, ...]:
-        del output
-        return self._effects
+        return ExecutedAttemptResult(
+            output=_coerce_output(self._output_model, outcome.output),
+            effects=tuple(outcome.effects),
+        )
 
 
 def close_improvement_task(handler_id: str) -> ClosedImprovementExecutor:

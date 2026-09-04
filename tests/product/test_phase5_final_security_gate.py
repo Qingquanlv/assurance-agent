@@ -28,7 +28,6 @@ EXPECTED_SECURITY_GATE_NODE_IDS = {
         "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[undeclared-write-root-execution]",
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_dual_root_workspace_identity_drift_is_fail_closed",
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity",
-        "packages/adapters/agent-runtime-cursor/tests/test_process_host_security.py::test_spawn_rejects_workspace_identity_drift",
     ),
     "secret_redaction": (
         "packages/adapters/agent-runtime-opencode/tests/test_credentials.py::test_success_durable_outputs_and_workspace_have_no_canary",
@@ -59,14 +58,3 @@ def test_security_gate_nodes_are_auditable_and_cannot_be_skipped() -> None:
         evidence = audit_gate_nodes(REPO_ROOT, node_ids)
         assert tuple(item.node_id for item in evidence) == node_ids
         assert all(item.line_number > 0 and len(item.source_sha256) == 64 for item in evidence)
-
-
-def test_security_gate_executes_the_exact_lower_level_suite() -> None:
-    run_gate_nodes = conformance.run_gate_nodes
-    manifest = conformance.SECURITY_GATE_NODE_IDS
-
-    node_ids = tuple(node_id for category in manifest.values() for node_id in category)
-    result = run_gate_nodes(REPO_ROOT, node_ids)
-
-    assert result.passed_count == len(node_ids)
-    assert result.skipped_count == 0

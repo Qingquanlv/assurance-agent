@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import os
@@ -50,21 +49,18 @@ def test_committed_live_manifest_pins_the_required_release_fields() -> None:
         {"artifact": "result.json", "status": "ok"}
     )
     adapters = document["adapters"]
+    assert set(adapters) == {"opencode"}
     assert adapters["opencode"]["protocol_profile"] == "opencode-http-v1"
-    assert adapters["cursor"]["protocol_profile"] == "confined_process"
     assert adapters["opencode"]["external_tool_version"]
-    assert adapters["cursor"]["external_tool_version"]
-    assert adapters["cursor"]["executable"].startswith("/")
     assert document["success"]["status"] == "succeeded"
     items = document["items"]
-    assert {item["adapter"] for item in items} == {"opencode", "cursor"}
+    assert {item["adapter"] for item in items} == {"opencode"}
     driver = _load_run_item()
-    for adapter in ("opencode", "cursor"):
-        meta = adapters[adapter]
-        assert meta["source_digest"] == driver._tree_digest(_REPO / meta["source_root"])
+    meta = adapters["opencode"]
+    assert meta["source_digest"] == driver._tree_digest(_REPO / meta["source_root"])
 
 
-@pytest.mark.parametrize("name", ["run-opencode.sh", "run-cursor.sh"])
+@pytest.mark.parametrize("name", ["run-opencode.sh"])
 def test_live_scripts_consume_only_the_committed_manifest_and_fail_closed(name: str) -> None:
     script = (_BENCH / name).read_text(encoding="utf-8")
     assert "manifest.json" in script
@@ -114,9 +110,9 @@ def test_run_item_driver_rejects_fallback_and_invented_credentials() -> None:
     assert "manifest.json" in source
     assert "fallback" not in source.lower()
     assert "pytest.skip" not in source
-    assert "invent credentials" in source.lower()
     assert "fail-closed" in source.lower()
     assert "_reject_credentials_in_text" in source
+    assert "credential material detected" in source.lower()
 
 
 def test_run_item_fails_closed_when_manifest_is_missing(tmp_path: Path) -> None:
@@ -138,29 +134,8 @@ def test_run_item_fails_closed_when_source_digest_drifted(tmp_path: Path) -> Non
     output = tmp_path / "output"
     output.mkdir()
     _assert_driver_fail_closed(
-        lambda: driver.main(["--adapter", "cursor", "--manifest", str(drifted), "--output", str(output)])
+        lambda: driver.main(["--adapter", "opencode", "--manifest", str(drifted), "--output", str(output)])
     )
-
-
-def test_run_item_fails_closed_when_cursor_secret_is_unset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    driver = _load_run_item()
-    version = "phase3-fail-closed"
-    executable = tmp_path / "cursor-agent"
-    executable.write_text(f"#!/bin/sh\necho '{version}'\n", encoding="utf-8")
-    executable.chmod(0o755)
-    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    monkeypatch.setattr(driver, "_load_cursor_api_key_from_keychain", lambda: None)
-    code = driver._check_cursor(
-        {
-            "executable": str(executable),
-            "executable_digest": hashlib.sha256(executable.read_bytes()).hexdigest(),
-            "external_tool_version": version,
-            "secret_env": "CURSOR_API_KEY",
-        }
-    )
-    assert code == 1
 
 
 def test_run_item_allows_opencode_without_token_when_session_is_reachable(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,12 @@ from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     TaskAttemptContract,
     resolve_contract,
 )
+from graph_engine.attempts.events import ActivityTerminalObserved, EffectIntentRecorded
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import (
@@ -21,6 +25,7 @@ from graph_engine.attempts.resolutions import (
     CommittedTaskResult,
     IndeterminateTaskResult,
     PendingTaskResult,
+    PermanentTaskFailure,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import canonical_digest
@@ -48,6 +53,7 @@ from graph_engine.effects.contracts import (
     EXPECTED_EFFECT_KINDS,
     effect_idempotency_key,
 )
+from graph_engine.effects.state import EffectCallContext, MemoryEffectState
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
 from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
 from graph_engine.plugin_api import (
@@ -131,16 +137,16 @@ class RecordingEffectHandler:
     def reconcile_keys(self) -> tuple[str, ...]:
         return tuple(self._reconcile_keys)
 
-    async def apply(self, _intent: EffectIntent, idempotency_key: str) -> EffectApplyResult:
-        self._apply_keys.append(idempotency_key)
+    async def apply(self, _intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult:
+        self._apply_keys.append(context.settlement_key)
         if self._apply_error is not None:
             raise self._apply_error
         if self._apply_untyped is not None:
             return self._apply_untyped  # type: ignore[return-value]
         return _take(self._apply_results, "apply")
 
-    async def reconcile(self, _intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult:
-        self._reconcile_keys.append(idempotency_key)
+    async def reconcile(self, _intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult:
+        self._reconcile_keys.append(context.settlement_key)
         if self._reconcile_error is not None:
             raise self._reconcile_error
         return _take(self._reconcile_results, "reconcile")
@@ -176,19 +182,19 @@ class _WritingExecutor:
         self,
         workspace: _RecordingWorkspace,
         *,
-        declared_effects: tuple[EffectIntent, ...] = (),
+        effects: tuple[EffectIntent, ...] = (),
     ) -> None:
         self.workspace = workspace
-        self.declared_effects = declared_effects
+        self.effects = effects
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[RunOutput]:
+        del validated_input
         self.calls += 1
-        binding = self.workspace.binding
-        assert binding is not None
-        (binding.write_root / "out.txt").write_bytes(b"committed")
-        return RunOutput(status="ok")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"committed")
+        return ExecutedAttemptResult(output=RunOutput(status="ok"), effects=self.effects)
 
 
 def _queued(
@@ -389,7 +395,7 @@ def make_effect_kernel(
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
     writer = _WritingExecutor(
         workspace,
-        declared_effects=(EffectIntent(kind=kind, payload={"n": 1}),),
+        effects=(EffectIntent(kind=kind, payload={"n": 1}),),
     )
     resolved = resolve_contract(contract(), executor=writer)
     kernel = AssuranceAttemptKernel(
@@ -399,6 +405,7 @@ def make_effect_kernel(
         graph_revision=graph_revision(),
         effects=effects,
         schemas=schemas,
+        effect_state=MemoryEffectState(),
         transaction_cut=transaction_cut,
     )
     validated = RunInput(change_id="chg-1")
@@ -441,6 +448,68 @@ def test_improvement_graph_names_are_not_effect_kinds() -> None:
     for name in GRAPH_NAMES:
         assert name not in EXPECTED_EFFECT_KINDS
         assert name not in effect_registry.entries
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_message"),
+    [
+        ("unknown_kind", "'unknown effect kind: assurance.unknown.effect.v1'"),
+        ("missing_schema", "effect intent schema is not registered: missing.intent.schema.v1"),
+        ("invalid_payload", "missing required property: remote_id"),
+    ],
+)
+async def test_effect_intent_validation_errors_are_exact(
+    tmp_path: Path,
+    case: str,
+    expected_message: str,
+) -> None:
+    known_kind = "assurance.improvement.effect.delivery.v1"
+    intent_kind = "assurance.unknown.effect.v1" if case == "unknown_kind" else known_kind
+    handler = RecordingEffectHandler(apply_result=EffectApplyResult.applied({"remote_id": "r1"}))
+    kernel, key, resolved, validated, context, writer, workspace, _project, store, effects, _schemas = (
+        make_effect_kernel(tmp_path, handler=handler, kind=intent_kind)
+    )
+    if case != "unknown_kind":
+        registration = effects.require(known_kind)
+        intent_schema_id = (
+            "missing.intent.schema.v1" if case == "missing_schema" else registration.receipt_schema_id
+        )
+        kernel.effects = EffectRegistry(
+            {
+                **effects.entries,
+                known_kind: replace(registration, intent_schema_id=intent_schema_id),
+            }
+        )
+    try:
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(first, PermanentTaskFailure)
+        assert first.kind == "configuration"
+        assert first.message == expected_message
+        first_snapshot = await kernel.journal.load(key)
+        assert first_snapshot is not None
+        assert first_snapshot.terminal is not None
+        assert first_snapshot.terminal.output is None
+        assert not any(
+            isinstance(event, (ActivityTerminalObserved, EffectIntentRecorded))
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
+
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert replay == first
+        replay_snapshot = await kernel.journal.load(key)
+        assert replay_snapshot is not None
+        assert replay_snapshot.terminal is not None
+        assert replay_snapshot.terminal.output is None
+        assert not any(
+            isinstance(event, (ActivityTerminalObserved, EffectIntentRecorded))
+            for record in kernel.journal.records(key)
+            for event in record.events
+        )
+        assert writer.calls == 1
+        assert workspace.promotions == 0
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("kind", sorted(EXPECTED_EFFECT_KINDS))

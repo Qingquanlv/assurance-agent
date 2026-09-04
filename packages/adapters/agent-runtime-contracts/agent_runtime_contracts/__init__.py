@@ -4,7 +4,7 @@ from agent_runtime_contracts.attempt_executor import (
     ReadOnlyRawWorkspace,
     ResolvedRawAgentExecutor,
 )
-from agent_runtime_contracts.execution_contract import AgentExecutionContract
+from agent_runtime_contracts.execution_contract import AgentExecutionContract, AgentPhaseWriteClaims
 from agent_runtime_contracts.models import (
     AgentRunRequest,
     AgentRunResult,
@@ -32,6 +32,7 @@ from agent_runtime_contracts.workspace import rebind_agent_run_workspace
 
 __all__ = [
     "AgentExecutionContract",
+    "AgentPhaseWriteClaims",
     "AgentRunRequest",
     "AgentRunResult",
     "AgentRuntimeBinding",

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Poll cursor benchmark loop until the supervisor exits or BENCHMARK_LOOP_DONE appears.
+# Poll the OpenCode benchmark loop until the supervisor exits or BENCHMARK_LOOP_DONE appears.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG="${WATCH_LOG:-$ROOT/benchmark/resume-logs/cursor-loop-latest.log}"
-PID_FILE="$ROOT/benchmark/resume-logs/cursor-loop-latest.pid"
+LOG="${WATCH_LOG:-$ROOT/benchmark/resume-logs/opencode-loop-latest.log}"
+PID_FILE="$ROOT/benchmark/resume-logs/opencode-loop-latest.pid"
 INTERVAL="${WATCH_INTERVAL:-30}"
 
 log_status() {
@@ -26,7 +26,7 @@ echo "watching $LOG (interval=${INTERVAL}s)"
 while true; do
   pid="$(cat "$PID_FILE" 2>/dev/null || true)"
   log_status "$pid"
-  if [ -f "$LOG" ] && grep -q 'cursor benchmark loop done' "$LOG" 2>/dev/null; then
+  if [ -f "$LOG" ] && grep -q 'opencode benchmark loop done' "$LOG" 2>/dev/null; then
     echo "done marker found"
     tail -20 "$LOG"
     exit 0

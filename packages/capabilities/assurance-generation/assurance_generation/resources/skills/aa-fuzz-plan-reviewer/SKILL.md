@@ -84,8 +84,7 @@ non-pass review when either file lacks the independently parseable mapping or
 when the two relations differ.
 
 Every mapped function must use `test_<case_id_lowercase>__<behavior>` with the
-complete Case ID. For an approved, codegen-ready plan, emit `"decision": "pass"`;
-never emit `"approved"`.
+complete Case ID. For a codegen-ready plan, emit `"decision": "pass"`.
 
 Required capability closure:
 

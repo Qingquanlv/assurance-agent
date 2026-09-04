@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import sys
 import tempfile
@@ -23,8 +22,6 @@ from agent_runtime_contracts import (
     ResultContract,
 )
 from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes, thaw_json
-from agent_runtime_cursor import CursorAdapterConfig, CursorHandler
-from agent_runtime_cursor.handler import CursorDispatchIncomplete
 from agent_runtime_opencode import OpenCodeAdapterConfig, OpenCodeHandler
 from agent_runtime_opencode.discovery import OpenCodeDispatchIncomplete
 from graph_engine import ENGINE_API_VERSION
@@ -38,7 +35,6 @@ from graph_engine.composition import (
     RegistryPlatform,
     ResolutionRequest,
 )
-from graph_engine.composition.lock import pinned_execution_host_lock
 from graph_engine.plugin_api import (
     CommitValidator,
     DirectoryIdentity,
@@ -66,6 +62,7 @@ from graph_engine.attempts.host_protocol import (
     TaskHostReconcileCall,
     TaskHostTerminalReceipt,
     authorized_secret_port,
+    current_bound_identity,
 )
 from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
 from graph_engine.attempts.activity import Ledger
@@ -512,6 +509,13 @@ class ConfinedTestHost:
                 attempt=identity.attempt,
                 activity_id=identity.activity_id,
                 operation=identity.operation,
+                attempt_key_digest=identity.attempt_key_digest,
+                authorization_id=identity.authorization_id,
+                fencing_token=identity.fencing_token,
+                phase=identity.phase,
+                graph_revision=identity.graph_revision,
+                product_lock_digest=identity.product_lock_digest,
+                handler_id=identity.handler_id,
                 request_digest=activity.request_digest,
                 workspace_identity_digest=activity.workspace_identity.identity_digest,
                 project_root_digest=activity.workspace_identity.project_digest,
@@ -684,8 +688,33 @@ class _AdapterHarness:
             }
         )
 
+    def _bound_fields(
+        self,
+        *,
+        request: TaskRequest,
+        workspace_identity: TaskWorkspaceIdentity,
+        composition: FrozenComposition,
+    ) -> dict[str, object]:
+        return current_bound_identity(
+            attempt_key_digest=engine_digest(
+                {
+                    "attempt": request.attempt,
+                    "invocation_id": request.invocation_id,
+                    "task_id": request.task_id,
+                }
+            ),
+            authorization_id=engine_digest({"authorization": request.invocation_id}),
+            workspace_identity_digest=workspace_identity.identity_digest,
+            request_digest=engine_digest(request.model_dump(mode="json")),
+            graph_revision=engine_digest({"composition": composition.digest}),
+            product_lock_digest=request.invocation.lock_digest,
+            handler_id=self.capability_id,
+        )
+
     def _host_identity(self, invocation_id: str, operation: str) -> TaskHostCallIdentity:
-        host_lock = pinned_execution_host_lock()
+        scenario = self._scenario
+        if scenario is None:
+            raise RuntimeError("host identity requires an open scenario")
         return TaskHostCallIdentity(
             invocation_id=invocation_id,
             task_id="adapter-task",
@@ -693,8 +722,11 @@ class _AdapterHarness:
             attempt=1,
             activity_id="adapter-activity",
             operation=operation,  # type: ignore[arg-type]
-            host_implementation_id=host_lock.implementation_id,
-            host_implementation_digest=host_lock.implementation_digest,
+            **self._bound_fields(  # type: ignore[arg-type]
+                request=scenario.request,
+                workspace_identity=scenario.attempt_root.workspace_identity,
+                composition=scenario.composition,
+            ),
         )
 
     def _prepared_activity(
@@ -759,12 +791,18 @@ class _AdapterHarness:
         request = self._task_request(composition, invocation_id)
         activity = self._prepared_activity(request, project_root, write_root)
         host._activity_snapshot = activity
+        attempt_root = self._attempt_root(project_root, write_root)
         activity_rpc = TaskActivityRpcIdentity(
             invocation_id=invocation_id,
             task_id="adapter-task",
             activation_id="adapter-run",
             attempt=1,
             activity_id="adapter-activity",
+            **self._bound_fields(  # type: ignore[arg-type]
+                request=request,
+                workspace_identity=attempt_root.workspace_identity,
+                composition=composition,
+            ),
         )
         scenario = _Scenario(
             composition=composition,
@@ -780,7 +818,7 @@ class _AdapterHarness:
             invocation_id=invocation_id,
             project_root=project_root,
             write_root=write_root,
-            attempt_root=self._attempt_root(project_root, write_root),
+            attempt_root=attempt_root,
             activity_rpc=activity_rpc,
             roots=(engine_root, invocation_root),
         )
@@ -805,14 +843,10 @@ class _AdapterHarness:
     def _is_incomplete(self, error: BaseException) -> bool:
         if isinstance(
             error,
-            OpenCodeDispatchIncomplete
-            | CursorDispatchIncomplete
-            | TimeoutError
-            | asyncio.TimeoutError
-            | httpx.TransportError,
+            OpenCodeDispatchIncomplete | TimeoutError | asyncio.TimeoutError | httpx.TransportError,
         ):
             return True
-        return error.__class__.__name__ == "ProcessDispatchCut"
+        return error.__class__.__name__ in {"ProcessDispatchCut"}
 
     def _execute_call(self, scenario: _Scenario) -> TaskHostExecuteCall:
         return TaskHostExecuteCall(
@@ -1152,104 +1186,3 @@ class OpenCodeRuntimeHarness(_AdapterHarness):
 
     async def recover_from_dead_host(self) -> RecoveryOutcome:
         raise AssertionError("OpenCode recovery_profile does not use dead-host process semantics")
-
-
-class CursorRuntimeHarness(_AdapterHarness):
-    recovery_profile: RecoveryProfile = "confined_process"
-    plugin_id = "runtime.cursor"
-    capability_id = "runtime.cursor.execute"
-    secret_handle = "cursor.api-key"
-
-    def _cursor_bin(self, root: Path) -> tuple[str, str]:
-        path = (root / "cursor").resolve()
-        path.write_bytes(b"cursor-binary")
-        path.chmod(0o755)
-        return str(path), hashlib.sha256(path.read_bytes()).hexdigest()
-
-    def _fake_and_handler(
-        self, *, cut: str | None = None, status: str = "exited"
-    ) -> tuple[Any, CursorHandler]:
-        fake_mod = _load_adapter_test_module("agent-runtime-cursor", "fake_process_host")
-        root = self._temp()
-        executable, digest = self._cursor_bin(root)
-        host = fake_mod.FakeConfinedProcessHost(
-            cut=cut,
-            status=status,
-            exit_code=None if status == "running" else 0,
-        )
-        self._last_cursor = (executable, digest, host)
-        return host, CursorHandler(host)
-
-    def _adapter_binding_data(self) -> dict[str, Any]:
-        executable, digest, _host = getattr(self, "_last_cursor")
-        config = CursorAdapterConfig.model_validate(
-            {
-                "schema_version": "1",
-                "executable": executable,
-                "executable_digest": digest,
-                "expected_version": "1.0.0",
-                "secret_handle": self.secret_handle,
-                "environment_names": ["PATH", "CURSOR_API_KEY"],
-                "graceful_cancel_seconds": 5,
-                "forced_cancel_seconds": 10,
-                "max_output_bytes": 65536,
-                "max_line_bytes": 4096,
-                "adapter_configuration_digest": _SHA,
-            }
-        )
-        return config.model_dump(mode="json")
-
-    async def _fresh_prepared(self) -> _Scenario:
-        fake, handler = self._fake_and_handler()
-        scenario = await self._open_scenario(
-            invocation_id="cursor-prepared",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-        return scenario
-
-    async def _open_bind_scenario(self) -> _Scenario:
-        fake, handler = self._fake_and_handler(cut="after_bind", status="running")
-        return await self._open_scenario(
-            invocation_id="cursor-bind",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-
-    async def _open_success_scenario(self) -> _Scenario:
-        fake, handler = self._fake_and_handler()
-        return await self._open_scenario(
-            invocation_id="cursor-success",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-
-    async def _open_receipt_scenario(self) -> _Scenario:
-        fake, handler = self._fake_and_handler()
-        return await self._open_scenario(
-            invocation_id="cursor-receipt",
-            handler=handler,
-            provider=fake,
-            host_cut="after_terminal_receipt",
-            secrets={self.secret_handle: CANARY},
-        )
-
-    async def recover_live_activity(self) -> RecoveryOutcome:
-        raise AssertionError("Cursor recovery_profile does not claim durable live adoption")
-
-    async def recover_from_dead_host(self) -> RecoveryOutcome:
-        fake, handler = self._fake_and_handler(cut="after_bind", status="running")
-        scenario = await self._open_scenario(
-            invocation_id="cursor-dead",
-            handler=handler,
-            provider=fake,
-            secrets={self.secret_handle: CANARY},
-        )
-        await self._drive_wave(scenario, allow_incomplete=True)
-        fake.alive = False
-        result = await self._drive_recover(scenario)
-        status = result.reconcile_status or "indeterminate"
-        return RecoveryOutcome(status=status, attempt=result.attempt, reason=None)

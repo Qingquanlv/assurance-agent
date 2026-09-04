@@ -76,7 +76,6 @@ from assurance_quality.contracts.sufficiency import (
 from assurance_quality.contracts.trace import (
     TraceProjection,
     TraceProjectionDocument,
-    TraceProjectionV1,
     TraceProjectionV2,
     load_trace_projection_document,
 )
@@ -139,7 +138,6 @@ __all__ = [
     "SufficiencyReportV2",
     "TraceProjection",
     "TraceProjectionDocument",
-    "TraceProjectionV1",
     "TraceProjectionV2",
     "TraceSufficiencyFacts",
     "attempt_contract_refs",

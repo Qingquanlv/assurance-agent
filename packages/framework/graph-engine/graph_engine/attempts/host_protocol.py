@@ -13,10 +13,12 @@ from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import (
     TASK_HOST_IMPLEMENTATION_ID,
     TASK_HOST_WIRE_SCHEMA_VERSION,
+    pinned_execution_host_lock,
 )
 from graph_engine.errors import GraphEngineError
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import (
+    ActivityPhase,
     DirectoryIdentity,
     FrozenModel,
     SecretHandleUnauthorized,
@@ -87,7 +89,32 @@ class AttemptRootDescriptor(FrozenModel):
         return self
 
 
-class TaskActivityRpcIdentity(FrozenModel):
+class _AttemptBoundIdentity(FrozenModel):
+    attempt_key_digest: str = Field(pattern=_SHA256_PATTERN)
+    authorization_id: str = Field(pattern=_SHA256_PATTERN)
+    fencing_token: int = Field(ge=1)
+    phase: ActivityPhase
+    workspace_identity_digest: str = Field(pattern=_SHA256_PATTERN)
+    request_digest: str = Field(pattern=_SHA256_PATTERN)
+    graph_revision: str = Field(pattern=_SHA256_PATTERN)
+    product_lock_digest: str = Field(pattern=_SHA256_PATTERN)
+    handler_id: str
+    host_implementation_id: str
+    host_implementation_digest: str = Field(pattern=_SHA256_PATTERN)
+    wire_schema_version: Literal["2"] = TASK_HOST_WIRE_SCHEMA_VERSION
+
+    @field_validator("handler_id")
+    @classmethod
+    def _validate_handler_id(cls, value: str) -> str:
+        return _qualified_id(value, "handler id")
+
+    @field_validator("host_implementation_id")
+    @classmethod
+    def _validate_host_implementation_id(cls, value: str) -> str:
+        return _qualified_id(value, "host implementation id")
+
+
+class TaskActivityRpcIdentity(_AttemptBoundIdentity):
     invocation_id: str
     task_id: str
     activation_id: str
@@ -95,21 +122,13 @@ class TaskActivityRpcIdentity(FrozenModel):
     activity_id: str | None = None
 
 
-class TaskHostCallIdentity(FrozenModel):
+class TaskHostCallIdentity(_AttemptBoundIdentity):
     invocation_id: str
     task_id: str
     activation_id: str
     attempt: int = Field(ge=1)
     activity_id: str | None = None
     operation: HostOperation
-    host_implementation_id: str
-    host_implementation_digest: str = Field(pattern=_SHA256_PATTERN)
-    wire_schema_version: Literal["1"] = TASK_HOST_WIRE_SCHEMA_VERSION
-
-    @field_validator("host_implementation_id")
-    @classmethod
-    def _validate_host_implementation_id(cls, value: str) -> str:
-        return _qualified_id(value, "host implementation id")
 
 
 class _TaskHostCallBase(FrozenModel):
@@ -183,15 +202,22 @@ class TaskHostCallResult(FrozenModel):
 
 
 class TaskHostTerminalReceipt(FrozenModel):
-    schema_version: Literal["2"] = "2"
+    schema_version: Literal["3"] = "3"
     host_implementation_digest: str = Field(pattern=_SHA256_PATTERN)
-    wire_schema_version: Literal["1"] = TASK_HOST_WIRE_SCHEMA_VERSION
+    wire_schema_version: Literal["2"] = TASK_HOST_WIRE_SCHEMA_VERSION
     invocation_id: str
     task_id: str
     activation_id: str
     attempt: int = Field(ge=1)
     activity_id: str = Field(min_length=1)
     operation: HostOperation
+    attempt_key_digest: str = Field(pattern=_SHA256_PATTERN)
+    authorization_id: str = Field(pattern=_SHA256_PATTERN)
+    fencing_token: int = Field(ge=1)
+    phase: ActivityPhase
+    graph_revision: str = Field(pattern=_SHA256_PATTERN)
+    product_lock_digest: str = Field(pattern=_SHA256_PATTERN)
+    handler_id: str
     request_digest: str = Field(pattern=_SHA256_PATTERN)
     workspace_identity_digest: str = Field(pattern=_SHA256_PATTERN)
     project_root_digest: str = Field(pattern=_SHA256_PATTERN)
@@ -206,12 +232,83 @@ class TaskHostTerminalReceipt(FrozenModel):
     quiescence_proof_digest: str = Field(pattern=_SHA256_PATTERN)
     host_call_id: int = Field(ge=1)
 
+    @field_validator("handler_id")
+    @classmethod
+    def _validate_handler_id(cls, value: str) -> str:
+        return _qualified_id(value, "handler id")
+
     @model_validator(mode="after")
     def _validate_outcome_digest(self) -> TaskHostTerminalReceipt:
         expected = canonical_digest(self.outcome.model_dump(mode="json"))
         if self.outcome_digest != expected:
             raise ValueError("terminal receipt requires a canonical outcome digest")
         return self
+
+
+_ATTEMPT_BOUND_FIELDS = (
+    "attempt_key_digest",
+    "authorization_id",
+    "fencing_token",
+    "phase",
+    "workspace_identity_digest",
+    "request_digest",
+    "graph_revision",
+    "product_lock_digest",
+    "handler_id",
+    "host_implementation_id",
+    "host_implementation_digest",
+    "wire_schema_version",
+)
+
+
+def attempt_bound_identity_fields(
+    identity: TaskActivityRpcIdentity | TaskHostCallIdentity | TaskHostTerminalReceipt,
+) -> dict[str, object]:
+    return {name: getattr(identity, name) for name in _ATTEMPT_BOUND_FIELDS}
+
+
+def identities_agree(
+    left: TaskActivityRpcIdentity | TaskHostCallIdentity,
+    right: TaskActivityRpcIdentity | TaskHostCallIdentity,
+) -> bool:
+    shared = (
+        "invocation_id",
+        "task_id",
+        "activation_id",
+        "attempt",
+        "activity_id",
+        *_ATTEMPT_BOUND_FIELDS,
+    )
+    return all(getattr(left, name) == getattr(right, name) for name in shared)
+
+
+def current_bound_identity(
+    *,
+    attempt_key_digest: str,
+    authorization_id: str,
+    workspace_identity_digest: str,
+    request_digest: str,
+    graph_revision: str,
+    product_lock_digest: str,
+    handler_id: str,
+    fencing_token: int = 1,
+    phase: ActivityPhase = "runtime",
+) -> dict[str, object]:
+    host = pinned_execution_host_lock()
+    return {
+        "attempt_key_digest": attempt_key_digest,
+        "authorization_id": authorization_id,
+        "fencing_token": fencing_token,
+        "phase": phase,
+        "workspace_identity_digest": workspace_identity_digest,
+        "request_digest": request_digest,
+        "graph_revision": graph_revision,
+        "product_lock_digest": product_lock_digest,
+        "handler_id": handler_id,
+        "host_implementation_id": host.implementation_id,
+        "host_implementation_digest": host.implementation_digest,
+        "wire_schema_version": TASK_HOST_WIRE_SCHEMA_VERSION,
+    }
 
 
 @runtime_checkable
@@ -286,6 +383,7 @@ def scan_for_secret_leaks(content: str | bytes, secrets: Iterable[bytes]) -> Non
 
 __all__ = [
     "ATTEMPT_ROOT_CAPABILITY_ID",
+    "ActivityPhase",
     "AttemptRootDescriptor",
     "HostOperation",
     "TASK_HOST_IMPLEMENTATION_ID",
@@ -300,9 +398,12 @@ __all__ = [
     "TaskHostReconcileCall",
     "TaskHostTerminalReceipt",
     "TASK_HOST_WIRE_MAGIC",
+    "attempt_bound_identity_fields",
+    "current_bound_identity",
     "authorized_secret_port",
     "decode_authenticated_frame",
     "derive_wire_session_key",
     "encode_authenticated_frame",
+    "identities_agree",
     "scan_for_secret_leaks",
 ]

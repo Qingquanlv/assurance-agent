@@ -3,8 +3,6 @@ from __future__ import annotations
 from graph_engine.composition import WheelPluginSource
 from graph_engine.plugin_api import ProviderSource
 
-from assurance_product.models import AdapterName
-
 _SIX_CAPABILITY_SOURCES: tuple[ProviderSource, ...] = (
     ProviderSource(
         distribution="assurance-intake",
@@ -62,42 +60,19 @@ _SIX_CAPABILITY_SOURCES: tuple[ProviderSource, ...] = (
     ),
 )
 
-_RUNTIME_SOURCES: dict[AdapterName, ProviderSource] = {
-    "opencode": ProviderSource(
-        distribution="agent-runtime-opencode",
-        version="0.1.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="opencode",
-        entrypoint_value="agent_runtime_opencode.plugin:OpenCodePlugin",
-        declaration_path="agent_runtime_opencode/plugin-declaration.json",
-        import_roots=("",),
-    ),
-    "cursor": ProviderSource(
-        distribution="agent-runtime-cursor",
-        version="0.1.0",
-        entrypoint_group="graph_engine.plugins",
-        entrypoint_name="cursor",
-        entrypoint_value="agent_runtime_cursor.plugin:CursorPlugin",
-        declaration_path="agent_runtime_cursor/plugin-declaration.json",
-        import_roots=("",),
-    ),
-}
+_OPENCODE_RUNTIME_SOURCE = ProviderSource(
+    distribution="agent-runtime-opencode",
+    version="0.1.0",
+    entrypoint_group="graph_engine.plugins",
+    entrypoint_name="opencode",
+    entrypoint_value="agent_runtime_opencode.plugin:OpenCodePlugin",
+    declaration_path="agent_runtime_opencode/plugin-declaration.json",
+    import_roots=("",),
+)
 
 
-def product_source_catalog(adapter: AdapterName) -> tuple[ProviderSource, ...]:
-    try:
-        runtime = _RUNTIME_SOURCES[adapter]
-    except KeyError as error:
-        raise ValueError(f"unsupported product adapter: {adapter!r}") from error
-    return (*_SIX_CAPABILITY_SOURCES, runtime)
-
-
-def adapter_for_entrypoint(entrypoint: str) -> AdapterName:
-    if entrypoint == "assurance-opencode":
-        return "opencode"
-    if entrypoint == "assurance-cursor":
-        return "cursor"
-    raise ValueError(f"unsupported product entrypoint: {entrypoint!r}")
+def product_source_catalog() -> tuple[ProviderSource, ...]:
+    return (*_SIX_CAPABILITY_SOURCES, _OPENCODE_RUNTIME_SOURCE)
 
 
 def wheel_plugin_source(source: ProviderSource) -> WheelPluginSource:

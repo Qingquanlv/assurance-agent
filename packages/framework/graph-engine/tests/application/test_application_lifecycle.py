@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from graph_engine.application import (
     AssuranceApplication,
     AssuranceRuntimeContext,
+    FixedExecutionFactory,
     InvocationStatus,
     RevisionMismatch,
 )
@@ -41,6 +42,15 @@ def _artifact(entrypoints: dict[str, object], *, lock: str = "b" * 64) -> BootAr
         entrypoints=entrypoints,  # type: ignore[arg-type]
         attempt_contracts={},
         checkpointer_backend_id="memory",
+    )
+
+
+def _factory(artifact: BootArtifact) -> FixedExecutionFactory:
+    return FixedExecutionFactory(
+        artifact=artifact,
+        attempt_kernel=object(),
+        secret_resolver=object(),
+        workspace_provider=object(),
     )
 
 
@@ -79,19 +89,18 @@ def application(tmp_path: Path) -> AssuranceApplication:
 
 
 async def test_start_pins_identity_and_run_uses_same_thread(application, artifact, context) -> None:
+    del context
     started = await application.start(
-        artifact=artifact,
         invocation_id="inv-1",
         entrypoint="execute",
         graph_input={"change_id": "chg-1"},
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     assert started.thread_id == "inv-1"
     assert started.revision_id == artifact.manifest.revision.revision_id
     result = await application.run(
-        artifact=artifact,
         invocation_id="inv-1",
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     assert result.status == "completed"
 
@@ -111,11 +120,10 @@ async def test_start_does_not_execute_business_node_and_status_is_running(
         workspace_provider=object(),
     )
     await application.start(
-        artifact=artifact,
         invocation_id="inv-1",
         entrypoint="execute",
         graph_input={"change_id": "chg-1"},
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     assert runs["execute"] == 0
     assert await application.status(
@@ -141,11 +149,10 @@ async def test_start_and_run_completes_on_same_thread(
     context: AssuranceRuntimeContext,
 ) -> None:
     result = await application.start_and_run(
-        artifact=artifact,
         invocation_id="inv-1",
         entrypoint="execute",
         graph_input={"change_id": "chg-1"},
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     assert result == InvocationStatus(status="completed")
     assert await application.status(
@@ -161,23 +168,14 @@ async def test_run_rejects_revision_mismatch_before_invocation(
     context: AssuranceRuntimeContext,
 ) -> None:
     await application.start(
-        artifact=artifact,
         invocation_id="inv-1",
         entrypoint="execute",
         graph_input={"change_id": "chg-1"},
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     other = _artifact({"execute": artifact.entrypoints["execute"]}, lock="e" * 64)
-    other_context = AssuranceRuntimeContext(
-        revision_id=other.manifest.revision.revision_id,
-        fencing_token=1,
-        attempt_kernel=object(),
-        secret_resolver=object(),
-        workspace_provider=object(),
-    )
     with pytest.raises(RevisionMismatch, match=artifact.manifest.revision.revision_id):
         await application.run(
-            artifact=other,
             invocation_id="inv-1",
-            runtime_context=other_context,
+            execution_factory=_factory(other),
         )

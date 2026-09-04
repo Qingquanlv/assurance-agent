@@ -128,7 +128,7 @@ async def test_crash_after_intent_applies_once_without_repeating_promotion(tmp_p
     try:
         with pytest.raises(TransactionCrash, match="EffectIntentRecorded"):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        assert workspace.promotions == 1
+        assert workspace.promotions == 0
         kernel.journal = kernel.journal.inner  # type: ignore[attr-defined]
         replay = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(replay, CommittedTaskResult)

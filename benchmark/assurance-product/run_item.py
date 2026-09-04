@@ -28,8 +28,6 @@ _AMBIENT_OVERRIDE_VARS = frozenset(
     {
         "OPENCODE_ENDPOINT",
         "OPENCODE_MODEL",
-        "CURSOR_EXECUTABLE",
-        "CURSOR_MODEL",
         "AA_MODEL",
         "PROVIDER_MODEL",
     }
@@ -160,7 +158,9 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
     if len(matches) != 1:
         raise SystemExit(f"manifest must declare exactly one item {item_id!r}")
     item = matches[0]
-    product = f"assurance-{adapter}"
+    if adapter != "opencode":
+        raise SystemExit(f"unsupported adapter {adapter!r}")
+    product = "assurance-opencode"
     if item.get("product") != product:
         raise SystemExit(f"adapter/product mismatch: {adapter} != {item.get('product')}")
     if item.get("adapter_version") != "0.1.0":
@@ -171,9 +171,9 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
         raise SystemExit("routing_assignments must equal deployment_binding_routes")
     models = {assignment.get("provider_model") for assignment in routes.values()}
     workers = {assignment.get("worker_profile") for assignment in routes.values()}
-    if adapter == "opencode" and models != {"openai/gpt-5.6-terra"}:
+    if models != {"openai/gpt-5.6-terra"}:
         raise SystemExit(f"OpenCode model mismatch: {sorted(models)}")
-    if adapter == "opencode" and workers != {"max"}:
+    if workers != {"max"}:
         raise SystemExit(f"OpenCode worker mismatch: {sorted(workers)}")
     families = tuple(item.get("selected_test_families") or ())
     if item.get("entrypoint") == "full" and families != ("api", "e2e", "fuzz", "performance"):
@@ -259,7 +259,6 @@ _PRODUCT_WHEEL_PACKAGES = (
     "assurance-improvement",
     "assurance-product",
     "agent-runtime-opencode",
-    "agent-runtime-cursor",
 )
 
 
@@ -597,12 +596,13 @@ def _write_deployment_manifest(
     project_scope: str,
     adapter: str,
 ) -> None:
+    if adapter != "opencode":
+        raise SystemExit(f"unsupported adapter {adapter!r}")
     binding = dict(item["adapter_binding"])
-    if adapter == "opencode":
-        binding["project_scope"] = project_scope
+    binding["project_scope"] = project_scope
     document = {
         "schema_version": "1",
-        "runtime_plugin_id": f"runtime.{adapter}",
+        "runtime_plugin_id": "runtime.opencode",
         "adapter_binding": binding,
         "routes": item["routing_assignments"],
         "permission_profiles": {
@@ -730,12 +730,11 @@ def _provider_reference(
     evidence = status.get("adapter_evidence") or []
     if evidence and isinstance(evidence[0], Mapping):
         session = evidence[0].get("activity_id") or evidence[0].get("activation_id")
+    if adapter != "opencode":
+        raise SystemExit(f"unsupported adapter {adapter!r}")
     raw_binding = item.get("adapter_binding")
     binding = raw_binding if isinstance(raw_binding, Mapping) else {}
-    if adapter == "opencode":
-        process = {"endpoint": binding.get("endpoint"), "protocol": "opencode-http-v1"}
-    else:
-        process = {"executable": binding.get("executable"), "protocol": "confined_process"}
+    process = {"endpoint": binding.get("endpoint"), "protocol": "opencode-http-v1"}
     return {"session": session, "process": process}
 
 
@@ -801,7 +800,7 @@ def _lifecycle_args(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--item", required=True)
-    parser.add_argument("--adapter", choices=("opencode", "cursor"), required=True)
+    parser.add_argument("--adapter", choices=("opencode",), required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--poll-seconds", type=int, default=30)
     parser.add_argument("--timeout-seconds", type=int, default=28800)
@@ -889,24 +888,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     env = os.environ.copy()
     secret_env = str(item["secret_env"])
-    if arguments.adapter == "opencode":
-        _load_opencode_secret(secret_env)
+    _load_opencode_secret(secret_env)
     env[secret_env] = os.environ.get(secret_env, "")
     isolated_env = dict(env)
     isolated_env.pop("PYTHONPATH", None)
     isolated_env.pop("UV_PROJECT", None)
     isolated_env["PYTHONNOUSERSITE"] = "1"
 
-    if arguments.adapter == "opencode":
-        endpoint = str(item["adapter_binding"]["endpoint"])
-        preflight = _check_opencode(endpoint)
-        if preflight != 0:
-            evidence["outcome"] = "blocked"
-            return finish(preflight, notes=f"OpenCode preflight failed at {endpoint}")
-        evidence["provider"] = {
-            "session": None,
-            "process": {"endpoint": endpoint, "protocol": "opencode-http-v1"},
-        }
+    endpoint = str(item["adapter_binding"]["endpoint"])
+    preflight = _check_opencode(endpoint)
+    if preflight != 0:
+        evidence["outcome"] = "blocked"
+        return finish(preflight, notes=f"OpenCode preflight failed at {endpoint}")
+    evidence["provider"] = {
+        "session": None,
+        "process": {"endpoint": endpoint, "protocol": "opencode-http-v1"},
+    }
 
     try:
         isolated_python, aa_next = _prepare_installed_product_env(
@@ -918,16 +915,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     isolated_env["PATH"] = f"{aa_next.parent}{os.pathsep}{isolated_env.get('PATH', '')}"
 
     project_dir = sut_root
-    if arguments.adapter == "opencode":
-        endpoint = str(item["adapter_binding"]["endpoint"])
-        agent_profile_errors = _check_opencode_agent_profiles(endpoint, project_dir)
-        agent_profile_errors.extend(_check_opencode_boundary_plugin(endpoint, project_dir))
-        if agent_profile_errors:
-            evidence["outcome"] = "blocked"
-            return finish(
-                1,
-                notes="OpenCode resolved agent preflight failed: " + "; ".join(agent_profile_errors),
-            )
+    endpoint = str(item["adapter_binding"]["endpoint"])
+    agent_profile_errors = _check_opencode_agent_profiles(endpoint, project_dir)
+    agent_profile_errors.extend(_check_opencode_boundary_plugin(endpoint, project_dir))
+    if agent_profile_errors:
+        evidence["outcome"] = "blocked"
+        return finish(
+            1,
+            notes="OpenCode resolved agent preflight failed: " + "; ".join(agent_profile_errors),
+        )
 
     config_tree = output / "config-tree"
     shutil.copytree(repo / "tests" / "product" / "fixtures" / "project-config", config_tree)

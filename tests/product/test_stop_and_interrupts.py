@@ -8,13 +8,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from graph_engine.application import (
     AssuranceApplication,
-    AssuranceRuntimeContext,
+    FixedExecutionFactory,
     InvalidResume,
     RevisionMismatch,
 )
 from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
+from tests.product.unused_runtime_ports import UNUSED_SECRET_RESOLVER, UNUSED_WORKSPACE_PROVIDER
 
 pytestmark = pytest.mark.usefixtures("product_runner")
 
@@ -43,13 +44,12 @@ def _artifact(entrypoints: dict[str, object], *, lock: str = "b" * 64) -> BootAr
     )
 
 
-def _context(artifact: BootArtifact) -> AssuranceRuntimeContext:
-    return AssuranceRuntimeContext(
-        revision_id=artifact.manifest.revision.revision_id,
-        fencing_token=1,
+def _factory(artifact: BootArtifact) -> FixedExecutionFactory:
+    return FixedExecutionFactory(
+        artifact=artifact,
         attempt_kernel=cast(Any, object()),
-        secret_resolver=object(),
-        workspace_provider=object(),
+        secret_resolver=UNUSED_SECRET_RESOLVER,
+        workspace_provider=UNUSED_WORKSPACE_PROVIDER,
     )
 
 
@@ -70,28 +70,24 @@ def test_invalid_resume_input_fails(tmp_path: Path) -> None:
     builder.add_edge("approve", END)
     graph = builder.compile(checkpointer=InMemorySaver())
     artifact = _artifact({"execute": graph})
-    context = _context(artifact)
     application = AssuranceApplication(lease=LocalInvocationRunnerLease(tmp_path), owner_id="runner-a")
 
     async def _run() -> None:
         await application.start(
-            artifact=artifact,
             invocation_id="inv-invalid",
             entrypoint="execute",
             graph_input={"decision": ""},
-            runtime_context=context,
+            execution_factory=_factory(artifact),
         )
         blocked = await application.run(
-            artifact=artifact,
             invocation_id="inv-invalid",
-            runtime_context=context,
+            execution_factory=_factory(artifact),
         )
         assert blocked.status == "interrupted"
         with pytest.raises((InvalidResume, ValueError, TypeError)):
             await application.resume(
-                artifact=artifact,
                 invocation_id="inv-invalid",
-                runtime_context=context,
+                execution_factory=_factory(artifact),
                 resume={"decision": "not-allowed", "extra": "field"},
             )
 
@@ -116,23 +112,19 @@ def test_revision_mismatch_rejects_drifted_resume(tmp_path: Path) -> None:
     graph = builder.compile(checkpointer=InMemorySaver())
     artifact = _artifact({"execute": graph})
     other = _artifact({"execute": graph}, lock="e" * 64)
-    context = _context(artifact)
-    other_context = _context(other)
     application = AssuranceApplication(lease=LocalInvocationRunnerLease(tmp_path), owner_id="runner-a")
 
     async def _run() -> None:
         await application.start(
-            artifact=artifact,
             invocation_id="inv-drift",
             entrypoint="execute",
             graph_input={"change_id": "CH-1"},
-            runtime_context=context,
+            execution_factory=_factory(artifact),
         )
         with pytest.raises(RevisionMismatch):
             await application.run(
-                artifact=other,
                 invocation_id="inv-drift",
-                runtime_context=other_context,
+                execution_factory=_factory(other),
             )
 
     import asyncio

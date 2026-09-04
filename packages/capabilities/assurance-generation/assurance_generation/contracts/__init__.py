@@ -40,7 +40,12 @@ from assurance_generation.contracts.decisions import (
     advance_review_round,
     complete_generation,
 )
-from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring, ReviewFinding
+from assurance_generation.contracts.reviews import (
+    PlanReview,
+    PlanReviewAuthoring,
+    ReviewDecision,
+    ReviewFinding,
+)
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
@@ -73,6 +78,7 @@ __all__ = [
     "PlanResultV1",
     "PlanReview",
     "PlanReviewAuthoring",
+    "ReviewDecision",
     "ReviewFinding",
     "advance_review_round",
     "attempt_contract_refs",

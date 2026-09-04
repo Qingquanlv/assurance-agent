@@ -18,9 +18,13 @@ from assurance_execution.graphs.nodes import publish_execution, select_execute
 from assurance_execution.graphs.state import ExecutionState
 from assurance_execution.plugin import ExecutionPlugin
 from assurance_product.agent_contracts import all_feature_agent_contracts
-from assurance_product.runtime_bindings import AGENT_RUNTIME_BINDINGS
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract, resolve_contract
+from graph_engine.attempts.contracts import (
+    ExecutedAttemptResult,
+    ResolvedAttemptContract,
+    TaskAttemptContract,
+    resolve_contract,
+)
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.node_factory import AttemptNodeFactory
@@ -73,7 +77,7 @@ class ValidatorParityResult:
 
 
 class _DeferredPhase:
-    async def execute(self, prepared: object, context: object) -> RawAgentRuntimeOutcome:
+    async def execute(self, prepared: object, scope: object) -> RawAgentRuntimeOutcome:
         raise RuntimeError("semantic attempt phase is not driven")
 
 
@@ -109,14 +113,16 @@ class _StagedWriteExecutor:
         self.relative = relative
         self.output = output
 
-    async def execute(self, validated_input: object, context: object) -> ExecutionManifest:
-        del validated_input, context
+    async def execute(
+        self, validated_input: object, scope: object
+    ) -> ExecutedAttemptResult[ExecutionManifest]:
+        del validated_input, scope
         binding = self.workspace.binding
         assert binding is not None
         target = binding.write_root / self.relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
-        return self.output
+        return ExecutedAttemptResult(output=self.output)
 
 
 class _CountingValidator:
@@ -156,9 +162,8 @@ def assert_production_inventory_unbound() -> None:
     contribution = production_contribution()
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
     assert TEST_CONTRACT_ID not in {item.contract_id for item in contribution.attempt_contracts}
-    assert TEST_CONTRACT_ID not in AGENT_RUNTIME_BINDINGS
     assert TEST_CONTRACT_ID not in all_feature_agent_contracts()
-    assert len(AGENT_RUNTIME_BINDINGS) == 33
+    assert len(all_feature_agent_contracts()) == 33
     assert len(all_feature_agent_contracts()) == 33
     registered = _registered_validator_count()
     bound = sum(1 for contract in all_feature_agent_contracts().values() if contract.validators)

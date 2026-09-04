@@ -278,7 +278,7 @@ def _load_authored_case_delta(
     )
     if not declared_cases:
         return CaseYamlAuthoring.model_construct(
-            schema_version="1",
+            schema_version="1.0",
             added=[],
             modified=[],
             removed=[],

@@ -1,7 +1,10 @@
 from graph_engine.application.application import (
     AmbiguousResume,
     AssuranceApplication,
+    FixedExecutionFactory,
     InvalidResume,
+    InvocationBoundExecution,
+    InvocationBoundExecutionFactory,
     StartedInvocation,
 )
 from graph_engine.application.revision_guard import RevisionMismatch, require_revision
@@ -27,6 +30,9 @@ __all__ = [
     "AssuranceApplication",
     "AssuranceRuntimeContext",
     "AttemptKernelPort",
+    "FixedExecutionFactory",
+    "InvocationBoundExecution",
+    "InvocationBoundExecutionFactory",
     "GraphSnapshotEnvelope",
     "InterruptEnvelope",
     "InvalidResume",

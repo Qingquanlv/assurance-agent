@@ -9,10 +9,12 @@ from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import (
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
+    AuthorizedAttemptScope,
+    ExecutedAttemptResult,
     TaskAttemptContract,
     resolve_contract,
 )
-from graph_engine.attempts.events import ActivityDispatchStarted, ActivityTerminalObserved
+from graph_engine.attempts.events import ActivityPrepared, ActivityTerminalObserved
 from graph_engine.attempts.kernel import AssuranceAttemptKernel, AttemptIdentityDrift
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
 from graph_engine.attempts.resolutions import CommittedTaskResult, PermanentTaskFailure
@@ -73,16 +75,16 @@ class _WritingExecutor:
         self.files = files if files is not None else {"out.txt": b"committed"}
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[RunOutput]:
+        del validated_input
         self.calls += 1
-        binding = self.workspace.binding
-        assert binding is not None
         for path, content in self.files.items():
-            target = binding.write_root / path
+            target = scope.workspace.write_root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
-        return RunOutput(status="ok")
+        return ExecutedAttemptResult(output=RunOutput(status="ok"))
 
 
 class _OtherOutput(BaseModel):
@@ -94,12 +96,13 @@ class _InvalidOutputExecutor:
         self.workspace: _RecordingWorkspace | None = None
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> _OtherOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_OtherOutput]:
+        del validated_input
         self.calls += 1
-        assert self.workspace is not None and self.workspace.binding is not None
-        (self.workspace.binding.write_root / "out.txt").write_bytes(b"invalid")
-        return _OtherOutput(unexpected="nope")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"invalid")
+        return ExecutedAttemptResult(output=_OtherOutput(unexpected="nope"))
 
 
 class _AdoptThenInvalidExecutor:
@@ -109,12 +112,15 @@ class _AdoptThenInvalidExecutor:
         self.key: AttemptKey | None = None
         self.calls = 0
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> _OtherOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[_OtherOutput]:
+        del validated_input
         self.calls += 1
         assert self.kernel is not None and self.key is not None
         await self.kernel.arbiter.adopt(self.key, fencing_token=5)
-        return _OtherOutput(unexpected="nope")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"invalid")
+        return ExecutedAttemptResult(output=_OtherOutput(unexpected="nope"))
 
 
 class _CrashAfterObserveJournal:
@@ -164,6 +170,9 @@ class _ReleaseOnceCrashArbiter:
     async def assert_usable(self, *args, **kwargs):
         return await self.inner.assert_usable(*args, **kwargs)
 
+    async def is_active(self, *args, **kwargs):
+        return await self.inner.is_active(*args, **kwargs)
+
 
 class _RecoverableExecutor:
     def __init__(self) -> None:
@@ -172,26 +181,26 @@ class _RecoverableExecutor:
         self.reconciles = 0
         self.crash_during_execute = True
 
-    async def execute(self, validated_input: RunInput, context: AttemptExecutionContext) -> RunOutput:
-        del validated_input, context
+    async def execute(
+        self, validated_input: RunInput, scope: AuthorizedAttemptScope
+    ) -> ExecutedAttemptResult[RunOutput]:
+        del validated_input
         self.calls += 1
-        assert self.workspace is not None and self.workspace.binding is not None
-        (self.workspace.binding.write_root / "out.txt").write_bytes(b"committed")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"committed")
         if self.crash_during_execute:
             raise TransactionCrash("in-flight activity")
-        return RunOutput(status="ok")
+        return ExecutedAttemptResult(output=RunOutput(status="ok"))
 
     async def reconcile(
         self,
         validated_input: RunInput,
-        context: AttemptExecutionContext,
+        scope: AuthorizedAttemptScope,
         activity: object,
-    ) -> RunOutput:
-        del validated_input, context, activity
+    ) -> ExecutedAttemptResult[RunOutput]:
+        del validated_input, activity
         self.reconciles += 1
-        assert self.workspace is not None and self.workspace.binding is not None
-        (self.workspace.binding.write_root / "out.txt").write_bytes(b"committed")
-        return RunOutput(status="ok")
+        (scope.workspace.write_root / "out.txt").write_bytes(b"committed")
+        return ExecutedAttemptResult(output=RunOutput(status="ok"))
 
 
 def _revision() -> str:
@@ -232,8 +241,9 @@ def _build(
     writer.workspace = workspace
     resolved = resolve_contract(_contract(writes=writes), executor=writer)
     revision = graph_revision or _revision()
+    owned_journal = journal if journal is not None else MemoryAttemptJournal()
     kernel = AssuranceAttemptKernel(
-        journal=journal if journal is not None else MemoryAttemptJournal(),
+        journal=owned_journal,
         arbiter=ResourceArbiter(
             authorization_store if authorization_store is not None else MemoryResourceAuthorizationStore()
         ),
@@ -259,16 +269,20 @@ def _build(
         attempt_key=key,
         fencing_token=fencing_token,
     )
-    return kernel, key, resolved, validated, context, writer, workspace, project, store
+    return kernel, key, resolved, validated, context, writer, workspace, project, store, owned_journal
 
 
 @pytest.mark.parametrize(
     "fault",
     [
+        "after_observed_result",
         "before_durable_prepare",
         "after_prepare_before_promotion",
         "during_multi_file_promotion",
         "after_promotion_before_receipt",
+        "terminal_durable",
+        "authorization_released",
+        "release_proof",
         "after_receipt_before_graph_checkpoint",
     ],
 )
@@ -288,7 +302,7 @@ async def test_crash_windows_replay_same_receipt_without_repeating_mutation(
             hits["count"] += 1
             raise TransactionCrash(fault)
 
-    kernel, key, resolved, validated, context, executor, workspace, project, store = _build(
+    kernel, key, resolved, validated, context, executor, workspace, project, store, _journal = _build(
         tmp_path,
         writes=writes,
         files=files,
@@ -337,7 +351,9 @@ async def test_crash_windows_replay_same_receipt_without_repeating_mutation(
 
 
 async def test_replay_rejects_input_contract_and_revision_drift(tmp_path: Path) -> None:
-    kernel, key, resolved, validated, context, _executor, _workspace, _project, store = _build(tmp_path)
+    kernel, key, resolved, validated, context, _executor, _workspace, _project, store, journal = _build(
+        tmp_path
+    )
     try:
         first = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(first, CommittedTaskResult)
@@ -360,7 +376,7 @@ async def test_replay_rejects_input_contract_and_revision_drift(tmp_path: Path) 
         with pytest.raises(AttemptIdentityDrift, match="contract"):
             await kernel.execute_or_recover(key, other_contract, validated, context)
         drifted = AssuranceAttemptKernel(
-            journal=kernel.journal,
+            journal=journal,
             arbiter=kernel.arbiter,
             workspace=kernel.workspace,
             graph_revision=canonical_digest({"revision": "other"}),
@@ -374,7 +390,7 @@ async def test_replay_rejects_input_contract_and_revision_drift(tmp_path: Path) 
 
 async def test_in_flight_recoverable_handler_is_adopted_with_same_key(tmp_path: Path) -> None:
     recoverable = _RecoverableExecutor()
-    kernel, key, resolved, validated, context, executor, _workspace, project, store = _build(
+    kernel, key, resolved, validated, context, executor, _workspace, project, store, journal = _build(
         tmp_path,
         executor=recoverable,
     )
@@ -382,12 +398,12 @@ async def test_in_flight_recoverable_handler_is_adopted_with_same_key(tmp_path: 
     try:
         with pytest.raises(TransactionCrash, match="in-flight"):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.activity_state in {
-            ActivityDispatchStarted.kind,
-            "dispatch_started",
-            "activity_dispatch_started",
+            ActivityPrepared.kind,
+            "prepared",
+            "activity_prepared",
         }
         recoverable.crash_during_execute = False
         result = await kernel.execute_or_recover(key, resolved, validated, context)
@@ -406,7 +422,7 @@ async def test_fence_is_checked_at_irreversible_boundaries(tmp_path: Path) -> No
         if name.startswith("fence:"):
             seen.append(name)
 
-    kernel, key, resolved, validated, context, _executor, _workspace, _project, store = _build(
+    kernel, key, resolved, validated, context, _executor, _workspace, _project, store, _journal = _build(
         tmp_path, transaction_cut=cut
     )
     try:
@@ -418,6 +434,7 @@ async def test_fence_is_checked_at_irreversible_boundaries(tmp_path: Path) -> No
             "fence:promotion",
             "fence:effect_application",
             "fence:terminal_receipt",
+            "fence:resource_release",
         ]
     finally:
         store.close()
@@ -468,9 +485,21 @@ async def test_stale_runner_can_observe_but_cannot_commit_after_lease_loss(tmp_p
         with pytest.raises(TransactionCrash, match="in-flight"):
             await old.execute_or_recover(key, resolved, validated, old_context)
         executor.crash_during_execute = False
-        observed = await old.observe_activity_completion(key, old_context)
+        observed = await journal.load(key)
         assert observed is not None
-        await old.adopt_or_create(key, resolved, validated, new_context)
+
+        def crash_after_adoption(name: str) -> None:
+            if name == "fence:external_dispatch":
+                raise TransactionCrash("after adoption")
+
+        with pytest.raises(TransactionCrash, match="after adoption"):
+            await old.execute_or_recover(
+                key,
+                resolved,
+                validated,
+                new_context,
+                transaction_cut=crash_after_adoption,
+            )
         with pytest.raises(StaleFencingToken):
             await old.execute_or_recover(key, resolved, validated, old_context)
         result = await old.execute_or_recover(key, resolved, validated, new_context)
@@ -481,25 +510,20 @@ async def test_stale_runner_can_observe_but_cannot_commit_after_lease_loss(tmp_p
         store.close()
 
 
-async def test_replay_of_observed_invalid_output_fail_closes_without_raising(tmp_path: Path) -> None:
+async def test_invalid_output_is_not_journaled_as_observed(tmp_path: Path) -> None:
     journal = _CrashAfterObserveJournal(MemoryAttemptJournal())
-    kernel, key, resolved, validated, context, executor, _workspace, _project, store = _build(
+    kernel, key, resolved, validated, context, executor, _workspace, _project, store, owned_journal = _build(
         tmp_path,
         executor=_InvalidOutputExecutor(),
         journal=journal,
     )
     try:
-        with pytest.raises(TransactionCrash, match="after activity terminal observed"):
-            await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
-        assert snapshot is not None
-        assert snapshot.activity_state == "terminal_observed"
-        assert snapshot.terminal is None
         first = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(first, PermanentTaskFailure)
         assert first.kind == "invalid_output"
-        snapshot = await kernel.journal.load(key)
+        snapshot = await owned_journal.load(key)
         assert snapshot is not None
+        assert snapshot.activity_state != "terminal_observed"
         assert snapshot.terminal is not None
         assert snapshot.released is True
         with pytest.raises(ResourceAuthorizationError, match="no active authorization"):
@@ -513,7 +537,7 @@ async def test_replay_of_observed_invalid_output_fail_closes_without_raising(tmp
 
 async def test_fail_closed_after_lease_loss_cannot_persist_terminal(tmp_path: Path) -> None:
     executor = _AdoptThenInvalidExecutor()
-    kernel, key, resolved, validated, context, _writer, _workspace, _project, store = _build(
+    kernel, key, resolved, validated, context, _writer, _workspace, _project, store, journal = _build(
         tmp_path,
         executor=executor,
         fencing_token=4,
@@ -523,14 +547,15 @@ async def test_fail_closed_after_lease_loss_cannot_persist_terminal(tmp_path: Pa
     try:
         with pytest.raises(StaleFencingToken):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is None
         successor = context.model_copy(update={"fencing_token": 5})
         result = await kernel.execute_or_recover(key, resolved, validated, successor)
         assert isinstance(result, PermanentTaskFailure)
-        assert result.kind == "invalid_output"
-        snapshot = await kernel.journal.load(key)
+        assert result.kind == "internal"
+        assert "cannot be adopted" in result.message
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is not None
         assert snapshot.released is True
@@ -540,18 +565,23 @@ async def test_fail_closed_after_lease_loss_cannot_persist_terminal(tmp_path: Pa
 
 
 async def test_terminal_replay_releases_held_grant(tmp_path: Path) -> None:
-    kernel, key, resolved, validated, context, executor, _workspace, _project, store = _build(tmp_path)
+    kernel, key, resolved, validated, context, executor, _workspace, _project, store, journal = _build(
+        tmp_path
+    )
     kernel.arbiter = _ReleaseOnceCrashArbiter(kernel.arbiter)
     try:
         with pytest.raises(TransactionCrash, match="after journaled release"):
             await kernel.execute_or_recover(key, resolved, validated, context)
-        snapshot = await kernel.journal.load(key)
+        snapshot = await journal.load(key)
         assert snapshot is not None
         assert snapshot.terminal is not None
-        assert snapshot.released is True
+        assert snapshot.released is False
         await kernel.arbiter.assert_usable(key, fencing_token=context.fencing_token)
         result = await kernel.execute_or_recover(key, resolved, validated, context)
         assert isinstance(result, CommittedTaskResult)
+        snapshot = await journal.load(key)
+        assert snapshot is not None
+        assert snapshot.released is True
         with pytest.raises(ResourceAuthorizationError, match="no active authorization"):
             await kernel.arbiter.assert_usable(key, fencing_token=context.fencing_token)
         assert executor.calls == 1

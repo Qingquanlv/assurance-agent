@@ -1,14 +1,55 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, fields, replace
 from typing import Protocol
 
-from graph_engine.attempts.events import AttemptEvent, AttemptSnapshot, fold_attempt_events
+from graph_engine.attempts.events import (
+    ActivityBound,
+    ActivityDispatchStarted,
+    ActivityPrepared,
+    ActivityTerminalObserved,
+    AttemptEvent,
+    AttemptOpened,
+    AttemptSnapshot,
+    AttemptTerminated,
+    CommitPrepared,
+    EffectApplied,
+    EffectIntentRecorded,
+    EffectReceiptRecorded,
+    ResourcesAuthorized,
+    ResourcesReleased,
+    SystemInterruptCompletionCheckpointed,
+    SystemInterruptIssuanceAnchored,
+    SystemInterruptIssued,
+    WorkspacePromoted,
+    fold_attempt_events,
+)
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 from graph_engine.persistence.runner_lease import StaleFencingToken
+
+ATTEMPT_JOURNAL_SCHEMA_VERSION = "1"
+
+_EVENT_TYPES: dict[str, type[AttemptEvent]] = {
+    ActivityBound.kind: ActivityBound,
+    ActivityDispatchStarted.kind: ActivityDispatchStarted,
+    ActivityPrepared.kind: ActivityPrepared,
+    ActivityTerminalObserved.kind: ActivityTerminalObserved,
+    AttemptOpened.kind: AttemptOpened,
+    AttemptTerminated.kind: AttemptTerminated,
+    CommitPrepared.kind: CommitPrepared,
+    EffectApplied.kind: EffectApplied,
+    EffectIntentRecorded.kind: EffectIntentRecorded,
+    EffectReceiptRecorded.kind: EffectReceiptRecorded,
+    ResourcesAuthorized.kind: ResourcesAuthorized,
+    ResourcesReleased.kind: ResourcesReleased,
+    SystemInterruptCompletionCheckpointed.kind: SystemInterruptCompletionCheckpointed,
+    SystemInterruptIssuanceAnchored.kind: SystemInterruptIssuanceAnchored,
+    SystemInterruptIssued.kind: SystemInterruptIssued,
+    WorkspacePromoted.kind: WorkspacePromoted,
+}
 
 
 class AttemptJournalIntegrityError(GraphEngineError):
@@ -73,6 +114,63 @@ class AttemptJournalRecord:
 
     def canonical_digest(self) -> str:
         return canonical_digest(self.canonical_projection())
+
+
+def decode_attempt_event(payload: object) -> AttemptEvent:
+    if not isinstance(payload, Mapping):
+        raise AttemptJournalIntegrityError("event is not an object")
+    kind = payload.get("kind")
+    event_type = _EVENT_TYPES.get(kind) if isinstance(kind, str) else None
+    if event_type is None:
+        raise AttemptJournalIntegrityError("unknown event kind")
+    expected = {field.name for field in fields(event_type)}
+    values = {key: value for key, value in payload.items() if key != "kind"}
+    extra = set(values) - expected
+    missing = expected - set(values)
+    if extra:
+        raise AttemptJournalIntegrityError("unknown event field")
+    if missing:
+        raise AttemptJournalIntegrityError("omitted required event field")
+    try:
+        return event_type(**values)  # type: ignore[misc]
+    except (TypeError, ValueError) as error:
+        raise AttemptJournalIntegrityError("event fields drifted") from error
+
+
+def decode_attempt_journal_record(
+    payload: object,
+    *,
+    schema_version: str,
+    record_digest: str,
+) -> AttemptJournalRecord:
+    if schema_version != ATTEMPT_JOURNAL_SCHEMA_VERSION:
+        raise AttemptJournalIntegrityError("unknown attempt journal schema version")
+    if not isinstance(payload, Mapping):
+        raise AttemptJournalIntegrityError("journal record is not an object")
+    expected = {"attempt_key_digest", "events", "fencing_token", "revision"}
+    extra = set(payload) - expected
+    missing = expected - set(payload)
+    if extra:
+        raise AttemptJournalIntegrityError("unknown journal record field")
+    if missing:
+        raise AttemptJournalIntegrityError("omitted required journal record field")
+    raw_events = payload["events"]
+    if not isinstance(raw_events, Sequence) or isinstance(raw_events, (str, bytes)) or not raw_events:
+        raise AttemptJournalIntegrityError("journal batch must be a nonempty event tuple")
+    events = tuple(decode_attempt_event(item) for item in raw_events)
+    try:
+        record = AttemptJournalRecord(
+            revision=payload["revision"],  # type: ignore[arg-type]
+            attempt_key_digest=str(payload["attempt_key_digest"]),
+            fencing_token=payload["fencing_token"],  # type: ignore[arg-type]
+            events=events,
+            record_digest=record_digest,
+        )
+    except (TypeError, ValueError) as error:
+        raise AttemptJournalIntegrityError("journal record fields drifted") from error
+    if record.record_digest != record.canonical_digest():
+        raise AttemptJournalIntegrityError("attempt journal digest drifted")
+    return record
 
 
 class AttemptJournalPort(Protocol):
@@ -158,6 +256,9 @@ class MemoryAttemptJournal:
     def durable_revision(self, attempt_key: AttemptKey) -> int:
         return self._durable.get(attempt_key.digest, 0)
 
+    def records(self, attempt_key: AttemptKey) -> tuple[AttemptJournalRecord, ...]:
+        return tuple(self._logs.get(attempt_key.digest, ()))
+
     def _snapshot(self, attempt_key: AttemptKey, records: Sequence[AttemptJournalRecord]) -> AttemptSnapshot:
         events = tuple(event for record in records for event in record.events)
         return fold_attempt_events(
@@ -169,8 +270,11 @@ class MemoryAttemptJournal:
 
 
 __all__ = [
+    "ATTEMPT_JOURNAL_SCHEMA_VERSION",
     "AttemptJournalIntegrityError",
     "AttemptJournalPort",
     "AttemptJournalRecord",
     "MemoryAttemptJournal",
+    "decode_attempt_event",
+    "decode_attempt_journal_record",
 ]

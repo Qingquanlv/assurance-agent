@@ -17,7 +17,6 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
-    SerializerFunctionWrapHandler,
     field_serializer,
     field_validator,
     model_serializer,
@@ -33,6 +32,7 @@ if TYPE_CHECKING:
     from graph_engine.attempts.keys import AttemptKey
     from graph_engine.attempts.resolutions import PermanentTaskFailure, RejectedTaskResult
     from graph_engine.canonical import JSONValue
+    from graph_engine.effects.state import EffectCallContext
 else:
     JSONValue = JsonValue
 
@@ -60,6 +60,8 @@ _FROZEN_MODEL_CONFIG = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=Fal
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _Capability = TypeVar("_Capability")
 ActivityState = Literal["prepared", "dispatch_started", "bound", "terminal_observed"]
+ActivityPhase = Literal["prepare", "runtime", "finalize"]
+TASK_ACTIVITY_IDENTITY_VERSION: Literal["2"] = "2"
 
 
 class FrozenModel(BaseModel):
@@ -438,9 +440,9 @@ class EffectReconcileResult(FrozenModel):
 
 
 class DurableEffectHandler(Protocol):
-    async def apply(self, intent: EffectIntent, idempotency_key: str) -> EffectApplyResult: ...
+    async def apply(self, intent: EffectIntent, context: EffectCallContext) -> EffectApplyResult: ...
 
-    async def reconcile(self, intent: EffectIntent, idempotency_key: str) -> EffectReconcileResult: ...
+    async def reconcile(self, intent: EffectIntent, context: EffectCallContext) -> EffectReconcileResult: ...
 
 
 @runtime_checkable
@@ -1342,13 +1344,6 @@ class PluginDescriptor(FrozenModel):
             raise ValueError("source version must equal plugin version")
         return self
 
-    @model_serializer(mode="wrap")
-    def _omit_empty_attempt_contracts(self, serializer: SerializerFunctionWrapHandler) -> object:
-        data = serializer(self)
-        if isinstance(data, dict) and not data.get("attempt_contracts"):
-            data.pop("attempt_contracts", None)
-        return data
-
 
 class PluginProvider(Protocol):
     def descriptor(self) -> PluginDescriptor: ...
@@ -1499,7 +1494,9 @@ def realize_plugin(descriptor: PluginDescriptor, contribution: PluginContributio
 
 
 __all__ = [
+    "ActivityPhase",
     "ActivityState",
+    "TASK_ACTIVITY_IDENTITY_VERSION",
     "AttemptContractRef",
     "CapabilityBindingContribution",
     "CandidateFile",

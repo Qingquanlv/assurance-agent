@@ -20,11 +20,16 @@ from agent_runtime_contracts.models import AgentRunResult
 from assurance_intake.contracts.agent import ArtifactListResultV1, CaseDesignInputV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
-from graph_engine.attempts.context import AttemptExecutionContext
-from graph_engine.attempts.contracts import TaskAttemptContract
+from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
+from graph_engine.attempts.contracts import ExecutedAttemptResult, TaskAttemptContract
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.plugin_api import ResourceClaims
+from graph_engine.plugin_api import (
+    DirectoryIdentity,
+    ResourceClaims,
+    TaskWorkspaceBinding,
+    TaskWorkspaceIdentity,
+)
 from graph_engine.testing import GraphHarness, committed
 
 _SHA = "a" * 64
@@ -194,8 +199,8 @@ class _RecordingPrepare:
         self.prepared = prepared
         self.seen_input: CaseDesignInputV1 | None = None
 
-    async def execute(self, validated_input: CaseDesignInputV1, context: object) -> dict[str, object]:
-        del context
+    async def execute(self, validated_input: CaseDesignInputV1, scope: object) -> dict[str, object]:
+        del scope
         self.seen_input = validated_input
         return self.prepared
 
@@ -205,8 +210,8 @@ class _RecordingRuntime:
         self.result = result
         self.seen_prepared: dict[str, object] | None = None
 
-    async def execute(self, prepared: dict[str, object], context: object) -> RawAgentRuntimeOutcome:
-        del context
+    async def execute(self, prepared: dict[str, object], scope: object) -> RawAgentRuntimeOutcome:
+        del scope
         self.seen_prepared = prepared
         payload = self.result.model_dump(mode="json")
         return RawAgentRuntimeOutcome(
@@ -231,20 +236,50 @@ class _RecordingFinalize:
     async def execute(
         self,
         bundle: RawFinalizeBundle[CaseDesignInputV1, dict[str, object], ArtifactListResultV1],
-        context: object,
+        scope: object,
     ) -> ArtifactListResultV1:
-        del context
+        del scope
         self.seen = bundle
         return self.output
 
 
-def _attempt_context(semantic_node_id: str) -> AttemptExecutionContext:
-    return AttemptExecutionContext(
-        invocation_id="inv-1",
-        public_entrypoint="case",
-        semantic_node_id=semantic_node_id,
-        attempt_key=AttemptKey(digest=_SHA),
-        fencing_token=1,
+def _attempt_scope(semantic_node_id: str, tmp_path: Path) -> AuthorizedAttemptScope:
+    project = tmp_path / "project"
+    write = tmp_path / "write"
+    project.mkdir()
+    write.mkdir()
+    identity = TaskWorkspaceIdentity.model_construct(
+        task_id="task",
+        attempt=1,
+        attempt_id="attempt-1",
+        output_paths=(),
+        baseline_files=(),
+        project_digest=_SHA,
+        write_root_digest=_SHA,
+        identity_digest=_SHA,
+        layout_schema_version="1",
+    )
+    directory = DirectoryIdentity.model_construct(
+        path_digest=_SHA,
+        device=1,
+        inode=1,
+        identity_digest=_SHA,
+    )
+    return AuthorizedAttemptScope(
+        execution=AttemptExecutionContext(
+            invocation_id="inv-1",
+            public_entrypoint="case",
+            semantic_node_id=semantic_node_id,
+            attempt_key=AttemptKey(digest=_SHA),
+            fencing_token=1,
+        ),
+        workspace=TaskWorkspaceBinding(
+            identity=identity,
+            project_root=project,
+            write_root=write,
+            project_root_identity=directory,
+            write_root_identity=directory,
+        ),
     )
 
 
@@ -270,7 +305,7 @@ def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
     ],
 )
 async def test_prepared_value_and_agent_result_reach_finalize_through_one_composite_attempt(
-    path: str, semantic_node_id: str, validation_attempt: int
+    path: str, semantic_node_id: str, validation_attempt: int, tmp_path: Path
 ) -> None:
     del path
     prepared: dict[str, object] = {"prompt": "design cases", "path": semantic_node_id}
@@ -289,7 +324,7 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     del writable
     output = await executor.execute(
         _case_design_input(validation_attempt=validation_attempt),
-        _attempt_context(semantic_node_id),
+        _attempt_scope(semantic_node_id, tmp_path),
     )
     assert prepare.seen_input is not None
     assert prepare.seen_input.validation_attempt == validation_attempt
@@ -297,8 +332,9 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     assert finalize.seen is not None
     assert finalize.seen.prepared == prepared
     assert finalize.seen.agent_result == agent_result
-    assert output == agent_result
-    assert isinstance(output, BaseModel)
+    assert isinstance(output, ExecutedAttemptResult)
+    assert output.output == agent_result
+    assert isinstance(output.output, BaseModel)
 
 
 async def test_prepare_graph_binds_four_agent_ids_across_five_occurrences() -> None:
@@ -331,4 +367,4 @@ async def test_prepare_graph_binds_four_agent_ids_across_five_occurrences() -> N
     assert result.promotion_decision == "committed"
     terminal = result.terminal
     assert isinstance(terminal, dict)
-    assert terminal.get("decision") in {"pass", "approved"}
+    assert terminal.get("decision") == "pass"
