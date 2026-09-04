@@ -13,6 +13,7 @@ from graph_engine.application import (
     AmbiguousResume,
     AssuranceApplication,
     AssuranceRuntimeContext,
+    FixedExecutionFactory,
     InvalidResume,
     InvocationStatus,
 )
@@ -117,6 +118,15 @@ def _context(artifact: BootArtifact) -> AssuranceRuntimeContext:
     )
 
 
+def _factory(artifact: BootArtifact) -> FixedExecutionFactory:
+    return FixedExecutionFactory(
+        artifact=artifact,
+        attempt_kernel=object(),
+        secret_resolver=object(),
+        workspace_provider=object(),
+    )
+
+
 async def _start_and_block(
     application: AssuranceApplication,
     artifact: BootArtifact,
@@ -127,16 +137,14 @@ async def _start_and_block(
 ) -> tuple[AssuranceRuntimeContext, InvocationStatus]:
     context = _context(artifact)
     await application.start(
-        artifact=artifact,
         invocation_id=invocation_id,
         entrypoint=entrypoint,
         graph_input=graph_input,
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     blocked = await application.run(
-        artifact=artifact,
         invocation_id=invocation_id,
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     return context, blocked
 
@@ -152,9 +160,8 @@ async def test_single_human_interrupt_accepts_validated_scalar(application: Assu
     )
     assert blocked == InvocationStatus(status="interrupted")
     result = await application.resume(
-        artifact=artifact,
         invocation_id="inv-human",
-        runtime_context=context,
+        execution_factory=_factory(artifact),
         resume="approve",
     )
     assert result == InvocationStatus(status="completed")
@@ -171,9 +178,8 @@ async def test_single_human_interrupt_rejects_invalid_scalar(application: Assura
     )
     with pytest.raises(ValidationError):
         await application.resume(
-            artifact=artifact,
             invocation_id="inv-bad",
-            runtime_context=context,
+            execution_factory=_factory(artifact),
             resume="not-an-action",
         )
 
@@ -191,9 +197,8 @@ async def test_disallowed_human_action_raises_with_actual_value(
     )
     with pytest.raises(InvalidResume, match="rework") as exc_info:
         await application.resume(
-            artifact=artifact,
             invocation_id="inv-rework",
-            runtime_context=context,
+            execution_factory=_factory(artifact),
             resume="rework",
         )
     assert "not-an-action" not in str(exc_info.value)
@@ -211,17 +216,15 @@ async def test_multiple_interrupts_require_interrupt_id_mapping(application: Ass
     assert blocked == InvocationStatus(status="interrupted")
     with pytest.raises(AmbiguousResume):
         await application.resume(
-            artifact=artifact,
             invocation_id="inv-multi",
-            runtime_context=context,
+            execution_factory=_factory(artifact),
             resume="approve",
         )
     snapshot = await artifact.entrypoints["execute"].aget_state({"configurable": {"thread_id": "inv-multi"}})
     mapping = {item.id: "approve" for item in snapshot.interrupts}
     result = await application.resume(
-        artifact=artifact,
         invocation_id="inv-multi",
-        runtime_context=context,
+        execution_factory=_factory(artifact),
         resume=mapping,
     )
     assert result == InvocationStatus(status="completed")
@@ -239,15 +242,13 @@ async def test_system_interrupt_accepts_only_wakeup_envelope(application: Assura
     assert blocked == InvocationStatus(status="blocked", reason="effect_pending")
     with pytest.raises(InvalidResume):
         await application.resume(
-            artifact=artifact,
             invocation_id="inv-system",
-            runtime_context=context,
+            execution_factory=_factory(artifact),
             resume="approve",
         )
     result = await application.resume(
-        artifact=artifact,
         invocation_id="inv-system",
-        runtime_context=context,
+        execution_factory=_factory(artifact),
         resume=PendingTaskResult(wakeup=SystemReference(reference_id="wake-1")),
     )
     assert result == InvocationStatus(status="completed")

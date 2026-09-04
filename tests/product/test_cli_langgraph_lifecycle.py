@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -15,18 +14,6 @@ from tests.product.cli_support import (
 from tests.product.composition_harness import request_for
 
 pytestmark = pytest.mark.usefixtures("installed_sources")
-
-
-@pytest.fixture(autouse=True)
-def _reset_runtime_ports() -> Iterator[None]:
-    yield
-    try:
-        from assurance_product.runtime_ports import ProductRuntimePorts
-
-        ProductRuntimePorts.test_kernel_resolutions = None
-        ProductRuntimePorts._last_scripted_committed = None
-    except ImportError:
-        return
 
 
 def _identity_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
@@ -310,18 +297,10 @@ def test_langgraph_run_does_not_map_integrity_errors_to_failed(
 ) -> None:
     from assurance_product.cli import app
     from assurance_product.product import resolve_assurance_composition
-    from assurance_product.runtime_ports import ProductRuntimePorts
     from assurance_product.application import RuntimeSelectionError
     from graph_engine.application import AssuranceApplication
-    from graph_engine.attempts.resolutions import CommittedTaskResult, ReceiptRef
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
-    ProductRuntimePorts.test_kernel_resolutions = [
-        CommittedTaskResult(
-            output={"status": "completed"},
-            receipt=ReceiptRef(receipt_id="r-integrity", receipt_digest="d" * 64),
-        )
-    ]
     composition = resolve_assurance_composition(request_for("opencode", installed_sources))
     args, project_dir, change_id = common_lifecycle_args(
         tmp_path=tmp_path,

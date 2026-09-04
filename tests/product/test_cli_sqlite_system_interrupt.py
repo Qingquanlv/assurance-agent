@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -12,16 +11,18 @@ from tests.product.composition_harness import request_for
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
-@pytest.fixture(autouse=True)
-def _reset_runtime_ports() -> Iterator[None]:
-    yield
-    try:
-        from assurance_product.runtime_ports import ProductRuntimePorts
+def _script_kernel(monkeypatch: pytest.MonkeyPatch, resolutions: list[object]) -> None:
+    from graph_engine.attempts.kernel import AssuranceAttemptKernel
 
-        ProductRuntimePorts.test_kernel_resolutions = None
-        ProductRuntimePorts._last_scripted_committed = None
-    except ImportError:
-        return
+    remaining = list(resolutions)
+
+    async def scripted(self: object, *args: object, **kwargs: object) -> object:
+        del self, args, kwargs
+        if not remaining:
+            raise AssertionError("no scripted kernel resolution remaining")
+        return remaining.pop(0)
+
+    monkeypatch.setattr(AssuranceAttemptKernel, "execute_or_recover", scripted)
 
 
 def _existing_args(project_dir: Path, change_id: str, invocation_id: str, args: list[str]) -> list[str]:
@@ -74,14 +75,16 @@ def test_cli_sqlite_system_interrupt_survives_reopen_and_replays_ordinal(
         invocation_id="inv-sqlite-interrupt",
         entrypoint="archive",
     )
-    resolutions = [
-        PendingTaskResult(wakeup=SystemReference(reference_id="wake-1")),
-        CommittedTaskResult(
-            output={"status": "completed"},
-            receipt=ReceiptRef(receipt_id="r1", receipt_digest="a" * 64),
-        ),
-    ]
-    monkeypatch.setattr(ProductRuntimePorts, "test_kernel_resolutions", resolutions)
+    _script_kernel(
+        monkeypatch,
+        [
+            PendingTaskResult(wakeup=SystemReference(reference_id="wake-1")),
+            CommittedTaskResult(
+                output={"status": "completed"},
+                receipt=ReceiptRef(receipt_id="r1", receipt_digest="a" * 64),
+            ),
+        ],
+    )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
     first = cli_runner.invoke(
@@ -148,9 +151,8 @@ def test_cli_sqlite_completion_pending_write_replays_before_aput(
         invocation_id="inv-sqlite-replay",
         entrypoint="archive",
     )
-    monkeypatch.setattr(
-        ProductRuntimePorts,
-        "test_kernel_resolutions",
+    _script_kernel(
+        monkeypatch,
         [
             PendingTaskResult(wakeup=SystemReference(reference_id="wake-2")),
             CommittedTaskResult(

@@ -11,6 +11,13 @@ from graph_engine.attempts.contracts import ResolvedAttemptContract
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.resolutions import AttemptResolution
 from graph_engine.canonical import JSONValue
+from graph_engine.plugin_api import (
+    PreparedWorkspaceRef,
+    PromotionReceipt,
+    ResourceClaims,
+    SealedWriteSet,
+    TaskWorkspaceBinding,
+)
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -31,9 +38,25 @@ class AttemptKernelPort(Protocol):
 class SecretResolverPort(Protocol):
     """Per-invocation secret resolver. Held by reference; never checkpointed."""
 
+    def resolve(self, handle: str) -> bytes: ...
+
 
 class WorkspaceProviderPort(Protocol):
     """Per-invocation workspace provider. Held by reference; never checkpointed."""
+
+    async def open_or_create(
+        self, attempt_key: AttemptKey, claims: ResourceClaims
+    ) -> TaskWorkspaceBinding: ...
+
+    async def seal(self, binding: TaskWorkspaceBinding) -> SealedWriteSet: ...
+
+    async def prepare(
+        self, binding: TaskWorkspaceBinding, sealed: SealedWriteSet
+    ) -> PreparedWorkspaceRef: ...
+
+    async def promote(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
+
+    async def recover_promotion(self, prepared: PreparedWorkspaceRef) -> PromotionReceipt: ...
 
 
 def _revision_id(value: str) -> str:

@@ -9,7 +9,11 @@ from typing import Any, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext
+from graph_engine.application import (
+    AssuranceApplication,
+    FixedExecutionFactory,
+    InvocationBoundExecutionFactory,
+)
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
 from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
@@ -48,7 +52,8 @@ class CatalogContractResolver:
 
 
 class _UnusedSecrets:
-    pass
+    def resolve(self, handle: str) -> bytes:
+        raise RuntimeError(f"secret resolver is unused: {handle}")
 
 
 class _FactoryAuthenticator:
@@ -124,20 +129,18 @@ def factory_application(
     kernel: AssuranceAttemptKernel,
     workspace: WorkspaceProvider,
     lease_root: Any,
-) -> tuple[AssuranceApplication, AssuranceRuntimeContext]:
+) -> tuple[AssuranceApplication, InvocationBoundExecutionFactory]:
     Path(lease_root).mkdir(parents=True, exist_ok=True)
     application = AssuranceApplication(
         lease=LocalInvocationRunnerLease(Path(lease_root)),
         owner_id="graph-engine-generic",
     )
-    context = AssuranceRuntimeContext(
-        revision_id=artifact.manifest.revision.revision_id,
-        fencing_token=1,
+    return application, FixedExecutionFactory(
+        artifact=artifact,
         attempt_kernel=kernel,
         secret_resolver=_UnusedSecrets(),
         workspace_provider=workspace,
     )
-    return application, context
 
 
 async def invocation_values(
@@ -161,15 +164,14 @@ async def run_factory_product(
     graph_input: Mapping[str, object],
     lease_root: Any,
 ) -> object:
-    application, context = factory_application(
+    application, factory = factory_application(
         artifact, kernel=kernel, workspace=workspace, lease_root=lease_root
     )
     return await application.start_and_run(
-        artifact=artifact,
         invocation_id=invocation_id,
         entrypoint=entrypoint,
         graph_input=cast(Mapping[str, JSONValue], dict(graph_input)),
-        runtime_context=context,
+        execution_factory=factory,
     )
 
 

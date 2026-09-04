@@ -125,7 +125,7 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import END, START, StateGraph
 
-    from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, RevisionMismatch
+    from graph_engine.application import AssuranceApplication, FixedExecutionFactory, RevisionMismatch
     from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
     from graph_engine.canonical import canonical_digest
     from graph_engine.persistence.runner_lease import LocalInvocationRunnerLease
@@ -172,28 +172,21 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
     lease_root = tmp_path / "replay-legacy-lock"
     lease_root.mkdir()
     application = AssuranceApplication(lease=LocalInvocationRunnerLease(lease_root), owner_id="runner-a")
-    context = AssuranceRuntimeContext(
-        revision_id=original.manifest.revision.revision_id,
-        fencing_token=1,
-        attempt_kernel=cast(Any, object()),
-        secret_resolver=object(),
-        workspace_provider=object(),
-    )
-    drifted_context = AssuranceRuntimeContext(
-        revision_id=drifted.manifest.revision.revision_id,
-        fencing_token=1,
-        attempt_kernel=cast(Any, object()),
-        secret_resolver=object(),
-        workspace_provider=object(),
-    )
+
+    def _factory(artifact: BootArtifact) -> FixedExecutionFactory:
+        return FixedExecutionFactory(
+            artifact=artifact,
+            attempt_kernel=cast(Any, object()),
+            secret_resolver=object(),
+            workspace_provider=object(),
+        )
 
     async def _run() -> None:
         await application.start(
-            artifact=original,
             invocation_id="inv-replay-legacy-001",
             entrypoint="intake",
             graph_input={"change_id": "CH-1"},
-            runtime_context=context,
+            execution_factory=_factory(original),
         )
 
         def _durable() -> tuple[tuple[Path, bytes], ...]:
@@ -208,9 +201,8 @@ def test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged(
         before = _durable()
         with pytest.raises(RevisionMismatch):
             await application.run(
-                artifact=drifted,
                 invocation_id="inv-replay-legacy-001",
-                runtime_context=drifted_context,
+                execution_factory=_factory(drifted),
             )
         after = _durable()
         assert after == before

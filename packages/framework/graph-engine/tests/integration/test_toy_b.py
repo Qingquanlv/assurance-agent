@@ -94,24 +94,22 @@ async def _run_to_completion(
         workspace=workspace,
         contract_resolver=resolver,
     )
-    application, context = factory_application(
+    application, factory = factory_application(
         artifact,
         kernel=kernel,
         workspace=workspace,
         lease_root=root / "leases",
     )
     blocked = await application.start_and_run(
-        artifact=artifact,
         invocation_id=invocation_id,
         entrypoint="review",
         graph_input={},
-        runtime_context=context,
+        execution_factory=factory,
     )
     assert blocked.status == "interrupted", blocked
     completed = await application.resume(
-        artifact=artifact,
         invocation_id=invocation_id,
-        runtime_context=context,
+        execution_factory=factory,
         resume="approve",
     )
     assert completed.status == "completed", completed
@@ -143,24 +141,22 @@ async def test_toy_b_recovers_then_interrupts_and_resumes(
         workspace=workspace,
         contract_resolver=resolver,
     )
-    application, context = factory_application(
+    application, factory = factory_application(
         artifact,
         kernel=kernel,
         workspace=workspace,
         lease_root=tmp_path / "leases",
     )
     blocked = await application.start_and_run(
-        artifact=artifact,
         invocation_id="toy-b-1",
         entrypoint="review",
         graph_input={},
-        runtime_context=context,
+        execution_factory=factory,
     )
     assert blocked.status == "interrupted", blocked
     completed = await application.resume(
-        artifact=artifact,
         invocation_id="toy-b-1",
-        runtime_context=context,
+        execution_factory=factory,
         resume="approve",
     )
     values = await invocation_values(artifact, "toy-b-1", "review")

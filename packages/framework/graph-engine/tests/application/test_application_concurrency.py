@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from graph_engine.application import (
     AssuranceApplication,
     AssuranceRuntimeContext,
+    FixedExecutionFactory,
     InvocationStatus,
 )
 from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
@@ -57,6 +58,15 @@ def _context(artifact: BootArtifact) -> AssuranceRuntimeContext:
     return AssuranceRuntimeContext(
         revision_id=artifact.manifest.revision.revision_id,
         fencing_token=1,
+        attempt_kernel=object(),
+        secret_resolver=object(),
+        workspace_provider=object(),
+    )
+
+
+def _factory(artifact: BootArtifact) -> FixedExecutionFactory:
+    return FixedExecutionFactory(
+        artifact=artifact,
         attempt_kernel=object(),
         secret_resolver=object(),
         workspace_provider=object(),
@@ -116,27 +126,24 @@ async def test_concurrent_run_produces_one_owner_and_one_runner_conflict(tmp_pat
     artifact = _artifact({"execute": _hold_graph(entered, release)})
     context = _context(artifact)
     await owner.start(
-        artifact=artifact,
         invocation_id="inv-1",
         entrypoint="execute",
         graph_input={"marker": "go"},
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
 
     async def run_owner() -> InvocationStatus:
         return await owner.run(
-            artifact=artifact,
             invocation_id="inv-1",
-            runtime_context=context,
+            execution_factory=_factory(artifact),
         )
 
     async def run_contender() -> None:
         await entered.wait()
         with pytest.raises(RunnerConflict):
             await contender.run(
-                artifact=artifact,
                 invocation_id="inv-1",
-                runtime_context=context,
+                execution_factory=_factory(artifact),
             )
         release.set()
 
@@ -153,16 +160,14 @@ async def test_graph_recursion_limit_is_failed_runtime_state(tmp_path: Path) -> 
     artifact = _artifact({"recurse": _recurse_graph()})
     context = _context(artifact)
     await application.start(
-        artifact=artifact,
         invocation_id="inv-recurse",
         entrypoint="recurse",
         graph_input={"n": 0},
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     result = await application.run(
-        artifact=artifact,
         invocation_id="inv-recurse",
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     assert result == InvocationStatus(status="failed", reason="graph_recursion_limit")
 
@@ -175,16 +180,14 @@ async def test_business_budget_terminal_is_distinct_from_graph_recursion(tmp_pat
     artifact = _artifact({"budget": _budget_graph()})
     context = _context(artifact)
     await application.start(
-        artifact=artifact,
         invocation_id="inv-budget",
         entrypoint="budget",
         graph_input={"remaining": 2, "terminal": None},
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     result = await application.run(
-        artifact=artifact,
         invocation_id="inv-budget",
-        runtime_context=context,
+        execution_factory=_factory(artifact),
     )
     assert result == InvocationStatus(status="completed", reason="round_budget_exhausted")
     assert result.reason != "graph_recursion_limit"

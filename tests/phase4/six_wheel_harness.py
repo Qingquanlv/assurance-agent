@@ -546,7 +546,7 @@ def _boot_application(
     checkpointer: MemoryCheckpointer | None = None,
     execute: object | None = None,
     finalize: object | None = None,
-) -> tuple[AssuranceApplication, BootArtifact, AssuranceRuntimeContext, MemoryCheckpointer, Path]:
+) -> tuple[AssuranceApplication, BootArtifact, object, MemoryCheckpointer, Path]:
     workspace, project_root = _workspace_binding(engine_root)
     saver = MemoryCheckpointer() if checkpointer is None else checkpointer
     artifact, kernel = boot_factory_product(
@@ -555,13 +555,13 @@ def _boot_application(
         contract_resolver=_phase4_resolver(host, execute=execute, finalize=finalize),
         checkpointer=saver,
     )
-    application, context = factory_application(
+    application, factory = factory_application(
         artifact,
         kernel=kernel,
         workspace=workspace,
         lease_root=engine_root / "leases",
     )
-    return application, artifact, context, saver, project_root
+    return application, artifact, factory, saver, project_root
 
 
 def _start_until_blocked(
@@ -585,11 +585,10 @@ def _start_until_blocked(
 
     async def _run() -> InvocationStatus:
         return await application.start_and_run(
-            artifact=artifact,
             invocation_id=invocation_id,
             entrypoint="fixture",
             graph_input={"change_id": "CH-DEMO-001"},
-            runtime_context=context,
+            execution_factory=context,
         )
 
     result = asyncio.run(_run())
@@ -610,9 +609,8 @@ def _open_until_blocked(
 
     async def _run() -> InvocationStatus:
         return await application.run(
-            artifact=artifact,  # type: ignore[arg-type]
             invocation_id=invocation_id,
-            runtime_context=runtime_context,  # type: ignore[arg-type]
+            execution_factory=runtime_context,  # type: ignore[arg-type]
         )
 
     return asyncio.run(_run())

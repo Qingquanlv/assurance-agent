@@ -11,10 +11,18 @@ from langgraph.types import interrupt
 
 from assurance_product import open_sqlite_checkpointer
 from assurance_product.change_workspace import ChangeWorkspace
-from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, InvocationStatus
+from graph_engine.application import (
+    AssuranceApplication,
+    AssuranceRuntimeContext,
+    InvocationBoundExecution,
+    InvocationStatus,
+)
 from graph_engine.boot.graph_revision import BootArtifact, GraphBuildManifest, GraphRevision
 from graph_engine.canonical import canonical_digest
-from graph_engine.persistence.journal import CheckpointIntegrityError, InvocationStarted
+from graph_engine.persistence.anchored_checkpointer import AnchoredCheckpointer
+from graph_engine.persistence.journal import CheckpointAnchorState, CheckpointIntegrityError, InvocationStarted
+from graph_engine.persistence.runner_lease import RunnerLease
+from assurance_product.runtime_ports import _FenceAdvancedReplayJournal
 
 
 LOCK = "b" * 64
@@ -58,14 +66,51 @@ def _artifact(graph: object) -> BootArtifact:
     )
 
 
-def _context(artifact: BootArtifact) -> AssuranceRuntimeContext:
-    return AssuranceRuntimeContext(
-        revision_id=artifact.manifest.revision.revision_id,
-        fencing_token=1,
-        attempt_kernel=object(),  # type: ignore[arg-type]
-        secret_resolver=object(),
-        workspace_provider=object(),
-    )
+class _LeaseBoundSaverFactory:
+    def __init__(
+        self,
+        backend: object,
+        *,
+        revision: GraphRevision,
+        root_input_digest: str,
+        build_artifact,
+    ) -> None:
+        self._backend = backend
+        self._revision = revision
+        self._root_input_digest = root_input_digest
+        self._build_artifact = build_artifact
+        self.last: InvocationBoundExecution | None = None
+
+    def bind(self, runner_lease: RunnerLease) -> InvocationBoundExecution:
+        identity = CheckpointAnchorState(
+            invocation_id="inv-1",
+            thread_id="inv-1",
+            graph_revision=self._revision.revision_id,
+            product_lock_digest=self._revision.product_lock_digest,
+            root_input_digest=self._root_input_digest,
+            fencing_token=runner_lease.fencing_token,
+        )
+        saver = AnchoredCheckpointer(
+            store=self._backend.store,  # type: ignore[attr-defined]
+            journal=_FenceAdvancedReplayJournal(self._backend.journal),  # type: ignore[attr-defined]
+            identity=identity,
+            observers=self._backend.observers,  # type: ignore[attr-defined]
+            lease=self._backend.lease,  # type: ignore[attr-defined]
+            serde=self._backend.serializer,  # type: ignore[attr-defined]
+        )
+        artifact = self._build_artifact(saver)
+        bound = InvocationBoundExecution(
+            artifact=artifact,
+            runtime_context=AssuranceRuntimeContext(
+                revision_id=artifact.manifest.revision.revision_id,
+                fencing_token=runner_lease.fencing_token,
+                attempt_kernel=object(),
+                secret_resolver=object(),
+                workspace_provider=object(),
+            ),
+        )
+        self.last = bound
+        return bound
 
 
 def _thread_id(config: object) -> str:
@@ -112,24 +157,29 @@ async def _process_reopen_resumes_same_invocation_without_duplicating_prepare(tm
         await first.journal.start_invocation(started, fencing_token=1)
         await first.remember_entrypoint("inv-1", "execute")
         first.seal_observers()
-        saver = first.checkpointer(started.anchor_state())
-        artifact = _artifact(_graph(saver))
+        factory = _LeaseBoundSaverFactory(
+            first,
+            revision=revision,
+            root_input_digest=INPUT_DIGEST,
+            build_artifact=lambda saver: _artifact(_graph(saver)),
+        )
         application = AssuranceApplication(lease=first.lease, owner_id="runner-a")
         pinned = await application.start(
-            artifact=artifact,
             invocation_id="inv-1",
             entrypoint="execute",
             graph_input={"change_id": "chg-1"},
-            runtime_context=_context(artifact),
+            execution_factory=factory,
         )
         assert pinned.thread_id == pinned.invocation_id == "inv-1"
         interrupted = await application.run(
-            artifact=artifact,
             invocation_id="inv-1",
-            runtime_context=_context(artifact),
+            execution_factory=factory,
         )
         assert interrupted.status == "interrupted"
-        snapshot = await artifact.entrypoints["execute"].aget_state({"configurable": {"thread_id": "inv-1"}})
+        assert factory.last is not None
+        snapshot = await factory.last.artifact.entrypoints["execute"].aget_state(
+            {"configurable": {"thread_id": "inv-1"}}
+        )
         assert snapshot.values["visits"] == 1
         assert snapshot.values["phase"] == "prepared"
         assert _thread_id(snapshot.config) == "inv-1"
@@ -140,18 +190,23 @@ async def _process_reopen_resumes_same_invocation_without_duplicating_prepare(tm
         assert recovered.thread_id == recovered.invocation_id == "inv-1"
         assert await second.read_entrypoint("inv-1") == "execute"
         second.seal_observers()
-        saver = second.checkpointer(recovered.anchor_state())
-        await saver.arecover(thread_id="inv-1")
-        artifact = _artifact(_graph(saver))
+        factory = _LeaseBoundSaverFactory(
+            second,
+            revision=revision,
+            root_input_digest=INPUT_DIGEST,
+            build_artifact=lambda saver: _artifact(_graph(saver)),
+        )
         application = AssuranceApplication(lease=second.lease, owner_id="runner-b")
         result = await application.resume(
-            artifact=artifact,
             invocation_id="inv-1",
-            runtime_context=_context(artifact),
+            execution_factory=factory,
             resume="approve",
         )
         assert result == InvocationStatus(status="completed")
-        snapshot = await artifact.entrypoints["execute"].aget_state({"configurable": {"thread_id": "inv-1"}})
+        assert factory.last is not None
+        snapshot = await factory.last.artifact.entrypoints["execute"].aget_state(
+            {"configurable": {"thread_id": "inv-1"}}
+        )
         assert snapshot.values["visits"] == 1
         assert snapshot.values["phase"] == "done"
         assert snapshot.next == ()
@@ -224,19 +279,24 @@ async def _second_application_start_cannot_rewrite_lock_input_revision_or_entryp
         )
         await backend.pin_start(started, "execute", fencing_token=1)
         backend.seal_observers()
-        saver = backend.checkpointer(started.anchor_state())
-        artifact = _multi_artifact(_idle_graph(saver), _idle_graph(saver), revision=revision)
+        factory = _LeaseBoundSaverFactory(
+            backend,
+            revision=revision,
+            root_input_digest=INPUT_DIGEST,
+            build_artifact=lambda saver: _multi_artifact(
+                _idle_graph(saver), _idle_graph(saver), revision=revision
+            ),
+        )
         application = AssuranceApplication(
             lease=backend.lease,
             owner_id="runner-a",
             start_pins=backend,
         )
         pinned = await application.start(
-            artifact=artifact,
             invocation_id="inv-1",
             entrypoint="execute",
             graph_input={"change_id": "chg-1"},
-            runtime_context=_context(artifact),
+            execution_factory=factory,
         )
         assert pinned.entrypoint == "execute"
         assert await backend.read_entrypoint("inv-1") == "execute"
@@ -248,33 +308,34 @@ async def _second_application_start_cannot_rewrite_lock_input_revision_or_entryp
 
         with pytest.raises(CheckpointIntegrityError):
             await application.start(
-                artifact=artifact,
                 invocation_id="inv-1",
                 entrypoint="execute",
                 graph_input={"change_id": "chg-other"},
-                runtime_context=_context(artifact),
+                execution_factory=factory,
             )
-        other_revision = _multi_revision(lock="e" * 64)
-        other_artifact = _multi_artifact(
-            artifact.entrypoints["execute"],
-            artifact.entrypoints["other"],
-            revision=other_revision,
+        other_factory = _LeaseBoundSaverFactory(
+            backend,
+            revision=_multi_revision(lock="e" * 64),
+            root_input_digest=INPUT_DIGEST,
+            build_artifact=lambda saver: _multi_artifact(
+                _idle_graph(saver),
+                _idle_graph(saver),
+                revision=_multi_revision(lock="e" * 64),
+            ),
         )
         with pytest.raises(CheckpointIntegrityError):
             await application.start(
-                artifact=other_artifact,
                 invocation_id="inv-1",
                 entrypoint="execute",
                 graph_input={"change_id": "chg-1"},
-                runtime_context=_context(other_artifact),
+                execution_factory=other_factory,
             )
         with pytest.raises(CheckpointIntegrityError):
             await application.start(
-                artifact=artifact,
                 invocation_id="inv-1",
                 entrypoint="other",
                 graph_input={"change_id": "chg-1"},
-                runtime_context=_context(artifact),
+                execution_factory=factory,
             )
         assert await backend.read_entrypoint("inv-1") == "execute"
         stored = await backend.journal.read_invocation_started("inv-1")

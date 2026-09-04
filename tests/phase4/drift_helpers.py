@@ -74,9 +74,8 @@ def _run_drifted(application, artifact, invocation_id: str, context) -> None:
 
     asyncio.run(
         application.run(
-            artifact=artifact,
             invocation_id=invocation_id,
-            runtime_context=context,
+            execution_factory=context,
         )
     )
 

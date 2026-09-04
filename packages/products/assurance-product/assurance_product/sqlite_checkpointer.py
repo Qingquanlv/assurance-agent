@@ -637,6 +637,9 @@ class _JournalLinkedLease:
     async def assert_current(self, invocation_id: str, fencing_token: int) -> None:
         await self._lease.assert_current(invocation_id, fencing_token)
 
+    def current(self, invocation_id: str) -> RunnerLease:
+        return self._lease.current(invocation_id)
+
 
 @dataclass(slots=True)
 class AssuranceSqliteBackend:

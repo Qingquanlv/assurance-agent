@@ -55,6 +55,7 @@ class InvocationRunnerLeasePort(Protocol):
     async def acquire(self, invocation_id: str, *, owner_id: str) -> RunnerLease: ...
     async def release(self, lease: RunnerLease) -> None: ...
     async def assert_current(self, invocation_id: str, fencing_token: int) -> None: ...
+    def current(self, invocation_id: str) -> RunnerLease: ...
 
 
 class LocalInvocationRunnerLease:
@@ -83,6 +84,13 @@ class LocalInvocationRunnerLease:
         record = self._read_record(invocation_id)
         if record is None or record.fencing_token != token:
             raise StaleFencingToken("fencing token is stale")
+
+    def current(self, invocation_id: str) -> RunnerLease:
+        invocation_id = _require_path_segment(invocation_id, "invocation id")
+        record = self._read_record(invocation_id)
+        if record is None:
+            raise ValueError("fencing token")
+        return record
 
     def simulate_process_exit_for_test(self, lease: RunnerLease) -> None:
         if not isinstance(lease, RunnerLease):

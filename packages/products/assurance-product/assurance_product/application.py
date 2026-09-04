@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
 
-from graph_engine.application import AssuranceApplication, AssuranceRuntimeContext, StartedInvocation
+from graph_engine.application import AssuranceApplication, StartedInvocation
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import ProductLock
@@ -291,6 +291,7 @@ class AssuranceProductApplication:
             self._start_langgraph(
                 workspace=workspace,
                 composition=composition,
+                authorization=authorization,
                 invocation_id=invocation_id,
                 entrypoint=entrypoint,
                 root_input=cast(Mapping[str, JSONValue], root_input),
@@ -363,6 +364,7 @@ class AssuranceProductApplication:
             self._run_langgraph(
                 workspace=workspace,
                 composition=composition,
+                authorization=authorization,
                 invocation_id=invocation_id,
                 record=record,
             )
@@ -395,6 +397,7 @@ class AssuranceProductApplication:
                 self._pending_interrupt_ids(
                     workspace=workspace,
                     composition=composition,
+                    authorization=authorization,
                     invocation_id=invocation_id,
                     record=record,
                 )
@@ -414,6 +417,7 @@ class AssuranceProductApplication:
             self._resume_langgraph(
                 workspace=workspace,
                 composition=composition,
+                authorization=authorization,
                 invocation_id=invocation_id,
                 record=record,
                 resume=resume_payload,
@@ -438,7 +442,13 @@ class AssuranceProductApplication:
             authorization=authorization,
         )
         status_name, snapshot, journal_events = asyncio.run(
-            self._status_langgraph(workspace, composition, invocation_id, record)
+            self._status_langgraph(
+                workspace,
+                composition,
+                authorization,
+                invocation_id,
+                record,
+            )
         )
         return render_status_from_langgraph(
             invocation_id=invocation_id,
@@ -517,40 +527,96 @@ class AssuranceProductApplication:
                 raise RuntimeSelectionError("identity record disagrees with langgraph evidence")
         return record
 
+    def _open_ports(
+        self,
+        workspace: ChangeWorkspace,
+        composition: Any,
+        *,
+        invocation_id: str,
+        authorization: InvocationRuntimeAuthorization,
+        entrypoint: str,
+    ):
+        return ProductRuntimePorts.open(
+            workspace,
+            composition,
+            invocation=invocation_id,
+            authorization=authorization,
+            reachable_contract_ids=ENTRYPOINT_AGENT_CONTRACT_IDS[entrypoint],
+        )
+
+    def _execution_factory(
+        self,
+        ports: ProductRuntimePorts,
+        *,
+        invocation_id: str,
+        entrypoint: str,
+        root_input_digest: str,
+    ):
+        return ports.execution_factory(
+            invocation_id=invocation_id,
+            entrypoint=entrypoint,
+            root_input_digest=root_input_digest,
+        )
+
+    def _application(self, ports: ProductRuntimePorts) -> AssuranceApplication:
+        return AssuranceApplication(
+            lease=ports.backend.lease,
+            owner_id="assurance-product",
+            start_pins=ports.backend,
+        )
+
+    def _remember_started(
+        self,
+        application: AssuranceApplication,
+        ports: ProductRuntimePorts,
+        invocation_id: str,
+        entrypoint: str,
+    ) -> None:
+        application._started[invocation_id] = StartedInvocation(
+            thread_id=invocation_id,
+            revision_id=ports.revision_id,
+            invocation_id=invocation_id,
+            entrypoint=entrypoint,
+        )
+
     async def _start_langgraph(
         self,
         *,
         workspace: ChangeWorkspace,
         composition: Any,
+        authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
         entrypoint: str,
         root_input: Mapping[str, JSONValue],
         product_lock: ProductLock,
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
-        async with ProductRuntimePorts.open(workspace, composition) as ports:
+        root_input_digest = canonical_digest(dict(root_input))
+        async with self._open_ports(
+            workspace,
+            composition,
+            invocation_id=invocation_id,
+            authorization=authorization,
+            entrypoint=entrypoint,
+        ) as ports:
             RevisionRegistry(workspace).remember(product_graph_manifest(composition, product_lock).revision)
-            artifact = await ports.compile_roots(
-                invocation_id=invocation_id,
-                root_input_digest=canonical_digest(dict(root_input)),
-            )
-            application = AssuranceApplication(
-                lease=ports.backend.lease,
-                owner_id="assurance-product",
-                start_pins=ports.backend,
-            )
+            application = self._application(ports)
             started = await application.start(
-                artifact=artifact,
                 invocation_id=invocation_id,
                 entrypoint=entrypoint,
                 graph_input=root_input,
-                runtime_context=_context(ports, artifact),
+                execution_factory=self._execution_factory(
+                    ports,
+                    invocation_id=invocation_id,
+                    entrypoint=entrypoint,
+                    root_input_digest=root_input_digest,
+                ),
             )
             del started
             maybe_crash("after_identity")
             recovered = await ports.backend.recover_handshake(invocation_id)
             if recovered is None:
-                return artifact.manifest.revision.revision_id
+                return ports.revision_id
             return canonical_digest(
                 {
                     "invocation_id": recovered.invocation_id,
@@ -565,31 +631,28 @@ class AssuranceProductApplication:
         *,
         workspace: ChangeWorkspace,
         composition: Any,
+        authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
         record: InvocationIdentityRecord,
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
-        async with ProductRuntimePorts.open(workspace, composition) as ports:
-            await ports.backend.recover_handshake(invocation_id)
-            artifact = await ports.compile_roots(
-                invocation_id=invocation_id,
-                root_input_digest=record.root_input_digest,
-            )
-            application = AssuranceApplication(
-                lease=ports.backend.lease,
-                owner_id="assurance-product",
-                start_pins=ports.backend,
-            )
-            application._started[invocation_id] = StartedInvocation(
-                thread_id=invocation_id,
-                revision_id=ports.revision_id,
-                invocation_id=invocation_id,
-                entrypoint=record.entrypoint,
-            )
+        async with self._open_ports(
+            workspace,
+            composition,
+            invocation_id=invocation_id,
+            authorization=authorization,
+            entrypoint=record.entrypoint,
+        ) as ports:
+            application = self._application(ports)
+            self._remember_started(application, ports, invocation_id, record.entrypoint)
             result = await application.run(
-                artifact=artifact,
                 invocation_id=invocation_id,
-                runtime_context=_context(ports, artifact),
+                execution_factory=self._execution_factory(
+                    ports,
+                    invocation_id=invocation_id,
+                    entrypoint=record.entrypoint,
+                    root_input_digest=record.root_input_digest,
+                ),
             )
             return result.status
 
@@ -598,32 +661,29 @@ class AssuranceProductApplication:
         *,
         workspace: ChangeWorkspace,
         composition: Any,
+        authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
         record: InvocationIdentityRecord,
         resume: object,
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
-        async with ProductRuntimePorts.open(workspace, composition) as ports:
-            await ports.backend.recover_handshake(invocation_id)
-            artifact = await ports.compile_roots(
-                invocation_id=invocation_id,
-                root_input_digest=record.root_input_digest,
-            )
-            application = AssuranceApplication(
-                lease=ports.backend.lease,
-                owner_id="assurance-product",
-                start_pins=ports.backend,
-            )
-            application._started[invocation_id] = StartedInvocation(
-                thread_id=invocation_id,
-                revision_id=ports.revision_id,
-                invocation_id=invocation_id,
-                entrypoint=record.entrypoint,
-            )
+        async with self._open_ports(
+            workspace,
+            composition,
+            invocation_id=invocation_id,
+            authorization=authorization,
+            entrypoint=record.entrypoint,
+        ) as ports:
+            application = self._application(ports)
+            self._remember_started(application, ports, invocation_id, record.entrypoint)
             result = await application.resume(
-                artifact=artifact,
                 invocation_id=invocation_id,
-                runtime_context=_context(ports, artifact),
+                execution_factory=self._execution_factory(
+                    ports,
+                    invocation_id=invocation_id,
+                    entrypoint=record.entrypoint,
+                    root_input_digest=record.root_input_digest,
+                ),
                 resume=resume,
             )
             return result.status
@@ -632,12 +692,19 @@ class AssuranceProductApplication:
         self,
         workspace: ChangeWorkspace,
         composition: Any,
+        authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
         record: InvocationIdentityRecord,
     ) -> tuple[str, object, tuple[object, ...]]:
         _assert_langgraph_revision(workspace, composition, invocation_id)
-        async with ProductRuntimePorts.open(workspace, composition) as ports:
-            artifact = await ports.compile_roots(
+        async with self._open_ports(
+            workspace,
+            composition,
+            invocation_id=invocation_id,
+            authorization=authorization,
+            entrypoint=record.entrypoint,
+        ) as ports:
+            bound = await ports.read_only_execution(
                 invocation_id=invocation_id,
                 root_input_digest=record.root_input_digest,
             )
@@ -645,18 +712,13 @@ class AssuranceProductApplication:
                 lease=ports.backend.lease,
                 owner_id="assurance-product",
             )
-            application._started[invocation_id] = StartedInvocation(
-                thread_id=invocation_id,
-                revision_id=ports.revision_id,
-                invocation_id=invocation_id,
-                entrypoint=record.entrypoint,
-            )
+            self._remember_started(application, ports, invocation_id, record.entrypoint)
             result = await application.status(
-                artifact=artifact,
+                artifact=bound.artifact,
                 invocation_id=invocation_id,
-                runtime_context=_context(ports, artifact),
+                runtime_context=bound.runtime_context,
             )
-            snapshot = await _graph_snapshot(artifact, record.entrypoint, invocation_id)
+            snapshot = await _graph_snapshot(bound.artifact, record.entrypoint, invocation_id)
             await ports._publish_journal_snapshot()
             return result.status, snapshot, ProductRuntimePorts.last_journal_events()
 
@@ -665,16 +727,23 @@ class AssuranceProductApplication:
         *,
         workspace: ChangeWorkspace,
         composition: Any,
+        authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
         record: InvocationIdentityRecord,
     ) -> tuple[str, ...]:
         _assert_langgraph_revision(workspace, composition, invocation_id)
-        async with ProductRuntimePorts.open(workspace, composition) as ports:
-            artifact = await ports.compile_roots(
+        async with self._open_ports(
+            workspace,
+            composition,
+            invocation_id=invocation_id,
+            authorization=authorization,
+            entrypoint=record.entrypoint,
+        ) as ports:
+            bound = await ports.read_only_execution(
                 invocation_id=invocation_id,
                 root_input_digest=record.root_input_digest,
             )
-            snapshot = await _graph_snapshot(artifact, record.entrypoint, invocation_id)
+            snapshot = await _graph_snapshot(bound.artifact, record.entrypoint, invocation_id)
         return tuple(
             str(getattr(item, "id"))
             for item in getattr(snapshot, "interrupts", ())
@@ -688,19 +757,6 @@ class SimpleRun:
     terminal_reason: str | None
     actions: tuple[str, ...]
     projection: object | None
-
-
-def _context(ports: ProductRuntimePorts, artifact: object) -> AssuranceRuntimeContext:
-    revision_id = getattr(
-        getattr(getattr(artifact, "manifest", None), "revision", None), "revision_id", ports.revision_id
-    )
-    return AssuranceRuntimeContext(
-        revision_id=str(revision_id),
-        fencing_token=1,
-        attempt_kernel=ports.kernel,
-        secret_resolver=object(),
-        workspace_provider=object(),
-    )
 
 
 def _load_input(path: Path, *, entrypoint: str, composition: Any) -> ProductInputV1:
