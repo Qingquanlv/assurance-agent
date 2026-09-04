@@ -309,6 +309,9 @@ class ProductRuntimePorts:
                 invocation_root=workspace.paths.change_root,
             )
             network = _preflight_selected_root(typed_composition, auth, reachable)
+            expected_allow = any(".agent." in contract_id for contract_id in reachable)
+            if network.allow_opencode != expected_allow:
+                raise ValueError("network policy does not match selected root")
             kernel = AssuranceAttemptKernel(
                 journal=journal,
                 arbiter=ResourceArbiter(SqliteResourceAuthorizationStore(backend)),

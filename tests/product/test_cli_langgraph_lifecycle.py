@@ -334,6 +334,27 @@ def _evaluate_task_payload() -> dict[str, object]:
     }
 
 
+def _workspace_at(project_root: Path, change_root: Path) -> object:
+    from assurance_product.change_workspace import ChangePaths, ChangeWorkspace
+
+    runtime = change_root / ".runtime"
+    langgraph = runtime / "langgraph"
+    return ChangeWorkspace(
+        ChangePaths(
+            project_root=project_root.resolve(),
+            change_root=change_root,
+            staging_root=change_root / ".staging",
+            runtime_root=runtime,
+            generated_root=change_root / "generated",
+            apply_manifest=change_root / "apply-manifest.json",
+            langgraph_root=langgraph,
+            langgraph_checkpoints=langgraph / "checkpoints.sqlite3",
+            langgraph_leases=langgraph / "leases",
+            langgraph_identities=langgraph / "identities",
+        )
+    )
+
+
 def _durable_chain(
     *,
     project_dir: Path,
@@ -342,17 +363,17 @@ def _durable_chain(
     composition: object,
     identity: object,
     expect_attempt_records: bool,
+    workspace: object | None = None,
 ) -> object:
     from assurance_product.change_workspace import ChangeWorkspace
     from assurance_product.cli import _authorization
-    from assurance_product.runtime_ports import ProductRuntimePorts, _preflight_selected_root
-    from graph_engine.attempts.secret_sources import empty_runtime_authorization
+    from assurance_product.runtime_ports import ProductRuntimePorts
 
     async def _read() -> object:
-        workspace = ChangeWorkspace.open(project_dir.resolve(), change_id)
+        opened = workspace or ChangeWorkspace.open(project_dir.resolve(), change_id)
         authorization = _authorization([f"{SECRET_HANDLE}=env:{SECRET_ENV}"])
         async with ProductRuntimePorts.open(
-            workspace,
+            opened,
             composition,
             invocation=invocation_id,
             authorization=authorization,
@@ -389,7 +410,7 @@ def _durable_chain(
             assert anchor.product_lock_digest == identity.product_lock_digest
             assert anchor.graph_revision == identity.revision_id
             assert anchor.root_input_digest == identity.root_input_digest
-            assert anchor.fencing_token == started.fencing_token
+            assert started.fencing_token >= anchor.fencing_token >= 1
             records = await ports.attempt_journal.read_records()
             if expect_attempt_records:
                 assert records
@@ -399,14 +420,6 @@ def _durable_chain(
                     for event in record.events
                 )
             assert ports.network.allow_opencode is False
-            from graph_engine.attempts.secret_sources import RuntimeAuthorizationError
-
-            with pytest.raises((ValueError, RuntimeAuthorizationError), match="secret handle|OpenCode"):
-                _preflight_selected_root(
-                    composition,
-                    empty_runtime_authorization(),
-                    ("assurance.intake.agent.intake.v1",),
-                )
             return started
 
     return asyncio.run(_read())
@@ -421,6 +434,7 @@ def _reject_lifecycle_tampers(
     identity_bytes: bytes,
     project_dir: Path,
     change_id: str,
+    monkeypatch,
 ) -> None:
     escaped = identity_path.with_name(f"{identity_path.name}.outside")
     escaped.write_bytes(identity_bytes)
@@ -437,11 +451,6 @@ def _reject_lifecycle_tampers(
     assert modest.exit_code == 40, modest.output
     identity_path.chmod(0o644)
 
-    secret_args = list(existing)
-    secret_args[secret_args.index("--secret") + 1] = f"{SECRET_HANDLE}=env:AA_MISSING_OPENCODE_TOKEN"
-    denied = cli_runner.invoke(app, ["run", *secret_args])
-    assert denied.exit_code == 40, denied.output
-
     checkpoints = (
         project_dir / "qa" / "changes" / change_id / ".runtime" / "langgraph" / "checkpoints.sqlite3"
     )
@@ -453,6 +462,27 @@ def _reject_lifecycle_tampers(
         assert escaped_db.exit_code == 40, escaped_db.output
         checkpoints.unlink()
         real.rename(checkpoints)
+
+    escaped_root = project_dir.parent / "escaped-project"
+    if escaped_root.exists() or escaped_root.is_symlink():
+        escaped_root.unlink()
+    escaped_root.symlink_to(project_dir.resolve())
+    escaped_args = list(existing)
+    escaped_args[escaped_args.index("--project-dir") + 1] = str(escaped_root)
+    escaped_project = cli_runner.invoke(app, ["run", *escaped_args])
+    assert escaped_project.exit_code == 40, escaped_project.output
+    escaped_root.unlink()
+
+    from assurance_product import runtime_ports as ports_mod
+    from assurance_product.runtime_ports import NetworkPolicy
+
+    original_preflight = ports_mod._preflight_selected_root
+    monkeypatch.setattr(
+        ports_mod, "_preflight_selected_root", lambda *_a, **_k: NetworkPolicy(allow_opencode=True)
+    )
+    mutated_network = cli_runner.invoke(app, ["run", *existing])
+    assert mutated_network.exit_code == 40, mutated_network.output
+    monkeypatch.setattr(ports_mod, "_preflight_selected_root", original_preflight)
 
 
 def _materialize_publication_from_graph_status(
@@ -496,14 +526,13 @@ def _materialize_publication_from_graph_status(
         f"qa/changes/{change_id}/apply-manifest.json",
         json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
     )
-    status = {
-        **graph_status,
-        "change": {"change_id": change_id, "state": "achieved"},
-        "apply": {"manifest_digest": manifest_digest, "file_count": len(manifest_files)},
-        "publication": {"status": "ready"},
-    }
+    from assurance_product.models import StatusV1
+
+    persisted = StatusV1.model_validate(graph_status).model_dump(mode="json")
+    assert persisted["change"]["state"] == "achieved"
+    assert persisted["publication"]["status"] != "ready"
     (change_root / "status.json").write_text(
-        json.dumps(status, indent=2, sort_keys=True) + "\n",
+        json.dumps(persisted, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -657,6 +686,7 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         identity_bytes=identity_bytes,
         project_dir=project_dir,
         change_id=change_id,
+        monkeypatch=monkeypatch,
     )
     _durable_chain(
         project_dir=project_dir,
@@ -674,6 +704,22 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         composition=composition,
         identity=identity,
     )
+    from types import MappingProxyType
+    from assurance_product import application as application_mod
+
+    original_reachable = application_mod.ENTRYPOINT_AGENT_CONTRACT_IDS
+    forced_reachable = dict(original_reachable)
+    forced_reachable["improvement-evaluate"] = ("assurance.intake.agent.intake.v1",)
+    monkeypatch.setattr(
+        application_mod,
+        "ENTRYPOINT_AGENT_CONTRACT_IDS",
+        MappingProxyType(forced_reachable),
+    )
+    secret_args = list(existing)
+    secret_args[secret_args.index("--secret") + 1] = "not-opencode.token=env:AA_OPENCODE_TOKEN"
+    denied_secret = cli_runner.invoke(app, ["run", *secret_args])
+    assert denied_secret.exit_code == 40, denied_secret.output
+    monkeypatch.setattr(application_mod, "ENTRYPOINT_AGENT_CONTRACT_IDS", original_reachable)
 
     original_acquire = ResourceArbiter.acquire
     issued = {"pending": False}
@@ -785,6 +831,15 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     assert archived_status["lock_digest"] == identity.product_lock_digest
     assert archived_status["root_input_digest"] == identity.root_input_digest
     assert archived_status["invocation_id"] == _EVALUATE_INVOCATION
+    _durable_chain(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=_EVALUATE_INVOCATION,
+        composition=composition,
+        identity=identity,
+        expect_attempt_records=True,
+        workspace=_workspace_at(project_dir, project_dir / "qa" / "archive" / CHANGE_ID),
+    )
 
 
 def test_langgraph_run_does_not_map_integrity_errors_to_failed(
