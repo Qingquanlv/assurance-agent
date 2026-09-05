@@ -16,6 +16,8 @@ from assurance_intake.operations import (
     ExplorePrepareHandler,
     IntakeFinalizeHandler,
     IntakePrepareHandler,
+    LoadPlanHandler,
+    ResolvePlanHandler,
     ReviewRoundAdvanceHandler,
 )
 from assurance_intake.resource_loader import resource_bytes
@@ -78,6 +80,8 @@ _HANDLERS = {
     "assurance.intake.intake.finalize": IntakeFinalizeHandler(),
     "assurance.intake.intake.prepare": IntakePrepareHandler(),
     "assurance.intake.review-round.advance": ReviewRoundAdvanceHandler(),
+    "assurance.intake.load-plan": LoadPlanHandler(),
+    "assurance.intake.resolve-plan": ResolvePlanHandler(),
 }
 
 _VALIDATORS = {

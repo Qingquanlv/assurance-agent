@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 from pathlib import Path
 
@@ -8,13 +9,19 @@ import pytest
 import yaml
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
-from assurance_intake.contracts.plan import ResolvePlanInputV1
+from assurance_intake.contracts.plan import LoadPlanInputV1, ResolvePlanInputV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.quality_goals import (
     PreparedObligationV1,
     normalize_goal_obligations,
     required_goal_families,
 )
-from assurance_intake.operations.plan_artifacts import prepare_quality_goal
+from assurance_intake.operations.plan_artifacts import (
+    LoadPlanHandler,
+    ResolvePlanHandler,
+    prepare_quality_goal,
+)
+from tests.product.test_change_local_output_routing import execute_task
 
 
 def _sha(data: bytes) -> str:
@@ -188,6 +195,55 @@ def test_prepare_quality_goal_authenticates_every_source(tmp_path: Path) -> None
     assert goal.required_test_families == ("e2e",)
     assert goal.source_resource_digests == source_digests
     assert goal.coverage_policy.coverage_floor_by_tier.critical == 1.0
+
+    resolve_stage = project / "resolve-stage"
+    resolve_stage.mkdir()
+    resolved = asyncio.run(
+        execute_task(
+            ResolvePlanHandler(),
+            request.model_dump(mode="json"),
+            workspace=project,
+            write_root=resolve_stage,
+            capability_id="assurance.intake.resolve-plan",
+        )
+    )
+    assert resolved.outcome.status == "succeeded"
+    output = resolved.outcome.output
+    assert isinstance(output, dict)
+    plan_ref = output["plan_ref"]
+    assert isinstance(plan_ref, dict)
+    relative = plan_ref["path"]
+    assert isinstance(relative, str)
+    staged_plan = resolve_stage / relative
+    assert staged_plan.is_file()
+    committed_plan = project / relative
+    committed_plan.parent.mkdir(parents=True)
+    committed_plan.write_bytes(staged_plan.read_bytes())
+
+    load_input = LoadPlanInputV1(
+        change_id=request.change_id,
+        requirement_digest=request.requirement_digest,
+        resolved_plan_ref=EvidenceArtifactRefV1.model_validate(plan_ref),
+        budgets=request.budgets,
+        policy_resource_id=request.policy_resource_id,
+        policy_digest=request.policy_digest,
+        source_resource_digests=request.source_resource_digests,
+        capability_leafs=request.capability_leafs,
+    )
+    load_stage = project / "load-stage"
+    load_stage.mkdir()
+    loaded = asyncio.run(
+        execute_task(
+            LoadPlanHandler(),
+            load_input.model_dump(mode="json"),
+            workspace=project,
+            write_root=load_stage,
+            capability_id="assurance.intake.load-plan",
+        )
+    )
+    assert loaded.outcome.status == "succeeded"
+    assert loaded.outcome.output == output
+    assert list(load_stage.rglob("*")) == []
 
     (aa / "policy.yaml").write_bytes(policy_bytes + b"\n")
     with pytest.raises(ValueError, match="digest"):

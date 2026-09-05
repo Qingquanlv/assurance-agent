@@ -9,12 +9,21 @@ from pathlib import Path
 from typing import cast
 
 import yaml
+from pydantic import ValidationError
+
+from graph_engine.canonical import JSONValue
+from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
 from assurance_intake.contracts.plan import (
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
+    LoadPlanInputV1,
+    ResolvePlanOutputV1,
     TestFamilyPolicyV1,
+    decode_plan,
+    plan_artifact_ref,
+    plan_bytes,
 )
 from assurance_intake.contracts.quality_goals import (
     COVERAGE_GOAL_ORDER,
@@ -24,6 +33,7 @@ from assurance_intake.contracts.quality_goals import (
     normalize_goal_obligations,
     required_goal_families,
 )
+from assurance_intake.operations.resolve_plan import derive_family_proposal, resolve_plan
 
 _RESOURCE_PATHS = {
     "assurance.product.configuration.capability-catalog": ".aa/capability-catalog.json",
@@ -137,4 +147,120 @@ def prepare_quality_goal(
     return advisory, goal
 
 
-__all__ = ["prepare_quality_goal"]
+def _write_plan(output: ResolvePlanOutputV1, write_root: Path) -> None:
+    destination = write_root.joinpath(*output.plan_ref.path.split("/"))
+    resolved_root = write_root.resolve(strict=True)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        destination.resolve(strict=False).relative_to(resolved_root)
+    except ValueError as error:
+        raise ValueError("plan output path escapes write_root") from error
+    data = plan_bytes(output.plan)
+    if destination.exists():
+        if destination.is_symlink() or destination.read_bytes() != data:
+            raise ValueError("plan output already exists with different bytes")
+        return
+    destination.write_bytes(data)
+
+
+def resolve_plan_artifact(
+    request: ResolvePlanInputV1,
+    *,
+    project_root: Path,
+    write_root: Path,
+) -> ResolvePlanOutputV1:
+    advisory, goal = prepare_quality_goal(request, project_root=project_root)
+    plan = resolve_plan(
+        request=request,
+        proposed=derive_family_proposal(advisory.test_strategy),
+        quality_goal=goal,
+    )
+    output = ResolvePlanOutputV1(plan=plan, plan_ref=plan_artifact_ref(plan))
+    _write_plan(output, write_root)
+    return output
+
+
+def load_plan_artifact(
+    request: LoadPlanInputV1,
+    *,
+    project_root: Path,
+) -> ResolvePlanOutputV1:
+    data = _read_regular_bytes(
+        project_root,
+        request.resolved_plan_ref.path,
+        request.resolved_plan_ref.digest,
+    )
+    plan = decode_plan(data, request.resolved_plan_ref)
+    if plan.change_id != request.change_id:
+        raise ValueError("plan change_id does not match loader input")
+    if plan.requirement_digest != request.requirement_digest:
+        raise ValueError("plan requirement_digest does not match loader input")
+    if plan.resolved_budgets != request.budgets:
+        raise ValueError("plan budgets do not match loader input")
+    if (
+        plan.policy_resource_id != request.policy_resource_id
+        or plan.policy_digest != request.policy_digest
+    ):
+        raise ValueError("plan policy identity does not match loader input")
+    if plan.quality_goal.source_resource_digests != request.source_resource_digests:
+        raise ValueError("plan source identities do not match loader input")
+
+    policy = _mapping_yaml(
+        _read_regular_bytes(project_root, _POLICY_PATH, request.policy_digest),
+        "product policy",
+    )
+    family_policy = TestFamilyPolicyV1.model_validate(policy.get("test_family_policy"))
+    resolve_input = ResolvePlanInputV1(
+        change_id=request.change_id,
+        requirement_digest=request.requirement_digest,
+        candidate_test_families=plan.candidate_test_families,
+        budgets=request.budgets,
+        policy_resource_id=request.policy_resource_id,
+        policy_digest=request.policy_digest,
+        family_policy=family_policy,
+        exploration_ref=plan.exploration_ref,
+        source_resource_digests=request.source_resource_digests,
+        capability_leafs=request.capability_leafs,
+    )
+    advisory, goal = prepare_quality_goal(resolve_input, project_root=project_root)
+    expected = resolve_plan(
+        request=resolve_input,
+        proposed=derive_family_proposal(advisory.test_strategy),
+        quality_goal=goal,
+    )
+    if expected != plan:
+        raise ValueError("stored plan does not match its authenticated inputs")
+    return ResolvePlanOutputV1(plan=plan, plan_ref=request.resolved_plan_ref)
+
+
+class ResolvePlanHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        try:
+            validated = ResolvePlanInputV1.model_validate(request.input)
+            output = resolve_plan_artifact(
+                validated,
+                project_root=context.project_root,
+                write_root=context.write_root,
+            )
+        except (ValueError, ValidationError, OSError) as error:
+            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+        return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
+
+
+class LoadPlanHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        try:
+            validated = LoadPlanInputV1.model_validate(request.input)
+            output = load_plan_artifact(validated, project_root=context.project_root)
+        except (ValueError, ValidationError, OSError) as error:
+            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+        return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
+
+
+__all__ = [
+    "LoadPlanHandler",
+    "ResolvePlanHandler",
+    "load_plan_artifact",
+    "prepare_quality_goal",
+    "resolve_plan_artifact",
+]

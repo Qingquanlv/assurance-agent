@@ -24,6 +24,8 @@
       "assurance.intake.explore.prepare",
       "assurance.intake.intake.finalize",
       "assurance.intake.intake.prepare",
+      "assurance.intake.load-plan",
+      "assurance.intake.resolve-plan",
       "assurance.intake.review-round.advance"
     ],
     "commit_validators": [
@@ -80,6 +82,14 @@
       {
         "contract_id": "assurance.intake.agent.intake.v1",
         "digest": "d96f0d6a440ae83869410cf63956caa5d5633298b448572c308f0519551c5cb3"
+      },
+      {
+        "contract_id": "assurance.intake.task.load-plan",
+        "digest": "3c717e002d617e65b824f0c25c1f9256d87210bec6bf4f0a2e9141bd3d32a649"
+      },
+      {
+        "contract_id": "assurance.intake.task.resolve-plan",
+        "digest": "8a624ece621d27e10e959105608566fe39108163483793f218b202b6e0ffd3f1"
       }
     ]
   },

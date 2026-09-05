@@ -19,6 +19,7 @@ from assurance_intake.contracts.agent import (
     IntakeInputV1,
 )
 from assurance_intake.contracts.review import CaseReviewResultV1
+from assurance_intake.contracts.plan import LoadPlanInputV1, ResolvePlanInputV1, ResolvePlanOutputV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _EXPLORER = "assurance-v1-explorer"
@@ -146,7 +147,38 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         for base, _skill, _profile, _input, _result, _output, outputs, _extra in _JOBS
     }
 )
-TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
+_RESOLVE_PLAN = TaskAttemptContract(
+    contract_id="assurance.intake.task.resolve-plan",
+    owner_id="assurance.intake",
+    handler_id="assurance.intake.resolve-plan",
+    input_model=ResolvePlanInputV1,
+    output_model=ResolvePlanOutputV1,
+    resources=ResourceClaimTemplate(
+        parameters={"change_id": "/change_id"},
+        reads=(".aa", "qa/changes/{change_id}/explore"),
+        writes=("qa/changes/{change_id}/plan",),
+    ),
+    retry=_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
+_LOAD_PLAN = TaskAttemptContract(
+    contract_id="assurance.intake.task.load-plan",
+    owner_id="assurance.intake",
+    handler_id="assurance.intake.load-plan",
+    input_model=LoadPlanInputV1,
+    output_model=ResolvePlanOutputV1,
+    resources=ResourceClaimTemplate(
+        parameters={"change_id": "/change_id"},
+        reads=(".aa", "qa/changes/{change_id}"),
+    ),
+    retry=_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
+TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
+    {"resolve-plan": _RESOLVE_PLAN, "load-plan": _LOAD_PLAN}
+)
 INTAKE_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
     "assurance.intake.agent.intake.v1",
     "assurance.intake.agent.explore.v1",
@@ -170,7 +202,7 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
                     contract_id=contract.contract_id,
                     digest=canonical_digest(cast(JSONValue, contract.canonical_projection())),
                 )
-                for contract in AGENT_JOB_CONTRACTS.values()
+                for contract in (*AGENT_JOB_CONTRACTS.values(), *TASK_ATTEMPT_CONTRACTS.values())
             ),
             key=lambda item: item.contract_id,
         )

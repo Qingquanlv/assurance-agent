@@ -41,6 +41,8 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_com
 def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) -> None:
     from assurance_product.agent_contracts import is_agent_contract
 
+    # The two Intake plan Tasks enter the live registry when Task 11 wires their
+    # semantic nodes into the public graphs.
     assert len(runtime_registry) == 46
     assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 34
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
