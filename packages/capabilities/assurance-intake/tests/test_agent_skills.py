@@ -722,6 +722,9 @@ async def _finalize_files(
     case_delta_paths: list[str] | None = None,
     validation_attempt: int | None = None,
     review_repair: object | None = None,
+    coverage_epoch: int = 0,
+    preparation_refs: list[dict[str, str]] | None = None,
+    case_refs: list[dict[str, str]] | None = None,
 ) -> Any:
     result = fake_agent_result(structured_result)
     executed = await execute_task(
@@ -745,6 +748,9 @@ async def _finalize_files(
                 **({"change_id": change_id} if change_id is not None else {}),
                 **({"validation_attempt": validation_attempt} if validation_attempt is not None else {}),
                 **({"review_repair": review_repair} if review_repair is not None else {}),
+                "coverage_epoch": coverage_epoch,
+                "preparation_refs": preparation_refs or [],
+                "case_refs": case_refs or [],
             },
         ),
         workspace,
@@ -1423,6 +1429,53 @@ async def test_case_review_finalize_accepts_typed_review(tmp_path: Path) -> None
     coverage = output["minimum_coverage"]
     assert isinstance(coverage, dict)
     assert coverage["missing"] == []
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_review_matrix(project, missing=[])
+    change_root = project / "qa/changes/CH-DEMO-001"
+    requirement = change_root / "requirement.md"
+    requirement.write_text("# Requirement\n", encoding="utf-8")
+    case_path = change_root / "cases/menus/case.yaml"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
+    review_document = _case_review_document(missing=[])
+    review_path = change_root / "review/case-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(review_document), encoding="utf-8")
+    (change_root / "review/case-review-summary.md").write_text("# Case review\n", encoding="utf-8")
+    preparation_refs = [
+        {
+            "path": requirement.relative_to(project).as_posix(),
+            "digest": hashlib.sha256(requirement.read_bytes()).hexdigest(),
+        }
+    ]
+    case_refs = [
+        {
+            "path": case_path.relative_to(project).as_posix(),
+            "digest": hashlib.sha256(case_path.read_bytes()).hexdigest(),
+        }
+    ]
+
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        review_document,
+        project,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        preparation_refs=preparation_refs,
+        case_refs=case_refs,
+        write_root=write_root,
+    )
+
+    assert executed.status == "succeeded"
+    output = cast(dict[str, object], executed.output)
+    reviewed = cast(dict[str, object], output["reviewed_case"])
+    assert reviewed["case_refs"] == case_refs
+    manifest = write_root / "qa/changes/CH-DEMO-001/cases/reviewed-case.json"
+    assert json.loads(manifest.read_bytes()) == reviewed
 
 
 @pytest.mark.asyncio

@@ -42,7 +42,9 @@ def _job(
 ) -> AgentExecutionContract[Any, Any, Any]:
     prepare_suffixes = ("explore/context.json",) if base == "explore" else ()
     prepare_paths = _paths(*prepare_suffixes) if prepare_suffixes else ()
-    writes = tuple(sorted(set(_paths(*outputs, *extra_claims)) | set(prepare_paths)))
+    finalize_suffixes = ("cases/reviewed-case.json",) if base == "case-review" else ()
+    finalize_paths = _paths(*finalize_suffixes) if finalize_suffixes else ()
+    writes = tuple(sorted(set(_paths(*outputs, *extra_claims)) | set(prepare_paths) | set(finalize_paths)))
     return AgentExecutionContract(
         contract_id=f"assurance.intake.agent.{base}.v1",
         owner_id="assurance.intake",
@@ -63,8 +65,10 @@ def _job(
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
             prepare=prepare_paths,
-            runtime=tuple(path for path in writes if path not in set(prepare_paths)),
-            finalize=(),
+            runtime=tuple(
+                path for path in writes if path not in set(prepare_paths) and path not in set(finalize_paths)
+            ),
+            finalize=finalize_paths,
         ),
     )
 
@@ -91,7 +95,7 @@ _JOBS: tuple[
         CaseReviewResultV1,
         CaseReviewResultV1,
         ("review/case-review.json", "review/case-review-summary.md"),
-        (),
+        ("cases/reviewed-case.json",),
     ),
     (
         "explore",

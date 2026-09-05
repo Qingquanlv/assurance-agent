@@ -17,6 +17,7 @@ ProductStatus = Literal["completed", "failed"]
 _FEATURE_STATUS_TO_PRODUCT: Mapping[str, ProductStatus] = {
     "completed": "completed",
     "passed": "completed",
+    "reviewed": "completed",
     "done": "completed",
     "failed": "failed",
     "rejected": "failed",
@@ -68,6 +69,12 @@ def validate_public_input(entrypoint: str):
 
 def adapt_intake(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
+    artifact_refs = [item.model_dump(mode="json") for item in payload.artifacts]
+    preparation_refs = [
+        item
+        for item in artifact_refs
+        if "/cases/" not in str(item["path"]) and "/review/" not in str(item["path"])
+    ]
     feature_input = {
         "change_id": payload.change_id,
         "requirement": payload.requirement,
@@ -78,7 +85,9 @@ def adapt_intake(state: ProductState) -> dict[str, object]:
         "rounds_budget": payload.budgets.review_rounds,
         "rounds_used": 0,
         "decision": payload.decision,
-        "artifacts": [item.model_dump(mode="json") for item in payload.artifacts],
+        "artifacts": artifact_refs,
+        "coverage_epoch": 0,
+        "preparation_refs": preparation_refs,
     }
     return {**feature_input, "feature_input": feature_input}
 

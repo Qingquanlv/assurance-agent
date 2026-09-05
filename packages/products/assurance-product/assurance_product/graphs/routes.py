@@ -19,7 +19,10 @@ def prepare_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
 
 def case_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     decision = state.get("decision")
-    reviewed = state.get("status") == "passed" and decision in {"pass", "approved"}
+    reviewed = state.get("status") in {"passed", "reviewed"} and decision in {
+        "pass",
+        "approved",
+    }
     return {"reviewed": "execute-tail" if reviewed else None}
 
 

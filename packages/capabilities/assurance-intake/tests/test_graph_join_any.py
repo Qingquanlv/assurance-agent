@@ -219,6 +219,8 @@ def _prepare_input() -> dict[str, object]:
         "allowed_artifact_paths": ["qa/changes"],
         "rounds_used": 0,
         "rounds_budget": 2,
+        "coverage_epoch": 0,
+        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
     }
 
 
@@ -230,7 +232,12 @@ def _design() -> dict[str, object]:
     return {
         "output_files": ["qa/changes/CH-DEMO-001/proposal.md"],
         "validation_status": "pass",
-        "artifacts": [{"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "digest": _SHA,
+            }
+        ],
     }
 
 
@@ -245,7 +252,12 @@ def _review(
         "decision": decision,
         "auto_fix_allowed": auto_fix,
         "human_review_required": False,
-        "artifacts": [{"path": "qa/changes", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                "digest": _SHA,
+            }
+        ],
         "rounds_used": used,
         "rounds_budget": budget,
     }

@@ -23,17 +23,26 @@ from assurance_intake.contracts.decisions import (
     advance_review_round,
 )
 from assurance_intake.contracts.review import CaseReviewFindingV1, CaseReviewResultV1, ReviewDecision
+from assurance_intake.contracts.workflow import (
+    CaseFlowResultV1,
+    CaseReworkContextV1,
+    EvidenceArtifactRefV1,
+    ReviewedCaseV1,
+)
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
     "CaseEntry",
     "CaseEntryAuthoring",
+    "CaseFlowResultV1",
+    "CaseReworkContextV1",
     "CaseId",
     "CaseReviewFindingV1",
     "CaseReviewResultV1",
     "CaseRisk",
     "CaseYaml",
     "CaseYamlAuthoring",
+    "EvidenceArtifactRefV1",
     "MinimumCoverageMatrixAuthoring",
     "MinimumCoverageMatrixRowAuthoring",
     "NonEmptyStr",
@@ -44,6 +53,7 @@ __all__ = [
     "QaWorkflow",
     "QaYaml",
     "ReviewDecision",
+    "ReviewedCaseV1",
     "ReviewRoundAdvanceInput",
     "ReviewRoundAdvanceOutput",
     "RiskTier",

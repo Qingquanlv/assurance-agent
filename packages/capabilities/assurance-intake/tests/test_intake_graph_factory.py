@@ -68,6 +68,8 @@ def intake_graph_input() -> dict[str, object]:
         "allowed_artifact_paths": ["qa/changes"],
         "rounds_used": 0,
         "rounds_budget": 2,
+        "coverage_epoch": 0,
+        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
     }
 
 
@@ -91,7 +93,12 @@ def _review_output(
         "decision": decision,
         "auto_fix_allowed": auto_fix_allowed,
         "human_review_required": human_review_required,
-        "artifacts": [{"path": "qa/changes", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                "digest": _SHA,
+            }
+        ],
         "rounds_used": rounds_used,
         "rounds_budget": rounds_budget,
     }
@@ -103,7 +110,13 @@ def _design_output(*, validation_status: str = "pass") -> dict[str, object]:
         "validation_status": validation_status,
         "validation_attempt": 0 if validation_status == "pass" else 1,
         "validation_error": None if validation_status == "pass" else "authored cases failed validation",
-        "artifacts": [{"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "digest": _SHA,
+            },
+            {"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA},
+        ],
     }
 
 
@@ -219,7 +232,22 @@ async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_
         _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
     ]
-    assert result.terminal is not None
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "reviewed"
+    reviewed = terminal["reviewed_case"]
+    assert isinstance(reviewed, dict)
+    assert reviewed["coverage_epoch"] == 0
+    assert reviewed["case_refs"] == [
+        {
+            "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+            "digest": _SHA,
+        }
+    ]
+    assert terminal["receipt"] == {
+        "receipt_id": _RECEIPT_ID,
+        "receipt_digest": _SHA,
+    }
 
 
 async def test_case_rejection_is_an_explicit_unsuccessful_terminal() -> None:
@@ -235,9 +263,10 @@ async def test_case_rejection_is_an_explicit_unsuccessful_terminal() -> None:
             "intake.case-review": [committed(_review_output(decision="reject"), receipt)],
         },
     )
-    assert result.terminal is not None
-    assert result.terminal["status"] == "rejected"
-    assert result.terminal["decision"] == "reject"
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "rejected"
+    assert terminal["decision"] == "reject"
 
 
 async def test_case_needs_fix_runs_design_and_review_again() -> None:
@@ -268,9 +297,10 @@ async def test_case_needs_fix_runs_design_and_review_again() -> None:
         "intake.case-design",
         "intake.case-review",
     ]
-    assert result.terminal is not None
-    assert result.terminal["status"] == "passed"
-    assert result.terminal["rounds_used"] == 1
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "reviewed"
+    assert terminal["rounds_used"] == 1
 
 
 async def test_case_budget_exhaustion_is_explicit() -> None:
@@ -297,9 +327,10 @@ async def test_case_budget_exhaustion_is_explicit() -> None:
             ],
         },
     )
-    assert result.terminal is not None
-    assert result.terminal["status"] == "exhausted"
-    assert result.terminal["rounds_used"] == 2
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "exhausted"
+    assert terminal["rounds_used"] == 2
 
 
 class _RecordingPrepare:

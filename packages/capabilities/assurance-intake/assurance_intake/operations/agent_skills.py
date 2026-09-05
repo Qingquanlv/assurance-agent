@@ -25,6 +25,7 @@ from assurance_intake.contracts.agent import (
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, build_explore_context
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
@@ -126,6 +127,17 @@ def _require_regular_project_input(project_root: Path, relative: str) -> None:
         raise InputError(f"missing case-review input: {relative}") from error
     if resolved != path or not path.is_file() or path.stat().st_nlink != 1:
         raise InputError(f"case-review input must be a regular single-link file: {relative}")
+
+
+def _authenticate_evidence_refs(
+    project_root: Path,
+    refs: tuple[EvidenceArtifactRefV1, ...],
+) -> None:
+    for ref in refs:
+        _require_regular_project_input(project_root, ref.path)
+        path = project_root.joinpath(*ref.path.split("/"))
+        if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
+            raise InputError(f"evidence digest changed after it was committed: {ref.path}")
 
 
 def _review_repair_contract(
@@ -357,6 +369,14 @@ class CaseDesignPrepareHandler:
         try:
             business = CaseDesignInputV1.model_validate(request.input)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
+            _authenticate_evidence_refs(context.project_root, business.preparation_refs)
+            if business.case_rework_context is not None:
+                rework = business.case_rework_context
+                _authenticate_evidence_refs(context.project_root, rework.assessment_refs)
+                _authenticate_evidence_refs(
+                    context.project_root,
+                    (*rework.previous_case.preparation_refs, *rework.previous_case.case_refs),
+                )
             exploration_relative = f"qa/changes/{business.change_id}/explore/exploration.json"
             exploration_path = context.project_root.joinpath(*exploration_relative.split("/"))
             exploration = None
@@ -398,6 +418,12 @@ class CaseReviewPrepareHandler:
         try:
             business = validate_input(CaseReviewInputV1, request.input)
             binding = validate_binding(request.binding_data)
+            _authenticate_evidence_refs(context.project_root, business.preparation_refs)
+            _authenticate_evidence_refs(context.project_root, business.case_refs)
+            if business.case_refs and {item.path for item in business.case_refs} != set(
+                business.case_delta_paths
+            ):
+                raise InputError("case_refs must bind every locked case_delta_path exactly once")
             review_inputs = case_review_inputs(business.change_id, business.case_delta_paths)
             for relative in review_inputs:
                 _require_regular_project_input(context.project_root, relative)

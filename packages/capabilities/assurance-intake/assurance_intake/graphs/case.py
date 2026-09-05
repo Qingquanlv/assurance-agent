@@ -13,9 +13,9 @@ from assurance_intake.graphs.nodes import (
     review_round_advance,
     review_round_advance_retry,
     review_round_advance_rework_retry,
-    terminal_done,
     terminal_exhausted,
     terminal_rejected,
+    terminal_reviewed,
 )
 from assurance_intake.graphs.routes import (
     route_case_design_result,
@@ -76,7 +76,7 @@ def build_case_graph(
     builder.add_node("advance-join", _node(advance_join))
     builder.add_node("human-review", _node(human_review))
     builder.add_node("human-review-retry", _node(human_review_retry))
-    builder.add_node("done", _node(terminal_done))
+    builder.add_node("done", _node(terminal_reviewed))
     builder.add_node("rejected", _node(terminal_rejected))
     builder.add_node("exhausted", _node(terminal_exhausted))
     builder.add_edge(START, "case-design")
