@@ -94,7 +94,7 @@ def main() -> int:
         "change_id": arguments["change_id"],
         "requirement": arguments["requirement"],
         "run_mode": "case",
-        "selected_test_families": list(arguments["selected_test_families"]),
+        "candidate_test_families": list(arguments["selected_test_families"]),
         "case_delta_paths": [
             f"qa/changes/{arguments['change_id']}/cases/{module}/case.yaml"
             for module in arguments["case_modules"]
@@ -217,6 +217,24 @@ def _resolve_sut(repo: Path, relative: str) -> Path:
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _acg_plan(change_root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+    plans = sorted(change_root.glob("plan/*/resolved-assurance-plan.json"))
+    if len(plans) != 1 or not plans[0].is_file() or plans[0].is_symlink():
+        return None, None
+    data = plans[0].read_bytes()
+    try:
+        plan = json.loads(data)
+    except (UnicodeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(plan, dict):
+        return None, None
+    relative = plans[0].relative_to(change_root)
+    return plan, {
+        "path": f"qa/changes/{change_root.name}/{relative.as_posix()}",
+        "digest": _sha256(data),
+    }
 
 
 def _test_runtime_seed_root(repo: Path) -> Path:
@@ -1576,8 +1594,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         "change_id": change_id,
         "change_root": str(change_root),
         "selected_test_families": list(item["selected_test_families"]),
+        "pair_id": item.get("pair_id"),
+        "arm": item.get("arm"),
+        "goal_baseline_digest": item.get("goal_baseline_digest"),
+        "policy_digest": item.get("policy_digest"),
+        "budget_digest": item.get("budget_digest"),
+        "tool_versions": item.get("tool_versions"),
+        "environment_digest": item.get("environment_digest"),
+        "plan": None,
+        "plan_ref": None,
+        "terminal_outcome": None,
+        "inspect_metrics": None,
+        "family_conflicts": None,
+        "first_round_tokens": None,
+        "first_round_tool_calls": None,
+        "first_round_seconds": None,
+        "first_round_cost": None,
+        "total_tokens": None,
+        "total_tool_calls": None,
+        "total_seconds": None,
+        "total_cost": None,
+        "coverage_rounds": None,
+        "healing_rounds": None,
         "adapter_version": item["adapter_version"],
         "provider_model": next(
+            iter({route.get("provider_model") for route in item["routing_assignments"].values()})
+        ),
+        "model_id": next(
             iter({route.get("provider_model") for route in item["routing_assignments"].values()})
         ),
         "worker_profile": next(
@@ -1599,6 +1642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def finish(code: int, *, notes: str, status: Mapping[str, Any] | None = None) -> int:
         evidence["ended_at"] = _utc_now()
+        evidence["plan"], evidence["plan_ref"] = _acg_plan(change_root)
         if status is not None:
             evidence["status"] = {
                 key: status.get(key)
@@ -1612,6 +1656,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             }
             evidence["terminal_status"] = status.get("status")
+            evidence["terminal_outcome"] = status.get("terminal_reason") or status.get("status")
             evidence["lock_digest"] = status.get("lock_digest") or evidence.get("lock_digest")
             evidence["provider"] = _provider_reference(status, adapter=arguments.adapter, item=item)
         evidence["notes"] = notes
@@ -1726,6 +1771,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     requirement_path = repo / str(item["requirement_path"])
     requirement = requirement_path.read_text(encoding="utf-8").strip()
+    evidence["requirement_digest"] = _sha256(requirement.encode("utf-8"))
     helper_dir = output / "helpers"
     helper_dir.mkdir()
     (helper_dir / "write_product_input.py").write_text(_WRITE_PRODUCT_INPUT, encoding="utf-8")
