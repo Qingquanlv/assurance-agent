@@ -491,27 +491,15 @@ async def test_issue_exports_are_independently_callable(
     assert result.terminal is not None
 
 
-async def test_report_receives_change_coverage_execution_and_report_references() -> None:
+async def test_report_rejects_coverage_flag_and_preexisting_report_references() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
     bundle = build_quality_graphs(context)
     report_refs = [{"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _SHA}]
     payload = quality_graph_input(coverage_state="satisfied", report_refs=report_refs)
-    result = await harness.run(
-        bundle.report,
-        input=payload,
-        script={"quality.report": [committed(_report_output(), _receipt())]},
-    )
-    assert [call.semantic_node_id for call in result.semantic_calls] == ["quality.report"]
-    assert [call.contract_id for call in result.semantic_calls] == [_REPORT_ID]
-    selected = result.select_values[0]
-    assert isinstance(selected, dict)
-    assert selected["change_id"] == "CH-DEMO-001"
-    assert selected["coverage_digest"] == "c" * 64
-    assert selected["execution_digest"] == "e" * 64
-    published = result.published_update
-    assert published is not None
-    assert published["change_id"] == "CH-DEMO-001"
-    assert published["coverage_state"] == "satisfied"
-    assert published["report_refs"] == report_refs
-    assert result.terminal is not None
+    with pytest.raises(ValidationError):
+        await harness.run(
+            bundle.report,
+            input=payload,
+            script={"quality.report": [committed(_report_output(), _receipt())]},
+        )

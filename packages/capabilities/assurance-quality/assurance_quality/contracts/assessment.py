@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic.types import AwareDatetime
 
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_quality.contracts.agent import FactBaselineResultV1, InspectionResultV1
+from assurance_quality.contracts.agent import (
+    FactBaselineResultV1,
+    InspectionResultV1,
+    QualitySkillInputV1,
+)
 from assurance_quality.contracts.coverage import CoverageState
 from assurance_quality.contracts.goal_policy import ActiveCoverageScopeV1, CoverageGoalPolicyV1
 from assurance_quality.contracts.metrics import MetricsDocument
@@ -26,6 +31,7 @@ InspectionDisposition = Literal[
     "needs_human",
     "blocked",
 ]
+ReportPurpose = Literal["normal", "diagnostic"]
 
 
 class MaterializeAssessmentInputV1(FrozenModel):
@@ -218,13 +224,144 @@ class InspectionOutcomeV1(FrozenModel):
         return self
 
 
+def _canonical_report_refs(
+    values: tuple[EvidenceArtifactRefV1, ...],
+) -> tuple[EvidenceArtifactRefV1, ...]:
+    if not values:
+        raise ValueError("report refs must not be empty")
+    ordered = tuple(sorted(values, key=lambda item: (item.path, item.digest)))
+    if values != ordered or len({item.path for item in values}) != len(values):
+        raise ValueError("report refs must be sorted with one digest per path")
+    return values
+
+
+class ReportSkillInputV1(QualitySkillInputV1):
+    coverage_epoch: int = Field(ge=0)
+    purpose: ReportPurpose
+    inspection: InspectionOutcomeV1
+    assessment: AssessmentInputsV1
+    generation: GenerationCycleResultV1
+    fact_baseline_ref: EvidenceArtifactRefV1
+
+    @model_validator(mode="after")
+    def _bind_current_inspection_chain(self) -> Self:
+        identity = (self.change_id, self.coverage_epoch, self.batch_id)
+        if identity != (
+            self.inspection.change_id,
+            self.inspection.coverage_epoch,
+            self.inspection.batch_id,
+        ):
+            raise ValueError("report input does not describe the current inspection")
+        if identity != (
+            self.assessment.change_id,
+            self.assessment.coverage_epoch,
+            self.assessment.batch_id,
+        ):
+            raise ValueError("report assessment does not describe the current inspection")
+        if self.generation.reviewed_case != self.inspection.reviewed_case:
+            raise ValueError("report generation does not use the inspected Reviewed Case")
+        if self.generation.mapping_ref != self.inspection.mapping_ref:
+            raise ValueError("report generation does not use the inspected mapping")
+        expected_refs = tuple(
+            sorted(
+                (
+                    self.assessment.trace_ref,
+                    self.assessment.gaps_ref,
+                    self.assessment.metrics_ref,
+                    self.assessment.sufficiency_ref,
+                    self.assessment.execution_ref,
+                    *(() if self.assessment.healing_ref is None else (self.assessment.healing_ref,)),
+                    *(() if self.assessment.issue_ref is None else (self.assessment.issue_ref,)),
+                    self.fact_baseline_ref,
+                ),
+                key=lambda item: (item.path, item.digest),
+            )
+        )
+        if self.inspection.assessment_refs != expected_refs:
+            raise ValueError("report input does not carry the inspected assessment evidence chain")
+        if self.execution_digest != self.assessment.execution_ref.digest:
+            raise ValueError("report execution digest does not match the current assessment")
+        if self.trace_digest != self.assessment.trace_ref.digest:
+            raise ValueError("report trace digest does not match the current assessment")
+        if self.coverage_digest != self.assessment.gaps_ref.digest:
+            raise ValueError("report coverage digest does not match the current assessment")
+        if self.metrics_digest != self.assessment.metrics_ref.digest:
+            raise ValueError("report metrics digest does not match the current assessment")
+        if self.mapping_digest != self.inspection.mapping_ref.digest:
+            raise ValueError("report mapping digest does not match the current inspection")
+        if self.case_digest != self.inspection.reviewed_case.review_ref.digest:
+            raise ValueError("report case digest does not match the current Reviewed Case")
+        plan_digest = canonical_digest(
+            cast(JSONValue, [ref.model_dump(mode="json") for ref in self.generation.plan_refs])
+        )
+        if self.plan_digest != plan_digest:
+            raise ValueError("report plan digest does not match the current generation cycle")
+        healing_digest = (
+            self.assessment.healing_ref.digest if self.assessment.healing_ref is not None else None
+        )
+        issue_digest = self.assessment.issue_ref.digest if self.assessment.issue_ref is not None else None
+        if self.healing_digest != healing_digest or self.issue_digest != issue_digest:
+            raise ValueError("report optional evidence digests do not match the current assessment")
+        if self.purpose == "normal" and self.inspection.disposition != "satisfied":
+            raise ValueError("normal report requires a satisfied inspection")
+        if self.purpose == "diagnostic" and self.inspection.disposition == "satisfied":
+            raise ValueError("diagnostic report requires a non-success inspection")
+        return self
+
+
+class FinalizedReportV1(FrozenModel):
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    batch_id: str = Field(min_length=1)
+    purpose: ReportPurpose
+    inspection_receipt: ReceiptRef
+    report_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
+
+    @field_validator("report_refs")
+    @classmethod
+    def _report_refs(cls, value: tuple[EvidenceArtifactRefV1, ...]) -> tuple[EvidenceArtifactRefV1, ...]:
+        return _canonical_report_refs(value)
+
+    @model_validator(mode="after")
+    def _refs_belong_to_report(self) -> Self:
+        prefix = f"qa/changes/{self.change_id}/report/"
+        if any(not ref.path.startswith(prefix) for ref in self.report_refs):
+            raise ValueError("report refs must belong to the current change report directory")
+        return self
+
+
+class ReportOutcomeV1(FrozenModel):
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    batch_id: str = Field(min_length=1)
+    inspection_receipt: ReceiptRef
+    report_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
+    report_receipt: ReceiptRef
+
+    @field_validator("report_refs")
+    @classmethod
+    def _report_refs(cls, value: tuple[EvidenceArtifactRefV1, ...]) -> tuple[EvidenceArtifactRefV1, ...]:
+        return _canonical_report_refs(value)
+
+    @model_validator(mode="after")
+    def _refs_belong_to_report(self) -> Self:
+        prefix = f"qa/changes/{self.change_id}/report/"
+        if any(not ref.path.startswith(prefix) for ref in self.report_refs):
+            raise ValueError("report refs must belong to the current change report directory")
+        return self
+
+
 __all__ = [
     "AssessmentInputsV1",
     "AssessmentSkillInputV1",
     "FailureClassificationFactsV1",
     "FinalizedFactBaselineV1",
     "FinalizedInspectionV1",
+    "FinalizedReportV1",
     "InspectionDisposition",
     "InspectionOutcomeV1",
     "MaterializeAssessmentInputV1",
+    "ReportOutcomeV1",
+    "ReportPurpose",
+    "ReportSkillInputV1",
 ]

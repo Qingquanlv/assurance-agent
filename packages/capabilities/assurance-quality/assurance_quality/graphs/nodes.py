@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import cast
 
 from pydantic import BaseModel
 
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.canonical import canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest
 
 from assurance_quality.contracts.agent import QualitySkillInputV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
@@ -16,8 +17,11 @@ from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
+    FinalizedReportV1,
     InspectionOutcomeV1,
     MaterializeAssessmentInputV1,
+    ReportOutcomeV1,
+    ReportSkillInputV1,
 )
 from assurance_quality.contracts.coverage import classify_coverage_state
 from assurance_quality.contracts.decisions import (
@@ -141,13 +145,38 @@ def select_materialize_assessment(state: Mapping[str, object]) -> MaterializeAss
 
 
 def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
-    if "coverage_state" not in state:
-        raise ValueError("report requires a coverage reference")
-    if "report_refs" not in state:
-        raise ValueError("report requires report references")
-    if "execution_digest" not in state and "execution_status" not in state:
-        raise ValueError("report requires an execution reference")
-    return select_quality(state)
+    purpose = state.get("report_purpose", "normal")
+    inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+    digests = {
+        "execution_digest": assessment.execution_ref.digest,
+        "healing_digest": assessment.healing_ref.digest if assessment.healing_ref is not None else None,
+        "trace_digest": assessment.trace_ref.digest,
+        "coverage_digest": assessment.gaps_ref.digest,
+        "metrics_digest": assessment.metrics_ref.digest,
+        "case_digest": inspection.reviewed_case.review_ref.digest,
+        "plan_digest": canonical_digest(
+            cast(JSONValue, [ref.model_dump(mode="json") for ref in generation.plan_refs])
+        ),
+        "mapping_digest": inspection.mapping_ref.digest,
+        "issue_digest": assessment.issue_ref.digest if assessment.issue_ref is not None else None,
+    }
+    return ReportSkillInputV1.model_validate(
+        {
+            "change_id": state.get("change_id"),
+            "batch_id": state.get("batch_id"),
+            "capability_leafs": state.get("capability_leafs", ()),
+            "artifact_paths": state.get("allowed_artifact_paths", ()),
+            **digests,
+            "coverage_epoch": state.get("coverage_epoch"),
+            "purpose": purpose,
+            "inspection": inspection,
+            "assessment": assessment,
+            "generation": generation,
+            "fact_baseline_ref": state.get("fact_baseline_ref"),
+        }
+    )
 
 
 def activation_assess(state: Mapping[str, object]) -> BusinessActivation:
@@ -329,18 +358,57 @@ def publish_report(
     output: object,
     receipt: object,
 ) -> dict[str, object]:
-    del receipt
-    payload = _output_payload(output)
-    change_id = state["change_id"]
-    if not isinstance(change_id, str):
-        raise TypeError("change_id must be a string")
-    return QualityReportPublicV1.model_validate(
-        {
-            "change_id": change_id,
-            "coverage_state": payload.get("coverage_state", state.get("coverage_state")),
-            "report_refs": _as_refs(payload.get("report_refs") or state.get("report_refs")),
-        }
+    if state.get("attempt_failure"):
+        raise ValueError("failed Report attempt cannot publish a business outcome")
+    selected = ReportSkillInputV1.model_validate(select_report(state))
+    finalized = FinalizedReportV1.model_validate(output)
+    identity = (selected.change_id, selected.coverage_epoch, selected.batch_id)
+    if identity != (finalized.change_id, finalized.coverage_epoch, finalized.batch_id):
+        raise ValueError("report was finalized against a stale inspection cycle")
+    if finalized.inspection_receipt != selected.inspection.inspection_receipt:
+        raise ValueError("report was finalized against a stale inspection receipt")
+    if finalized.purpose != selected.purpose:
+        raise ValueError("report purpose changed after selection")
+    committed = ReceiptRef.model_validate(receipt)
+    normal_outcome = None
+    status = "diagnostic"
+    if finalized.purpose == "normal":
+        normal_outcome = ReportOutcomeV1(
+            change_id=finalized.change_id,
+            coverage_epoch=finalized.coverage_epoch,
+            batch_id=finalized.batch_id,
+            inspection_receipt=finalized.inspection_receipt,
+            report_refs=finalized.report_refs,
+            report_receipt=committed,
+        )
+        status = "reported"
+    return QualityReportPublicV1(
+        change_id=finalized.change_id,
+        coverage_state=selected.inspection.coverage_state,
+        purpose=finalized.purpose,
+        status=status,  # type: ignore[arg-type]
+        report_outcome=normal_outcome,
+        report_refs=finalized.report_refs,
+        report_receipt=committed,
     ).model_dump(mode="json")
+
+
+def clear_report_state(state: Mapping[str, object]) -> dict[str, object]:
+    del state
+    return {
+        "attempt_failure": {},
+        "report_outcome": {},
+        "report_refs": [],
+        "report_receipt": None,
+    }
+
+
+def route_report_attempt(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return "failed"
+    if state.get("report_outcome") or state.get("report_purpose") == "diagnostic":
+        return "done"
+    return "failed"
 
 
 def terminal_done(state: QualityState) -> dict[str, object]:
@@ -352,11 +420,13 @@ __all__ = [
     "activation_assess",
     "activation_materialize_assessment",
     "activation_one_shot",
+    "clear_report_state",
     "publish_fact_baseline",
     "publish_inspect",
     "publish_materialize_assessment",
     "publish_issue",
     "publish_report",
+    "route_report_attempt",
     "select_fact_baseline",
     "select_inspect",
     "select_quality",

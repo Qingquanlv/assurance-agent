@@ -38,6 +38,8 @@ from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
+    FinalizedReportV1,
+    ReportSkillInputV1,
 )
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
@@ -213,6 +215,21 @@ def _assessment_finalize_payload(data: object) -> tuple[AssessmentSkillInputV1, 
         raise InputError(str(error)) from error
 
 
+def _report_finalize_payload(data: object) -> tuple[ReportSkillInputV1, AgentRunResult]:
+    if not isinstance(data, Mapping):
+        raise InputError("report finalize input must be an object")
+    validated = data.get("validated_input")
+    if validated is None:
+        validated = {key: value for key, value in data.items() if key not in {"agent_result", "prepared"}}
+    agent_result = data.get("agent_result")
+    if not isinstance(validated, Mapping) or agent_result is None:
+        raise InputError("report finalize input is missing its agent result")
+    try:
+        return ReportSkillInputV1.model_validate(validated), AgentRunResult.model_validate(agent_result)
+    except ValidationError as error:
+        raise InputError(str(error)) from error
+
+
 def _canonical_file(root: Path, relative: str) -> Path:
     posix = PurePosixPath(relative)
     if posix.is_absolute() or "\\" in relative or any(part in {"", ".", ".."} for part in posix.parts):
@@ -258,6 +275,23 @@ def _authenticate_assessment_input(business: AssessmentSkillInputV1, root: Path)
     policy = _canonical_file(root, ".aa/policy.yaml").read_bytes()
     if hashlib.sha256(policy).hexdigest() != business.assessment.scope.policy_digest:
         raise OutputError("product policy digest changed after assessment materialization")
+
+
+def _authenticate_report_input(business: ReportSkillInputV1, root: Path) -> None:
+    refs = (
+        *business.inspection.reviewed_case.preparation_refs,
+        *business.inspection.reviewed_case.case_refs,
+        business.inspection.reviewed_case.review_ref,
+        business.inspection.mapping_ref,
+        *business.generation.source_refs,
+        *business.generation.plan_refs,
+        *business.inspection.assessment_refs,
+    )
+    for ref in refs:
+        _authenticate_ref(root, ref)
+    policy = _canonical_file(root, ".aa/policy.yaml").read_bytes()
+    if hashlib.sha256(policy).hexdigest() != business.assessment.scope.policy_digest:
+        raise OutputError("product policy digest changed after inspection")
 
 
 def _load_json_ref(root: Path, ref: object, model: type[Any]) -> Any:
@@ -359,8 +393,18 @@ class IssueTriagePrepareHandler:
 class ReportPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(REPORT_SKILL, REPORTER_PERSONA, REPORT_RESULT_ID, request, context)
-        except InputError as error:
+            business = validate_input(ReportSkillInputV1, request.input)
+            _authenticate_report_input(business, context.project_root)
+            binding = validate_binding(request.binding_data)
+            return prepare_outcome(
+                skill_path=REPORT_SKILL,
+                persona_path=REPORTER_PERSONA,
+                business=business,
+                binding=binding,
+                result_schema_id=REPORT_RESULT_ID,
+                context=context,
+            )
+        except (InputError, OutputError) as error:
             return failed_input(error)
 
 
@@ -552,23 +596,23 @@ class IssueTriageFinalizeHandler:
 
 class ReportFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            payload = _legacy_finalize_payload(request.input)
+            business, agent_run = _report_finalize_payload(request.input)
             try:
-                document = ReportResultV1.model_validate(_structured(payload))
+                document = ReportResultV1.model_validate(thaw_json(agent_run.result_payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
+            _authenticate_report_input(business, context.project_root)
             expected = {
-                "case_digest": payload.case_digest,
-                "plan_digest": payload.plan_digest,
-                "mapping_digest": payload.mapping_digest,
-                "execution_digest": payload.execution_digest,
-                "healing_digest": payload.healing_digest,
-                "trace_digest": payload.trace_digest,
-                "coverage_digest": payload.coverage_digest,
-                "issue_digest": payload.issue_digest,
-                "metrics_digest": payload.metrics_digest,
+                "case_digest": business.case_digest,
+                "plan_digest": business.plan_digest,
+                "mapping_digest": business.mapping_digest,
+                "execution_digest": business.execution_digest,
+                "healing_digest": business.healing_digest,
+                "trace_digest": business.trace_digest,
+                "coverage_digest": business.coverage_digest,
+                "issue_digest": business.issue_digest,
+                "metrics_digest": business.metrics_digest,
             }
             actual = {
                 "case_digest": document.case_digest,
@@ -584,9 +628,38 @@ class ReportFinalizeHandler:
             for key, locked in expected.items():
                 if actual[key] != locked:
                     raise OutputError(f"report {key} is not closed against the locked projection")
-            if document.change_id != payload.change_id or document.batch_id != payload.batch_id:
+            if document.change_id != business.change_id or document.batch_id != business.batch_id:
                 raise OutputError("report identity does not match the locked change")
-            return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
+            if document.purpose != business.purpose:
+                raise OutputError("report purpose does not match the locked request")
+            allowed = _QUALITY_OUTPUTS[REPORT_RESULT_ID](business.change_id)
+            if document.report_files != allowed:
+                raise OutputError("report files must exactly match the declared report write set")
+            staged = {
+                path.relative_to(context.write_root).as_posix()
+                for path in context.write_root.rglob("*")
+                if path.is_file() and not path.is_symlink()
+            }
+            if staged != set(document.report_files):
+                raise OutputError("report result does not match the actual candidate write set")
+            refs = tuple(
+                EvidenceArtifactRefV1(
+                    path=relative,
+                    digest=hashlib.sha256(
+                        _canonical_file(context.write_root, relative).read_bytes()
+                    ).hexdigest(),
+                )
+                for relative in document.report_files
+            )
+            finalized = FinalizedReportV1(
+                change_id=business.change_id,
+                coverage_epoch=business.coverage_epoch,
+                batch_id=business.batch_id,
+                purpose=business.purpose,
+                inspection_receipt=business.inspection.inspection_receipt,
+                report_refs=refs,
+            )
+            return TaskOutcome.succeeded(cast(JSONValue, finalized.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
         except OutputError as error:

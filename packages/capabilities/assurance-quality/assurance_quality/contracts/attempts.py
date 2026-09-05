@@ -22,7 +22,9 @@ from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
+    FinalizedReportV1,
     MaterializeAssessmentInputV1,
+    ReportSkillInputV1,
 )
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
@@ -111,8 +113,8 @@ _JOBS: tuple[tuple[str, str, str, type[Any], tuple[str, ...], type[Any], type[An
         _REPORTER,
         ReportResultV1,
         ("report/report.md",),
-        QualitySkillInputV1,
-        None,
+        ReportSkillInputV1,
+        FinalizedReportV1,
     ),
 )
 

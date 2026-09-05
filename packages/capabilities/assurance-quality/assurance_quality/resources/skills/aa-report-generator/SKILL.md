@@ -11,14 +11,16 @@ generate-report handler owns `quality_score` and `final_status`.
 
 ### required
 
+- the current Inspect outcome, its receipt, Reviewed Case, generation mapping, and assessment refs
 - locked case, plan, mapping, execution, healing, trace, coverage, issue, and metrics digests
-- quality-gate and failure-analysis projections already materialized by the graph
+- an explicit `normal` or `diagnostic` purpose
 
 ## Outputs
 
 ### required
 
-- structured `ReportResultV1`
+- a Markdown report at `qa/changes/<change-id>/report/report.md`
+- structured `ReportResultV1` declaring that path in `report_files`
 - every source digest equals the locked projection digest
 
 ## Rules
@@ -30,5 +32,6 @@ generate-report handler owns `quality_score` and `final_status`.
 - Do not write minimum-coverage JSON; that projection is owned by a deterministic handler.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
-- Write the typed result to `qa/changes/<change-id>/report/report.md`.
-- Return the typed result and stop.
+- A normal report may describe only a satisfied Inspect outcome. A diagnostic report must
+  retain the `diagnostic` purpose and must not claim normal success.
+- Return the typed result after writing the declared report file, then stop.

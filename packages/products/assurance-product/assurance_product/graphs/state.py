@@ -15,7 +15,12 @@ from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
 )
-from assurance_quality.contracts.assessment import AssessmentInputsV1, InspectionOutcomeV1
+from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
+    InspectionOutcomeV1,
+    ReportOutcomeV1,
+    ReportPurpose,
+)
 
 FAILED_JOIN_PREDECESSORS = ("execute", "run")
 COVERAGE_NEEDED_PREDECESSORS = ("quality", "quality-recheck")
@@ -439,6 +444,8 @@ class ProductStateDocument(FrozenModel):
     last_coverage_source_receipt: ReceiptRef | None
     report_refs: list[dict[str, str]]
     report_receipt: ReceiptRef | None
+    report_outcome: ReportOutcomeV1
+    report_purpose: ReportPurpose
 
 
 class ProductState(CheckpointBridgeState, total=False):
@@ -503,6 +510,8 @@ class ProductState(CheckpointBridgeState, total=False):
     last_coverage_source_receipt: ReceiptRef | None
     report_refs: list[dict[str, str]]
     report_receipt: ReceiptRef | None
+    report_outcome: ReportOutcomeV1
+    report_purpose: str
 
 
 __all__ = [

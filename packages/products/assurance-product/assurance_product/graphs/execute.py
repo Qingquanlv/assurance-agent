@@ -269,6 +269,13 @@ def adapt_report(state: ProductState) -> dict[str, object]:
     coverage = state.get("coverage_state")
     if isinstance(trigger, Mapping):
         coverage = trigger.get("coverage_state", coverage)
+    inspection = state.get("inspection_outcome")
+    disposition = None
+    if isinstance(inspection, Mapping):
+        disposition = inspection.get("disposition")
+    elif isinstance(inspection, FrozenModel):
+        disposition = inspection.model_dump(mode="python").get("disposition")
+    report_purpose = "normal" if disposition == "satisfied" else "diagnostic"
     feature_input = {
         "change_id": payload.change_id,
         "capability_leafs": list(payload.capability_leafs),
@@ -279,6 +286,7 @@ def adapt_report(state: ProductState) -> dict[str, object]:
         "rounds_budget": payload.budgets.healing_rounds,
         "rounds_used": 0,
         "coverage_state": coverage,
+        "report_purpose": report_purpose,
     }
     return {**feature_input, "feature_input": feature_input}
 

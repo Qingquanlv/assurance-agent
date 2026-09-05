@@ -130,7 +130,7 @@
       {"contract_id": "assurance.quality.agent.inspect.v1", "digest": "b38c02506293d62453683931064e0018cc1dac0823e624b5e2902d14998b7359"},
       {"contract_id": "assurance.quality.agent.issue-analysis.v1", "digest": "3ea070bab84f5437a5dcaa69f21f81c325f57973469439a504a9c47482427370"},
       {"contract_id": "assurance.quality.agent.issue-triage.v1", "digest": "1c077d25891ed836f3a0d39b57372b227567c934aa80ae2c96ed2bc108995a2f"},
-      {"contract_id": "assurance.quality.agent.report.v1", "digest": "4a2cc91864ab30702a2de6ddbd6bd556952058b5467b6bae139a9c41113982f9"},
+      {"contract_id": "assurance.quality.agent.report.v1", "digest": "6ba0043a242c806e7050c5ef2ac9fb0e292e4dfe837ae7f03952c70c210d4231"},
       {"contract_id": "assurance.quality.materialize-assessment-inputs", "digest": "2a72f1ccd312a2c691d1e52eebed0cc43c9a31a35ff3eefc9942269c77ff08ef"}
     ]
   },

@@ -10,7 +10,9 @@ from graph_engine.boot.boot import CapabilityBuildContext
 
 from assurance_quality.graphs.nodes import (
     activation_one_shot,
+    clear_report_state,
     publish_report,
+    route_report_attempt,
     select_report,
     terminal_done,
 )
@@ -21,6 +23,7 @@ _REPORT_ID = "assurance.quality.agent.report.v1"
 
 def build_report_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[QualityState] = StateGraph(QualityState)
+    builder.add_node("clear-report", cast(Callable[..., Any], clear_report_state))
     builder.add_node(
         "quality.report",
         cast(
@@ -35,9 +38,16 @@ def build_report_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
         ),
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
-    builder.add_edge(START, "quality.report")
-    builder.add_edge("quality.report", "done")
+    builder.add_node("failed", cast(Callable[..., Any], terminal_done))
+    builder.add_edge(START, "clear-report")
+    builder.add_edge("clear-report", "quality.report")
+    builder.add_conditional_edges(
+        "quality.report",
+        cast(Callable[..., Any], route_report_attempt),
+        {"done": "done", "failed": "failed"},
+    )
     builder.add_edge("done", END)
+    builder.add_edge("failed", END)
     return context.compile_subgraph(builder)
 
 

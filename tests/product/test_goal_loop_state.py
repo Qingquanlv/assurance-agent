@@ -116,6 +116,7 @@ def test_current_cycle_clear_preserves_epoch_scoped_reducer_history() -> None:
     assert "generation_results" not in update
     assert "generation_receipts" not in update
     assert update["report_receipt"] is None
+    assert update["report_outcome"] == {}
     assert update["assessment_trigger"] is None
     previous = make_assessment_trigger(
         source="quality",

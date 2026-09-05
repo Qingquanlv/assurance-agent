@@ -29,6 +29,7 @@ def clear_current_cycle(*, next_epoch: int) -> dict[str, object]:
         "tail_result": {},
         "report_refs": [],
         "report_receipt": None,
+        "report_outcome": {},
         "assessment_trigger": None,
         "current_trigger": None,
         "coverage_state": "",

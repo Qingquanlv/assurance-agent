@@ -11,7 +11,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_product.models import BusinessBudgetsV1, ResourceRefV1
-from assurance_quality.contracts.assessment import InspectionOutcomeV1
+from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
 
 
 class ExecuteTailInputV1(FrozenModel):
@@ -49,6 +49,7 @@ class ExecuteTailResultV1(FrozenModel):
         "blocked",
     ]
     inspection: InspectionOutcomeV1 | None = None
+    report: ReportOutcomeV1 | None = None
     report_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     report_receipt: ReceiptRef | None = None
     reason: str | None = None
@@ -59,10 +60,28 @@ class ExecuteTailResultV1(FrozenModel):
             if (
                 self.inspection is None
                 or self.inspection.disposition != "satisfied"
+                or self.report is None
                 or not self.report_refs
                 or self.report_receipt is None
             ):
                 raise ValueError("reported tail requires satisfied Inspect and committed Report")
+            if (
+                self.inspection.change_id,
+                self.inspection.coverage_epoch,
+                self.inspection.batch_id,
+                self.inspection.inspection_receipt,
+            ) != (
+                self.report.change_id,
+                self.report.coverage_epoch,
+                self.report.batch_id,
+                self.report.inspection_receipt,
+            ):
+                raise ValueError("report does not describe the current inspection")
+            if (
+                self.report.report_refs != self.report_refs
+                or self.report.report_receipt != self.report_receipt
+            ):
+                raise ValueError("reported tail evidence does not match the Report outcome")
         elif self.status == "coverage_insufficient":
             if self.inspection is None or self.inspection.disposition != "coverage_insufficient":
                 raise ValueError("coverage_insufficient tail requires matching Inspect evidence")
@@ -78,7 +97,30 @@ class ExecuteTailResultV1(FrozenModel):
                 raise ValueError("blocked tail cannot carry successful report evidence")
             if not self.reason:
                 raise ValueError("blocked tail requires a reason")
+        if self.status != "reported" and self.report is not None:
+            raise ValueError("non-reported tail cannot carry a normal Report outcome")
         return self
 
 
-__all__ = ["ExecuteTailInputV1", "ExecuteTailResultV1"]
+def reported_tail_result(
+    inspection: InspectionOutcomeV1,
+    report: ReportOutcomeV1,
+) -> ExecuteTailResultV1:
+    if (inspection.coverage_epoch, inspection.batch_id, inspection.inspection_receipt) != (
+        report.coverage_epoch,
+        report.batch_id,
+        report.inspection_receipt,
+    ) or inspection.change_id != report.change_id:
+        raise ValueError("report does not describe the current inspection")
+    if inspection.disposition != "satisfied":
+        raise ValueError("normal report requires satisfied inspection")
+    return ExecuteTailResultV1(
+        status="reported",
+        inspection=inspection,
+        report=report,
+        report_refs=report.report_refs,
+        report_receipt=report.report_receipt,
+    )
+
+
+__all__ = ["ExecuteTailInputV1", "ExecuteTailResultV1", "reported_tail_result"]

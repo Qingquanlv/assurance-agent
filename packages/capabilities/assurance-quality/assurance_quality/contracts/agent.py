@@ -159,17 +159,24 @@ class ReportResultV1(FrozenModel):
     schema_version: Literal["1.1"]
     change_id: str = Field(min_length=1)
     batch_id: str = Field(min_length=1)
+    purpose: Literal["normal", "diagnostic"]
+    report_files: tuple[str, ...] = Field(min_length=1)
     case_digest: str = Field(pattern=_SHA256)
     plan_digest: str = Field(pattern=_SHA256)
     mapping_digest: str = Field(pattern=_SHA256)
     execution_digest: str = Field(pattern=_SHA256)
-    healing_digest: str = Field(pattern=_SHA256)
+    healing_digest: str | None = Field(pattern=_SHA256)
     trace_digest: str = Field(pattern=_SHA256)
     coverage_digest: str = Field(pattern=_SHA256)
-    issue_digest: str = Field(pattern=_SHA256)
+    issue_digest: str | None = Field(pattern=_SHA256)
     metrics_digest: str = Field(pattern=_SHA256)
     risk_rationale: str | None = None
     recommendation: str | None = None
+
+    @field_validator("report_files")
+    @classmethod
+    def _report_files(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _canonical_relative_paths(value)
 
 
 __all__ = [

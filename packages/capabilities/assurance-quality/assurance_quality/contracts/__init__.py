@@ -3,9 +3,12 @@ from __future__ import annotations
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
+    FinalizedReportV1,
     InspectionDisposition,
     InspectionOutcomeV1,
     MaterializeAssessmentInputV1,
+    ReportOutcomeV1,
+    ReportSkillInputV1,
 )
 from assurance_quality.contracts.decisions import (
     COVERAGE_STATES,
@@ -95,6 +98,7 @@ from assurance_quality.contracts.trace import (
 __all__ = [
     "AGENT_JOB_CONTRACTS",
     "AssessmentInputsV1",
+    "FinalizedReportV1",
     "COVERAGE_STATES",
     "CoverageAssessmentPublicV1",
     "CoverageState",
@@ -104,6 +108,8 @@ __all__ = [
     "InspectionDisposition",
     "InspectionOutcomeV1",
     "MaterializeAssessmentInputV1",
+    "ReportOutcomeV1",
+    "ReportSkillInputV1",
     "CHANGE_ISSUE_EVENT_ADAPTER",
     "PROBLEM_EVENT_ADAPTER",
     "AdversarialYieldEvidence",
