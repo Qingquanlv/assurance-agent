@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AwareDatetime, Field, field_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
@@ -106,10 +106,6 @@ class ExecutionPrepareInputV1(FrozenModel):
         return _sorted_unique(value, label="capability leaf")
 
 
-class ExecutionFinalizeRequestV1(ExecutionPrepareInputV1):
-    agent_result: AgentRunResult
-
-
 class RunTestsInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     batch_id: str = Field(min_length=1)
@@ -176,6 +172,9 @@ class SkillInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     repair_round: int = Field(default=0, ge=0)
     generation_result: GenerationCycleResultV1 | None = None
+    execution_view_root: str
+    execution_view_digest: str = Field(pattern=_SHA256)
+    executed_at: AwareDatetime
 
     @field_validator("capability_leafs")
     @classmethod
@@ -191,6 +190,11 @@ class SkillInputV1(FrozenModel):
     @classmethod
     def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_relative_paths(value)
+
+    @field_validator("execution_view_root")
+    @classmethod
+    def _execution_view_root(cls, value: str) -> str:
+        return _canonical_relative_paths((value,))[0]
 
 
 class ExecuteInputV1(SkillInputV1):
@@ -201,32 +205,5 @@ class RunSkillInputV1(SkillInputV1):
     pass
 
 
-class AgentFinalizeInputV1(FrozenModel):
+class AgentFinalizeInputV1(SkillInputV1):
     agent_result: AgentRunResult
-    change_id: str = Field(min_length=1)
-    batch_id: str = Field(min_length=1)
-    capability_leafs: tuple[str, ...]
-    case_ids: tuple[str, ...]
-    artifact_paths: tuple[str, ...]
-    mapping: ClosedMappingV1
-    selected_targets: SelectedTargets
-    baseline_tree_id: str = Field(pattern=_SHA256)
-    runner_profile_digest: str = Field(pattern=_SHA256)
-    coverage_epoch: int = Field(default=0, ge=0)
-    repair_round: int = Field(default=0, ge=0)
-    generation_result: GenerationCycleResultV1 | None = None
-
-    @field_validator("capability_leafs")
-    @classmethod
-    def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _sorted_unique(value, label="capability leaf")
-
-    @field_validator("case_ids")
-    @classmethod
-    def _case_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _sorted_unique(value, label="case id")
-
-    @field_validator("artifact_paths")
-    @classmethod
-    def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _canonical_relative_paths(value)

@@ -58,12 +58,17 @@ def execution_document(
             "runner_profile_digest": HEX_A,
             "receipt_digest": HEX_A,
             "receipt": {
-                "command": ["pytest"],
-                "exit_code": 0 if status == "passed" else 1,
-                "collected": 1,
-                "passed": 1 if status == "passed" else 0,
-                "failed": 0 if status == "passed" else 1,
-                "skipped": 0,
+                "commands": [
+                    {
+                        "family": layer,
+                        "command": ["pytest"],
+                        "exit_code": 0 if status == "passed" else 1,
+                        "collected": 1,
+                        "passed": 1 if status == "passed" else 0,
+                        "failed": 0 if status == "passed" else 1,
+                        "skipped": 0,
+                    }
+                ]
             },
             "results": [
                 {
@@ -78,28 +83,52 @@ def execution_document(
     )
 
 
-def empty_execution() -> dict[str, object]:
+def missing_asset_execution() -> dict[str, object]:
     return _dumped(
         ExecutionEvidenceV1,
         {
             "schema_version": "1",
             "change_id": CHANGE_ID,
             "batch_id": BATCH_ID,
-            "selected_targets": {"api": False, "e2e": False, "fuzz": False, "performance": False},
-            "mapping": {"schema_version": "1", "selected": [], "mappings": []},
+            "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+            "mapping": {
+                "schema_version": "1",
+                "selected": ["tests/generated.py"],
+                "mappings": [
+                    {
+                        "test": "tests/generated.py",
+                        "case_id": CASE_ID,
+                        "capability": LEAF,
+                        "layer": "api",
+                    }
+                ],
+            },
             "mapping_digest": HEX_A,
             "baseline_tree_id": HEX_A,
             "runner_profile_digest": HEX_A,
             "receipt_digest": HEX_A,
             "receipt": {
-                "command": ["pytest"],
-                "exit_code": 0,
-                "collected": 0,
-                "passed": 0,
-                "failed": 0,
-                "skipped": 0,
+                "commands": [
+                    {
+                        "family": "api",
+                        "command": ["pytest", "tests/generated.py"],
+                        "exit_code": 0,
+                        "collected": 1,
+                        "passed": 0,
+                        "failed": 0,
+                        "skipped": 1,
+                    }
+                ]
             },
-            "results": [],
+            "results": [
+                {
+                    "test": "tests/generated.py",
+                    "status": "skipped",
+                    "duration_ms": 0,
+                    "message": "execution asset missing",
+                    "case_id": CASE_ID,
+                }
+            ],
         },
     )
 
@@ -235,8 +264,8 @@ async def test_inspect_integrity_issue_is_critical_manifest_failure() -> None:
     payload = inspect_input(
         message="",
         status="passed",
-        execution=empty_execution(),
-        execution_digest=digest_of(empty_execution()),
+        execution=missing_asset_execution(),
+        execution_digest=digest_of(missing_asset_execution()),
         result_paths={},
         integrity_issues=[
             {

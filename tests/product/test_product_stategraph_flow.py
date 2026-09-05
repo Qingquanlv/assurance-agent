@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterator, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -121,6 +122,7 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         coverage_epoch=epoch,
         repair_round=repair_round,
         batch_id=f"20260905T120{epoch}{repair_round}0Z",
+        executed_at=datetime(2026, 9, 5, 12, epoch, repair_round, tzinfo=UTC),
         final_status=status,  # type: ignore[arg-type]
         evidence_ref=_ref(
             f"qa/changes/CH-DEMO-001/execution/epochs/{epoch}/rounds/{repair_round}/result.json"
@@ -368,7 +370,7 @@ def test_build_product_graphs_rejects_missing_duplicate_and_extra_before_return(
 def test_execute_composes_generation_execution_inspect_and_report() -> None:
     result = invoke_product_root(_product_graphs(), "execute", _public_input("execute"))
     assert ProductPublicOutput.model_validate(result["output"]).status == "completed"
-    assert result["terminal"] == "done"
+    assert result["terminal"] == {"status": "completed", "reason": "done"}
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "reported"
 
 
@@ -378,7 +380,7 @@ def test_repairable_inspection_requires_applied_repair_before_rerun() -> None:
         repair_failure=_applied(),
     )
     result = invoke_product_root(_product_graphs(features), "execute", _public_input("execute"))
-    assert result["terminal"] == "done"
+    assert result["terminal"] == {"status": "completed", "reason": "done"}
     assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 1
 
 
@@ -393,8 +395,24 @@ def test_proposal_only_does_not_enter_rerun() -> None:
         "execute",
         _public_input("execute"),
     )
-    assert result["terminal"] == "not-achieved"
+    assert result["terminal"] == {"status": "failed", "reason": "blocked"}
     assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 0
+
+
+def test_quality_adapter_uses_committed_time_for_hashed_execution_batch() -> None:
+    from assurance_product.graphs.execute import adapt_quality_assess
+
+    execution = ExecutionCycleResultV1.model_validate(_execution()["execution_result"])
+    execution = execution.model_copy(update={"batch_id": "d" * 64})
+    state = {
+        **_public_input("full"),
+        **_generation(),
+        "execution_result": execution.model_dump(mode="json"),
+        "reviewed_case": _reviewed().model_dump(mode="json"),
+    }
+    adapted = adapt_quality_assess(cast(Any, state))
+    assert adapted["batch_id"] == "d" * 64
+    assert adapted["execution_at"] == execution.executed_at.isoformat()
 
 
 def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
@@ -438,13 +456,13 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
     )
     del intake
     result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
-    assert result["terminal"] == "achieved"
+    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
     assert result["coverage_epoch"] == 1
     assert calls == {"prepare": 1, "case": 2}
 
 
 @pytest.mark.parametrize("feature", ["retro", "apply"])
-def test_full_does_not_achieve_when_post_report_work_fails(feature: str) -> None:
+def test_full_does_not_invoke_optional_post_report_work(feature: str) -> None:
     update = {"status": "failed", "attempt_failure": {"kind": "invalid_input"}}
     result = invoke_product_root(
         _product_graphs(
@@ -456,7 +474,7 @@ def test_full_does_not_achieve_when_post_report_work_fails(feature: str) -> None
         "full",
         _public_input("full"),
     )
-    assert result["terminal"] == "not-achieved"
+    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
 
 
 def test_full_case_rejection_does_not_enter_generation() -> None:
@@ -465,7 +483,7 @@ def test_full_case_rejection_does_not_enter_generation() -> None:
         "full",
         _public_input("full"),
     )
-    assert result["terminal"] == "not-achieved"
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert "generation_result" not in result
 
 
@@ -475,7 +493,7 @@ def test_failed_report_never_enters_retro_or_achieved() -> None:
         "full",
         _public_input("full"),
     )
-    assert result["terminal"] == "not-achieved"
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert result.get("report_outcome") in (None, {})
 
 

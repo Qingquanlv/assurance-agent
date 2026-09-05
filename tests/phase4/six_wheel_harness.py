@@ -407,6 +407,7 @@ def _fixture_agent_request() -> AgentRunRequest:
         "scope_id": "CH-DEMO-001",
         "write_root": "qa/changes/CH-DEMO-001/.staging/attempt-1",
         "allowed_outputs": ["review.json"],
+        "read_roots": [],
     }
     workspace_payload["identity_digest"] = canonical_digest(workspace_payload)
     return AgentRunRequest(

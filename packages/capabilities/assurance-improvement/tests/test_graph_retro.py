@@ -30,6 +30,7 @@ from graph_engine.attempts.resolutions import RejectedTaskResult
 from graph_engine.testing import GraphHarness, committed
 
 from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
+    IMPROVEMENT_ID,
     RETRO_ID,
     candidate_payload,
     improvement_projection,
@@ -199,6 +200,28 @@ def reconciled_ledger() -> dict[str, object]:
     }
 
 
+def reconcile_result() -> dict[str, object]:
+    ledger = reconciled_ledger()
+    return {**ledger, "improvement_ids": [IMPROVEMENT_ID], "events": []}
+
+
+def test_reconcile_output_retains_events_and_publishes_only_typed_ledger() -> None:
+    from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
+    from assurance_improvement.graphs.nodes import publish_reconcile
+
+    contract = TASK_ATTEMPT_CONTRACTS["assurance.improvement.reconcile-improvements"]
+    payload = {
+        **reconcile_result(),
+        "events": [{"type": "improvement_proposed", "improvement_id": IMPROVEMENT_ID, "seq": 1}],
+    }
+    result = contract.output_model.model_validate(payload)
+    assert result.model_dump(mode="json")["events"] == payload["events"]
+    ledger = ImprovementLedgerProjection.model_validate(reconciled_ledger())
+    assert publish_reconcile({}, result, _receipt()) == {"ledger": ledger.model_dump(mode="json")}
+    with pytest.raises(ValidationError):
+        contract.output_model.model_validate(reconciled_ledger())
+
+
 def test_named_analysis_reducers_are_deterministic_and_not_a_token_list() -> None:
     first = analysis_agent_output("eval")
     second = {**analysis_agent_output("eval"), "analysis_status": "ok"}
@@ -304,7 +327,7 @@ async def test_retro_traces_collect_three_analyses_reconcile_then_agent() -> Non
             "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconciled_ledger(), receipt)],
+            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
             "improvement.retro": [committed(retro_agent_output(), receipt)],
         },
     )
@@ -363,7 +386,7 @@ async def test_archive_remains_an_independent_graph() -> None:
             "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), _receipt())],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), _receipt())],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), _receipt())],
-            "improvement.retro-reconcile": [committed(reconciled_ledger(), _receipt())],
+            "improvement.retro-reconcile": [committed(reconcile_result(), _receipt())],
             "improvement.retro": [committed(retro_agent_output(), _receipt())],
         },
     )
@@ -421,7 +444,7 @@ async def test_reconcile_receives_assembled_context_not_caller_supplied() -> Non
             "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconciled_ledger(), receipt)],
+            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
             "improvement.retro": [committed(retro_agent_output(), receipt)],
         },
     )
@@ -454,7 +477,7 @@ async def test_rejected_collect_fail_closes_without_later_agents() -> None:
             "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconciled_ledger(), receipt)],
+            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
             "improvement.retro": [committed(retro_agent_output(), receipt)],
         },
     )
@@ -504,7 +527,7 @@ async def test_rejected_analysis_fail_closes_without_later_agents() -> None:
             "improvement.retro-eval-analysis": [RejectedTaskResult(reason="eval analysis rejected")],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
-            "improvement.retro-reconcile": [committed(reconciled_ledger(), receipt)],
+            "improvement.retro-reconcile": [committed(reconcile_result(), receipt)],
             "improvement.retro": [committed(retro_agent_output(), receipt)],
         },
     )

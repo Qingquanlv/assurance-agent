@@ -24,7 +24,7 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from assurance_improvement.contracts.agent import (
     ArchiveResultV1,
@@ -38,8 +38,12 @@ from assurance_improvement.contracts.delivery import (
     MemoryEvalReceipt,
     MemoryRollbackReceipt,
 )
-from assurance_improvement.contracts.improvements import ImprovementLedgerProjection, ImprovementProjection
-from assurance_improvement.contracts.review import ImprovementAutoReviewStatus
+from assurance_improvement.contracts.improvements import (
+    ImprovementLedgerProjection,
+    ImprovementProjection,
+    ReconcileResultV1,
+)
+from assurance_improvement.contracts.review import AppliedAutoReviewV1
 from assurance_improvement.operations.delivery import (
     ApplyMemoryInput,
     EvaluateMemoryInput,
@@ -89,7 +93,7 @@ def _job(
         agent_result_model=result_model,
         output_model=result_model,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
+            parameters={"change_id": "/change_id"},
             reads=("qa",),
             writes=_paths(*outputs),
         ),
@@ -177,7 +181,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
         "assurance.improvement.apply-improvement-auto-review": _task(
             "assurance.improvement.apply-improvement-auto-review",
             ApplyAutoReviewInput,
-            ImprovementAutoReviewStatus,
+            AppliedAutoReviewV1,
         ),
         "assurance.improvement.apply-improvement-review": _task(
             "assurance.improvement.apply-improvement-review",
@@ -202,7 +206,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
         "assurance.improvement.reconcile-improvements": _task(
             "assurance.improvement.reconcile-improvements",
             ReconcileInput,
-            ImprovementLedgerProjection,
+            ReconcileResultV1,
         ),
         "assurance.improvement.retro-collect-v3": _task(
             "assurance.improvement.retro-collect-v3",
@@ -290,7 +294,7 @@ class ClosedImprovementExecutor:
         if outcome.failure is not None:
             raise InputError(outcome.failure.message)
         return ExecutedAttemptResult(
-            output=_coerce_output(self._output_model, outcome.output),
+            output=self._output_model.model_validate(outcome.output),
             effects=tuple(outcome.effects),
         )
 
@@ -358,23 +362,6 @@ def _synthetic_context(context: AttemptExecutionContext) -> TaskContext:
         cancel_requested=lambda: False,
         invocation=invocation,
     )
-
-
-def _coerce_output(model: type[BaseModel], payload: object) -> BaseModel:
-    if payload is None:
-        raise ValueError("handler returned empty output")
-    try:
-        return model.model_validate(payload)
-    except ValidationError:
-        if isinstance(payload, Mapping):
-            for key in ("status", "projection"):
-                nested = payload.get(key)
-                if nested is not None:
-                    try:
-                        return model.model_validate(nested)
-                    except ValidationError:
-                        continue
-        raise
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:

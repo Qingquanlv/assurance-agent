@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import importlib.util
 from collections.abc import Mapping
@@ -10,6 +11,8 @@ from typing import Any
 import pytest
 import yaml
 
+from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
+
 from tests.product.conformance import PREPARE_IDS
 
 REPO = Path(__file__).resolve().parents[2]
@@ -19,6 +22,9 @@ DEPT_REQUIREMENT_PATH = (
     REPO / "benchmark" / "vue-fastapi-admin" / "benchmark" / "requirements" / "dept-management.md"
 )
 DATA_KNOWLEDGE_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "data-knowledge.yaml"
+TEST_RUNTIME_SEED_ROOT = (
+    REPO / "benchmark" / "assurance-product" / "fixtures" / "vue-fastapi-admin-tests-runtime-v1"
+)
 
 FULL_WORKFLOW_REQUIRED_STEPS = (
     "intake.intake",
@@ -145,6 +151,65 @@ def test_opencode_benchmark_is_one_full_locked_item(phase5_manifest):
     assert all(route.worker_profile == "max" for route in item.routing_assignments.values())
 
 
+def test_opencode_benchmark_preserves_three_case_fix_rounds() -> None:
+    spec = importlib.util.spec_from_file_location("phase5_run_item_budget", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    assert '"review_rounds": 3' in runner._WRITE_PRODUCT_INPUT
+
+
+def test_status_projection_round_trips_full_benchmark_steps() -> None:
+    from types import SimpleNamespace
+
+    from assurance_product.status import render_status_from_langgraph
+
+    spec = importlib.util.spec_from_file_location("phase5_run_item_status", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    events = tuple(
+        event
+        for semantic_node_id in FULL_WORKFLOW_REQUIRED_STEPS
+        for event in (
+            AttemptOpened(
+                contract_digest="a" * 64,
+                input_digest="b" * 64,
+                graph_revision="c" * 64,
+                invocation_id="inv-status-round-trip",
+                public_entrypoint="full",
+                semantic_node_id=semantic_node_id,
+            ),
+            AttemptTerminated(
+                resolution_kind="committed",
+                output={"status": "completed"},
+                receipt_id=f"receipt-{semantic_node_id}",
+                receipt_digest="d" * 64,
+            ),
+        )
+    )
+    status = render_status_from_langgraph(
+        invocation_id="inv-status-round-trip",
+        lock_digest="e" * 64,
+        root_input_digest="f" * 64,
+        entrypoint="full",
+        change_id="CH-BENCHMARK-001",
+        status="completed",
+        snapshot=SimpleNamespace(
+            next=(),
+            interrupts=(),
+            values={
+                "terminal": {"status": "completed", "reason": "achieved"},
+                "selected_test_families": ["api", "e2e", "fuzz", "performance"],
+            },
+        ),
+        journal_events=events,
+    )
+
+    assert runner._status_steps(status.model_dump(mode="json")) == FULL_WORKFLOW_REQUIRED_STEPS
+
+
 def test_full_benchmark_requirement_preconfirms_noninteractive_fuzz_and_performance() -> None:
     requirement = DEPT_REQUIREMENT_PATH.read_text(encoding="utf-8")
     assert "POST /api/v1/dept/create" in requirement
@@ -162,6 +227,46 @@ def test_dept_capability_catalog_does_not_publish_missing_api_adapter() -> None:
 
     assert "dept" in capabilities["domain_factories"]
     assert "dept" not in capabilities["adapters"]["api"]
+
+
+def test_dept_runtime_seed_is_closed_versioned_and_contains_no_case_oracle() -> None:
+    manifest_path = TEST_RUNTIME_SEED_ROOT / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    declared_files = manifest["files"]
+    actual_files = {
+        path.relative_to(TEST_RUNTIME_SEED_ROOT).as_posix()
+        for path in TEST_RUNTIME_SEED_ROOT.rglob("*")
+        if path.is_file() and path != manifest_path
+    }
+    knowledge = yaml.safe_load(DATA_KNOWLEDGE_PATH.read_text(encoding="utf-8"))
+
+    def dept_symbols(value: object, *, under_dept: bool = False) -> set[str]:
+        if not isinstance(value, dict):
+            return set()
+        found: set[str] = set()
+        for key, child in value.items():
+            selected = under_dept or key == "dept"
+            if selected and key == "symbol" and isinstance(child, str):
+                found.add(child)
+            found.update(dept_symbols(child, under_dept=selected))
+        return found
+
+    assert manifest["schema_version"] == "vue-fastapi-admin-tests-runtime/v1"
+    assert set(declared_files) == actual_files
+    assert dept_symbols(knowledge) <= set(manifest["symbols"])
+    assert {
+        "tests/__init__.py",
+        "tests/config.py",
+        "tests/conftest.py",
+        "tests/schema_validation.py",
+    } <= actual_files
+    assert not any(
+        part.startswith("test_") or part.startswith("locustfile")
+        for relative in actual_files
+        for part in Path(relative).parts
+    )
+    for relative, expected_digest in declared_files.items():
+        assert hashlib.sha256((TEST_RUNTIME_SEED_ROOT / relative).read_bytes()).hexdigest() == expected_digest
 
 
 def test_runner_resolves_real_sut_without_copying(tmp_path: Path) -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal, Self
 
 from pydantic import Field, model_validator
+from pydantic.types import AwareDatetime
 
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
@@ -18,6 +19,7 @@ class ExecutionCycleResultV1(FrozenModel):
     coverage_epoch: int = Field(ge=0)
     repair_round: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
+    executed_at: AwareDatetime
     final_status: Literal["PASS", "FAIL"]
     evidence_ref: EvidenceArtifactRefV1
     mapping_ref: EvidenceArtifactRefV1

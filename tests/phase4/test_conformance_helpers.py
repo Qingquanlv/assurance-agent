@@ -63,6 +63,7 @@ def _agent_workspace(
         "scope_id": "CH-1",
         "write_root": write_root,
         "allowed_outputs": list(allowed_outputs),
+        "read_roots": [],
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 

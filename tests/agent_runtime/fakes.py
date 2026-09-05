@@ -107,6 +107,7 @@ def _agent_workspace() -> AgentWorkspaceV1:
         "scope_id": "CH-1",
         "write_root": "qa/changes/CH-1/.staging/attempt-1",
         "allowed_outputs": ["result.json"],
+        "read_roots": [],
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 

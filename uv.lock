@@ -287,6 +287,7 @@ dependencies = [
     { name = "graph-engine" },
     { name = "langgraph" },
     { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -299,6 +300,7 @@ requires-dist = [
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "langgraph", specifier = "==1.2.11" },
     { name = "pydantic", specifier = ">=2.7" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]

@@ -481,7 +481,7 @@ def _authenticate_manifest(
     except ValueError as error:
         raise OutputError("generated-files manifest escapes the attempt workspace") from error
     if not path.exists():
-        return
+        raise OutputError(f"generated-files manifest is missing: {relative}")
     path = _workspace_regular_file(workspace, relative)
     try:
         manifest = CodegenAuthoringV1.model_validate(
@@ -537,6 +537,8 @@ class CodegenPrepareHandler:
 
 
 class CodegenFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     def __init__(self, family: Family | None = None) -> None:
         self._family: Family | None = None if family is None else closed_family(family)
 
@@ -548,7 +550,7 @@ class CodegenFinalizeHandler:
             document = _finalize_authoring(payload, family)
             allowed = payload.allowed_paths or payload.artifact_paths
             files = _complete_files(
-                context.project_root,
+                context.write_root,
                 document.files,
                 document.mapping,
                 change_id=document.change_id,
@@ -588,7 +590,7 @@ class CodegenFinalizeHandler:
                     context={"capability_leafs": leafs_of(payload.capability_leafs)},
                 )
             _authenticate_manifest(
-                context.project_root,
+                context.write_root,
                 document=document,
                 capability_leafs=payload.capability_leafs,
             )
@@ -639,6 +641,8 @@ class CodegenFixPrepareHandler:
 
 
 class CodegenFixFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     def __init__(self, family: Family | None = None) -> None:
         self._family: Family | None = None if family is None else closed_fix_family(family)
 
@@ -654,7 +658,7 @@ class CodegenFixFinalizeHandler:
             if payload.baseline_tree_id is None:
                 raise OutputError("codegen-fix requires a baseline tree identity")
             files = _complete_files(
-                context.project_root,
+                context.write_root,
                 document.files,
                 document.mapping,
                 change_id=document.change_id,
@@ -675,7 +679,7 @@ class CodegenFixFinalizeHandler:
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
             _authenticate_manifest(
-                context.project_root,
+                context.write_root,
                 document=document,
                 capability_leafs=payload.capability_leafs,
             )

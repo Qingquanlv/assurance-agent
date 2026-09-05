@@ -184,7 +184,7 @@ def _review_repair_contract(
         key = finding.locator.key
         if not isinstance(key, str) or not key.strip():
             raise InputError("automatic case repair requires an exact locator key")
-        allowed_paths = tuple(sorted({part.strip() for part in key.split(",") if part.strip()}))
+        allowed_paths = tuple(part.strip() for part in key.split(",") if part.strip())
         try:
             actions.append(
                 ReviewRepairActionV1(
@@ -254,6 +254,7 @@ def agent_workspace(
         "scope_id": scope_id,
         "write_root": write_root,
         "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+        "read_roots": (),
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 

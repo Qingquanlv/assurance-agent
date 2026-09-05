@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -26,7 +25,13 @@ from assurance_healing.contracts.application import (
 from assurance_healing.contracts.effects import ProposalApprovedIntentV1
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.operations.agent import agent_workspace, result_contract
-from assurance_healing.operations.common import InputError, OutputError, failed_input, failed_output
+from assurance_healing.operations.common import (
+    InputError,
+    OutputError,
+    failed_input,
+    failed_output,
+    validate_input,
+)
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.resource_loader import resource_text
 from assurance_intake.contracts import build_loop_round_history
@@ -126,22 +131,6 @@ def _prove_implementation_only(before: bytes, after: bytes, symbols: set[str], p
         raise OutputError(f"mapping names a missing existing test identity: {path}")
     if any(symbol.split("::")[-1] not in after_symbols for symbol in symbols):
         raise OutputError(f"repair removes or renames a mapped test identity: {path}")
-
-
-def _finalize_payload(data: object) -> tuple[ApplyTestRepairInputV1, AgentRunResult]:
-    if not isinstance(data, Mapping):
-        raise InputError("application finalize input must be an object")
-    validated = data.get("validated_input")
-    if validated is None:
-        validated = {key: value for key, value in data.items() if key != "agent_result"}
-    agent_result = data.get("agent_result")
-    try:
-        return (
-            ApplyTestRepairInputV1.model_validate(validated),
-            AgentRunResult.model_validate(agent_result),
-        )
-    except ValidationError as error:
-        raise InputError(str(error)) from error
 
 
 def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
@@ -267,10 +256,17 @@ class ApplyTestRepairPrepareHandler:
             return failed_input(InputError(str(error)))
 
 
+class ApplyTestRepairFinalizeInputV1(ApplyTestRepairInputV1):
+    agent_result: AgentRunResult
+
+
 class ApplyTestRepairFinalizeHandler:
+    input_model = ApplyTestRepairFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business, envelope = _finalize_payload(request.input)
+            business = validate_input(ApplyTestRepairFinalizeInputV1, request.input)
+            envelope = business.agent_result
             try:
                 result = TestRepairResultV1.model_validate(thaw_json(envelope.result_payload))
             except ValidationError as error:

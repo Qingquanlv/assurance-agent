@@ -16,6 +16,7 @@ from assurance_improvement.contracts.improvements import (
     ImprovementProjection,
     ImprovementSourceRefs,
     ImprovementState,
+    ReconcileResultV1,
 )
 from assurance_improvement.contracts.knowledge import to_persisted_data_knowledge_proposal
 from assurance_improvement.contracts.retro import (
@@ -558,7 +559,8 @@ class ReconcileImprovementsHandler:
         del context
         try:
             payload = validate_input(ReconcileInput, request.input)
-            return succeeded(reconcile_improvements(payload))
+            result = ReconcileResultV1.model_validate(reconcile_improvements(payload))
+            return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
 

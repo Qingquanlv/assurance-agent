@@ -170,8 +170,8 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         resources = contract.resources
         assert isinstance(resources, ResourceClaimTemplate)
-        assert resources.parameters == {"change_id": "/workspace/scope_id"}
-        assert resources.resolve({"workspace": {"scope_id": change_id}}).writes == catalog.resource_claims(
+        assert resources.parameters == {"change_id": "/change_id"}
+        assert resources.resolve({"change_id": change_id}).writes == catalog.resource_claims(
             contract_id, change_id
         )
 

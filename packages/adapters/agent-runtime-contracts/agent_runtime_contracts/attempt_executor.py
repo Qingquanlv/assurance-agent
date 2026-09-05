@@ -227,11 +227,24 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         graph_revision: str,
         product_lock_digest: str,
     ) -> ResolvedRawAgentExecutor[InputT, PreparedT, AgentResultT, OutputT]:
+        def bind_phase(phase: object) -> object:
+            bind = getattr(phase, "with_host", None)
+            if not callable(bind):
+                return phase
+            return bind(
+                host,
+                graph_revision=graph_revision,
+                product_lock_digest=product_lock_digest,
+            )
+
         return ResolvedRawAgentExecutor(
             self._contract,
-            prepare=self._prepare,
-            runtime=self._runtime,
-            finalize=self._finalize,
+            prepare=cast(PreparePhase[InputT, PreparedT], bind_phase(self._prepare)),
+            runtime=cast(RuntimePhase[PreparedT], bind_phase(self._runtime)),
+            finalize=cast(
+                FinalizePhase[InputT, PreparedT, AgentResultT, OutputT],
+                bind_phase(self._finalize),
+            ),
             result_context=self._result_context,
             host=host,
             graph_revision=graph_revision,
@@ -410,11 +423,17 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         outcome: RawAgentRuntimeOutcome,
         scope: AuthorizedAttemptScope,
     ) -> OutputT | ExecutorResolution:
-        _exact, _digest, agent_result = validate_local_agent_result(
-            thaw_json(outcome.run_result.result_payload),
-            result_model=self._contract.agent_result_model,
-            context=self._result_context,
-        )
+        try:
+            _exact, _digest, agent_result = validate_local_agent_result(
+                thaw_json(outcome.run_result.result_payload),
+                result_model=self._contract.agent_result_model,
+                context=self._result_context,
+            )
+        except (TypeError, ValueError) as error:
+            return PermanentTaskFailure(
+                kind="invalid_output",
+                message=f"invalid agent result: {error}",
+            )
         bundle = RawFinalizeBundle(
             validated_input=validated_input,
             prepared=prepared,
@@ -426,7 +445,7 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         failure = _typed_failure(output)
         if failure is not None:
             return failure
-        return self._contract.output_model.model_validate(output)
+        return self._contract.output_model.model_validate(output, context=self._result_context)
 
 
 __all__ = [

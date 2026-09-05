@@ -102,6 +102,12 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                 },
                 "baseline_tree_id": _HEX,
                 "runner_profile_digest": _HEX,
+                "execution_view_root": (
+                    "qa/changes/CH-DEMO-001/.staging/task/attempt-1/"
+                    "qa/changes/CH-DEMO-001/.staging/execution/batch-1"
+                ),
+                "execution_view_digest": _HEX,
+                "executed_at": "2026-09-05T00:00:00Z",
                 "mapping": {
                     "schema_version": "1",
                     "selected": [],
@@ -124,23 +130,7 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
             "execution_evidence_digest": _HEX,
             "claimed_capabilities": [],
         }
-        base.update(
-            {
-                **prepare,
-                "mapping": {
-                    "schema_version": "1",
-                    "layer": "api",
-                    "entries": [
-                        {
-                            "case_id": "TC-1",
-                            "symbol": "test_users",
-                            "target_file": "tests/api/test_users.py",
-                        }
-                    ],
-                },
-                "prepare": prepare,
-            }
-        )
+        base = {**prepare, "prepare": prepare}
     if wheel == "quality":
         base.update(
             {

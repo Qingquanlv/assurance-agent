@@ -125,14 +125,17 @@ def receipt_counts(
     *,
     exit_code: int,
     collected: int | None = None,
+    passed: int | None = None,
+    failed: int | None = None,
+    skipped: int | None = None,
 ) -> dict[str, int]:
-    passed = sum(1 for item in results if item.status == "passed")
-    failed = sum(1 for item in results if item.status == "failed")
-    skipped = sum(1 for item in results if item.status == "skipped")
+    result_passed = sum(1 for item in results if item.status == "passed")
+    result_failed = sum(1 for item in results if item.status == "failed")
+    result_skipped = sum(1 for item in results if item.status == "skipped")
     return {
         "exit_code": exit_code,
         "collected": collected if collected is not None else len(results),
-        "passed": passed,
-        "failed": failed,
-        "skipped": skipped,
+        "passed": passed if passed is not None else result_passed,
+        "failed": failed if failed is not None else result_failed,
+        "skipped": skipped if skipped is not None else result_skipped,
     }

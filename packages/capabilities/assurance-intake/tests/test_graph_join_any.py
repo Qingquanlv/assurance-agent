@@ -489,6 +489,37 @@ async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
     assert terminal["rounds_used"] == 2
 
 
+async def test_compiled_case_keeps_review_budget_authoritative_when_agent_replays_round_zero() -> None:
+    harness = GraphHarness()
+    bundle = build_intake_graphs(
+        harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
+    )
+    result = await harness.run(
+        bundle.case,
+        input=_prepare_input(),
+        script={
+            "intake.intake": [committed(_artifact(), _RECEIPT)],
+            "intake.explore": [committed(_artifact(), _RECEIPT)],
+            "intake.case-design": [committed(_design(), _RECEIPT) for _index in range(4)],
+            "intake.case-review": [
+                committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
+                committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
+                committed(_review("needs_fix", auto_fix=True, used=0, budget=99), _RECEIPT),
+                committed(_review("pass", used=0, budget=99), _RECEIPT),
+            ],
+        },
+    )
+
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "exhausted"
+    assert terminal["decision"] == "exhausted"
+    assert terminal["rounds_used"] == 2
+    assert terminal["rounds_budget"] == 2
+    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 3
+    assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-review") == 3
+
+
 def test_arrival_contains_required_identity_fields() -> None:
     arrival = _arrival("review-round-advance", epoch=2, sequence=3, used=1)
     assert set(arrival) == {

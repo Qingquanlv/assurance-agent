@@ -36,6 +36,11 @@ class SystemState(TypedDict):
     settled: str
 
 
+class DualSystemState(TypedDict):
+    left: str
+    right: str
+
+
 def _artifact(entrypoints: dict[str, object]) -> BootArtifact:
     names = tuple(entrypoints)
     revision = GraphRevision.build(
@@ -100,6 +105,55 @@ def _system_graph():
     builder.add_node("settle", settle)
     builder.add_edge(START, "settle")
     builder.add_edge("settle", END)
+    return builder.compile(checkpointer=InMemorySaver())
+
+
+def _system_block_graph():
+    def settle(state: SystemState) -> SystemState:
+        raw = interrupt(
+            {
+                "kind": "system_block",
+                "reason": "indeterminate",
+                "reconciliation": {"reference_id": "reconcile-1"},
+            }
+        )
+        return {"settled": str(raw)}
+
+    builder = StateGraph(SystemState)
+    builder.add_node("settle", settle)
+    builder.add_edge(START, "settle")
+    builder.add_edge("settle", END)
+    return builder.compile(checkpointer=InMemorySaver())
+
+
+def _dual_system_graph():
+    def left(state: DualSystemState) -> dict[str, str]:
+        raw = interrupt(
+            {
+                "kind": "system_wake",
+                "reason": "resource_pending",
+                "wakeup": {"reference_id": "wake-left"},
+            }
+        )
+        return {"left": str(raw["wakeup"]["reference_id"])}
+
+    def right(state: DualSystemState) -> dict[str, str]:
+        raw = interrupt(
+            {
+                "kind": "system_wake",
+                "reason": "resource_pending",
+                "wakeup": {"reference_id": "wake-right"},
+            }
+        )
+        return {"right": str(raw["wakeup"]["reference_id"])}
+
+    builder = StateGraph(DualSystemState)
+    builder.add_node("left", left)
+    builder.add_node("right", right)
+    builder.add_edge(START, "left")
+    builder.add_edge(START, "right")
+    builder.add_edge("left", END)
+    builder.add_edge("right", END)
     return builder.compile(checkpointer=InMemorySaver())
 
 
@@ -252,3 +306,50 @@ async def test_system_interrupt_accepts_only_wakeup_envelope(application: Assura
         resume=PendingTaskResult(wakeup=SystemReference(reference_id="wake-1")),
     )
     assert result == InvocationStatus(status="completed")
+
+
+async def test_run_auto_resumes_all_system_wake_interrupts(
+    application: AssuranceApplication,
+) -> None:
+    artifact = _artifact({"execute": _dual_system_graph()})
+    _context, blocked = await _start_and_block(
+        application,
+        artifact,
+        invocation_id="inv-system-multi",
+        entrypoint="execute",
+        graph_input={"left": "", "right": ""},
+    )
+    assert blocked == InvocationStatus(status="blocked", reason="resource_pending")
+
+    result = await application.run(
+        invocation_id="inv-system-multi",
+        execution_factory=_factory(artifact),
+    )
+
+    assert result == InvocationStatus(status="completed")
+    snapshot = await artifact.entrypoints["execute"].aget_state(
+        {"configurable": {"thread_id": "inv-system-multi"}}
+    )
+    assert snapshot.values["left"] == "wake-left"
+    assert snapshot.values["right"] == "wake-right"
+
+
+async def test_run_does_not_auto_resume_system_block(
+    application: AssuranceApplication,
+) -> None:
+    artifact = _artifact({"execute": _system_block_graph()})
+    _context, blocked = await _start_and_block(
+        application,
+        artifact,
+        invocation_id="inv-system-block",
+        entrypoint="execute",
+        graph_input={"settled": ""},
+    )
+    assert blocked == InvocationStatus(status="blocked", reason="indeterminate")
+
+    still_blocked = await application.run(
+        invocation_id="inv-system-block",
+        execution_factory=_factory(artifact),
+    )
+
+    assert still_blocked == blocked

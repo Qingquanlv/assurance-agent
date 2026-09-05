@@ -170,6 +170,7 @@ class AgentWorkspaceV1(FrozenModel):
     scope_id: str
     write_root: str
     allowed_outputs: tuple[str, ...]
+    read_roots: tuple[str, ...] = ()
     identity_digest: str = Field(pattern=_SHA256_PATTERN)
 
     @field_validator("write_root")
@@ -190,6 +191,16 @@ class AgentWorkspaceV1(FrozenModel):
             raise ValueError("allowed outputs must be sorted exact logical paths")
         if len(set(normalized)) != len(normalized):
             raise ValueError("allowed outputs must be unique exact logical paths")
+        return normalized
+
+    @field_validator("read_roots")
+    @classmethod
+    def _validate_read_roots(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(_validate_project_relative_path(value) for value in values)
+        if normalized != tuple(sorted(normalized)):
+            raise ValueError("read roots must be sorted exact project-relative paths")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("read roots must be unique exact project-relative paths")
         return normalized
 
     @model_validator(mode="after")

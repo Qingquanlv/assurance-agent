@@ -41,12 +41,19 @@ def _evidence(*, case_id: str = "TC_A", case_type: str = "api") -> ExecutionEvid
             "runner_profile_digest": _SHA,
             "receipt_digest": _SHA,
             "receipt": {
-                "command": ("pytest",),
-                "exit_code": 0,
-                "collected": 1,
-                "passed": 1,
-                "failed": 0,
-                "skipped": 0,
+                "commands": [
+                    {
+                        "family": "api",
+                        **{
+                            "command": ("pytest",),
+                            "exit_code": 0,
+                            "collected": 1,
+                            "passed": 1,
+                            "failed": 0,
+                            "skipped": 0,
+                        },
+                    }
+                ]
             },
             "results": (
                 {

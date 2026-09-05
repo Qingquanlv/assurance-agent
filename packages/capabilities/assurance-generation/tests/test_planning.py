@@ -162,7 +162,7 @@ async def test_plan_prepare_hydrates_family_input_from_reviewed_workspace_cases(
 @pytest.mark.asyncio
 async def test_plan_finalize_accepts_typed_family_plan(family: str, tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    files = _write_plan_package(project, family)
+    files = _write_plan_package(write_root, family)
     executed = await execute_task(
         planning_handler(family, "finalize"),
         fake_agent_result(valid_plan_result(family), artifact_paths=list(files)),
@@ -180,10 +180,10 @@ async def test_plan_finalize_rejects_malformed_closed_codegen_mapping(tmp_path: 
     project, write_root = dual_roots(tmp_path)
     files = family_plan_files("e2e")
     for relative in files:
-        path = project / relative
+        path = write_root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ok\n", encoding="utf-8")
-    mapping = project / "qa/changes/CH-DEMO-001/plans/e2e-codegen-mapping.json"
+    mapping = write_root / "qa/changes/CH-DEMO-001/plans/e2e-codegen-mapping.json"
     mapping.write_text(
         json.dumps(
             {
@@ -238,7 +238,7 @@ async def test_performance_plan_finalize_rejects_unknown_scenario_capability(
 @pytest.mark.asyncio
 async def test_plan_finalize_accepts_files_below_declared_artifact_root(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    _write_plan_package(project, "api")
+    _write_plan_package(write_root, "api")
     executed = await execute_task(
         planning_handler("api", "finalize"),
         fake_agent_result(valid_plan_result("api"), artifact_paths=["qa/changes"]),

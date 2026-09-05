@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SourceCodeEvidenceV1(BaseModel):
@@ -33,10 +33,38 @@ class CaseDesignGuidanceV1(BaseModel):
     regression_focus: list[Any]
 
 
+class TestScopeV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    in_scope: list[str]
+    out_of_scope: list[str]
+
+
+class LayerRecommendationV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    layer: Literal["API", "E2E", "Fuzz", "Performance"]
+    recommended: bool
+    rationale: str = Field(min_length=1)
+    evidence_ids: list[str]
+
+
 class TestStrategyV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    layer_recommendation: list[Any] = Field(min_length=1)
+    scope: TestScopeV1 | None
+    data_focus: list[str]
+    depth: Literal["smoke", "core", "exhaustive"]
+    layer_recommendation: list[LayerRecommendationV1] = Field(min_length=4, max_length=4)
+    approach: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _all_layers_once(self) -> TestStrategyV1:
+        layers = tuple(item.layer for item in self.layer_recommendation)
+        expected = ("API", "E2E", "Fuzz", "Performance")
+        if layers != expected:
+            raise ValueError("layer_recommendation must list API, E2E, Fuzz, Performance once")
+        return self
 
 
 class ExploreAdvisoryV1(BaseModel):

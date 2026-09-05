@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_generation.contracts import CodegenMapping, LayerName
+from assurance_generation.contracts import LayerName
 from assurance_healing.contracts.coverage_repair import (
     CoverageRepairApplySummary,
     CoverageRepairBaseline,
     CoverageRepairBrief,
 )
-from assurance_healing.contracts.effects import ProposalApprovedIntentV1
 from assurance_healing.contracts.proposal import FixProposalSummary
 from assurance_healing.contracts.wire import FrozenContract, HexDigest, validate_repo_path
 from assurance_intake.contracts import NonEmptyStr
@@ -98,45 +97,9 @@ class FixProposalInputV1(FrozenModel):
         return roots
 
 
-class AgentFinalizeInputV1(FrozenModel):
+class FixProposalFinalizeInputV1(FixProposalInputV1):
     agent_result: AgentRunResult
-    change_id: str = Field(min_length=1)
-    owner_id: str = Field(min_length=1)
-    capability_leafs: tuple[str, ...]
-    allowed_paths: tuple[str, ...]
-    allowed_roots: tuple[str, ...]
-    baseline_digest: HexDigest
-    candidate_digest: HexDigest
-    policy_digest: HexDigest
-    mapping_paths: tuple[str, ...]
-    require_approval: bool = True
-    execution_evidence_digest: HexDigest
-    claimed_capabilities: tuple[str, ...] = ()
-    artifact_paths: tuple[str, ...] = ()
     prepare: FixProposalInputV1
-    mapping: CodegenMapping
-    approval: ProposalApprovedIntentV1 | None = None
-
-    @model_validator(mode="after")
-    def _require_approval_binding(self) -> Self:
-        if self.require_approval and self.approval is None:
-            raise ValueError("require_approval requires an authenticated approval binding")
-        return self
-
-    @field_validator("capability_leafs", "claimed_capabilities")
-    @classmethod
-    def _leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _sorted_unique(value, label="capability") if value else ()
-
-    @field_validator("allowed_paths", "mapping_paths", "artifact_paths")
-    @classmethod
-    def _paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _canonical_paths(value) if value else ()
-
-    @field_validator("allowed_roots")
-    @classmethod
-    def _roots(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _sorted_unique(value, label="allowed root")
 
 
 class CoverageRepairInputV1(FrozenModel):
@@ -262,7 +225,7 @@ class CoverageRepairSafetyInputV1(FrozenModel):
 
 __all__ = [
     "AgentBindingDataV1",
-    "AgentFinalizeInputV1",
+    "FixProposalFinalizeInputV1",
     "AllocateHealingInputV1",
     "CoverageRepairAllocateInputV1",
     "CoverageRepairFinalizeInputV1",

@@ -10,7 +10,6 @@ from pydantic import ValidationError
 
 from assurance_improvement.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS,
-    _coerce_output,
     close_improvement_task,
     select_evaluate_memory,
 )
@@ -143,10 +142,9 @@ def test_offline_benchmark_eval_comparator_is_not_this_handler() -> None:
     assert "assurance.improvement.evaluate-benchmark" not in TASK_ATTEMPT_CONTRACTS
 
 
-def test_coerce_output_rejects_field_subset_after_validation_fails() -> None:
+def test_eval_output_contract_rejects_undeclared_fields() -> None:
     with pytest.raises(ValidationError):
-        _coerce_output(
-            MemoryEvalReceipt,
+        TASK_ATTEMPT_CONTRACTS[_EVALUATE_ID].output_model.model_validate(
             {
                 "eval_run_id": "eval-1",
                 "outcome": "passed",

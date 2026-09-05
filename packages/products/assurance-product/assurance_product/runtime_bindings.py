@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
+from copy import copy
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, Generic, TypeVar, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -27,8 +29,15 @@ from graph_engine.attempts import (
     TaskAttemptContract,
     resolve_contract,
 )
+from graph_engine.attempts.host_protocol import (
+    AttemptRootDescriptor,
+    TaskActivityRpcIdentity,
+    TaskHostCallIdentity,
+    TaskHostExecuteCall,
+    current_bound_identity,
+)
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.composition import CapabilityBindingEntry, FrozenComposition
+from graph_engine.composition import CapabilityBindingEntry, FrozenComposition, TaskHandlerEntry
 from graph_engine.frozen_json import thaw_json as thaw_frozen
 from graph_engine.plugin_api import (
     InvocationMetadata,
@@ -41,10 +50,18 @@ from assurance_product.agent_contracts import (
     all_feature_agent_contracts,
     all_feature_task_contracts,
 )
+from assurance_product.models import (
+    ADAPTER_BINDING_RESOURCE_ID,
+    CONFIGURATION_PLUGIN_ID,
+    PLUGIN_ID,
+    OpenCodeBindingV1,
+)
 
 _RUNTIME_HANDLER_ID = "runtime.opencode.execute"
 _PROVIDER = "opencode"
 _ACTIVITY_RECOVERY = "adopt-observe-reconcile-v1"
+_CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
+_FinalOutputT = TypeVar("_FinalOutputT", bound=BaseModel)
 
 
 def _contract_digest(contract: AgentExecutionContract[Any, Any, Any]) -> str:
@@ -199,6 +216,39 @@ def runtime_bindings_from_composition(
     return MappingProxyType(resolved)
 
 
+def _adapter_binding_from_composition(composition: FrozenComposition) -> OpenCodeBindingV1:
+    entry = composition.registries.resources.entries.get(ADAPTER_BINDING_RESOURCE_ID)
+    if entry is None:
+        raise ValueError("authenticated OpenCode adapter binding is missing")
+    if entry.owner_id != PLUGIN_ID or entry.media_type != "application/json":
+        raise ValueError("authenticated OpenCode adapter binding identity drifted")
+    return OpenCodeBindingV1.model_validate_json(entry.content)
+
+
+def _attempt_validation_context(composition: FrozenComposition) -> Mapping[str, object]:
+    entry = composition.registries.resources.entries.get(_CAPABILITY_CATALOG_RESOURCE_ID)
+    if entry is None:
+        raise ValueError("authenticated capability catalog is missing")
+    if entry.owner_id != CONFIGURATION_PLUGIN_ID or entry.media_type != "application/json":
+        raise ValueError("authenticated capability catalog identity drifted")
+    try:
+        document = json.loads(entry.content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("authenticated capability catalog is not canonical JSON") from error
+    if not isinstance(document, Mapping) or set(document) != {"schema_version", "typed_leafs"}:
+        raise ValueError("authenticated capability catalog shape drifted")
+    if document.get("schema_version") != "1":
+        raise ValueError("authenticated capability catalog schema_version drifted")
+    leafs = document.get("typed_leafs")
+    if not isinstance(leafs, list) or any(
+        not isinstance(item, str) or not item or item != item.strip() or "." not in item for item in leafs
+    ):
+        raise ValueError("authenticated capability catalog typed_leafs are invalid")
+    if leafs != sorted(set(leafs)):
+        raise ValueError("authenticated capability catalog typed_leafs are not canonical")
+    return MappingProxyType({"capability_leafs": frozenset(leafs)})
+
+
 def raw_agent_runtime_binding_rows(
     composition: FrozenComposition,
 ) -> tuple[RawAgentRuntimeBindingProjectionV1, ...]:
@@ -259,8 +309,9 @@ def _task_request(
     scope: AuthorizedAttemptScope,
     binding_data: object = None,
     task_id: str,
+    lock_digest: str | None = None,
 ) -> TaskRequest:
-    digest = scope.workspace.identity.identity_digest
+    digest = lock_digest or scope.workspace.identity.identity_digest
     invocation = InvocationMetadata(
         invocation_id=scope.execution.invocation_id,
         lock_digest=digest,
@@ -280,6 +331,111 @@ def _task_request(
     )
 
 
+def _attempt_root(scope: AuthorizedAttemptScope) -> AttemptRootDescriptor:
+    workspace = scope.workspace
+    return AttemptRootDescriptor(
+        workspace_identity=workspace.identity,
+        project_root_identity=workspace.project_root_identity,
+        write_root_identity=workspace.write_root_identity,
+        project_root_digest=workspace.identity.project_digest,
+        write_root_digest=workspace.identity.write_root_digest,
+        baseline_digest=canonical_digest(
+            [item.model_dump(mode="json") for item in workspace.identity.baseline_files]
+        ),
+    )
+
+
+class _HostBackedInstalledPhase:
+    def __init__(
+        self,
+        handler_id: str,
+        handler: object,
+        *,
+        phase: str,
+        callable_path: str | None = None,
+        secret_handles: tuple[str, ...] = (),
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self.handler_id = handler_id
+        self._handler = handler
+        self._phase = phase
+        self._callable_path = callable_path or (
+            f"{type(handler).__module__}:{type(handler).__qualname__}.execute"
+        )
+        self._secret_handles = tuple(sorted(secret_handles))
+        self._timeout_seconds = timeout_seconds
+        self._host: object | None = None
+        self._graph_revision = ""
+        self._product_lock_digest = ""
+
+    def with_host(
+        self,
+        host: object,
+        *,
+        graph_revision: str,
+        product_lock_digest: str,
+    ) -> _HostBackedInstalledPhase:
+        bound = copy(self)
+        bound._host = host
+        bound._graph_revision = graph_revision
+        bound._product_lock_digest = product_lock_digest
+        return bound
+
+    @property
+    def lock_digest(self) -> str | None:
+        return self._product_lock_digest or None
+
+    async def _invoke(self, request: TaskRequest, scope: AuthorizedAttemptScope) -> TaskOutcome:
+        if self._host is None:
+            return await self._handler.execute(request, _task_context(scope))  # type: ignore[attr-defined]
+        authorization_id = scope.execution.authorization_id
+        if authorization_id is None:
+            raise ValueError("host-backed phase requires an authorized Attempt")
+        request_digest = canonical_digest(cast(JSONValue, request.model_dump(mode="json")))
+        activity_id = scope.execution.attempt_key.digest if self._phase == "runtime" else None
+        bound = current_bound_identity(
+            attempt_key_digest=scope.execution.attempt_key.digest,
+            authorization_id=authorization_id,
+            workspace_identity_digest=scope.workspace.identity.identity_digest,
+            request_digest=request_digest,
+            graph_revision=self._graph_revision,
+            product_lock_digest=self._product_lock_digest,
+            handler_id=self.handler_id,
+            fencing_token=scope.execution.fencing_token,
+            phase=cast(Any, self._phase),
+        )
+        identity = TaskHostCallIdentity(
+            invocation_id=scope.execution.invocation_id,
+            task_id=request.task_id,
+            activation_id=scope.execution.semantic_node_id,
+            attempt=scope.workspace.identity.attempt,
+            activity_id=activity_id,
+            operation="execute",
+            **bound,  # type: ignore[arg-type]
+        )
+        call = TaskHostExecuteCall(
+            identity=identity,
+            capability_id=self.handler_id,
+            capability_entrypoint=self._callable_path,
+            request=request,
+            attempt_root=_attempt_root(scope),
+            activity_rpc=TaskActivityRpcIdentity(
+                invocation_id=identity.invocation_id,
+                task_id=identity.task_id,
+                activation_id=identity.activation_id,
+                attempt=identity.attempt,
+                activity_id=identity.activity_id,
+                **bound,  # type: ignore[arg-type]
+            ),
+            authorized_secret_handles=(self._secret_handles if self._phase == "runtime" else ()),
+            timeout_seconds=self._timeout_seconds,
+        )
+        result = await self._host.execute(call)  # type: ignore[attr-defined]
+        if result.operation != "execute" or result.outcome is None:
+            raise ValueError("task execution host returned an invalid execute result")
+        return result.outcome
+
+
 def _outcome_failure(outcome: TaskOutcome) -> PermanentTaskFailure | None:
     if outcome.failure is None:
         return None
@@ -297,10 +453,23 @@ def _outcome_failure(outcome: TaskOutcome) -> PermanentTaskFailure | None:
     return PermanentTaskFailure(kind=kind, message=outcome.failure.message)
 
 
-class InstalledPreparePhase:
-    def __init__(self, handler_id: str, handler: object, binding_data: object) -> None:
-        self.handler_id = handler_id
-        self._handler = handler
+class InstalledPreparePhase(_HostBackedInstalledPhase):
+    def __init__(
+        self,
+        handler_id: str,
+        handler: object,
+        binding_data: object,
+        *,
+        callable_path: str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        super().__init__(
+            handler_id,
+            handler,
+            phase="prepare",
+            callable_path=callable_path,
+            timeout_seconds=timeout_seconds,
+        )
         self._binding_data = binding_data
 
     async def execute(
@@ -314,19 +483,35 @@ class InstalledPreparePhase:
             scope=scope,
             binding_data=self._binding_data,
             task_id=phase_task_id(scope.execution.attempt_key, "prepare", self.handler_id),
+            lock_digest=self.lock_digest,
         )
-        outcome = await self._handler.execute(request, _task_context(scope))  # type: ignore[attr-defined]
+        outcome = await self._invoke(request, scope)
         failure = _outcome_failure(outcome)
         if failure is not None:
             return failure
         return AgentRunRequest.model_validate(outcome.output)
 
 
-class InstalledRuntimePhase:
-    def __init__(self, handler_id: str, handler: object, binding: AgentRuntimeBinding) -> None:
-        self.handler_id = handler_id
-        self._handler = handler
-        self._binding = binding
+class InstalledRuntimePhase(_HostBackedInstalledPhase):
+    def __init__(
+        self,
+        handler_id: str,
+        handler: object,
+        binding_data: object,
+        *,
+        callable_path: str | None = None,
+        secret_handles: tuple[str, ...] = (),
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        super().__init__(
+            handler_id,
+            handler,
+            phase="runtime",
+            callable_path=callable_path,
+            secret_handles=secret_handles,
+            timeout_seconds=timeout_seconds,
+        )
+        self._binding_data = binding_data
 
     async def execute(
         self,
@@ -337,14 +522,11 @@ class InstalledRuntimePhase:
             capability_id=self.handler_id,
             payload=prepared.model_dump(mode="json"),
             scope=scope,
-            binding_data={
-                "provider": self._binding.provider,
-                "model": self._binding.model,
-                "secret_handles": list(self._binding.secret_handles),
-            },
+            binding_data=self._binding_data,
             task_id=phase_task_id(scope.execution.attempt_key, "runtime", self.handler_id),
+            lock_digest=self.lock_digest,
         )
-        outcome = await self._handler.execute(request, _task_context(scope))  # type: ignore[attr-defined]
+        outcome = await self._invoke(request, scope)
         failure = _outcome_failure(outcome)
         if failure is not None:
             return failure
@@ -358,39 +540,78 @@ class InstalledRuntimePhase:
         )
 
 
-class InstalledFinalizePhase:
-    def __init__(self, handler_id: str, handler: object, output_model: type[BaseModel]) -> None:
-        self.handler_id = handler_id
-        self._handler = handler
-        self._output_model = output_model
+class InstalledFinalizePhase(_HostBackedInstalledPhase, Generic[_FinalOutputT]):
+    def __init__(
+        self,
+        handler_id: str,
+        handler: object,
+        output_model: type[_FinalOutputT],
+        *,
+        callable_path: str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        super().__init__(
+            handler_id,
+            handler,
+            phase="finalize",
+            callable_path=callable_path,
+            timeout_seconds=timeout_seconds,
+        )
+        del output_model
 
     async def execute(
         self,
         bundle: RawFinalizeBundle[Any, Any, Any],
         scope: AuthorizedAttemptScope,
-    ) -> BaseModel | PermanentTaskFailure:
-        payload = {
-            "agent_result": bundle.run_evidence.model_dump(mode="json"),
-            "prepared": (
-                bundle.prepared.model_dump(mode="json")
-                if isinstance(bundle.prepared, BaseModel)
-                else bundle.prepared
-            ),
-            "validated_input": bundle.validated_input.model_dump(mode="json"),
+    ) -> _FinalOutputT | PermanentTaskFailure:
+        input_model = getattr(self._handler, "input_model", None)
+        if not isinstance(input_model, type) or not issubclass(input_model, BaseModel):
+            return PermanentTaskFailure(
+                kind="configuration",
+                message=f"finalize handler does not declare an input model: {self.handler_id}",
+            )
+        locked_input = bundle.validated_input.model_dump(mode="json")
+        prepared_business: dict[str, object] = {}
+        if isinstance(bundle.prepared, AgentRunRequest):
+            for instruction in bundle.prepared.instructions:
+                raw = thaw_frozen(instruction.json_content)
+                if not isinstance(raw, Mapping):
+                    continue
+                for name in input_model.model_fields:
+                    if name in {"agent_result", "prepare"} or name not in raw:
+                        continue
+                    value = raw[name]
+                    if name in prepared_business and prepared_business[name] != value:
+                        return PermanentTaskFailure(
+                            kind="invalid_input",
+                            message=f"prepared business field is ambiguous: {name}",
+                        )
+                    prepared_business[name] = value
+        projected = {
+            name: value
+            for name, value in locked_input.items()
+            if name in input_model.model_fields and name != "agent_result"
         }
+        projected.update(prepared_business)
+        projected["agent_result"] = bundle.run_evidence.model_dump(mode="json")
+        if "prepare" in input_model.model_fields:
+            projected["prepare"] = {**locked_input, **prepared_business}
+        try:
+            payload = input_model.model_validate(projected).model_dump(mode="json")
+        except ValidationError as error:
+            return PermanentTaskFailure(kind="invalid_input", message=str(error))
         request = _task_request(
             capability_id=self.handler_id,
             payload=payload,
             scope=scope,
             task_id=phase_task_id(scope.execution.attempt_key, "finalize", self.handler_id),
+            lock_digest=self.lock_digest,
         )
-        outcome = await self._handler.execute(request, _task_context(scope))  # type: ignore[attr-defined]
+        outcome = await self._invoke(request, scope)
         failure = _outcome_failure(outcome)
         if failure is not None:
             return failure
-        if isinstance(outcome.output, self._output_model):
-            return outcome.output
-        return self._output_model.model_validate(outcome.output)
+        return cast(_FinalOutputT, outcome.output)
 
 
 class DeterministicTaskExecutor:
@@ -417,67 +638,95 @@ class DeterministicTaskExecutor:
         if failure is not None:
             return failure
         return ExecutedAttemptResult(
-            output=_coerce_output(self._output_model, outcome.output),
+            output=self._output_model.model_validate(outcome.output),
             effects=tuple(outcome.effects),
         )
 
 
-def _coerce_output(model: type[BaseModel], payload: object) -> BaseModel:
-    if payload is None:
-        raise ValueError("handler returned empty output")
-    if isinstance(payload, model):
-        return payload
-    try:
-        return model.model_validate(payload)
-    except ValidationError:
-        if isinstance(payload, Mapping):
-            for key in ("status", "projection"):
-                nested = payload.get(key)
-                if nested is not None:
-                    try:
-                        return model.model_validate(nested)
-                    except ValidationError:
-                        continue
-        raise
+def _installed_handler(
+    composition: FrozenComposition,
+    handler_id: str,
+) -> tuple[object, str]:
+    entry = composition.registries.capabilities.entries.get(handler_id)
+    if not isinstance(entry, TaskHandlerEntry):
+        raise ValueError(f"installed task handler entry is missing: {handler_id}")
+    return entry.handler, entry.provenance.callable_path
+
+
+def _binding_timeout(binding_data: object) -> float:
+    if not isinstance(binding_data, Mapping):
+        raise ValueError("binding data is not a mapping")
+    execution = binding_data.get("execution")
+    if not isinstance(execution, Mapping):
+        raise ValueError("binding execution is not a mapping")
+    limits = execution.get("limits")
+    if not isinstance(limits, Mapping):
+        raise ValueError("binding execution limits are not a mapping")
+    value = limits.get("max_seconds")
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        raise ValueError("binding execution max_seconds is invalid")
+    timeout = float(value)
+    if timeout <= 0 or timeout > 3600:
+        raise ValueError("binding execution max_seconds is outside the host limit")
+    return timeout
 
 
 def _resolve_agent_contract(
     contract: AgentExecutionContract[Any, Any, Any],
     binding: AgentRuntimeBinding,
     composition: FrozenComposition,
+    adapter_binding: OpenCodeBindingV1,
+    validation_context: Mapping[str, object],
 ) -> ResolvedAttemptContract[Any, Any]:
-    handlers = composition.registries.capabilities.task_handlers
     entries = _capability_bindings(composition)
     binding_data = thaw_frozen(entries[contract.contract_id].data)
+    timeout_seconds = _binding_timeout(binding_data)
+    prepare_handler, prepare_callable = _installed_handler(composition, contract.prepare_handler_id)
+    runtime_handler, runtime_callable = _installed_handler(composition, binding.runtime_handler_id)
+    finalize_handler, finalize_callable = _installed_handler(composition, contract.finalize_handler_id)
     executor = ResolvedRawAgentExecutor(
         contract,
         prepare=InstalledPreparePhase(
             contract.prepare_handler_id,
-            handlers[contract.prepare_handler_id],
+            prepare_handler,
             binding_data,
+            callable_path=prepare_callable,
+            timeout_seconds=timeout_seconds,
         ),
         runtime=InstalledRuntimePhase(
             binding.runtime_handler_id,
-            handlers[binding.runtime_handler_id],
-            binding,
+            runtime_handler,
+            adapter_binding.model_dump(mode="json"),
+            callable_path=runtime_callable,
+            secret_handles=binding.secret_handles,
+            timeout_seconds=timeout_seconds,
         ),
         finalize=InstalledFinalizePhase(
             contract.finalize_handler_id,
-            handlers[contract.finalize_handler_id],
+            finalize_handler,
             contract.output_model,
+            callable_path=finalize_callable,
+            timeout_seconds=timeout_seconds,
         ),
+        result_context=validation_context,
     )
-    return executor.resolve()
+    return resolve_contract(
+        executor.to_task_contract(),
+        executor=executor,
+        validation_context=validation_context,
+    )
 
 
 def _resolve_task_contract(
     contract: TaskAttemptContract[Any, Any],
     composition: FrozenComposition,
+    validation_context: Mapping[str, object],
 ) -> ResolvedAttemptContract[Any, Any]:
     handler = composition.registries.capabilities.task_handlers[contract.handler_id]
     return resolve_contract(
         contract,
         executor=DeterministicTaskExecutor(contract.handler_id, handler, contract.output_model),
+        validation_context=validation_context,
     )
 
 
@@ -491,6 +740,8 @@ def boot_semantic_attempt_contracts(
     for binding in catalog.values():
         _authenticate_runtime_binding(composition, binding)
     _require_opencode_composition(composition)
+    adapter_binding = _adapter_binding_from_composition(composition)
+    validation_context = _attempt_validation_context(composition)
     agents = all_feature_agent_contracts()
     authenticate_raw_agent_runtime_bindings(
         tuple(
@@ -502,9 +753,15 @@ def boot_semantic_attempt_contracts(
     )
     resolved: dict[str, ResolvedAttemptContract[Any, Any]] = {}
     for contract_id, binding in catalog.items():
-        resolved[contract_id] = _resolve_agent_contract(agents[contract_id], binding, composition)
+        resolved[contract_id] = _resolve_agent_contract(
+            agents[contract_id], binding, composition, adapter_binding, validation_context
+        )
     for contract in all_feature_task_contracts().values():
-        resolved[contract.contract_id] = _resolve_task_contract(contract, composition)
+        resolved[contract.contract_id] = _resolve_task_contract(
+            contract,
+            composition,
+            validation_context,
+        )
     if len(resolved) != 46:
         raise ValueError(f"semantic attempt registry must contain 46 contracts, got {len(resolved)}")
     return MappingProxyType(resolved)

@@ -14,6 +14,7 @@ from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_improvement.contracts.retro import RetroWindow
+from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
 
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
@@ -54,6 +55,7 @@ PLUGIN_ID = "assurance.product.agent"
 PLUGIN_VERSION = "1.1.0"
 CONFIGURATION_PLUGIN_ID = "assurance.product.configuration"
 CONFIGURATION_PLUGIN_VERSION = "1.0.0"
+ADAPTER_BINDING_RESOURCE_ID = "assurance.product.agent.adapter-binding"
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _ROUTING_MARKERS = (",", ";", "|", "->", "fallback", "route:", "candidates")
@@ -623,6 +625,33 @@ class PendingInterruptStatusV1(FrozenModel):
     reason_category: str
 
 
+class ExecutionGateRefV1(FrozenModel):
+    semantic_node_id: Literal["execution.execute", "execution.run"]
+    batch_id: str = Field(min_length=1)
+    execution_digest: str = Field(pattern=_SHA256)
+
+
+class QualityGateRefV1(FrozenModel):
+    inspection: InspectionOutcomeV1
+    report: ReportOutcomeV1
+
+    @model_validator(mode="after")
+    def _same_inspection(self) -> QualityGateRefV1:
+        if (
+            self.inspection.change_id,
+            self.inspection.coverage_epoch,
+            self.inspection.batch_id,
+            self.inspection.inspection_receipt,
+        ) != (
+            self.report.change_id,
+            self.report.coverage_epoch,
+            self.report.batch_id,
+            self.report.inspection_receipt,
+        ):
+            raise ValueError("report must bind the current inspection")
+        return self
+
+
 class ChangeProjectionV1(FrozenModel):
     change_id: str
     state: Literal["running", "blocked", "interrupted", "stopped", "failed", "achieved"]
@@ -681,6 +710,8 @@ class StatusV1(FrozenModel):
     coverage_progress: CoverageProgressV1 | None
     durable_effects: tuple[EffectStatusV1, ...]
     adapter_evidence: tuple[AdapterEvidenceRefV1, ...]
+    execution_gate: ExecutionGateRefV1 | None
+    quality_gate: QualityGateRefV1 | None
     pending_interrupt: PendingInterruptStatusV1 | None
     terminal_reason: str | None
     change: ChangeProjectionV1

@@ -16,7 +16,12 @@ from assurance_generation.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS,
     attempt_contract_refs,
 )
-from assurance_generation.contracts.codegen import CodegenResultV1
+from assurance_generation.contracts.codegen import (
+    CodegenAuthoringV1,
+    CodegenFixCandidateV1,
+    CodegenResultV1,
+    CodegenResultV2,
+)
 from assurance_generation.contracts.decisions import (
     GenerationCompletionOutput,
     GenerationReviewRoundAdvanceOutput,
@@ -24,7 +29,7 @@ from assurance_generation.contracts.decisions import (
     complete_generation,
 )
 from assurance_generation.contracts.plans import PlanResultV1
-from assurance_generation.contracts.reviews import PlanReview
+from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
 from assurance_generation.operations.workflow_state import (
     GenerationCompleteHandler,
     GenerationReviewRoundAdvanceHandler,
@@ -104,21 +109,22 @@ def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:
             assert contract.skill_id == f"aa-{family}-plan"
         elif stage == "plan-review":
             assert contract.input_model is PlanInputV1
-            assert contract.agent_result_model is PlanReview
+            assert contract.agent_result_model is PlanReviewAuthoring
             assert contract.output_model is PlanReview
             assert contract.agent_profile == _PLAN_REVIEW_PROFILE
             assert contract.skill_id == f"aa-{family}-plan-reviewer"
         elif stage == "codegen":
             assert contract.input_model is CodegenInputV1
-            assert contract.agent_result_model is CodegenResultV1
-            assert contract.output_model is CodegenResultV1
+            assert contract.agent_result_model is CodegenAuthoringV1
+            expected_output = CodegenResultV2 if family in {"api", "e2e"} else CodegenResultV1
+            assert contract.output_model is expected_output
             assert contract.agent_profile == _CODEGEN_PROFILE
             assert contract.skill_id == f"aa-{family}-codegen"
         else:
             assert stage == "codegen-fix"
             assert contract.input_model is CodegenFixInputV1
-            assert contract.agent_result_model is CodegenResultV1
-            assert contract.output_model is CodegenResultV1
+            assert contract.agent_result_model is CodegenAuthoringV1
+            assert contract.output_model is CodegenFixCandidateV1
             assert contract.agent_profile == _CODEGEN_PROFILE
             assert contract.skill_id == f"aa-{family}-codegen-fixer"
 

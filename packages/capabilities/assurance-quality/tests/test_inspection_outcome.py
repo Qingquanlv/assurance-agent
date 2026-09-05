@@ -286,6 +286,26 @@ async def test_prepare_rejects_assessment_evidence_that_changed_after_materializ
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("handler_type", [FactBaselineFinalizeHandler, InspectFinalizeHandler])
+async def test_assessment_finalizer_rejects_wrapped_input(tmp_path: Path, handler_type) -> None:
+    business = _assessment_business(tmp_path).model_dump(mode="json")
+    result = await execute_task(
+        handler_type(),
+        cast(
+            JSONValue,
+            {
+                "validated_input": business,
+                "prepared": business,
+                "agent_result": _agent_run({"source": "unavailable", "change_id": MATERIALIZED_CHANGE_ID}),
+            },
+        ),
+        tmp_path,
+    )
+    assert result.failure is not None
+    assert result.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
 async def test_finalize_authenticates_baseline_and_builds_deterministic_inspection(
     tmp_path: Path,
 ) -> None:
@@ -339,9 +359,8 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
         cast(
             JSONValue,
             {
-                "validated_input": inspect_business.model_dump(mode="json"),
+                **inspect_business.model_dump(mode="json"),
                 "agent_result": _agent_run(inspection_document),
-                "prepared": {},
             },
         ),
         tmp_path,

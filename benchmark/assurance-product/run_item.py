@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from fnmatch import fnmatchcase
+import hashlib
+from importlib.resources import files
 import json
 import os
 import re
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import time
@@ -15,7 +20,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -39,6 +44,10 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "interrupted"}
 _OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS = 300
 _OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS = 10
 _OPENCODE_RESOLVED_READ_ATTEMPTS = 3
+_TEST_RUNTIME_SCHEMA = "vue-fastapi-admin-tests-runtime/v1"
+_TEST_RUNTIME_MANIFEST_SHA256 = "84c183243ff672bac7eb6e48d0ef4c847fc4332f4d0cdc272bb4e8053f845743"
+_BACKEND_URL = "http://127.0.0.1:9999"
+_FRONTEND_URL = "http://127.0.0.1:3100"
 _WRITE_PRODUCT_INPUT = r"""
 from __future__ import annotations
 
@@ -96,7 +105,7 @@ def main() -> int:
         "data_knowledge": _ref(composition, "assurance.product.configuration.data-knowledge"),
         "allowed_artifact_paths": ["qa/archive", "qa/cases", "qa/changes", "tests"],
         "budgets": {
-            "review_rounds": 2,
+            "review_rounds": 3,
             "coverage_rounds": 2,
             "healing_rounds": 2,
             "execution_retries": 2,
@@ -206,6 +215,228 @@ def _resolve_sut(repo: Path, relative: str) -> Path:
     raise SystemExit(f"live SUT is missing at {relative}")
 
 
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _test_runtime_seed_root(repo: Path) -> Path:
+    return repo / "benchmark" / "assurance-product" / "fixtures" / "vue-fastapi-admin-tests-runtime-v1"
+
+
+def _required_runtime_environment(output: Path) -> dict[str, str]:
+    sqlite_file = output / "sut-runtime" / "db.sqlite3"
+    return {
+        "AA_ADMIN_PASSWORD": "123456",
+        "AA_ADMIN_USERNAME": "admin",
+        "AA_BASE_URL": _BACKEND_URL,
+        "AA_SQLITE_PATH": str(sqlite_file),
+        "API_BASE_URL": _BACKEND_URL,
+        "BASE_URL": _BACKEND_URL,
+        "E2E_BACKEND_URL": _BACKEND_URL,
+        "E2E_FRONTEND_URL": _FRONTEND_URL,
+        "FRONTEND_URL": _FRONTEND_URL,
+        "FUZZ_SCHEMA_MODE": "uri",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "QA_ADMIN_PASSWORD": "123456",
+        "QA_ADMIN_USERNAME": "admin",
+        "QA_FUZZ_SCHEMA_MODE": "uri",
+        "QA_SQLITE_FILE": str(sqlite_file),
+        "no_proxy": "127.0.0.1,localhost",
+    }
+
+
+def _runtime_environment_errors(environment: Mapping[str, str], *, output: Path) -> list[str]:
+    return [
+        f"OpenCode server environment {name} must equal {expected!r}"
+        for name, expected in _required_runtime_environment(output).items()
+        if environment.get(name) != expected
+    ]
+
+
+def _dept_runtime_symbols(knowledge_path: Path) -> set[str]:
+    try:
+        document = yaml.safe_load(knowledge_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise SystemExit("live SUT data knowledge is not valid YAML") from error
+
+    def collect(value: object, *, under_dept: bool = False) -> set[str]:
+        if not isinstance(value, dict):
+            return set()
+        found: set[str] = set()
+        for key, child in value.items():
+            selected = under_dept or key == "dept"
+            if selected and key == "symbol" and isinstance(child, str):
+                found.add(child)
+            found.update(collect(child, under_dept=selected))
+        return found
+
+    return collect(document)
+
+
+def _materialize_test_runtime_seed(
+    *,
+    seed_root: Path,
+    project_dir: Path,
+) -> dict[str, Any]:
+    manifest_path = seed_root / "manifest.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise SystemExit("test runtime seed is missing a regular manifest.json")
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_digest = _sha256(manifest_bytes)
+    if manifest_digest != _TEST_RUNTIME_MANIFEST_SHA256:
+        raise SystemExit("test runtime seed manifest digest does not match the pinned version")
+    try:
+        manifest = json.loads(manifest_bytes)
+    except json.JSONDecodeError as error:
+        raise SystemExit("test runtime seed manifest is not valid JSON") from error
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != _TEST_RUNTIME_SCHEMA:
+        raise SystemExit(f"test runtime seed must use {_TEST_RUNTIME_SCHEMA}")
+    raw_files = manifest.get("files")
+    raw_modules = manifest.get("modules")
+    raw_symbols = manifest.get("symbols")
+    if (
+        not isinstance(raw_files, dict)
+        or not raw_files
+        or not isinstance(raw_modules, list)
+        or not raw_modules
+        or not isinstance(raw_symbols, list)
+        or not raw_symbols
+        or any(not isinstance(value, str) for value in (*raw_modules, *raw_symbols))
+    ):
+        raise SystemExit("test runtime seed manifest has invalid files/modules/symbols")
+    declared: dict[str, str] = {}
+    for raw_relative, raw_digest in raw_files.items():
+        if not isinstance(raw_relative, str) or not isinstance(raw_digest, str):
+            raise SystemExit("test runtime seed file entries must be strings")
+        relative = Path(raw_relative)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or relative.parts[0] != "tests"
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            raise SystemExit(f"unsafe test runtime seed path: {raw_relative!r}")
+        if any(part.startswith("test_") or part.startswith("locustfile") for part in relative.parts):
+            raise SystemExit(f"test runtime seed contains a case oracle: {raw_relative}")
+        if not re.fullmatch(r"[0-9a-f]{64}", raw_digest):
+            raise SystemExit(f"invalid test runtime seed digest: {raw_relative}")
+        declared[relative.as_posix()] = raw_digest
+    actual: set[str] = set()
+    for source in seed_root.rglob("*"):
+        if source.is_symlink():
+            raise SystemExit(f"test runtime seed contains a symbolic link: {source}")
+        if source.is_file() and source != manifest_path:
+            actual.add(source.relative_to(seed_root).as_posix())
+    undeclared = sorted(actual - set(declared))
+    missing = sorted(set(declared) - actual)
+    if undeclared:
+        raise SystemExit(f"test runtime seed has undeclared files: {undeclared}")
+    if missing:
+        raise SystemExit(f"test runtime seed is missing declared files: {missing}")
+    declared_symbols = set(raw_symbols)
+    required_symbols = _dept_runtime_symbols(project_dir / ".aa" / "data-knowledge.yaml")
+    absent_symbols = sorted(required_symbols - declared_symbols)
+    if absent_symbols:
+        raise SystemExit(f"test runtime seed is missing dept symbols: {absent_symbols}")
+    payloads: dict[str, bytes] = {}
+    for relative, expected_digest in sorted(declared.items()):
+        source = seed_root / relative
+        data = source.read_bytes()
+        if _sha256(data) != expected_digest:
+            raise SystemExit(f"test runtime seed digest mismatch: {relative}")
+        payloads[relative] = data
+
+    project_root = project_dir.resolve()
+    for relative, data in payloads.items():
+        target = project_dir / relative
+        parent = project_dir
+        for part in Path(relative).parts[:-1]:
+            parent /= part
+            if parent.is_symlink():
+                raise SystemExit(f"test runtime seed target parent is a symbolic link: {relative}")
+            if parent.exists() and not parent.is_dir():
+                raise SystemExit(f"test runtime seed target parent is not a directory: {relative}")
+        if target.exists() or target.is_symlink():
+            if target.is_symlink():
+                raise SystemExit(f"test runtime seed target is a symbolic link: {relative}")
+            if not target.is_file() or target.read_bytes() != data:
+                raise SystemExit(f"existing test runtime support differs: {relative}")
+            if target.stat().st_nlink != 1:
+                raise SystemExit(f"test runtime seed target has an unsafe link count: {relative}")
+
+    for relative, data in payloads.items():
+        target = project_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.parent.resolve().is_relative_to(project_root):
+            raise SystemExit(f"test runtime seed target escapes the project: {relative}")
+        if not target.exists():
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                descriptor = os.open(target, flags, 0o644)
+            except OSError as error:
+                raise SystemExit(f"test runtime seed target could not be created: {relative}") from error
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(data)
+        expected_digest = declared[relative]
+        if (
+            target.is_symlink()
+            or not target.is_file()
+            or target.stat().st_nlink != 1
+            or _sha256(target.read_bytes()) != expected_digest
+        ):
+            raise SystemExit(f"test runtime seed materialization failed: {relative}")
+    return {
+        "schema_version": _TEST_RUNTIME_SCHEMA,
+        "manifest_digest": manifest_digest,
+        "file_count": len(declared),
+        "modules": list(raw_modules),
+        "symbols": sorted(declared_symbols),
+    }
+
+
+_VALIDATE_TEST_RUNTIME = r"""
+import importlib
+import json
+import sys
+
+project_dir, raw_modules, raw_symbols = sys.argv[1:]
+sys.path.insert(0, project_dir)
+for module_name in json.loads(raw_modules):
+    importlib.import_module(module_name)
+for symbol in json.loads(raw_symbols):
+    module_name, _, attribute = symbol.rpartition(".")
+    value = getattr(importlib.import_module(module_name), attribute, None)
+    if not callable(value):
+        raise SystemExit(f"test runtime symbol is absent or not callable: {symbol}")
+"""
+
+
+def _validate_test_runtime_symbols(
+    *,
+    python: Path,
+    project_dir: Path,
+    symbols: Sequence[str],
+    env: Mapping[str, str],
+    modules: Sequence[str] = (),
+) -> None:
+    _run_checked(
+        [
+            str(python),
+            "-c",
+            _VALIDATE_TEST_RUNTIME,
+            str(project_dir),
+            json.dumps(list(modules)),
+            json.dumps(list(symbols)),
+        ],
+        cwd=project_dir,
+        env=env,
+        timeout=60,
+        label="test runtime import check",
+    )
+
+
 def derive_change_id(*, item_id: str, stamp: str, nonce: str) -> str:
     parts = (("item", item_id), ("stamp", stamp), ("nonce", nonce))
     for label, value in parts:
@@ -300,6 +531,309 @@ def _run_checked(
     if completed.returncode != 0:
         raise SystemExit(f"{label} failed: {completed.stderr.strip() or completed.stdout.strip()}")
     return completed
+
+
+class _SutRuntime:
+    __slots__ = (
+        "backend_log",
+        "backend_url",
+        "env",
+        "frontend_log",
+        "frontend_url",
+        "seed_receipt",
+        "sqlite_file",
+    )
+
+    def __init__(
+        self,
+        *,
+        env: Mapping[str, str],
+        backend_url: str,
+        frontend_url: str,
+        sqlite_file: Path,
+        backend_log: Path,
+        frontend_log: Path,
+        seed_receipt: Mapping[str, Any],
+    ) -> None:
+        self.env = env
+        self.backend_url = backend_url
+        self.frontend_url = frontend_url
+        self.sqlite_file = sqlite_file
+        self.backend_log = backend_log
+        self.frontend_log = frontend_log
+        self.seed_receipt = seed_receipt
+
+
+def _prepare_sut_python(
+    *,
+    project_dir: Path,
+    runtime_root: Path,
+    env: Mapping[str, str],
+) -> Path:
+    for required in (project_dir / "pyproject.toml", project_dir / "uv.lock"):
+        if not required.is_file() or required.is_symlink():
+            raise SystemExit(f"managed SUT dependency input is missing or unsafe: {required}")
+    venv = runtime_root / "venv"
+    _run_checked(
+        ["uv", "venv", "--python", "3.11", str(venv)],
+        cwd=project_dir,
+        env=env,
+        timeout=120,
+        label="managed SUT uv venv",
+    )
+    active_env = dict(env)
+    active_env["VIRTUAL_ENV"] = str(venv)
+    _run_checked(
+        [
+            "uv",
+            "sync",
+            "--active",
+            "--frozen",
+            "--project",
+            str(project_dir),
+            "--no-install-project",
+        ],
+        cwd=project_dir,
+        env=active_env,
+        timeout=900,
+        label="managed SUT frozen dependency sync",
+    )
+    python = venv / "bin" / "python"
+    if not python.is_file():
+        raise SystemExit("managed SUT environment is missing Python")
+    return python
+
+
+def _copy_runtime_component(source: Path, destination: Path) -> None:
+    if not source.is_dir() or source.is_symlink():
+        raise SystemExit(f"managed SUT runtime source is missing or unsafe: {source}")
+    symbolic_links = [path for path in source.rglob("*") if path.is_symlink()]
+    if symbolic_links:
+        raise SystemExit(f"managed SUT runtime source contains symbolic links: {symbolic_links[0]}")
+    shutil.copytree(source, destination)
+
+
+def _assert_loopback_port_available(port: int) -> None:
+    try:
+        with socket.socket() as probe:
+            probe.settimeout(0.25)
+            occupied = probe.connect_ex(("127.0.0.1", port)) == 0
+    except OSError as error:
+        raise SystemExit(f"managed SUT loopback port could not be checked: {port}") from error
+    if occupied:
+        raise SystemExit(f"managed SUT loopback port is already in use: {port}")
+
+
+def _spawn_managed_process(
+    *,
+    label: str,
+    command: Sequence[str],
+    cwd: Path,
+    env: Mapping[str, str],
+    log_path: Path,
+) -> subprocess.Popen[bytes]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("ab", buffering=0) as log:
+        try:
+            return subprocess.Popen(  # noqa: S603
+                list(command),
+                cwd=cwd,
+                env=dict(env),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise SystemExit(f"managed SUT {label} could not start: {error}") from error
+
+
+def _stop_managed_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    expected_group = process.pid
+    try:
+        actual_group = os.getpgid(process.pid)
+    except ProcessLookupError:
+        process.wait(timeout=1)
+        return
+    if actual_group != expected_group:
+        raise SystemExit(
+            f"refusing to terminate managed SUT process with changed group identity: "
+            f"pid={process.pid} expected={expected_group} actual={actual_group}"
+        )
+    os.killpg(expected_group, signal.SIGTERM)
+    try:
+        process.wait(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if process.poll() is not None:
+        return
+    try:
+        actual_group = os.getpgid(process.pid)
+    except ProcessLookupError:
+        process.wait(timeout=1)
+        return
+    if actual_group != expected_group:
+        raise SystemExit("refusing to kill a managed SUT process after group identity changed")
+    os.killpg(expected_group, signal.SIGKILL)
+    process.wait(timeout=5)
+
+
+def _wait_http_ready(
+    url: str,
+    *,
+    accept: str,
+    label: str,
+    process: subprocess.Popen[bytes],
+    timeout: float,
+) -> None:
+    deadline = time.monotonic() + timeout
+    last_error: object = "not attempted"
+    while time.monotonic() < deadline:
+        returncode = process.poll()
+        if returncode is not None:
+            raise SystemExit(f"managed SUT {label} exited before readiness: {returncode}")
+        try:
+            request = Request(url, headers={"Accept": accept}, method="GET")
+            with urlopen(request, timeout=2) as response:  # noqa: S310 - pinned loopback URL
+                if 200 <= response.status < 300:
+                    return
+                last_error = f"HTTP {response.status}"
+        except (OSError, URLError, TimeoutError) as error:
+            last_error = error
+        time.sleep(0.25)
+    raise SystemExit(f"managed SUT {label} failed readiness at {url}: {last_error}")
+
+
+def _acquire_admin_token(
+    backend_url: str,
+    *,
+    username: str,
+    password: str,
+) -> str:
+    request = Request(
+        f"{backend_url}/api/v1/base/access_token",
+        data=json.dumps({"username": username, "password": password}).encode(),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - pinned loopback URL
+            body = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"managed SUT administrator login failed: {error}") from error
+    token = body.get("data", {}).get("access_token") if isinstance(body, dict) else None
+    if not isinstance(token, str) or not token:
+        raise SystemExit("managed SUT administrator login returned no data.access_token")
+    return token
+
+
+@contextmanager
+def _managed_sut_runtime(
+    *,
+    repo: Path,
+    project_dir: Path,
+    output: Path,
+    env: Mapping[str, str],
+) -> Iterator[_SutRuntime]:
+    _assert_loopback_port_available(9999)
+    _assert_loopback_port_available(3100)
+    runtime_root = output / "sut-runtime"
+    if runtime_root.exists():
+        raise SystemExit(f"managed SUT runtime directory must be fresh: {runtime_root}")
+    runtime_root.mkdir(parents=True)
+    seed_receipt = _materialize_test_runtime_seed(
+        seed_root=_test_runtime_seed_root(repo),
+        project_dir=project_dir,
+    )
+    python = _prepare_sut_python(project_dir=project_dir, runtime_root=runtime_root, env=env)
+    _validate_test_runtime_symbols(
+        python=python,
+        project_dir=project_dir,
+        modules=tuple(seed_receipt["modules"]),
+        symbols=tuple(seed_receipt["symbols"]),
+        env=env,
+    )
+    _copy_runtime_component(project_dir / "app", runtime_root / "app")
+    _copy_runtime_component(project_dir / "migrations", runtime_root / "migrations")
+    sqlite_file = runtime_root / "db.sqlite3"
+    backend_log = output / "sut-backend.log"
+    frontend_log = output / "sut-frontend.log"
+    runtime_env = dict(env)
+    runtime_env.update(_required_runtime_environment(output))
+    vite = project_dir / "web" / "node_modules" / ".bin" / "vite"
+    lockfile = project_dir / "web" / "pnpm-lock.yaml"
+    if not vite.is_file() or not os.access(vite, os.X_OK) or not lockfile.is_file():
+        raise SystemExit("managed SUT frontend requires pinned pnpm dependencies and executable Vite")
+    backend: subprocess.Popen[bytes] | None = None
+    frontend: subprocess.Popen[bytes] | None = None
+    body_failed = False
+    try:
+        backend = _spawn_managed_process(
+            label="backend",
+            command=(
+                str(python),
+                "-m",
+                "uvicorn",
+                "app:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "9999",
+            ),
+            cwd=runtime_root,
+            env=runtime_env,
+            log_path=backend_log,
+        )
+        _wait_http_ready(
+            f"{_BACKEND_URL}/openapi.json",
+            accept="application/json",
+            label="backend",
+            process=backend,
+            timeout=90,
+        )
+        token = _acquire_admin_token(_BACKEND_URL, username="admin", password="123456")
+        runtime_env["API_ADMIN_TOKEN"] = token
+        runtime_env["E2E_API_TOKEN"] = token
+        frontend = _spawn_managed_process(
+            label="frontend",
+            command=(str(vite), "--host", "127.0.0.1", "--port", "3100", "--strictPort"),
+            cwd=project_dir / "web",
+            env=runtime_env,
+            log_path=frontend_log,
+        )
+        _wait_http_ready(
+            _FRONTEND_URL,
+            accept="text/html,application/xhtml+xml",
+            label="frontend",
+            process=frontend,
+            timeout=90,
+        )
+        yield _SutRuntime(
+            env=runtime_env,
+            backend_url=_BACKEND_URL,
+            frontend_url=_FRONTEND_URL,
+            sqlite_file=sqlite_file,
+            backend_log=backend_log,
+            frontend_log=frontend_log,
+            seed_receipt=seed_receipt,
+        )
+    except BaseException:
+        body_failed = True
+        raise
+    finally:
+        cleanup_errors: list[str] = []
+        for process in (frontend, backend):
+            if process is None:
+                continue
+            try:
+                _stop_managed_process(process)
+            except (OSError, subprocess.SubprocessError, SystemExit) as error:
+                cleanup_errors.append(str(error))
+        if cleanup_errors and not body_failed:
+            raise SystemExit("managed SUT cleanup failed: " + "; ".join(cleanup_errors))
 
 
 def _prepare_installed_product_env(
@@ -527,6 +1061,30 @@ def _product_locked_opencode_config() -> dict[str, Any]:
     if not isinstance(document, dict):
         raise SystemExit("product-locked OpenCode config is not an object")
     return document
+
+
+def _project_opencode_asset_errors(project_dir: Path) -> list[str]:
+    from assurance_product.opencode_agents import _opencode_config
+
+    expected = (
+        (
+            project_dir / "opencode.json",
+            _opencode_config().encode("utf-8"),
+            "project OpenCode config differs from the installed product",
+        ),
+        (
+            project_dir / ".opencode" / "plugins" / "assurance-boundary.mjs",
+            files("assurance_product")
+            .joinpath("resources", "opencode", "assurance-boundary.mjs")
+            .read_bytes(),
+            "project OpenCode boundary plugin differs from the installed product",
+        ),
+    )
+    errors: list[str] = []
+    for path, expected_bytes, message in expected:
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != expected_bytes:
+            errors.append(message)
+    return errors
 
 
 def _check_opencode_agent_profiles(endpoint: str, project_dir: Path) -> list[str]:
@@ -797,6 +1355,181 @@ def _lifecycle_args(
     ]
 
 
+def _drive_started_change(
+    *,
+    aa_next: Path,
+    repo: Path,
+    project_dir: Path,
+    change_id: str,
+    source_args: Sequence[str],
+    input_path: Path,
+    item: Mapping[str, Any],
+    env: Mapping[str, str],
+    run_log: Path,
+    poll_seconds: int,
+    timeout_seconds: int,
+    evidence: dict[str, Any],
+    finish: Callable[..., int],
+) -> int:
+    change_args = _lifecycle_args(
+        project_dir=project_dir,
+        change_id=change_id,
+        invocation_id=change_id,
+        source_args=source_args,
+    )
+    started = _aa_next(
+        aa_next,
+        "start",
+        "--json",
+        *change_args,
+        "--entrypoint",
+        str(item["entrypoint"]),
+        "--input",
+        str(input_path),
+        "--secret",
+        _secret_arg(item),
+        cwd=repo,
+        env=env,
+        timeout=600,
+    )
+    if started.returncode != 0:
+        evidence["outcome"] = "blocked"
+        return finish(started.returncode, notes=f"start failed: {started.stderr.strip()}")
+    start_doc = _parse_json(started.stdout, label="start")
+    evidence["lock_digest"] = start_doc.get("lock_digest") or evidence.get("lock_digest")
+
+    deadline = time.monotonic() + timeout_seconds
+    last_status: dict[str, Any] = {}
+    last_run: dict[str, Any] = {}
+    transitions: list[dict[str, Any]] = []
+    run_args = ["run", "--json", *change_args, "--secret", _secret_arg(item)]
+    status_args = ["status", "--json", *change_args, "--secret", _secret_arg(item)]
+
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            evidence["outcome"] = "blocked"
+            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
+            return finish(
+                1,
+                notes="timed out waiting for a terminal aa-next status",
+                status=last_status,
+            )
+        run_start = run_log.stat().st_size
+        with run_log.open("a", encoding="utf-8") as log:
+            run_proc = subprocess.run(  # noqa: S603
+                [str(aa_next), *run_args],
+                cwd=repo,
+                env=dict(env),
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=max(1, int(remaining)),
+                check=False,
+            )
+        parsed_run = _last_json_object(run_log, start=run_start)
+        last_run = parsed_run or {
+            "status": None,
+            "terminal_reason": None,
+            "returncode": run_proc.returncode,
+        }
+        if run_proc.returncode != 0 and parsed_run is None:
+            evidence["outcome"] = "blocked"
+            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
+            return finish(
+                run_proc.returncode,
+                notes="aa-next run exited non-zero without a structured run result",
+            )
+        status_proc = _aa_next(
+            aa_next,
+            *status_args,
+            cwd=repo,
+            env=env,
+            timeout=120,
+        )
+        if status_proc.returncode == 0:
+            last_status = _parse_json(status_proc.stdout, label="status")
+            current = {
+                "at": _utc_now(),
+                "status": last_status.get("status"),
+                "terminal_reason": last_status.get("terminal_reason") or last_run.get("terminal_reason"),
+            }
+            if not transitions or transitions[-1].get("status") != current["status"]:
+                transitions.append(current)
+            if last_status.get("status") in _TERMINAL_STATUSES:
+                break
+        else:
+            evidence["outcome"] = "blocked"
+            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
+            return finish(
+                status_proc.returncode or run_proc.returncode or 1,
+                notes=f"run ended without readable status: {status_proc.stderr.strip()}",
+            )
+        if last_run.get("status") == "interrupted":
+            actions = last_run.get("actions") or []
+            if actions:
+                evidence["outcome"] = "blocked"
+                evidence["validation"] = {"transitions": transitions, "last_run": last_run}
+                return finish(
+                    run_proc.returncode or 1,
+                    notes="aa-next run returned a pending interrupt; resume was not invoked",
+                    status=last_status,
+                )
+            if last_run.get("terminal_reason") == "activity_recovery":
+                time.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
+                continue
+        if last_status.get("status") in _TERMINAL_STATUSES:
+            break
+        time.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
+
+    evidence["validation"] = {"transitions": transitions, "last_run": last_run}
+    errors = _validate_live_result(item=item, status=last_status)
+    if (
+        errors
+        or last_status.get("status") != item["expected_terminal"]
+        or not _change_is_achieved(last_status)
+    ):
+        evidence["outcome"] = "blocked"
+        evidence["validation"] = {**evidence["validation"], "errors": errors}
+        detail = "; ".join(errors) if errors else f"live item did not reach {item['expected_terminal']!r}"
+        run_reason = last_run.get("terminal_reason")
+        if run_reason:
+            detail = f"{detail}; last aa-next run returned {last_run.get('status')!r}/{run_reason!r}"
+        return finish(
+            run_proc.returncode or 1,
+            notes=detail,
+            status=last_status,
+        )
+
+    exported = _aa_next(
+        aa_next,
+        "export",
+        "--json",
+        "--project-dir",
+        str(project_dir),
+        "--change",
+        change_id,
+        cwd=repo,
+        env=env,
+        timeout=600,
+    )
+    if exported.returncode != 0:
+        evidence["outcome"] = "blocked"
+        return finish(
+            exported.returncode,
+            notes=f"export failed: {exported.stderr.strip()}",
+            status=last_status,
+        )
+    export_doc = _parse_json(exported.stdout, label="export")
+    evidence["publish_receipt"] = export_doc
+    evidence["lock_digest"] = export_doc.get("lock_digest") or evidence.get("lock_digest")
+    evidence["outcome"] = "completed"
+    return finish(
+        0,
+        notes="live item reached achieved and export published once",
+        status=last_status,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--item", required=True)
@@ -895,6 +1628,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     isolated_env.pop("UV_PROJECT", None)
     isolated_env["PYTHONNOUSERSITE"] = "1"
 
+    runtime_environment_errors = _runtime_environment_errors(os.environ, output=output)
+    if runtime_environment_errors:
+        evidence["outcome"] = "blocked"
+        return finish(1, notes="; ".join(runtime_environment_errors))
+
     endpoint = str(item["adapter_binding"]["endpoint"])
     preflight = _check_opencode(endpoint)
     if preflight != 0:
@@ -916,7 +1654,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     project_dir = sut_root
     endpoint = str(item["adapter_binding"]["endpoint"])
-    agent_profile_errors = _check_opencode_agent_profiles(endpoint, project_dir)
+    agent_profile_errors = _project_opencode_asset_errors(project_dir)
+    agent_profile_errors.extend(_check_opencode_agent_profiles(endpoint, project_dir))
     agent_profile_errors.extend(_check_opencode_boundary_plugin(endpoint, project_dir))
     if agent_profile_errors:
         evidence["outcome"] = "blocked"
@@ -1019,166 +1758,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         evidence["outcome"] = "blocked"
         return finish(written.returncode, notes=f"product input write failed: {written.stderr.strip()}")
 
-    invocation_id = change_id
-    change_args = _lifecycle_args(
-        project_dir=project_dir,
-        change_id=change_id,
-        invocation_id=invocation_id,
-        source_args=source_args,
-    )
-    started = _aa_next(
-        aa_next,
-        "start",
-        "--json",
-        *change_args,
-        "--entrypoint",
-        str(item["entrypoint"]),
-        "--input",
-        str(input_path),
-        "--secret",
-        _secret_arg(item),
-        cwd=repo,
-        env=isolated_env,
-        timeout=600,
-    )
-    if started.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(started.returncode, notes=f"start failed: {started.stderr.strip()}")
-    start_doc = _parse_json(started.stdout, label="start")
-    evidence["lock_digest"] = start_doc.get("lock_digest") or evidence.get("lock_digest")
-
-    deadline = time.monotonic() + arguments.timeout_seconds
-    last_status: dict[str, Any] = {}
-    last_run: dict[str, Any] = {}
-    transitions: list[dict[str, Any]] = []
-    run_args = [
-        "run",
-        "--json",
-        *change_args,
-        "--secret",
-        _secret_arg(item),
-    ]
-    status_args = [
-        "status",
-        "--json",
-        *change_args,
-        "--secret",
-        _secret_arg(item),
-    ]
-
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            evidence["outcome"] = "blocked"
-            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-            return finish(1, notes="timed out waiting for a terminal aa-next status", status=last_status)
-        run_start = run_log.stat().st_size
-        with run_log.open("a", encoding="utf-8") as log:
-            run_proc = subprocess.run(  # noqa: S603
-                [str(aa_next), *run_args],
-                cwd=repo,
-                env=isolated_env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=max(1, int(remaining)),
-                check=False,
-            )
-        parsed_run = _last_json_object(run_log, start=run_start)
-        last_run = parsed_run or {
-            "status": None,
-            "terminal_reason": None,
-            "returncode": run_proc.returncode,
-        }
-        if run_proc.returncode != 0 and parsed_run is None:
-            evidence["outcome"] = "blocked"
-            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-            return finish(
-                run_proc.returncode,
-                notes="aa-next run exited non-zero without a structured run result",
-            )
-        status_proc = _aa_next(
-            aa_next,
-            *status_args,
-            cwd=repo,
+    try:
+        with _managed_sut_runtime(
+            repo=repo,
+            project_dir=project_dir,
+            output=output,
             env=isolated_env,
-            timeout=120,
-        )
-        if status_proc.returncode == 0:
-            last_status = _parse_json(status_proc.stdout, label="status")
-            current = {
-                "at": _utc_now(),
-                "status": last_status.get("status"),
-                "terminal_reason": last_status.get("terminal_reason") or last_run.get("terminal_reason"),
-            }
-            if not transitions or transitions[-1].get("status") != current["status"]:
-                transitions.append(current)
-            if last_status.get("status") in _TERMINAL_STATUSES:
-                break
-        else:
-            evidence["outcome"] = "blocked"
-            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-            return finish(
-                status_proc.returncode or run_proc.returncode or 1,
-                notes=f"run ended without readable status: {status_proc.stderr.strip()}",
+        ) as sut_runtime:
+            isolated_env.update(sut_runtime.env)
+            evidence["test_runtime_seed"] = dict(sut_runtime.seed_receipt)
+            evidence["logs"].update(
+                {
+                    "sut_backend": str(sut_runtime.backend_log),
+                    "sut_frontend": str(sut_runtime.frontend_log),
+                }
             )
-        if last_run.get("status") == "interrupted":
-            actions = last_run.get("actions") or []
-            if actions:
-                evidence["outcome"] = "blocked"
-                evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-                return finish(
-                    run_proc.returncode or 1,
-                    notes="aa-next run returned a pending interrupt; resume was not invoked",
-                    status=last_status,
-                )
-            if last_run.get("terminal_reason") == "activity_recovery":
-                time.sleep(min(arguments.poll_seconds, max(0, deadline - time.monotonic())))
-                continue
-        if last_status.get("status") in _TERMINAL_STATUSES:
-            break
-        time.sleep(min(arguments.poll_seconds, max(0, deadline - time.monotonic())))
-
-    evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-    errors = _validate_live_result(item=item, status=last_status)
-    if (
-        errors
-        or last_status.get("status") != item["expected_terminal"]
-        or not _change_is_achieved(last_status)
-    ):
+            return _drive_started_change(
+                aa_next=aa_next,
+                repo=repo,
+                project_dir=project_dir,
+                change_id=change_id,
+                source_args=source_args,
+                input_path=input_path,
+                item=item,
+                env=isolated_env,
+                run_log=run_log,
+                poll_seconds=arguments.poll_seconds,
+                timeout_seconds=arguments.timeout_seconds,
+                evidence=evidence,
+                finish=finish,
+            )
+    except SystemExit as error:
         evidence["outcome"] = "blocked"
-        evidence["validation"] = {**evidence["validation"], "errors": errors}
-        detail = "; ".join(errors) if errors else f"live item did not reach {item['expected_terminal']!r}"
-        run_reason = last_run.get("terminal_reason")
-        if run_reason:
-            detail = f"{detail}; last aa-next run returned {last_run.get('status')!r}/{run_reason!r}"
-        return finish(
-            run_proc.returncode or 1,
-            notes=detail,
-            status=last_status,
-        )
-
-    exported = _aa_next(
-        aa_next,
-        "export",
-        "--json",
-        "--project-dir",
-        str(project_dir),
-        "--change",
-        change_id,
-        cwd=repo,
-        env=isolated_env,
-        timeout=600,
-    )
-    if exported.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(
-            exported.returncode, notes=f"export failed: {exported.stderr.strip()}", status=last_status
-        )
-    export_doc = _parse_json(exported.stdout, label="export")
-    evidence["publish_receipt"] = export_doc
-    evidence["lock_digest"] = export_doc.get("lock_digest") or evidence.get("lock_digest")
-    evidence["outcome"] = "completed"
-    return finish(0, notes="live item reached achieved and export published once", status=last_status)
+        return finish(1, notes=str(error))
 
 
 if __name__ == "__main__":

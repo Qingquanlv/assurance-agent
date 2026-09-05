@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import stat
 from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import cast
@@ -22,7 +25,9 @@ from assurance_intake.contracts import (
 )
 from assurance_intake.contracts.agent import (
     AgentFinalizeInputV1,
+    ArtifactDigestV1,
     ArtifactListResultV1,
+    CaseDesignOutputV1,
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
@@ -44,37 +49,6 @@ class OutputError(ValueError):
 
 def failed_output(message: str) -> TaskOutcome:
     return TaskOutcome.failed("invalid_output", message, retryable=True)
-
-
-def _review_round_fields(raw: object) -> dict[str, int]:
-    if not isinstance(raw, dict):
-        return {}
-    used = raw.get("rounds_used")
-    budget = raw.get("rounds_budget")
-    fields: dict[str, int] = {}
-    if isinstance(used, int) and used >= 0:
-        fields["rounds_used"] = used
-    if isinstance(budget, int) and budget >= 0:
-        fields["rounds_budget"] = budget
-    return fields
-
-
-def _finalize_payload(raw: object) -> object:
-    if not isinstance(raw, dict):
-        return raw
-    validated = raw.get("validated_input")
-    if isinstance(validated, dict):
-        cleaned = {
-            **{key: value for key, value in validated.items() if key in AgentFinalizeInputV1.model_fields},
-            "agent_result": raw.get("agent_result"),
-        }
-    else:
-        cleaned = dict(raw)
-    cleaned.pop("prepared", None)
-    cleaned.pop("validated_input", None)
-    cleaned.pop("rounds_used", None)
-    cleaned.pop("rounds_budget", None)
-    return cleaned
 
 
 def _leafs(values: Iterable[str]) -> frozenset[str]:
@@ -147,7 +121,7 @@ def _validate_case_review_repair_scope(
                 finding_id=finding_id,
                 artifact=artifact,
                 case_id=finding.locator.case_id,
-                allowed_paths=tuple(sorted({part.strip() for part in key.split(",") if part.strip()})),
+                allowed_paths=tuple(part.strip() for part in key.split(",") if part.strip()),
                 instructions=edits,
             )
         except ValidationError as error:
@@ -194,6 +168,48 @@ def _workspace_file(workspace: Path, relative: str) -> Path:
     return path
 
 
+def _read_regular_bytes(workspace: Path, relative: str, *, kind: str) -> bytes:
+    path = _workspace_file(workspace, relative)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise OutputError(f"{kind} is missing or is not a regular file: {relative}") from error
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise OutputError(f"{kind} is missing or is not a regular file: {relative}")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    data = b"".join(chunks)
+    before_signature = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_nlink,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    )
+    after_signature = (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_nlink,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    )
+    if before_signature != after_signature or len(data) != before.st_size:
+        raise OutputError(f"{kind} changed while being read: {relative}")
+    return data
+
+
 def _allowed_by_lock(relative: str, locked: tuple[str, ...]) -> bool:
     return any(relative == prefix or relative.startswith(f"{prefix}/") for prefix in locked)
 
@@ -213,6 +229,24 @@ def _authenticate_files(
         if not path.is_file() or path.is_symlink():
             raise OutputError(f"declared output file is missing: {relative}")
         artifacts.append({"path": relative, "digest": _file_digest(path.read_bytes())})
+    return artifacts
+
+
+def _authenticate_review_repair_images(
+    images: Mapping[str, bytes],
+    declared: tuple[str, ...],
+    locked: tuple[str, ...],
+) -> list[dict[str, str]]:
+    if not locked:
+        raise InputError("artifact_paths must lock the expected output files")
+    artifacts: list[dict[str, str]] = []
+    for relative in declared:
+        if not _allowed_by_lock(relative, locked):
+            raise OutputError(f"undeclared output file: {relative}")
+        data = images.get(relative)
+        if data is None:
+            raise OutputError(f"declared output file is missing: {relative}")
+        artifacts.append({"path": relative, "digest": _file_digest(data)})
     return artifacts
 
 
@@ -279,6 +313,7 @@ def _load_authored_case_delta(
     locked: tuple[str, ...],
     declared: tuple[str, ...],
     capability_leafs: frozenset[str],
+    images: Mapping[str, bytes] | None = None,
 ) -> CaseYamlAuthoring:
     if not locked:
         raise InputError("artifact_paths must lock the expected output files")
@@ -302,11 +337,13 @@ def _load_authored_case_delta(
     for relative in relative_files:
         if not _allowed_by_lock(relative, locked):
             raise OutputError(f"undeclared output file: {relative}")
-        path = _workspace_file(workspace, relative)
-        if not path.is_file() or path.is_symlink():
-            raise OutputError(f"declared output file is missing: {relative}")
         try:
-            raw = yaml.safe_load(path.read_bytes())
+            data = (
+                images[relative]
+                if images is not None
+                else _read_regular_bytes(workspace, relative, kind="declared output file")
+            )
+            raw = yaml.safe_load(data)
             document = CaseYamlAuthoring.model_validate(
                 raw,
                 context={"capability_leafs": capability_leafs},
@@ -335,8 +372,13 @@ def _load_minimum_coverage_matrix(
     *,
     relative: str,
     authored: CaseYamlAuthoring,
+    images: Mapping[str, bytes] | None = None,
 ) -> MinimumCoverageMatrixAuthoring:
-    document = _read_minimum_coverage_matrix(workspace, relative=relative)
+    document = _read_minimum_coverage_matrix(
+        workspace,
+        relative=relative,
+        images=images,
+    )
 
     cases = {entry.case_id: entry for entry in (*authored.added, *authored.modified)}
     category_layer = {
@@ -365,10 +407,15 @@ def _read_minimum_coverage_matrix(
     workspace: Path,
     *,
     relative: str,
+    images: Mapping[str, bytes] | None = None,
 ) -> MinimumCoverageMatrixAuthoring:
-    path = _workspace_file(workspace, relative)
     try:
-        document = MinimumCoverageMatrixAuthoring.model_validate(json.loads(path.read_bytes()))
+        data = (
+            images[relative]
+            if images is not None
+            else _read_regular_bytes(workspace, relative, kind="minimum coverage matrix")
+        )
+        document = MinimumCoverageMatrixAuthoring.model_validate(json.loads(data))
     except (OSError, json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
         raise OutputError(f"invalid minimum-coverage-matrix.json: {error}") from error
     return document
@@ -436,11 +483,12 @@ def _validate_case_repair_document(
     }
     if before_identity != after_identity:
         raise OutputError(f"review repair added, removed, moved, or reordered a case: {artifact}")
-    before_removed = before.get("removed") if isinstance(before, Mapping) else None
-    after_removed = after.get("removed") if isinstance(after, Mapping) else None
-    before_schema = before.get("schema_version") if isinstance(before, Mapping) else None
-    after_schema = after.get("schema_version") if isinstance(after, Mapping) else None
-    if before_removed != after_removed or before_schema != after_schema:
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        raise OutputError(f"repair baseline is not a case document: {artifact}")
+    mutable_sections = {"added", "modified"}
+    before_structure = {key: value for key, value in before.items() if key not in mutable_sections}
+    after_structure = {key: value for key, value in after.items() if key not in mutable_sections}
+    if before_structure != after_structure:
         raise OutputError(f"review repair changed case document structure: {artifact}")
 
     actions_by_case: dict[str, list[ReviewRepairActionV1]] = {}
@@ -469,47 +517,207 @@ def _validate_case_repair_document(
                 raise OutputError(f"review repair did not apply finding {action.finding_id}")
 
 
-def _validate_review_repair(workspace: Path, contract: ReviewRepairContractV1) -> None:
-    review_path = _workspace_file(workspace, contract.review_path)
-    if not review_path.is_file() or _file_digest(review_path.read_bytes()) != contract.review_sha256:
+def _proposal_parts(data: bytes, *, artifact: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise OutputError(f"review repair proposal is not UTF-8: {artifact}") from error
+    lines = text.splitlines(keepends=True)
+    starts: list[int] = []
+    fence: tuple[str, int] | None = None
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        indented = content.lstrip(" ")
+        indent = len(content) - len(indented)
+        if fence is not None:
+            marker, minimum = fence
+            if indent <= 3 and indented.startswith(marker * minimum):
+                run = len(indented) - len(indented.lstrip(marker))
+                if run >= minimum and not indented[run:].strip():
+                    fence = None
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})", content)
+        if opening is not None:
+            token = opening.group(1)
+            fence = (token[0], len(token))
+            continue
+        if content.startswith("# ") or content.startswith("## "):
+            starts.append(index)
+    if not starts:
+        return text, ()
+    preamble = "".join(lines[: starts[0]])
+    sections: list[tuple[str, str]] = []
+    for offset, start in enumerate(starts):
+        stop = starts[offset + 1] if offset + 1 < len(starts) else len(lines)
+        heading = lines[start].rstrip("\r\n")
+        sections.append((heading, "".join(lines[start + 1 : stop])))
+    return preamble, tuple(sections)
+
+
+def _validate_proposal_repair_document(
+    *,
+    artifact: str,
+    before: bytes,
+    after: bytes,
+    actions: tuple[ReviewRepairActionV1, ...],
+) -> None:
+    if any(action.case_id is not None for action in actions):
+        raise OutputError("proposal.md review repair case_id must be null")
+    targets = tuple(action.allowed_paths[0] for action in actions)
+    if len(targets) != len(set(targets)):
+        raise OutputError("proposal.md review repair sections must not overlap")
+    before_preamble, before_sections = _proposal_parts(before, artifact=artifact)
+    after_preamble, after_sections = _proposal_parts(after, artifact=artifact)
+    before_headings = tuple(heading for heading, _body in before_sections)
+    after_headings = tuple(heading for heading, _body in after_sections)
+    if before_preamble != after_preamble or before_headings != after_headings:
+        raise OutputError(f"review repair changed proposal structure outside named section: {artifact}")
+    for target in targets:
+        if before_headings.count(target) != 1:
+            raise OutputError(f"proposal.md repair heading must occur exactly once in the baseline: {target}")
+    for (heading, before_body), (_after_heading, after_body) in zip(
+        before_sections, after_sections, strict=True
+    ):
+        if heading not in targets and before_body != after_body:
+            raise OutputError(f"review repair changed proposal outside named section: {heading}")
+        if heading in targets and before_body == after_body:
+            raise OutputError(f"review repair did not change named proposal section: {heading}")
+
+
+def _matrix_rows(data: bytes, *, artifact: str) -> tuple[dict[str, object], ...]:
+    try:
+        document = MinimumCoverageMatrixAuthoring.model_validate(json.loads(data))
+    except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
+        raise OutputError(f"invalid repaired minimum-coverage-matrix.json {artifact}: {error}") from error
+    return tuple(cast(dict[str, object], row.model_dump(mode="json")) for row in document.root)
+
+
+def _validate_matrix_repair_document(
+    *,
+    artifact: str,
+    before: bytes,
+    after: bytes,
+    actions: tuple[ReviewRepairActionV1, ...],
+) -> None:
+    if any(action.case_id is not None for action in actions):
+        raise OutputError("minimum coverage matrix review repair case_id must be null")
+    before_rows = _matrix_rows(before, artifact=artifact)
+    after_rows = _matrix_rows(after, artifact=artifact)
+    before_ids = tuple(cast(str, row["mrc_id"]) for row in before_rows)
+    after_ids = tuple(cast(str, row["mrc_id"]) for row in after_rows)
+    if before_ids != after_ids:
+        raise OutputError(f"review repair changed MRC row identity or order: {artifact}")
+    targets: set[str] = set()
+    for action in actions:
+        action_targets = action.allowed_paths
+        expected_order = tuple(mrc_id for mrc_id in before_ids if mrc_id in action_targets)
+        if action_targets != expected_order:
+            raise OutputError(
+                "minimum coverage matrix repair allowed_paths must be existing mrc_id values "
+                "in baseline order"
+            )
+        overlap = targets.intersection(action_targets)
+        if overlap:
+            raise OutputError(f"minimum coverage matrix repair rows overlap: {sorted(overlap)}")
+        targets.update(action_targets)
+
+    stable_fields = ("mrc_id", "key", "required", "category", "layer")
+    changed_targets: set[str] = set()
+    for before_row, after_row in zip(before_rows, after_rows, strict=True):
+        mrc_id = cast(str, before_row["mrc_id"])
+        if mrc_id not in targets:
+            if before_row != after_row:
+                raise OutputError(f"review repair changed outside named MRC rows: {mrc_id}")
+            continue
+        if any(before_row[field] != after_row[field] for field in stable_fields):
+            raise OutputError(f"review repair changed frozen MRC fields: {mrc_id}")
+        if before_row != after_row:
+            changed_targets.add(mrc_id)
+    for action in actions:
+        if not changed_targets.intersection(action.allowed_paths):
+            raise OutputError(f"review repair did not apply finding {action.finding_id}")
+
+
+def _validate_repair_document(
+    *,
+    artifact: str,
+    before: bytes,
+    after: bytes,
+    actions: tuple[ReviewRepairActionV1, ...],
+) -> None:
+    if artifact.endswith("/case.yaml"):
+        try:
+            before_document = yaml.safe_load(before)
+            after_document = yaml.safe_load(after)
+        except yaml.YAMLError as error:
+            raise OutputError(f"invalid repaired case.yaml {artifact}: {error}") from error
+        _validate_case_repair_document(
+            artifact=artifact,
+            before=before_document,
+            after=after_document,
+            actions=actions,
+        )
+    elif artifact.endswith("/proposal.md"):
+        _validate_proposal_repair_document(
+            artifact=artifact,
+            before=before,
+            after=after,
+            actions=actions,
+        )
+    elif artifact.endswith("/trace/minimum-coverage-matrix.json"):
+        _validate_matrix_repair_document(
+            artifact=artifact,
+            before=before,
+            after=after,
+            actions=actions,
+        )
+    else:
+        raise OutputError(f"review repair artifact type is not supported: {artifact}")
+
+
+def _validate_review_repair(
+    project_root: Path,
+    write_root: Path,
+    contract: ReviewRepairContractV1,
+) -> dict[str, bytes]:
+    review = _read_regular_bytes(project_root, contract.review_path, kind="case-review authority")
+    if _file_digest(review) != contract.review_sha256:
         raise OutputError("case-review repair authority changed after prepare")
     actions_by_artifact: dict[str, list[ReviewRepairActionV1]] = {}
     for action in contract.actions:
         actions_by_artifact.setdefault(action.artifact, []).append(action)
-    baseline_documents = thaw_json(contract.baseline_case_documents)
-    if not isinstance(baseline_documents, Mapping):
-        raise OutputError("case-review repair baseline documents are invalid")
+    images: dict[str, bytes] = {}
     for relative, baseline_digest in contract.baseline_file_digests.items():
-        path = _workspace_file(workspace, relative)
-        if not path.is_file():
-            raise OutputError(f"review repair output is missing: {relative}")
-        current_digest = _file_digest(path.read_bytes())
+        baseline = _read_regular_bytes(project_root, relative, kind="review repair baseline")
+        if _file_digest(baseline) != baseline_digest:
+            raise OutputError(f"review repair baseline changed after prepare: {relative}")
         actions = actions_by_artifact.get(relative)
         if actions is None:
-            if current_digest != baseline_digest:
-                raise OutputError(f"review repair non-target output changed: {relative}")
+            candidate_path = _workspace_file(write_root, relative)
+            if candidate_path.exists() or candidate_path.is_symlink():
+                raise OutputError(f"review repair staged a non-target output: {relative}")
+            images[relative] = baseline
             continue
-        if current_digest == baseline_digest:
+        candidate = _read_regular_bytes(write_root, relative, kind="review repair output")
+        if _file_digest(candidate) == baseline_digest:
             raise OutputError(f"review repair target did not change: {relative}")
-        if relative.endswith("/case.yaml"):
-            before = baseline_documents.get(relative)
-            try:
-                after = yaml.safe_load(path.read_bytes())
-            except yaml.YAMLError as error:
-                raise OutputError(f"invalid repaired case.yaml {relative}: {error}") from error
-            _validate_case_repair_document(
-                artifact=relative,
-                before=before,
-                after=after,
-                actions=tuple(actions),
-            )
+        _validate_repair_document(
+            artifact=relative,
+            before=baseline,
+            after=candidate,
+            actions=tuple(actions),
+        )
+        images[relative] = candidate
+    return images
 
 
 class IntakeFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
-            artifacts = _finalize_artifact_list(payload, context.project_root)
+            artifacts = _finalize_artifact_list(payload, context.write_root)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -518,6 +726,8 @@ class IntakeFinalizeHandler:
 
 
 class ExploreFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
@@ -528,8 +738,8 @@ class ExploreFinalizeHandler:
             expected = {f"qa/changes/{change_id}/explore/exploration.json"}
             if set(document.output_files) != expected:
                 raise OutputError("explore receipt must declare exactly exploration.json")
-            artifacts = _finalize_artifact_list(payload, context.project_root)
-            _validate_explore_outputs(context.project_root, document.output_files)
+            artifacts = _finalize_artifact_list(payload, context.write_root)
+            _validate_explore_outputs(context.write_root, document.output_files)
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -538,10 +748,12 @@ class ExploreFinalizeHandler:
 
 
 class CaseDesignFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         parsed: AgentFinalizeInputV1 | None = None
         try:
-            payload = validate_input(AgentFinalizeInputV1, _finalize_payload(request.input))
+            payload = validate_input(AgentFinalizeInputV1, request.input)
             parsed = payload
             change_id = _case_change_id(payload.change_id)
             capability_leafs = _leafs(payload.capability_leafs)
@@ -576,56 +788,78 @@ class CaseDesignFinalizeHandler:
                     "case-design receipt case paths do not match locked case_delta_paths; "
                     f"missing={missing_cases}, unexpected={unexpected_cases}"
                 )
-            artifacts = _authenticate_files(
-                context.project_root,
-                receipt.output_files,
-                payload.artifact_paths,
-            )
             if payload.review_repair is not None:
-                _validate_review_repair(context.project_root, payload.review_repair)
+                if tuple(receipt.output_files) != tuple(payload.review_repair.baseline_file_digests):
+                    raise OutputError(
+                        "review repair receipt must exactly match the frozen case-design outputs"
+                    )
+                images = _validate_review_repair(
+                    context.project_root,
+                    context.write_root,
+                    payload.review_repair,
+                )
+                artifacts = _authenticate_review_repair_images(
+                    images,
+                    receipt.output_files,
+                    payload.artifact_paths,
+                )
+            else:
+                images = None
+                artifacts = _authenticate_files(
+                    context.write_root,
+                    receipt.output_files,
+                    payload.artifact_paths,
+                )
             authored = _load_authored_case_delta(
-                context.project_root,
+                context.write_root,
                 change_id=change_id,
                 locked=payload.artifact_paths,
                 declared=receipt.output_files,
                 capability_leafs=capability_leafs,
+                images=images,
             )
-            authored_json = authored.model_dump(mode="json")
-            authored_json["artifacts"] = artifacts
-            authored_json.update(_review_round_fields(request.input))
-            authored_json["validation_status"] = "pass"
             if payload.selected_test_families:
                 _require_selected_test_families(authored, payload.selected_test_families)
             if authored.added or authored.modified:
                 _load_minimum_coverage_matrix(
-                    context.project_root,
+                    context.write_root,
                     relative=matrix_relative,
                     authored=authored,
+                    images=images,
                 )
             else:
-                _read_minimum_coverage_matrix(context.project_root, relative=matrix_relative)
-            return TaskOutcome.succeeded(authored_json)
+                _read_minimum_coverage_matrix(
+                    context.write_root,
+                    relative=matrix_relative,
+                    images=images,
+                )
+            output = CaseDesignOutputV1(
+                validation_status="pass",
+                validation_attempt=payload.validation_attempt,
+                artifacts=tuple(ArtifactDigestV1.model_validate(item) for item in artifacts),
+                review_repair=payload.review_repair,
+            )
+            return TaskOutcome.succeeded(output.model_dump(mode="json"))
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
             if isinstance(request.input, dict) and request.input.get("validation_attempt") == 0:
-                repair_output: dict[str, object] = {
-                    "validation_status": "needs_fix",
-                    "validation_attempt": 1,
-                    "validation_error": str(error)[:8192],
-                    "review_repair": None,
-                    **_review_round_fields(request.input),
-                }
-                if parsed is not None and parsed.review_repair is not None:
-                    repair_output["review_repair"] = parsed.review_repair.model_dump(mode="json")
-                return TaskOutcome.succeeded(cast(JSONValue, repair_output))
+                repair_output = CaseDesignOutputV1(
+                    validation_status="needs_fix",
+                    validation_attempt=1,
+                    validation_error=str(error)[:8192],
+                    review_repair=parsed.review_repair if parsed is not None else None,
+                )
+                return TaskOutcome.succeeded(repair_output.model_dump(mode="json"))
             return failed_output(str(error))
 
 
 class CaseReviewFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, _finalize_payload(request.input))
+            payload = validate_input(AgentFinalizeInputV1, request.input)
             try:
                 document = CaseReviewResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -649,10 +883,9 @@ class CaseReviewFinalizeHandler:
                 update={"minimum_coverage": CaseMinimumCoverageReview.model_validate(expected_projection)}
             )
             output = document.model_dump(mode="json")
-            output.update(_review_round_fields(request.input))
             if payload.preparation_refs and payload.case_refs:
                 artifacts = _authenticate_files(
-                    context.project_root,
+                    context.write_root,
                     case_review_outputs(change_id),
                     payload.artifact_paths,
                 )

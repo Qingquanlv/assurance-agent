@@ -8,7 +8,9 @@
       "entrypoint_name": "quality",
       "entrypoint_value": "assurance_quality.plugin:QualityPlugin",
       "declaration_path": "assurance_quality/plugin-declaration.json",
-      "import_roots": [""]
+      "import_roots": [
+        ""
+      ]
     },
     "plugin_id": "assurance.quality",
     "plugin_version": "0.2.0",
@@ -68,10 +70,22 @@
       "assurance.quality.validator.trace.v2"
     ],
     "dependencies": [
-      {"plugin_id": "assurance.intake", "version_specifier": "==0.2.0"},
-      {"plugin_id": "assurance.generation", "version_specifier": "==0.2.0"},
-      {"plugin_id": "assurance.execution", "version_specifier": "==0.2.0"},
-      {"plugin_id": "assurance.healing", "version_specifier": "==0.2.0"}
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.2.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.2.0"
+      },
+      {
+        "plugin_id": "assurance.execution",
+        "version_specifier": "==0.2.0"
+      },
+      {
+        "plugin_id": "assurance.healing",
+        "version_specifier": "==0.2.0"
+      }
     ],
     "schemas": [
       "assurance.quality.schema.adversarial-yield.v1",
@@ -126,12 +140,30 @@
     "effects": [],
     "bindings": [],
     "attempt_contracts": [
-      {"contract_id": "assurance.quality.agent.fact-baseline.v1", "digest": "c3b381c141d0718d0d45786fdd21411b7aa089db2a48ecab71de9c731a5f9372"},
-      {"contract_id": "assurance.quality.agent.inspect.v1", "digest": "b38c02506293d62453683931064e0018cc1dac0823e624b5e2902d14998b7359"},
-      {"contract_id": "assurance.quality.agent.issue-analysis.v1", "digest": "3ea070bab84f5437a5dcaa69f21f81c325f57973469439a504a9c47482427370"},
-      {"contract_id": "assurance.quality.agent.issue-triage.v1", "digest": "1c077d25891ed836f3a0d39b57372b227567c934aa80ae2c96ed2bc108995a2f"},
-      {"contract_id": "assurance.quality.agent.report.v1", "digest": "6ba0043a242c806e7050c5ef2ac9fb0e292e4dfe837ae7f03952c70c210d4231"},
-      {"contract_id": "assurance.quality.materialize-assessment-inputs", "digest": "2a72f1ccd312a2c691d1e52eebed0cc43c9a31a35ff3eefc9942269c77ff08ef"}
+      {
+        "contract_id": "assurance.quality.agent.fact-baseline.v1",
+        "digest": "038b8e5787200a420ac3b375da65d9d550a754640bcae4552a64e68a51d73d96"
+      },
+      {
+        "contract_id": "assurance.quality.agent.inspect.v1",
+        "digest": "a81ebb670fc216d7c2d3d432948caaed70412b15fedebb034240918ff48a00dd"
+      },
+      {
+        "contract_id": "assurance.quality.agent.issue-analysis.v1",
+        "digest": "8ea830acdd593537f6e98e9df1efe9f85e84ef5564b5f91669a5996bd3ea5de8"
+      },
+      {
+        "contract_id": "assurance.quality.agent.issue-triage.v1",
+        "digest": "eb3891b87afa3bf5cf2d32936b1b96e737ef6b85ed3d4cfd2a154ff5181212f3"
+      },
+      {
+        "contract_id": "assurance.quality.agent.report.v1",
+        "digest": "7dc504e488d79201e5de64672687d16b4b6b89208702c47741028fdbdfa97428"
+      },
+      {
+        "contract_id": "assurance.quality.materialize-assessment-inputs",
+        "digest": "4002b44a426c49ed082404f9d337e2fee07e4fcb9d2dd22e93e853b65e45fd34"
+      }
     ]
   },
   "kind": "plugin",
@@ -142,7 +174,9 @@
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "quality",
     "entrypoint_value": "assurance_quality.plugin:QualityPlugin",
-    "import_roots": [""],
+    "import_roots": [
+      ""
+    ],
     "version": "0.2.0"
   }
 }

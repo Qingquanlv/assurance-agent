@@ -27,7 +27,7 @@ def test_coverage_insufficient_reenters_the_shared_case_flow() -> None:
         report=_report(1),
     )
     result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
-    assert result["terminal"] == "achieved"
+    assert result["terminal"] == {"status": "completed", "reason": "achieved"}
     assert result["coverage_epoch"] == 1
     assert result["case_rework_context"]["previous_case"]["coverage_epoch"] == 0
     assert result["reviewed_case"]["coverage_epoch"] == 1
@@ -47,7 +47,7 @@ def test_exhausted_coverage_budget_stops_without_report_or_retro() -> None:
             },
         ),
     )
-    assert result["terminal"] == "not-achieved"
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "coverage_insufficient"
     assert result.get("report_outcome") in (None, {})
     assert "projection" not in result

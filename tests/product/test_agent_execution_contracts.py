@@ -118,7 +118,7 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
     assert doc_author["tools"]["apply_patch"] is True
     assert "tool literally named `write` is available" in doc_author["prompt"]
     executor = config["agent"]["assurance-v1-executor"]
-    execution_view = "qa/changes/*/.staging/execution/*"
+    execution_view = "**/qa/changes/*/.staging/execution/*"
     pytest_command = (
         "PYTHONDONTWRITEBYTECODE=1 "
         "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
@@ -387,8 +387,9 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     }
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         assert isinstance(contract.resources, ResourceClaimTemplate)
-        assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
-        resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
+        assert "change_id" in contract.input_model.model_fields
+        assert contract.resources.parameters == {"change_id": "/change_id"}
+        resolved = contract.resources.resolve({"change_id": change_id})
         extra = extra_claims.get(contract_id, ())
         if contract_id == "assurance.intake.agent.case-review.v1":
             extra = (*extra, f"qa/changes/{change_id}/cases/reviews")
@@ -403,13 +404,19 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
             extra = (*extra, f"qa/changes/{change_id}/codegen/{family}/fixes")
         if contract_id == "assurance.healing.agent.apply-test-repair.v1":
             extra = (*extra, f"qa/changes/{change_id}/healing/epochs")
+        if feature == "execution":
+            extra = (*extra, f"qa/changes/{change_id}/.staging/execution")
         extra_set = set(extra)
         extra = tuple(path for path in resolved.writes if path in extra_set)
         outputs = catalog.outputs(contract_id, change_id)
         assert outputs == tuple(path for path in resolved.writes if path not in extra)
         assert extra == tuple(path for path in resolved.writes if path not in outputs)
         assert all(path.startswith(f"qa/changes/{change_id}/") for path in resolved.writes)
-        assert all("/.runtime/" not in path and "/.staging/" not in path for path in resolved.writes)
+        assert all(
+            "/.runtime/" not in path
+            and ("/.staging/" not in path or path == f"qa/changes/{change_id}/.staging/execution")
+            for path in resolved.writes
+        )
         assert all(path not in forbidden_prefixes for path in resolved.writes)
 
 
@@ -430,7 +437,7 @@ def test_exact_current_change_claims_do_not_scan_a_symlinked_sibling_on_promotio
 
     template = AGENT_EXECUTION_CONTRACTS["assurance.intake.agent.intake.v1"].resources
     assert isinstance(template, ResourceClaimTemplate)
-    claims = template.resolve({"workspace": {"scope_id": current_id}}).writes
+    claims = template.resolve({"change_id": current_id}).writes
     store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
     try:
         binding = store.begin(task_id="intake-execute", attempt=1, output_paths=claims)
@@ -475,9 +482,9 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
 
     resources = AGENT_EXECUTION_CONTRACTS["assurance.intake.agent.explore.v1"].resources
     assert isinstance(resources, ResourceClaimTemplate)
-    assert resources.parameters == {"change_id": "/workspace/scope_id"}
+    assert resources.parameters == {"change_id": "/change_id"}
     assert resources.reads == ("qa",)
-    claims = resources.resolve({"workspace": {"scope_id": current_id}}).writes
+    claims = resources.resolve({"change_id": current_id}).writes
     context_claim = f"qa/changes/{current_id}/explore/context.json"
     assert claims == (
         context_claim,

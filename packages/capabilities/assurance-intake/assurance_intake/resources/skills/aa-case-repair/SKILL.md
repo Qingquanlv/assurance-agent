@@ -24,6 +24,10 @@ Changes outside the declared locators fail the node.
    finish and read the file back before the next patch.
 4. Change only the named field paths. A path such as `automation.fuzz` permits
    changes inside that nested object, not the rest of `automation`.
+   For `proposal.md`, the one allowed path is a complete `## ` heading and only
+   that section body may change. For the minimum-coverage matrix, allowed paths
+   are exact `mrc_id` values and only their `status`, `covered_by_cases`, and
+   `skip_reason` fields may change. `.qa.yaml` is never an automatic repair target.
 5. Re-read every graph-declared output and verify the locked receipt.
 
 Do not add, remove, reorder, or rewrite any case unless a repair action explicitly

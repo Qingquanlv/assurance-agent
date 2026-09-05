@@ -8,9 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from assurance_intake.contracts.workflow import CaseFlowResultV1
 from assurance_product.graphs.entrypoints import (
-    adapt_improvement,
     adapt_intake,
-    adapt_retro,
     publish_public_output,
     validate_public_input,
 )
@@ -50,13 +48,13 @@ def route_case_result(state: Mapping[str, object]) -> Literal["reviewed", "faile
 
 def route_full_tail(
     state: Mapping[str, object],
-) -> Literal["retro", "advance-coverage", "not-achieved"]:
+) -> Literal["achieved", "advance-coverage", "not-achieved"]:
     try:
         result = ExecuteTailResultV1.model_validate(state.get("tail_result"))
     except (TypeError, ValueError):
         return "not-achieved"
     if result.status == "reported":
-        return "retro"
+        return "achieved"
     if result.status != "coverage_insufficient" or result.inspection is None:
         return "not-achieved"
     try:
@@ -76,24 +74,12 @@ def route_full_tail(
 
 def _terminal_achieved(state: ProductState) -> dict[str, object]:
     published = publish_public_output(cast(ProductState, {**dict(state), "status": "completed"}))
-    return {**published, "terminal": "achieved", "status": "completed"}
+    return {**published, "terminal": {"status": "completed", "reason": "achieved"}, "status": "completed"}
 
 
 def _terminal_not_achieved(state: ProductState) -> dict[str, object]:
     published = publish_public_output(cast(ProductState, {**dict(state), "status": "failed"}))
-    return {**published, "terminal": "not-achieved", "status": "failed"}
-
-
-def _route_feature_success(state: ProductState) -> str:
-    if state.get("attempt_failure") or state.get("status") in {
-        "failed",
-        "rejected",
-        "exhausted",
-        "rework",
-        "superseded",
-    }:
-        return "not-achieved"
-    return "succeeded"
+    return {**published, "terminal": {"status": "failed", "reason": "not_achieved"}, "status": "failed"}
 
 
 def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph[ProductState]:
@@ -107,10 +93,6 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_node("advance-coverage", cast(Any, advance_coverage))
     builder.add_node("adapt-execute-tail", cast(Any, adapt_execute_tail))
     builder.add_node("execute-tail", execute)
-    builder.add_node("adapt-retro", cast(Any, adapt_retro))
-    builder.add_node("retro", typed.improvement.retro)
-    builder.add_node("adapt-improvement", cast(Any, adapt_improvement))
-    builder.add_node("improvement", typed.improvement.apply)
     builder.add_node("achieved", cast(Any, _terminal_achieved))
     builder.add_node("not-achieved", cast(Any, _terminal_not_achieved))
     builder.add_edge(START, "validate")
@@ -133,22 +115,10 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
         "execute-tail",
         cast(Callable[..., Any], route_full_tail),
         {
-            "retro": "adapt-retro",
+            "achieved": "achieved",
             "advance-coverage": "advance-coverage",
             "not-achieved": "not-achieved",
         },
-    )
-    builder.add_edge("adapt-retro", "retro")
-    builder.add_conditional_edges(
-        "retro",
-        cast(Callable[..., Any], _route_feature_success),
-        {"succeeded": "adapt-improvement", "not-achieved": "not-achieved"},
-    )
-    builder.add_edge("adapt-improvement", "improvement")
-    builder.add_conditional_edges(
-        "improvement",
-        cast(Callable[..., Any], _route_feature_success),
-        {"succeeded": "achieved", "not-achieved": "not-achieved"},
     )
     builder.add_edge("achieved", END)
     builder.add_edge("not-achieved", END)

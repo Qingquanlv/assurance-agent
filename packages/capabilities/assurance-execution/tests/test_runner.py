@@ -95,7 +95,7 @@ async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_tests_empty_mapping_does_not_spawn(tmp_path: Path) -> None:
+async def test_run_tests_empty_mapping_fails_closed_without_spawning(tmp_path: Path) -> None:
     write_test(tmp_path / "tests/legacy_test.py")
     write_test(tmp_path / "tests/generated_test.py")
     host = fake_pytest_host()
@@ -104,13 +104,11 @@ async def test_run_tests_empty_mapping_does_not_spawn(tmp_path: Path) -> None:
         run_request(selected=[]),
         tmp_path,
     )
-    assert outcome.status == "succeeded"
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert "at least one selected test" in outcome.failure.message
     assert host.commands == []
-    assert executed_paths(outcome) == ()
-    output = as_object(outcome.output)
-    assert output["results"] == []
-    assert as_object(output["evidence"])["results"] == []
-    assert as_object(as_object(output["evidence"])["mapping"])["selected"] == []
 
 
 def test_confined_host_scrubs_env_and_confines_report(

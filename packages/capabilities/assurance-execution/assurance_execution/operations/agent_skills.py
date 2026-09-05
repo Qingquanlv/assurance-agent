@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -20,14 +21,21 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_execution.contracts.agent import (
     AgentBindingDataV1,
     AgentFinalizeInputV1,
-    ExecutionFinalizeRequestV1,
     ExecutionPrepareInputV1,
     ExecuteInputV1,
     RunSkillInputV1,
     SelectInputV1,
 )
-from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
+from assurance_execution.execution_view import (
+    ExecutionView,
+    build_or_authenticate_execution_view,
+    collect_test_support_files,
+    discard_authenticated_execution_view,
+    execution_view_relative,
+)
+from assurance_execution.generated_merge import merge_generated
 from assurance_execution.operations.common import (
     InputError,
     OutputError,
@@ -38,6 +46,7 @@ from assurance_execution.operations.common import (
     mapping_digest,
     validate_input,
 )
+from assurance_execution.operations.paths import resolve_canonical_evidence
 from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
 from assurance_generation.contracts import CodegenAuthoringV1
@@ -54,6 +63,7 @@ _RUNNER_PROFILE_DIGEST = canonical_digest(
         "profile": "assurance.execution.agent.v1",
         "selection": "closed-mapping-test-selector.v1",
         "evidence": "assurance.execution.result.execution.v1",
+        "receipt": "ordered-family-command-receipts.v1",
     }
 )
 _BOUNDED_PROFILES = {
@@ -65,6 +75,88 @@ _BOUNDED_PROFILES = {
     "aa-reviewer": "assurance-v1-reviewer",
     "aa-test-author": "assurance-v1-test-author",
 }
+_BASELINE_POLICY_ID = "assurance.execution.closed-baseline.v1"
+_BASELINE_SOURCE_ROOTS = ("app", "migrations", "src", "web/build", "web/src")
+_BASELINE_CONFIG_FILES = (
+    ".python-version",
+    "Pipfile",
+    "Pipfile.lock",
+    "bun.lock",
+    "bun.lockb",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "package.json",
+    "pdm.lock",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "poetry.lock",
+    "pyproject.toml",
+    "pytest.ini",
+    "requirements-dev.txt",
+    "requirements.txt",
+    "ruff.toml",
+    "setup.cfg",
+    "tox.ini",
+    "uv.lock",
+    "yarn.lock",
+    "web/.env",
+    "web/index.html",
+    "web/bun.lock",
+    "web/bun.lockb",
+    "web/jsconfig.json",
+    "web/npm-shrinkwrap.json",
+    "web/package-lock.json",
+    "web/package.json",
+    "web/playwright.config.js",
+    "web/playwright.config.ts",
+    "web/pnpm-lock.yaml",
+    "web/tsconfig.json",
+    "web/unocss.config.js",
+    "web/vite.config.js",
+    "web/vite.config.ts",
+    "web/vitest.config.js",
+    "web/vitest.config.ts",
+    "web/yarn.lock",
+)
+_BASELINE_IGNORED_DIRECTORIES = frozenset(
+    {
+        ".hypothesis",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "logs",
+        "node_modules",
+        "venv",
+    }
+)
+_MAX_BASELINE_FILES = 10_000
+_MAX_BASELINE_FILE_BYTES = 16 * 1024 * 1024
+_MAX_BASELINE_BYTES = 256 * 1024 * 1024
+
+
+@dataclass
+class _BaselineManifest:
+    entries: dict[str, tuple[str, int]] = field(default_factory=dict)
+    total_bytes: int = 0
+
+    def add(self, relative: str, payload: bytes) -> None:
+        if len(payload) > _MAX_BASELINE_FILE_BYTES:
+            raise InputError(f"workspace baseline file exceeds size limit: {relative}")
+        previous = self.entries.get(relative)
+        if previous is None and len(self.entries) >= _MAX_BASELINE_FILES:
+            raise InputError("workspace baseline exceeds file count limit")
+        next_total = self.total_bytes - (0 if previous is None else previous[1]) + len(payload)
+        if next_total > _MAX_BASELINE_BYTES:
+            raise InputError("workspace baseline exceeds total size limit")
+        self.entries[relative] = (hashlib.sha256(payload).hexdigest(), len(payload))
+        self.total_bytes = next_total
+
+    def members(self) -> list[list[str]]:
+        return [[path, self.entries[path][0]] for path in sorted(self.entries)]
 
 
 def result_contract() -> ResultContract:
@@ -89,6 +181,7 @@ def _agent_workspace(
     *,
     agent_profile: str,
     allowed_outputs: tuple[str, ...],
+    read_roots: tuple[str, ...],
     scope_id: str,
 ) -> AgentWorkspaceV1:
     try:
@@ -103,13 +196,9 @@ def _agent_workspace(
         "scope_id": scope_id,
         "write_root": write_root,
         "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+        "read_roots": tuple(sorted(set(read_roots))),
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
-
-
-def _execution_outputs(change_id: str, *, run: bool) -> tuple[str, ...]:
-    name = "run-result.json" if run else "execute-result.json"
-    return (f"qa/changes/{change_id}/execution/{name}",)
 
 
 def prepare_outcome(
@@ -119,6 +208,7 @@ def prepare_outcome(
     binding: AgentBindingDataV1,
     context: TaskContext,
     allowed_outputs: tuple[str, ...],
+    read_roots: tuple[str, ...],
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
         instructions=(
@@ -132,6 +222,7 @@ def prepare_outcome(
             context,
             agent_profile=binding.agent_profile,
             allowed_outputs=allowed_outputs,
+            read_roots=read_roots,
             scope_id=business.change_id,
         ),
         request_policy_digest=binding.request_policy_digest,
@@ -217,34 +308,138 @@ def _reviewed_cases(
         raise InputError(str(error)) from error
 
 
-def _workspace_tree_id(workspace: Path) -> str:
-    manifest: dict[str, str] = {}
-    for root, directories, filenames in os.walk(workspace, topdown=True, followlinks=False):
-        root_path = Path(root)
-        for name in (*directories, *filenames):
-            if (root_path / name).is_symlink():
-                raise InputError("attempt workspace contains a symbolic link")
-        for name in filenames:
-            path = root_path / name
-            if not path.is_file() or path.stat().st_nlink != 1:
-                raise InputError("attempt workspace contains a non-regular file")
-            relative = path.relative_to(workspace).as_posix()
-            manifest[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    pairs = [[path, manifest[path]] for path in sorted(manifest)]
-    return canonical_digest(pairs)
+def _workspace_tree_id(
+    workspace: Path,
+    *,
+    excluded_root: Path,
+    merged_generated_digest: str,
+) -> str:
+    manifest = _BaselineManifest()
+    try:
+        excluded = excluded_root.resolve().relative_to(workspace.resolve())
+    except ValueError as error:
+        raise InputError("attempt write root must remain inside the project") from error
+    for relative_root in _BASELINE_SOURCE_ROOTS:
+        _add_baseline_tree(workspace, relative_root, excluded=excluded, manifest=manifest)
+    try:
+        support_files = collect_test_support_files(workspace)
+    except ValueError as error:
+        raise InputError(str(error)) from error
+    for relative, source in support_files.items():
+        payload, _ = source
+        manifest.add(relative, payload)
+    for relative in _baseline_config_members(workspace):
+        _add_baseline_path(workspace, relative, manifest=manifest)
+    return canonical_digest(
+        {
+            "policy_id": _BASELINE_POLICY_ID,
+            "members": manifest.members(),
+            "merged_generated_digest": merged_generated_digest,
+        }
+    )
+
+
+def _add_baseline_tree(
+    workspace: Path,
+    relative_root: str,
+    *,
+    excluded: Path,
+    manifest: _BaselineManifest,
+) -> None:
+    root = workspace.joinpath(*PurePosixPath(relative_root).parts)
+    if root.is_symlink():
+        raise InputError(f"workspace baseline contains a symbolic link: {relative_root}")
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise InputError(f"workspace baseline source root is not a directory: {relative_root}")
+    try:
+        root.resolve().relative_to(workspace.resolve())
+        for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            kept: list[str] = []
+            for name in sorted(directories):
+                child = current_path / name
+                relative = child.relative_to(workspace)
+                if relative == excluded or name in _BASELINE_IGNORED_DIRECTORIES:
+                    continue
+                if child.is_symlink():
+                    raise InputError(f"workspace baseline contains a symbolic link: {relative.as_posix()}")
+                kept.append(name)
+            directories[:] = kept
+            for name in sorted(filenames):
+                if _runtime_noise_file(name):
+                    continue
+                relative = (current_path / name).relative_to(workspace)
+                if relative == excluded or excluded in relative.parents:
+                    continue
+                _add_baseline_path(workspace, relative.as_posix(), manifest=manifest)
+    except InputError:
+        raise
+    except ValueError as error:
+        raise InputError(f"workspace baseline source root escapes project: {relative_root}") from error
+    except OSError as error:
+        raise InputError(f"could not scan workspace baseline root: {relative_root}") from error
+
+
+def _baseline_config_members(workspace: Path) -> tuple[str, ...]:
+    members: set[str] = set(_BASELINE_CONFIG_FILES)
+    for relative_root in (".", "web"):
+        root = workspace if relative_root == "." else workspace / relative_root
+        if root.is_symlink():
+            raise InputError(f"workspace baseline contains a symbolic link: {relative_root}")
+        if not root.exists():
+            continue
+        if not root.is_dir():
+            raise InputError(f"workspace baseline config root is not a directory: {relative_root}")
+        try:
+            for child in root.iterdir():
+                package_manifest = child.name.startswith("package") and child.name.endswith(".json")
+                web_runtime_config = relative_root == "web" and (
+                    child.name.startswith(".env") or child.name == "index.html" or ".config." in child.name
+                )
+                if package_manifest or web_runtime_config:
+                    members.add(child.relative_to(workspace).as_posix())
+        except OSError as error:
+            raise InputError(f"could not scan workspace baseline config root: {relative_root}") from error
+    return tuple(sorted(members))
+
+
+def _add_baseline_path(workspace: Path, relative: str, *, manifest: _BaselineManifest) -> None:
+    path = workspace.joinpath(*PurePosixPath(relative).parts)
+    if path.is_symlink():
+        raise InputError(f"workspace baseline contains a symbolic link: {relative}")
+    if not path.exists():
+        return
+    try:
+        path.resolve().relative_to(workspace.resolve())
+        stat = path.stat()
+        if not path.is_file() or stat.st_nlink != 1:
+            raise InputError(f"workspace baseline contains a non-regular file: {relative}")
+        if stat.st_size > _MAX_BASELINE_FILE_BYTES:
+            raise InputError(f"workspace baseline file exceeds size limit: {relative}")
+        payload = path.read_bytes()
+    except InputError:
+        raise
+    except (OSError, ValueError) as error:
+        raise InputError(f"could not authenticate workspace baseline file: {relative}") from error
+    manifest.add(relative, payload)
+
+
+def _runtime_noise_file(name: str) -> bool:
+    lowered = name.lower()
+    return lowered.endswith(
+        (".db", ".sqlite", ".sqlite3", ".sqlite3-shm", ".sqlite3-wal")
+    ) or lowered.endswith((".log", ".pyc", ".pyo"))
 
 
 def assemble_execution_input(
     data: object,
     *,
     workspace: Path,
+    write_root: Path,
     model: type[ExecuteInputV1] | type[RunSkillInputV1],
-    baseline_tree_id: str | None = None,
 ) -> ExecuteInputV1 | RunSkillInputV1:
-    try:
-        return model.model_validate(data)
-    except ValidationError:
-        pass
     root = validate_input(ExecutionPrepareInputV1, data)
     _authenticate_generation_sources(root, workspace)
     selected = SelectedTargets(
@@ -287,16 +482,36 @@ def assemble_execution_input(
             case_ids=case_ids,
         )
     )
-    locked_baseline = baseline_tree_id or _workspace_tree_id(workspace)
-    runner_profile_digest = _RUNNER_PROFILE_DIGEST
-    batch_id = canonical_digest(
-        {
-            "change_id": root.change_id,
-            "mapping": closed.model_dump(mode="json"),
-            "baseline_tree_id": locked_baseline,
-            "runner_profile_digest": runner_profile_digest,
-        }
-    )
+    try:
+        merged = merge_generated(workspace, root.change_id, root.selected_test_families)
+        locked_baseline = _workspace_tree_id(
+            workspace,
+            excluded_root=write_root,
+            merged_generated_digest=merged.digest,
+        )
+        runner_profile_digest = _RUNNER_PROFILE_DIGEST
+        batch_id = canonical_digest(
+            {
+                "change_id": root.change_id,
+                "mapping": closed.model_dump(mode="json"),
+                "baseline_tree_id": locked_baseline,
+                "runner_profile_digest": runner_profile_digest,
+            }
+        )
+        view = build_or_authenticate_execution_view(
+            workspace,
+            write_root=write_root,
+            change_id=root.change_id,
+            batch_id=batch_id,
+            merged=merged,
+            selected=closed.selected,
+        )
+        physical_view = write_root.joinpath(*PurePosixPath(view.root).parts)
+        execution_view_root = physical_view.resolve().relative_to(workspace.resolve()).as_posix()
+        if view.executed_at is None:
+            raise ValueError("execution view preparation time is missing")
+    except ValueError as error:
+        raise InputError(str(error)) from error
     return model(
         change_id=root.change_id,
         batch_id=batch_id,
@@ -310,40 +525,75 @@ def assemble_execution_input(
         coverage_epoch=root.coverage_epoch,
         repair_round=root.repair_round,
         generation_result=root.generation_result,
+        execution_view_root=execution_view_root,
+        execution_view_digest=view.digest,
+        executed_at=view.executed_at,
     )
 
 
 def _finalize_payload(
     data: object,
-    *,
-    workspace: Path,
-    model: type[ExecuteInputV1] | type[RunSkillInputV1],
 ) -> AgentFinalizeInputV1:
+    return validate_input(AgentFinalizeInputV1, data)
+
+
+def _discard_execution_view(
+    payload: AgentFinalizeInputV1,
+    *,
+    project_root: Path,
+    write_root: Path,
+) -> None:
+    relative = execution_view_relative(payload.change_id, payload.batch_id)
+    expected = write_root.joinpath(*PurePosixPath(relative).parts)
     try:
-        return AgentFinalizeInputV1.model_validate(data)
-    except ValidationError:
-        pass
-    envelope = validate_input(ExecutionFinalizeRequestV1, data)
-    structured = thaw_json(envelope.agent_result.result_payload)
-    if not isinstance(structured, dict):
-        raise InputError("execution result must be an object")
-    baseline_tree_id = structured.get("baseline_tree_id")
-    if (
-        not isinstance(baseline_tree_id, str)
-        or len(baseline_tree_id) != 64
-        or any(character not in "0123456789abcdef" for character in baseline_tree_id)
-    ):
-        raise InputError("execution result baseline_tree_id must be a lowercase SHA-256")
-    business = assemble_execution_input(
-        envelope.model_dump(mode="json", exclude={"agent_result"}),
-        workspace=workspace,
-        model=model,
-        baseline_tree_id=baseline_tree_id,
+        project_relative = expected.resolve().relative_to(project_root.resolve()).as_posix()
+    except ValueError as error:
+        raise OutputError("execution view escapes the authenticated attempt workspace") from error
+    if payload.execution_view_root != project_relative:
+        raise OutputError("execution view root does not match the authenticated attempt workspace")
+    view = ExecutionView(
+        batch_id=payload.batch_id,
+        root=relative,
+        selected_targets=payload.mapping.selected,
+        digest=payload.execution_view_digest,
     )
-    return AgentFinalizeInputV1(
-        agent_result=envelope.agent_result,
-        **business.model_dump(mode="json"),
+    try:
+        discard_authenticated_execution_view(write_root, view)
+    except ValueError as error:
+        raise OutputError(str(error)) from error
+
+
+def _commit_execution_evidence(
+    payload: AgentFinalizeInputV1,
+    evidence: ExecutionEvidenceV1,
+    *,
+    project_root: Path,
+    write_root: Path,
+    filename: str,
+) -> None:
+    output = resolve_canonical_evidence(write_root, evidence.change_id, filename)
+    expected = json.dumps(evidence.model_dump(mode="json"), indent=2).encode("utf-8") + b"\n"
+    view = write_root.joinpath(
+        *PurePosixPath(execution_view_relative(payload.change_id, payload.batch_id)).parts
     )
+    if output.exists():
+        if (
+            output.is_symlink()
+            or not output.is_file()
+            or output.stat().st_nlink != 1
+            or output.read_bytes() != expected
+        ):
+            raise OutputError("prepared execution evidence drifted before finalize recovery")
+    else:
+        if not view.is_dir() or view.is_symlink():
+            raise OutputError("execution view is missing before first finalize")
+        write_canonical_evidence(write_root, evidence, filename=filename)
+    if view.exists():
+        _discard_execution_view(
+            payload,
+            project_root=project_root,
+            write_root=write_root,
+        )
 
 
 def _canonical_relative(path: str) -> bool:
@@ -394,35 +644,35 @@ def _finalize_evidence(payload: AgentFinalizeInputV1, workspace: Path) -> Execut
             payload.mapping.model_dump(mode="json"),
             context={"capability_leafs": leafs, "case_ids": case_ids},
         )
-        evidence = ExecutionEvidenceV1.model_validate(
+        agent_result = ExecutionAgentResultV1.model_validate(
             _structured(payload),
             context={"capability_leafs": leafs, "case_ids": case_ids},
         )
     except ValidationError as error:
         raise OutputError(str(error)) from error
-    if evidence.mapping != locked:
+    if agent_result.mapping != locked:
         raise OutputError("execution evidence mapping does not match the locked closed mapping")
-    if evidence.change_id != payload.change_id or evidence.batch_id != payload.batch_id:
+    if agent_result.change_id != payload.change_id or agent_result.batch_id != payload.batch_id:
         raise OutputError("execution evidence identity does not match the locked change")
-    if evidence.baseline_tree_id != payload.baseline_tree_id:
+    if agent_result.baseline_tree_id != payload.baseline_tree_id:
         raise OutputError("execution evidence baseline tree does not match the authenticated workspace")
-    if evidence.selected_targets != payload.selected_targets:
+    if agent_result.selected_targets != payload.selected_targets:
         raise OutputError("execution evidence targets do not match the locked selection")
-    if evidence.runner_profile_digest != payload.runner_profile_digest:
+    if agent_result.runner_profile_digest != payload.runner_profile_digest:
         raise OutputError("execution evidence runner profile does not match the locked selection")
     if payload.artifact_paths:
         _authenticate_files(workspace, payload.artifact_paths)
-    status = (
-        "failed"
-        if evidence.receipt.exit_code != 0 or any(item.status == "failed" for item in evidence.results)
-        else "passed"
-    )
-    return evidence.model_copy(
-        update={
+    result_failed = any(item.status == "failed" for item in agent_result.results)
+    status = "failed" if agent_result.receipt.exit_code != 0 or result_failed else "passed"
+    return ExecutionEvidenceV1.model_validate(
+        {
+            **agent_result.model_dump(mode="json"),
+            "executed_at": payload.executed_at,
             "status": status,
             "mapping_digest": mapping_digest(locked),
-            "receipt_digest": json_digest(cast(JSONValue, evidence.receipt.model_dump(mode="json"))),
-        }
+            "receipt_digest": json_digest(cast(JSONValue, agent_result.receipt.model_dump(mode="json"))),
+        },
+        context={"capability_leafs": leafs, "case_ids": case_ids},
     )
 
 
@@ -433,6 +683,7 @@ class ExecutePrepareHandler:
             business = assemble_execution_input(
                 request.input,
                 workspace=context.project_root,
+                write_root=context.write_root,
                 model=ExecuteInputV1,
             )
             return prepare_outcome(
@@ -440,7 +691,8 @@ class ExecutePrepareHandler:
                 business=business,
                 binding=binding,
                 context=context,
-                allowed_outputs=_execution_outputs(business.change_id, run=False),
+                allowed_outputs=(),
+                read_roots=(business.execution_view_root,),
             )
         except InputError as error:
             return failed_input(error)
@@ -453,6 +705,7 @@ class RunPrepareHandler:
             business = assemble_execution_input(
                 request.input,
                 workspace=context.project_root,
+                write_root=context.write_root,
                 model=RunSkillInputV1,
             )
             return prepare_outcome(
@@ -460,22 +713,27 @@ class RunPrepareHandler:
                 business=business,
                 binding=binding,
                 context=context,
-                allowed_outputs=_execution_outputs(business.change_id, run=True),
+                allowed_outputs=(),
+                read_roots=(business.execution_view_root,),
             )
         except InputError as error:
             return failed_input(error)
 
 
 class ExecuteFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = _finalize_payload(
-                request.input,
-                workspace=context.project_root,
-                model=ExecuteInputV1,
-            )
+            payload = _finalize_payload(request.input)
             evidence = _finalize_evidence(payload, context.project_root)
-            write_canonical_evidence(context.write_root, evidence, filename="execute-result.json")
+            _commit_execution_evidence(
+                payload,
+                evidence,
+                project_root=context.project_root,
+                write_root=context.write_root,
+                filename="execute-result.json",
+            )
             return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
@@ -484,15 +742,19 @@ class ExecuteFinalizeHandler:
 
 
 class RunFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = _finalize_payload(
-                request.input,
-                workspace=context.project_root,
-                model=RunSkillInputV1,
-            )
+            payload = _finalize_payload(request.input)
             evidence = _finalize_evidence(payload, context.project_root)
-            write_canonical_evidence(context.write_root, evidence, filename="run-result.json")
+            _commit_execution_evidence(
+                payload,
+                evidence,
+                project_root=context.project_root,
+                write_root=context.write_root,
+                filename="run-result.json",
+            )
             return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)

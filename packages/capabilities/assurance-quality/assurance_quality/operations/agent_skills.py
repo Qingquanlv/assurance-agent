@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -12,7 +11,6 @@ from pydantic import ValidationError
 
 from agent_runtime_contracts import (
     AgentRunRequest,
-    AgentRunResult,
     AgentWorkspaceV1,
     InstructionPart,
     ResultContract,
@@ -35,11 +33,13 @@ from assurance_quality.contracts.agent import (
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import (
+    AssessmentFinalizeInputV1,
     AssessmentSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     FinalizedReportV1,
     ReportSkillInputV1,
+    ReportFinalizeInputV1,
 )
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
@@ -119,6 +119,7 @@ def agent_workspace(
         "scope_id": scope_id,
         "write_root": write_root,
         "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+        "read_roots": (),
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
@@ -184,50 +185,6 @@ def prepare_outcome(
 
 def _structured(payload: AgentFinalizeInputV1) -> object:
     return thaw_json(payload.agent_result.result_payload)
-
-
-def _legacy_finalize_payload(data: object) -> AgentFinalizeInputV1:
-    try:
-        return validate_input(AgentFinalizeInputV1, data)
-    except InputError:
-        pass
-    if not isinstance(data, Mapping):
-        raise InputError("agent finalize input must be an object")
-    validated = data.get("validated_input")
-    agent_result = data.get("agent_result")
-    if not isinstance(validated, Mapping) or agent_result is None:
-        raise InputError("agent finalize input is missing its validated input")
-    return validate_input(AgentFinalizeInputV1, {**validated, "agent_result": agent_result})
-
-
-def _assessment_finalize_payload(data: object) -> tuple[AssessmentSkillInputV1, AgentRunResult]:
-    if not isinstance(data, Mapping):
-        raise InputError("assessment finalize input must be an object")
-    validated = data.get("validated_input")
-    if validated is None:
-        validated = {key: value for key, value in data.items() if key not in {"agent_result", "prepared"}}
-    agent_result = data.get("agent_result")
-    if not isinstance(validated, Mapping) or agent_result is None:
-        raise InputError("assessment finalize input is missing its agent result")
-    try:
-        return AssessmentSkillInputV1.model_validate(validated), AgentRunResult.model_validate(agent_result)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
-
-
-def _report_finalize_payload(data: object) -> tuple[ReportSkillInputV1, AgentRunResult]:
-    if not isinstance(data, Mapping):
-        raise InputError("report finalize input must be an object")
-    validated = data.get("validated_input")
-    if validated is None:
-        validated = {key: value for key, value in data.items() if key not in {"agent_result", "prepared"}}
-    agent_result = data.get("agent_result")
-    if not isinstance(validated, Mapping) or agent_result is None:
-        raise InputError("report finalize input is missing its agent result")
-    try:
-        return ReportSkillInputV1.model_validate(validated), AgentRunResult.model_validate(agent_result)
-    except ValidationError as error:
-        raise InputError(str(error)) from error
 
 
 def _canonical_file(root: Path, relative: str) -> Path:
@@ -409,9 +366,12 @@ class ReportPrepareHandler:
 
 
 class FactBaselineFinalizeHandler:
+    input_model = AssessmentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business, agent_run = _assessment_finalize_payload(request.input)
+            business = validate_input(AssessmentFinalizeInputV1, request.input)
+            agent_run = business.agent_result
             try:
                 document = FactBaselineResultV1.model_validate(thaw_json(agent_run.result_payload))
             except ValidationError as error:
@@ -441,9 +401,12 @@ class FactBaselineFinalizeHandler:
 
 
 class InspectFinalizeHandler:
+    input_model = AssessmentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business, agent_run = _assessment_finalize_payload(request.input)
+            business = validate_input(AssessmentFinalizeInputV1, request.input)
+            agent_run = business.agent_result
             try:
                 document = InspectionResultV1.model_validate(thaw_json(agent_run.result_payload))
             except ValidationError as error:
@@ -526,10 +489,12 @@ class InspectFinalizeHandler:
 
 
 class IssueAnalysisFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = _legacy_finalize_payload(request.input)
+            payload = validate_input(AgentFinalizeInputV1, request.input)
             try:
                 document = IssueAnalysisResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -570,10 +535,12 @@ class IssueAnalysisFinalizeHandler:
 
 
 class IssueTriageFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = _legacy_finalize_payload(request.input)
+            payload = validate_input(AgentFinalizeInputV1, request.input)
             try:
                 document = IssueTriageResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -595,9 +562,12 @@ class IssueTriageFinalizeHandler:
 
 
 class ReportFinalizeHandler:
+    input_model = ReportFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business, agent_run = _report_finalize_payload(request.input)
+            business = validate_input(ReportFinalizeInputV1, request.input)
+            agent_run = business.agent_result
             try:
                 document = ReportResultV1.model_validate(thaw_json(agent_run.result_payload))
             except ValidationError as error:

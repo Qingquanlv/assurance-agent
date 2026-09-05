@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -21,6 +22,10 @@ _AGENT = "assurance-v1-doc-author"
 _WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
 _ALLOWED = "qa/changes/CH-1/proposal.md"
 _OTHER_NODE = "qa/changes/CH-1/review/review.md"
+_EXECUTION_VIEW = (
+    f"{_WRITE_ROOT}/qa/changes/CH-1/.staging/execution/"
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
 _DRIVER = r"""
 import { pathToFileURL } from "node:url";
 const pluginPath = process.argv[1];
@@ -50,6 +55,7 @@ def _binding_title(
     agent_profile: str = _AGENT,
     write_root: str = _WRITE_ROOT,
     allowed_outputs: tuple[str, ...] = (_ALLOWED,),
+    read_roots: tuple[str, ...] = (),
     task_id: str = "task-1",
     attempt: int = 1,
     attempt_id: str = "attempt-1",
@@ -63,6 +69,7 @@ def _binding_title(
         task_id=task_id,
         attempt=attempt,
         attempt_id=attempt_id,
+        read_roots=read_roots,
     )
 
 
@@ -159,6 +166,7 @@ def _workspace(*, agent_profile: str = _AGENT) -> AgentWorkspaceV1:
         "scope_id": "CH-1",
         "write_root": _WRITE_ROOT,
         "allowed_outputs": [_ALLOWED],
+        "read_roots": [],
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
@@ -215,6 +223,7 @@ def test_workspace_binding_is_digest_bound_and_requires_session_identity(tmp_pat
     assert document["project_root_digest"] == canonical_digest(str(project.resolve()))
     assert document["write_root"] == _WRITE_ROOT
     assert document["allowed_outputs"] == [_ALLOWED]
+    assert document["read_roots"] == []
     assert document["task_id"] == "task-1"
     assert document["attempt"] == 1
     assert document["attempt_id"] == "attempt-1"
@@ -243,6 +252,120 @@ def test_native_write_and_edit_redirect_allowed_logical_path_to_write_root(
     args = _allowed(_run(plugin, session=session, tool=tool, args={key: _ALLOWED}))
     assert args[key] == str(_staged(project, _ALLOWED))
     assert (project / _ALLOWED).exists() is False
+
+
+@pytest.mark.parametrize("tool", ["edit", "apply_patch"])
+def test_repair_mutation_copies_the_existing_output_to_staging_before_redirect(
+    tmp_path: Path, tool: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    baseline = project / _ALLOWED
+    baseline.parent.mkdir(parents=True)
+    baseline.write_bytes(b"baseline bytes\n")
+    baseline.chmod(0o640)
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+    if tool == "edit":
+        original_args: Mapping[str, object] = {
+            "filePath": _ALLOWED,
+            "oldString": "baseline",
+            "newString": "repaired",
+        }
+    else:
+        original_args = {
+            "patchText": (
+                f"*** Begin Patch\n*** Update File: {_ALLOWED}\n"
+                "@@\n-baseline bytes\n+repaired bytes\n*** End Patch"
+            )
+        }
+
+    args = _allowed(_run(plugin, session=session, tool=tool, args=original_args))
+
+    staged = _staged(project, _ALLOWED)
+    assert staged.read_bytes() == b"baseline bytes\n"
+    assert staged.stat().st_mode & 0o777 == 0o640
+    assert baseline.read_bytes() == b"baseline bytes\n"
+    redirected = args.get("filePath") or args.get("patchText")
+    assert str(staged) in str(redirected)
+
+
+@pytest.mark.parametrize("baseline_kind", ["symlink", "hardlink", "parent_symlink"])
+def test_repair_copy_on_write_rejects_non_private_project_baselines(
+    tmp_path: Path, baseline_kind: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    baseline = project / _ALLOWED
+    if baseline_kind == "symlink":
+        baseline.parent.mkdir(parents=True)
+        baseline.symlink_to(outside)
+    elif baseline_kind == "hardlink":
+        baseline.parent.mkdir(parents=True)
+        os.link(outside, baseline)
+    else:
+        outside_qa = tmp_path / "outside-qa"
+        outside_baseline = outside_qa / "changes" / "CH-1" / "proposal.md"
+        outside_baseline.parent.mkdir(parents=True)
+        outside_baseline.write_text("outside\n", encoding="utf-8")
+        (project / "qa").symlink_to(outside_qa, target_is_directory=True)
+        outside = outside_baseline
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+
+    denied = _run(
+        plugin,
+        session=session,
+        tool="edit",
+        args={"filePath": _ALLOWED, "oldString": "outside", "newString": "changed"},
+    )
+
+    _denied(denied, "not allowed")
+    assert not _staged(project, _ALLOWED).exists()
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
+def test_repair_copy_on_write_never_overwrites_an_existing_staged_output(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    baseline = project / _ALLOWED
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text("baseline\n", encoding="utf-8")
+    staged = _staged(project, _ALLOWED)
+    staged.parent.mkdir(parents=True)
+    staged.write_text("prior staged repair\n", encoding="utf-8")
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+
+    args = _allowed(
+        _run(
+            plugin,
+            session=session,
+            tool="edit",
+            args={"filePath": _ALLOWED, "oldString": "prior", "newString": "next"},
+        )
+    )
+
+    assert args["filePath"] == str(staged)
+    assert staged.read_text(encoding="utf-8") == "prior staged repair\n"
+
+
+def test_new_file_write_does_not_copy_a_project_baseline(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    baseline = project / _ALLOWED
+    baseline.parent.mkdir(parents=True)
+    baseline.write_text("baseline\n", encoding="utf-8")
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+
+    args = _allowed(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}))
+
+    staged = _staged(project, _ALLOWED)
+    assert args["filePath"] == str(staged)
+    assert not staged.exists()
 
 
 @pytest.mark.parametrize(
@@ -462,10 +585,10 @@ _EXECUTOR_VIEW_COMMAND = (
     "PYTHONDONTWRITEBYTECODE=1 "
     "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-1 "
     "uv run --isolated pytest -p no:cacheprovider --rootdir "
-    "qa/changes/CH-1/.staging/execution/api"
+    f"{_EXECUTION_VIEW} {_EXECUTION_VIEW}/tests/api/test_generated.py::test_ok"
 )
-_PLAYWRIGHT_VIEW_COMMAND = "npx playwright test --config=qa/changes/CH-1/.staging/execution/e2e"
-_NPM_VIEW_COMMAND = "npm test --prefix qa/changes/CH-1/.staging/execution/api"
+_PLAYWRIGHT_VIEW_COMMAND = f"npx playwright test --config={_EXECUTION_VIEW}"
+_NPM_VIEW_COMMAND = f"npm test --prefix {_EXECUTION_VIEW}"
 _CWD_RENAME = (
     "python -c \"__import__('os').rename(__import__('os').getcwd(), __import__('os').getcwd()+'.bak')\""
 )
@@ -477,7 +600,11 @@ def test_executor_execution_view_shell_is_allowed(tmp_path: Path) -> None:
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, agent_profile="assurance-v1-executor"),
+        _binding_title(
+            project,
+            agent_profile="assurance-v1-executor",
+            read_roots=(_EXECUTION_VIEW,),
+        ),
         agent="assurance-v1-executor",
     )
     args = _allowed(_run(plugin, session=session, tool="bash", args={"command": _EXECUTOR_VIEW_COMMAND}))
@@ -490,11 +617,144 @@ def test_executor_playwright_config_view_shell_is_allowed(tmp_path: Path) -> Non
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, agent_profile="assurance-v1-executor"),
+        _binding_title(
+            project,
+            agent_profile="assurance-v1-executor",
+            read_roots=(_EXECUTION_VIEW,),
+        ),
         agent="assurance-v1-executor",
     )
     args = _allowed(_run(plugin, session=session, tool="bash", args={"command": _PLAYWRIGHT_VIEW_COMMAND}))
     assert args["command"] == _PLAYWRIGHT_VIEW_COMMAND
+
+
+def test_executor_shell_rejects_a_sibling_attempt_execution_view(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(
+            project,
+            agent_profile="assurance-v1-executor",
+            read_roots=(_EXECUTION_VIEW,),
+        ),
+        agent="assurance-v1-executor",
+    )
+    sibling = _EXECUTION_VIEW.replace("attempt-1", "attempt-2")
+    command = _EXECUTOR_VIEW_COMMAND.replace(_EXECUTION_VIEW, sibling)
+
+    _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
+
+
+def test_executor_cannot_overwrite_the_authenticated_execution_view(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(
+            project,
+            agent_profile="assurance-v1-executor",
+            read_roots=(_EXECUTION_VIEW,),
+        ),
+        agent="assurance-v1-executor",
+    )
+
+    _denied(
+        _run(plugin, session=session, tool="write", args={"filePath": _EXECUTION_VIEW}),
+        "path",
+    )
+
+
+def test_executor_read_is_confined_to_the_authenticated_execution_view(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    selected = project / _EXECUTION_VIEW / "tests/api/test_generated.py"
+    selected.parent.mkdir(parents=True)
+    selected.write_text("def test_ok(): pass\n", encoding="utf-8")
+    sibling = Path(str(selected).replace("attempt-1", "attempt-2"))
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("def test_sibling(): pass\n", encoding="utf-8")
+    plugin = _install(project)
+    session = _session(
+        project,
+        _binding_title(
+            project,
+            agent_profile="assurance-v1-executor",
+            read_roots=(_EXECUTION_VIEW,),
+        ),
+        agent="assurance-v1-executor",
+    )
+
+    args = _allowed(
+        _run(
+            plugin,
+            session=session,
+            tool="read",
+            args={"filePath": selected.relative_to(project).as_posix()},
+        )
+    )
+    assert Path(str(args["filePath"])).resolve() == selected.resolve()
+    _denied(
+        _run(
+            plugin,
+            session=session,
+            tool="read",
+            args={"filePath": sibling.relative_to(project).as_posix()},
+        ),
+        "path",
+    )
+
+
+def test_tampered_execution_read_root_is_rejected_by_binding_digest(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    document = json.loads(
+        _binding_title(
+            project,
+            agent_profile="assurance-v1-executor",
+            read_roots=(_EXECUTION_VIEW,),
+        ).split(":", 1)[1]
+    )
+    document["read_roots"] = [_EXECUTION_VIEW.replace("attempt-1", "attempt-2")]
+    title = "aa-workspace-binding-v1:" + canonical_json_bytes(document).decode("utf-8")
+
+    _denied(
+        _run(
+            plugin,
+            session=_session(project, title, agent="assurance-v1-executor"),
+            tool="bash",
+            args={"command": _EXECUTOR_VIEW_COMMAND},
+        ),
+        "binding",
+    )
+
+
+def test_signed_noncanonical_execution_read_roots_are_rejected(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    plugin = _install(project)
+    document = json.loads(
+        _binding_title(
+            project,
+            agent_profile="assurance-v1-executor",
+            read_roots=(_EXECUTION_VIEW,),
+        ).split(":", 1)[1]
+    )
+    document["read_roots"] = [_EXECUTION_VIEW, _EXECUTION_VIEW]
+    document["digest"] = canonical_digest({key: value for key, value in document.items() if key != "digest"})
+    title = "aa-workspace-binding-v1:" + canonical_json_bytes(document).decode("utf-8")
+
+    _denied(
+        _run(
+            plugin,
+            session=_session(project, title, agent="assurance-v1-executor"),
+            tool="bash",
+            args={"command": _EXECUTOR_VIEW_COMMAND},
+        ),
+        "binding",
+    )
 
 
 def test_executor_project_root_mv_is_denied(tmp_path: Path) -> None:

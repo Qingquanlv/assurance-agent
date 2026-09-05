@@ -380,7 +380,8 @@ class AssuranceAttemptKernel:
 
         try:
             validated_output = contract.contract.output_model.model_validate(
-                step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output
+                step.output.model_dump(mode="json") if isinstance(step.output, BaseModel) else step.output,
+                context=contract.validation_context,
             )
             if step.effects:
                 if self.effects is None or self.schemas is None:
@@ -667,7 +668,10 @@ def _executed_from_snapshot(
     snapshot: AttemptSnapshot,
 ) -> ExecutedAttemptResult[Any] | PermanentTaskFailure:
     try:
-        output = contract.contract.output_model.model_validate(snapshot.activity_outcome)
+        output = contract.contract.output_model.model_validate(
+            snapshot.activity_outcome,
+            context=contract.validation_context,
+        )
     except ValidationError as error:
         return PermanentTaskFailure(kind="invalid_output", message=str(error))
     receipt = None
@@ -769,7 +773,10 @@ def _committed_from_terminal(
     terminal: AttemptTerminated,
     contract: ResolvedAttemptContract[Any, Any],
 ) -> CommittedTaskResult[Any]:
-    output = contract.contract.output_model.model_validate(terminal.output)
+    output = contract.contract.output_model.model_validate(
+        terminal.output,
+        context=contract.validation_context,
+    )
     return CommittedTaskResult(
         output=output,
         receipt=ReceiptRef(receipt_id=terminal.receipt_id, receipt_digest=terminal.receipt_digest),

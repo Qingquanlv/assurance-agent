@@ -91,65 +91,6 @@ def valid_proposal() -> dict[str, Any]:
     }
 
 
-def _mapping_for(structured: dict[str, Any]) -> dict[str, Any]:
-    files: list[str] = []
-    for item in structured.get("proposals", []):
-        if isinstance(item, dict):
-            files.extend(str(path) for path in item.get("files_to_modify") or [])
-    if not files:
-        files = ["tests/api/test_users.py"]
-    unique = sorted(set(files))
-    return {
-        "schema_version": "1",
-        "layer": "api",
-        "entries": [
-            {"case_id": f"TC_{index}", "symbol": "test_ok", "target_file": path}
-            for index, path in enumerate(unique, start=1)
-        ],
-    }
-
-
-def _approval_for(prepare: dict[str, Any], structured: dict[str, Any]) -> dict[str, Any]:
-    from graph_engine.canonical import canonical_digest
-
-    from assurance_healing.contracts.agent import FixProposalResultV1
-    from assurance_healing.operations.keys import derive_approval_id
-
-    document = FixProposalResultV1.model_validate(structured)
-    proposal_digest = canonical_digest(document.model_dump(mode="json"))
-    paths = [
-        str(path)
-        for item in structured.get("proposals", [])
-        if isinstance(item, dict)
-        for path in item.get("files_to_modify") or []
-    ] or ["tests/api/test_users.py"]
-    return {
-        "schema_version": "1",
-        "approval_id": derive_approval_id(
-            owner_id=str(prepare["owner_id"]),
-            candidate_digest=str(prepare["candidate_digest"]),
-            baseline_digest=str(prepare["baseline_digest"]),
-            policy_digest=str(prepare["policy_digest"]),
-            proposal_digest=proposal_digest,
-        ),
-        "change_id": prepare["change_id"],
-        "owner_id": prepare["owner_id"],
-        "root_invocation_id": "inv-1",
-        "interrupt_task_id": "task-1",
-        "source_gate_attempt_id": "gate-1",
-        "source_tree_id": "tree-src",
-        "target_tree_id": "tree-dst",
-        "proposal_digest": proposal_digest,
-        "fixer_authority_digest": "b" * 64,
-        "candidate_digest": prepare["candidate_digest"],
-        "baseline_digest": prepare["baseline_digest"],
-        "policy_digest": prepare["policy_digest"],
-        "targets": ["api"],
-        "paths": paths,
-        "action": "approve_and_apply",
-    }
-
-
 def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any]:
     from agent_runtime_contracts import AgentRunResult
     from agent_runtime_contracts.schema import canonical_digest
@@ -167,10 +108,7 @@ def fake_agent_result(structured: dict[str, Any], **extra: Any) -> dict[str, Any
     body = {
         "agent_result": result.model_dump(mode="json"),
         **prepare,
-        "artifact_paths": [],
         "prepare": prepare,
-        "mapping": _mapping_for(structured),
-        "approval": _approval_for(prepare, structured),
     }
     body.update(extra)
     return body
@@ -220,6 +158,9 @@ async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> N
     target = project / "tests/api/test_users.py"
     target.parent.mkdir(parents=True)
     target.write_text("def test_ok():\n    assert True\n")
+    staged = write_root / "qa/changes/CH-DEMO-001/healing/fix-proposal.json"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(canonical_json_bytes(cast(JSONValue, valid_proposal())) + b"\n")
     outcome = await execute_task(
         FixProposalFinalizeHandler(),
         fake_agent_result(valid_proposal()),
@@ -232,7 +173,7 @@ async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_fix_proposal_finalize_accepts_installed_runtime_envelope_before_approval(
+async def test_fix_proposal_finalize_rejects_wrapped_runtime_input(
     tmp_path: Path,
 ) -> None:
     project, write_root = dual_roots(tmp_path)
@@ -243,12 +184,12 @@ async def test_fix_proposal_finalize_accepts_installed_runtime_envelope_before_a
     proposal_path = write_root / "qa/changes/CH-DEMO-001/healing/fix-proposal.json"
     proposal_path.parent.mkdir(parents=True)
     proposal_path.write_bytes(canonical_json_bytes(cast(JSONValue, proposal)) + b"\n")
-    legacy = fake_agent_result(proposal)
+    current = fake_agent_result(proposal)
 
     outcome = await execute_task(
         FixProposalFinalizeHandler(),
         {
-            "agent_result": legacy["agent_result"],
+            "agent_result": current["agent_result"],
             "prepared": {},
             "validated_input": proposal_input(),
         },
@@ -256,8 +197,9 @@ async def test_fix_proposal_finalize_accepts_installed_runtime_envelope_before_a
         write_root=write_root,
     )
 
-    assert outcome.status == "succeeded"
-    assert as_object(outcome.output)["proposals"][0]["proposal_id"] == "P1"
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio

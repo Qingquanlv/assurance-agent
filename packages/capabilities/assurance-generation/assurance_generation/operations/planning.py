@@ -126,6 +126,7 @@ def agent_workspace(
         "scope_id": scope_id,
         "write_root": write_root,
         "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+        "read_roots": (),
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
@@ -634,6 +635,8 @@ class PlanPrepareHandler:
 
 
 class PlanFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     def __init__(self, family: Family | None = None) -> None:
         self._family: Family | None = None if family is None else closed_family(family)
 
@@ -652,8 +655,8 @@ class PlanFinalizeHandler:
             if document.family != family:
                 raise OutputError(f"plan family {document.family!r} does not match {family}")
             if payload.artifact_paths:
-                _authenticate_files(context.project_root, document.output_files, payload.artifact_paths)
-            _authenticate_codegen_mapping(context.project_root, document=document, family=family)
+                _authenticate_files(context.write_root, document.output_files, payload.artifact_paths)
+            _authenticate_codegen_mapping(context.write_root, document=document, family=family)
             dumped = document.model_dump(mode="json")
             used, budget = round_counters(request.input)
             if used is not None:

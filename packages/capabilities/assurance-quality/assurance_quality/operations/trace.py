@@ -105,6 +105,22 @@ def _status_for(path: str, payload: TraceOperationInput) -> Literal["passed", "f
     return "skipped"
 
 
+def _atemporal_kinds(
+    case: TraceCaseInput,
+    execution: TraceExecution | None,
+    coverage_state: Literal["covered", "uncovered", "not_required"],
+) -> tuple[str, ...]:
+    kinds: list[str] = []
+    if coverage_state == "covered":
+        kinds.append("covered")
+    if execution is not None and execution.status in {"passed", "failed"}:
+        if case.case_type == "Fuzz" and execution.target == "fuzz":
+            kinds.append("fuzz_run")
+        elif case.case_type == "Performance" and execution.target == "performance":
+            kinds.append("perf_run")
+    return tuple(kinds)
+
+
 def _mapped_paths(
     case: TraceCaseInput,
     payload: TraceOperationInput,
@@ -167,6 +183,7 @@ def project_trace(payload: TraceOperationInput) -> TraceProjectionV2:
                 latest_execution=execution,
                 freshest_pass=execution if execution is not None and execution.status == "passed" else None,
                 presence_in_current_batch="executed" if executed else "not_in_current_batch",
+                atemporal_kinds_present=_atemporal_kinds(case, execution, coverage_state),
                 capability=case.capability,
                 plan_id=case.plan_id,
             )

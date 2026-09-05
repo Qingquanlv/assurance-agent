@@ -562,6 +562,7 @@ def _bind_executor_host(
                 product_lock_digest=product_lock_digest,
             ),
         ),
+        validation_context=resolved.validation_context,
     )
 
 

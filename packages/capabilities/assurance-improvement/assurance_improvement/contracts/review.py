@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from assurance_improvement.contracts.improvements import (
     DeliveryKind,
     ImprovementKind,
+    ImprovementProjection,
     ImprovementSourceRefs,
     ImprovementVerification,
 )
@@ -87,6 +88,13 @@ class ImprovementAutoReviewStatus(BaseModel):
     result: Literal["approved", "escalated", "review_error", "stale"]
     ledger_event_id: str | None = None
     replayed: bool = False
+
+
+class AppliedAutoReviewV1(BaseModel):
+    model_config = _FROZEN
+
+    status: ImprovementAutoReviewStatus
+    projection: ImprovementProjection
 
 
 class AutoReviewBatchError(BaseModel):

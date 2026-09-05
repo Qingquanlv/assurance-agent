@@ -111,14 +111,10 @@ def report_input(**overrides: JSONValue) -> JSONValue:
         "scope": {"cases": 1, "requirements": ["REQ-1"]},
         "started_at": None,
         "duration": None,
-        "case_digest": HEX_A,
-        "plan_digest": HEX_B,
-        "mapping_digest": HEX_A,
         "execution_digest": HEX_A,
         "healing_digest": HEX_B,
         "trace_digest": HEX_A,
         "coverage_digest": HEX_B,
-        "issue_digest": HEX_B,
         "metrics_digest": HEX_A,
     }
     payload.update(overrides)
@@ -177,6 +173,13 @@ async def test_generate_report_uses_gate_status_not_issue_risk() -> None:
     assert payload["recommendation"].startswith("Do not release")
     assert "session" not in str(payload).lower()
     assert "secret" not in str(payload).lower()
+    assert set(payload["source_digests"]) == {
+        "execution",
+        "healing",
+        "trace",
+        "coverage",
+        "metrics",
+    }
 
 
 @pytest.mark.asyncio
@@ -213,3 +216,33 @@ async def test_dashboard_projects_report_without_transcript() -> None:
     encoded = str(payload).lower()
     assert "opencode" not in encoded
     assert "secret" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_report_markdown_is_a_deterministic_human_projection() -> None:
+    from assurance_quality.operations.report import render_quality_report_markdown
+
+    outcome = await execute_task(GenerateReportHandler(), report_input())
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+
+    first = render_quality_report_markdown(payload)
+    second = render_quality_report_markdown(payload)
+
+    assert first == second
+    assert first.startswith(b"# Quality Report\n")
+    assert b"Final status: FAIL" in first
+    assert b"Execution: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in first
+
+
+@pytest.mark.asyncio
+async def test_report_markdown_rejects_a_non_hex_source_digest() -> None:
+    from assurance_quality.operations.report import render_quality_report_markdown
+
+    outcome = await execute_task(GenerateReportHandler(), report_input())
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    payload["source_digests"]["execution"] = "z" * 64
+
+    with pytest.raises(ValueError, match="execution digest"):
+        render_quality_report_markdown(payload)

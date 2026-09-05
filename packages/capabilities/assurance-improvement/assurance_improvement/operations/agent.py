@@ -90,6 +90,7 @@ def agent_workspace(
         "scope_id": scope_id,
         "write_root": write_root,
         "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+        "read_roots": (),
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
@@ -255,6 +256,8 @@ class ArchivePrepareHandler:
 
 
 class RetroFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
@@ -266,6 +269,8 @@ class RetroFinalizeHandler:
 
 
 class RetroEvalFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
@@ -277,6 +282,8 @@ class RetroEvalFinalizeHandler:
 
 
 class RetroIssueFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
@@ -288,6 +295,8 @@ class RetroIssueFinalizeHandler:
 
 
 class RetroWorkflowFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
@@ -299,6 +308,8 @@ class RetroWorkflowFinalizeHandler:
 
 
 class ImprovementReviewFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
@@ -327,6 +338,8 @@ class ImprovementReviewFinalizeHandler:
 
 
 class ArchiveFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:

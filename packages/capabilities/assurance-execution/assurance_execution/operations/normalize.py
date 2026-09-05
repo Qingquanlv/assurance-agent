@@ -12,8 +12,14 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.agent import NormalizeInputV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
-from assurance_execution.contracts.execution import ExecutionReceiptV1, RawTestResultV1
-from assurance_execution.contracts.selection import ClosedMappingV1
+from assurance_execution.contracts.execution import (
+    EXECUTION_FAMILIES,
+    ExecutionCommandReceiptV1,
+    ExecutionFamily,
+    ExecutionReceiptV1,
+    RawTestResultV1,
+)
+from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
 from assurance_execution.operations.common import (
     InputError,
     OutputError,
@@ -25,6 +31,13 @@ from assurance_execution.operations.common import (
     validate_input,
 )
 from assurance_execution.operations.pytest_parser import parse_pytest_report, receipt_counts
+
+
+def _summary_count(summary: Mapping[str, Any], name: str, fallback: int) -> int:
+    value = summary.get(name, fallback)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise OutputError(f"pytest report summary {name} must be a non-negative integer")
+    return value
 
 
 def normalize_evidence(
@@ -42,21 +55,50 @@ def normalize_evidence(
     report: Mapping[str, Any],
     receipt: ExecutionReceiptV1 | None = None,
 ) -> ExecutionEvidenceV1:
+    try:
+        targets = SelectedTargets.model_validate(selected_targets)
+    except ValidationError as error:
+        raise OutputError(str(error)) from error
     results = parse_pytest_report(report, mapping)
+    summary = report.get("summary")
+    summary = summary if isinstance(summary, Mapping) else {}
     counts = receipt_counts(
         results,
         exit_code=exit_code,
-        collected=int((report.get("summary") or {}).get("collected", len(results)) or len(results))
-        if isinstance(report.get("summary"), Mapping)
-        else len(results),
+        collected=_summary_count(summary, "collected", len(results)),
+        passed=_summary_count(
+            summary,
+            "passed",
+            sum(1 for item in results if item.status == "passed"),
+        ),
+        failed=_summary_count(
+            summary,
+            "failed",
+            sum(1 for item in results if item.status == "failed"),
+        ),
+        skipped=_summary_count(
+            summary,
+            "skipped",
+            sum(1 for item in results if item.status == "skipped"),
+        ),
     )
+    selected_families: tuple[ExecutionFamily, ...] = tuple(
+        family for family in EXECUTION_FAMILIES if getattr(targets, family)
+    )
+    if len(selected_families) != 1 and receipt is None:
+        raise OutputError("one-command normalization requires exactly one selected family")
     built = receipt or ExecutionReceiptV1(
-        command=command,
-        exit_code=counts["exit_code"],
-        collected=counts["collected"],
-        passed=counts["passed"],
-        failed=counts["failed"],
-        skipped=counts["skipped"],
+        commands=(
+            ExecutionCommandReceiptV1(
+                family=selected_families[0],
+                command=command,
+                exit_code=counts["exit_code"],
+                collected=counts["collected"],
+                passed=counts["passed"],
+                failed=counts["failed"],
+                skipped=counts["skipped"],
+            ),
+        )
     )
     try:
         return ExecutionEvidenceV1.model_validate(
@@ -66,7 +108,7 @@ def normalize_evidence(
                 "status": "failed"
                 if built.exit_code != 0 or any(item.status == "failed" for item in results)
                 else "passed",
-                "selected_targets": selected_targets,
+                "selected_targets": targets.model_dump(mode="json"),
                 "mapping": mapping.model_dump(mode="json"),
                 "mapping_digest": mapping_digest(mapping),
                 "baseline_tree_id": baseline_tree_id,

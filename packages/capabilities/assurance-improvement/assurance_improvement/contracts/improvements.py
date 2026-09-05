@@ -166,6 +166,11 @@ class ImprovementLedgerProjection(BaseModel):
     by_fingerprint: dict[str, str]
 
 
+class ReconcileResultV1(ImprovementLedgerProjection):
+    improvement_ids: tuple[str, ...]
+    events: tuple[dict[str, str | int], ...]
+
+
 class ImprovementReviewQueue(BaseModel):
     model_config = _FROZEN
 

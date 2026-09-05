@@ -151,6 +151,17 @@ def _evict_workspace_packages() -> None:
 
 def _import_extracted_workspace_packages() -> None:
     """Load extracted wheels with standard loaders, not pytest assertion rewriting."""
+    prefixes = tuple(name.replace("-", "_") for name, _ in _WORKSPACE_WHEELS)
+    loaded_modules = tuple(
+        sorted(
+            (
+                module_name
+                for module_name in sys.modules
+                if module_name in prefixes or any(module_name.startswith(f"{prefix}.") for prefix in prefixes)
+            ),
+            key=lambda module_name: (module_name.count("."), module_name),
+        )
+    )
     _evict_workspace_packages()
     hooks = [finder for finder in sys.meta_path if type(finder).__name__ == "AssertionRewritingHook"]
     for hook in hooks:
@@ -159,6 +170,8 @@ def _import_extracted_workspace_packages() -> None:
         importlib.invalidate_caches()
         for distribution, _project in _WORKSPACE_WHEELS:
             importlib.import_module(distribution.replace("-", "_"))
+        for module_name in loaded_modules:
+            importlib.import_module(module_name)
     finally:
         for hook in reversed(hooks):
             if hook not in sys.meta_path:

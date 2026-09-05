@@ -19,6 +19,7 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_product.models import (
+    ADAPTER_BINDING_RESOURCE_ID,
     ENGINE_API,
     PLUGIN_ID,
     PLUGIN_VERSION,
@@ -638,7 +639,13 @@ def _render_declaration(
 
 
 def _resource_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object], ...]:
-    documents: list[dict[str, object]] = []
+    documents: list[dict[str, object]] = [
+        {
+            "resource_id": ADAPTER_BINDING_RESOURCE_ID,
+            "media_type": "application/json",
+            "content": bindings.adapter_binding.model_dump(mode="json"),
+        }
+    ]
     for resource_id, profile in sorted(bindings.permission_profiles.items()):
         documents.append(
             {

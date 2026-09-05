@@ -11,6 +11,7 @@ const REQUIRED_KEYS = [
   "attempt_id",
   "digest",
   "project_root_digest",
+  "read_roots",
   "schema_version",
   "session_id",
   "task_id",
@@ -23,7 +24,7 @@ const EXECUTOR_PROFILE = "assurance-v1-executor";
 const EXECUTION_VIEW_RELATIVE = /^qa\/changes\/[^/]+\/\.staging\/execution\/[^/]+$/;
 const HYPOTHESIS_CACHE = /^\/tmp\/aa-hypothesis-[A-Za-z0-9._-]+$/;
 const SHELL_UNSAFE = /[;\n\r`<>]|&&|\|\||(?<!\$)\||\$\(|<\(|>\(/;
-const EXECUTION_VIEW_PATTERN = String.raw`qa/changes/[^/\s]+/\.staging/execution/[^/\s]+`;
+const EXECUTION_VIEW_PATTERN = String.raw`(?:[A-Za-z0-9._-]+/)*qa/changes/[A-Za-z0-9._-]+/\.staging/execution/[A-Za-z0-9._-]+`;
 const HYPOTHESIS_PATTERN = String.raw`/tmp/aa-hypothesis-[A-Za-z0-9._-]+`;
 const PLAYWRIGHT_OUTPUT = /^\/tmp\/aa-playwright-[A-Za-z0-9._-]+$/;
 const EXECUTOR_GRAMMARS = [
@@ -117,6 +118,10 @@ const projectRelative = (value) => {
   return !value.split("/").some((part) => part === "" || part === "." || part === "..");
 };
 
+const uniqueSorted = (values) => (
+  values.every((value, index) => index === 0 || values[index - 1] < value)
+);
+
 const parseBinding = (session, root) => {
   if (typeof session?.title !== "string" || !session.title.startsWith(BINDING_PREFIX)) {
     throw new Error("Assurance write boundary: binding is missing or invalid");
@@ -148,6 +153,10 @@ const parseBinding = (session, root) => {
     || !projectRelative(document.write_root)
     || !Array.isArray(document.allowed_outputs)
     || !document.allowed_outputs.every((item) => typeof item === "string" && projectRelative(item))
+    || !uniqueSorted(document.allowed_outputs)
+    || !Array.isArray(document.read_roots)
+    || !document.read_roots.every((item) => typeof item === "string" && projectRelative(item))
+    || !uniqueSorted(document.read_roots)
     || typeof document.task_id !== "string"
     || document.task_id.length === 0
     || !Number.isInteger(document.attempt)
@@ -184,6 +193,9 @@ const assertWritable = (binding, root, candidate) => {
   if (leaf === "workflow-state.json" || leaf === "workflow-state.yaml") {
     throw new Error("Assurance write boundary: path is not allowed");
   }
+  if (binding.read_roots.some((item) => logical === item || logical.startsWith(`${item}/`))) {
+    throw new Error("Assurance write boundary: path is not allowed");
+  }
   if (!binding.allowed_outputs.includes(logical)) {
     throw new Error("Assurance write boundary: path is not allowed");
   }
@@ -192,6 +204,103 @@ const assertWritable = (binding, root, candidate) => {
     throw new Error("Assurance write boundary: symlink write is not allowed");
   }
   return dest;
+};
+
+const lstatOrNull = (candidate) => {
+  try {
+    return fs.lstatSync(candidate);
+  } catch (error) {
+    if (error instanceof Error && error.code === "ENOENT") return null;
+    throw error;
+  }
+};
+
+const assertPrivateRegular = (root, candidate, stats) => {
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+    throw new Error("Assurance write boundary: copy-on-write source is not allowed");
+  }
+  const resolved = fs.realpathSync.native(candidate);
+  const relative = path.relative(root, resolved);
+  if (
+    resolved !== candidate
+    || relative === ".."
+    || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative)
+  ) {
+    throw new Error("Assurance write boundary: copy-on-write source is not allowed");
+  }
+};
+
+const ensurePrivateDirectories = (root, destination) => {
+  const relative = path.relative(root, destination);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Assurance write boundary: copy-on-write destination is not allowed");
+  }
+  let current = root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const existing = lstatOrNull(current);
+    if (existing === null) {
+      fs.mkdirSync(current, { mode: 0o700 });
+      continue;
+    }
+    if (!existing.isDirectory() || existing.isSymbolicLink() || fs.realpathSync.native(current) !== current) {
+      throw new Error("Assurance write boundary: copy-on-write destination is not allowed");
+    }
+  }
+};
+
+const copyBaselineForMutation = (root, candidate, destination) => {
+  const { absolute } = lexicalLogical(root, candidate);
+  const destinationStats = lstatOrNull(destination);
+  if (destinationStats !== null) {
+    assertPrivateRegular(root, destination, destinationStats);
+    return;
+  }
+  const sourceStats = lstatOrNull(absolute);
+  if (sourceStats === null) return;
+  assertPrivateRegular(root, absolute, sourceStats);
+
+  const sourceFlags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+  const source = fs.openSync(absolute, sourceFlags);
+  try {
+    const opened = fs.fstatSync(source);
+    if (
+      !opened.isFile()
+      || opened.nlink !== 1
+      || opened.dev !== sourceStats.dev
+      || opened.ino !== sourceStats.ino
+    ) {
+      throw new Error("Assurance write boundary: copy-on-write source is not allowed");
+    }
+    const contents = fs.readFileSync(source);
+    const observed = fs.fstatSync(source);
+    if (
+      observed.dev !== opened.dev
+      || observed.ino !== opened.ino
+      || observed.nlink !== 1
+      || observed.size !== opened.size
+      || observed.mtimeMs !== opened.mtimeMs
+    ) {
+      throw new Error("Assurance write boundary: copy-on-write source changed during read");
+    }
+
+    ensurePrivateDirectories(root, path.dirname(destination));
+    const mode = opened.mode & 0o777;
+    const destinationFlags = fs.constants.O_WRONLY
+      | fs.constants.O_CREAT
+      | fs.constants.O_EXCL
+      | (fs.constants.O_NOFOLLOW ?? 0);
+    const staged = fs.openSync(destination, destinationFlags, mode);
+    try {
+      fs.writeFileSync(staged, contents);
+      fs.fchmodSync(staged, mode);
+    } finally {
+      fs.closeSync(staged);
+    }
+  } finally {
+    fs.closeSync(source);
+  }
 };
 
 const rewritePatch = (text, rewrite) => {
@@ -214,7 +323,7 @@ const rewritePatch = (text, rewrite) => {
     if (target.trim() !== target || target.length === 0) {
       throw new Error("apply_patch has an invalid file path");
     }
-    rewritten.push(`*** ${match[0]}${rewrite(target)}`);
+    rewritten.push(`*** ${match[0]}${rewrite(target, match[1])}`);
     if (match[1] !== "Move to") operations += 1;
   }
   rewritten.push(lines.at(-1));
@@ -277,19 +386,38 @@ const isOutputDestinationFlag = (token) => (
   token.startsWith("-") && !token.includes("=") && OUTPUT_FLAG.test(token.replace(/^-+/, ""))
 );
 
-const isAllowedOutputTarget = (value, root) => (
-  HYPOTHESIS_CACHE.test(value) || PLAYWRIGHT_OUTPUT.test(value) || isExecutionViewPath(value, root)
+const boundExecutionView = (binding) => {
+  const prefix = `${binding.write_root}/`;
+  const candidates = binding.read_roots.filter((item) => (
+    item.startsWith(prefix) && EXECUTION_VIEW_RELATIVE.test(item.slice(prefix.length))
+  ));
+  return candidates.length === 1 ? candidates[0] : null;
+};
+
+const projectCommandPath = (value, root) => {
+  const candidate = value.split("::", 1)[0];
+  if (path.isAbsolute(candidate) || /^file:/i.test(candidate)) {
+    try {
+      return relativeLogical(root, candidate);
+    } catch {
+      return null;
+    }
+  }
+  return projectRelative(candidate) ? candidate : null;
+};
+
+const isAllowedOutputTarget = (value, root, binding) => (
+  HYPOTHESIS_CACHE.test(value)
+  || PLAYWRIGHT_OUTPUT.test(value)
+  || isExecutionViewPath(value, root, binding)
 );
 
-const isExecutionViewPath = (value, root) => {
-  if (EXECUTION_VIEW_RELATIVE.test(value)) return true;
-  const prefix = `${root}/`;
-  if (value.startsWith(prefix) && EXECUTION_VIEW_RELATIVE.test(value.slice(prefix.length))) {
-    return true;
-  }
-  const windowsPrefix = `${root}\\`;
-  return value.startsWith(windowsPrefix)
-    && EXECUTION_VIEW_RELATIVE.test(value.slice(windowsPrefix.length).split("\\").join("/"));
+const isExecutionViewPath = (value, root, binding) => {
+  const expected = boundExecutionView(binding);
+  const relative = projectCommandPath(value, root);
+  return expected !== null
+    && relative !== null
+    && (relative === expected || relative.startsWith(`${expected}/`));
 };
 
 const outputParents = (binding) => new Set(
@@ -309,20 +437,20 @@ const isDeniedLocation = (value, root, binding) => {
   for (const parent of outputParents(binding)) {
     if (relative === parent || value === parent) return true;
   }
-  return !isExecutionViewPath(value, root)
+  return !isExecutionViewPath(value, root, binding)
     && !HYPOTHESIS_CACHE.test(value)
     && !PLAYWRIGHT_OUTPUT.test(value);
 };
 
 const matchesExecutorGrammar = (command) => EXECUTOR_GRAMMARS.some((pattern) => pattern.test(command));
 
-const isCwdRelativeOutput = (token, root) => {
+const isCwdRelativeOutput = (token, root, binding) => {
   const value = assignmentValue(token);
   if (value === null) {
     return token === "." || token === ".." || token.startsWith("./") || token.startsWith("../");
   }
   if (!value) return true;
-  if (isAllowedOutputTarget(value, root)) {
+  if (isAllowedOutputTarget(value, root, binding)) {
     return false;
   }
   const lastEq = token.lastIndexOf("=");
@@ -332,11 +460,11 @@ const isCwdRelativeOutput = (token, root) => {
   return OUTPUT_FLAG.test(key) || looksLikePath(value);
 };
 
-const hasDeniedTwoTokenOutput = (tokens, root) => {
+const hasDeniedTwoTokenOutput = (tokens, root, binding) => {
   for (let index = 0; index < tokens.length; index += 1) {
     if (!isOutputDestinationFlag(tokens[index])) continue;
     const next = tokens[index + 1];
-    if (next === undefined || next.startsWith("-") || !isAllowedOutputTarget(next, root)) {
+    if (next === undefined || next.startsWith("-") || !isAllowedOutputTarget(next, root, binding)) {
       return true;
     }
   }
@@ -355,7 +483,10 @@ const assertExecutorShell = (binding, root, args) => {
   if (tokens.some((token) => token === "-c" || /^python\d*$/.test(token))) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
-  if (tokens.some((token) => isCwdRelativeOutput(token, root)) || hasDeniedTwoTokenOutput(tokens, root)) {
+  if (
+    tokens.some((token) => isCwdRelativeOutput(token, root, binding))
+    || hasDeniedTwoTokenOutput(tokens, root, binding)
+  ) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }
   const paths = pathCandidates(command);
@@ -380,6 +511,12 @@ const rewriteRead = (tool, args, binding, root) => {
     return;
   }
   const logical = relativeLogical(root, target);
+  if (
+    binding.agent_profile === EXECUTOR_PROFILE
+    && !isExecutionViewPath(logical, root, binding)
+  ) {
+    throw new Error("Assurance path boundary: path is not allowed");
+  }
   if (logical === "") {
     args[key] = root;
     return;
@@ -426,11 +563,21 @@ export default async ({ client }) => ({
       rewriteRead(tool, output.args, binding, root);
       return;
     }
-    const rewrite = (candidate) => assertWritable(binding, root, candidate);
+    const rewrite = (candidate, copyBaseline = false) => {
+      const destination = assertWritable(binding, root, candidate);
+      if (copyBaseline) copyBaselineForMutation(root, candidate, destination);
+      return destination;
+    };
     if (tool === "apply_patch") {
-      output.args.patchText = rewritePatch(output.args?.patchText, rewrite);
+      output.args.patchText = rewritePatch(
+        output.args?.patchText,
+        (candidate, operation) => rewrite(
+          candidate,
+          operation === "Update File" || operation === "Delete File",
+        ),
+      );
       return;
     }
-    rewriteNativeWrites(output.args, rewrite);
+    rewriteNativeWrites(output.args, (candidate) => rewrite(candidate, tool === "edit"));
   },
 });

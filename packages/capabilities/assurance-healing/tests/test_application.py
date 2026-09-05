@@ -103,12 +103,19 @@ def _execution() -> dict[str, Any]:
         "runner_profile_digest": SHA,
         "receipt_digest": SHA,
         "receipt": {
-            "command": ["pytest"],
-            "exit_code": 1,
-            "collected": 1,
-            "passed": 0,
-            "failed": 1,
-            "skipped": 0,
+            "commands": [
+                {
+                    "family": "api",
+                    **{
+                        "command": ["pytest"],
+                        "exit_code": 1,
+                        "collected": 1,
+                        "passed": 0,
+                        "failed": 1,
+                        "skipped": 0,
+                    },
+                }
+            ]
         },
         "results": [
             {
@@ -201,7 +208,7 @@ def _agent_result(output_files: list[str]) -> dict[str, object]:
 async def _finalize(project: Path, stage: Path, payload: dict[str, object], outputs: list[str]):
     return await execute_task(
         ApplyTestRepairFinalizeHandler(),
-        cast(JSONValue, {"validated_input": payload, "agent_result": _agent_result(outputs)}),
+        cast(JSONValue, {**payload, "agent_result": _agent_result(outputs)}),
         project,
         write_root=stage,
         capability_id="assurance.healing.apply-test-repair.finalize",
@@ -226,6 +233,27 @@ def test_proposal_result_cannot_parse_as_applied_repair() -> None:
         AppliedTestRepairV1.model_validate(_proposal())
     with pytest.raises(ValidationError):
         AppliedTestRepairV1.model_validate({"change_id": CHANGE})
+
+
+@pytest.mark.asyncio
+async def test_repair_finalizer_rejects_wrapped_input(tmp_path: Path) -> None:
+    payload, _before = _fixture(tmp_path)
+    result = await execute_task(
+        ApplyTestRepairFinalizeHandler(),
+        cast(
+            JSONValue,
+            {
+                "validated_input": payload,
+                "prepared": None,
+                "agent_result": _agent_result([SOURCE]),
+            },
+        ),
+        tmp_path,
+        write_root=tmp_path / ".stage",
+        capability_id="assurance.healing.apply-test-repair.finalize",
+    )
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio
@@ -265,22 +293,23 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
         adapter_id="test.fake",
         adapter_version="1.0.0",
     )
+    proposal_input = {
+        "change_id": CHANGE,
+        "owner_id": "assurance.healing",
+        "capability_leafs": ["users.read"],
+        "allowed_paths": [SOURCE],
+        "allowed_roots": ["qa"],
+        "mapping_paths": [SOURCE],
+        "baseline_digest": "b" * 64,
+        "candidate_digest": "c" * 64,
+        "policy_digest": "d" * 64,
+        "execution_evidence_digest": "e" * 64,
+    }
     proposed = await execute_task(
         FixProposalFinalizeHandler(),
         {
-            "validated_input": {
-                "change_id": CHANGE,
-                "owner_id": "assurance.healing",
-                "capability_leafs": ["users.read"],
-                "allowed_paths": [SOURCE],
-                "allowed_roots": ["qa"],
-                "mapping_paths": [SOURCE],
-                "baseline_digest": "b" * 64,
-                "candidate_digest": "c" * 64,
-                "policy_digest": "d" * 64,
-                "execution_evidence_digest": "e" * 64,
-            },
-            "prepared": {},
+            **proposal_input,
+            "prepare": proposal_input,
             "agent_result": agent.model_dump(mode="json"),
         },
         tmp_path,
@@ -319,7 +348,7 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
     execution["results"].append(
         {"test": f"{other_target}::test_other", "status": "passed", "duration_ms": 1, "case_id": "CASE_2"}
     )
-    execution["receipt"].update(collected=2, passed=1)
+    execution["receipt"]["commands"][0].update(collected=2, passed=1)
     payload["mapping_ref"] = _write(tmp_path, MAPPING, _json_bytes(execution["mapping"]))
     payload["execution_ref"] = _write(tmp_path, EXECUTION, _json_bytes(execution))
     prepared = await execute_task(

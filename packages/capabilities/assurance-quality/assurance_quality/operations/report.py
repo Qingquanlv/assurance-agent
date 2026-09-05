@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Mapping
 from typing import Any, Literal, cast
 
 from pydantic import Field
@@ -57,14 +59,10 @@ class GenerateReportInputV1(FrozenModel):
     scope: ReportScope
     started_at: str | None = None
     duration: str | None = None
-    case_digest: str = Field(pattern=_SHA256)
-    plan_digest: str = Field(pattern=_SHA256)
-    mapping_digest: str = Field(pattern=_SHA256)
     execution_digest: str = Field(pattern=_SHA256)
     healing_digest: str = Field(pattern=_SHA256)
     trace_digest: str = Field(pattern=_SHA256)
     coverage_digest: str = Field(pattern=_SHA256)
-    issue_digest: str = Field(pattern=_SHA256)
     metrics_digest: str = Field(pattern=_SHA256)
 
 
@@ -358,6 +356,65 @@ def build_quality_report(payload: GenerateReportInputV1) -> QualityReport:
     )
 
 
+def _one_line(value: object) -> str:
+    return " ".join(str(value).split())
+
+
+def render_quality_report_markdown(raw: Mapping[str, object]) -> bytes:
+    """Render the typed report as stable, human-readable Markdown."""
+
+    report = QualityReport.model_validate(raw)
+    source_raw = raw.get("source_digests")
+    if not isinstance(source_raw, Mapping):
+        raise ValueError("quality report source_digests are missing")
+    expected = ("execution", "healing", "trace", "coverage", "metrics")
+    source_digests: dict[str, str] = {}
+    for name in expected:
+        digest = source_raw.get(name)
+        if not isinstance(digest, str) or re.fullmatch(_SHA256, digest) is None:
+            raise ValueError(f"quality report {name} digest is invalid")
+        source_digests[name] = digest
+    lines = [
+        "# Quality Report",
+        "",
+        f"- Change: {_one_line(report.change_id)}",
+        f"- Batch: {_one_line(report.batch_id)}",
+        f"- Final status: {report.final_status}",
+        f"- Quality score: {report.quality_score:g}",
+        "",
+        "## Scope",
+        "",
+        f"- Cases: {report.scope.cases}",
+        "- Requirements: "
+        + (", ".join(_one_line(item) for item in report.scope.requirements) or "not collected"),
+        "",
+        "## Dimensions",
+        "",
+        f"- Functional: {report.functional.status}",
+        f"- Coverage: {report.coverage.status}",
+        "- Non-functional: "
+        + (report.non_functional.status if report.non_functional is not None else "not collected"),
+        "",
+        "## Risk",
+        "",
+        f"- Level: {report.risk_level}",
+        f"- Rationale: {_one_line(report.risk_rationale)}",
+        f"- Recommendation: {_one_line(report.recommendation)}",
+        "",
+        "## Authenticated sources",
+        "",
+    ]
+    labels = {
+        "execution": "Execution",
+        "healing": "Healing",
+        "trace": "Trace",
+        "coverage": "Coverage",
+        "metrics": "Metrics",
+    }
+    lines.extend(f"- {labels[name]}: {source_digests[name]}" for name in expected)
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 class GenerateReportHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
@@ -366,14 +423,10 @@ class GenerateReportHandler:
             report = build_quality_report(payload)
             output = report.model_dump(mode="json")
             output["source_digests"] = {
-                "case": payload.case_digest,
-                "plan": payload.plan_digest,
-                "mapping": payload.mapping_digest,
                 "execution": payload.execution_digest,
                 "healing": payload.healing_digest,
                 "trace": payload.trace_digest,
                 "coverage": payload.coverage_digest,
-                "issue": payload.issue_digest,
                 "metrics": payload.metrics_digest,
             }
             return TaskOutcome.succeeded(cast(JSONValue, output))

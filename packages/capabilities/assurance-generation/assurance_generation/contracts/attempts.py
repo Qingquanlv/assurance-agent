@@ -10,9 +10,14 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
 from assurance_generation.contracts.agent import CodegenFixInputV1, CodegenInputV1, PlanInputV1
-from assurance_generation.contracts.codegen import CodegenResultV1
+from assurance_generation.contracts.codegen import (
+    CodegenAuthoringV1,
+    CodegenFixCandidateV1,
+    CodegenResultV1,
+    CodegenResultV2,
+)
 from assurance_generation.contracts.plans import PlanResultV1
-from assurance_generation.contracts.reviews import PlanReview
+from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
 from assurance_generation.contracts.workflow import (
     CompleteGenerationInputV1,
     GenerationCycleResultV1,
@@ -79,7 +84,8 @@ def _job(
     skill_id: str,
     agent_profile: str,
     input_model: type[Any],
-    result_model: type[Any],
+    agent_result_model: type[Any],
+    output_model: type[Any],
     outputs: tuple[str, ...],
 ) -> AgentExecutionContract[Any, Any, Any]:
     family, _, stage = base.partition(".")
@@ -102,10 +108,10 @@ def _job(
         skill_id=skill_id,
         agent_profile=agent_profile,
         input_model=input_model,
-        agent_result_model=result_model,
-        output_model=result_model,
+        agent_result_model=agent_result_model,
+        output_model=output_model,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
+            parameters={"change_id": "/change_id"},
             reads=("qa",),
             writes=writes,
         ),
@@ -118,34 +124,88 @@ def _job(
     )
 
 
-_JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] = (
+_JOBS: tuple[
+    tuple[str, str, str, type[Any], type[Any], type[Any], tuple[str, ...]],
+    ...,
+] = (
     (
         "api.codegen-fix",
         "aa-api-codegen-fixer",
         _TEST_AUTHOR,
         CodegenFixInputV1,
-        CodegenResultV1,
+        CodegenAuthoringV1,
+        CodegenFixCandidateV1,
         _codegen_outputs("api", fix=True),
     ),
-    ("api.codegen", "aa-api-codegen", _TEST_AUTHOR, CodegenInputV1, CodegenResultV1, _codegen_outputs("api")),
-    ("api.plan-review", "aa-api-plan-reviewer", _REVIEWER, PlanInputV1, PlanReview, _review_outputs("api")),
-    ("api.plan", "aa-api-plan", _DOC_AUTHOR, PlanInputV1, PlanResultV1, _PLAN_FILES["api"]),
+    (
+        "api.codegen",
+        "aa-api-codegen",
+        _TEST_AUTHOR,
+        CodegenInputV1,
+        CodegenAuthoringV1,
+        CodegenResultV2,
+        _codegen_outputs("api"),
+    ),
+    (
+        "api.plan-review",
+        "aa-api-plan-reviewer",
+        _REVIEWER,
+        PlanInputV1,
+        PlanReviewAuthoring,
+        PlanReview,
+        _review_outputs("api"),
+    ),
+    (
+        "api.plan",
+        "aa-api-plan",
+        _DOC_AUTHOR,
+        PlanInputV1,
+        PlanResultV1,
+        PlanResultV1,
+        _PLAN_FILES["api"],
+    ),
     (
         "e2e.codegen-fix",
         "aa-e2e-codegen-fixer",
         _TEST_AUTHOR,
         CodegenFixInputV1,
-        CodegenResultV1,
+        CodegenAuthoringV1,
+        CodegenFixCandidateV1,
         _codegen_outputs("e2e", fix=True),
     ),
-    ("e2e.codegen", "aa-e2e-codegen", _TEST_AUTHOR, CodegenInputV1, CodegenResultV1, _codegen_outputs("e2e")),
-    ("e2e.plan-review", "aa-e2e-plan-reviewer", _REVIEWER, PlanInputV1, PlanReview, _review_outputs("e2e")),
-    ("e2e.plan", "aa-e2e-plan", _DOC_AUTHOR, PlanInputV1, PlanResultV1, _PLAN_FILES["e2e"]),
+    (
+        "e2e.codegen",
+        "aa-e2e-codegen",
+        _TEST_AUTHOR,
+        CodegenInputV1,
+        CodegenAuthoringV1,
+        CodegenResultV2,
+        _codegen_outputs("e2e"),
+    ),
+    (
+        "e2e.plan-review",
+        "aa-e2e-plan-reviewer",
+        _REVIEWER,
+        PlanInputV1,
+        PlanReviewAuthoring,
+        PlanReview,
+        _review_outputs("e2e"),
+    ),
+    (
+        "e2e.plan",
+        "aa-e2e-plan",
+        _DOC_AUTHOR,
+        PlanInputV1,
+        PlanResultV1,
+        PlanResultV1,
+        _PLAN_FILES["e2e"],
+    ),
     (
         "fuzz.codegen",
         "aa-fuzz-codegen",
         _TEST_AUTHOR,
         CodegenInputV1,
+        CodegenAuthoringV1,
         CodegenResultV1,
         _codegen_outputs("fuzz"),
     ),
@@ -154,15 +214,25 @@ _JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] =
         "aa-fuzz-plan-reviewer",
         _REVIEWER,
         PlanInputV1,
+        PlanReviewAuthoring,
         PlanReview,
         _review_outputs("fuzz"),
     ),
-    ("fuzz.plan", "aa-fuzz-plan", _DOC_AUTHOR, PlanInputV1, PlanResultV1, _PLAN_FILES["fuzz"]),
+    (
+        "fuzz.plan",
+        "aa-fuzz-plan",
+        _DOC_AUTHOR,
+        PlanInputV1,
+        PlanResultV1,
+        PlanResultV1,
+        _PLAN_FILES["fuzz"],
+    ),
     (
         "performance.codegen",
         "aa-performance-codegen",
         _TEST_AUTHOR,
         CodegenInputV1,
+        CodegenAuthoringV1,
         CodegenResultV1,
         _codegen_outputs("performance"),
     ),
@@ -171,6 +241,7 @@ _JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] =
         "aa-performance-plan-reviewer",
         _REVIEWER,
         PlanInputV1,
+        PlanReviewAuthoring,
         PlanReview,
         _review_outputs("performance"),
     ),
@@ -180,14 +251,15 @@ _JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] =
         _DOC_AUTHOR,
         PlanInputV1,
         PlanResultV1,
+        PlanResultV1,
         _PLAN_FILES["performance"],
     ),
 )
 
 AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
     {
-        base: _job(base, skill_id, profile, input_model, result_model, outputs)
-        for base, skill_id, profile, input_model, result_model, outputs in _JOBS
+        base: _job(base, skill_id, profile, input_model, agent_result_model, output_model, outputs)
+        for base, skill_id, profile, input_model, agent_result_model, output_model, outputs in _JOBS
     }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
@@ -214,7 +286,7 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                 )
             )
         )
-        for base, _skill, _profile, _input, _result, outputs in _JOBS
+        for base, _skill, _profile, _input, _agent_result, _result, outputs in _JOBS
     }
 )
 _RESOLVE_INPUTS = TaskAttemptContract(

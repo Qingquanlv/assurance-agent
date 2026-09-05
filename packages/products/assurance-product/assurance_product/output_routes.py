@@ -66,7 +66,7 @@ class OutputRouteCatalog:
         if contract is None:
             raise ValueError(f"unknown capability output route: {contract_id}")
         if isinstance(contract.resources, ResourceClaimTemplate):
-            return contract.resources.resolve({"workspace": {"scope_id": change_id}}).writes
+            return contract.resources.resolve({"change_id": change_id}).writes
         return contract.resources.writes
 
 

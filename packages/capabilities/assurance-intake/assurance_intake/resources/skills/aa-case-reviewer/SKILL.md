@@ -719,7 +719,7 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
 - A `high` finding MAY be referenced only when requirement/product-source evidence proves one
   intended repair and the plan names a bounded artifact locator and exact fields or steps to edit.
 - Every automatic repair artifact must be an authorized case-design output:
-  `.qa.yaml`, `proposal.md`, `trace/minimum-coverage-matrix.json`, or one of the
+  `proposal.md`, `trace/minimum-coverage-matrix.json`, or one of the
   graph-provided exact `case_delta_paths`. A file under `plans/`, `.aa/`, the
   stable `qa/cases/` tree, or any other path cannot appear as an automatic
   repair target. Route the repair through an authorized case/proposal/matrix
@@ -727,7 +727,7 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
 - Every `auto_fix_plan` item must use this exact shape; do not substitute
   `action`, `instructions`, or a free-form `locator` for these fields:
   `{"finding_id":"CR-001","artifact":"qa/changes/<change-id>/cases/<module>/case.yaml","case_id":"TC_001","edits":["one exact edit instruction"]}`.
-  Use `case_id: null` for a proposal, matrix, or `.qa.yaml` repair. The matching
+  Use `case_id: null` for a proposal or matrix repair. The matching
   finding locator's `key` is the exclusive field or section scope.
 - Each `auto_fix_plan[].artifact` MUST equal that finding's `locator.artifact`,
   and each finding ID may appear in exactly one plan item. If one logical defect
@@ -740,6 +740,20 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
   fields use `"key":"steps,assertions"` with a comma separator. The form
   `"key":"steps/assertions"` is invalid; `/`, `|`, prose, JSONPath, and YAML
   selectors are not accepted by the repair contract.
+- For a `proposal.md` finding, `locator.key` MUST be one complete, unique level-two
+  ATX heading exactly as written in the file, including the `## ` prefix (for
+  example `"key":"## Data Needs"`). A bare title, heading fragment, line range,
+  or higher/lower-level heading is invalid. The repair may change only that
+  section body and may not add, remove, rename, or reorder headings.
+- For `trace/minimum-coverage-matrix.json`, `locator.key` MUST contain only exact
+  `mrc_id` values separated by commas and listed in their current matrix order
+  (for example `"key":"MRC-DATA-001,MRC-DATA-002"`). A field selector such as
+  `MRC-DATA-001.status` is invalid. The repair may change only
+  `status`, `covered_by_cases`, and `skip_reason` on those rows; row identity,
+  order, key, required flag, category, and layer are frozen.
+- `.qa.yaml` contains change identity, targets, and approval authority and MUST
+  NOT appear in `auto_fix_plan`. Report such a finding as diagnostic and choose
+  `needs_human_review` or `reject` when it blocks progress.
 
 ---
 

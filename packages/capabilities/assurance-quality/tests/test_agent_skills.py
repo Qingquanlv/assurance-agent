@@ -184,6 +184,20 @@ async def test_issue_finalize_stamps_candidate_digest_for_owned_evidence(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_issue_finalize_rejects_wrapped_input(tmp_path: Path) -> None:
+    payload = as_object(fake_agent_result(issue_candidate(evidence_ids=[_OWNED])))
+    agent_result = payload.pop("agent_result")
+    outcome = await execute_task(
+        IssueAnalysisFinalizeHandler(),
+        {"validated_input": payload, "agent_result": agent_result},
+        tmp_path,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
 async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
     first = await execute_task(
         IssueAnalysisPrepareHandler(),
