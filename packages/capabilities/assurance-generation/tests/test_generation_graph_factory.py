@@ -202,8 +202,8 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
-    assert len(recording_context.bound_contract_ids) == 15
-    assert len(unique) == 15
+    assert len(recording_context.bound_contract_ids) == 16
+    assert len(unique) == 16
     assert set(unique) == {
         *(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()),
         *(contract.contract_id for contract in TASK_ATTEMPT_CONTRACTS.values()),
@@ -444,20 +444,22 @@ async def test_codegen_fix_loop_reaches_fixer(family: str) -> None:
     assert result.terminal is not None
 
 
-async def test_root_done_does_not_overwrite_skipped_api_result() -> None:
+async def test_root_done_does_not_overwrite_skipped_api_result(tmp_path: Path) -> None:
+    from test_generation_cycle import cycle_fixture  # pyright: ignore[reportMissingImports]
+    from assurance_generation.operations.cycle import complete_generation_cycle
+
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.generation", contracts=generation_contracts())
     bundle = build_generation_graphs(context)
     receipt = _receipt()
+    payload, script = await cycle_fixture(tmp_path, ("e2e",))
+    script["generation.publish-cycle"] = [
+        committed(complete_generation_cycle(payload, tmp_path, tmp_path / ".stage"), receipt)
+    ]
     result = await harness.run(
         bundle.generation,
         input=generation_graph_input(selected=("e2e",)),
-        script={
-            "generation.resolve-inputs": [committed(_reviewed_case(), receipt)],
-            _semantic("e2e", "plan"): [committed(_plan_output(), receipt)],
-            _semantic("e2e", "plan-review"): [committed(_review_output(), receipt)],
-            _semantic("e2e", "codegen"): [committed(_codegen_output(), receipt)],
-        },
+        script=script,
     )
     terminal = result.terminal
     assert isinstance(terminal, dict)

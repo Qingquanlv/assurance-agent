@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from agent_runtime_contracts import AgentRunResult
+from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from pydantic import ValidationError
 
 from assurance_healing.contracts.application import (
@@ -17,10 +17,15 @@ from assurance_healing.contracts.application import (
     ApplyTestRepairInputV1,
     TestRepairResultV1 as RepairAgentResultV1,
 )
-from assurance_healing.operations.application import ApplyTestRepairFinalizeHandler
+from assurance_healing.contracts.agent import FixProposalResultV1
+from assurance_healing.operations.agent import FixProposalFinalizeHandler
+from assurance_healing.operations.application import (
+    ApplyTestRepairFinalizeHandler,
+    ApplyTestRepairPrepareHandler,
+)
 from assurance_healing.operations.keys import derive_approval_id
 from tests.phase4.agent_harness import FakeAgentAdapter
-from tests.product.test_change_local_output_routing import execute_task
+from tests.product.test_change_local_output_routing import BINDING, execute_task
 
 CHANGE = "CH-REPAIR-1"
 SOURCE = f"qa/changes/{CHANGE}/generated/api/files/tests/api/test_users.py"
@@ -58,7 +63,7 @@ def _proposal() -> dict[str, object]:
                 "eligible": True,
                 "risk_level": "low",
                 "needs_review": False,
-                "files_to_modify": [TARGET],
+                "files_to_modify": [SOURCE],
             }
         ],
     }
@@ -67,12 +72,14 @@ def _proposal() -> dict[str, object]:
 def _mapping(*, symbol: str = "test_users") -> dict[str, object]:
     return {
         "schema_version": "1",
-        "layer": "api",
-        "entries": [{"case_id": "CASE_1", "symbol": symbol, "target_file": TARGET}],
+        "selected": [f"{TARGET}::{symbol}"],
+        "mappings": [
+            {"case_id": "CASE_1", "test": f"{TARGET}::{symbol}", "capability": "users.read", "layer": "api"}
+        ],
     }
 
 
-def _execution() -> dict[str, object]:
+def _execution() -> dict[str, Any]:
     return {
         "schema_version": "1",
         "status": "failed",
@@ -139,7 +146,7 @@ def _approval(proposal: dict[str, object]) -> dict[str, object]:
         "baseline_digest": "b" * 64,
         "policy_digest": "d" * 64,
         "targets": ["api"],
-        "paths": [TARGET],
+        "paths": [SOURCE],
         "action": "approve_and_apply",
     }
 
@@ -242,6 +249,117 @@ async def test_finalize_proves_existing_test_bytes_changed(tmp_path: Path) -> No
 
     assert resumed.outcome.status == "succeeded"
     assert history_path.read_bytes() == first_history
+
+
+@pytest.mark.asyncio
+async def test_proposal_and_application_accept_the_same_generated_source_path(tmp_path: Path) -> None:
+    payload, _ = _fixture(tmp_path)
+    proposal = FixProposalResultV1.model_validate(_proposal()).model_dump(mode="json")
+    proposal_stage = tmp_path / ".proposal-stage"
+    proposal_bytes = canonical_json_bytes(proposal) + b"\n"
+    _write(proposal_stage, PROPOSAL, proposal_bytes)
+    agent = AgentRunResult(
+        result_payload=proposal,
+        result_digest=canonical_digest(proposal),
+        evidence_digest=FakeAgentAdapter.EVIDENCE_DIGEST,
+        adapter_id="test.fake",
+        adapter_version="1.0.0",
+    )
+    proposed = await execute_task(
+        FixProposalFinalizeHandler(),
+        {
+            "validated_input": {
+                "change_id": CHANGE,
+                "owner_id": "assurance.healing",
+                "capability_leafs": ["users.read"],
+                "allowed_paths": [SOURCE],
+                "allowed_roots": ["qa"],
+                "mapping_paths": [SOURCE],
+                "baseline_digest": "b" * 64,
+                "candidate_digest": "c" * 64,
+                "policy_digest": "d" * 64,
+                "execution_evidence_digest": "e" * 64,
+            },
+            "prepared": {},
+            "agent_result": agent.model_dump(mode="json"),
+        },
+        tmp_path,
+        write_root=proposal_stage,
+    )
+    assert proposed.status == "succeeded", proposed.failure
+    payload["proposal_ref"] = _write(tmp_path, PROPOSAL, proposal_bytes)
+    payload["approval_ref"] = _write(tmp_path, APPROVAL, _json_bytes(_approval(proposal)))
+    stage = tmp_path / ".stage"
+    after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
+    _write(stage, SOURCE, after)
+    result = await _finalize(tmp_path, stage, payload, [SOURCE])
+    assert result.outcome.status == "succeeded", result.outcome.failure
+
+
+@pytest.mark.asyncio
+async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tmp_path: Path) -> None:
+    payload, _ = _fixture(tmp_path)
+    other_target = "tests/api/test_other.py"
+    other_source = f"qa/changes/{CHANGE}/generated/api/files/{other_target}"
+    other_bytes = b"def test_other():\n    assert True\n"
+    other_ref = _write(tmp_path, other_source, other_bytes)
+    source_refs = cast(list[dict[str, str]], payload["source_refs"])
+    payload["source_refs"] = sorted([*source_refs, other_ref], key=lambda ref: ref["path"])
+    payload["allowed_test_paths"] = sorted([SOURCE, other_source])
+    execution = _execution()
+    execution["mapping"]["selected"].append(f"{other_target}::test_other")
+    execution["mapping"]["mappings"].append(
+        {
+            "case_id": "CASE_2",
+            "test": f"{other_target}::test_other",
+            "capability": "users.read",
+            "layer": "api",
+        }
+    )
+    execution["results"].append(
+        {"test": f"{other_target}::test_other", "status": "passed", "duration_ms": 1, "case_id": "CASE_2"}
+    )
+    execution["receipt"].update(collected=2, passed=1)
+    payload["mapping_ref"] = _write(tmp_path, MAPPING, _json_bytes(execution["mapping"]))
+    payload["execution_ref"] = _write(tmp_path, EXECUTION, _json_bytes(execution))
+    prepared = await execute_task(
+        ApplyTestRepairPrepareHandler(),
+        cast(JSONValue, payload),
+        tmp_path,
+        binding_data=BINDING,
+    )
+    assert prepared.status == "succeeded", prepared.failure
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert request.workspace.allowed_outputs == (SOURCE,)
+    stage = tmp_path / ".stage"
+    _write(
+        stage,
+        SOURCE,
+        b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n",
+    )
+    result = await _finalize(tmp_path, stage, payload, [SOURCE])
+    assert result.outcome.status == "succeeded", result.outcome.failure
+    assert (tmp_path / other_source).read_bytes() == other_bytes
+    assert not (stage / other_source).exists()
+
+    _write(stage, other_source, b"def test_other():\n    x = 1\n    assert True\n")
+    extra = await _finalize(tmp_path, stage, payload, sorted([SOURCE, other_source]))
+    assert extra.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_prepare_rejects_a_proposal_outside_approval_scope(tmp_path: Path) -> None:
+    payload, _ = _fixture(tmp_path)
+    approval = _approval(_proposal())
+    approval["paths"] = [TARGET]
+    payload["approval_ref"] = _write(tmp_path, APPROVAL, _json_bytes(approval))
+    result = await execute_task(
+        ApplyTestRepairPrepareHandler(),
+        cast(JSONValue, payload),
+        tmp_path,
+        binding_data=BINDING,
+    )
+    assert result.status == "failed"
 
 
 @pytest.mark.asyncio

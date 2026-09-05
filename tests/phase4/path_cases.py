@@ -14,7 +14,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
 )
 
-from assurance_execution.contracts.selection import _safe_project_relative_path
+from assurance_generation.contracts.mapping import _safe_project_relative_path
 from assurance_execution.operations.paths import resolve_selected_file
 from assurance_execution.validators.mapping import ClosedMappingValidator
 from assurance_generation.contracts.plans import canonical_relative_path

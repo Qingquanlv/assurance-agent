@@ -9,7 +9,12 @@ from pydantic import BaseModel
 from assurance_generation.contracts.agent import CodegenFixInputV1, CodegenInputV1, PlanInputV1
 from assurance_generation.contracts.decisions import advance_review_round, complete_generation
 from assurance_generation.contracts.families import GENERATION_FAMILIES
-from assurance_generation.contracts.workflow import ResolveGenerationInputV1
+from assurance_generation.contracts.workflow import (
+    CompleteGenerationInputV1,
+    GenerationCycleResultV1,
+    ResolveGenerationInputV1,
+)
+from graph_engine.attempts.resolutions import ReceiptRef
 from assurance_intake.contracts.workflow import ReviewedCaseV1
 from assurance_generation.graphs.state import (
     PlanRoundArrival,
@@ -90,12 +95,50 @@ def activation_generation_inputs(state: Mapping[str, object]) -> BusinessActivat
     return BusinessActivation.for_trigger(f"coverage.{epoch}.resolve-inputs")
 
 
+def activation_generation_cycle(state: Mapping[str, object]) -> BusinessActivation:
+    epoch = _as_int(state["coverage_epoch"], name="coverage_epoch")
+    return BusinessActivation.for_trigger(f"coverage.{epoch}.publish-cycle")
+
+
 def publish_generation_inputs(
     state: Mapping[str, object], output: object, receipt: object
 ) -> dict[str, object]:
     del state, receipt
     reviewed = ReviewedCaseV1.model_validate(output)
-    return {"reviewed_case": reviewed.model_dump(mode="json")}
+    return {"reviewed_case": reviewed.model_dump(mode="json"), "generation_result": {}}
+
+
+def select_generation_cycle(state: Mapping[str, object]) -> CompleteGenerationInputV1:
+    epoch = _as_int(state["coverage_epoch"], name="coverage_epoch")
+    results = [
+        item
+        for item in _as_items(state.get("family_results"))
+        if isinstance(item, Mapping) and item.get("coverage_epoch") == epoch and item.get("selected")
+    ]
+    if any(item.get("status") != "passed" for item in results):
+        raise ValueError("generation cycle requires every selected family to pass")
+    return CompleteGenerationInputV1.model_validate(
+        {
+            "change_id": state["change_id"],
+            "coverage_epoch": epoch,
+            "reviewed_case": state["reviewed_case"],
+            "selected_test_families": state["selected_test_families"],
+            "capability_leafs": state["capability_leafs"],
+            "families": [item.get("generated") for item in results],
+        }
+    )
+
+
+def publish_generation_cycle(
+    state: Mapping[str, object], output: object, receipt: object
+) -> dict[str, object]:
+    result = GenerationCycleResultV1.model_validate(output)
+    if result.change_id != state["change_id"] or result.coverage_epoch != state["coverage_epoch"]:
+        raise ValueError("generation cycle does not match the current epoch")
+    return {
+        "generation_result": result.model_dump(mode="json"),
+        "generation_receipt": ReceiptRef.model_validate(receipt).model_dump(mode="json"),
+    }
 
 
 def select_plan_review(state: Mapping[str, object]) -> PlanInputV1:
@@ -169,6 +212,7 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     del receipt
     payload = _output_payload(output)
     return {
+        "plan_files": payload.get("output_files", []),
         "artifacts": payload.get("artifacts") or [],
         "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
         "rounds_budget": _published_int(payload, "rounds_budget", state.get("rounds_budget", 2)),
@@ -190,12 +234,13 @@ def publish_plan_review(state: Mapping[str, object], output: object, receipt: ob
 
 
 def publish_codegen(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    del receipt
     payload = _output_payload(output)
     verdict = payload.get("verdict")
     needs_fix = payload.get("needs_fix")
     repair = payload.get("repair")
     update: dict[str, object] = {
+        "codegen_output": payload,
+        "codegen_receipt": ReceiptRef.model_validate(receipt).model_dump(mode="json"),
         "codegen_verdict": verdict,
         "needs_fix": True if verdict == "needs_fix" or needs_fix is True else False,
         "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
@@ -327,7 +372,7 @@ def _family_result(state: Mapping[str, object], *, status: str, selected: bool) 
     family = state.get("family")
     if not isinstance(family, str) or not family:
         raise ValueError("family lane result requires family")
-    return {
+    result = {
         "family_results": [
             make_family_lane_result(
                 coverage_epoch=_as_int(state.get("coverage_epoch", 0), name="coverage_epoch"),
@@ -338,10 +383,27 @@ def _family_result(state: Mapping[str, object], *, status: str, selected: bool) 
             )
         ]
     }
+    if selected and status == "passed":
+        codegen = state.get("codegen_output")
+        receipt = state.get("codegen_receipt")
+        if isinstance(codegen, Mapping) and isinstance(receipt, Mapping):
+            lane = result["family_results"][0]
+            lane["receipt_id"] = str(receipt["receipt_id"])
+            lane["generated"] = {
+                "family": family,
+                "coverage_epoch": state.get("coverage_epoch", 0),
+                "plan_files": state.get("plan_files", []),
+                "files": codegen.get("files", []),
+                "mapping": codegen.get("mapping"),
+                "receipt": dict(receipt),
+            }
+    return {"family_results": result["family_results"]}
 
 
 def generation_done(state: Mapping[str, object]) -> dict[str, object]:
-    del state
+    if state.get("attempt_failure"):
+        return {"status": "failed", "generation_result": {}}
+    GenerationCycleResultV1.model_validate(state.get("generation_result"))
     return {"status": "passed"}
 
 
@@ -419,6 +481,7 @@ __all__ = [
     "activation_codegen",
     "activation_codegen_fix",
     "activation_generation_inputs",
+    "activation_generation_cycle",
     "activation_one_shot",
     "activation_plan",
     "activation_plan_review",
@@ -433,6 +496,7 @@ __all__ = [
     "plan_round_join",
     "publish_codegen",
     "publish_generation_inputs",
+    "publish_generation_cycle",
     "publish_plan",
     "publish_plan_review",
     "review_round_advance",
@@ -440,6 +504,7 @@ __all__ = [
     "select_codegen",
     "select_codegen_fix",
     "select_generation_inputs",
+    "select_generation_cycle",
     "select_plan",
     "select_plan_review",
     "terminal_done",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from assurance_generation.contracts.families import GENERATION_FAMILIES
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
@@ -35,6 +35,7 @@ class FamilyLaneResult(TypedDict):
     receipt_id: str
     selected: bool
     status: str
+    generated: NotRequired[dict[str, object]]
 
 
 def empty_plan_round_inbox() -> PlanRoundInbox:
@@ -179,6 +180,11 @@ class FamilyLaneOutput(TypedDict, total=False):
 
 
 class GenerationState(CheckpointBridgeState, total=False):
+    generation_result: dict[str, object]
+    generation_receipt: dict[str, object]
+    plan_files: list[str]
+    codegen_output: dict[str, object]
+    codegen_receipt: dict[str, object]
     coverage_epoch: int
     reviewed_case: dict[str, object]
     source_artifacts: list[dict[str, str]]

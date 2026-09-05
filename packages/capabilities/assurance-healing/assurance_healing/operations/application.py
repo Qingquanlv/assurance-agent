@@ -15,7 +15,8 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from pydantic import ValidationError
 
 from assurance_execution.contracts import ExecutionEvidenceV1
-from assurance_generation.contracts import CodegenMapping
+from assurance_generation.contracts.codegen import staged_generated_path
+from assurance_generation.contracts.mapping import ClosedMappingV1, selected_test_file
 from assurance_healing.contracts.agent import AgentBindingDataV1
 from assurance_healing.contracts.application import (
     ApplyTestRepairInputV1,
@@ -65,13 +66,12 @@ def _load_ref(root: Path, ref: EvidenceArtifactRefV1, model: type[Any]) -> Any:
         raise OutputError(str(error)) from error
 
 
-def _test_identity(entry: Any) -> tuple[str, str]:
-    return entry.case_id, f"{entry.target_file}::{entry.symbol}"
-
-
-def _source_target(path: str, targets: set[str]) -> str | None:
-    matches = [target for target in targets if path.endswith(f"/files/{target}")]
-    return matches[0] if len(matches) == 1 else None
+def _mapped_sources(change_id: str, mapping: ClosedMappingV1) -> dict[str, set[str]]:
+    sources: dict[str, set[str]] = {}
+    for entry in mapping.mappings:
+        source = staged_generated_path(change_id, entry.layer, selected_test_file(entry.test))
+        sources.setdefault(source, set()).add(entry.test.partition("::")[2])
+    return sources
 
 
 def _call_name(node: ast.Call) -> str:
@@ -144,13 +144,7 @@ def _finalize_payload(data: object) -> tuple[ApplyTestRepairInputV1, AgentRunRes
         raise InputError(str(error)) from error
 
 
-def _verify_application(
-    business: ApplyTestRepairInputV1,
-    result: TestRepairResultV1,
-    context: TaskContext,
-) -> VerifiedTestRepairV1:
-    if result.change_id != business.change_id:
-        raise OutputError("repair result change_id does not match the locked change")
+def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
     for ref in (
         *business.reviewed_case.preparation_refs,
         *business.reviewed_case.case_refs,
@@ -160,14 +154,14 @@ def _verify_application(
         business.mapping_ref,
         *business.source_refs,
     ):
-        _authenticate_ref(context.project_root, ref)
+        _authenticate_ref(root, ref)
     if business.approval_ref is None:
         raise OutputError("repair application requires an authenticated approval")
 
-    proposal = _load_ref(context.project_root, business.proposal_ref, FixProposalResultV1)
-    approval = _load_ref(context.project_root, business.approval_ref, ProposalApprovedIntentV1)
-    execution = _load_ref(context.project_root, business.execution_ref, ExecutionEvidenceV1)
-    mapping = _load_ref(context.project_root, business.mapping_ref, CodegenMapping)
+    proposal = _load_ref(root, business.proposal_ref, FixProposalResultV1)
+    approval = _load_ref(root, business.approval_ref, ProposalApprovedIntentV1)
+    execution = _load_ref(root, business.execution_ref, ExecutionEvidenceV1)
+    mapping = _load_ref(root, business.mapping_ref, ClosedMappingV1)
     if proposal.change_id != business.change_id or approval.change_id != business.change_id:
         raise OutputError("proposal or approval belongs to another change")
     if approval.proposal_digest != engine_digest(cast(JSONValue, proposal.model_dump(mode="json"))):
@@ -186,26 +180,37 @@ def _verify_application(
         for item in proposal.proposals
         if item.eligible and not item.needs_review and item.risk_level != "critical"
     )
-    proposed_targets = {path for item in eligible for path in item.files_to_modify}
+    proposed_sources = {path for item in eligible for path in item.files_to_modify}
     proposed_layers = {item.target for item in eligible}
-    if not proposed_targets:
+    if not proposed_sources:
         raise OutputError("proposal has no eligible existing-test repair")
-    if not proposed_targets <= set(approval.paths) or not proposed_layers <= set(approval.targets):
+    if not proposed_sources <= set(approval.paths) or not proposed_layers <= set(approval.targets):
         raise OutputError("approval scope does not cover the proposed repair")
 
-    mapping_targets = {entry.target_file for entry in mapping.entries}
-    if not proposed_targets <= mapping_targets:
+    mapped_sources = _mapped_sources(business.change_id, mapping)
+    if not proposed_sources <= set(mapped_sources):
         raise OutputError("proposal changes a file outside the reviewed mapping")
-    closed = {_test_identity(entry) for entry in mapping.entries}
-    executed = {(entry.case_id, entry.test) for entry in execution.mapping.mappings}
-    if closed != executed:
+    if mapping != execution.mapping:
         raise OutputError("mapping membership or test identity changed")
     if execution.status != "failed" or not any(item.status == "failed" for item in execution.results):
         raise OutputError("repair application requires failed existing-test evidence")
+    if not proposed_sources <= set(business.allowed_test_paths) or not proposed_sources <= {
+        ref.path for ref in business.source_refs
+    }:
+        raise OutputError("proposal paths must be current generated test sources")
+    return {path: mapped_sources[path] for path in sorted(proposed_sources)}
 
-    allowed = set(business.allowed_test_paths)
+
+def _verify_application(
+    business: ApplyTestRepairInputV1,
+    result: TestRepairResultV1,
+    context: TaskContext,
+) -> VerifiedTestRepairV1:
+    if result.change_id != business.change_id:
+        raise OutputError("repair result change_id does not match the locked change")
+    approved_sources = _approved_sources(business, context.project_root)
     outputs = set(result.output_files)
-    if outputs != allowed:
+    if outputs != set(approved_sources):
         raise OutputError("repair output set must exactly equal the approved candidate write set")
     staged = {
         path.relative_to(context.write_root).as_posix()
@@ -219,12 +224,9 @@ def _verify_application(
     source_by_path = {ref.path: ref for ref in business.source_refs}
     changed: list[EvidenceArtifactRefV1] = []
     for path in result.output_files:
-        target = _source_target(path, mapping_targets)
-        if target is None or target not in proposed_targets or path not in source_by_path:
-            raise OutputError(f"repair output is not an approved existing mapped test: {path}")
         before = _authenticate_ref(context.project_root, source_by_path[path])
         after = _canonical_file(context.write_root, path).read_bytes()
-        symbols = {entry.symbol for entry in mapping.entries if entry.target_file == target}
+        symbols = approved_sources[path]
         _prove_implementation_only(before, after, symbols, path)
         changed.append(EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(after).hexdigest()))
     return VerifiedTestRepairV1(
@@ -241,27 +243,19 @@ class ApplyTestRepairPrepareHandler:
         try:
             business = ApplyTestRepairInputV1.model_validate(request.input)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
-            for ref in (
-                *business.reviewed_case.preparation_refs,
-                *business.reviewed_case.case_refs,
-                business.reviewed_case.review_ref,
-                business.proposal_ref,
-                business.execution_ref,
-                business.mapping_ref,
-                *business.source_refs,
-                *(() if business.approval_ref is None else (business.approval_ref,)),
-            ):
-                _authenticate_ref(context.project_root, ref)
+            approved_paths = tuple(_approved_sources(business, context.project_root))
             request_payload = AgentRunRequest(
                 instructions=(
                     InstructionPart.text("text/plain", resource_text(APPLICATION_SKILL)),
-                    InstructionPart.from_json(business.model_dump(mode="json")),
+                    InstructionPart.from_json(
+                        {**business.model_dump(mode="json"), "allowed_test_paths": list(approved_paths)}
+                    ),
                 ),
                 result_contract=result_contract(APPLICATION_RESULT_ID, APPLICATION_RESULT_FILE),
                 execution=binding.execution,
                 workspace=agent_workspace(
                     context,
-                    allowed_outputs=business.allowed_test_paths,
+                    allowed_outputs=approved_paths,
                     agent_profile=binding.agent_profile,
                     scope_id=business.change_id,
                 ),

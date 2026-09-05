@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -393,19 +394,20 @@ async def test_human_action_on_family_graph(family: str, action: str) -> None:
         assert resumed.get("decision") == "reject" or resumed.get("status") == "rejected"
 
 
-async def test_root_fanout_surfaces_resumable_family_human_interrupt() -> None:
+async def test_root_fanout_surfaces_resumable_family_human_interrupt(tmp_path: Path) -> None:
+    from assurance_generation.operations.cycle import complete_generation_cycle
+    from test_generation_cycle import cycle_fixture  # pyright: ignore[reportMissingImports]
+
+    cycle_input, script = await cycle_fixture(tmp_path, ("api",))
+    cycle_result = complete_generation_cycle(cycle_input, tmp_path, tmp_path / ".stage")
     harness = GraphHarness()
     backend = harness.anchored_memory_checkpointer()
     await _prepare_anchored_backend(backend)
     bundle = build_generation_graphs(
         harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
     )
-    script: dict[str, list[AttemptResolution]] = {
-        "generation.resolve-inputs": [committed(_reviewed_case(), _RECEIPT)],
-        "generation.api.plan": [committed(_plan(), _RECEIPT)],
-        "generation.api.plan-review": [committed(_review("needs_human_review", human=True), _RECEIPT)],
-        "generation.api.codegen": [committed(_codegen("api"), _RECEIPT)],
-    }
+    script["generation.api.plan-review"] = [committed(_review("needs_human_review", human=True), _RECEIPT)]
+    script["generation.publish-cycle"] = [committed(cycle_result, _RECEIPT)]
     harness._kernel.load_script(script)
     wrapper: StateGraph[GenerationState] = StateGraph(GenerationState)
     wrapper.add_node("generation", cast(Any, bundle.generation))
@@ -421,7 +423,7 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt() -> None:
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,
-        "reviewed_case": _reviewed_case(),
+        "reviewed_case": cycle_input.reviewed_case.model_dump(mode="json"),
     }
     interrupted: object | None
     try:

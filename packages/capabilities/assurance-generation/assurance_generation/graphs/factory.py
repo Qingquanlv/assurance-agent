@@ -9,12 +9,15 @@ from langgraph.graph.state import CompiledStateGraph
 
 from assurance_generation.graphs.api import compile_family_pair
 from assurance_generation.graphs.nodes import (
+    activation_generation_cycle,
     activation_generation_inputs,
     complete_generation_node,
     generation_done,
     join_selected,
     publish_generation_inputs,
     select_generation_inputs,
+    select_generation_cycle,
+    publish_generation_cycle,
 )
 from assurance_generation.graphs.routes import route_families
 from assurance_generation.graphs.state import GenerationState
@@ -59,6 +62,19 @@ def _build_root_graph(
     builder.add_node("performance", performance)
     builder.add_node("join-selected", cast(Callable[..., Any], join_selected))
     builder.add_node("complete", cast(Callable[..., Any], complete_generation_node))
+    builder.add_node(
+        "generation.publish-cycle",
+        cast(
+            Callable[..., Any],
+            context.attempt(
+                "assurance.generation.publish-cycle",
+                semantic_node_id="generation.publish-cycle",
+                activation=activation_generation_cycle,
+                select=select_generation_cycle,
+                publish=publish_generation_cycle,
+            ),
+        ),
+    )
     builder.add_node("done", cast(Callable[..., Any], generation_done))
     builder.add_edge(START, "generation.resolve-inputs")
     builder.add_edge("generation.resolve-inputs", "fanout")
@@ -68,7 +84,8 @@ def _build_root_graph(
     builder.add_edge("fuzz", "join-selected")
     builder.add_edge("performance", "join-selected")
     builder.add_edge("join-selected", "complete")
-    builder.add_edge("complete", "done")
+    builder.add_edge("complete", "generation.publish-cycle")
+    builder.add_edge("generation.publish-cycle", "done")
     builder.add_edge("done", END)
     return context.compile_subgraph(builder)
 
