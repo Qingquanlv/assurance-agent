@@ -21,6 +21,7 @@ from assurance_quality.contracts.assessment import (
     ReportOutcomeV1,
     ReportPurpose,
 )
+from assurance_improvement.contracts.retro import RetroWindow
 
 FAILED_JOIN_PREDECESSORS = ("execute", "run")
 COVERAGE_NEEDED_PREDECESSORS = ("quality", "quality-recheck")
@@ -396,6 +397,7 @@ class ProductStateDocument(FrozenModel):
     allowed_artifact_paths: list[str]
     budgets: dict[str, int]
     artifacts: list[dict[str, Any]]
+    retro_window: RetroWindow | None
     decision: str
     receipts: list[dict[str, str]]
     output: dict[str, Any]
@@ -462,6 +464,7 @@ class ProductState(CheckpointBridgeState, total=False):
     allowed_artifact_paths: list[str]
     budgets: dict[str, int]
     artifacts: list[dict[str, object]]
+    retro_window: RetroWindow | None
     decision: str
     receipts: Annotated[list[dict[str, object]], replace_receipts]
     output: dict[str, object]

@@ -31,6 +31,7 @@ AGENT_IDS = (
     _RETRO_ID,
 )
 TASK_COLLECT_ID = "assurance.improvement.task.retro-collect-v3"
+TASK_BUILD_SLICES_ID = "assurance.improvement.retro-build-slices"
 TASK_RECONCILE_ID = "assurance.improvement.task.reconcile-improvements"
 TASK_AUTO_REVIEW_ID = "assurance.improvement.task.apply-improvement-auto-review"
 TASK_HUMAN_REVIEW_ID = "assurance.improvement.task.apply-improvement-review"
@@ -39,6 +40,7 @@ TASK_EXPORT_ID = "assurance.improvement.task.export-change-improvement"
 TASK_APPLY_ID = "assurance.improvement.task.apply-memory-improvement"
 TASK_ROLLBACK_ID = "assurance.improvement.task.rollback-memory-improvement"
 TASK_IDS = (
+    TASK_BUILD_SLICES_ID,
     TASK_COLLECT_ID,
     TASK_RECONCILE_ID,
     TASK_AUTO_REVIEW_ID,
@@ -159,7 +161,7 @@ def test_improvement_factory_exports_seven_public_graphs(recording_context) -> N
     assert set(bound) >= set(AGENT_IDS)
     assert set(bound) >= set(TASK_IDS)
     assert len({item for item in bound if item in AGENT_IDS}) == 6
-    assert len({item for item in bound if item in TASK_IDS}) == 8
+    assert len({item for item in bound if item in TASK_IDS}) == 9
     assert bound.count(TASK_EVALUATE_ID) == 2
     assert sum(1 for item in bound if item in TASK_IDS) == 9
     for agent_id in AGENT_IDS:

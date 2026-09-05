@@ -25,6 +25,7 @@ from assurance_improvement.contracts.delivery import (
     MemoryRollbackReceipt,
 )
 from assurance_improvement.contracts.improvements import ImprovementLedgerProjection, ImprovementProjection
+from assurance_improvement.contracts.retro import RetroBuildSlicesInputV1
 from assurance_improvement.contracts.review import ImprovementAutoReviewStatus
 from assurance_improvement.operations.delivery import (
     ApplyMemoryInput,
@@ -37,6 +38,7 @@ from assurance_improvement.operations.review import ApplyAutoReviewInput, ApplyR
 from assurance_improvement.plugin import ImprovementPlugin
 
 _EFFECTFUL_TASK_IDS = (
+    "assurance.improvement.retro-build-slices",
     "assurance.improvement.retro-collect-v3",
     "assurance.improvement.reconcile-improvements",
     "assurance.improvement.evaluate-memory-improvement",
@@ -90,8 +92,9 @@ def test_improvement_owns_six_agent_contracts() -> None:
         assert set(claims.runtime) == set(contract.resources.writes)
 
 
-def test_eight_effectful_improvement_ids_are_task_contracts() -> None:
+def test_nine_effectful_improvement_ids_are_task_contracts() -> None:
     expected_models = {
+        "assurance.improvement.retro-build-slices": (RetroBuildSlicesInputV1, RetroCollectInput),
         "assurance.improvement.retro-collect-v3": (RetroCollectInput, RetroCollectInput),
         "assurance.improvement.reconcile-improvements": (ReconcileInput, ImprovementLedgerProjection),
         "assurance.improvement.evaluate-memory-improvement": (EvaluateMemoryInput, MemoryEvalReceipt),
@@ -109,9 +112,19 @@ def test_eight_effectful_improvement_ids_are_task_contracts() -> None:
         contract = TASK_ATTEMPT_CONTRACTS[handler_id]
         assert isinstance(contract, TaskAttemptContract)
         suffix = handler_id.removeprefix("assurance.improvement.")
-        assert contract.contract_id == f"assurance.improvement.task.{suffix}"
+        expected_id = (
+            "assurance.improvement.retro-build-slices"
+            if handler_id == "assurance.improvement.retro-build-slices"
+            else f"assurance.improvement.task.{suffix}"
+        )
+        assert contract.contract_id == expected_id
         assert contract.owner_id == "assurance.improvement"
-        assert contract.handler_id == handler_id
+        expected_handler = (
+            "assurance.improvement.retro-build-slices.execute"
+            if handler_id == "assurance.improvement.retro-build-slices"
+            else handler_id
+        )
+        assert contract.handler_id == expected_handler
         assert contract.input_model is input_model
         assert contract.output_model is output_model
         assert contract.validators == ()
@@ -137,12 +150,12 @@ def test_evaluate_memory_improvement_is_effectful_not_a_pure_function() -> None:
         )  # type: ignore[call-arg]
 
 
-def test_improvement_plugin_projects_forty_one_owner_contracts() -> None:
+def test_improvement_plugin_projects_owner_contracts() -> None:
     refs = attempt_contract_refs()
     contribution = ImprovementPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     assert refs == contribution.attempt_contracts == ImprovementPlugin.descriptor().attempt_contracts
     assert all(isinstance(item, AttemptContractRef) for item in refs)
-    assert len(refs) == 14
+    assert len(refs) == 15
     assert {item.contract_id for item in refs} == {
         *(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()),
         *(contract.contract_id for contract in TASK_ATTEMPT_CONTRACTS.values()),

@@ -25,10 +25,12 @@ from assurance_improvement.contracts.retro import (
     DomainStatuses,
     RetroContextV3,
     RetroIntegrity,
+    RetroBuildSlicesInputV1,
     RetroSourceManifestV3,
     Signal,
     SignalDocumentV3,
 )
+from assurance_improvement.operations.retro import RetroCollectInput
 
 APPLY_HUMAN_ACTIONS = ("approve", "reject", "request_rework", "supersede")
 EFFECT_IDS = frozenset(
@@ -119,6 +121,16 @@ def select_collect(state: Mapping[str, object]) -> object:
             "coverage_gap_slice",
         )
     )
+
+
+def select_build_slices(state: Mapping[str, object]) -> RetroBuildSlicesInputV1:
+    return RetroBuildSlicesInputV1.model_validate(_pick(state, "retro_id", "window", "source_refs"))
+
+
+def publish_build_slices(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
+    del state, receipt
+    collected = RetroCollectInput.model_validate(_output_payload(output))
+    return collected.model_dump(mode="json")
 
 
 def publish_collect(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
@@ -617,6 +629,7 @@ __all__ = [
     "publish_archive",
     "publish_auto_review",
     "publish_collect",
+    "publish_build_slices",
     "publish_eval_analysis",
     "publish_evaluate",
     "publish_export",
@@ -630,6 +643,7 @@ __all__ = [
     "select_apply_memory",
     "select_auto_review",
     "select_collect",
+    "select_build_slices",
     "select_eval_analysis",
     "select_evaluate",
     "select_export",

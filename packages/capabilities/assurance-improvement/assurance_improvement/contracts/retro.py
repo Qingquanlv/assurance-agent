@@ -141,6 +141,23 @@ class RetroWindow(BaseModel):
     batch_scope: RetroBatchScope | None = None
 
 
+class RetroBuildSlicesInputV1(BaseModel):
+    model_config = _FROZEN
+
+    retro_id: str = Field(min_length=1)
+    window: RetroWindow
+    source_refs: tuple[EvidenceArtifactRefV1, ...]
+
+    @model_validator(mode="after")
+    def validate_sources(self) -> Self:
+        ordered = tuple(sorted(self.source_refs, key=lambda item: (item.path, item.digest)))
+        if self.source_refs != ordered or len({item.path for item in self.source_refs}) != len(
+            self.source_refs
+        ):
+            raise ValueError("source_refs must be sorted and unique by path")
+        return self
+
+
 class RetroSourceDescriptor(BaseModel):
     model_config = _FROZEN
 
@@ -153,6 +170,9 @@ class RetroSourceDescriptor(BaseModel):
         "retro_pipeline_failure",
         "discovery_projection",
         "coverage_gap_projection",
+        "inspection_outcome",
+        "loop_round_history",
+        "report_outcome",
     ]
     change_id: str | None = None
     head_event_id: str | None = None

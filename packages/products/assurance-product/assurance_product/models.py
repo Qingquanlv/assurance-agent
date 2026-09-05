@@ -13,6 +13,8 @@ from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 
+from assurance_improvement.contracts.retro import RetroWindow
+
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
 PRODUCT_ID = "assurance"
@@ -434,6 +436,7 @@ class ProductInputV1(FrozenModel):
     allowed_artifact_paths: tuple[str, ...]
     budgets: BusinessBudgetsV1
     artifacts: tuple[ArtifactRefV1, ...] = ()
+    retro_window: RetroWindow | None = None
     decision: str = "pass"
 
     @field_validator("change_id")
@@ -495,6 +498,8 @@ class ProductInputV1(FrozenModel):
             raise ValueError(f"{entrypoint} requires non-empty exact case_delta_paths")
         if not requires_case_delta and self.case_delta_paths:
             raise ValueError(f"{entrypoint} does not consume case_delta_paths")
+        if entrypoint != "retro" and self.retro_window is not None:
+            raise ValueError(f"{entrypoint} does not consume retro_window")
         return self
 
     def authenticate_against(self, composition: object) -> ProductInputV1:

@@ -9,6 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from assurance_product.graphs.entrypoints import (
     adapt_improvement,
     adapt_intake,
+    adapt_retro,
     publish_public_output,
     validate_public_input,
 )
@@ -32,6 +33,18 @@ def _terminal_not_achieved(state: ProductState) -> dict[str, object]:
     return {**published, "terminal": "not-achieved", "status": "failed"}
 
 
+def _route_feature_success(state: ProductState) -> str:
+    if state.get("attempt_failure") or state.get("status") in {
+        "failed",
+        "rejected",
+        "exhausted",
+        "rework",
+        "superseded",
+    }:
+        return "not-achieved"
+    return "succeeded"
+
+
 def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph[ProductState]:
     typed = cast(Any, bundles)
     builder: StateGraph[ProductState] = StateGraph(ProductState)
@@ -41,7 +54,7 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_node("case", typed.intake.case)
     builder.add_node("adapt-execute-tail", cast(Any, adapt_execute_tail))
     builder.add_node("execute-tail", execute)
-    builder.add_node("adapt-retro", cast(Any, adapt_improvement))
+    builder.add_node("adapt-retro", cast(Any, adapt_retro))
     builder.add_node("retro", typed.improvement.retro)
     builder.add_node("adapt-improvement", cast(Any, adapt_improvement))
     builder.add_node("improvement", typed.improvement.apply)
@@ -67,9 +80,17 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
         {"retro": "adapt-retro", "not-achieved": "not-achieved"},
     )
     builder.add_edge("adapt-retro", "retro")
-    builder.add_edge("retro", "adapt-improvement")
+    builder.add_conditional_edges(
+        "retro",
+        cast(Callable[..., Any], _route_feature_success),
+        {"succeeded": "adapt-improvement", "not-achieved": "not-achieved"},
+    )
     builder.add_edge("adapt-improvement", "improvement")
-    builder.add_edge("improvement", "achieved")
+    builder.add_conditional_edges(
+        "improvement",
+        cast(Callable[..., Any], _route_feature_success),
+        {"succeeded": "achieved", "not-achieved": "not-achieved"},
+    )
     builder.add_edge("achieved", END)
     builder.add_edge("not-achieved", END)
     return builder

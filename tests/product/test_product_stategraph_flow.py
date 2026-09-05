@@ -325,6 +325,27 @@ def test_full_composes_intake_execute_retro_and_improvement() -> None:
     } >= {"retro", "apply"}
 
 
+@pytest.mark.parametrize(
+    ("feature", "update"),
+    [
+        ("retro", {"status": "failed", "attempt_failure": {"kind": "invalid_input"}}),
+        ("apply", {"status": "failed", "attempt_failure": {"kind": "invalid_input"}}),
+    ],
+)
+def test_full_does_not_achieve_when_post_report_work_fails(
+    feature: str, update: Mapping[str, object]
+) -> None:
+    graphs = _product_graphs(
+        _flow_features(
+            retro=update if feature == "retro" else None,
+            apply=update if feature == "apply" else None,
+        )
+    )
+    result = invoke_product_root(graphs, "full", _public_input("full"))
+    assert result["terminal"] == "not-achieved"
+    assert ProductPublicOutput.model_validate(result["output"]).status == "failed"
+
+
 def test_full_prepare_rejection_is_not_achieved() -> None:
     graphs = _product_graphs(_flow_features(prepare={"status": "failed"}))
     result = invoke_product_root(graphs, "full", _public_input("full"))
