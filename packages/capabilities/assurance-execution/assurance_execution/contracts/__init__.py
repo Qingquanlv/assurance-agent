@@ -12,12 +12,15 @@ from assurance_execution.contracts.selection import (
     ClosedMappingV1,
     SelectedTargets,
 )
+from assurance_execution.contracts.workflow import ExecutionCycleInputV1, ExecutionCycleResultV1
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
     "ClosedMappingEntryV1",
     "ClosedMappingV1",
     "ExecutionEvidenceV1",
+    "ExecutionCycleInputV1",
+    "ExecutionCycleResultV1",
     "ExecutionManifest",
     "ExecutionReceiptV1",
     "RawTestResultV1",

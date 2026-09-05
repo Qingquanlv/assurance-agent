@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
+import hashlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,9 +11,13 @@ from pydantic import BaseModel
 
 from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
 from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs
+from assurance_execution.graphs.nodes import activation_execute, activation_rerun, publish_execution
+from assurance_execution.operations.agent_skills import assemble_execution_input
+from assurance_execution.operations.common import InputError
 from graph_engine.attempts.contracts import (
     ExecutedAttemptResult,
     ResolvedAttemptContract,
@@ -86,7 +91,41 @@ def execution_graph_input(
     }
     if activation is not None:
         payload["activation"] = activation
+        payload["repair_round"] = int(activation["value"])
     return payload
+
+
+def execution_evidence(*, change_id: str = "CH-DEMO-001", status: str = "passed") -> ExecutionEvidenceV1:
+    return ExecutionEvidenceV1.model_validate(
+        {
+            "schema_version": "1",
+            "status": status,
+            "change_id": change_id,
+            "batch_id": "20260822T000000Z",
+            "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+            "mapping": _mapping(),
+            "mapping_digest": _SHA,
+            "baseline_tree_id": "b" * 64,
+            "runner_profile_digest": "c" * 64,
+            "receipt_digest": "d" * 64,
+            "receipt": {
+                "command": ["pytest", "tests/a.py"],
+                "exit_code": 0 if status == "passed" else 1,
+                "collected": 1,
+                "passed": 1 if status == "passed" else 0,
+                "failed": 0 if status == "passed" else 1,
+                "skipped": 0,
+            },
+            "results": [
+                {
+                    "test": "tests/a.py",
+                    "status": status,
+                    "duration_ms": 1,
+                    "case_id": "TC_A",
+                }
+            ],
+        }
+    )
 
 
 def execution_manifest(*, change_id: str = "CH-DEMO-001") -> ExecutionManifest:
@@ -102,6 +141,25 @@ def execution_manifest(*, change_id: str = "CH-DEMO-001") -> ExecutionManifest:
 
 def execution_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
     return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+
+
+def generation_result() -> dict[str, object]:
+    ref = lambda path: {"path": path, "digest": _SHA}  # noqa: E731
+    reviewed = {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 2,
+        "preparation_refs": [ref("qa/changes/CH-DEMO-001/requirement.md")],
+        "case_refs": [ref("qa/changes/CH-DEMO-001/cases/items/case.yaml")],
+        "review_ref": ref("qa/changes/CH-DEMO-001/review/case-review.json"),
+    }
+    return {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 2,
+        "reviewed_case": reviewed,
+        "mapping_ref": ref("qa/changes/CH-DEMO-001/codegen/closed-mapping.json"),
+        "source_refs": [ref("qa/changes/CH-DEMO-001/generated/api/files/tests/a.py")],
+        "plan_refs": [ref("qa/changes/CH-DEMO-001/plans/api-plan.md")],
+    }
 
 
 @pytest.fixture
@@ -122,6 +180,13 @@ def test_execution_factory_exports_execute_and_rerun(recording_context) -> None:
     assert recording_context.compiled_subgraph_checkpointers == (None, None)
 
 
+def test_execute_and_rerun_activations_bind_epoch_and_repair_round() -> None:
+    assert activation_execute({"coverage_epoch": 0}) != activation_execute({"coverage_epoch": 1})
+    assert activation_rerun({"coverage_epoch": 1, "repair_round": 0}) != activation_rerun(
+        {"coverage_epoch": 1, "repair_round": 1}
+    )
+
+
 async def test_execute_and_rerun_publish_typed_public_output() -> None:
     harness = GraphHarness()
     context = harness.recording_context(
@@ -129,7 +194,7 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
         contracts=execution_contracts(),
     )
     bundle = build_execution_graphs(context)
-    output = execution_manifest()
+    output = execution_evidence()
     execute = await harness.run(
         bundle.execute,
         input=execution_graph_input(),
@@ -178,6 +243,66 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
     assert pending.promotion_decision == "pending"
     assert pending.terminal is None
     assert pending.interrupt_envelope is not None
+
+
+@pytest.mark.parametrize("bad_status", [None, "", "unknown", "PASS_WITH_WARNINGS"])
+def test_execution_result_rejects_unknown_final_status(bad_status: object) -> None:
+    with pytest.raises(ValueError, match="final_status"):
+        publish_execution(
+            {"rounds_budget": 1, "rounds_used": 0},
+            {"final_status": bad_status},
+            None,
+        )
+
+
+def test_failed_execution_publishes_committed_versioned_evidence() -> None:
+    published = publish_execution(
+        {
+            "coverage_epoch": 2,
+            "repair_round": 1,
+            "rounds_budget": 2,
+            "rounds_used": 1,
+            "generation_result": generation_result(),
+        },
+        execution_evidence(status="failed"),
+        _RECEIPT,
+    )
+    assert published["status"] == "failed"
+    result = published["execution_result"]
+    assert isinstance(result, dict)
+    assert result["coverage_epoch"] == 2
+    assert result["repair_round"] == 1
+    assert result["final_status"] == "FAIL"
+    assert result["receipt"] == _RECEIPT.model_dump(mode="json")
+
+
+def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) -> None:
+    mapping_path = "qa/changes/CH-DEMO-001/codegen/closed-mapping.json"
+    source_path = "qa/changes/CH-DEMO-001/generated/api/files/tests/a.py"
+    mapping_bytes = b"{}"
+    source_bytes = b"original"
+    for relative, content in ((mapping_path, mapping_bytes), (source_path, b"replaced")):
+        path = tmp_path.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    generation = generation_result()
+    generation["mapping_ref"] = {
+        "path": mapping_path,
+        "digest": hashlib.sha256(mapping_bytes).hexdigest(),
+    }
+    generation["source_refs"] = [{"path": source_path, "digest": hashlib.sha256(source_bytes).hexdigest()}]
+    with pytest.raises(InputError, match="source digest changed"):
+        assemble_execution_input(
+            {
+                "change_id": "CH-DEMO-001",
+                "selected_test_families": ["api"],
+                "capability_leafs": ["entities.item.create"],
+                "coverage_epoch": 2,
+                "generation_result": generation,
+            },
+            workspace=tmp_path,
+            model=AGENT_JOB_CONTRACTS["execute"].input_model,
+        )
 
 
 class _RecordingWorkspace:
@@ -320,14 +445,25 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
         assert writer.calls == 3
 
         selected = AGENT_JOB_CONTRACTS["run"].input_model.model_validate(
-            {key: first_rerun[key] for key in AGENT_JOB_CONTRACTS["run"].input_model.model_fields}
+            {
+                key: first_rerun[key]
+                for key in AGENT_JOB_CONTRACTS["run"].input_model.model_fields
+                if key in first_rerun
+            }
+        )
+        selected_second = AGENT_JOB_CONTRACTS["run"].input_model.model_validate(
+            {
+                key: second_rerun[key]
+                for key in AGENT_JOB_CONTRACTS["run"].input_model.model_fields
+                if key in second_rerun
+            }
         )
         first_key = derive_attempt_key(
             invocation_id="inv-1",
             graph_revision=_revision(),
             public_entrypoint="rerun",
             semantic_node_id="execution.run",
-            business_activation=BusinessActivation.for_round(0),
+            business_activation=BusinessActivation.for_trigger("coverage.0.repair.0.rerun"),
             contract_id=_RUN_ID,
             validated_input=selected,
         )
@@ -336,9 +472,9 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
             graph_revision=_revision(),
             public_entrypoint="rerun",
             semantic_node_id="execution.run",
-            business_activation=BusinessActivation.for_round(1),
+            business_activation=BusinessActivation.for_trigger("coverage.0.repair.1.rerun"),
             contract_id=_RUN_ID,
-            validated_input=selected,
+            validated_input=selected_second,
         )
         assert first_key != second_key
     finally:

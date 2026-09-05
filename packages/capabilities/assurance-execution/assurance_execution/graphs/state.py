@@ -13,6 +13,10 @@ class ExecutionPublicOutput(FrozenModel):
 
 
 class ExecutionState(CheckpointBridgeState, total=False):
+    coverage_epoch: int
+    repair_round: int
+    generation_result: dict[str, object]
+    execution_result: dict[str, object]
     change_id: str
     batch_id: str
     selected_test_families: list[str]

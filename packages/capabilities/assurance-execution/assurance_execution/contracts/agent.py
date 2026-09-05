@@ -12,6 +12,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.execution import ExecutionReceiptV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
 
 _SHA256 = r"^[0-9a-f]{64}$"
 
@@ -84,6 +85,9 @@ class ExecutionPrepareInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
     capability_leafs: tuple[str, ...]
+    coverage_epoch: int = Field(default=0, ge=0)
+    repair_round: int = Field(default=0, ge=0)
+    generation_result: GenerationCycleResultV1 | None = None
 
     @field_validator("selected_test_families")
     @classmethod
@@ -169,6 +173,9 @@ class SkillInputV1(FrozenModel):
     selected_targets: SelectedTargets
     baseline_tree_id: str = Field(pattern=_SHA256)
     runner_profile_digest: str = Field(pattern=_SHA256)
+    coverage_epoch: int = Field(default=0, ge=0)
+    repair_round: int = Field(default=0, ge=0)
+    generation_result: GenerationCycleResultV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod
@@ -205,6 +212,9 @@ class AgentFinalizeInputV1(FrozenModel):
     selected_targets: SelectedTargets
     baseline_tree_id: str = Field(pattern=_SHA256)
     runner_profile_digest: str = Field(pattern=_SHA256)
+    coverage_epoch: int = Field(default=0, ge=0)
+    repair_round: int = Field(default=0, ge=0)
+    generation_result: GenerationCycleResultV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod
