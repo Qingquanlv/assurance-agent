@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_serializer, model_validator
 
 from assurance_improvement.contracts.improvements import ImprovementCandidateV3, ImprovementSourceRefs
-from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -232,11 +232,40 @@ class SkillDriftEvidenceEntry(_WorkflowEvidenceBase):
     ts: NonEmptyStr | None = None
 
 
+class LoopRoundEvidenceEntry(_WorkflowEvidenceBase):
+    entry_kind: Literal["loop_round"] = "loop_round"
+    coverage_epoch: int = Field(ge=0)
+    loop_kind: Literal[
+        "coverage",
+        "case_review",
+        "plan_review",
+        "codegen_fix",
+        "implementation_repair",
+    ]
+    family: Literal["api", "e2e", "fuzz", "performance"] | None = None
+    round_index: int = Field(ge=0)
+    outcome: NonEmptyStr
+    source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_family_and_sources(self) -> Self:
+        family_loop = self.loop_kind in {"plan_review", "codegen_fix"}
+        if family_loop != (self.family is not None):
+            raise ValueError("family is required only for family-specific generation loops")
+        ordered = tuple(sorted(self.source_refs, key=lambda item: (item.path, item.digest)))
+        if self.source_refs != ordered or len({item.path for item in self.source_refs}) != len(
+            self.source_refs
+        ):
+            raise ValueError("source_refs must be sorted and unique by path")
+        return self
+
+
 WorkflowEvidenceEntry = Annotated[
     GateVerdictEvidenceEntry
     | TaskFailureEvidenceEntry
     | HealingOutcomeEvidenceEntry
-    | SkillDriftEvidenceEntry,
+    | SkillDriftEvidenceEntry
+    | LoopRoundEvidenceEntry,
     Field(discriminator="entry_kind"),
 ]
 

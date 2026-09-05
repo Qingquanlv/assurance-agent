@@ -22,10 +22,12 @@ from assurance_generation.operations.planning import (
     closed_family,
     failed_input,
     failed_output,
+    evidence_ref,
     leafs_of,
     plan_review_outputs,
     plan_review_input_paths,
     prepare_plan_outcome,
+    persist_loop_round_history,
     resolve_family,
     split_finalize_input,
     validate_plan_input,
@@ -79,7 +81,6 @@ class PlanReviewFinalizeHandler:
         self._family: Family | None = None if family is None else closed_family(family)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
             family = resolve_family(self._family, request)
             stripped, used, budget = split_finalize_input(request.input)
@@ -103,6 +104,37 @@ class PlanReviewFinalizeHandler:
                 "rounds_used": used if used is not None else 0,
                 "rounds_budget": budget if budget is not None else 2,
             }
+            if payload.change_id is not None:
+                if payload.change_id != document.change_id:
+                    raise OutputError("plan review change_id does not match locked change_id")
+                input_paths = plan_review_input_paths(
+                    context.project_root,
+                    change_id=document.change_id,
+                    family=family,
+                )
+                input_refs = tuple(evidence_ref(context.project_root, path) for path in input_paths)
+                review_ref = evidence_ref(
+                    context.project_root,
+                    f"qa/changes/{document.change_id}/review/{family}-plan-review.json",
+                )
+                history_relative = (
+                    f"qa/changes/{document.change_id}/plan/{family}/reviews/epochs/"
+                    f"{payload.coverage_epoch}/rounds/{payload.local_round}.json"
+                )
+                history_ref = persist_loop_round_history(
+                    context,
+                    relative=history_relative,
+                    change_id=document.change_id,
+                    coverage_epoch=payload.coverage_epoch,
+                    loop_kind="plan_review",
+                    family=family,
+                    round_index=payload.local_round,
+                    outcome=document.public_outcome or document.decision,
+                    input_refs=input_refs,
+                    source_refs=(*input_refs, review_ref),
+                )
+                extra["history_ref"] = history_ref.model_dump(mode="json")
+                extra["artifacts"] = [history_ref.model_dump(mode="json")]
             return TaskOutcome.succeeded(cast(JSONValue, {**document.model_dump(mode="json"), **extra}))
         except (InputError, ValidationError) as error:
             return failed_input(error)

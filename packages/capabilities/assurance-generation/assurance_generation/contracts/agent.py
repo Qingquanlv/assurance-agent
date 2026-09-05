@@ -107,10 +107,14 @@ class PlanInputV1(FrozenModel):
 
 class AgentFinalizeInputV1(FrozenModel):
     agent_result: AgentRunResult
+    change_id: str | None = Field(default=None, min_length=1)
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
     allowed_paths: tuple[str, ...] = ()
     baseline_tree_id: str | None = Field(default=None, pattern=_SHA256)
+    coverage_epoch: int = Field(default=0, ge=0)
+    local_round: int = Field(default=0, ge=0)
+    reviewed_case: ReviewedCaseV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod

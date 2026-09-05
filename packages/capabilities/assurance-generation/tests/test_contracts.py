@@ -266,6 +266,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             (
                 "qa/changes/{change_id}/codegen/api-codegen-fix-summary.md",
                 "qa/changes/{change_id}/codegen/api-generated-files.json",
+                "qa/changes/{change_id}/codegen/api/fixes/epochs/{coverage_epoch}/rounds/{review_round}.json",
             ),
         ),
         "api.codegen": (
@@ -280,6 +281,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-api-plan-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/changes/{change_id}/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/changes/{change_id}/review/api-plan-review-summary.md",
                 "qa/changes/{change_id}/review/api-plan-review.json",
             ),
@@ -301,6 +303,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             (
                 "qa/changes/{change_id}/codegen/e2e-codegen-fix-summary.md",
                 "qa/changes/{change_id}/codegen/e2e-generated-files.json",
+                "qa/changes/{change_id}/codegen/e2e/fixes/epochs/{coverage_epoch}/rounds/{review_round}.json",
             ),
         ),
         "e2e.codegen": (
@@ -315,6 +318,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-e2e-plan-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/changes/{change_id}/plan/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/changes/{change_id}/review/e2e-plan-review-summary.md",
                 "qa/changes/{change_id}/review/e2e-plan-review.json",
             ),
@@ -342,6 +346,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-fuzz-plan-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/changes/{change_id}/plan/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/changes/{change_id}/review/fuzz-plan-review-summary.md",
                 "qa/changes/{change_id}/review/fuzz-plan-review.json",
             ),
@@ -368,6 +373,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-performance-plan-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/changes/{change_id}/plan/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/changes/{change_id}/review/performance-plan-review-summary.md",
                 "qa/changes/{change_id}/review/performance-plan-review.json",
             ),
@@ -394,9 +400,24 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
         family, _, stage = base.partition(".")
-        expected_claims = writes
+        expected_claims = tuple(
+            path for path in writes if "{coverage_epoch}" not in path and "{review_round}" not in path
+        )
         if stage in {"codegen", "codegen-fix"}:
             expected_claims = tuple(sorted((*writes, f"qa/changes/{{change_id}}/generated/{family}/files")))
+            expected_claims = tuple(
+                path
+                for path in expected_claims
+                if "{coverage_epoch}" not in path and "{review_round}" not in path
+            )
+        if stage == "plan-review":
+            expected_claims = tuple(
+                sorted((*expected_claims, f"qa/changes/{{change_id}}/plan/{family}/reviews"))
+            )
+        elif stage == "codegen-fix":
+            expected_claims = tuple(
+                sorted((*expected_claims, f"qa/changes/{{change_id}}/codegen/{family}/fixes"))
+            )
         assert contract.resources.writes == expected_claims
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()

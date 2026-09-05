@@ -29,6 +29,7 @@ from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
 )
+from assurance_intake.contracts.loop_history import LoopRoundHistoryV1, build_loop_round_history
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
@@ -58,5 +59,7 @@ __all__ = [
     "ReviewRoundAdvanceOutput",
     "RiskTier",
     "advance_review_round",
+    "LoopRoundHistoryV1",
+    "build_loop_round_history",
     "attempt_contract_refs",
 ]

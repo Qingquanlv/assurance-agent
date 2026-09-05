@@ -390,11 +390,21 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
         resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
         extra = extra_claims.get(contract_id, ())
+        if contract_id == "assurance.intake.agent.case-review.v1":
+            extra = (*extra, f"qa/changes/{change_id}/cases/reviews")
         body = contract_id.removeprefix("assurance.").removesuffix(".v1")
         feature, _, rest = body.partition(".agent.")
         family, _, job = rest.rpartition(".")
         if feature == "generation" and job in {"codegen", "codegen-fix"}:
             extra = (*extra, f"qa/changes/{change_id}/generated/{family}/files")
+        if feature == "generation" and job == "plan-review":
+            extra = (*extra, f"qa/changes/{change_id}/plan/{family}/reviews")
+        if feature == "generation" and job == "codegen-fix":
+            extra = (*extra, f"qa/changes/{change_id}/codegen/{family}/fixes")
+        if contract_id == "assurance.healing.agent.apply-test-repair.v1":
+            extra = (*extra, f"qa/changes/{change_id}/healing/epochs")
+        extra_set = set(extra)
+        extra = tuple(path for path in resolved.writes if path in extra_set)
         outputs = catalog.outputs(contract_id, change_id)
         assert outputs == tuple(path for path in resolved.writes if path not in extra)
         assert extra == tuple(path for path in resolved.writes if path not in outputs)

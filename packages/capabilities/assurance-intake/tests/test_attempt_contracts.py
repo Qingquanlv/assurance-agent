@@ -70,6 +70,16 @@ _PURE_IDS = frozenset(
 )
 
 
+def test_review_history_identity_includes_epoch() -> None:
+    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    pattern = "qa/changes/{change_id}/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    assert pattern in OUTPUT_ROUTE_TEMPLATES["case-review"]
+    first = pattern.format(change_id="CH-1", coverage_epoch=0, review_round=0)
+    second = pattern.format(change_id="CH-1", coverage_epoch=1, review_round=0)
+    assert first != second
+
+
 def test_feature_agent_counts_are_frozen() -> None:
     catalogs = {
         "assurance.intake": AGENT_JOB_CONTRACTS,

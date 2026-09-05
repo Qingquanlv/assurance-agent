@@ -54,7 +54,8 @@ class OutputRouteCatalog:
         if templates is None:
             raise ValueError(f"unknown capability output route: {contract_id}")
         token = safe_change_id(change_id)
-        return tuple(path.replace("{change_id}", token, 1) for path in templates)
+        rendered = tuple(path.replace("{change_id}", token, 1) for path in templates)
+        return tuple(path for path in rendered if "{" not in path and "}" not in path)
 
     def resource_claims(self, contract_id: str, change_id: str) -> tuple[str, ...]:
         """Return task-store claims; provider output admission remains exact."""

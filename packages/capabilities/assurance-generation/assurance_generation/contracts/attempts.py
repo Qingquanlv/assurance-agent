@@ -82,7 +82,14 @@ def _job(
     claim_outputs = outputs
     if stage in {"codegen", "codegen-fix"}:
         claim_outputs = (*outputs, f"generated/{family}/files")
-    writes = _paths(*claim_outputs)
+    finalize_suffixes: tuple[str, ...] = ()
+    if stage == "plan-review":
+        finalize_suffixes = (f"plan/{family}/reviews",)
+    elif stage == "codegen-fix":
+        finalize_suffixes = (f"codegen/{family}/fixes",)
+    runtime_writes = _paths(*claim_outputs)
+    finalize_writes = _paths(*finalize_suffixes)
+    writes = tuple(sorted((*runtime_writes, *finalize_writes)))
     return AgentExecutionContract(
         contract_id=f"assurance.generation.agent.{base}.v1",
         owner_id="assurance.generation",
@@ -101,7 +108,9 @@ def _job(
         retry=_RETRY,
         timeout=_TIMEOUT,
         validators=(),
-        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=writes, finalize=()),
+        phase_write_claims=AgentPhaseWriteClaims(
+            prepare=(), runtime=runtime_writes, finalize=finalize_writes
+        ),
     )
 
 
@@ -178,7 +187,31 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
     }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {base: _paths(*outputs) for base, _skill, _profile, _input, _result, outputs in _JOBS}
+    {
+        base: tuple(
+            sorted(
+                (
+                    *_paths(*outputs),
+                    *(
+                        (
+                            f"qa/changes/{{change_id}}/plan/{base.partition('.')[0]}/reviews/"
+                            "epochs/{coverage_epoch}/rounds/{review_round}.json",
+                        )
+                        if base.partition(".")[2] == "plan-review"
+                        else (
+                            (
+                                f"qa/changes/{{change_id}}/codegen/{base.partition('.')[0]}/fixes/"
+                                "epochs/{coverage_epoch}/rounds/{review_round}.json",
+                            )
+                            if base.partition(".")[2] == "codegen-fix"
+                            else ()
+                        )
+                    ),
+                )
+            )
+        )
+        for base, _skill, _profile, _input, _result, outputs in _JOBS
+    }
 )
 _RESOLVE_INPUTS = TaskAttemptContract(
     contract_id="assurance.generation.resolve-inputs",

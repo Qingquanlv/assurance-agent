@@ -233,6 +233,16 @@ async def test_finalize_proves_existing_test_bytes_changed(tmp_path: Path) -> No
     output = cast(dict[str, Any], result.outcome.output)
     assert output["changed_test_refs"] == [{"path": SOURCE, "digest": hashlib.sha256(after).hexdigest()}]
     assert output["mapping_ref"] == payload["mapping_ref"]
+    history_path = stage / f"qa/changes/{CHANGE}/healing/epochs/0/rounds/1/repair.json"
+    first_history = history_path.read_bytes()
+    history = json.loads(first_history)
+    assert history["loop_kind"] == "implementation_repair"
+    assert [ref["path"] for ref in history["source_refs"]].count(SOURCE) == 1
+
+    resumed = await _finalize(tmp_path, stage, payload, [SOURCE])
+
+    assert resumed.outcome.status == "succeeded"
+    assert history_path.read_bytes() == first_history
 
 
 @pytest.mark.asyncio

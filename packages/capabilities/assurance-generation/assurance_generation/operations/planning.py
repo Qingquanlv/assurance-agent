@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
@@ -12,7 +13,7 @@ import yaml
 
 from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
@@ -27,7 +28,11 @@ from assurance_generation.contracts.codegen import CodegenMapping, family_allows
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
 from assurance_generation.resource_loader import resource_bytes, resource_text
-from assurance_intake.contracts import CaseYamlAuthoring
+from assurance_intake.contracts import (
+    CaseYamlAuthoring,
+    EvidenceArtifactRefV1,
+    build_loop_round_history,
+)
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 
 Family = LayerName
@@ -221,14 +226,79 @@ def failed_output(message: str) -> TaskOutcome:
 def split_finalize_input(raw: object) -> tuple[dict[str, object], int | None, int | None]:
     if not isinstance(raw, dict):
         return {}, None, None
-    used = raw.get("rounds_used")
+    validated = raw.get("validated_input")
+    if isinstance(validated, dict):
+        finalize_fields = {
+            "change_id",
+            "capability_leafs",
+            "artifact_paths",
+            "allowed_paths",
+            "baseline_tree_id",
+            "coverage_epoch",
+            "local_round",
+            "reviewed_case",
+        }
+        payload = {
+            **{key: value for key, value in validated.items() if key in finalize_fields},
+            "agent_result": raw.get("agent_result"),
+        }
+    else:
+        payload = dict(raw)
+    used = raw.get("rounds_used", payload.get("local_round"))
     budget = raw.get("rounds_budget")
-    payload = {key: value for key, value in raw.items() if key not in {"rounds_used", "rounds_budget"}}
+    payload = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"rounds_used", "rounds_budget", "prepared", "validated_input"}
+    }
     return (
         payload,
         used if isinstance(used, int) and used >= 0 else None,
         budget if isinstance(budget, int) and budget >= 1 else None,
     )
+
+
+def evidence_ref(workspace: Path, relative: str) -> EvidenceArtifactRefV1:
+    data = _regular_input_file(
+        workspace,
+        workspace.joinpath(*PurePosixPath(relative).parts),
+        label="loop evidence",
+    ).read_bytes()
+    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
+
+
+def persist_loop_round_history(
+    context: TaskContext,
+    *,
+    relative: str,
+    change_id: str,
+    coverage_epoch: int,
+    loop_kind: Literal["plan_review", "codegen_fix"],
+    family: Family,
+    round_index: int,
+    outcome: str,
+    input_refs: tuple[EvidenceArtifactRefV1, ...],
+    source_refs: tuple[EvidenceArtifactRefV1, ...],
+) -> EvidenceArtifactRefV1:
+    ordered_inputs = tuple(sorted(input_refs, key=lambda item: item.path))
+    review_input_digest = engine_digest(
+        cast(JSONValue, [item.model_dump(mode="json") for item in ordered_inputs])
+    )
+    history = build_loop_round_history(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        loop_kind=loop_kind,
+        family=family,
+        round_index=round_index,
+        outcome=outcome,
+        review_input_digest=review_input_digest,
+        source_refs=tuple(sorted(source_refs, key=lambda item: item.path)),
+    )
+    data = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
+    path = context.write_root.joinpath(*PurePosixPath(relative).parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
 
 
 def round_counters(raw: object) -> tuple[int | None, int | None]:
@@ -620,9 +690,11 @@ __all__ = [
     "closed_family",
     "failed_input",
     "failed_output",
+    "evidence_ref",
     "leafs_of",
     "planning_handler",
     "plan_review_input_paths",
+    "persist_loop_round_history",
     "prepare_plan_outcome",
     "request_family",
     "resolve_family",

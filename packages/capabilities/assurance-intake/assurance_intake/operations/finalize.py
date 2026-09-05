@@ -11,7 +11,7 @@ from typing import cast
 import yaml
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -27,6 +27,7 @@ from assurance_intake.contracts.agent import (
     ReviewRepairContractV1,
 )
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.loop_history import build_loop_round_history
 from assurance_intake.contracts.review import (
     CaseMinimumCoverageReview,
     normalized_auto_fix_case_id,
@@ -61,7 +62,16 @@ def _review_round_fields(raw: object) -> dict[str, int]:
 def _finalize_payload(raw: object) -> object:
     if not isinstance(raw, dict):
         return raw
-    cleaned = dict(raw)
+    validated = raw.get("validated_input")
+    if isinstance(validated, dict):
+        cleaned = {
+            **{key: value for key, value in validated.items() if key in AgentFinalizeInputV1.model_fields},
+            "agent_result": raw.get("agent_result"),
+        }
+    else:
+        cleaned = dict(raw)
+    cleaned.pop("prepared", None)
+    cleaned.pop("validated_input", None)
     cleaned.pop("rounds_used", None)
     cleaned.pop("rounds_budget", None)
     return cleaned
@@ -650,6 +660,34 @@ class CaseReviewFinalizeHandler:
                 review_ref = EvidenceArtifactRefV1.model_validate(
                     next(item for item in artifacts if item["path"] == review_relative)
                 )
+                input_refs = tuple(
+                    sorted((*payload.preparation_refs, *payload.case_refs), key=lambda item: item.path)
+                )
+                input_digest = canonical_digest(
+                    cast(JSONValue, [item.model_dump(mode="json") for item in input_refs])
+                )
+                history = build_loop_round_history(
+                    change_id=change_id,
+                    coverage_epoch=payload.coverage_epoch,
+                    loop_kind="case_review",
+                    family=None,
+                    round_index=payload.review_round,
+                    outcome=document.public_outcome or document.decision,
+                    review_input_digest=input_digest,
+                    source_refs=tuple(sorted((*input_refs, review_ref), key=lambda item: item.path)),
+                )
+                history_relative = (
+                    f"qa/changes/{change_id}/cases/reviews/epochs/{payload.coverage_epoch}/"
+                    f"rounds/{payload.review_round}.json"
+                )
+                history_bytes = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
+                history_path = context.write_root.joinpath(*history_relative.split("/"))
+                history_path.parent.mkdir(parents=True, exist_ok=True)
+                history_path.write_bytes(history_bytes)
+                history_ref = EvidenceArtifactRefV1(
+                    path=history_relative,
+                    digest=_file_digest(history_bytes),
+                )
                 reviewed = ReviewedCaseV1(
                     change_id=change_id,
                     coverage_epoch=payload.coverage_epoch,
@@ -668,8 +706,10 @@ class CaseReviewFinalizeHandler:
                         "path": manifest_relative,
                         "digest": _file_digest(manifest_bytes),
                     },
+                    history_ref.model_dump(mode="json"),
                 ]
                 output["reviewed_case"] = reviewed.model_dump(mode="json")
+                output["history_ref"] = history_ref.model_dump(mode="json")
             else:
                 output["artifacts"] = []
             return TaskOutcome.succeeded(output)

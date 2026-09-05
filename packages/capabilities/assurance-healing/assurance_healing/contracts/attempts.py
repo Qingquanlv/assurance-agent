@@ -76,7 +76,9 @@ _JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] =
     ),
 )
 
-_APPLICATION_ROOTS = ("qa/changes/{change_id}/generated",)
+_APPLICATION_RUNTIME_ROOTS = ("qa/changes/{change_id}/generated",)
+_APPLICATION_FINALIZE_ROOTS = ("qa/changes/{change_id}/healing/epochs",)
+_APPLICATION_ROOTS = tuple(sorted((*_APPLICATION_RUNTIME_ROOTS, *_APPLICATION_FINALIZE_ROOTS)))
 
 AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
     {
@@ -102,13 +104,26 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
             retry=_RETRY,
             timeout=_TIMEOUT,
             validators=(),
-            phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=_APPLICATION_ROOTS, finalize=()),
+            phase_write_claims=AgentPhaseWriteClaims(
+                prepare=(),
+                runtime=_APPLICATION_RUNTIME_ROOTS,
+                finalize=_APPLICATION_FINALIZE_ROOTS,
+            ),
         )
     }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {base: _paths(*outputs) for base, _skill, _profile, _input, _result, outputs in _JOBS}
-    | {"apply-test-repair": _APPLICATION_ROOTS}
+    | {
+        "apply-test-repair": tuple(
+            sorted(
+                (
+                    *_APPLICATION_RUNTIME_ROOTS,
+                    "qa/changes/{change_id}/healing/epochs/{coverage_epoch}/rounds/{repair_round}",
+                )
+            )
+        )
+    }
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
 HEALING_GRAPH_CONTRACT_IDS: tuple[str, ...] = (

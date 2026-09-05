@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import cast
 
@@ -76,6 +77,53 @@ async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: 
     assert output["review_type"] == f"{family}-plan"
     assert output["decision"] == "pass"
     assert output["required_capabilities"] == ["entities.item.create"]
+
+
+@pytest.mark.asyncio
+async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path) -> None:
+    family = "api"
+    change_root = tmp_path / "qa/changes/CH-DEMO-001"
+    (change_root / "cases/items").mkdir(parents=True)
+    (change_root / "cases/items/case.yaml").write_text(
+        "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n",
+        encoding="utf-8",
+    )
+    (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
+    for relative in family_plan_files(family):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("locked plan input\n", encoding="utf-8")
+    review = review_result(family)
+    latest = change_root / "review/api-plan-review.json"
+    latest.parent.mkdir(parents=True)
+    latest.write_text(json.dumps(review), encoding="utf-8")
+    envelope = fake_agent_result(review)
+    stage = tmp_path / ".stage"
+
+    executed = await execute_task(
+        review_finalize_handler(family),
+        {
+            "validated_input": {
+                **plan_input(family),
+                "coverage_epoch": 2,
+                "local_round": 1,
+            },
+            "agent_result": envelope["agent_result"],
+        },
+        tmp_path,
+        write_root=stage,
+    )
+
+    assert executed.status == "succeeded", executed.failure
+    history_path = stage / "qa/changes/CH-DEMO-001/plan/api/reviews/epochs/2/rounds/1.json"
+    history = json.loads(history_path.read_bytes())
+    assert history["loop_kind"] == "plan_review"
+    assert history["family"] == "api"
+    assert history["coverage_epoch"] == 2
+    assert history["round_index"] == 1
+    output = cast(dict[str, object], executed.output)
+    history_ref = cast(dict[str, object], output["history_ref"])
+    assert history_ref["path"] == history_path.relative_to(stage).as_posix()
 
 
 @pytest.mark.parametrize("family", FAMILIES)

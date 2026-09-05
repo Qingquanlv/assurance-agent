@@ -42,7 +42,7 @@ def _job(
 ) -> AgentExecutionContract[Any, Any, Any]:
     prepare_suffixes = ("explore/context.json",) if base == "explore" else ()
     prepare_paths = _paths(*prepare_suffixes) if prepare_suffixes else ()
-    finalize_suffixes = ("cases/reviewed-case.json",) if base == "case-review" else ()
+    finalize_suffixes = ("cases/reviewed-case.json", "cases/reviews") if base == "case-review" else ()
     finalize_paths = _paths(*finalize_suffixes) if finalize_suffixes else ()
     writes = tuple(sorted(set(_paths(*outputs, *extra_claims)) | set(prepare_paths) | set(finalize_paths)))
     return AgentExecutionContract(
@@ -126,7 +126,24 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
     }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {base: _paths(*outputs) for base, _skill, _profile, _input, _result, _output, outputs, _extra in _JOBS}
+    {
+        base: tuple(
+            sorted(
+                (
+                    *_paths(*outputs),
+                    *(
+                        (
+                            "qa/changes/{change_id}/cases/reviews/epochs/"
+                            "{coverage_epoch}/rounds/{review_round}.json",
+                        )
+                        if base == "case-review"
+                        else ()
+                    ),
+                )
+            )
+        )
+        for base, _skill, _profile, _input, _result, _output, outputs, _extra in _JOBS
+    }
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
 INTAKE_GRAPH_CONTRACT_IDS: tuple[str, ...] = (

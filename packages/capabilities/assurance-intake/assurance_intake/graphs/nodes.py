@@ -89,6 +89,7 @@ def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
             **_skill_payload(state),
             "case_delta_paths": state["case_delta_paths"],
             "coverage_epoch": state.get("coverage_epoch", 0),
+            "review_round": state.get("rounds_used", 0),
             "preparation_refs": state.get("preparation_refs", ()),
             "case_refs": state.get("case_refs", ()),
         }

@@ -233,6 +233,7 @@ class CaseDesignInputV1(_SkillInputV1):
 
 class CaseReviewInputV1(_SkillInputV1):
     coverage_epoch: int = Field(default=0, ge=0)
+    review_round: int = Field(default=0, ge=0)
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_delta_paths: tuple[str, ...] = Field(min_length=1)
@@ -286,6 +287,7 @@ class AgentFinalizeInputV1(FrozenModel):
     validation_attempt: Literal[0, 1] = 1
     review_repair: ReviewRepairContractV1 | None = None
     coverage_epoch: int = Field(default=0, ge=0)
+    review_round: int = Field(default=0, ge=0)
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_rework_context: CaseReworkContextV1 | None = None

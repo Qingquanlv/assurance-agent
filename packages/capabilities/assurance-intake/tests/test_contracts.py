@@ -540,10 +540,12 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
             "assurance-v1-reviewer",
             (
                 "qa/changes/{change_id}/cases/reviewed-case.json",
+                "qa/changes/{change_id}/cases/reviews",
                 "qa/changes/{change_id}/review/case-review-summary.md",
                 "qa/changes/{change_id}/review/case-review.json",
             ),
             (
+                "qa/changes/{change_id}/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/changes/{change_id}/review/case-review-summary.md",
                 "qa/changes/{change_id}/review/case-review.json",
             ),

@@ -127,6 +127,9 @@ def select_codegen_fix(state: Mapping[str, object]) -> CodegenFixInputV1:
             "baseline_tree_id": state.get("baseline_tree_id"),
             "allowed_paths": state.get("repair_allowed_paths"),
             "approved_proposal": state.get("approved_proposal"),
+            "coverage_epoch": state.get("coverage_epoch", 0),
+            "local_round": state.get("rounds_used", 0),
+            "reviewed_case": state.get("reviewed_case"),
         }
     )
 

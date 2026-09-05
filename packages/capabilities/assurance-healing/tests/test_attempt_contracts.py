@@ -69,7 +69,8 @@ def test_healing_owns_three_agent_contracts() -> None:
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
-        assert set(claims.runtime) == set(contract.resources.writes)
+        assert set(claims.runtime) | set(claims.finalize) == set(contract.resources.writes)
+        assert not (set(claims.runtime) & set(claims.finalize))
 
 
 def test_healing_plugin_projects_authenticated_attempt_contracts() -> None:

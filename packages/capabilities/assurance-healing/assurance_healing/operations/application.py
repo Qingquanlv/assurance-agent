@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult, InstructionPart
-from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
+from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from pydantic import ValidationError
@@ -28,6 +28,7 @@ from assurance_healing.operations.agent import agent_workspace, result_contract
 from assurance_healing.operations.common import InputError, OutputError, failed_input, failed_output
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.resource_loader import resource_text
+from assurance_intake.contracts import build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 APPLICATION_SKILL = "skills/aa-apply-test-repair/SKILL.md"
@@ -209,7 +210,9 @@ def _verify_application(
     staged = {
         path.relative_to(context.write_root).as_posix()
         for path in context.write_root.rglob("*")
-        if path.is_file() and not path.is_symlink()
+        if path.is_file()
+        and not path.is_symlink()
+        and "/healing/epochs/" not in f"/{path.relative_to(context.write_root).as_posix()}"
     }
     if staged != outputs:
         raise OutputError("repair result does not match the actual candidate write set")
@@ -279,6 +282,41 @@ class ApplyTestRepairFinalizeHandler:
             except ValidationError as error:
                 raise OutputError(str(error)) from error
             verified = _verify_application(business, result, context)
+            input_refs = tuple(
+                sorted(
+                    (
+                        *business.reviewed_case.preparation_refs,
+                        *business.reviewed_case.case_refs,
+                        business.reviewed_case.review_ref,
+                        business.proposal_ref,
+                        business.execution_ref,
+                        business.mapping_ref,
+                    ),
+                    key=lambda item: item.path,
+                )
+            )
+            input_digest = engine_digest(
+                cast(JSONValue, [item.model_dump(mode="json") for item in input_refs])
+            )
+            source_by_path = {item.path: item for item in (*input_refs, *verified.changed_test_refs)}
+            history = build_loop_round_history(
+                change_id=business.change_id,
+                coverage_epoch=business.coverage_epoch,
+                loop_kind="implementation_repair",
+                family=None,
+                round_index=business.repair_round,
+                outcome="applied",
+                review_input_digest=input_digest,
+                source_refs=tuple(source_by_path[path] for path in sorted(source_by_path)),
+            )
+            history_relative = (
+                f"qa/changes/{business.change_id}/healing/epochs/{business.coverage_epoch}/"
+                f"rounds/{business.repair_round}/repair.json"
+            )
+            history_bytes = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
+            history_path = context.write_root.joinpath(*history_relative.split("/"))
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            history_path.write_bytes(history_bytes)
             return TaskOutcome.succeeded(cast(JSONValue, verified.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
