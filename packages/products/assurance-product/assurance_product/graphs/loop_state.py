@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from assurance_intake.contracts.workflow import CaseReworkContextV1
 from assurance_product.graphs.state import ProductState
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import BusinessBudgetsV1
@@ -21,6 +22,8 @@ def clear_current_cycle(*, next_epoch: int) -> dict[str, object]:
     return {
         "coverage_epoch": next_epoch,
         "healing_rounds_used": 0,
+        "reviewed_case": {},
+        "case_result": {},
         "generation_result": {},
         "execution_result": {},
         "assessment_inputs": {},
@@ -30,15 +33,9 @@ def clear_current_cycle(*, next_epoch: int) -> dict[str, object]:
         "report_refs": [],
         "report_receipt": None,
         "report_outcome": {},
-        "assessment_trigger": None,
-        "current_trigger": None,
         "coverage_state": "",
-        "classification": "",
-        "fix_eligible": False,
-        "coverage_decision": "",
-        "human_action": "",
-        "feature_action": "",
         "rounds_used": 0,
+        "attempt_failure": {},
     }
 
 
@@ -58,8 +55,23 @@ def advance_coverage(state: ProductState) -> dict[str, object]:
         raise ValueError("the same Inspect receipt cannot advance coverage twice")
     if not can_reenter_case(coverage_epoch=epoch, budgets=budgets):
         raise ValueError("coverage retry budget is exhausted")
+    gaps = tuple(
+        ref
+        for ref in result.inspection.assessment_refs
+        if ref.path.endswith("/gaps.json") or ref.path.endswith("/coverage-gaps.json")
+    )
+    if len(gaps) != 1:
+        raise ValueError("coverage advance requires exactly one authenticated gaps ref")
+    rework = CaseReworkContextV1(
+        previous_case=result.inspection.reviewed_case,
+        inspect_receipt=result.inspection.inspection_receipt,
+        assessment_refs=result.inspection.assessment_refs,
+        gaps_ref=gaps[0],
+        target_case_paths=tuple(ref.path for ref in result.inspection.reviewed_case.case_refs),
+    )
     return {
         **clear_current_cycle(next_epoch=epoch + 1),
+        "case_rework_context": rework.model_dump(mode="json"),
         "last_coverage_source_receipt": source,
     }
 

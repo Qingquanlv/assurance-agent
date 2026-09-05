@@ -16,6 +16,7 @@ from assurance_product.graphs.factory import (
 )
 from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
 from assurance_product.graphs.state import ProductState
+from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import PRODUCT_ENTRYPOINTS
 from graph_engine.application.status import normalize_runtime_error
 from graph_engine.boot.boot import EngineGraphBuildContext
@@ -23,6 +24,7 @@ from graph_engine.boot.boot import EngineGraphBuildContext
 from tests.product.test_product_stategraph_flow import (
     _build_context,
     _flow_features,
+    _inspection,
     _product_graphs,
     _public_input,
 )
@@ -31,11 +33,7 @@ from tests.product.test_stategraph_entrypoints import _real_features
 
 def test_product_root_tests_bind_declared_recursion_limits() -> None:
     root = Path(__file__).resolve().parent
-    for path in (
-        root / "test_product_stategraph_flow.py",
-        root / "test_product_join_any.py",
-        root / "test_product_interrupts.py",
-    ):
+    for path in (root / "test_product_stategraph_flow.py",):
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
         assert "invoke_product_root" in source
@@ -88,26 +86,25 @@ def test_graph_recursion_error_normalizes_to_runtime_failure() -> None:
 def test_business_budget_exhaustion_is_a_distinct_terminal() -> None:
     graphs = _product_graphs(
         _flow_features(
-            execute={"status": "failed", "rounds_used": 1, "rounds_budget": 1},
-            issue_analyze={
-                "classification": "test",
-                "fix_eligible": True,
-                "rounds_used": 1,
-                "rounds_budget": 1,
-            },
+            execute={"status": "failed", "attempt_failure": {"kind": "runtime"}},
         )
     )
     result = invoke_product_root(graphs, "execute", _public_input("execute"))
     assert result["terminal"] == "not-achieved"
     assert result.get("status") != "graph_recursion_limit"
     coverage = invoke_product_root(
-        _product_graphs(
-            _flow_features(assess={"coverage_state": "repair_required", "rounds_used": 2, "rounds_budget": 2})
+        _product_graphs(_flow_features(assess=_inspection(disposition="coverage_insufficient"))),
+        "full",
+        _public_input(
+            "full",
+            budgets={
+                "review_rounds": 2,
+                "coverage_rounds": 0,
+                "healing_rounds": 1,
+                "execution_retries": 1,
+            },
         ),
-        "execute",
-        _public_input("execute"),
     )
     assert coverage["terminal"] == "not-achieved"
-    inbox = coverage.get("coverage_needed_inbox") or {}
-    assert isinstance(inbox, dict)
-    assert inbox.get("arrivals", []) == []
+    assert ExecuteTailResultV1.model_validate(coverage["tail_result"]).status == "coverage_insufficient"
+    assert "coverage_needed_inbox" not in coverage

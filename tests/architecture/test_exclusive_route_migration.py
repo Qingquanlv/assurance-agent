@@ -19,14 +19,14 @@ def test_exclusive_route_inventory_matches_legacy_compiler() -> None:
     assert frozen == live
     kinds = Counter(row.node_kind for row in EXCLUSIVE_ROUTE_INVENTORY)
     owners = Counter(row.owner for row in EXCLUSIVE_ROUTE_INVENTORY)
-    assert len(EXCLUSIVE_ROUTE_INVENTORY) == 51
-    assert kinds == {"task": 13, "subgraph": 21, "interrupt": 11, "gate": 6}
-    assert owners == {"feature": 42, "product": 9}
+    assert len(EXCLUSIVE_ROUTE_INVENTORY) == 47
+    assert kinds == {"task": 13, "subgraph": 17, "interrupt": 11, "gate": 6}
+    assert owners == {"feature": 42, "product": 5}
     assert all(row.target_test for row in EXCLUSIVE_ROUTE_INVENTORY)
     assert all(row.otherwise_target for row in EXCLUSIVE_ROUTE_INVENTORY)
     assert all("pending" not in row.target_test for row in EXCLUSIVE_ROUTE_INVENTORY)
     product_rows = [row for row in EXCLUSIVE_ROUTE_INVENTORY if row.owner == "product"]
-    assert len(product_rows) == 9
+    assert len(product_rows) == 5
     assert all(row.node_id in PRODUCT_EXCLUSIVE_ROUTES for row in product_rows)
 
 

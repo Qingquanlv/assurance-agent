@@ -326,37 +326,15 @@ EXCLUSIVE_ROUTE_INVENTORY: tuple[ExclusiveRouteRow, ...] = (
     _row("assurance.intake.workflow.graph.entry", "case-review-retry", "subgraph", "exhausted", "feature"),
     _row("assurance.intake.workflow.graph.entry", "human-review", "interrupt", "exhausted", "feature"),
     _row("assurance.intake.workflow.graph.entry", "human-review-retry", "interrupt", "exhausted", "feature"),
+    _row("assurance.product.workflow.graph.product-execute", "execute", "subgraph", "blocked", "product"),
     _row(
         "assurance.product.workflow.graph.product-execute",
-        "coverage-repair",
+        "fix-proposal",
         "subgraph",
-        "not-achieved",
+        "blocked",
         "product",
     ),
-    _row(
-        "assurance.product.workflow.graph.product-execute", "execute", "subgraph", "not-achieved", "product"
-    ),
-    _row(
-        "assurance.product.workflow.graph.product-execute",
-        "issue-analysis",
-        "subgraph",
-        "not-achieved",
-        "product",
-    ),
-    _row(
-        "assurance.product.workflow.graph.product-execute", "quality", "subgraph", "not-achieved", "product"
-    ),
-    _row(
-        "assurance.product.workflow.graph.product-execute",
-        "quality-recheck",
-        "subgraph",
-        "not-achieved",
-        "product",
-    ),
-    _row("assurance.product.workflow.graph.product-execute", "run", "subgraph", "not-achieved", "product"),
-    _row(
-        "assurance.product.workflow.graph.product-full", "execute-tail", "subgraph", "not-achieved", "product"
-    ),
+    _row("assurance.product.workflow.graph.product-execute", "quality", "subgraph", "blocked", "product"),
+    _row("assurance.product.workflow.graph.product-execute", "run", "subgraph", "blocked", "product"),
     _row("assurance.product.workflow.graph.product-full", "prepare", "subgraph", "failed", "product"),
-    _row("assurance.product.workflow.graph.product-full", "case", "subgraph", "not-achieved", "product"),
 )

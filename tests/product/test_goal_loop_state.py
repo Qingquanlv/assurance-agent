@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from pydantic import ValidationError
 
@@ -8,7 +10,6 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_product.graphs.execute import adapt_execute_tail_input, adapt_public_execute_tail
 from assurance_product.graphs.loop_state import advance_coverage, can_reenter_case, clear_current_cycle
-from assurance_product.graphs.state import make_assessment_trigger, merge_assessment_trigger
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import BusinessBudgetsV1
 from assurance_quality.contracts.assessment import InspectionOutcomeV1
@@ -94,6 +95,10 @@ def test_advance_coverage_switches_epoch_without_changing_review_budget() -> Non
     assert merged["fact_baseline_ref"] == {}
     assert merged["report_refs"] == []
     assert update["last_coverage_source_receipt"] == _receipt().model_dump(mode="json")
+    rework = cast(dict[str, object], update["case_rework_context"])
+    assert rework["previous_case"] == _reviewed_case().model_dump(mode="json")
+    assert rework["gaps_ref"] == _ref("qa/changes/CH-1/inspect/epochs/0/gaps.json").model_dump(mode="json")
+    assert rework["target_case_paths"] == ["qa/changes/CH-1/cases/system/case.yaml"]
 
 
 def test_same_inspection_receipt_cannot_advance_coverage_twice() -> None:
@@ -117,14 +122,7 @@ def test_current_cycle_clear_preserves_epoch_scoped_reducer_history() -> None:
     assert "generation_receipts" not in update
     assert update["report_receipt"] is None
     assert update["report_outcome"] == {}
-    assert update["assessment_trigger"] is None
-    previous = make_assessment_trigger(
-        source="quality",
-        coverage_state="satisfied",
-        rounds={"rounds_used": 0, "rounds_budget": 1},
-        evidence=(),
-    )
-    assert merge_assessment_trigger(previous, update["assessment_trigger"]) == {}
+    assert "assessment_trigger" not in update
 
 
 def test_tail_result_status_and_evidence_round_trip() -> None:

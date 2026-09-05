@@ -43,7 +43,7 @@ def test_all_final_gate_nodes_are_unique_auditable_and_collectable() -> None:
 
     node_ids = all_final_gate_node_ids()
     assert len(node_ids) == len(set(node_ids))
-    assert len(node_ids) == 113
+    assert len(node_ids) == 114
     evidence = audit_gate_nodes(REPO_ROOT, node_ids)
     assert tuple(item.node_id for item in evidence) == node_ids
 

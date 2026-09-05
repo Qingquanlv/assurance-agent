@@ -13,7 +13,7 @@ from assurance_product.graphs.routes import route_prepare
 from assurance_product.graphs.state import ProductState
 from assurance_product.models import ProductInputV1, ProductPublicOutput, ProductReceiptRefV1
 from assurance_improvement.contracts.retro import RetroSelectionSnapshot, RetroWindow
-from assurance_intake.contracts import EvidenceArtifactRefV1
+from assurance_intake.contracts import CaseReworkContextV1, EvidenceArtifactRefV1
 from graph_engine.canonical import JSONValue, canonical_digest
 
 ProductStatus = Literal["completed", "failed"]
@@ -76,11 +76,20 @@ def adapt_intake(state: ProductState) -> dict[str, object]:
     artifact_refs = [item.model_dump(mode="json") for item in payload.artifacts]
     rework_context = state.get("case_rework_context")
     coverage_epoch = int(state.get("coverage_epoch", 0)) if rework_context is not None else 0
-    preparation_refs = [
-        item
-        for item in artifact_refs
-        if "/cases/" not in str(item["path"]) and "/review/" not in str(item["path"])
-    ]
+    current_preparation = state.get("preparation_refs")
+    if isinstance(current_preparation, list) and current_preparation:
+        preparation_refs = [dict(item) for item in current_preparation if isinstance(item, Mapping)]
+    elif rework_context is None:
+        preparation_refs = [
+            item
+            for item in artifact_refs
+            if "/cases/" not in str(item["path"]) and "/review/" not in str(item["path"])
+        ]
+    else:
+        typed_rework = CaseReworkContextV1.model_validate(rework_context)
+        preparation_refs = [
+            item.model_dump(mode="json") for item in typed_rework.previous_case.preparation_refs
+        ]
     feature_input = {
         "change_id": payload.change_id,
         "requirement": payload.requirement,
