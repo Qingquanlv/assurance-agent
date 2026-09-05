@@ -7,9 +7,15 @@ from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_healing.contracts.agent import CoverageRepairInputV1, FixProposalInputV1
+from assurance_healing.contracts.application import (
+    AppliedTestRepairV1,
+    ApplyTestRepairInputV1,
+    VerifiedTestRepairV1,
+)
 from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES, HealingRepairOutcome
 from assurance_healing.contracts.decisions import advance_repair_round
 from assurance_healing.contracts.status import RepairRoundKind
@@ -64,10 +70,9 @@ def _receipt_payload(receipt: object) -> Mapping[str, object]:
 
 
 def _closed_repair_status(value: object, *, kind: object) -> HealingRepairOutcome:
+    del kind
     if value in HEALING_REPAIR_OUTCOMES:
         return value  # type: ignore[return-value]
-    if kind == "failure" and value is None:
-        return "repaired"
     return "failed"
 
 
@@ -102,6 +107,24 @@ def select_coverage(state: Mapping[str, object]) -> CoverageRepairInputV1:
             "brief": state["brief"],
             "baseline_digest": state["baseline_digest"],
             "allowed_roots": state["allowed_roots"],
+        }
+    )
+
+
+def select_application(state: Mapping[str, object]) -> ApplyTestRepairInputV1:
+    repair_round = state.get("repair_round", state.get("rounds_used"))
+    return ApplyTestRepairInputV1.model_validate(
+        {
+            "change_id": state["change_id"],
+            "coverage_epoch": state["coverage_epoch"],
+            "repair_round": repair_round,
+            "reviewed_case": state["reviewed_case"],
+            "proposal_ref": state["proposal_ref"],
+            "approval_ref": state.get("approval_ref"),
+            "execution_ref": state["execution_ref"],
+            "mapping_ref": state["mapping_ref"],
+            "source_refs": state["source_refs"],
+            "allowed_test_paths": state["allowed_test_paths"],
         }
     )
 
@@ -148,6 +171,36 @@ def publish_repair(
     ).model_dump(mode="json")
 
 
+def publish_proposal(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
+    del state
+    return {
+        "proposal_result": _output_payload(output),
+        "proposal_receipt": dict(_receipt_payload(receipt)),
+    }
+
+
+def publish_applied_repair(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
+    verified = VerifiedTestRepairV1.model_validate(output)
+    applied = AppliedTestRepairV1(
+        change_id=verified.change_id,
+        coverage_epoch=verified.coverage_epoch,
+        repair_round=verified.repair_round,
+        status="applied",
+        changed_test_refs=verified.changed_test_refs,
+        mapping_ref=verified.mapping_ref,
+        receipt=ReceiptRef.model_validate(receipt),
+    )
+    return HealingRepairPublicV1(
+        change_id=verified.change_id,
+        effect_refs=_as_effect_refs(_receipt_payload(receipt).get("effect_refs")),
+        kind=_require_kind(state),
+        rounds_budget=_published_int({}, "rounds_budget", state.get("rounds_budget")),
+        rounds_used=_published_int({}, "rounds_used", state.get("rounds_used")),
+        status="applied",
+        repair_result=applied.model_dump(mode="json"),
+    ).model_dump(mode="json")
+
+
 def advance_repair_round_node(state: Mapping[str, object]) -> dict[str, object]:
     return advance_repair_round(
         {
@@ -187,8 +240,8 @@ def coverage_review(state: Mapping[str, object]) -> dict[str, object]:
     return {"human_action": decision.action}
 
 
-def _public_terminal(state: Mapping[str, object], status: HealingRepairOutcome) -> dict[str, object]:
-    return {
+def _public_terminal(state: Mapping[str, object], status: HealingRepairOutcome | str) -> dict[str, object]:
+    payload: dict[str, object] = {
         "status": status,
         "kind": state.get("kind"),
         "change_id": state.get("change_id"),
@@ -196,10 +249,19 @@ def _public_terminal(state: Mapping[str, object], status: HealingRepairOutcome) 
         "rounds_budget": state.get("rounds_budget", 0),
         "effect_refs": state.get("effect_refs") or [],
     }
+    repair_result = state.get("repair_result")
+    if isinstance(repair_result, Mapping):
+        payload["repair_result"] = dict(repair_result)
+    return payload
 
 
 def terminal_done(state: HealingState) -> dict[str, object]:
-    return _public_terminal(state, _closed_repair_status(state.get("status"), kind=state.get("kind")))
+    status = state.get("status")
+    if state.get("kind") == "failure":
+        if status != "applied":
+            raise ValueError("failure repair can complete only with an applied repair")
+        return _public_terminal(state, "applied")
+    return _public_terminal(state, _closed_repair_status(status, kind=state.get("kind")))
 
 
 def terminal_exhausted(state: Mapping[str, object]) -> dict[str, object]:
@@ -214,6 +276,10 @@ def terminal_failed(state: Mapping[str, object]) -> dict[str, object]:
     return _public_terminal(state, "failed")
 
 
+def terminal_needs_review(state: Mapping[str, object]) -> dict[str, object]:
+    return _public_terminal(state, "needs_review")
+
+
 __all__ = [
     "COVERAGE_REVIEW_ACTIONS",
     "CoverageReviewDecision",
@@ -222,10 +288,14 @@ __all__ = [
     "advance_repair_round_node",
     "coverage_review",
     "publish_repair",
+    "publish_applied_repair",
+    "publish_proposal",
+    "select_application",
     "select_coverage",
     "select_failure",
     "terminal_done",
     "terminal_exhausted",
     "terminal_failed",
     "terminal_not_eligible",
+    "terminal_needs_review",
 ]

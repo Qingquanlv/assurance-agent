@@ -98,6 +98,10 @@ def _resolve_claim_paths(
     return resolved
 
 
+def _covered_by_claims(path: str, claims: set[str]) -> bool:
+    return any(path == claim or path.startswith(f"{claim}/") for claim in claims)
+
+
 @dataclass(frozen=True, slots=True)
 class ReadOnlyRawWorkspace:
     _root: Path
@@ -338,10 +342,11 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         after = _list_relative_files(scope.workspace.write_root)
         delta = after - before
         allowed = self._allowed_paths(phase, scope)
-        if not delta <= allowed:
+        unexpected = {path for path in delta if not _covered_by_claims(path, allowed)}
+        if unexpected:
             return PermanentTaskFailure(
                 kind="invalid_output",
-                message=f"{phase} wrote undeclared staging paths: {sorted(delta - allowed)}",
+                message=f"{phase} wrote undeclared staging paths: {sorted(unexpected)}",
             )
         failure = _typed_failure(result)
         if failure is not None:

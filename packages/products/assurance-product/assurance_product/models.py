@@ -240,7 +240,7 @@ class DeploymentBindingsV1(FrozenModel):
         extra = sorted(actual - expected)
         if missing or extra:
             raise ValueError(
-                f"routes must contain exactly the 33 semantic Agent contract IDs; missing={missing!r} extra={extra!r}"
+                f"routes must contain exactly the 34 semantic Agent contract IDs; missing={missing!r} extra={extra!r}"
             )
         for assignment in self.routes.values():
             if assignment.permission_profile_id not in self.permission_profiles:

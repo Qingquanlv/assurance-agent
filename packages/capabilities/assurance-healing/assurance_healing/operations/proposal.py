@@ -26,6 +26,10 @@ from assurance_healing.operations.agent import (
     FixProposalFinalizeHandler,
     FixProposalPrepareHandler,
 )
+from assurance_healing.operations.application import (
+    ApplyTestRepairFinalizeHandler,
+    ApplyTestRepairPrepareHandler,
+)
 from assurance_healing.operations.common import InputError, failed_input, validate_input
 from assurance_healing.operations.keys import (
     derive_allocation_ids,
@@ -197,6 +201,8 @@ def healing_handlers() -> dict[str, Any]:
 
     return {
         REPAIR_ROUND_ADVANCE_ID: HealingRepairRoundAdvanceHandler(),
+        "assurance.healing.apply-test-repair.finalize": ApplyTestRepairFinalizeHandler(),
+        "assurance.healing.apply-test-repair.prepare": ApplyTestRepairPrepareHandler(),
         "assurance.healing.allocate-coverage-repair-attempt": AllocateCoverageRepairAttemptHandler(),
         "assurance.healing.allocate-healing-attempt": AllocateHealingAttemptHandler(),
         "assurance.healing.combine-fixer-safety": CombineFixerSafetyHandler(),

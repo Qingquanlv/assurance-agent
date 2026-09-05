@@ -20,6 +20,7 @@ from graph_engine.testing.graph_harness import _prepare_anchored_backend
 
 from test_healing_graph_factory import (  # type: ignore[import-not-found]
     EFFECT_IDS,
+    application_output,
     coverage_agent_output,
     coverage_graph_input,
     failure_agent_output,
@@ -169,7 +170,10 @@ async def test_published_effect_refs_come_from_kernel_receipt_not_output_extras(
     failure = await harness.run(
         bundle.repair_failure,
         input=failure_graph_input(),
-        script={"healing.fix-proposal": [committed(failure_output, receipt)]},
+        script={
+            "healing.fix-proposal": [committed(failure_output, receipt)],
+            "healing.apply-test-repair": [committed(application_output(), receipt)],
+        },
     )
     coverage = await harness.run(
         bundle.repair_coverage,

@@ -335,7 +335,7 @@ def test_missing_prepare_assignment_is_rejected(opencode_document):
     routes = dict(opencode_document["routes"])
     del routes[PREPARE_IDS[0]]
     opencode_document["routes"] = routes
-    with pytest.raises(ValidationError, match="33 semantic"):
+    with pytest.raises(ValidationError, match="34 semantic"):
         DeploymentBindingsV1.model_validate(opencode_document)
 
 
@@ -347,7 +347,7 @@ def test_extra_prepare_assignment_is_rejected(opencode_document):
     routes = dict(opencode_document["routes"])
     routes["assurance.product.unknown.prepare"] = routes[PREPARE_IDS[0]]
     opencode_document["routes"] = routes
-    with pytest.raises(ValidationError, match="33 semantic"):
+    with pytest.raises(ValidationError, match="34 semantic"):
         DeploymentBindingsV1.model_validate(opencode_document)
 
 
@@ -360,7 +360,7 @@ def test_unknown_prepare_assignment_is_rejected(opencode_document):
     assignment = routes.pop(PREPARE_IDS[0])
     routes["assurance.intake.not-a-capability.prepare"] = assignment
     opencode_document["routes"] = routes
-    with pytest.raises(ValidationError, match="33 semantic"):
+    with pytest.raises(ValidationError, match="34 semantic"):
         DeploymentBindingsV1.model_validate(opencode_document)
 
 
@@ -374,7 +374,7 @@ def test_output_directory_must_be_empty(tmp_path, opencode_manifest):
         build_deployment_wheel(opencode_manifest, occupied)
 
 
-def test_generated_provider_contributes_exactly_33_semantic_bindings(tmp_path, opencode_manifest):
+def test_generated_provider_contributes_exactly_34_semantic_bindings(tmp_path, opencode_manifest):
     from graph_engine.plugin_api import RegistryPorts
 
     from assurance_product.binding_builder import build_deployment_wheel
@@ -399,13 +399,13 @@ def test_generated_provider_contributes_exactly_33_semantic_bindings(tmp_path, o
     assert descriptor.effects == ()
     assert descriptor.schemas == ()
     assert set(descriptor.bindings) == set(ALL_BINDING_IDS)
-    assert len(descriptor.bindings) == 33
+    assert len(descriptor.bindings) == 34
     assert contribution.task_handlers == {}
     assert contribution.commit_validators == {}
     assert contribution.effects == ()
     assert contribution.schemas == ()
     assert {binding.capability_id for binding in contribution.bindings} == set(ALL_BINDING_IDS)
-    assert len(contribution.bindings) == 33
+    assert len(contribution.bindings) == 34
 
 
 def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_manifest):

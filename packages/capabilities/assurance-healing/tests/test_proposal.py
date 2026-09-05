@@ -478,9 +478,11 @@ def test_healing_resources_forbid_legacy_and_provider_names() -> None:
     required = (
         "skills/aa-fix-proposal/SKILL.md",
         "skills/aa-coverage-repair/SKILL.md",
+        "skills/aa-apply-test-repair/SKILL.md",
         "personas/fix-proposer.md",
         "result-contracts/fix-proposal.v1.schema.json",
         "result-contracts/coverage-repair.v1.schema.json",
+        "result-contracts/applied-test-repair.v1.schema.json",
     )
     missing = [item for item in required if not (_RESOURCES / item).is_file()]
     assert missing == []
@@ -501,10 +503,14 @@ def test_healing_resources_forbid_legacy_and_provider_names() -> None:
 
 def test_result_contracts_match_typed_models() -> None:
     from assurance_healing.contracts import CoverageRepairApplySummary
+    from assurance_healing.contracts.application import TestRepairResultV1
 
     assert resource_bytes("result-contracts/fix-proposal.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, FixProposalResultV1.model_json_schema())
     )
     assert resource_bytes("result-contracts/coverage-repair.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, CoverageRepairApplySummary.model_json_schema())
+    )
+    assert resource_bytes("result-contracts/applied-test-repair.v1.schema.json") == canonical_json_bytes(
+        cast(JSONValue, TestRepairResultV1.model_json_schema())
     )

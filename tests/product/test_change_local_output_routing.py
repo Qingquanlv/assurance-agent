@@ -157,7 +157,7 @@ def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
 def test_every_agent_triplet_has_a_closed_output_route_that_stays_inside_the_change() -> None:
     catalog = OutputRouteCatalog()
 
-    assert len(EXECUTE_ALIASES) == 33
+    assert len(EXECUTE_ALIASES) == 34
     assert catalog.aliases() == EXECUTE_ALIASES
 
     for alias in EXECUTE_ALIASES:
