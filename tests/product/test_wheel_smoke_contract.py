@@ -111,7 +111,7 @@ def test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix(
     assert "product_lock" in smoke_script
     assert "graph_manifest" in smoke_script
     assert "14 roots" in smoke_script or "len(entrypoints) != 14" in smoke_script
-    assert "45" in smoke_script
+    assert "46" in smoke_script
     assert "34" in smoke_script
     assert "ResolvedRawAgentExecutor" in smoke_script
     assert "resources/workflow/module.yaml" in smoke_script

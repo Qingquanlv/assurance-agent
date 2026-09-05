@@ -454,7 +454,10 @@ async def test_root_done_does_not_overwrite_skipped_api_result(tmp_path: Path) -
     receipt = _receipt()
     payload, script = await cycle_fixture(tmp_path, ("e2e",))
     script["generation.publish-cycle"] = [
-        committed(complete_generation_cycle(payload, tmp_path, tmp_path / ".stage"), receipt)
+        committed(
+            complete_generation_cycle(payload, tmp_path, tmp_path / ".stage").model_dump(mode="json"),
+            receipt,
+        )
     ]
     result = await harness.run(
         bundle.generation,

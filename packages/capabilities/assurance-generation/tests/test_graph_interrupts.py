@@ -407,7 +407,7 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt(tmp_path: P
         harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
     )
     script["generation.api.plan-review"] = [committed(_review("needs_human_review", human=True), _RECEIPT)]
-    script["generation.publish-cycle"] = [committed(cycle_result, _RECEIPT)]
+    script["generation.publish-cycle"] = [committed(cycle_result.model_dump(mode="json"), _RECEIPT)]
     harness._kernel.load_script(script)
     wrapper: StateGraph[GenerationState] = StateGraph(GenerationState)
     wrapper.add_node("generation", cast(Any, bundle.generation))

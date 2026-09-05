@@ -26,7 +26,7 @@ from graph_engine.testing import committed
 from graph_engine.testing.graph_harness import ScriptedAttempt
 from tests.product.test_change_local_output_routing import execute_task
 from tests.product.test_product_input import valid_product_input
-from codegen_fixtures import codegen_result, family_test_file, fake_agent_result  # pyright: ignore[reportMissingImports]
+from codegen_fixtures import codegen_result, family_symbol, family_test_file, fake_agent_result  # pyright: ignore[reportMissingImports]
 from planning_fixtures import reviewed_cases  # pyright: ignore[reportMissingImports]
 from test_resolve_inputs import _fixture, _write  # pyright: ignore[reportMissingImports]
 
@@ -51,7 +51,7 @@ async def cycle_fixture(
     for family in families:
         target = family_test_file(family)
         source = f"qa/changes/CH-DEMO-001/generated/{family}/files/{target}"
-        _write(root, source, b"def test_ok():\n    assert True\n")
+        _write(root, source, f"def {family_symbol(family)}():\n    assert True\n".encode())
         plan = f"qa/changes/CH-DEMO-001/plans/{family}-plan.md"
         _write(root, plan, b"reviewed test plan\n")
         finalized = await execute_task(
@@ -79,7 +79,7 @@ async def cycle_fixture(
         {
             "change_id": reviewed.change_id,
             "coverage_epoch": coverage_epoch,
-            "reviewed_case": reviewed,
+            "reviewed_case": reviewed.model_dump(mode="json"),
             "selected_test_families": families,
             "capability_leafs": ["entities.item.create"],
             "families": family_inputs,
