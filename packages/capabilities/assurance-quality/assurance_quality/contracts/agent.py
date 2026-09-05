@@ -54,14 +54,14 @@ class QualitySkillInputV1(FrozenModel):
     owned_evidence_ids: tuple[str, ...] = ()
     evidence_bundle_digest: str | None = Field(default=None, pattern=_DIGEST_REF)
     execution_digest: str = Field(pattern=_SHA256)
-    healing_digest: str = Field(pattern=_SHA256)
+    healing_digest: str | None = Field(default=None, pattern=_SHA256)
     trace_digest: str = Field(pattern=_SHA256)
     coverage_digest: str = Field(pattern=_SHA256)
     metrics_digest: str = Field(pattern=_SHA256)
     case_digest: str = Field(pattern=_SHA256)
     plan_digest: str = Field(pattern=_SHA256)
     mapping_digest: str = Field(pattern=_SHA256)
-    issue_digest: str = Field(pattern=_SHA256)
+    issue_digest: str | None = Field(default=None, pattern=_SHA256)
 
     @field_validator("capability_leafs")
     @classmethod

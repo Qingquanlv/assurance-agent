@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from collections.abc import Mapping
+from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
+from agent_runtime_contracts import (
+    AgentRunRequest,
+    AgentRunResult,
+    AgentWorkspaceV1,
+    InstructionPart,
+    ResultContract,
+)
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -23,6 +32,15 @@ from assurance_quality.contracts.agent import (
     QualitySkillInputV1,
     ReportResultV1,
 )
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_quality.contracts.assessment import (
+    AssessmentSkillInputV1,
+    FinalizedFactBaselineV1,
+    FinalizedInspectionV1,
+)
+from assurance_quality.contracts.metrics import MetricsDocument
+from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.issues import IssueCandidateDocument
 from assurance_quality.operations.common import (
     InputError,
@@ -36,6 +54,7 @@ from assurance_quality.operations.identity import (
     problem_fingerprint,
     problem_id,
 )
+from assurance_quality.operations.inspect import build_failure_classification_facts
 from assurance_quality.resource_loader import resource_bytes, resource_text
 
 FACT_BASELINE_SKILL = "skills/aa-fact-baseline/SKILL.md"
@@ -165,10 +184,119 @@ def _structured(payload: AgentFinalizeInputV1) -> object:
     return thaw_json(payload.agent_result.result_payload)
 
 
+def _legacy_finalize_payload(data: object) -> AgentFinalizeInputV1:
+    try:
+        return validate_input(AgentFinalizeInputV1, data)
+    except InputError:
+        pass
+    if not isinstance(data, Mapping):
+        raise InputError("agent finalize input must be an object")
+    validated = data.get("validated_input")
+    agent_result = data.get("agent_result")
+    if not isinstance(validated, Mapping) or agent_result is None:
+        raise InputError("agent finalize input is missing its validated input")
+    return validate_input(AgentFinalizeInputV1, {**validated, "agent_result": agent_result})
+
+
+def _assessment_finalize_payload(data: object) -> tuple[AssessmentSkillInputV1, AgentRunResult]:
+    if not isinstance(data, Mapping):
+        raise InputError("assessment finalize input must be an object")
+    validated = data.get("validated_input")
+    if validated is None:
+        validated = {key: value for key, value in data.items() if key not in {"agent_result", "prepared"}}
+    agent_result = data.get("agent_result")
+    if not isinstance(validated, Mapping) or agent_result is None:
+        raise InputError("assessment finalize input is missing its agent result")
+    try:
+        return AssessmentSkillInputV1.model_validate(validated), AgentRunResult.model_validate(agent_result)
+    except ValidationError as error:
+        raise InputError(str(error)) from error
+
+
+def _canonical_file(root: Path, relative: str) -> Path:
+    posix = PurePosixPath(relative)
+    if posix.is_absolute() or "\\" in relative or any(part in {"", ".", ".."} for part in posix.parts):
+        raise OutputError(f"evidence path must be canonical and relative: {relative}")
+    path = root.joinpath(*posix.parts)
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root.resolve())
+    except (OSError, ValueError) as error:
+        raise OutputError(f"evidence file is missing: {relative}") from error
+    if resolved != path or path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+        raise OutputError(f"evidence file must be a regular single-link file: {relative}")
+    return path
+
+
+def _authenticate_ref(root: Path, ref: object) -> bytes:
+    artifact = EvidenceArtifactRefV1.model_validate(ref)
+    data = _canonical_file(root, artifact.path).read_bytes()
+    if hashlib.sha256(data).hexdigest() != artifact.digest:
+        raise OutputError(f"evidence digest changed: {artifact.path}")
+    return data
+
+
+def _authenticate_assessment_input(business: AssessmentSkillInputV1, root: Path) -> None:
+    refs = (
+        *business.reviewed_case.preparation_refs,
+        *business.reviewed_case.case_refs,
+        business.reviewed_case.review_ref,
+        business.mapping_ref,
+        business.assessment.trace_ref,
+        business.assessment.gaps_ref,
+        business.assessment.metrics_ref,
+        business.assessment.sufficiency_ref,
+        business.assessment.execution_ref,
+    )
+    for ref in refs:
+        _authenticate_ref(root, ref)
+    for optional in (business.assessment.healing_ref, business.assessment.issue_ref):
+        if optional is not None:
+            _authenticate_ref(root, optional)
+    if business.fact_baseline_ref is not None:
+        _authenticate_ref(root, business.fact_baseline_ref)
+    policy = _canonical_file(root, ".aa/policy.yaml").read_bytes()
+    if hashlib.sha256(policy).hexdigest() != business.assessment.scope.policy_digest:
+        raise OutputError("product policy digest changed after assessment materialization")
+
+
+def _load_json_ref(root: Path, ref: object, model: type[Any]) -> Any:
+    try:
+        return model.model_validate_json(_authenticate_ref(root, ref))
+    except ValidationError as error:
+        raise OutputError(str(error)) from error
+
+
+def _staged_agent_document(
+    *,
+    context: TaskContext,
+    relative: str,
+    result: object,
+    model: type[Any],
+) -> tuple[Any, EvidenceArtifactRefV1]:
+    path = _canonical_file(context.write_root, relative)
+    data = path.read_bytes()
+    try:
+        staged = model.model_validate_json(data)
+    except ValidationError as error:
+        raise OutputError(str(error)) from error
+    if staged != result:
+        raise OutputError(f"staged agent document differs from the structured result: {relative}")
+    return staged, EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
+
+
 def _prepare(
-    skill: str, persona: str, result_id: str, request: TaskRequest, context: TaskContext
+    skill: str,
+    persona: str,
+    result_id: str,
+    request: TaskRequest,
+    context: TaskContext,
+    *,
+    input_model: type[Any] = QualitySkillInputV1,
 ) -> TaskOutcome:
-    business = validate_input(QualitySkillInputV1, request.input)
+    business = validate_input(input_model, request.input)
+    if isinstance(business, AssessmentSkillInputV1):
+        _authenticate_assessment_input(business, context.project_root)
     binding = validate_binding(request.binding_data)
     return prepare_outcome(
         skill_path=skill,
@@ -183,16 +311,30 @@ def _prepare(
 class FactBaselinePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(FACT_BASELINE_SKILL, EXPLORER_PERSONA, FACT_BASELINE_RESULT_ID, request, context)
-        except InputError as error:
+            return _prepare(
+                FACT_BASELINE_SKILL,
+                EXPLORER_PERSONA,
+                FACT_BASELINE_RESULT_ID,
+                request,
+                context,
+                input_model=AssessmentSkillInputV1,
+            )
+        except (InputError, OutputError) as error:
             return failed_input(error)
 
 
 class InspectPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(INSPECT_SKILL, EXPLORER_PERSONA, INSPECTION_RESULT_ID, request, context)
-        except InputError as error:
+            return _prepare(
+                INSPECT_SKILL,
+                EXPLORER_PERSONA,
+                INSPECTION_RESULT_ID,
+                request,
+                context,
+                input_model=AssessmentSkillInputV1,
+            )
+        except (InputError, OutputError) as error:
             return failed_input(error)
 
 
@@ -224,18 +366,30 @@ class ReportPrepareHandler:
 
 class FactBaselineFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            business, agent_run = _assessment_finalize_payload(request.input)
             try:
-                document = FactBaselineResultV1.model_validate(_structured(payload))
+                document = FactBaselineResultV1.model_validate(thaw_json(agent_run.result_payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
-            owned = frozenset(payload.owned_evidence_ids)
-            for evidence_id in document.source_evidence_ids:
-                if evidence_id not in owned:
-                    raise OutputError(f"fact baseline cites unowned source evidence: {evidence_id}")
-            return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
+            _authenticate_assessment_input(business, context.project_root)
+            if business.fact_baseline_ref is not None:
+                raise InputError("fact-baseline input must not contain a future baseline reference")
+            if document.change_id != business.change_id:
+                raise OutputError("fact baseline change_id does not match the locked assessment")
+            relative = f"qa/changes/{business.change_id}/facts/fact-baseline.json"
+            _, baseline_ref = _staged_agent_document(
+                context=context,
+                relative=relative,
+                result=document,
+                model=FactBaselineResultV1,
+            )
+            finalized = FinalizedFactBaselineV1(
+                agent_result=document,
+                assessment=business.assessment,
+                fact_baseline_ref=baseline_ref,
+            )
+            return TaskOutcome.succeeded(cast(JSONValue, finalized.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
@@ -244,19 +398,32 @@ class FactBaselineFinalizeHandler:
 
 class InspectFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            business, agent_run = _assessment_finalize_payload(request.input)
             try:
-                document = InspectionResultV1.model_validate(_structured(payload))
+                document = InspectionResultV1.model_validate(thaw_json(agent_run.result_payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
+            _authenticate_assessment_input(business, context.project_root)
+            if business.fact_baseline_ref is None:
+                raise InputError("Inspect requires an authenticated fact baseline")
+            relative = f"qa/changes/{business.change_id}/inspect/inspection.json"
+            _staged_agent_document(
+                context=context,
+                relative=relative,
+                result=document,
+                model=InspectionResultV1,
+            )
             expected = {
-                "execution_digest": payload.execution_digest,
-                "healing_digest": payload.healing_digest,
-                "trace_digest": payload.trace_digest,
-                "coverage_digest": payload.coverage_digest,
-                "metrics_digest": payload.metrics_digest,
+                "execution_digest": business.assessment.execution_ref.digest,
+                "healing_digest": (
+                    business.assessment.healing_ref.digest
+                    if business.assessment.healing_ref is not None
+                    else None
+                ),
+                "trace_digest": business.assessment.trace_ref.digest,
+                "coverage_digest": business.assessment.gaps_ref.digest,
+                "metrics_digest": business.assessment.metrics_ref.digest,
             }
             actual = {
                 "execution_digest": document.execution_digest,
@@ -268,9 +435,46 @@ class InspectFinalizeHandler:
             for key, locked in expected.items():
                 if actual[key] != locked:
                     raise OutputError(f"inspection {key} is not closed against the locked projection")
-            if document.change_id != payload.change_id or document.batch_id != payload.batch_id:
+            if document.change_id != business.change_id or document.batch_id != business.batch_id:
                 raise OutputError("inspection identity does not match the locked change")
-            return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
+            metrics = _load_json_ref(context.project_root, business.assessment.metrics_ref, MetricsDocument)
+            sufficiency = _load_json_ref(
+                context.project_root,
+                business.assessment.sufficiency_ref,
+                TraceSufficiencyFacts,
+            )
+            execution = _load_json_ref(
+                context.project_root,
+                business.assessment.execution_ref,
+                ExecutionEvidenceV1,
+            )
+            failure_facts, reason_codes = build_failure_classification_facts(
+                execution,
+                metrics,
+                adversarial_required="fuzz" in business.assessment.scope.selected_families,
+            )
+            has_failures = any(item.status == "failed" for item in execution.results)
+            if has_failures and not document.classification_performed:
+                raise OutputError("inspection did not classify the authenticated execution failures")
+            if document.status == "no_failures" and has_failures:
+                raise OutputError("inspection claims no failures for a failing execution")
+            if document.status == "failed":
+                failure_facts = failure_facts.model_copy(
+                    update={"identity_valid": False, "needs_human": True}
+                )
+                reason_codes = tuple(sorted({*reason_codes, "inspection.analysis_failed"}))
+            finalized = FinalizedInspectionV1(
+                agent_result=document,
+                assessment=business.assessment,
+                reviewed_case=business.reviewed_case,
+                mapping_ref=business.mapping_ref,
+                metrics=metrics,
+                sufficiency=sufficiency,
+                failure_facts=failure_facts,
+                fact_baseline_ref=business.fact_baseline_ref,
+                reason_codes=reason_codes,
+            )
+            return TaskOutcome.succeeded(cast(JSONValue, finalized.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
@@ -281,7 +485,7 @@ class IssueAnalysisFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = _legacy_finalize_payload(request.input)
             try:
                 document = IssueAnalysisResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -325,7 +529,7 @@ class IssueTriageFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = _legacy_finalize_payload(request.input)
             try:
                 document = IssueTriageResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -350,7 +554,7 @@ class ReportFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = _legacy_finalize_payload(request.input)
             try:
                 document = ReportResultV1.model_validate(_structured(payload))
             except ValidationError as error:

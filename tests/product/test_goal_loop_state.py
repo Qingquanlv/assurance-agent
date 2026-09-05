@@ -90,6 +90,8 @@ def test_advance_coverage_switches_epoch_without_changing_review_budget() -> Non
     assert merged["budgets"] == budgets.model_dump(mode="json")
     assert merged["generation_result"] == {}
     assert merged["execution_result"] == {}
+    assert merged["assessment_inputs"] == {}
+    assert merged["fact_baseline_ref"] == {}
     assert merged["report_refs"] == []
     assert update["last_coverage_source_receipt"] == _receipt().model_dump(mode="json")
 
@@ -137,6 +139,11 @@ def test_tail_result_status_and_evidence_round_trip() -> None:
         reason="inspection policy blocked progression",
     )
     assert blocked.inspection is not None
+
+    for status in ("repairable_execution_failure", "needs_human"):
+        inspection = _inspection().model_copy(update={"disposition": status, "coverage_state": None})
+        unresolved = ExecuteTailResultV1(status=status, inspection=inspection)  # type: ignore[arg-type]
+        assert ExecuteTailResultV1.model_validate(unresolved.model_dump(mode="json")) == unresolved
 
 
 def test_public_execute_adapter_initializes_standalone_tail_from_artifacts() -> None:

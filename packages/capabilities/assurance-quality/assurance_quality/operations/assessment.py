@@ -22,7 +22,11 @@ from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_intake.contracts.cases import CaseEntryAuthoring, CaseYamlAuthoring
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
+from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
+    MaterializeAssessmentInputV1,
+)
+from assurance_quality.contracts.decisions import classify_inspection_disposition
 from assurance_quality.contracts.goal_policy import (
     ActiveCoverageScopeV1,
     CoverageGoalPolicyV1,
@@ -449,5 +453,6 @@ __all__ = [
     "AssessmentInputError",
     "MaterializeAssessmentExecutor",
     "MaterializeAssessmentHandler",
+    "classify_inspection_disposition",
     "materialize_assessment_inputs",
 ]

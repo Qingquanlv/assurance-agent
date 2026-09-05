@@ -5,11 +5,25 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 
 from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import canonical_digest
 
 from assurance_quality.contracts.agent import QualitySkillInputV1
-from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
-from assurance_quality.contracts.decisions import CoverageAssessmentPublicV1, IssueAnalysisPublicV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
+    AssessmentSkillInputV1,
+    FinalizedFactBaselineV1,
+    FinalizedInspectionV1,
+    InspectionOutcomeV1,
+    MaterializeAssessmentInputV1,
+)
+from assurance_quality.contracts.coverage import classify_coverage_state
+from assurance_quality.contracts.decisions import (
+    IssueAnalysisPublicV1,
+    classify_inspection_disposition,
+)
 from assurance_quality.graphs.state import (
     QualityAssessPublicV1,
     QualityIssuePublicV1,
@@ -70,12 +84,45 @@ def _skill_payload(state: Mapping[str, object]) -> dict[str, object]:
         "batch_id": state["batch_id"],
         "capability_leafs": state["capability_leafs"],
         "artifact_paths": state["allowed_artifact_paths"],
-        **{name: state[name] for name in _SKILL_DIGESTS},
+        **{name: state.get(name) for name in _SKILL_DIGESTS},
     }
 
 
 def select_quality(state: Mapping[str, object]) -> QualitySkillInputV1:
     return QualitySkillInputV1.model_validate(_skill_payload(state))
+
+
+def _assessment_skill_input(
+    state: Mapping[str, object], *, require_fact_baseline: bool
+) -> AssessmentSkillInputV1:
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    reviewed_case = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
+    generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+    baseline_raw = state.get("fact_baseline_ref")
+    baseline = EvidenceArtifactRefV1.model_validate(baseline_raw) if baseline_raw is not None else None
+    if require_fact_baseline and baseline is None:
+        raise ValueError("Inspect requires the committed fact baseline")
+    return AssessmentSkillInputV1.model_validate(
+        {
+            "change_id": state.get("change_id"),
+            "coverage_epoch": state.get("coverage_epoch"),
+            "batch_id": state.get("batch_id"),
+            "capability_leafs": state.get("capability_leafs", ()),
+            "artifact_paths": state.get("allowed_artifact_paths", ()),
+            "assessment": assessment,
+            "reviewed_case": reviewed_case,
+            "mapping_ref": generation.mapping_ref,
+            "fact_baseline_ref": baseline,
+        }
+    )
+
+
+def select_fact_baseline(state: Mapping[str, object]) -> AssessmentSkillInputV1:
+    return _assessment_skill_input(state, require_fact_baseline=False)
+
+
+def select_inspect(state: Mapping[str, object]) -> AssessmentSkillInputV1:
+    return _assessment_skill_input(state, require_fact_baseline=True)
 
 
 def select_materialize_assessment(state: Mapping[str, object]) -> MaterializeAssessmentInputV1:
@@ -159,11 +206,16 @@ def publish_fact_baseline(
     receipt: object,
 ) -> dict[str, object]:
     del receipt
-    payload = _output_payload(output)
+    finalized = FinalizedFactBaselineV1.model_validate(output)
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    if finalized.assessment != assessment:
+        raise ValueError("fact baseline was finalized against stale assessment inputs")
     return {
-        "evidence_refs": _as_refs(payload.get("evidence_refs") or state.get("evidence_refs")),
-        "rounds_budget": _published_int(payload, "rounds_budget", state.get("rounds_budget", 0)),
-        "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
+        "fact_baseline_ref": finalized.fact_baseline_ref.model_dump(mode="json"),
+        "evidence_refs": [
+            *_as_refs(state.get("evidence_refs")),
+            finalized.fact_baseline_ref.model_dump(mode="json"),
+        ],
     }
 
 
@@ -172,24 +224,77 @@ def publish_inspect(
     output: object,
     receipt: object,
 ) -> dict[str, object]:
-    del receipt
-    payload = _output_payload(output)
-    assessed = CoverageAssessmentPublicV1.model_validate(
-        {
-            "coverage_state": payload.get("coverage_state"),
-            "rounds_budget": payload.get("rounds_budget", state.get("rounds_budget")),
-            "rounds_used": payload.get("rounds_used", state.get("rounds_used")),
-        }
+    if state.get("attempt_failure"):
+        raise ValueError("failed Inspect attempt cannot publish a business outcome")
+    finalized = FinalizedInspectionV1.model_validate(output)
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    reviewed_case = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
+    generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+    if finalized.assessment != assessment:
+        raise ValueError("inspection was finalized against stale assessment inputs")
+    if finalized.reviewed_case != reviewed_case:
+        raise ValueError("inspection was finalized against a stale Reviewed Case")
+    if finalized.mapping_ref != generation.mapping_ref:
+        raise ValueError("inspection was finalized against a stale test mapping")
+    if finalized.fact_baseline_ref != EvidenceArtifactRefV1.model_validate(state.get("fact_baseline_ref")):
+        raise ValueError("inspection was finalized against a stale fact baseline")
+    if (
+        state.get("change_id") != assessment.change_id
+        or state.get("coverage_epoch") != assessment.coverage_epoch
+        or state.get("batch_id") != assessment.batch_id
+        or state.get("policy_sha256") != assessment.scope.policy_digest
+    ):
+        raise ValueError("inspection identity no longer matches the active assessment cycle")
+    facts = finalized.failure_facts
+    has_execution_problem = (
+        not facts.identity_valid or facts.blocking_failure or facts.needs_human or facts.repairable_failure
     )
-    change_id = state["change_id"]
-    if not isinstance(change_id, str):
-        raise TypeError("change_id must be a string")
+    coverage_state = None
+    if not has_execution_problem:
+        coverage_state = classify_coverage_state(
+            metrics=finalized.metrics,
+            sufficiency=finalized.sufficiency,
+            scope=finalized.assessment.scope,
+            policy=finalized.assessment.policy,
+        )
+    disposition = classify_inspection_disposition(facts=facts, coverage_state=coverage_state)
+    reason_codes = set(finalized.reason_codes)
+    if coverage_state is not None:
+        reason_codes.add(f"coverage.{coverage_state}")
+    assessment_refs = tuple(
+        sorted(
+            (
+                assessment.trace_ref,
+                assessment.gaps_ref,
+                assessment.metrics_ref,
+                assessment.sufficiency_ref,
+                assessment.execution_ref,
+                *(() if assessment.healing_ref is None else (assessment.healing_ref,)),
+                *(() if assessment.issue_ref is None else (assessment.issue_ref,)),
+                finalized.fact_baseline_ref,
+            ),
+            key=lambda item: (item.path, item.digest),
+        )
+    )
+    outcome = InspectionOutcomeV1(
+        change_id=assessment.change_id,
+        coverage_epoch=assessment.coverage_epoch,
+        batch_id=assessment.batch_id,
+        disposition=disposition,
+        inspection_receipt=ReceiptRef.model_validate(receipt),
+        reviewed_case=finalized.reviewed_case,
+        mapping_ref=finalized.mapping_ref,
+        assessment_refs=assessment_refs,
+        reason_codes=tuple(sorted(reason_codes)),
+        coverage_state=coverage_state,
+    )
     return QualityAssessPublicV1(
-        change_id=change_id,
-        coverage_state=assessed.coverage_state,
-        evidence_refs=_as_refs(payload.get("evidence_refs") or state.get("evidence_refs")),
-        rounds_budget=assessed.rounds_budget,
-        rounds_used=assessed.rounds_used,
+        change_id=assessment.change_id,
+        coverage_state=coverage_state,
+        inspection_outcome=outcome,
+        evidence_refs=[ref.model_dump(mode="json") for ref in assessment_refs],
+        rounds_budget=_published_int({}, "rounds_budget", state.get("rounds_budget", 0)),
+        rounds_used=_published_int({}, "rounds_used", state.get("rounds_used", 0)),
     ).model_dump(mode="json")
 
 
@@ -252,6 +357,8 @@ __all__ = [
     "publish_materialize_assessment",
     "publish_issue",
     "publish_report",
+    "select_fact_baseline",
+    "select_inspect",
     "select_quality",
     "select_materialize_assessment",
     "select_report",

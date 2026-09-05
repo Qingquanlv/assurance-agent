@@ -8,13 +8,14 @@ from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_quality.contracts.assessment import AssessmentInputsV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1, InspectionOutcomeV1
 from assurance_quality.contracts.decisions import CoverageState, FailureClassification
 
 
 class QualityAssessPublicV1(FrozenModel):
     change_id: str
-    coverage_state: CoverageState
+    coverage_state: CoverageState | None
+    inspection_outcome: InspectionOutcomeV1
     evidence_refs: list[dict[str, str]]
     rounds_budget: int
     rounds_used: int
@@ -48,6 +49,8 @@ class QualityState(CheckpointBridgeState, total=False):
     healing_ref: EvidenceArtifactRefV1 | None
     issue_ref: EvidenceArtifactRefV1 | None
     assessment_inputs: AssessmentInputsV1
+    fact_baseline_ref: EvidenceArtifactRefV1
+    inspection_outcome: InspectionOutcomeV1
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]
     evidence_refs: list[dict[str, str]]
@@ -61,14 +64,14 @@ class QualityState(CheckpointBridgeState, total=False):
     fix_eligible: bool
     report_refs: list[dict[str, str]]
     execution_digest: str
-    healing_digest: str
+    healing_digest: str | None
     trace_digest: str
     coverage_digest: str
     metrics_digest: str
     case_digest: str
     plan_digest: str
     mapping_digest: str
-    issue_digest: str
+    issue_digest: str | None
     status: str
     attempt_failure: dict[str, object]
 

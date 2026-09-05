@@ -4,15 +4,23 @@ from collections.abc import Mapping
 
 from graph_engine.stategraph.routing import select_exclusive_route
 
-from assurance_quality.contracts.decisions import COVERAGE_STATES, FIX_ELIGIBLE_CLASSIFICATIONS
+from assurance_quality.contracts.decisions import FIX_ELIGIBLE_CLASSIFICATIONS
 
 _COVERAGE_OTHERWISE = "failed"
 _FAILURE_OTHERWISE = "failed"
 
 
 def coverage_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    current = state.get("coverage_state")
-    return {name: name if current == name else None for name in COVERAGE_STATES}
+    dispositions = (
+        "satisfied",
+        "coverage_insufficient",
+        "repairable_execution_failure",
+        "needs_human",
+        "blocked",
+    )
+    raw = state.get("inspection_outcome")
+    current = raw.get("disposition") if isinstance(raw, Mapping) else getattr(raw, "disposition", None)
+    return {name: name if current == name else None for name in dispositions}
 
 
 def failure_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:

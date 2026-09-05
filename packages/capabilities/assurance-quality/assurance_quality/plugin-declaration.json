@@ -126,8 +126,8 @@
     "effects": [],
     "bindings": [],
     "attempt_contracts": [
-      {"contract_id": "assurance.quality.agent.fact-baseline.v1", "digest": "b270ed18919508022d8b0c5a7099827a0762b26e5e64408ce9198be089d0e1f4"},
-      {"contract_id": "assurance.quality.agent.inspect.v1", "digest": "086bc38fbe2af92ca6747a30d08244b55910b6c0e835aa7cc441bbe4fb8d0a25"},
+      {"contract_id": "assurance.quality.agent.fact-baseline.v1", "digest": "c3b381c141d0718d0d45786fdd21411b7aa089db2a48ecab71de9c731a5f9372"},
+      {"contract_id": "assurance.quality.agent.inspect.v1", "digest": "b38c02506293d62453683931064e0018cc1dac0823e624b5e2902d14998b7359"},
       {"contract_id": "assurance.quality.agent.issue-analysis.v1", "digest": "3ea070bab84f5437a5dcaa69f21f81c325f57973469439a504a9c47482427370"},
       {"contract_id": "assurance.quality.agent.issue-triage.v1", "digest": "1c077d25891ed836f3a0d39b57372b227567c934aa80ae2c96ed2bc108995a2f"},
       {"contract_id": "assurance.quality.agent.report.v1", "digest": "4a2cc91864ab30702a2de6ddbd6bd556952058b5467b6bae139a9c41113982f9"},

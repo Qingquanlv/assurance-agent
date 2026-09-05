@@ -41,7 +41,13 @@ class ExecuteTailInputV1(FrozenModel):
 
 
 class ExecuteTailResultV1(FrozenModel):
-    status: Literal["reported", "coverage_insufficient", "blocked"]
+    status: Literal[
+        "reported",
+        "coverage_insufficient",
+        "repairable_execution_failure",
+        "needs_human",
+        "blocked",
+    ]
     inspection: InspectionOutcomeV1 | None = None
     report_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     report_receipt: ReceiptRef | None = None
@@ -62,6 +68,11 @@ class ExecuteTailResultV1(FrozenModel):
                 raise ValueError("coverage_insufficient tail requires matching Inspect evidence")
             if self.report_refs or self.report_receipt is not None:
                 raise ValueError("coverage retry cannot publish an intermediate Report")
+        elif self.status in {"repairable_execution_failure", "needs_human"}:
+            if self.inspection is None or self.inspection.disposition != self.status:
+                raise ValueError(f"{self.status} tail requires matching Inspect evidence")
+            if self.report_refs or self.report_receipt is not None:
+                raise ValueError("unresolved execution result cannot publish a Report")
         else:
             if self.report_refs or self.report_receipt is not None:
                 raise ValueError("blocked tail cannot carry successful report evidence")

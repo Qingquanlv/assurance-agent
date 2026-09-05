@@ -9,7 +9,12 @@ from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
-from assurance_intake.contracts.workflow import CaseFlowResultV1, CaseReworkContextV1, ReviewedCaseV1
+from assurance_intake.contracts.workflow import (
+    CaseFlowResultV1,
+    CaseReworkContextV1,
+    EvidenceArtifactRefV1,
+    ReviewedCaseV1,
+)
 from assurance_quality.contracts.assessment import AssessmentInputsV1, InspectionOutcomeV1
 
 FAILED_JOIN_PREDECESSORS = ("execute", "run")
@@ -427,6 +432,7 @@ class ProductStateDocument(FrozenModel):
     generation_result: GenerationCycleResultV1
     execution_result: ExecutionCycleResultV1
     assessment_inputs: AssessmentInputsV1
+    fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, Any]
     case_rework_context: CaseReworkContextV1
@@ -490,6 +496,7 @@ class ProductState(CheckpointBridgeState, total=False):
     generation_result: GenerationCycleResultV1
     execution_result: ExecutionCycleResultV1
     assessment_inputs: AssessmentInputsV1
+    fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, object]
     case_rework_context: CaseReworkContextV1

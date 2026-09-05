@@ -17,6 +17,11 @@ from assurance_quality.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS,
     attempt_contract_refs,
 )
+from assurance_quality.contracts.assessment import (
+    AssessmentSkillInputV1,
+    FinalizedFactBaselineV1,
+    FinalizedInspectionV1,
+)
 from assurance_quality.plugin import QualityPlugin
 
 
@@ -60,9 +65,16 @@ def test_quality_owns_five_agent_contracts() -> None:
         assert set(claims.runtime) == set(contract.resources.writes)
         assert contract.skill_id == skill_id
         assert contract.agent_profile == profile
-        assert contract.input_model is QualitySkillInputV1
+        expected_input = (
+            AssessmentSkillInputV1 if base in {"fact-baseline", "inspect"} else QualitySkillInputV1
+        )
+        expected_output = {
+            "fact-baseline": FinalizedFactBaselineV1,
+            "inspect": FinalizedInspectionV1,
+        }.get(base, result_model)
+        assert contract.input_model is expected_input
         assert contract.agent_result_model is result_model
-        assert contract.output_model is result_model
+        assert contract.output_model is expected_output
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60

@@ -8,7 +8,8 @@ from typing import Any
 import pytest
 
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
-from assurance_quality.contracts.decisions import COVERAGE_STATES, FailureClassification
+from assurance_quality.contracts.assessment import InspectionDisposition
+from assurance_quality.contracts.decisions import FailureClassification
 from assurance_quality.graphs.factory import build_quality_graphs
 from assurance_quality.graphs.routes import (
     coverage_named_matches,
@@ -48,6 +49,13 @@ _FOREIGN_GRAPH_OWNERS = (
 )
 _COVERAGE_OTHERWISE = "failed"
 _FAILURE_OTHERWISE = "failed"
+_INSPECTION_DISPOSITIONS: tuple[InspectionDisposition, ...] = (
+    "satisfied",
+    "coverage_insufficient",
+    "repairable_execution_failure",
+    "needs_human",
+    "blocked",
+)
 
 
 def _imported_names(path: Path, *, module_name: str) -> tuple[str, ...]:
@@ -105,17 +113,18 @@ def test_exclusive_route_zero_and_two_simultaneous_named_matches(
         )
 
 
-@pytest.mark.parametrize("coverage_state", COVERAGE_STATES)
-def test_known_coverage_states_route_to_themselves(coverage_state: str) -> None:
-    assert route_coverage({"coverage_state": coverage_state}) == coverage_state
+@pytest.mark.parametrize("disposition", _INSPECTION_DISPOSITIONS)
+def test_known_inspection_dispositions_route_to_themselves(disposition: str) -> None:
+    assert route_coverage({"inspection_outcome": {"disposition": disposition}}) == disposition
 
 
-def test_unknown_coverage_classification_fails_closed() -> None:
-    first_branch = COVERAGE_STATES[0]
-    assert route_coverage({"coverage_state": "not_a_coverage_state"}) == _COVERAGE_OTHERWISE
+def test_unknown_inspection_disposition_fails_closed() -> None:
+    first_branch = _INSPECTION_DISPOSITIONS[0]
+    unknown = {"inspection_outcome": {"disposition": "not_a_disposition"}}
+    assert route_coverage(unknown) == _COVERAGE_OTHERWISE
     assert route_coverage({}) == _COVERAGE_OTHERWISE
-    assert route_coverage({"coverage_state": "not_a_coverage_state"}) != first_branch
-    assert coverage_named_matches({"coverage_state": "not_a_coverage_state"})[first_branch] is None
+    assert route_coverage(unknown) != first_branch
+    assert coverage_named_matches(unknown)[first_branch] is None
 
 
 def test_known_failure_classifications_do_not_select_healing() -> None:
@@ -149,6 +158,7 @@ def test_attempt_failure_fails_closed_despite_leftover_successful_outcome() -> N
     }
     assess_recheck = {
         "coverage_state": "satisfied",
+        "inspection_outcome": {"disposition": "satisfied"},
         "attempt_failure": failure,
     }
     issue_recheck = {

@@ -24,7 +24,6 @@ from assurance_quality.operations.agent_skills import (
     FactBaselineFinalizeHandler,
     FactBaselinePrepareHandler,
     InspectFinalizeHandler,
-    InspectPrepareHandler,
     IssueAnalysisFinalizeHandler,
     IssueAnalysisPrepareHandler,
     IssueTriageFinalizeHandler,
@@ -239,8 +238,6 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
 @pytest.mark.parametrize(
     ("handler", "marker"),
     (
-        (FactBaselinePrepareHandler(), "Capability-owned fact-baseline skill"),
-        (InspectPrepareHandler(), "Capability-owned inspect skill"),
         (IssueTriagePrepareHandler(), "Capability-owned issue-triage skill"),
         (ReportPrepareHandler(), "Capability-owned report-generator skill"),
     ),
@@ -256,7 +253,7 @@ async def test_each_prepare_locks_skill_persona_and_execution(
 
 
 @pytest.mark.asyncio
-async def test_fact_baseline_finalize_rejects_unowned_source_evidence(tmp_path: Path) -> None:
+async def test_fact_baseline_finalize_requires_authenticated_assessment_input(tmp_path: Path) -> None:
     structured = {
         "source": "seed_file",
         "schema_version": "1.0",
@@ -271,11 +268,11 @@ async def test_fact_baseline_finalize_rejects_unowned_source_evidence(tmp_path: 
         tmp_path,
     )
     assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio
-async def test_inspect_finalize_rejects_unclosed_projection_digest(tmp_path: Path) -> None:
+async def test_inspect_finalize_requires_authenticated_assessment_input(tmp_path: Path) -> None:
     structured = {
         "schema_version": "1.0",
         "change_id": CHANGE_ID,
@@ -295,7 +292,7 @@ async def test_inspect_finalize_rejects_unclosed_projection_digest(tmp_path: Pat
         tmp_path,
     )
     assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio

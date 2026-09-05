@@ -3,14 +3,24 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterator
 from dataclasses import fields
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
 
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_quality.contracts.metrics import (
+    METRIC_KEYS,
+    MetricEntry,
+    MetricKey,
+    MetricScope,
+    MetricsDocument,
+)
+from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs
+from assurance_quality.operations.metrics import BoundRisk
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
@@ -148,9 +158,11 @@ def _receipt() -> ReceiptRef:
 
 
 def _fact_baseline_output() -> dict[str, object]:
+    baseline = {"path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json", "digest": _SHA}
     return {
-        "source": "unavailable",
-        "evidence_refs": [{"path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json", "digest": _SHA}],
+        "agent_result": {"source": "unavailable", "change_id": "CH-DEMO-001"},
+        "assessment": _assessment_output(),
+        "fact_baseline_ref": baseline,
     }
 
 
@@ -191,19 +203,94 @@ def _assessment_output() -> dict[str, object]:
     }
 
 
-def _inspect_output(*, coverage_state: str = "satisfied") -> dict[str, object]:
+def _metrics_output() -> dict[str, object]:
+    layers = {
+        "diff_coverage": "backend",
+        "constraint_coverage": "api",
+        "auth_matrix_coverage": "api",
+        "journey_coverage": "e2e",
+        "baseline_drift": "performance",
+        "mutation_score": "backend",
+        "assertion_strength": "cross",
+        "threshold_slack": "performance",
+        "adversarial_yield": "api",
+        "adversarial_clean": "cross",
+    }
+    metrics: dict[MetricKey, MetricEntry] = {
+        key: MetricEntry(layer=cast(Any, layers[key]), status="skipped") for key in METRIC_KEYS
+    }
+    scope = MetricScope.of(total=1, covered=1)
+    metrics["constraint_coverage"] = MetricEntry(
+        layer="api",
+        status="evaluated",
+        value=1.0,
+        declared=scope,
+        evidence="trace",
+    )
+    return MetricsDocument.of(
+        risk=BoundRisk(lower_bound="high"),
+        change_id="CH-DEMO-001",
+        cadence="pr",
+        computed_at=datetime(2026, 8, 22, tzinfo=UTC),
+        metrics=metrics,
+        policy_digest=_SHA,
+        floor_ratio=1.0,
+    ).model_dump(mode="json")
+
+
+def _sufficiency_output() -> dict[str, object]:
+    return TraceSufficiencyFacts.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": "CH-DEMO-001",
+            "authoritative_batch_id": "20260822T000000Z",
+            "policy_digest": _SHA,
+            "as_of": "2026-08-22T00:00:00Z",
+            "integrity": "complete",
+            "integrity_blocks_routing": False,
+            "sufficient": True,
+            "has_open_problems": False,
+            "error_code": None,
+            "insufficient_cases": [],
+            "gap_codes": [],
+        }
+    ).model_dump(mode="json")
+
+
+def _inspect_output() -> dict[str, object]:
+    source = assess_graph_input()
+    reviewed = cast(dict[str, object], source["reviewed_case"])
+    generation = cast(dict[str, object], source["generation_result"])
     return {
-        "schema_version": "1.0",
-        "change_id": "CH-DEMO-001",
-        "batch_id": "20260822T000000Z",
-        "inspect_mode": "primary",
-        "classification_performed": True,
-        "status": "no_failures",
-        "coverage_state": coverage_state,
-        "evidence_refs": [{"path": "qa/changes/CH-DEMO-001/inspect/inspection.json", "digest": _SHA}],
-        "rounds_budget": 2,
-        "rounds_used": 0,
-        **_skill_digests(),
+        "agent_result": {
+            "schema_version": "1.0",
+            "change_id": "CH-DEMO-001",
+            "batch_id": "20260822T000000Z",
+            "inspect_mode": "primary",
+            "classification_performed": True,
+            "status": "no_failures",
+            "execution_digest": _SHA,
+            "healing_digest": None,
+            "trace_digest": _SHA,
+            "coverage_digest": _SHA,
+            "metrics_digest": _SHA,
+        },
+        "assessment": _assessment_output(),
+        "reviewed_case": reviewed,
+        "mapping_ref": generation["mapping_ref"],
+        "metrics": _metrics_output(),
+        "sufficiency": _sufficiency_output(),
+        "failure_facts": {
+            "identity_valid": True,
+            "blocking_failure": False,
+            "needs_human": False,
+            "repairable_failure": False,
+        },
+        "fact_baseline_ref": {
+            "path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json",
+            "digest": _SHA,
+        },
+        "reason_codes": [],
     }
 
 
@@ -344,9 +431,15 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     assert published["coverage_state"] == "satisfied"
     assert published["rounds_budget"] == 2
     assert published["rounds_used"] == 0
-    assert published["evidence_refs"] == [
-        {"path": "qa/changes/CH-DEMO-001/inspect/inspection.json", "digest": _SHA}
-    ]
+    inspection_outcome = published["inspection_outcome"]
+    evidence_refs = published["evidence_refs"]
+    assert isinstance(inspection_outcome, dict)
+    assert isinstance(evidence_refs, list)
+    assert inspection_outcome["disposition"] == "satisfied"
+    receipt_payload = inspection_outcome["inspection_receipt"]
+    assert isinstance(receipt_payload, dict)
+    assert receipt_payload["receipt_id"] == _RECEIPT_ID
+    assert len(evidence_refs) == 6
     assert result.terminal is not None
 
 

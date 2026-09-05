@@ -23,6 +23,8 @@ def clear_current_cycle(*, next_epoch: int) -> dict[str, object]:
         "healing_rounds_used": 0,
         "generation_result": {},
         "execution_result": {},
+        "assessment_inputs": {},
+        "fact_baseline_ref": {},
         "inspection_outcome": {},
         "tail_result": {},
         "report_refs": [],
