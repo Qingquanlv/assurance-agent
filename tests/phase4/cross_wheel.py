@@ -797,9 +797,6 @@ def _healing_finalize_payload(
     from agent_runtime_contracts.schema import canonical_digest as runtime_digest
     from tests.phase4.agent_harness import FakeAgentAdapter
 
-    from assurance_healing.contracts.agent import FixProposalResultV1
-    from assurance_healing.operations.keys import derive_approval_id
-
     structured = {
         "schema_version": "1",
         "change_id": _CHANGE_ID,
@@ -816,8 +813,6 @@ def _healing_finalize_payload(
         ],
     }
     prepare = _fix_proposal_input(leafs, evidence_digest or ("e" * 64))
-    proposal = FixProposalResultV1.model_validate(structured)
-    proposal_digest = canonical_digest(cast(JSONValue, proposal.model_dump(mode="json")))
     result = AgentRunResult(
         result_payload=cast(JSONValue, structured),
         result_digest=runtime_digest(cast(JSONValue, structured)),
@@ -829,38 +824,7 @@ def _healing_finalize_payload(
         "agent_result": result.model_dump(mode="json"),
         **prepare,
         "claimed_capabilities": [claimed],
-        "artifact_paths": [],
         "prepare": prepare,
-        "mapping": {
-            "schema_version": "1",
-            "layer": "api",
-            "entries": [{"case_id": "TC_1", "symbol": "test_ok", "target_file": "tests/api/test_users.py"}],
-        },
-        "approval": {
-            "schema_version": "1",
-            "approval_id": derive_approval_id(
-                owner_id="assurance.healing",
-                candidate_digest="c" * 64,
-                baseline_digest="b" * 64,
-                policy_digest="d" * 64,
-                proposal_digest=proposal_digest,
-            ),
-            "change_id": _CHANGE_ID,
-            "owner_id": "assurance.healing",
-            "root_invocation_id": "inv-1",
-            "interrupt_task_id": "task-1",
-            "source_gate_attempt_id": "gate-1",
-            "source_tree_id": "tree-src",
-            "target_tree_id": "tree-dst",
-            "proposal_digest": proposal_digest,
-            "fixer_authority_digest": "b" * 64,
-            "candidate_digest": "c" * 64,
-            "baseline_digest": "b" * 64,
-            "policy_digest": "d" * 64,
-            "targets": ["api"],
-            "paths": ["tests/api/test_users.py"],
-            "action": "approve_and_apply",
-        },
     }
 
 

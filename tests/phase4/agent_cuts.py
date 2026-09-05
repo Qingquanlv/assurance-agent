@@ -130,23 +130,7 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
             "execution_evidence_digest": _HEX,
             "claimed_capabilities": [],
         }
-        base.update(
-            {
-                **prepare,
-                "mapping": {
-                    "schema_version": "1",
-                    "layer": "api",
-                    "entries": [
-                        {
-                            "case_id": "TC-1",
-                            "symbol": "test_users",
-                            "target_file": "tests/api/test_users.py",
-                        }
-                    ],
-                },
-                "prepare": prepare,
-            }
-        )
+        base = {**prepare, "prepare": prepare}
     if wheel == "quality":
         base.update(
             {
