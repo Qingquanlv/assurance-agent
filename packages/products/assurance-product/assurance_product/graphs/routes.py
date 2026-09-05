@@ -14,8 +14,13 @@ def _has_budget(state: Mapping[str, object]) -> bool:
 
 
 def prepare_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
+    return {"prepared": "prepared" if state.get("status") == "prepared" else None}
+
+
+def case_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     decision = state.get("decision")
-    return {"pass": "execute-tail" if decision in {"pass", "approved"} else None}
+    reviewed = state.get("status") == "passed" and decision in {"pass", "approved"}
+    return {"reviewed": "execute-tail" if reviewed else None}
 
 
 def execute_tail_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
@@ -82,7 +87,11 @@ def coverage_decision_named_matches(state: Mapping[str, object]) -> dict[str, st
 
 
 def route_prepare(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(prepare_named_matches(state), otherwise=_NOT_ACHIEVED)
+    return select_exclusive_route(prepare_named_matches(state), otherwise="failed")
+
+
+def route_case(state: Mapping[str, object]) -> str:
+    return select_exclusive_route(case_named_matches(state), otherwise=_NOT_ACHIEVED)
 
 
 def route_execute_tail(state: Mapping[str, object]) -> str:
@@ -119,6 +128,7 @@ def route_coverage_decision(state: Mapping[str, object]) -> str:
 
 PRODUCT_EXCLUSIVE_ROUTES = {
     "prepare": route_prepare,
+    "case": route_case,
     "execute-tail": route_execute_tail,
     "execute": route_execute,
     "run": route_run,
@@ -133,6 +143,7 @@ __all__ = [
     "PRODUCT_EXCLUSIVE_ROUTES",
     "coverage_decision_named_matches",
     "coverage_repair_named_matches",
+    "case_named_matches",
     "execute_named_matches",
     "execute_tail_named_matches",
     "issue_analysis_named_matches",
@@ -144,6 +155,7 @@ __all__ = [
     "route_execute",
     "route_execute_tail",
     "route_issue_analysis",
+    "route_case",
     "route_prepare",
     "route_quality",
     "route_quality_recheck",

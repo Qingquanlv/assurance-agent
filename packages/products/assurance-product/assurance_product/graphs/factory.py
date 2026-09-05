@@ -94,7 +94,7 @@ def build_thin_entrypoint_graphs(
 ) -> ThinEntrypointGraphs:
     bundles = coerce_feature_bundles(features)
     entrypoints = {
-        "intake": build_intake_root(context, bundles.intake.prepare),
+        "intake": build_intake_root(context, bundles.intake.prepare, bundles.intake.case),
         "case": build_case_root(context, bundles.intake.case),
         "archive": build_archive_root(context, bundles.improvement.archive),
         "retro": build_retro_root(context, bundles.improvement.retro),

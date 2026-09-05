@@ -12,7 +12,7 @@ from assurance_product.graphs.entrypoints import (
     publish_public_output,
     validate_public_input,
 )
-from assurance_product.graphs.routes import route_execute_tail, route_prepare
+from assurance_product.graphs.routes import route_case, route_execute_tail, route_prepare
 from assurance_product.graphs.state import ProductState
 from graph_engine.boot.boot import GraphBuildContext
 
@@ -38,6 +38,7 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_node("validate", validate_public_input("full"))
     builder.add_node("adapt-prepare", cast(Any, adapt_intake))
     builder.add_node("prepare", typed.intake.prepare)
+    builder.add_node("case", typed.intake.case)
     builder.add_node("adapt-execute-tail", cast(Any, adapt_execute_tail))
     builder.add_node("execute-tail", execute)
     builder.add_node("adapt-retro", cast(Any, adapt_improvement))
@@ -52,6 +53,11 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_conditional_edges(
         "prepare",
         cast(Callable[..., Any], route_prepare),
+        {"prepared": "case", "failed": "not-achieved"},
+    )
+    builder.add_conditional_edges(
+        "case",
+        cast(Callable[..., Any], route_case),
         {"execute-tail": "adapt-execute-tail", "not-achieved": "not-achieved"},
     )
     builder.add_edge("adapt-execute-tail", "execute-tail")

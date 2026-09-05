@@ -22,9 +22,10 @@ from assurance_intake.graphs.nodes import (
     select_explore,
     select_intake,
     terminal_done,
+    terminal_failed,
 )
 from assurance_intake.graphs.prepare import build_prepare_graph
-from assurance_intake.graphs.routes import route_case_design
+from assurance_intake.graphs.routes import route_case_design, route_case_design_repair
 from assurance_intake.graphs.state import IntakeState
 from graph_engine.boot.boot import CapabilityBuildContext
 
@@ -35,6 +36,7 @@ _CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
 _CASE_DESIGN_PATHS: dict[Hashable, str] = {
     "done": "done",
     "case-design-repair": "intake.case-design-repair",
+    "failed": "failed",
 }
 
 
@@ -75,8 +77,6 @@ def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
             context,
             intake=intake,
             explore=explore,
-            case_design=case_design,
-            case_review=case_review,
         ),
         case=build_case_graph(context, case_design=case_design, case_review=case_review),
     )
@@ -139,14 +139,20 @@ def _compile_case_design(context: CapabilityBuildContext) -> CompiledStateGraph:
         ),
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
+    builder.add_node("failed", cast(Callable[..., Any], terminal_failed))
     builder.add_edge(START, "intake.case-design")
     builder.add_conditional_edges(
         "intake.case-design",
         cast(Callable[..., Any], route_case_design),
         _CASE_DESIGN_PATHS,
     )
-    builder.add_edge("intake.case-design-repair", "done")
+    builder.add_conditional_edges(
+        "intake.case-design-repair",
+        cast(Callable[..., Any], route_case_design_repair),
+        {"done": "done", "failed": "failed"},
+    )
     builder.add_edge("done", END)
+    builder.add_edge("failed", END)
     return context.compile_subgraph(builder)
 
 

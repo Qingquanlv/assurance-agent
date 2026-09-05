@@ -357,5 +357,6 @@ EXCLUSIVE_ROUTE_INVENTORY: tuple[ExclusiveRouteRow, ...] = (
     _row(
         "assurance.product.workflow.graph.product-full", "execute-tail", "subgraph", "not-achieved", "product"
     ),
-    _row("assurance.product.workflow.graph.product-full", "prepare", "subgraph", "not-achieved", "product"),
+    _row("assurance.product.workflow.graph.product-full", "prepare", "subgraph", "failed", "product"),
+    _row("assurance.product.workflow.graph.product-full", "case", "subgraph", "not-achieved", "product"),
 )

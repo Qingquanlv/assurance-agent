@@ -282,6 +282,16 @@ def terminal_done(state: Mapping[str, object]) -> dict[str, object]:
     return {"status": "passed", "decision": state.get("decision", "pass")}
 
 
+def terminal_prepared(state: Mapping[str, object]) -> dict[str, object]:
+    del state
+    return {"status": "prepared"}
+
+
+def terminal_failed(state: Mapping[str, object]) -> dict[str, object]:
+    del state
+    return {"status": "failed"}
+
+
 def terminal_rejected(state: Mapping[str, object]) -> dict[str, object]:
     return {"status": "rejected", "decision": "reject"}
 
@@ -318,7 +328,9 @@ __all__ = [
     "select_case_review",
     "select_explore",
     "select_intake",
+    "terminal_failed",
     "terminal_done",
     "terminal_exhausted",
+    "terminal_prepared",
     "terminal_rejected",
 ]

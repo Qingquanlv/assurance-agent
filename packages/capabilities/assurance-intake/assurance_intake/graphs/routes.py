@@ -33,6 +33,8 @@ def _is_human(state: Mapping[str, object]) -> bool:
 
 
 def case_review_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
+    if state.get("attempt_failure"):
+        return {"pass": None, "auto_fix": None, "reject": None, "human": None}
     return {
         "pass": "done" if _is_pass(state) else None,
         "auto_fix": "review-round-advance" if _is_auto_fix(state) else None,
@@ -70,7 +72,25 @@ def human_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, s
 
 
 def case_design_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    return {"pass": "done" if state.get("validation_status") == "pass" else None}
+    failed = bool(state.get("attempt_failure"))
+    return {
+        "pass": "done" if not failed and state.get("validation_status") == "pass" else None,
+        "failed": "failed" if failed else None,
+    }
+
+
+def route_preparation_attempt(state: Mapping[str, object]) -> str:
+    return "failed" if state.get("attempt_failure") else "committed"
+
+
+def route_case_design_result(state: Mapping[str, object]) -> str:
+    return "review" if state.get("status") == "passed" else "failed"
+
+
+def route_case_design_repair(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return "failed"
+    return "done" if state.get("validation_status") == "pass" else "failed"
 
 
 def route_case_review(state: Mapping[str, object]) -> str:
@@ -100,8 +120,11 @@ __all__ = [
     "human_review_named_matches",
     "human_review_retry_named_matches",
     "route_case_design",
+    "route_case_design_repair",
+    "route_case_design_result",
     "route_case_review",
     "route_case_review_retry",
     "route_human_review",
     "route_human_review_retry",
+    "route_preparation_attempt",
 ]

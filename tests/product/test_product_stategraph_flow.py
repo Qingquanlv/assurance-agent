@@ -24,6 +24,7 @@ from assurance_product.graphs.factory import (
 from assurance_product.graphs.revisions import ENTRYPOINT_CONTRACTS, ENTRYPOINT_RECURSION_LIMITS
 from assurance_product.graphs.routes import (
     PRODUCT_EXCLUSIVE_ROUTES,
+    case_named_matches,
     coverage_repair_named_matches,
     execute_named_matches,
     execute_tail_named_matches,
@@ -32,6 +33,7 @@ from assurance_product.graphs.routes import (
     quality_named_matches,
     quality_recheck_named_matches,
     route_coverage_repair,
+    route_case,
     route_execute,
     route_execute_tail,
     route_issue_analysis,
@@ -59,6 +61,7 @@ _ROUTES_PATH = _GRAPHS_ROOT / "routes.py"
 
 _NAMED_MATCHES = {
     "prepare": prepare_named_matches,
+    "case": case_named_matches,
     "execute-tail": execute_tail_named_matches,
     "execute": execute_named_matches,
     "run": run_named_matches,
@@ -120,6 +123,7 @@ def _sequenced(updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
 def _flow_features(
     *,
     prepare: Mapping[str, object] | None = None,
+    case: Mapping[str, object] | None = None,
     generation: Mapping[str, object] | None = None,
     execute: Mapping[str, object] | None = None,
     run: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
@@ -138,8 +142,17 @@ def _flow_features(
         else _echo(assess or {"coverage_state": "satisfied", "rounds_used": 0, "rounds_budget": 1})
     )
     features["assurance.intake"] = IntakeGraphs(
-        prepare=_echo(prepare or {"decision": "pass", "artifacts": [{"path": "qa/changes", "digest": _SHA}]}),
-        case=_echo({"decision": "pass", "artifacts": [{"path": "qa/changes", "digest": _SHA}]}),
+        prepare=_echo(
+            prepare or {"status": "prepared", "artifacts": [{"path": "qa/changes", "digest": _SHA}]}
+        ),
+        case=_echo(
+            case
+            or {
+                "status": "passed",
+                "decision": "pass",
+                "artifacts": [{"path": "qa/changes", "digest": _SHA}],
+            }
+        ),
     )
     features["assurance.generation"] = GenerationGraphs(
         generation=_echo(generation or {"status": "passed", "families": {"api": {"completed": True}}}),
@@ -313,11 +326,18 @@ def test_full_composes_intake_execute_retro_and_improvement() -> None:
 
 
 def test_full_prepare_rejection_is_not_achieved() -> None:
-    graphs = _product_graphs(_flow_features(prepare={"decision": "reject"}))
+    graphs = _product_graphs(_flow_features(prepare={"status": "failed"}))
     result = invoke_product_root(graphs, "full", _public_input("full"))
     assert result["terminal"] == "not-achieved"
     output = ProductPublicOutput.model_validate(result["output"])
     assert output.status == "failed"
+
+
+def test_full_case_rejection_does_not_enter_generation() -> None:
+    graphs = _product_graphs(_flow_features(case={"status": "rejected", "decision": "reject"}))
+    result = invoke_product_root(graphs, "full", _public_input("full"))
+    assert result["terminal"] == "not-achieved"
+    assert "families" not in result
 
 
 def test_full_execute_tail_uses_compile_root_and_validates_execute_schema() -> None:
@@ -378,9 +398,11 @@ def test_exclusive_route(row: ExclusiveRouteRow) -> None:
 
 
 def test_product_exclusive_routes_match_yaml_conditions() -> None:
-    assert route_prepare({"decision": "pass"}) == "execute-tail"
-    assert route_prepare({"decision": "approved"}) == "execute-tail"
-    assert route_prepare({"decision": "reject"}) == "not-achieved"
+    assert route_prepare({"status": "prepared"}) == "prepared"
+    assert route_prepare({"status": "failed"}) == "failed"
+    assert route_case({"status": "passed", "decision": "pass"}) == "execute-tail"
+    assert route_case({"status": "passed", "decision": "approved"}) == "execute-tail"
+    assert route_case({"status": "rejected", "decision": "reject"}) == "not-achieved"
     assert route_execute_tail({"coverage_state": "satisfied"}) == "retro"
     assert route_execute_tail({"coverage_state": "exhausted"}) == "not-achieved"
     assert route_execute({"status": "passed"}) == "quality"
@@ -414,7 +436,7 @@ def test_product_exclusive_routes_match_yaml_conditions() -> None:
 
 def test_product_owned_inventory_has_no_pending_rows() -> None:
     product_rows = [row for row in EXCLUSIVE_ROUTE_INVENTORY if row.owner == "product"]
-    assert len(product_rows) == 8
+    assert len(product_rows) == 9
     assert all("pending" not in row.target_test for row in product_rows)
     assert all(
         row.target_test.startswith("tests/product/test_product_stategraph_flow.py") for row in product_rows

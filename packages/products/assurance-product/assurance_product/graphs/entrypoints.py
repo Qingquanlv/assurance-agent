@@ -9,6 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.stategraph.checkpoint_bridge import omit_checkpoint_bridge_fields
 
+from assurance_product.graphs.routes import route_prepare
 from assurance_product.graphs.state import ProductState
 from assurance_product.models import ProductInputV1, ProductPublicOutput, ProductReceiptRefV1
 
@@ -177,8 +178,28 @@ def compile_thin_root(
     return context.compile_root(builder)
 
 
-def build_intake_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="intake", adapt=adapt_intake)
+def build_intake_root(
+    context: GraphBuildContext,
+    prepare: CompiledStateGraph,
+    case: CompiledStateGraph,
+) -> CompiledStateGraph:
+    builder: StateGraph[ProductState] = StateGraph(ProductState)
+    builder.add_node("validate", validate_public_input("intake"))
+    builder.add_node("adapt", cast(Any, adapt_intake))
+    builder.add_node("prepare", prepare)
+    builder.add_node("case", case)
+    builder.add_node("publish", publish_public_output)
+    builder.add_edge(START, "validate")
+    builder.add_edge("validate", "adapt")
+    builder.add_edge("adapt", "prepare")
+    builder.add_conditional_edges(
+        "prepare",
+        cast(Any, route_prepare),
+        {"prepared": "case", "failed": "publish"},
+    )
+    builder.add_edge("case", "publish")
+    builder.add_edge("publish", END)
+    return context.compile_root(builder)
 
 
 def build_case_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:

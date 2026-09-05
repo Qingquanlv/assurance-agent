@@ -413,13 +413,13 @@ async def test_compiled_graph_dispatch_cursor_never_reclaims_consumed_arrival() 
         )
 
 
-async def test_compiled_prepare_first_arrival_is_exact_current_trigger() -> None:
+async def test_compiled_case_first_arrival_is_exact_current_trigger() -> None:
     harness = GraphHarness()
     bundle = build_intake_graphs(
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_prepare_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
@@ -444,13 +444,13 @@ async def test_compiled_prepare_first_arrival_is_exact_current_trigger() -> None
     assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
 
 
-async def test_compiled_prepare_repeated_epochs_preserve_exact_rounds() -> None:
+async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
     harness = GraphHarness()
     bundle = build_intake_graphs(
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_prepare_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
