@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import yaml
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,7 @@ from assurance_product.status import (
     load_persisted_status,
     render_status_from_langgraph,
 )
+from assurance_intake.contracts.plan import TestFamilyPolicyV1
 
 _TEST_CRASH_AT: str | None = None
 
@@ -254,6 +256,18 @@ class AssuranceProductApplication:
         if product_input.change_id != change_id:
             raise ValueError("change does not match product input change_id")
         root_input_data = product_input.model_dump(mode="json")
+        if entrypoint in {"full", "intake"}:
+            resource = composition.registries.resources.entries.get(product_input.product_policy.resource_id)
+            try:
+                policy = yaml.safe_load(resource.content)
+                family_policy = TestFamilyPolicyV1.model_validate(policy["test_family_policy"])
+            except (AttributeError, KeyError, TypeError, ValueError, yaml.YAMLError) as error:
+                raise ValueError("authenticated product policy has invalid test_family_policy") from error
+            if not set(family_policy.required) <= set(product_input.candidate_test_families):
+                raise ValueError("policy required families must be candidates")
+            if not set(family_policy.allowed) & set(product_input.candidate_test_families):
+                raise ValueError("candidate and policy allowed families must intersect")
+            root_input_data["family_policy"] = family_policy.model_dump(mode="json")
         root_input = cast(JSONValue, root_input_data)
         root_input_digest = canonical_digest(cast(JSONValue, root_input_data))
         product_lock = product_lock_from_composition(composition)

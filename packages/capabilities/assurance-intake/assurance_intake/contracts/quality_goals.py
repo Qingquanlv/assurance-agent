@@ -109,16 +109,12 @@ class PreparedQualityGoalV1(FrozenModel):
 
     @field_validator("source_resource_digests")
     @classmethod
-    def _source_resource_digests(
-        cls, value: tuple[tuple[str, str], ...]
-    ) -> tuple[tuple[str, str], ...]:
+    def _source_resource_digests(cls, value: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
         return validate_resource_digests(value)
 
     @field_validator("required_test_families")
     @classmethod
-    def _required_test_families(
-        cls, value: tuple[TestFamily, ...]
-    ) -> tuple[TestFamily, ...]:
+    def _required_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
         return validate_family_tuple(value)
 
     @field_validator("metric_catalog")

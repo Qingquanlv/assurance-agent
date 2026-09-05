@@ -58,6 +58,7 @@ from tests.product.test_product_input import valid_product_input
 from tests.product.test_stategraph_entrypoints import _real_features, _stub_features
 
 _SHA = "a" * 64
+_PLAN_DIGEST = "b" * 64
 _CASE_DELTA = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
 _GRAPHS_ROOT = (
     Path(__file__).resolve().parents[2] / "packages/products/assurance-product/assurance_product/graphs"
@@ -81,11 +82,31 @@ def _receipt(name: str) -> ReceiptRef:
     return ReceiptRef(receipt_id=name, receipt_digest=_SHA)
 
 
+def _plan_ref() -> EvidenceArtifactRefV1:
+    return _ref(
+        f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+        "c" * 64,
+    )
+
+
+def _plan_update() -> dict[str, object]:
+    return {
+        "plan_digest": _PLAN_DIGEST,
+        "plan_ref": _plan_ref().model_dump(mode="json"),
+        "selected_test_families": ["api"],
+    }
+
+
 def _reviewed(epoch: int = 0) -> ReviewedCaseV1:
     return ReviewedCaseV1(
         change_id="CH-DEMO-001",
         coverage_epoch=epoch,
-        preparation_refs=(_ref("qa/changes/CH-DEMO-001/preparation/context.json"),),
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
+        preparation_refs=(
+            _plan_ref(),
+            _ref("qa/changes/CH-DEMO-001/preparation/context.json"),
+        ),
         case_refs=(_ref(_CASE_DELTA),),
         review_ref=_ref("qa/changes/CH-DEMO-001/review/case-review.json"),
     )
@@ -107,6 +128,8 @@ def _generation(epoch: int = 0) -> dict[str, object]:
     result = GenerationCycleResultV1(
         change_id="CH-DEMO-001",
         coverage_epoch=epoch,
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         reviewed_case=_reviewed(epoch),
         mapping_ref=_ref(f"qa/changes/CH-DEMO-001/generation/epochs/{epoch}/mapping.json"),
         source_refs=(_ref(f"qa/changes/CH-DEMO-001/generated/epochs/{epoch}/tests/test_case.py"),),
@@ -120,6 +143,8 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
     result = ExecutionCycleResultV1(
         change_id="CH-DEMO-001",
         coverage_epoch=epoch,
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         repair_round=repair_round,
         batch_id=f"20260905T120{epoch}{repair_round}0Z",
         executed_at=datetime(2026, 9, 5, 12, epoch, repair_round, tzinfo=UTC),
@@ -145,6 +170,8 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
         change_id="CH-DEMO-001",
         coverage_epoch=epoch,
         batch_id=execution.batch_id,
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         disposition=disposition,  # type: ignore[arg-type]
         inspection_receipt=_receipt(f"inspect-{epoch}"),
         reviewed_case=_reviewed(epoch),
@@ -169,6 +196,8 @@ def _report(epoch: int = 0) -> dict[str, object]:
         coverage_epoch=epoch,
         batch_id=inspection.batch_id,
         inspection_receipt=inspection.inspection_receipt,
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         report_refs=(ref,),
         report_receipt=receipt,
     )
@@ -186,6 +215,8 @@ def _applied(epoch: int = 0, repair_round: int = 1) -> dict[str, object]:
         change_id="CH-DEMO-001",
         coverage_epoch=epoch,
         repair_round=repair_round,
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         status="applied",
         changed_test_refs=(source,),
         mapping_ref=_ref(f"qa/changes/CH-DEMO-001/generation/epochs/{epoch}/mapping.json"),
@@ -207,11 +238,16 @@ def _build_context(checkpointer: Any = None) -> EngineGraphBuildContext:
 
 def _public_input(entrypoint: str, **overrides: object) -> dict[str, object]:
     case_delta = (_CASE_DELTA,) if entrypoint in {"intake", "case", "full"} else ()
-    families = ("api",) if entrypoint in {"full", "execute"} else ()
+    families = ("api",) if entrypoint in {"full", "intake"} else ()
+    resolved_plan_ref = _plan_ref().model_dump(mode="json") if entrypoint in {"case", "execute"} else None
+    values: dict[str, object] = {
+        "case_delta_paths": case_delta,
+        "candidate_test_families": families,
+        "resolved_plan_ref": resolved_plan_ref,
+    }
+    values.update(overrides)
     payload = valid_product_input(
-        case_delta_paths=case_delta,
-        selected_test_families=families,
-        **overrides,
+        **values,
     )
     return ProductInputV1.model_validate(payload).model_dump(mode="json")
 
@@ -270,12 +306,14 @@ def _flow_features(
         prepare=_echo(
             prepare
             or {
+                **_plan_update(),
                 "status": "prepared",
                 "preparation_refs": [
                     _ref("qa/changes/CH-DEMO-001/preparation/context.json").model_dump(mode="json")
                 ],
             }
         ),
+        load_plan=_echo({**_plan_update(), "status": "prepared"}),
         case=_graph(case or _case()),
     )
     features["assurance.generation"] = GenerationGraphs(
@@ -445,6 +483,7 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
             "prepare",
             (
                 {
+                    **_plan_update(),
                     "status": "prepared",
                     "preparation_refs": [
                         _ref("qa/changes/CH-DEMO-001/preparation/context.json").model_dump(mode="json")
@@ -452,6 +491,7 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
                 },
             ),
         ),
+        load_plan=intake.load_plan,
         case=counted("case", (_case(0), _case(1))),
     )
     del intake
@@ -579,6 +619,8 @@ def test_full_routes_require_current_typed_case_and_tail_results() -> None:
     assert route_case_result({"status": "passed", "decision": "pass"}) == "failed"
     insufficient = ExecuteTailResultV1(
         status="coverage_insufficient",
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         inspection=InspectionOutcomeV1.model_validate(
             _inspection(disposition="coverage_insufficient")["inspection_outcome"]
         ),

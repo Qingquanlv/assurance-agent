@@ -28,6 +28,7 @@ from assurance_intake.contracts.agent import (
     ArtifactDigestV1,
     ArtifactListResultV1,
     CaseDesignOutputV1,
+    CaseFinalizeInputV1,
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
@@ -39,6 +40,7 @@ from assurance_intake.contracts.review import (
     normalized_auto_fix_edits,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.contracts.plan import decode_plan
 from assurance_intake.operations.agent_skills import InputError, failed_input, validate_input
 from assurance_intake.operations.agent_skills import case_review_outputs
 
@@ -748,14 +750,23 @@ class ExploreFinalizeHandler:
 
 
 class CaseDesignFinalizeHandler:
-    input_model = AgentFinalizeInputV1
+    input_model = CaseFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        parsed: AgentFinalizeInputV1 | None = None
+        parsed: CaseFinalizeInputV1 | None = None
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_input(CaseFinalizeInputV1, request.input)
             parsed = payload
             change_id = _case_change_id(payload.change_id)
+            try:
+                plan_path = _workspace_file(context.project_root, payload.plan_ref.path)
+                plan = decode_plan(plan_path.read_bytes(), payload.plan_ref)
+            except (OSError, ValidationError, ValueError) as error:
+                raise InputError(f"invalid frozen assurance plan: {error}") from error
+            if plan.change_id != change_id or plan.plan_digest != payload.plan_digest:
+                raise InputError("frozen assurance plan does not match case input")
+            if plan.selected_test_families != payload.selected_test_families:
+                raise InputError("case selected families do not match frozen assurance plan")
             capability_leafs = _leafs(payload.capability_leafs)
             receipt = _artifact_list(payload)
             change_root = f"qa/changes/{change_id}"
@@ -855,11 +866,18 @@ class CaseDesignFinalizeHandler:
 
 
 class CaseReviewFinalizeHandler:
-    input_model = AgentFinalizeInputV1
+    input_model = CaseFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
+            payload = validate_input(CaseFinalizeInputV1, request.input)
+            try:
+                plan_path = _workspace_file(context.project_root, payload.plan_ref.path)
+                plan = decode_plan(plan_path.read_bytes(), payload.plan_ref)
+            except (OSError, ValidationError, ValueError) as error:
+                raise InputError(f"invalid frozen assurance plan: {error}") from error
+            if plan.plan_digest != payload.plan_digest:
+                raise InputError("frozen assurance plan does not match case review input")
             try:
                 document = CaseReviewResultV1.model_validate(_structured(payload))
             except ValidationError as error:
@@ -924,6 +942,8 @@ class CaseReviewFinalizeHandler:
                 reviewed = ReviewedCaseV1(
                     change_id=change_id,
                     coverage_epoch=payload.coverage_epoch,
+                    plan_digest=payload.plan_digest,
+                    plan_ref=payload.plan_ref,
                     preparation_refs=payload.preparation_refs,
                     case_refs=payload.case_refs,
                     review_ref=review_ref,

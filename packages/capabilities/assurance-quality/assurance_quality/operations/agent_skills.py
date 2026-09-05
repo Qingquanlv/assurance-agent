@@ -626,6 +626,8 @@ class ReportFinalizeHandler:
                 coverage_epoch=business.coverage_epoch,
                 batch_id=business.batch_id,
                 purpose=business.purpose,
+                plan_digest=business.plan_digest,
+                plan_ref=business.plan_ref,
                 inspection_receipt=business.inspection.inspection_receipt,
                 report_refs=refs,
             )

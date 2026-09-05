@@ -12,6 +12,8 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_generation.contracts.workflow import ResolveGenerationInputV1
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.workflow import require_same_plan
 
 
 class InputError(ValueError):
@@ -49,6 +51,16 @@ def authenticate_reviewed_case(
         raise InputError("reviewed case change_id does not match generation input")
     if reviewed.coverage_epoch != coverage_epoch:
         raise InputError("generation epoch must match the current Reviewed Case")
+    try:
+        plan = decode_plan(_file(project_root, reviewed.plan_ref).read_bytes(), reviewed.plan_ref)
+    except (ValidationError, ValueError) as error:
+        raise InputError(f"invalid frozen assurance plan: {error}") from error
+    require_same_plan(
+        reviewed.plan_digest,
+        reviewed.plan_ref,
+        plan.plan_digest,
+        reviewed.plan_ref,
+    )
     for ref in (*reviewed.preparation_refs, *reviewed.case_refs, reviewed.review_ref):
         _file(project_root, ref)
     try:
@@ -84,6 +96,15 @@ def resolve_generation_input(data: object, project_root: Path) -> ReviewedCaseV1
         change_id=request.change_id,
         coverage_epoch=reviewed.coverage_epoch,
     )
+    try:
+        require_same_plan(
+            request.plan_digest,
+            request.plan_ref,
+            authenticated.plan_digest,
+            authenticated.plan_ref,
+        )
+    except ValueError as error:
+        raise InputError(str(error)) from error
     if not standalone and authenticated.coverage_epoch != request.coverage_epoch:
         raise InputError("full generation epoch must match the current Reviewed Case")
     if standalone and authenticated.coverage_epoch != request.coverage_epoch:

@@ -16,11 +16,14 @@ from assurance_intake.graphs.nodes import (
     publish_artifacts,
     publish_case_design,
     publish_case_review,
+    publish_plan,
     select_case_design,
     select_case_design_repair,
     select_case_review,
     select_explore,
     select_intake,
+    select_load_plan,
+    select_resolve_plan,
     terminal_done,
     terminal_failed,
 )
@@ -33,6 +36,8 @@ _INTAKE_ID = "assurance.intake.agent.intake.v1"
 _EXPLORE_ID = "assurance.intake.agent.explore.v1"
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
+_RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
+_LOAD_PLAN_ID = "assurance.intake.task.load-plan"
 _CASE_DESIGN_PATHS: dict[Hashable, str] = {
     "done": "done",
     "case-design-repair": "intake.case-design-repair",
@@ -43,6 +48,7 @@ _CASE_DESIGN_PATHS: dict[Hashable, str] = {
 @dataclass(frozen=True, slots=True)
 class IntakeGraphs:
     prepare: CompiledStateGraph
+    load_plan: CompiledStateGraph
     case: CompiledStateGraph
 
 
@@ -63,6 +69,22 @@ def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
         select=select_explore,
         publish=publish_artifacts,
     )
+    resolve_plan = _compile_leaf(
+        context,
+        contract_id=_RESOLVE_PLAN_ID,
+        semantic_node_id="intake.resolve-plan",
+        activation=activation_one_shot,
+        select=select_resolve_plan,
+        publish=publish_plan,
+    )
+    load_plan = _compile_leaf(
+        context,
+        contract_id=_LOAD_PLAN_ID,
+        semantic_node_id="intake.load-plan",
+        activation=activation_one_shot,
+        select=select_load_plan,
+        publish=publish_plan,
+    )
     case_design = _compile_case_design(context)
     case_review = _compile_leaf(
         context,
@@ -77,7 +99,9 @@ def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:
             context,
             intake=intake,
             explore=explore,
+            resolve_plan=resolve_plan,
         ),
+        load_plan=load_plan,
         case=build_case_graph(context, case_design=case_design, case_review=case_review),
     )
 

@@ -4,16 +4,18 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import TypedDict, cast
 
 import pytest
 from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_digest
+from tests.acg_plan_fixture import install_plan
 
 CHANGE_ID = "CH-DEMO-001"
 TARGET = "tests/api/test_users.py"
 _SHA = "a" * 64
+_TEST_PLAN_DIGEST = "d" * 64
 _PUBLICATION_STATES = ("not_ready", "ready", "published", "drifted")
 
 
@@ -94,7 +96,18 @@ def valid_status(**overrides: object) -> dict[str, object]:
     return payload
 
 
-def _execution_evidence(*, batch_id: str, status: str) -> dict[str, object]:
+def _execution_evidence(
+    *,
+    batch_id: str,
+    status: str,
+    plan_digest: str = _TEST_PLAN_DIGEST,
+    plan_ref: dict[str, str] | None = None,
+) -> dict[str, object]:
+    if plan_ref is None:
+        plan_ref = {
+            "path": (f"qa/changes/{CHANGE_ID}/plan/{plan_digest}/resolved-assurance-plan.json"),
+            "digest": "e" * 64,
+        }
     mapping: dict[str, object] = {
         "schema_version": "1",
         "selected": [TARGET],
@@ -126,6 +139,8 @@ def _execution_evidence(*, batch_id: str, status: str) -> dict[str, object]:
         "change_id": CHANGE_ID,
         "batch_id": batch_id,
         "executed_at": "2026-09-05T00:00:00Z",
+        "plan_digest": plan_digest,
+        "plan_ref": plan_ref,
         "selected_targets": {
             "api": True,
             "e2e": False,
@@ -162,11 +177,34 @@ def _execution_gate(
     }
 
 
+class _PlanBinding(TypedDict):
+    plan_digest: str
+    plan_ref: dict[str, str]
+
+
+def _plan_binding_for(project: Path) -> _PlanBinding:
+    evidence = json.loads(
+        (project / "qa" / "changes" / CHANGE_ID / "execution" / "execute-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return {
+        "plan_digest": cast(str, evidence["plan_digest"]),
+        "plan_ref": cast(dict[str, str], evidence["plan_ref"]),
+    }
+
+
 def _ready_change(tmp_path: Path, *, execution_status: str = "passed") -> Path:
     project = _project(tmp_path)
+    plan, plan_ref = install_plan(project, CHANGE_ID)
     _promote(project, "api", TARGET, b"generated-candidate\n")
     (project / TARGET).write_bytes(b"original-sut\n")
-    evidence = _execution_evidence(batch_id="batch-execute", status=execution_status)
+    evidence = _execution_evidence(
+        batch_id="batch-execute",
+        status=execution_status,
+        plan_digest=plan.plan_digest,
+        plan_ref=plan_ref,
+    )
     _write(
         project,
         f"qa/changes/{CHANGE_ID}/execution/execute-result.json",
@@ -217,10 +255,22 @@ def _quality_gate_for(
         return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(path.read_bytes()).hexdigest())
 
     batch_id = cast(str, execution_gate["batch_id"])
+    execution_document = json.loads(
+        (project / prefix / "execution" / "execute-result.json").read_text(encoding="utf-8")
+    )
+    plan_digest = cast(str, execution_document["plan_digest"])
+    plan_ref = EvidenceArtifactRefV1.model_validate(execution_document["plan_ref"])
     reviewed = ReviewedCaseV1(
         change_id=CHANGE_ID,
         coverage_epoch=0,
-        preparation_refs=(ref(f"{prefix}/requirement.md", b"Reviewed requirement"),),
+        plan_digest=plan_digest,
+        plan_ref=plan_ref,
+        preparation_refs=tuple(
+            sorted(
+                (plan_ref, ref(f"{prefix}/requirement.md", b"Reviewed requirement")),
+                key=lambda item: (item.path, item.digest),
+            )
+        ),
         case_refs=(ref(f"{prefix}/cases/items/case.yaml", b"reviewed cases"),),
         review_ref=ref(f"{prefix}/review/case-review.json", b'{"decision":"pass"}'),
     )
@@ -232,6 +282,8 @@ def _quality_gate_for(
         change_id=CHANGE_ID,
         coverage_epoch=0,
         batch_id=batch_id,
+        plan_digest=plan_digest,
+        plan_ref=plan_ref,
         disposition="satisfied",
         coverage_state="satisfied",
         inspection_receipt=inspection_receipt,
@@ -245,6 +297,8 @@ def _quality_gate_for(
         coverage_epoch=0,
         batch_id=batch_id,
         inspection_receipt=inspection_receipt,
+        plan_digest=plan_digest,
+        plan_ref=plan_ref,
         report_refs=(ref(f"{prefix}/report/report.md"),),
         report_receipt=ReceiptRef(receipt_id="report", receipt_digest=_SHA),
     )
@@ -365,7 +419,7 @@ def test_finalize_achieved_accepts_authenticated_successful_rerun(tmp_path: Path
     from assurance_product.status import finalize_achieved
 
     project = _ready_change(tmp_path, execution_status="failed")
-    rerun = _execution_evidence(batch_id="batch-rerun", status="passed")
+    rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(project))
     _write(
         project,
         f"qa/changes/{CHANGE_ID}/execution/run-result.json",
@@ -417,7 +471,7 @@ def test_finalize_achieved_rejects_unbound_successful_rerun(tmp_path: Path) -> N
     from assurance_product.status import finalize_achieved
 
     project = _ready_change(tmp_path, execution_status="failed")
-    rerun = _execution_evidence(batch_id="batch-rerun", status="passed")
+    rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(project))
     _write(
         project,
         f"qa/changes/{CHANGE_ID}/execution/run-result.json",
@@ -433,7 +487,7 @@ def test_finalize_achieved_rejects_drifted_rerun_authority(tmp_path: Path, drift
     from assurance_product.status import finalize_achieved
 
     project = _ready_change(tmp_path, execution_status="failed")
-    rerun = _execution_evidence(batch_id="batch-rerun", status="passed")
+    rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(project))
     _write(
         project,
         f"qa/changes/{CHANGE_ID}/execution/run-result.json",

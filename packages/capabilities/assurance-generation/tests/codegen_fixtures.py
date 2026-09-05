@@ -90,6 +90,8 @@ def codegen_input(family: str) -> dict[str, Any]:
     payload = plan_input(family)
     return {
         "change_id": payload["change_id"],
+        "plan_digest": payload["plan_digest"],
+        "plan_ref": payload["plan_ref"],
         "capability_leafs": payload["capability_leafs"],
         "reviewed_plan": valid_plan_result(family),
         "reviewed_cases": reviewed_cases(family),

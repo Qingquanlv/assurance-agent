@@ -22,6 +22,8 @@ class HealingRepairPublicV1(FrozenModel):
 
 class HealingState(CheckpointBridgeState, total=False):
     change_id: str
+    plan_digest: str
+    plan_ref: dict[str, str]
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]
     classification: str

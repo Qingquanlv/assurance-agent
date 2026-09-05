@@ -284,6 +284,8 @@ def run_closed_mapping(
     report = receipt.report or {}
     evidence = normalize_evidence(
         change_id=payload.change_id,
+        plan_digest=payload.plan_digest,
+        plan_ref=payload.plan_ref,
         batch_id=payload.batch_id,
         selected_targets=payload.selected_targets,
         mapping=mapping,

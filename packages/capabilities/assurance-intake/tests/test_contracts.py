@@ -43,21 +43,25 @@ _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
         "1",
         "c0053b53d8d5358e7818694c5313e7632a62e379113c161c959f2ed46e2ea1f5",
     ),
+    "assurance.intake.schema.resolved-assurance-plan.v1": (
+        "1",
+        "0a095b5f9b45699c07e2d1c3ee67c5f3fa09c78a72f695191278587de289a499",
+    ),
     "assurance.intake.workflow.case.input.v1": (
         "1",
-        "a092fe28e54f550001e021c726350a082bb5797c8868abd13730baae4c54585a",
+        "2eba0cec702a8417a5d8ad5f95713c2d6f2721a308a621cd81cd862d9d9f1d93",
     ),
     "assurance.intake.workflow.case.output.v1": (
         "1",
-        "acdb88e9650b96d7305d3919cb0a9280af3224495e3bd341af2deb5d2cf2075e",
+        "7f52fd1fd1c53ceb8704c05ea7ce059d27302d5b3a994b852f470dd1a64253a7",
     ),
     "assurance.intake.workflow.prepare.input.v1": (
         "1",
-        "9784c26ac8e68916b6961943bd38c2b26082c1ff0b19d525a427844bcd70ca46",
+        "94c01c29cf5e7ddab08f73f3adef4fec2206a64fa56938e4b52b5e7380f10e08",
     ),
     "assurance.intake.workflow.prepare.output.v1": (
         "1",
-        "acdb88e9650b96d7305d3919cb0a9280af3224495e3bd341af2deb5d2cf2075e",
+        "9f78ed3908421163bfffc2579e083300914bbb9cc9a02c8bf54fc7a3bf97e6eb",
     ),
 }
 
@@ -69,10 +73,19 @@ _SHA = "a" * 64
 
 
 def _reviewed_case() -> ReviewedCaseV1:
+    plan_ref = EvidenceArtifactRefV1(
+        path=f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+        digest=_SHA,
+    )
     return ReviewedCaseV1(
         change_id="CH-DEMO-001",
         coverage_epoch=0,
-        preparation_refs=(EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/requirement.md", digest=_SHA),),
+        plan_digest=_SHA,
+        plan_ref=plan_ref,
+        preparation_refs=(
+            plan_ref,
+            EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/requirement.md", digest=_SHA),
+        ),
         case_refs=(EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/cases/menus/case.yaml", digest=_SHA),),
         review_ref=EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/review/case-review.json", digest=_SHA),
     )

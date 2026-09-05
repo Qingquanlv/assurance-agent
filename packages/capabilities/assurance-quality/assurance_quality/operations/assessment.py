@@ -20,8 +20,20 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1
-from assurance_intake.contracts.cases import CaseEntryAuthoring, CaseYamlAuthoring
+from assurance_intake.contracts.cases import (
+    CaseEntryAuthoring,
+    CaseYamlAuthoring,
+    MinimumCoverageMatrixAuthoring,
+)
+from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.quality_goals import (
+    CoverageGoal,
+    PreparedObligationV1,
+    journey_keys_from_document,
+    normalize_goal_obligations,
+)
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
     MaterializeAssessmentInputV1,
@@ -49,6 +61,7 @@ from assurance_quality.operations.metrics import (
 from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
 from assurance_quality.operations.common import json_digest
+from assurance_quality.operations.goal_scope import goal_case_map
 
 
 class AssessmentInputError(ValueError):
@@ -58,6 +71,10 @@ class AssessmentInputError(ValueError):
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
 _GOAL_ORDER = ("constraint_coverage", "auth_matrix_coverage", "journey_coverage")
 _BATCH_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_GOAL_RESOURCE_PATHS = {
+    "assurance.product.configuration.capability-catalog": ".aa/capability-catalog.json",
+    "assurance.product.configuration.data-knowledge": ".aa/data-knowledge.yaml",
+}
 
 
 def _read_ref(root: Path, ref: EvidenceArtifactRefV1) -> bytes:
@@ -152,32 +169,88 @@ def _policy(
         raise AssessmentInputError(f"policy_error: {error}") from error
 
 
-def _applicable_goals(cases: tuple[CaseEntryAuthoring, ...]) -> tuple[str, ...]:
-    goals: set[str] = set()
-    trace_keys = {key for case in cases for key in case.trace}
-    if any(".constraints." in key for key in trace_keys):
-        goals.add("constraint_coverage")
-    if any(key.startswith(("auth.", "auth_matrix.")) for key in trace_keys):
-        goals.add("auth_matrix_coverage")
-    if any(case.type == "E2E" for case in cases):
-        goals.add("journey_coverage")
-    return tuple(goal for goal in _GOAL_ORDER if goal in goals)
+def _prepared_obligations(
+    root: Path,
+    request: MaterializeAssessmentInputV1,
+    *,
+    plan: ResolvedAssurancePlan,
+) -> tuple[PreparedObligationV1, ...]:
+    quality_goal = plan.quality_goal
+    try:
+        advisory = ExploreAdvisoryV1.model_validate(json.loads(_read_ref(root, quality_goal.obligations_ref)))
+    except (json.JSONDecodeError, ValidationError) as error:
+        raise AssessmentInputError(f"invalid prepared goal obligations: {error}") from error
+    if advisory.change_id != request.reviewed_case.change_id:
+        raise AssessmentInputError("prepared goal obligations belong to another change")
+
+    source_bytes: dict[str, bytes] = {}
+    for resource_id, digest in quality_goal.source_resource_digests:
+        try:
+            path = _GOAL_RESOURCE_PATHS[resource_id]
+        except KeyError as error:
+            raise AssessmentInputError(f"unsupported prepared goal source: {resource_id}") from error
+        source_bytes[resource_id] = _read_ref(
+            root,
+            EvidenceArtifactRefV1(path=path, digest=digest),
+        )
+    if set(source_bytes) != set(_GOAL_RESOURCE_PATHS):
+        raise AssessmentInputError("prepared goals require catalog and data knowledge sources")
+    try:
+        catalog = json.loads(source_bytes["assurance.product.configuration.capability-catalog"])
+        knowledge = yaml.safe_load(source_bytes["assurance.product.configuration.data-knowledge"])
+        if not isinstance(catalog, Mapping) or not isinstance(knowledge, Mapping):
+            raise AssessmentInputError("prepared goal sources must be mappings")
+        raw_leafs = catalog.get("typed_leafs")
+        if not isinstance(raw_leafs, list) or any(not isinstance(item, str) for item in raw_leafs):
+            raise AssessmentInputError("capability catalog typed_leafs are invalid")
+        obligations = normalize_goal_obligations(
+            advisory,
+            capability_leafs=frozenset(raw_leafs),
+            journey_keys=frozenset(journey_keys_from_document(knowledge)),
+        )
+    except (json.JSONDecodeError, yaml.YAMLError, ValidationError, ValueError) as error:
+        if isinstance(error, AssessmentInputError):
+            raise
+        raise AssessmentInputError(f"invalid prepared goal sources: {error}") from error
+    return obligations
 
 
-def _goal_obligations(goal: str, cases: tuple[CaseEntryAuthoring, ...]) -> Mapping[str, frozenset[str]]:
-    if goal == "constraint_coverage":
-        return {
-            key: frozenset(case.case_id for case in cases if key in case.trace)
-            for key in sorted({key for case in cases for key in case.trace if ".constraints." in key})
-        }
-    if goal == "auth_matrix_coverage":
-        return {
-            key: frozenset(case.case_id for case in cases if key in case.trace)
-            for key in sorted(
-                {key for case in cases for key in case.trace if key.startswith(("auth.", "auth_matrix."))}
-            )
-        }
-    return {case.case_id: frozenset({case.case_id}) for case in cases if case.type == "E2E"}
+def _reviewed_goal_maps(
+    root: Path,
+    request: MaterializeAssessmentInputV1,
+    cases: tuple[CaseEntryAuthoring, ...],
+) -> dict[CoverageGoal, dict[str, tuple[str, ...]]]:
+    matrix_path = f"qa/changes/{request.reviewed_case.change_id}/trace/minimum-coverage-matrix.json"
+    matrix_ref = next(
+        (ref for ref in request.reviewed_case.preparation_refs if ref.path == matrix_path),
+        None,
+    )
+    if matrix_ref is None:
+        raise AssessmentInputError("Reviewed Case is missing its minimum coverage matrix")
+    try:
+        matrix = MinimumCoverageMatrixAuthoring.model_validate(json.loads(_read_ref(root, matrix_ref)))
+    except (json.JSONDecodeError, ValidationError) as error:
+        raise AssessmentInputError(f"invalid reviewed minimum coverage matrix: {error}") from error
+    case_by_id = {case.case_id: case for case in cases}
+    result: dict[CoverageGoal, dict[str, tuple[str, ...]]] = {
+        "constraint_coverage": {},
+        "auth_matrix_coverage": {},
+        "journey_coverage": {},
+    }
+    for row in matrix.root:
+        unknown = sorted(set(row.covered_by_cases) - set(case_by_id))
+        if unknown:
+            raise AssessmentInputError(f"minimum coverage matrix references unknown active cases: {unknown}")
+        case_ids = tuple(sorted(row.covered_by_cases))
+        if ".constraints." in row.key:
+            result["constraint_coverage"][row.key] = case_ids
+        if row.key.startswith(("auth.", "auth_matrix.")):
+            result["auth_matrix_coverage"][row.key] = case_ids
+        if row.category == "e2e" or (
+            row.category is None and any(case_by_id[case_id].type == "E2E" for case_id in case_ids)
+        ):
+            result["journey_coverage"][row.key] = case_ids
+    return result
 
 
 def _metrics(
@@ -186,12 +259,14 @@ def _metrics(
     projection: TraceProjectionV2,
     policy_digest: str,
     computed_at: datetime,
+    baseline: tuple[PreparedObligationV1, ...],
+    reviewed: Mapping[CoverageGoal, Mapping[str, tuple[str, ...]]],
 ) -> MetricsDocument:
     trace = projection
     rows = {row.case_id: row for row in trace.rows}
 
-    def scope(goal: str) -> MetricScope | None:
-        obligations = _goal_obligations(goal, cases)
+    def scope(goal: CoverageGoal) -> MetricScope | None:
+        obligations = goal_case_map(goal, baseline=baseline, reviewed=reviewed[goal])
         if not obligations:
             return None
         uncovered = tuple(
@@ -294,6 +369,12 @@ def materialize_assessment_inputs(
 ) -> AssessmentInputsV1:
     if _BATCH_TOKEN.fullmatch(request.execution.batch_id) is None:
         raise AssessmentInputError("execution batch_id must be a canonical path token")
+    try:
+        plan = decode_plan(_read_ref(project_root, request.plan_ref), request.plan_ref)
+    except (ValidationError, ValueError) as error:
+        raise AssessmentInputError(f"invalid frozen assurance plan: {error}") from error
+    if plan.plan_digest != request.plan_digest:
+        raise AssessmentInputError("assessment plan digest does not match frozen plan")
     for ref in (
         *request.reviewed_case.preparation_refs,
         request.reviewed_case.review_ref,
@@ -337,6 +418,16 @@ def materialize_assessment_inputs(
     if request.execution.final_status != expected_status:
         raise AssessmentInputError("execution cycle final_status disagrees with evidence")
     policy, sufficiency_policy = _policy(project_root, request)
+    if plan.policy_resource_id != request.policy_resource_id:
+        raise AssessmentInputError("assessment policy resource differs from frozen plan")
+    if plan.policy_digest != request.policy_sha256:
+        raise AssessmentInputError("assessment policy digest differs from frozen plan")
+    if plan.quality_goal.coverage_policy != policy:
+        raise AssessmentInputError("current coverage policy differs from frozen plan")
+    if plan.quality_goal.sufficiency_policy != sufficiency_policy:
+        raise AssessmentInputError("current sufficiency policy differs from frozen plan")
+    baseline = _prepared_obligations(project_root, request, plan=plan)
+    reviewed_goal_maps = _reviewed_goal_maps(project_root, request, cases)
     trace_cases = tuple(
         TraceCaseInput(
             case_id=case.case_id,
@@ -377,8 +468,18 @@ def materialize_assessment_inputs(
         projection=projection,
         policy_digest=request.policy_sha256,
         computed_at=request.execution_at,
+        baseline=baseline,
+        reviewed=reviewed_goal_maps,
     )
-    goals = _applicable_goals(cases)
+    goals = tuple(
+        goal
+        for goal in _GOAL_ORDER
+        if goal_case_map(
+            cast(CoverageGoal, goal),
+            baseline=baseline,
+            reviewed=reviewed_goal_maps[cast(CoverageGoal, goal)],
+        )
+    )
     selected = {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
     scope = ActiveCoverageScopeV1.model_validate(
         {
@@ -409,6 +510,8 @@ def materialize_assessment_inputs(
         change_id=request.reviewed_case.change_id,
         coverage_epoch=request.reviewed_case.coverage_epoch,
         batch_id=request.execution.batch_id,
+        plan_digest=request.plan_digest,
+        plan_ref=request.plan_ref,
         scope=scope,
         policy=policy,
         trace_ref=trace_ref,

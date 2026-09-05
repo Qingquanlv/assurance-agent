@@ -8,7 +8,7 @@ execution ``final_status``.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from assurance_quality.contracts.common import (
     CoverageDimension,
@@ -16,6 +16,7 @@ from assurance_quality.contracts.common import (
     GateStatus,
     ReportRiskLevel,
 )
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 ScoreValue = float | Literal["N/A"]
 
@@ -47,6 +48,11 @@ class ReportDefects(BaseModel):
     environment: list[ReportDefect]
 
 
+class ReportPlan(BaseModel):
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+
+
 class IssueReport(BaseModel):
     """Embedded Issue section — schema 1.1 only.
 
@@ -76,6 +82,7 @@ class QualityReport(BaseModel):
     schema_version: Literal["1.1"]
     change_id: str
     batch_id: str
+    plan: ReportPlan
     final_status: GateStatus
     quality_score: float
     score_breakdown: QualityScoreBreakdown

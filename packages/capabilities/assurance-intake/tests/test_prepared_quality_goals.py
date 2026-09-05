@@ -32,7 +32,7 @@ def _advisory(mrc: dict[str, object]) -> dict[str, object]:
     return {
         "schema_version": "1",
         "change_id": "CH-1",
-        "context_ref": "qa/changes/CH-1/explore/context.json",
+        "context_ref": "explore/context.json",
         "generated_at": "2026-09-05T00:00:00Z",
         "executive_summary": "Checkout changes",
         "watchlist": [],
@@ -184,7 +184,10 @@ def test_prepare_quality_goal_authenticates_every_source(tmp_path: Path) -> None
             "policy_resource_id": "assurance.product.configuration.product-policy",
             "policy_digest": _sha(policy_bytes),
             "family_policy": {"required": (), "allowed": ("api", "e2e")},
-            "exploration_ref": {"path": explore_path.relative_to(project).as_posix(), "digest": _sha(explore_bytes)},
+            "exploration_ref": {
+                "path": explore_path.relative_to(project).as_posix(),
+                "digest": _sha(explore_bytes),
+            },
             "source_resource_digests": source_digests,
             "capability_leafs": (),
         }

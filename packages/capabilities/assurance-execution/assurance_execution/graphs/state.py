@@ -22,6 +22,8 @@ class ExecutionState(CheckpointBridgeState, total=False):
     generation_result: dict[str, object]
     execution_result: dict[str, object]
     change_id: str
+    plan_digest: str
+    plan_ref: dict[str, str]
     batch_id: str
     selected_test_families: list[str]
     capability_leafs: list[str]

@@ -95,7 +95,7 @@ def prepare_quality_goal(
         raise ValueError("exploration artifact is invalid") from error
     if advisory.change_id != request.change_id:
         raise ValueError("exploration change_id does not match plan input")
-    expected_context = f"qa/changes/{request.change_id}/explore/context.json"
+    expected_context = "explore/context.json"
     if advisory.context_ref != expected_context:
         raise ValueError("exploration context_ref does not match the current change")
 
@@ -118,14 +118,10 @@ def prepare_quality_goal(
         raise ValueError("goal sources must contain catalog and data knowledge")
 
     try:
-        catalog = json.loads(
-            source_bytes["assurance.product.configuration.capability-catalog"]
-        )
+        catalog = json.loads(source_bytes["assurance.product.configuration.capability-catalog"])
     except (UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("capability catalog is invalid JSON") from error
-    if not isinstance(catalog, Mapping) or catalog.get("typed_leafs") != list(
-        request.capability_leafs
-    ):
+    if not isinstance(catalog, Mapping) or catalog.get("typed_leafs") != list(request.capability_leafs):
         raise ValueError("capability catalog does not match capability_leafs")
     knowledge = _mapping_yaml(
         source_bytes["assurance.product.configuration.data-knowledge"],
@@ -197,10 +193,7 @@ def load_plan_artifact(
         raise ValueError("plan requirement_digest does not match loader input")
     if plan.resolved_budgets != request.budgets:
         raise ValueError("plan budgets do not match loader input")
-    if (
-        plan.policy_resource_id != request.policy_resource_id
-        or plan.policy_digest != request.policy_digest
-    ):
+    if plan.policy_resource_id != request.policy_resource_id or plan.policy_digest != request.policy_digest:
         raise ValueError("plan policy identity does not match loader input")
     if plan.quality_goal.source_resource_digests != request.source_resource_digests:
         raise ValueError("plan source identities do not match loader input")

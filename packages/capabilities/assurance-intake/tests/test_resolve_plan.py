@@ -177,9 +177,7 @@ def test_resolved_plan_records_fixed_reasons_and_two_distinct_digests() -> None:
 
     ref = plan_artifact_ref(plan)
     assert ref.digest != plan.plan_digest
-    assert ref.path == (
-        f"qa/changes/CH-1/plan/{plan.plan_digest}/resolved-assurance-plan.json"
-    )
+    assert ref.path == (f"qa/changes/CH-1/plan/{plan.plan_digest}/resolved-assurance-plan.json")
     assert decode_plan(plan_bytes(plan), ref) == plan
 
 

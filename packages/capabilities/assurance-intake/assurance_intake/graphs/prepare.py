@@ -21,10 +21,12 @@ def build_prepare_graph(
     *,
     intake: CompiledStateGraph,
     explore: CompiledStateGraph,
+    resolve_plan: CompiledStateGraph,
 ) -> CompiledStateGraph:
     builder: StateGraph[IntakeState] = StateGraph(IntakeState)
     builder.add_node("intake", intake)
     builder.add_node("explore", explore)
+    builder.add_node("resolve-plan", resolve_plan)
     builder.add_node("prepared", _node(terminal_prepared))
     builder.add_node("failed", _node(terminal_failed))
     builder.add_edge(START, "intake")
@@ -35,6 +37,11 @@ def build_prepare_graph(
     )
     builder.add_conditional_edges(
         "explore",
+        cast(Callable[..., Any], route_preparation_attempt),
+        {"committed": "resolve-plan", "failed": "failed"},
+    )
+    builder.add_conditional_edges(
+        "resolve-plan",
         cast(Callable[..., Any], route_preparation_attempt),
         {"committed": "prepared", "failed": "failed"},
     )

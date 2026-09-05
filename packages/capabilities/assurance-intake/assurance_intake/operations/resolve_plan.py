@@ -34,11 +34,7 @@ def _canonical(values: set[TestFamily]) -> tuple[TestFamily, ...]:
 
 def derive_family_proposal(strategy: TestStrategyV1) -> tuple[TestFamily, ...]:
     """Project the strict four-row Explore recommendation into family names."""
-    return tuple(
-        _LAYER_TO_FAMILY[row.layer]
-        for row in strategy.layer_recommendation
-        if row.recommended
-    )
+    return tuple(_LAYER_TO_FAMILY[row.layer] for row in strategy.layer_recommendation if row.recommended)
 
 
 def resolve_families(
@@ -73,9 +69,7 @@ def _reasons(
 ) -> tuple[ResolutionReasonV1, ...]:
     reasons = [
         ResolutionReasonV1(
-            reason_code=(
-                "accepted_proposal" if fallback_cause is None else "fallback_all_candidates"
-            ),
+            reason_code=("accepted_proposal" if fallback_cause is None else "fallback_all_candidates"),
             detail=fallback_cause,
             summary=(
                 "Accepted the Explore family proposal."
@@ -122,9 +116,7 @@ def resolve_plan(
         policy=request.family_policy,
         goal_required=quality_goal.required_test_families,
     )
-    reasons = list(
-        _reasons(request=request, proposed=proposed, fallback_cause=fallback_cause)
-    )
+    reasons = list(_reasons(request=request, proposed=proposed, fallback_cause=fallback_cause))
     required = set(request.family_policy.required) | set(quality_goal.required_test_families)
     for family in TEST_FAMILY_ORDER:
         if family not in required or family in proposed:

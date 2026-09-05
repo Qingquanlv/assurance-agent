@@ -16,6 +16,7 @@ from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
+from tests.acg_plan_fixture import install_plan
 from tests.phase4.conformance import execute_task
 
 CHANGE_ID = "CH-ASSESS-001"
@@ -88,6 +89,14 @@ def _write_json(root: Path, relative: str, value: object) -> dict[str, str]:
 
 
 def _workspace_input(root: Path) -> dict[str, Any]:
+    plan_document, plan_ref = install_plan(
+        root,
+        CHANGE_ID,
+        capability_leafs=(CAPABILITY, "entities.item.constraints.description"),
+        minimum_required_coverage={
+            "api": [CAPABILITY, "entities.item.constraints.description"],
+        },
+    )
     preparation = _write_text(root, f"qa/changes/{CHANGE_ID}/requirement.md", "# Requirement\n")
     review = _write_json(
         root,
@@ -109,6 +118,30 @@ def _workspace_input(root: Path) -> dict[str, Any]:
             },
             sort_keys=True,
         ),
+    )
+    matrix_ref = _write_json(
+        root,
+        f"qa/changes/{CHANGE_ID}/trace/minimum-coverage-matrix.json",
+        [
+            {
+                "mrc_id": "MRC-API-001",
+                "key": CAPABILITY,
+                "category": "api",
+                "required": True,
+                "layer": "api",
+                "covered_by_cases": ["TC_ITEM_001"],
+                "status": "covered",
+            },
+            {
+                "mrc_id": "MRC-API-002",
+                "key": "entities.item.constraints.description",
+                "category": "api",
+                "required": True,
+                "layer": "api",
+                "covered_by_cases": ["TC_ITEM_002"],
+                "status": "covered",
+            },
+        ],
     )
     source = _write_text(
         root,
@@ -135,6 +168,8 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         "change_id": CHANGE_ID,
         "batch_id": BATCH_ID,
         "executed_at": EXECUTED_AT.isoformat(),
+        "plan_digest": plan_document.plan_digest,
+        "plan_ref": plan_ref,
         "selected_targets": {
             "api": True,
             "e2e": False,
@@ -171,39 +206,31 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         ],
     }
     evidence_ref = _write_json(root, EVIDENCE_PATH, evidence)
-    policy_bytes = yaml.safe_dump(
-        {
-            "coverage_floor_by_tier": {
-                "low": 0.7,
-                "medium": 0.8,
-                "high": 0.9,
-                "critical": 1.0,
-            },
-            "evidence_sufficiency": {
-                "recency_hours": 24,
-                "require_current_batch": True,
-            },
-        },
-        sort_keys=True,
-    ).encode()
-    _write_bytes(root, ".aa/policy.yaml", policy_bytes)
-    policy_digest = hashlib.sha256(policy_bytes).hexdigest()
     reviewed = {
         "change_id": CHANGE_ID,
         "coverage_epoch": 3,
-        "preparation_refs": [preparation],
+        "plan_digest": plan_document.plan_digest,
+        "plan_ref": plan_ref,
+        "preparation_refs": sorted(
+            [preparation, matrix_ref, plan_ref],
+            key=lambda item: (item["path"], item["digest"]),
+        ),
         "case_refs": [case_ref],
         "review_ref": review,
     }
     generation = {
         "change_id": CHANGE_ID,
         "coverage_epoch": 3,
+        "plan_digest": plan_document.plan_digest,
+        "plan_ref": plan_ref,
         "reviewed_case": reviewed,
         "mapping_ref": mapping_ref,
         "source_refs": [source],
         "plan_refs": [plan],
     }
     return {
+        "plan_digest": plan_document.plan_digest,
+        "plan_ref": plan_ref,
         "reviewed_case": reviewed,
         "generation": generation,
         "execution": {
@@ -212,6 +239,8 @@ def _workspace_input(root: Path) -> dict[str, Any]:
             "repair_round": 0,
             "batch_id": BATCH_ID,
             "executed_at": EXECUTED_AT.isoformat(),
+            "plan_digest": plan_document.plan_digest,
+            "plan_ref": plan_ref,
             "final_status": "PASS",
             "evidence_ref": evidence_ref,
             "mapping_ref": mapping_ref,
@@ -219,7 +248,7 @@ def _workspace_input(root: Path) -> dict[str, Any]:
             "receipt": {"receipt_id": "execute", "receipt_digest": "e" * 64},
         },
         "policy_resource_id": "assurance.product.configuration.product-policy",
-        "policy_sha256": policy_digest,
+        "policy_sha256": plan_document.policy_digest,
         "execution_at": EXECUTED_AT.isoformat(),
     }
 

@@ -16,6 +16,8 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 class ExecutionCycleResultV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     coverage_epoch: int = Field(ge=0)
     repair_round: int = Field(ge=0)
     batch_id: str = Field(min_length=1)

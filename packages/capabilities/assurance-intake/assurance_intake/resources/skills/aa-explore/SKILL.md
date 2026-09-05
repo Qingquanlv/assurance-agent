@@ -164,6 +164,11 @@ Move actually-read items from `not_inspected` to `available`:
 
 Read `context.json`, requirement text, **and source code evidence collected in Step 3**. Produce `exploration.json` only.
 
+Also read the candidate test families and authenticated goal-source identities from
+the graph input. Candidates bound what the deterministic resolver may choose after
+Explore; they do not state the selected families and must not suppress applicable
+business obligations.
+
 ### LLM Hard Rules
 
 1. All numbers, `case_id`, `issue_id`, module names **must** come from `context.json` fields (`evidence[]`, `impact.*`, `historical_issues[]`, `case_signals[]`) **or from source code evidence (SC-* IDs) collected in Step 3**.
@@ -315,7 +320,7 @@ Generate from the **module's domain shape** (CRUD operations + tree/hierarchy if
 | Sub-array | What to include |
 |-----------|----------------|
 | `api` | One entry per main API operation the module exposes (CRUD + any module-specific queries). Name in snake_case (`verb_noun`). |
-| `e2e_if_enabled` | Only if E2E is in scope; cover admin happy-path flows + role-based visibility. Omit or set `[]` if E2E is excluded. |
+| `e2e_if_enabled` | Declare every business-required user journey supported by the requirement and authenticated data knowledge. This obligation set is independent of the E2E recommendation; a `recommended: false` entry must not erase a required journey. |
 | `negative` | Missing required fields, invalid foreign-key refs, boundary violations, unauthorized access. |
 | `data_integrity` | Consistency invariants specific to this module (tree consistency, sort order, join-table consistency). |
 

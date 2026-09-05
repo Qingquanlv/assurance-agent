@@ -357,6 +357,13 @@ def quality_report_payload(*, issue_risk: str = "clear") -> dict[str, object]:
         "schema_version": "1.1",
         "change_id": CHANGE_ID,
         "batch_id": "20260822T000000Z",
+        "plan": {
+            "plan_digest": HEX_A,
+            "plan_ref": {
+                "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_A}/resolved-assurance-plan.json",
+                "digest": HEX_B,
+            },
+        },
         "final_status": "PASS",
         "quality_score": 1.0,
         "score_breakdown": {"functional": 1.0, "coverage": 1.0, "fuzz": "N/A", "performance": "N/A"},

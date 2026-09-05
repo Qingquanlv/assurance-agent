@@ -22,6 +22,7 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 SelectedFamily = TestFamily
 
+
 class ActiveCoverageScopeV1(FrozenModel):
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)

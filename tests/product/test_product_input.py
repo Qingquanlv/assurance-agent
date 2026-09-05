@@ -15,8 +15,8 @@ pytestmark = pytest.mark.usefixtures("installed_sources")
 
 _SHA = "a" * 64
 _FAMILY_EMPTY_ENTRYPOINTS = (
-    "intake",
     "case",
+    "execute",
     "archive",
     "retro",
     "issue-review",
@@ -28,7 +28,12 @@ _FAMILY_EMPTY_ENTRYPOINTS = (
     "improvement-apply",
     "improvement-rollback",
 )
-_FAMILY_NONEMPTY_ENTRYPOINTS = ("full", "execute")
+_FAMILY_NONEMPTY_ENTRYPOINTS = ("full", "intake")
+
+_PLAN_REF = {
+    "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+    "digest": _SHA,
+}
 
 
 def valid_product_input(**overrides: object) -> dict[str, object]:
@@ -37,7 +42,7 @@ def valid_product_input(**overrides: object) -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "requirement": "Add login",
         "run_mode": "case",
-        "selected_test_families": (),
+        "candidate_test_families": (),
         "case_delta_paths": (),
         "capability_leafs": (),
         "capability_catalog": {
@@ -179,13 +184,20 @@ def test_product_input_requires_canonical_family_order():
     from assurance_product.models import ProductInputV1
 
     value = ProductInputV1.model_validate(
-        valid_product_input(selected_test_families=("api", "e2e", "fuzz", "performance"))
+        valid_product_input(candidate_test_families=("api", "e2e", "fuzz", "performance"))
     )
-    assert value.selected_test_families == ("api", "e2e", "fuzz", "performance")
+    assert value.candidate_test_families == ("api", "e2e", "fuzz", "performance")
     with pytest.raises(ValidationError):
-        ProductInputV1.model_validate(valid_product_input(selected_test_families=("e2e", "api")))
+        ProductInputV1.model_validate(valid_product_input(candidate_test_families=("e2e", "api")))
     with pytest.raises(ValidationError):
-        ProductInputV1.model_validate(valid_product_input(selected_test_families=("api", "api")))
+        ProductInputV1.model_validate(valid_product_input(candidate_test_families=("api", "api")))
+
+
+def test_product_input_rejects_the_removed_public_selection_field() -> None:
+    from assurance_product.models import ProductInputV1
+
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(selected_test_families=("api",)))
 
 
 def test_product_input_requires_sorted_unique_capability_leafs():
@@ -274,10 +286,14 @@ def test_case_delta_path_model_matches_public_schema_ascii_shape() -> None:
 def test_case_design_entrypoints_require_exact_case_delta_paths(entrypoint: str) -> None:
     from assurance_product.models import ProductInputV1
 
-    selected = ("api",) if entrypoint == "full" else ()
+    candidate = ("api",) if entrypoint in {"full", "intake"} else ()
+    plan_ref = _PLAN_REF if entrypoint == "case" else None
     with pytest.raises(ValueError, match="case_delta_paths"):
         ProductInputV1.model_validate(
-            valid_product_input(selected_test_families=selected)
+            valid_product_input(
+                candidate_test_families=candidate,
+                resolved_plan_ref=plan_ref,
+            )
         ).validate_for_entrypoint(entrypoint)
 
 
@@ -308,31 +324,64 @@ def test_resource_ref_sha256_is_lowercase_hex():
 def test_empty_family_entrypoints_require_empty_selection(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
-    case_delta_paths = (
-        ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint in {"intake", "case"} else ()
+    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
+    plan_ref = _PLAN_REF if entrypoint in {"case", "execute"} else None
+    value = ProductInputV1.model_validate(
+        valid_product_input(case_delta_paths=case_delta_paths, resolved_plan_ref=plan_ref)
     )
-    value = ProductInputV1.model_validate(valid_product_input(case_delta_paths=case_delta_paths))
     value.validate_for_entrypoint(entrypoint)
     with pytest.raises(ValueError):
         ProductInputV1.model_validate(
-            valid_product_input(selected_test_families=("api",))
+            valid_product_input(
+                candidate_test_families=("api",),
+                case_delta_paths=case_delta_paths,
+                resolved_plan_ref=plan_ref,
+            )
         ).validate_for_entrypoint(entrypoint)
 
 
 @pytest.mark.parametrize("entrypoint", _FAMILY_NONEMPTY_ENTRYPOINTS)
-def test_full_and_execute_require_non_empty_families(entrypoint: str):
+def test_plan_creators_require_non_empty_candidates(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
-    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint == "full" else ()
+    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",)
     ProductInputV1.model_validate(
         valid_product_input(
-            selected_test_families=("api",),
+            candidate_test_families=("api",),
             case_delta_paths=case_delta_paths,
         )
     ).validate_for_entrypoint(entrypoint)
     with pytest.raises(ValueError):
         ProductInputV1.model_validate(
             valid_product_input(case_delta_paths=case_delta_paths)
+        ).validate_for_entrypoint(entrypoint)
+
+
+@pytest.mark.parametrize("entrypoint", ("case", "execute"))
+def test_plan_consumers_require_one_resolved_plan_ref(entrypoint: str) -> None:
+    from assurance_product.models import ProductInputV1
+
+    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
+    ProductInputV1.model_validate(
+        valid_product_input(case_delta_paths=case_delta_paths, resolved_plan_ref=_PLAN_REF)
+    ).validate_for_entrypoint(entrypoint)
+    with pytest.raises(ValueError, match="requires resolved_plan_ref"):
+        ProductInputV1.model_validate(
+            valid_product_input(case_delta_paths=case_delta_paths)
+        ).validate_for_entrypoint(entrypoint)
+
+
+@pytest.mark.parametrize("entrypoint", ("full", "intake"))
+def test_plan_creators_reject_imported_plan(entrypoint: str) -> None:
+    from assurance_product.models import ProductInputV1
+
+    with pytest.raises(ValueError, match="cannot accept resolved_plan_ref"):
+        ProductInputV1.model_validate(
+            valid_product_input(
+                candidate_test_families=("api",),
+                resolved_plan_ref=_PLAN_REF,
+                case_delta_paths=("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
+            )
         ).validate_for_entrypoint(entrypoint)
 
 

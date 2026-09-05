@@ -100,11 +100,7 @@ class ResolutionReasonV1(FrozenModel):
 
 
 def resolution_reason_sort_key(reason: ResolutionReasonV1) -> tuple[int, int]:
-    family_rank = (
-        -1
-        if reason.family is None
-        else ("api", "e2e", "fuzz", "performance").index(reason.family)
-    )
+    family_rank = -1 if reason.family is None else ("api", "e2e", "fuzz", "performance").index(reason.family)
     return _REASON_ORDER[reason.reason_code], family_rank
 
 
@@ -148,9 +144,7 @@ class ResolvedAssurancePlan(FrozenModel):
     def _plan_invariants(self) -> Self:
         if not set(self.selected_test_families) <= set(self.candidate_test_families):
             raise ValueError("selected_test_families must be candidates")
-        if not set(self.quality_goal.required_test_families) <= set(
-            self.selected_test_families
-        ):
+        if not set(self.quality_goal.required_test_families) <= set(self.selected_test_families):
             raise ValueError("selected_test_families must retain required goal families")
         expected_exploration = f"qa/changes/{self.change_id}/explore/exploration.json"
         if self.exploration_ref.path != expected_exploration:
@@ -188,9 +182,7 @@ class ResolvePlanInputV1(FrozenModel):
 
     @field_validator("candidate_test_families")
     @classmethod
-    def _candidate_test_families(
-        cls, value: tuple[TestFamily, ...]
-    ) -> tuple[TestFamily, ...]:
+    def _candidate_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
         return validate_family_tuple(value)
 
     @field_validator("policy_resource_id")
@@ -205,9 +197,7 @@ class ResolvePlanInputV1(FrozenModel):
 
     @field_validator("source_resource_digests")
     @classmethod
-    def _source_resource_digests(
-        cls, value: tuple[tuple[str, str], ...]
-    ) -> tuple[tuple[str, str], ...]:
+    def _source_resource_digests(cls, value: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
         return validate_resource_digests(value)
 
     @field_validator("capability_leafs")
@@ -251,9 +241,7 @@ class LoadPlanInputV1(FrozenModel):
 
     @field_validator("source_resource_digests")
     @classmethod
-    def _source_resource_digests(
-        cls, value: tuple[tuple[str, str], ...]
-    ) -> tuple[tuple[str, str], ...]:
+    def _source_resource_digests(cls, value: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
         return validate_resource_digests(value)
 
     @field_validator("capability_leafs")
@@ -290,10 +278,7 @@ def plan_bytes(plan: ResolvedAssurancePlan) -> bytes:
 def plan_artifact_ref(plan: ResolvedAssurancePlan) -> EvidenceArtifactRefV1:
     data = plan_bytes(plan)
     return EvidenceArtifactRefV1(
-        path=(
-            f"qa/changes/{plan.change_id}/plan/{plan.plan_digest}/"
-            "resolved-assurance-plan.json"
-        ),
+        path=(f"qa/changes/{plan.change_id}/plan/{plan.plan_digest}/resolved-assurance-plan.json"),
         digest=hashlib.sha256(data).hexdigest(),
     )
 

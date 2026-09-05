@@ -88,6 +88,8 @@ def complete_generation_cycle(
         change_id=request.change_id,
         coverage_epoch=request.coverage_epoch,
         reviewed_case=reviewed,
+        plan_digest=request.plan_digest,
+        plan_ref=request.plan_ref,
         mapping_ref=EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest()),
         source_refs=tuple(sources[key] for key in sorted(sources)),
         plan_refs=tuple(plans[key] for key in sorted(plans)),

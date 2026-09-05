@@ -24,8 +24,10 @@ from assurance_healing.operations.application import (
     ApplyTestRepairPrepareHandler,
 )
 from assurance_healing.operations.keys import derive_approval_id
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import BINDING, execute_task
+from tests.acg_plan_fixture import install_plan
 
 CHANGE = "CH-REPAIR-1"
 SOURCE = f"qa/changes/{CHANGE}/generated/api/files/tests/api/test_users.py"
@@ -79,11 +81,17 @@ def _mapping(*, symbol: str = "test_users") -> dict[str, object]:
     }
 
 
-def _execution() -> dict[str, Any]:
+def _execution(plan_digest: str = SHA, plan_ref: dict[str, str] | None = None) -> dict[str, Any]:
+    bound_ref = plan_ref or {
+        "path": f"qa/changes/{CHANGE}/plan/{plan_digest}/resolved-assurance-plan.json",
+        "digest": SHA,
+    }
     return {
         "schema_version": "1",
         "status": "failed",
         "change_id": CHANGE,
+        "plan_digest": plan_digest,
+        "plan_ref": bound_ref,
         "batch_id": "batch-1",
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
         "mapping": {
@@ -159,6 +167,11 @@ def _approval(proposal: dict[str, object]) -> dict[str, object]:
 
 
 def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
+    plan, plan_ref = install_plan(
+        project,
+        CHANGE,
+        capability_leafs=("users.read",),
+    )
     before = b"def test_users(client):\n    response = wrong_client(client)\n    assert response.status_code == 200\n"
     case_ref = _write(project, CASE, b"schema_version: '1.0'\ncase_id: CASE_1\n")
     review_ref = _write(project, REVIEW, b'{"decision":"approved"}\n')
@@ -167,16 +180,27 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
     proposal = _proposal()
     proposal_ref = _write(project, PROPOSAL, _json_bytes(proposal))
     approval_ref = _write(project, APPROVAL, _json_bytes(_approval(proposal)))
-    execution_ref = _write(project, EXECUTION, _json_bytes(_execution()))
+    execution_ref = _write(
+        project,
+        EXECUTION,
+        _json_bytes(_execution(plan.plan_digest, plan_ref)),
+    )
     source_ref = _write(project, SOURCE, before)
     payload: dict[str, object] = {
         "change_id": CHANGE,
+        "plan_digest": plan.plan_digest,
+        "plan_ref": plan_ref,
         "coverage_epoch": 0,
         "repair_round": 1,
         "reviewed_case": {
             "change_id": CHANGE,
             "coverage_epoch": 0,
-            "preparation_refs": [prep_ref],
+            "plan_digest": plan.plan_digest,
+            "plan_ref": plan_ref,
+            "preparation_refs": sorted(
+                [plan_ref, prep_ref],
+                key=lambda item: (item["path"], item["digest"]),
+            ),
             "case_refs": [case_ref],
             "review_ref": review_ref,
         },
@@ -219,6 +243,8 @@ def test_applied_requires_committed_changed_tests() -> None:
     with pytest.raises(ValidationError):
         AppliedTestRepairV1(
             change_id=CHANGE,
+            plan_digest="d" * 64,
+            plan_ref=EvidenceArtifactRefV1(path="qa/changes/CH-1/plan.json", digest="e" * 64),
             coverage_epoch=0,
             repair_round=1,
             status="applied",
@@ -295,6 +321,8 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
     )
     proposal_input = {
         "change_id": CHANGE,
+        "plan_digest": payload["plan_digest"],
+        "plan_ref": payload["plan_ref"],
         "owner_id": "assurance.healing",
         "capability_leafs": ["users.read"],
         "allowed_paths": [SOURCE],
@@ -454,6 +482,11 @@ def test_input_binds_reviewed_case_epoch() -> None:
         ApplyTestRepairInputV1.model_validate(
             {
                 "change_id": CHANGE,
+                "plan_digest": SHA,
+                "plan_ref": {
+                    "path": f"qa/changes/{CHANGE}/plan/{SHA}/resolved-assurance-plan.json",
+                    "digest": SHA,
+                },
                 "coverage_epoch": 1,
                 "repair_round": 1,
                 "reviewed_case": {
@@ -481,6 +514,11 @@ def test_publisher_adds_only_real_commit_receipt() -> None:
     verified = VerifiedTestRepairV1.model_validate(
         {
             "change_id": CHANGE,
+            "plan_digest": SHA,
+            "plan_ref": {
+                "path": f"qa/changes/{CHANGE}/plan/{SHA}/resolved-assurance-plan.json",
+                "digest": SHA,
+            },
             "coverage_epoch": 0,
             "repair_round": 1,
             "changed_test_refs": [ref],

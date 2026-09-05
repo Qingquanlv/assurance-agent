@@ -44,6 +44,11 @@ def _contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
 def _input(family: str) -> dict[str, object]:
     return {
         "change_id": "CH-DEMO-001",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "selected_test_families": [family],
         "capability_leafs": ["entities.item.create"],
         "allowed_artifact_paths": ["qa/changes"],
@@ -417,6 +422,8 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt(tmp_path: P
     config = _config("api")
     payload = {
         "change_id": "CH-DEMO-001",
+        "plan_digest": cycle_input.plan_digest,
+        "plan_ref": cycle_input.plan_ref.model_dump(mode="json"),
         "selected_test_families": ["api"],
         "capability_leafs": ["entities.item.create"],
         "allowed_artifact_paths": ["qa/changes"],

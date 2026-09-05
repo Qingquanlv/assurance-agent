@@ -109,7 +109,12 @@ class IntakeInputV1(_SkillInputV1):
 
 
 class ExploreInputV1(_SkillInputV1):
-    pass
+    candidate_test_families: tuple[TestFamily, ...] = Field(min_length=1)
+
+    @field_validator("candidate_test_families")
+    @classmethod
+    def _candidate_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
+        return _canonical_test_families(value)
 
 
 class ReviewRepairActionV1(FrozenModel):
@@ -204,6 +209,8 @@ class ReviewRepairContractV1(FrozenModel):
 
 
 class CaseDesignInputV1(_SkillInputV1):
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     coverage_epoch: int = Field(default=0, ge=0)
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_rework_context: CaseReworkContextV1 | None = None
@@ -247,6 +254,8 @@ class CaseDesignInputV1(_SkillInputV1):
 
 
 class CaseReviewInputV1(_SkillInputV1):
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     coverage_epoch: int = Field(default=0, ge=0)
     review_round: int = Field(default=0, ge=0)
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
@@ -387,3 +396,8 @@ class AgentFinalizeInputV1(FrozenModel):
                 raise ValueError("change_id is required with case_delta_paths")
             _validate_case_delta_paths(self.change_id, self.case_delta_paths)
         return self
+
+
+class CaseFinalizeInputV1(AgentFinalizeInputV1):
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1

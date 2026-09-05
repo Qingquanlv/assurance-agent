@@ -11,9 +11,10 @@ from langgraph.types import Command
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_healing.contracts.application import AppliedTestRepairV1
-from assurance_intake.contracts.workflow import ReviewedCaseV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_product.graphs.entrypoints import (
     _input_from_state,
+    adapt_load_plan,
     publish_public_output,
     validate_public_input,
 )
@@ -22,6 +23,7 @@ from assurance_product.graphs.routes import (
     route_execute,
     route_quality,
     route_run,
+    route_prepare,
 )
 from assurance_product.graphs.state import ProductState
 from assurance_product.graphs.tail_contracts import (
@@ -53,9 +55,11 @@ def adapt_execute_tail_input(
             "requirement": payload.requirement,
             "run_mode": payload.run_mode,
             "coverage_epoch": 0 if standalone else state.get("coverage_epoch", 0),
+            "plan_digest": state.get("plan_digest"),
+            "plan_ref": state.get("plan_ref"),
             "reviewed_case": reviewed_case,
             "source_artifacts": source_artifacts,
-            "selected_test_families": payload.selected_test_families,
+            "selected_test_families": state.get("selected_test_families"),
             "capability_leafs": payload.capability_leafs,
             "capability_catalog": payload.capability_catalog,
             "product_policy": payload.product_policy,
@@ -82,10 +86,12 @@ def adapt_generation(state: ProductState) -> dict[str, object]:
         source_artifacts = [item.model_dump(mode="json") for item in payload.artifacts]
     feature_input = {
         "change_id": payload.change_id,
+        "plan_digest": state.get("plan_digest"),
+        "plan_ref": state.get("plan_ref"),
         "coverage_epoch": int(state.get("coverage_epoch", 0)),
         "reviewed_case": state.get("reviewed_case"),
         "source_artifacts": source_artifacts,
-        "selected_test_families": list(payload.selected_test_families),
+        "selected_test_families": list(state.get("selected_test_families") or []),
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
         "artifacts": [item.model_dump(mode="json") for item in payload.artifacts],
@@ -110,8 +116,10 @@ def adapt_execution(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
     feature_input = {
         "change_id": payload.change_id,
+        "plan_digest": state.get("plan_digest"),
+        "plan_ref": state.get("plan_ref"),
         "capability_leafs": list(payload.capability_leafs),
-        "selected_test_families": list(payload.selected_test_families),
+        "selected_test_families": list(state.get("selected_test_families") or []),
         "coverage_epoch": int(state.get("coverage_epoch", 0)),
         "repair_round": 0,
         "rounds_budget": payload.budgets.healing_rounds,
@@ -138,8 +146,10 @@ def adapt_rerun(state: ProductState) -> dict[str, object]:
     repair_round = int(state.get("healing_rounds_used") or state.get("rounds_used") or 0)
     feature_input = {
         "change_id": payload.change_id,
+        "plan_digest": state.get("plan_digest"),
+        "plan_ref": state.get("plan_ref"),
         "capability_leafs": list(payload.capability_leafs),
-        "selected_test_families": list(payload.selected_test_families),
+        "selected_test_families": list(state.get("selected_test_families") or []),
         "coverage_epoch": int(state.get("coverage_epoch", 0)),
         "repair_round": repair_round,
         "rounds_budget": int(state.get("rounds_budget") or payload.budgets.healing_rounds),
@@ -159,6 +169,8 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         raise ValueError("execution does not use the current Reviewed Case")
     feature_input = {
         "change_id": payload.change_id,
+        "plan_digest": generation.plan_digest,
+        "plan_ref": generation.plan_ref.model_dump(mode="json"),
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
         "budgets": payload.budgets.model_dump(mode="json"),
@@ -195,6 +207,8 @@ def adapt_repair_failure(state: ProductState) -> dict[str, object]:
     allowed_roots = tuple(sorted({path.split("/", 1)[0] for path in allowed_paths}))
     feature_input = {
         "change_id": payload.change_id,
+        "plan_digest": generation.plan_digest,
+        "plan_ref": generation.plan_ref.model_dump(mode="json"),
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
         "budgets": payload.budgets.model_dump(mode="json"),
@@ -229,6 +243,8 @@ def adapt_report(state: ProductState) -> dict[str, object]:
     inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
     feature_input = {
         "change_id": payload.change_id,
+        "plan_digest": inspection.plan_digest,
+        "plan_ref": inspection.plan_ref.model_dump(mode="json"),
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
         "budgets": payload.budgets.model_dump(mode="json"),
@@ -245,7 +261,12 @@ def adapt_report(state: ProductState) -> dict[str, object]:
 def _finish_inspection(status: Literal["coverage_insufficient", "needs_human"]):
     def node(state: ProductState) -> dict[str, object]:
         inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
-        tail = ExecuteTailResultV1(status=status, inspection=inspection)
+        tail = ExecuteTailResultV1(
+            status=status,
+            plan_digest=inspection.plan_digest,
+            plan_ref=inspection.plan_ref,
+            inspection=inspection,
+        )
         return {
             "tail_result": tail.model_dump(mode="json"),
             "terminal": {"status": "stopped", "reason": status},
@@ -285,7 +306,19 @@ def _finish_blocked(state: ProductState, *, reason: str = "execute tail is block
         inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
     except (TypeError, ValueError):
         pass
-    tail = ExecuteTailResultV1(status="blocked", inspection=inspection, reason=reason)
+    plan_digest = inspection.plan_digest if inspection is not None else str(state.get("plan_digest"))
+    plan_ref = (
+        inspection.plan_ref
+        if inspection is not None
+        else EvidenceArtifactRefV1.model_validate(state.get("plan_ref"))
+    )
+    tail = ExecuteTailResultV1(
+        status="blocked",
+        plan_digest=plan_digest,
+        plan_ref=plan_ref,
+        inspection=inspection,
+        reason=reason,
+    )
     return {
         "tail_result": tail.model_dump(mode="json"),
         "terminal": {"status": "failed", "reason": "blocked"},
@@ -434,16 +467,25 @@ def build_execute_tail(bundles: object) -> CompiledStateGraph:
 def build_execute_root(
     context: GraphBuildContext,
     bundles: object,
+    load_plan: CompiledStateGraph,
     execute_tail: CompiledStateGraph | None = None,
 ) -> CompiledStateGraph:
     tail = execute_tail or build_execute_tail(bundles)
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     builder.add_node("validate", validate_public_input("execute"))
+    builder.add_node("adapt-load-plan", cast(Any, adapt_load_plan))
+    builder.add_node("load-plan", load_plan)
     builder.add_node("adapt-tail", cast(Any, adapt_public_execute_tail))
     builder.add_node("execute-tail", tail)
     builder.add_node("publish", publish_public_output)
     builder.add_edge(START, "validate")
-    builder.add_edge("validate", "adapt-tail")
+    builder.add_edge("validate", "adapt-load-plan")
+    builder.add_edge("adapt-load-plan", "load-plan")
+    builder.add_conditional_edges(
+        "load-plan",
+        cast(Any, route_prepare),
+        {"prepared": "adapt-tail", "failed": "publish"},
+    )
     builder.add_edge("adapt-tail", "execute-tail")
     builder.add_edge("execute-tail", "publish")
     builder.add_edge("publish", END)

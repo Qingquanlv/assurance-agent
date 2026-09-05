@@ -28,9 +28,10 @@ def test_public_entrypoints_are_the_python_product_roots() -> None:
     assert len(PRODUCT_ENTRYPOINTS) == 14
 
 
-def test_intake_bundle_exposes_prepare_and_case_graphs() -> None:
-    assert PUBLIC_BUNDLE_FIELDS["assurance.intake"] == ("prepare", "case")
+def test_intake_bundle_exposes_prepare_load_and_case_graphs() -> None:
+    assert PUBLIC_BUNDLE_FIELDS["assurance.intake"] == ("prepare", "load_plan", "case")
     assert "prepare" in IntakeGraphs.__dataclass_fields__
+    assert "load_plan" in IntakeGraphs.__dataclass_fields__
     assert "case" in IntakeGraphs.__dataclass_fields__
     assert build_intake_graphs is not None
 

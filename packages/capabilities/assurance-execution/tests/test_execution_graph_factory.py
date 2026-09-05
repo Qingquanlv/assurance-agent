@@ -46,6 +46,7 @@ from graph_engine.plugin_api import (
 )
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext, committed
+from tests.acg_plan_fixture import install_plan
 
 _SHA = "a" * 64
 _RECEIPT = ReceiptRef(receipt_id="receipt-1", receipt_digest="b" * 64)
@@ -77,6 +78,11 @@ def execution_graph_input(
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "change_id": change_id,
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/{change_id}/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "batch_id": "20260822T000000Z",
         "selected_test_families": ["api"],
         "capability_leafs": ["entities.item.create"],
@@ -101,6 +107,11 @@ def execution_evidence(*, change_id: str = "CH-DEMO-001", status: str = "passed"
             "schema_version": "1",
             "status": status,
             "change_id": change_id,
+            "plan_digest": _SHA,
+            "plan_ref": {
+                "path": f"qa/changes/{change_id}/plan/{_SHA}/resolved-assurance-plan.json",
+                "digest": _SHA,
+            },
             "batch_id": "20260822T000000Z",
             "executed_at": "2026-08-22T00:00:00Z",
             "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
@@ -153,16 +164,21 @@ def execution_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
 
 def generation_result() -> dict[str, object]:
     ref = lambda path: {"path": path, "digest": _SHA}  # noqa: E731
+    plan_ref = ref(f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json")
     reviewed = {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 2,
-        "preparation_refs": [ref("qa/changes/CH-DEMO-001/requirement.md")],
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
+        "preparation_refs": [plan_ref, ref("qa/changes/CH-DEMO-001/requirement.md")],
         "case_refs": [ref("qa/changes/CH-DEMO-001/cases/items/case.yaml")],
         "review_ref": ref("qa/changes/CH-DEMO-001/review/case-review.json"),
     }
     return {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 2,
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
         "reviewed_case": reviewed,
         "mapping_ref": ref("qa/changes/CH-DEMO-001/codegen/closed-mapping.json"),
         "source_refs": [ref("qa/changes/CH-DEMO-001/generated/api/files/tests/a.py")],
@@ -293,6 +309,11 @@ def test_failed_execution_publishes_committed_versioned_evidence() -> None:
 
 
 def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) -> None:
+    plan, plan_ref = install_plan(
+        tmp_path,
+        "CH-DEMO-001",
+        capability_leafs=("entities.item.create",),
+    )
     mapping_path = "qa/changes/CH-DEMO-001/codegen/closed-mapping.json"
     source_path = "qa/changes/CH-DEMO-001/generated/api/files/tests/a.py"
     mapping_bytes = b"{}"
@@ -302,6 +323,15 @@ def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) ->
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
     generation = generation_result()
+    generation["plan_digest"] = plan.plan_digest
+    generation["plan_ref"] = plan_ref
+    reviewed = cast(dict[str, object], generation["reviewed_case"])
+    reviewed["plan_digest"] = plan.plan_digest
+    reviewed["plan_ref"] = plan_ref
+    reviewed["preparation_refs"] = [
+        plan_ref,
+        {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
+    ]
     generation["mapping_ref"] = {
         "path": mapping_path,
         "digest": hashlib.sha256(mapping_bytes).hexdigest(),
@@ -311,6 +341,8 @@ def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) ->
         assemble_execution_input(
             {
                 "change_id": "CH-DEMO-001",
+                "plan_digest": plan.plan_digest,
+                "plan_ref": plan_ref,
                 "selected_test_families": ["api"],
                 "capability_leafs": ["entities.item.create"],
                 "coverage_epoch": 2,

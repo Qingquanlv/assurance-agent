@@ -521,6 +521,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
             attempt=1,
             input={
                 "change_id": current_id,
+                "candidate_test_families": ["api"],
                 "capability_leafs": ["entities.item.create"],
                 "artifact_paths": [f"qa/changes/{current_id}/requirement.md"],
             },

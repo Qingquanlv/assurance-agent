@@ -26,6 +26,7 @@ from assurance_intake.contracts.agent import (
     ReviewRepairContractV1,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, build_explore_context
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
@@ -138,6 +139,26 @@ def _authenticate_evidence_refs(
         path = project_root.joinpath(*ref.path.split("/"))
         if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
             raise InputError(f"evidence digest changed after it was committed: {ref.path}")
+
+
+def _authenticate_plan(
+    project_root: Path,
+    *,
+    change_id: str,
+    plan_digest: str,
+    plan_ref: EvidenceArtifactRefV1,
+) -> ResolvedAssurancePlan:
+    _authenticate_evidence_refs(project_root, (plan_ref,))
+    try:
+        plan = decode_plan(
+            project_root.joinpath(*plan_ref.path.split("/")).read_bytes(),
+            plan_ref,
+        )
+    except (OSError, ValidationError, ValueError) as error:
+        raise InputError(f"invalid frozen assurance plan: {error}") from error
+    if plan.change_id != change_id or plan.plan_digest != plan_digest:
+        raise InputError("frozen assurance plan does not match case input")
+    return plan
 
 
 def _review_repair_contract(
@@ -370,6 +391,14 @@ class CaseDesignPrepareHandler:
         try:
             business = CaseDesignInputV1.model_validate(request.input)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
+            plan = _authenticate_plan(
+                context.project_root,
+                change_id=business.change_id,
+                plan_digest=business.plan_digest,
+                plan_ref=business.plan_ref,
+            )
+            if business.selected_test_families != plan.selected_test_families:
+                raise InputError("case selected families do not match frozen assurance plan")
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
             if business.case_rework_context is not None:
                 rework = business.case_rework_context
@@ -419,6 +448,12 @@ class CaseReviewPrepareHandler:
         try:
             business = validate_input(CaseReviewInputV1, request.input)
             binding = validate_binding(request.binding_data)
+            _authenticate_plan(
+                context.project_root,
+                change_id=business.change_id,
+                plan_digest=business.plan_digest,
+                plan_ref=business.plan_ref,
+            )
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
             _authenticate_evidence_refs(context.project_root, business.case_refs)
             if business.case_refs and {item.path for item in business.case_refs} != set(

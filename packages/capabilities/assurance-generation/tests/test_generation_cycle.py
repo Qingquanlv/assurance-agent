@@ -87,6 +87,8 @@ async def cycle_fixture(
         {
             "change_id": reviewed.change_id,
             "coverage_epoch": coverage_epoch,
+            "plan_digest": reviewed.plan_digest,
+            "plan_ref": reviewed.plan_ref.model_dump(mode="json"),
             "reviewed_case": reviewed.model_dump(mode="json"),
             "selected_test_families": families,
             "capability_leafs": ["entities.item.create"],
@@ -138,6 +140,8 @@ async def run_generation_boundary(root: Path, coverage_epoch: int = 0):
         {
             "change_id": payload.change_id,
             "coverage_epoch": coverage_epoch,
+            "plan_digest": payload.plan_digest,
+            "plan_ref": payload.plan_ref.model_dump(mode="json"),
             "reviewed_case": payload.reviewed_case.model_dump(mode="json"),
             "selected_test_families": ["api", "e2e"],
             "capability_leafs": ["entities.item.create"],
