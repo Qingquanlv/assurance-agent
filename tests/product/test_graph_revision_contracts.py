@@ -9,11 +9,13 @@ from langgraph.checkpoint.memory import InMemorySaver
 from assurance_product.graphs.factory import ThinEntrypointGraphs, build_thin_entrypoint_graphs
 from assurance_product.graphs.revisions import (
     ENTRYPOINT_CONTRACTS,
+    STATE_SCHEMA_VERSION,
     canonical_contract_projection,
     digest,
 )
 from assurance_product.graphs.state import ProductState, ProductStateDocument
 from assurance_product.models import PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
+from assurance_quality.contracts.agent import InspectionResultV1
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.canonical import JSONValue, canonical_digest
 
@@ -95,13 +97,19 @@ def test_entrypoint_digest_changes_with_schema_or_limit_not_compiled_repr() -> N
     assert digest(contract) == canonical_digest(contract.canonical_projection())
 
 
-def test_exact_limit_table_and_state_schema_version_one() -> None:
+def test_exact_limit_table_and_state_schema_version_two() -> None:
     assert set(EXPECTED_RECURSION_LIMITS) == set(PRODUCT_ENTRYPOINTS)
+    assert STATE_SCHEMA_VERSION == "2"
     for name, contract in ENTRYPOINT_CONTRACTS.items():
         assert isinstance(contract, EntrypointGraphContract)
         assert contract.name == name
         assert contract.recursion_limit == EXPECTED_RECURSION_LIMITS[name]
-        assert contract.state_schema_version == "1"
+        assert contract.state_schema_version == "2"
+
+
+def test_graph_revision_keeps_agent_routes_out_of_inspection_result() -> None:
+    assert "coverage_state" not in InspectionResultV1.model_fields
+    assert "disposition" not in InspectionResultV1.model_fields
 
 
 def test_dry_and_runtime_contract_projections_match() -> None:

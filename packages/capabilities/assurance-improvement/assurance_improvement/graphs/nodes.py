@@ -11,6 +11,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_improvement.contracts.agent import ImprovementSkillInputV1
 from assurance_improvement.contracts.attempts import (
+    RetroCollectInput,
     select_analysis_slice,
     select_evaluate_memory,
     select_retro_agent,
@@ -30,7 +31,6 @@ from assurance_improvement.contracts.retro import (
     Signal,
     SignalDocumentV3,
 )
-from assurance_improvement.operations.retro import RetroCollectInput
 
 APPLY_HUMAN_ACTIONS = ("approve", "reject", "request_rework", "supersede")
 EFFECT_IDS = frozenset(

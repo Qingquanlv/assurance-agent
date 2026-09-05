@@ -17,6 +17,7 @@ from assurance_healing.graphs.nodes import (
     publish_applied_repair,
     publish_proposal,
     publish_repair,
+    proposal_approval,
     select_application,
     select_coverage,
     select_failure,
@@ -31,6 +32,7 @@ from assurance_healing.graphs.routes import (
     route_admit_failure,
     route_coverage_status,
     route_failure_status,
+    route_proposal_approval,
     route_proposal_status,
 )
 from assurance_healing.graphs.state import HealingState
@@ -57,7 +59,11 @@ _FAILURE_STATUS_PATHS: dict[Hashable, str] = {
     "not-eligible": "not-eligible",
     "failed": "failed",
 }
-_PROPOSAL_STATUS_PATHS: dict[Hashable, str] = {"apply": "healing.apply-test-repair", "failed": "failed"}
+_PROPOSAL_STATUS_PATHS: dict[Hashable, str] = {"approval": "approval", "failed": "failed"}
+_APPROVAL_PATHS: dict[Hashable, str] = {
+    "healing.apply-test-repair": "healing.apply-test-repair",
+    "needs-review": "needs-review",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +97,7 @@ def _build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledStat
     builder: StateGraph[HealingState] = StateGraph(HealingState)
     _add_shared_terminals(builder)
     builder.add_node("needs-review", cast(Callable[..., Any], terminal_needs_review))
+    builder.add_node("approval", cast(Callable[..., Any], proposal_approval))
     builder.add_edge("needs-review", END)
     builder.add_node(
         "healing.fix-proposal",
@@ -126,6 +133,9 @@ def _build_repair_failure_graph(context: CapabilityBuildContext) -> CompiledStat
     builder.add_edge("repair-round-advance", "healing.fix-proposal")
     builder.add_conditional_edges(
         "healing.fix-proposal", cast(Callable[..., Any], route_proposal_status), _PROPOSAL_STATUS_PATHS
+    )
+    builder.add_conditional_edges(
+        "approval", cast(Callable[..., Any], route_proposal_approval), _APPROVAL_PATHS
     )
     builder.add_conditional_edges(
         "healing.apply-test-repair", cast(Callable[..., Any], route_failure_status), _FAILURE_STATUS_PATHS

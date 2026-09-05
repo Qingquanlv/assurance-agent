@@ -91,7 +91,18 @@ def failure_status_named_matches(state: Mapping[str, object]) -> dict[str, str |
 
 
 def route_proposal_status(state: Mapping[str, object]) -> str:
-    return "failed" if state.get("attempt_failure") else "apply"
+    return "failed" if state.get("attempt_failure") else "approval"
+
+
+def route_proposal_approval(state: Mapping[str, object]) -> str:
+    approved = state.get("human_action") == "approve" and isinstance(state.get("approval_ref"), Mapping)
+    return select_exclusive_route(
+        {
+            "apply": "healing.apply-test-repair" if approved else None,
+            "review": "needs-review" if not approved else None,
+        },
+        otherwise="needs-review",
+    )
 
 
 def route_coverage_status(state: Mapping[str, object]) -> str:
@@ -118,5 +129,6 @@ __all__ = [
     "route_admit_failure",
     "route_coverage_status",
     "route_failure_status",
+    "route_proposal_approval",
     "route_proposal_status",
 ]

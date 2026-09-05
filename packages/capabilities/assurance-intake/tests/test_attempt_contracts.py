@@ -205,7 +205,7 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert contract.validators == ()
         effectful += 1
     assert registered == 25
-    assert effectful == 42
+    assert effectful == 43
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 

@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, Self, cast
 
 from langgraph.types import interrupt
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_healing.contracts.agent import CoverageRepairInputV1, FixProposalInputV1
+from assurance_healing.contracts.agent import (
+    CoverageRepairInputV1,
+    FixProposalInputV1,
+    FixProposalResultV1,
+)
 from assurance_healing.contracts.application import (
     AppliedTestRepairV1,
     ApplyTestRepairInputV1,
@@ -20,13 +26,28 @@ from assurance_healing.contracts.coverage_repair import HEALING_REPAIR_OUTCOMES,
 from assurance_healing.contracts.decisions import advance_repair_round
 from assurance_healing.contracts.status import RepairRoundKind
 from assurance_healing.graphs.state import HealingRepairPublicV1, HealingState
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 COVERAGE_REVIEW_ACTIONS = ("approve", "reject")
+PROPOSAL_APPROVAL_ACTIONS = ("approve", "reject")
 _REPAIR_KINDS = frozenset({"failure", "coverage"})
 
 
 class CoverageReviewDecision(FrozenModel):
     action: Literal["approve", "reject"]
+
+
+class ProposalApprovalDecision(FrozenModel):
+    action: Literal["approve", "reject"]
+    approval_ref: EvidenceArtifactRefV1 | None = None
+
+    @model_validator(mode="after")
+    def _approved_requires_reference(self) -> Self:
+        if self.action == "approve" and self.approval_ref is None:
+            raise ValueError("approval requires an authenticated approval reference")
+        if self.action == "reject" and self.approval_ref is not None:
+            raise ValueError("rejection cannot carry an approval reference")
+        return self
 
 
 def _output_payload(output: object) -> dict[str, object]:
@@ -172,15 +193,21 @@ def publish_repair(
 
 
 def publish_proposal(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    del state
+    payload = _output_payload(output)
+    proposal = FixProposalResultV1.model_validate(
+        {name: payload[name] for name in FixProposalResultV1.model_fields if name in payload}
+    )
+    relative = f"qa/changes/{proposal.change_id}/healing/fix-proposal.json"
+    data = canonical_json_bytes(cast(JSONValue, proposal.model_dump(mode="json"))) + b"\n"
     return {
-        "proposal_result": _output_payload(output),
+        "proposal_result": proposal.model_dump(mode="json"),
+        "proposal_ref": {"path": relative, "digest": hashlib.sha256(data).hexdigest()},
         "proposal_receipt": dict(_receipt_payload(receipt)),
     }
 
 
 def publish_applied_repair(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    verified = VerifiedTestRepairV1.model_validate(output)
+    verified = VerifiedTestRepairV1.model_validate(_output_payload(output))
     applied = AppliedTestRepairV1(
         change_id=verified.change_id,
         coverage_epoch=verified.coverage_epoch,
@@ -188,7 +215,7 @@ def publish_applied_repair(state: Mapping[str, object], output: object, receipt:
         status="applied",
         changed_test_refs=verified.changed_test_refs,
         mapping_ref=verified.mapping_ref,
-        receipt=ReceiptRef.model_validate(receipt),
+        receipt=ReceiptRef.model_validate(_receipt_payload(receipt)),
     )
     return HealingRepairPublicV1(
         change_id=verified.change_id,
@@ -240,6 +267,30 @@ def coverage_review(state: Mapping[str, object]) -> dict[str, object]:
     return {"human_action": decision.action}
 
 
+def proposal_approval(state: Mapping[str, object]) -> dict[str, object]:
+    existing = state.get("approval_ref")
+    if existing is not None:
+        ref = EvidenceArtifactRefV1.model_validate(existing)
+        return {"human_action": "approve", "approval_ref": ref.model_dump(mode="json")}
+    raw = interrupt(
+        {
+            "reason": "fix_proposal_requires_approval",
+            "actions": list(PROPOSAL_APPROVAL_ACTIONS),
+            "interrupt_id": "fix-proposal-approval",
+            "ordinal": 0,
+            "proposal_ref": state.get("proposal_ref"),
+            "proposal": state.get("proposal_result"),
+        }
+    )
+    decision = ProposalApprovalDecision.model_validate(raw)
+    return {
+        "human_action": decision.action,
+        "approval_ref": (
+            None if decision.approval_ref is None else decision.approval_ref.model_dump(mode="json")
+        ),
+    }
+
+
 def _public_terminal(state: Mapping[str, object], status: HealingRepairOutcome | str) -> dict[str, object]:
     payload: dict[str, object] = {
         "status": status,
@@ -282,7 +333,9 @@ def terminal_needs_review(state: Mapping[str, object]) -> dict[str, object]:
 
 __all__ = [
     "COVERAGE_REVIEW_ACTIONS",
+    "PROPOSAL_APPROVAL_ACTIONS",
     "CoverageReviewDecision",
+    "ProposalApprovalDecision",
     "activation_repair",
     "admit_passthrough",
     "advance_repair_round_node",
@@ -290,6 +343,7 @@ __all__ = [
     "publish_repair",
     "publish_applied_repair",
     "publish_proposal",
+    "proposal_approval",
     "select_application",
     "select_coverage",
     "select_failure",

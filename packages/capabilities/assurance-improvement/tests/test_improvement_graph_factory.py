@@ -163,7 +163,7 @@ def test_improvement_factory_exports_seven_public_graphs(recording_context) -> N
     assert len({item for item in bound if item in AGENT_IDS}) == 6
     assert len({item for item in bound if item in TASK_IDS}) == 9
     assert bound.count(TASK_EVALUATE_ID) == 2
-    assert sum(1 for item in bound if item in TASK_IDS) == 9
+    assert sum(1 for item in bound if item in TASK_IDS) == 10
     for agent_id in AGENT_IDS:
         assert bound.count(agent_id) == 1
     assert "assurance.improvement.graph.benchmark-eval" not in bound

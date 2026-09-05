@@ -32,7 +32,7 @@ from assurance_quality.contracts.goal_policy import (
     CoverageGoalPolicyV1,
     SufficiencyPolicyV1,
 )
-from assurance_quality.contracts.metrics import MetricsDocument
+from assurance_quality.contracts.metrics import MetricScope, MetricsDocument
 from assurance_quality.contracts.pr_metrics import (
     AuthMatrixEvidence,
     ConstraintCoverageEvidence,
@@ -187,8 +187,6 @@ def _metrics(
     policy_digest: str,
     computed_at: datetime,
 ) -> MetricsDocument:
-    from assurance_quality.contracts.metrics import MetricScope
-
     trace = projection
     rows = {row.case_id: row for row in trace.rows}
 

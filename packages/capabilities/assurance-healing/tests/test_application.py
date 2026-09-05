@@ -19,7 +19,6 @@ from assurance_healing.contracts.application import (
 )
 from assurance_healing.operations.application import ApplyTestRepairFinalizeHandler
 from assurance_healing.operations.keys import derive_approval_id
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import execute_task
 
@@ -332,12 +331,14 @@ def test_publisher_adds_only_real_commit_receipt() -> None:
     from assurance_healing.graphs.nodes import publish_applied_repair
 
     ref = {"path": SOURCE, "digest": SHA}
-    verified = VerifiedTestRepairV1(
-        change_id=CHANGE,
-        coverage_epoch=0,
-        repair_round=1,
-        changed_test_refs=(EvidenceArtifactRefV1.model_validate(ref),),
-        mapping_ref=EvidenceArtifactRefV1(path=MAPPING, digest=SHA),
+    verified = VerifiedTestRepairV1.model_validate(
+        {
+            "change_id": CHANGE,
+            "coverage_epoch": 0,
+            "repair_round": 1,
+            "changed_test_refs": [ref],
+            "mapping_ref": {"path": MAPPING, "digest": SHA},
+        }
     )
     receipt = ReceiptRef(receipt_id="receipt-1", receipt_digest=SHA)
     published = publish_applied_repair(

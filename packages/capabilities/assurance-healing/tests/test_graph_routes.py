@@ -22,6 +22,7 @@ from assurance_healing.graphs.routes import (
     route_admit_failure,
     route_coverage_status,
     route_failure_status,
+    route_proposal_approval,
 )
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
@@ -121,6 +122,18 @@ def test_failure_admit_routes_eligible_exhausted_and_not_eligible() -> None:
     assert route_admit_failure(failure_graph_input(classification="product_bug")) == "not-eligible"
     assert route_admit_failure(failure_graph_input(fix_eligible=False)) == "not-eligible"
     assert route_admit_failure({}) == "not-eligible"
+
+
+def test_proposal_approval_routes_only_authenticated_approval_to_application() -> None:
+    assert route_proposal_approval(failure_graph_input(human_action="approve")) == "healing.apply-test-repair"
+    assert (
+        route_proposal_approval(failure_graph_input(human_action="reject", approval_ref=None))
+        == "needs-review"
+    )
+    assert (
+        route_proposal_approval(failure_graph_input(human_action="approve", approval_ref=None))
+        == "needs-review"
+    )
 
 
 def test_coverage_admit_routes_eligible_exhausted_and_not_eligible() -> None:

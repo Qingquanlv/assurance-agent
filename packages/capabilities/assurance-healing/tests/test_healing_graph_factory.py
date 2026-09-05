@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from collections.abc import Iterator
 from dataclasses import fields
 from pathlib import Path
@@ -16,6 +17,7 @@ from assurance_healing.graphs.nodes import activation_repair, advance_repair_rou
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.testing import GraphHarness, committed
 
 _SHA = "a" * 64
@@ -156,6 +158,17 @@ def failure_agent_output() -> dict[str, object]:
         "change_id": "CH-FIX-001",
         "summary": {"eligible_count": 1},
         "proposals": [],
+    }
+
+
+def test_proposal_publisher_exposes_the_committed_proposal_reference() -> None:
+    from assurance_healing.graphs.nodes import publish_proposal
+
+    output = failure_agent_output()
+    published = publish_proposal(failure_graph_input(), output, _receipt())
+    assert published["proposal_ref"] == {
+        "path": "qa/changes/CH-FIX-001/healing/fix-proposal.json",
+        "digest": hashlib.sha256(canonical_json_bytes(cast(JSONValue, output)) + b"\n").hexdigest(),
     }
 
 
