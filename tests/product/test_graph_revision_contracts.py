@@ -99,12 +99,12 @@ def test_entrypoint_digest_changes_with_schema_or_limit_not_compiled_repr() -> N
 
 def test_exact_limit_table_uses_the_current_state_schema() -> None:
     assert set(EXPECTED_RECURSION_LIMITS) == set(PRODUCT_ENTRYPOINTS)
-    assert STATE_SCHEMA_VERSION == "1"
+    assert STATE_SCHEMA_VERSION == "2"
     for name, contract in ENTRYPOINT_CONTRACTS.items():
         assert isinstance(contract, EntrypointGraphContract)
         assert contract.name == name
         assert contract.recursion_limit == EXPECTED_RECURSION_LIMITS[name]
-        assert contract.state_schema_version == "1"
+        assert contract.state_schema_version == "2"
 
 
 def test_graph_revision_keeps_agent_routes_out_of_inspection_result() -> None:
