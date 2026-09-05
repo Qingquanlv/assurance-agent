@@ -11,7 +11,7 @@ def test_report_is_mandatory_on_success(tmp_path) -> None:
     run = asyncio.run(run_goal_loop(tmp_path, GoalLoopScenario()))
 
     assert run.dispatch_count("quality.report") == 1
-    assert run.node_visits.count("retro") == 1
+    assert run.node_visits.count("retro") == 0
     assert run.state["status"] == "completed"
 
 

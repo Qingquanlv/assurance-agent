@@ -90,7 +90,7 @@ def test_business_budget_exhaustion_is_a_distinct_terminal() -> None:
         )
     )
     result = invoke_product_root(graphs, "execute", _public_input("execute"))
-    assert result["terminal"] == "not-achieved"
+    assert result["terminal"] == {"status": "failed", "reason": "blocked"}
     assert result.get("status") != "graph_recursion_limit"
     coverage = invoke_product_root(
         _product_graphs(_flow_features(assess=_inspection(disposition="coverage_insufficient"))),
@@ -105,6 +105,6 @@ def test_business_budget_exhaustion_is_a_distinct_terminal() -> None:
             },
         ),
     )
-    assert coverage["terminal"] == "not-achieved"
+    assert coverage["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert ExecuteTailResultV1.model_validate(coverage["tail_result"]).status == "coverage_insufficient"
     assert "coverage_needed_inbox" not in coverage

@@ -1,1 +1,99 @@
-{"descriptor":{"schema_version":"1","source":{"distribution":"assurance-intake","version":"0.2.0","entrypoint_group":"graph_engine.plugins","entrypoint_name":"intake","entrypoint_value":"assurance_intake.plugin:IntakePlugin","declaration_path":"assurance_intake/plugin-declaration.json","import_roots":[""]},"plugin_id":"assurance.intake","plugin_version":"0.2.0","engine_api":"2.0","task_handlers":["assurance.intake.case-design.finalize","assurance.intake.case-design.prepare","assurance.intake.case-review.finalize","assurance.intake.case-review.prepare","assurance.intake.explore.finalize","assurance.intake.explore.prepare","assurance.intake.intake.finalize","assurance.intake.intake.prepare","assurance.intake.review-round.advance"],"commit_validators":["assurance.intake.validator.case-candidate.v1","assurance.intake.validator.case-references.v1"],"dependencies":[],"schemas":["assurance.intake.schema.case-authoring.v1","assurance.intake.schema.case-review.v1","assurance.intake.schema.case.v1","assurance.intake.schema.qa-change.v1","assurance.intake.workflow.case.input.v1","assurance.intake.workflow.case.output.v1","assurance.intake.workflow.prepare.input.v1","assurance.intake.workflow.prepare.output.v1"],"resources":["assurance.intake.persona.doc-author.v1","assurance.intake.persona.explorer.v1","assurance.intake.persona.intake-host.v1","assurance.intake.persona.reviewer.v1","assurance.intake.prompt.case-design.v1","assurance.intake.prompt.case-review.v1","assurance.intake.prompt.explore.v1","assurance.intake.prompt.intake.v1","assurance.intake.result.case-design.v1","assurance.intake.result.case-review.v1","assurance.intake.result.explore.v1","assurance.intake.result.intake.v1","assurance.intake.skill.aa-case-design.case-delta-reviewer-prompt.v1","assurance.intake.skill.aa-case-design.v1","assurance.intake.skill.aa-case-design.visual-companion.v1","assurance.intake.skill.aa-case-repair.v1","assurance.intake.skill.aa-case-reviewer.v1","assurance.intake.skill.aa-explore.v1","assurance.intake.skill.aa-intake.v1"],"effects":[],"bindings":[],"attempt_contracts":[{"contract_id":"assurance.intake.agent.case-design.v1","digest":"7526babfdeb7b29b134df5e7ac0c102c51fbcd85c941b3c3139429bd5e77690b"},{"contract_id":"assurance.intake.agent.case-review.v1","digest":"46e669b58c75591c13c9dc25a97eefa429c04c27493fc8416f40125ea6132269"},{"contract_id":"assurance.intake.agent.explore.v1","digest":"110afe307a7a6301cdf5d8a85e22a9931b3f966ef32f26933cc0fd2b1082bb59"},{"contract_id":"assurance.intake.agent.intake.v1","digest":"8adc3fe36e84975eeb5703e7c540f787355bb1a6d3ce5dd8497c0a8dacd6ac16"}]},"kind":"plugin","schema_version":"1","source":{"declaration_path":"assurance_intake/plugin-declaration.json","distribution":"assurance-intake","entrypoint_group":"graph_engine.plugins","entrypoint_name":"intake","entrypoint_value":"assurance_intake.plugin:IntakePlugin","import_roots":[""],"version":"0.2.0"}}
+{
+  "descriptor": {
+    "schema_version": "1",
+    "source": {
+      "distribution": "assurance-intake",
+      "version": "0.2.0",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "intake",
+      "entrypoint_value": "assurance_intake.plugin:IntakePlugin",
+      "declaration_path": "assurance_intake/plugin-declaration.json",
+      "import_roots": [
+        ""
+      ]
+    },
+    "plugin_id": "assurance.intake",
+    "plugin_version": "0.2.0",
+    "engine_api": "2.0",
+    "task_handlers": [
+      "assurance.intake.case-design.finalize",
+      "assurance.intake.case-design.prepare",
+      "assurance.intake.case-review.finalize",
+      "assurance.intake.case-review.prepare",
+      "assurance.intake.explore.finalize",
+      "assurance.intake.explore.prepare",
+      "assurance.intake.intake.finalize",
+      "assurance.intake.intake.prepare",
+      "assurance.intake.review-round.advance"
+    ],
+    "commit_validators": [
+      "assurance.intake.validator.case-candidate.v1",
+      "assurance.intake.validator.case-references.v1"
+    ],
+    "dependencies": [],
+    "schemas": [
+      "assurance.intake.schema.case-authoring.v1",
+      "assurance.intake.schema.case-review.v1",
+      "assurance.intake.schema.case.v1",
+      "assurance.intake.schema.qa-change.v1",
+      "assurance.intake.workflow.case.input.v1",
+      "assurance.intake.workflow.case.output.v1",
+      "assurance.intake.workflow.prepare.input.v1",
+      "assurance.intake.workflow.prepare.output.v1"
+    ],
+    "resources": [
+      "assurance.intake.persona.doc-author.v1",
+      "assurance.intake.persona.explorer.v1",
+      "assurance.intake.persona.intake-host.v1",
+      "assurance.intake.persona.reviewer.v1",
+      "assurance.intake.prompt.case-design.v1",
+      "assurance.intake.prompt.case-review.v1",
+      "assurance.intake.prompt.explore.v1",
+      "assurance.intake.prompt.intake.v1",
+      "assurance.intake.result.case-design.v1",
+      "assurance.intake.result.case-review.v1",
+      "assurance.intake.result.explore.v1",
+      "assurance.intake.result.intake.v1",
+      "assurance.intake.skill.aa-case-design.case-delta-reviewer-prompt.v1",
+      "assurance.intake.skill.aa-case-design.v1",
+      "assurance.intake.skill.aa-case-design.visual-companion.v1",
+      "assurance.intake.skill.aa-case-repair.v1",
+      "assurance.intake.skill.aa-case-reviewer.v1",
+      "assurance.intake.skill.aa-explore.v1",
+      "assurance.intake.skill.aa-intake.v1"
+    ],
+    "effects": [],
+    "bindings": [],
+    "attempt_contracts": [
+      {
+        "contract_id": "assurance.intake.agent.case-design.v1",
+        "digest": "c105d5587add35228dad71c7f606ee4cb0767aa22d0abc642c8beb2a85b4d897"
+      },
+      {
+        "contract_id": "assurance.intake.agent.case-review.v1",
+        "digest": "5c7c13c56b89ede7f94928fe820f62494b9e9dfd02bdd8032d7df17efc3d2cc6"
+      },
+      {
+        "contract_id": "assurance.intake.agent.explore.v1",
+        "digest": "a0c61ac9cc722a25b56df81918f67d30210db8830f2f19dc4df286faa8d7cdb0"
+      },
+      {
+        "contract_id": "assurance.intake.agent.intake.v1",
+        "digest": "d96f0d6a440ae83869410cf63956caa5d5633298b448572c308f0519551c5cb3"
+      }
+    ]
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_intake/plugin-declaration.json",
+    "distribution": "assurance-intake",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "intake",
+    "entrypoint_value": "assurance_intake.plugin:IntakePlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.2.0"
+  }
+}

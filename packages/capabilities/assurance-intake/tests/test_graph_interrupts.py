@@ -145,23 +145,19 @@ def _config() -> RunnableConfig:
     }
 
 
-def test_publish_case_review_keeps_graph_rounds_when_result_omits_or_nulls_them() -> None:
+def test_publish_case_review_ignores_agent_authored_rounds() -> None:
     state = {"rounds_used": 0, "rounds_budget": 2}
     result = _review_result_v1("needs_fix", auto_fix=True)
     dumped = result.model_dump(mode="json")
-    assert dumped["rounds_used"] is None
-    assert dumped["rounds_budget"] is None
+    assert "rounds_used" not in dumped
+    assert "rounds_budget" not in dumped
     published = publish_case_review(state, result, None)
     assert published["rounds_used"] == 0
     assert published["rounds_budget"] == 2
-    omitted = {key: value for key, value in dumped.items() if key not in {"rounds_used", "rounds_budget"}}
-    published_omitted = publish_case_review(state, omitted, None)
-    assert published_omitted["rounds_used"] == 0
-    assert published_omitted["rounds_budget"] == 2
     authored = {**dumped, "rounds_used": 1, "rounds_budget": 3}
     published_authored = publish_case_review(state, authored, None)
-    assert published_authored["rounds_used"] == 1
-    assert published_authored["rounds_budget"] == 3
+    assert published_authored["rounds_used"] == 0
+    assert published_authored["rounds_budget"] == 2
 
 
 def _patch_interrupt(node: Callable[..., Any], **kwargs: Any):

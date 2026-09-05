@@ -102,6 +102,7 @@ def execution_evidence(*, change_id: str = "CH-DEMO-001", status: str = "passed"
             "status": status,
             "change_id": change_id,
             "batch_id": "20260822T000000Z",
+            "executed_at": "2026-08-22T00:00:00Z",
             "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
             "mapping": _mapping(),
             "mapping_digest": _SHA,
@@ -109,12 +110,19 @@ def execution_evidence(*, change_id: str = "CH-DEMO-001", status: str = "passed"
             "runner_profile_digest": "c" * 64,
             "receipt_digest": "d" * 64,
             "receipt": {
-                "command": ["pytest", "tests/a.py"],
-                "exit_code": 0 if status == "passed" else 1,
-                "collected": 1,
-                "passed": 1 if status == "passed" else 0,
-                "failed": 0 if status == "passed" else 1,
-                "skipped": 0,
+                "commands": [
+                    {
+                        "family": "api",
+                        **{
+                            "command": ["pytest", "tests/a.py"],
+                            "exit_code": 0 if status == "passed" else 1,
+                            "collected": 1,
+                            "passed": 1 if status == "passed" else 0,
+                            "failed": 0 if status == "passed" else 1,
+                            "skipped": 0,
+                        },
+                    }
+                ]
             },
             "results": [
                 {
@@ -201,6 +209,10 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
         script={"execution.execute": [committed(output, _RECEIPT)]},
     )
     assert execute.published_update == {
+        "batch_id": output.batch_id,
+        "execution_evidence": output.model_dump(mode="json"),
+        "execution_digest": canonical_digest(output.model_dump(mode="json")),
+        "execution_semantic_node_id": "execution.execute",
         "rounds_budget": 2,
         "rounds_used": 0,
         "status": "passed",
@@ -215,6 +227,10 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
         script={"execution.run": [committed(output, _RECEIPT)]},
     )
     assert rerun.published_update == {
+        "batch_id": output.batch_id,
+        "execution_evidence": output.model_dump(mode="json"),
+        "execution_digest": canonical_digest(output.model_dump(mode="json")),
+        "execution_semantic_node_id": "execution.run",
         "rounds_budget": 2,
         "rounds_used": 0,
         "status": "passed",
@@ -301,6 +317,7 @@ def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) ->
                 "generation_result": generation,
             },
             workspace=tmp_path,
+            write_root=tmp_path / ".stage",
             model=AGENT_JOB_CONTRACTS["execute"].input_model,
         )
 
@@ -332,14 +349,14 @@ class _RecordingWorkspace:
 
 
 class _WritingExecutor:
-    def __init__(self, workspace: _RecordingWorkspace, output: ExecutionManifest) -> None:
+    def __init__(self, workspace: _RecordingWorkspace, output: ExecutionEvidenceV1) -> None:
         self.workspace = workspace
         self.output = output
         self.calls = 0
 
     async def execute(
         self, validated_input: BaseModel, scope: object
-    ) -> ExecutedAttemptResult[ExecutionManifest]:
+    ) -> ExecutedAttemptResult[ExecutionEvidenceV1]:
         del validated_input, scope
         self.calls += 1
         binding = self.workspace.binding
@@ -389,7 +406,7 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
     project.mkdir()
     store = TaskWorkspaceStore(project, tmp_path / "attempts", tmp_path / "receipts")
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
-    output = execution_manifest()
+    output = execution_evidence()
     writer = _WritingExecutor(workspace, output)
     core = _boot_resolved_execute()
     writable = ResourceClaims(writes=("tests",))

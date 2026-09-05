@@ -134,6 +134,7 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         "status": "passed",
         "change_id": CHANGE_ID,
         "batch_id": BATCH_ID,
+        "executed_at": EXECUTED_AT.isoformat(),
         "selected_targets": {
             "api": True,
             "e2e": False,
@@ -146,12 +147,19 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         "runner_profile_digest": "c" * 64,
         "receipt_digest": "d" * 64,
         "receipt": {
-            "command": ["pytest", TEST_SELECTOR],
-            "exit_code": 0,
-            "collected": 1,
-            "passed": 1,
-            "failed": 0,
-            "skipped": 0,
+            "commands": [
+                {
+                    "family": "api",
+                    **{
+                        "command": ["pytest", TEST_SELECTOR],
+                        "exit_code": 0,
+                        "collected": 1,
+                        "passed": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                    },
+                }
+            ]
         },
         "results": [
             {
@@ -203,6 +211,7 @@ def _workspace_input(root: Path) -> dict[str, Any]:
             "coverage_epoch": 3,
             "repair_round": 0,
             "batch_id": BATCH_ID,
+            "executed_at": EXECUTED_AT.isoformat(),
             "final_status": "PASS",
             "evidence_ref": evidence_ref,
             "mapping_ref": mapping_ref,

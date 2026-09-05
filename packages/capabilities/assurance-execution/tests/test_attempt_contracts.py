@@ -4,13 +4,13 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import AttemptContractRef
 
 from agent_runtime_contracts import AgentExecutionContract
-from assurance_execution.contracts.agent import ExecuteInputV1, RunSkillInputV1
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
     TASK_ATTEMPT_CONTRACTS,
     attempt_contract_refs,
 )
-from assurance_execution.contracts.execution import ExecutionManifest
+from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.plugin import ExecutionPlugin
 
 
@@ -18,8 +18,8 @@ def test_execution_owns_two_agent_contracts() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 2
     assert TASK_ATTEMPT_CONTRACTS == {}
     expected = {
-        "execute": ("aa-execute", ExecuteInputV1),
-        "run": ("aa-run", RunSkillInputV1),
+        "execute": ("aa-execute", ExecutionPrepareInputV1),
+        "run": ("aa-run", ExecutionPrepareInputV1),
     }
     assert set(AGENT_JOB_CONTRACTS) == set(expected)
     for base, (skill_id, input_model) in expected.items():
@@ -32,15 +32,18 @@ def test_execution_owns_two_agent_contracts() -> None:
         assert contract.skill_id == skill_id
         assert contract.agent_profile == "assurance-v1-executor"
         assert contract.input_model is input_model
-        assert contract.agent_result_model is ExecutionManifest
-        assert contract.output_model is ExecutionManifest
+        assert contract.agent_result_model is ExecutionAgentResultV1
+        assert contract.output_model is ExecutionEvidenceV1
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
-        assert set(claims.finalize) == set(contract.resources.writes)
-        assert claims.prepare == ()
+        assert claims.prepare == ("qa/changes/{change_id}/.staging/execution",)
         assert claims.runtime == ()
+        assert claims.finalize == (
+            f"qa/changes/{{change_id}}/execution/{'run' if base == 'run' else 'execute'}-result.json",
+        )
+        assert set((*claims.prepare, *claims.finalize)) == set(contract.resources.writes)
 
 
 def test_execution_plugin_projects_authenticated_attempt_contracts() -> None:

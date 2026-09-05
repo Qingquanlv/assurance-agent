@@ -437,7 +437,7 @@ def test_codegen_job_claims_cover_dynamic_change_local_mapping_targets() -> None
             base = f"{family}.{suffix}"
             resources = AGENT_JOB_CONTRACTS[base].resources
             assert isinstance(resources, ResourceClaimTemplate)
-            claims = resources.resolve({"workspace": {"scope_id": "CH-1"}}).writes
+            claims = resources.resolve({"change_id": "CH-1"}).writes
             dynamic_root = f"qa/changes/CH-1/generated/{family}/files"
             assert dynamic_root in claims
             assert dynamic_root not in tuple(

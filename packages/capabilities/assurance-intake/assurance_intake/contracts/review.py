@@ -161,8 +161,6 @@ class CaseReviewResultV1(BaseModel):
     minimum_coverage: CaseMinimumCoverageReview
     source_verification: CaseSourceVerification
     public_outcome: PublicReviewOutcome | None = None
-    rounds_used: int | None = Field(default=None, ge=0)
-    rounds_budget: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def _normalize_public_outcome(self) -> CaseReviewResultV1:
@@ -173,9 +171,6 @@ class CaseReviewResultV1(BaseModel):
         )
         if self.public_outcome is not None and self.public_outcome != outcome:
             raise ValueError("public_outcome does not match the normalized review decision")
-        if self.rounds_used is not None and self.rounds_budget is not None:
-            if self.rounds_used > self.rounds_budget:
-                raise ValueError("rounds_used cannot exceed rounds_budget")
         return self.model_copy(update={"public_outcome": outcome})
 
 

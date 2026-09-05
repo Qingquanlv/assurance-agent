@@ -54,8 +54,16 @@ async def cycle_fixture(
         _write(root, source, f"def {family_symbol(family)}():\n    assert True\n".encode())
         plan = f"qa/changes/CH-DEMO-001/plans/{family}-plan.md"
         _write(root, plan, b"reviewed test plan\n")
+        _write(
+            root,
+            f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json",
+            json.dumps(codegen_result([target], family=family)).encode(),
+        )
         finalized = await execute_task(
-            CodegenFinalizeHandler(family), fake_agent_result(codegen_result([target], family=family)), root
+            CodegenFinalizeHandler(family),
+            fake_agent_result(codegen_result([target], family=family)),
+            root,
+            write_root=root,
         )
         assert finalized.status == "succeeded", finalized.failure
         output = cast(dict[str, Any], finalized.output)

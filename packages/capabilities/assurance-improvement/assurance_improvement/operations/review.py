@@ -17,6 +17,7 @@ from assurance_improvement.contracts.improvements import (
     LastAutoReview,
 )
 from assurance_improvement.contracts.review import (
+    AppliedAutoReviewV1,
     AutoReviewBatchError,
     ImprovementAutoReviewAssessment,
     ImprovementAutoReviewAssessmentAuthoring,
@@ -257,16 +258,8 @@ class ApplyImprovementAutoReviewHandler:
         try:
             payload = validate_input(ApplyAutoReviewInput, request.input)
             status, updated = apply_auto_review(payload)
-            dumped = updated.model_dump(mode="json")
-            return succeeded(
-                {
-                    "status": status.model_dump(mode="json"),
-                    "projection": dumped,
-                    "lifecycle_state": updated.state.value,
-                    "effect_intents": [],
-                    "write_authorization": [],
-                }
-            )
+            result = AppliedAutoReviewV1(status=status, projection=updated)
+            return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
 
@@ -372,15 +365,7 @@ class ApplyImprovementReviewHandler:
         try:
             payload = validate_input(ApplyReviewInput, request.input)
             updated = apply_review(payload)
-            dumped = updated.model_dump(mode="json")
-            return succeeded(
-                {
-                    **cast(dict[str, object], dumped),
-                    "lifecycle_state": updated.state.value,
-                    "effect_intents": [],
-                    "write_authorization": [],
-                }
-            )
+            return succeeded(cast(dict[str, object], updated.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
 

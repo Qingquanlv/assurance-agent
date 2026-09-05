@@ -137,6 +137,7 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
                 "coverage_epoch": 2,
                 "repair_round": 0,
                 "batch_id": "20260822T000000Z",
+                "executed_at": "2026-08-22T00:00:00Z",
                 "final_status": "PASS",
                 "evidence_ref": ref("qa/changes/CH-DEMO-001/execution/execute-result.json"),
                 "mapping_ref": generation["mapping_ref"],

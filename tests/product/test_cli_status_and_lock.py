@@ -13,7 +13,24 @@ def test_status_schema_is_closed_status_v1() -> None:
     assert schema["additionalProperties"] is False
     required = schema["required"]
     assert isinstance(required, list)
-    assert {"invocation_id", "lock_digest", "entrypoint", "change", "status"} <= set(required)
+    assert {
+        "invocation_id",
+        "lock_digest",
+        "entrypoint",
+        "change",
+        "status",
+        "execution_gate",
+        "quality_gate",
+    } <= set(required)
+    execution_gate = schema["$defs"]["ExecutionGateRefV1"]
+    assert execution_gate["properties"]["semantic_node_id"]["enum"] == [
+        "execution.execute",
+        "execution.run",
+    ]
+    quality_gate = schema["$defs"]["QualityGateRefV1"]
+    assert quality_gate["properties"]["inspection"] == {"$ref": "#/$defs/InspectionOutcomeV1"}
+    assert quality_gate["properties"]["report"] == {"$ref": "#/$defs/ReportOutcomeV1"}
+    assert set(quality_gate["required"]) == {"inspection", "report"}
 
 
 def test_render_status_projects_started_invocation(cli_runner, installed_sources, tmp_path, monkeypatch):

@@ -189,12 +189,14 @@ class AssuranceApplication:
         execution_factory: InvocationBoundExecutionFactory,
     ) -> InvocationStatus:
         async with self._hold_lease(invocation_id, execution_factory) as (lease, bound):
+            snapshot = await self._read_snapshot(bound.artifact, invocation_id, bound.runtime_context)
             return await self._run_locked(
                 artifact=bound.artifact,
                 invocation_id=invocation_id,
                 runtime_context=bound.runtime_context,
                 lease=lease,
-                command=None,
+                command=_system_wake_command(tuple(getattr(snapshot, "interrupts", ()))),
+                snapshot=snapshot,
             )
 
     async def resume(
@@ -534,6 +536,27 @@ def _resume_payload(resume: object, pending: tuple[object, ...]) -> object:
             raise InvalidResume("resume mapping must cover pending interrupt ids")
         return {getattr(item, "id"): _validate_one(resume[getattr(item, "id")], item) for item in pending}
     return _validate_one(resume, first)
+
+
+def _system_wake_command(pending: tuple[object, ...]) -> Command | None:
+    if not pending or any(_interrupt_kind(item) != "system_wake" for item in pending):
+        return None
+    resumptions = tuple(_pending_wakeup(item) for item in pending)
+    resume: object
+    if len(pending) == 1:
+        resume = resumptions[0]
+    else:
+        if not all(hasattr(item, "id") for item in pending):
+            raise InvalidResume("multiple system wake interrupts require interrupt ids")
+        resume = {getattr(item, "id"): value for item, value in zip(pending, resumptions, strict=True)}
+    return Command(resume=_resume_payload(resume, pending))
+
+
+def _pending_wakeup(item: object) -> PendingTaskResult:
+    value = getattr(item, "value", item)
+    if not isinstance(value, Mapping) or "wakeup" not in value:
+        raise InvalidResume("system wake interrupt is missing its wakeup envelope")
+    return PendingTaskResult.model_validate({"wakeup": value["wakeup"]})
 
 
 def _validate_one(resume: object, item: object) -> object:

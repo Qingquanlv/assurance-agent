@@ -77,6 +77,8 @@ async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: 
     assert output["review_type"] == f"{family}-plan"
     assert output["decision"] == "pass"
     assert output["required_capabilities"] == ["entities.item.create"]
+    assert "rounds_used" not in output
+    assert "rounds_budget" not in output
 
 
 @pytest.mark.asyncio
@@ -99,6 +101,9 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
     latest.write_text(json.dumps(review), encoding="utf-8")
     envelope = fake_agent_result(review)
     stage = tmp_path / ".stage"
+    staged_review = stage / latest.relative_to(tmp_path)
+    staged_review.parent.mkdir(parents=True)
+    staged_review.write_bytes(latest.read_bytes())
 
     executed = await execute_task(
         review_finalize_handler(family),

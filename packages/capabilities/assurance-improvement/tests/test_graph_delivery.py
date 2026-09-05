@@ -35,7 +35,7 @@ from graph_engine.attempts.kernel import AssuranceAttemptKernel
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.attempts.node_factory import AttemptNodeFactory
 from graph_engine.attempts.resolutions import ReceiptRef
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from graph_engine.attempts.resource_arbiter import ResourceArbiter
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.effects.contracts import EXPECTED_EFFECT_KINDS, GRAPH_NAMES_NOT_EFFECT_KINDS
@@ -138,11 +138,12 @@ def apply_graph_input(**overrides: object) -> dict[str, object]:
 
 def auto_review_output(*, lifecycle_state: str) -> dict[str, object]:
     return {
-        "schema_version": "1",
-        "review_id": "REV-1",
-        "improvement_id": IMPROVEMENT_ID,
-        "result": "approved" if lifecycle_state == "approved" else "escalated",
-        "lifecycle_state": lifecycle_state,
+        "status": {
+            "schema_version": "1",
+            "review_id": "REV-1",
+            "improvement_id": IMPROVEMENT_ID,
+            "result": "approved" if lifecycle_state == "approved" else "escalated",
+        },
         "projection": improvement_projection(state=lifecycle_state),
     }
 
@@ -261,7 +262,6 @@ def test_auto_review_and_evaluate_routes_are_exclusive() -> None:
     [
         ("needs_rework", "rework"),
         ("rejected", "rejected"),
-        ("unknown", "failed"),
     ],
 )
 async def test_apply_auto_review_routes_typed_lifecycle(lifecycle_state: str, terminal: str) -> None:
@@ -286,6 +286,21 @@ async def test_apply_auto_review_routes_typed_lifecycle(lifecycle_state: str, te
     assert isinstance(terminal_state, dict)
     assert terminal_state.get("lifecycle_state") in {lifecycle_state, terminal, "failed"}
     assert terminal_state.get("status", terminal) == terminal
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"result": "approved"},
+        auto_review_output(lifecycle_state="unknown"),
+        {"projection": improvement_projection(state="approved")},
+    ],
+)
+def test_auto_review_publisher_rejects_malformed_output(payload: dict[str, object]) -> None:
+    from assurance_improvement.graphs.nodes import publish_auto_review
+
+    with pytest.raises(ValidationError):
+        publish_auto_review(apply_graph_input(), payload, _receipt())
 
 
 async def test_apply_covers_auto_review_evaluate_and_apply() -> None:

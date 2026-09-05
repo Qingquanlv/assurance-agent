@@ -157,6 +157,7 @@ async def test_execute_uses_project_root_and_request_carries_stage_root() -> Non
         dumped = agent_run.model_dump(mode="json")
         assert dumped["workspace"]["write_root"] == WRITE_ROOT
         assert dumped["workspace"]["allowed_outputs"] == list(agent_run.workspace.allowed_outputs)
+        assert dumped["workspace"]["read_roots"] == list(agent_run.workspace.read_roots)
     finally:
         fixture.close()
 
@@ -197,6 +198,7 @@ async def test_execute_stamps_binding_title_after_create_before_prompt_admission
         assert document["agent_profile"] != agent_run.execution.worker_profile
         assert document["write_root"] == WRITE_ROOT
         assert document["allowed_outputs"] == list(ALLOWED_OUTPUTS)
+        assert document["read_roots"] == []
         assert document["task_id"] == "task-1"
         assert document["attempt"] == 1
         assert document["attempt_id"] == "attempt-1"
@@ -248,6 +250,7 @@ async def test_opencode_rebinds_prepare_workspace_to_current_execute_workspace()
         document = json.loads(title.split(":", 1)[1])
         assert document["write_root"] == execute_root.relative_to(context.project_root).as_posix()
         assert document["allowed_outputs"] == list(ALLOWED_OUTPUTS)
+        assert document["read_roots"] == []
         assert agent_run_from_request(fixture.request).workspace.write_root == WRITE_ROOT
         effective = rebind_agent_run_workspace(
             agent_run_from_request(fixture.request),

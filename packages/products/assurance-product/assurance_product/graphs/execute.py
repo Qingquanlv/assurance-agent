@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from langchain_core.runnables.config import RunnableConfig
@@ -158,10 +157,6 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
     current_reviewed = state.get("reviewed_case")
     if current_reviewed is not None and ReviewedCaseV1.model_validate(current_reviewed) != reviewed:
         raise ValueError("execution does not use the current Reviewed Case")
-    try:
-        execution_at = datetime.strptime(execution.batch_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
-    except ValueError as error:
-        raise ValueError("execution batch_id must carry the locked UTC execution time") from error
     feature_input = {
         "change_id": payload.change_id,
         "capability_leafs": list(payload.capability_leafs),
@@ -178,7 +173,7 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "execution_result": execution.model_dump(mode="json"),
         "policy_resource_id": payload.product_policy.resource_id,
         "policy_sha256": payload.product_policy.sha256,
-        "execution_at": execution_at.isoformat(),
+        "execution_at": execution.executed_at.isoformat(),
         "healing_ref": state.get("healing_ref"),
         "issue_ref": state.get("issue_ref"),
         "activation": {
@@ -253,8 +248,8 @@ def _finish_inspection(status: Literal["coverage_insufficient", "needs_human"]):
         tail = ExecuteTailResultV1(status=status, inspection=inspection)
         return {
             "tail_result": tail.model_dump(mode="json"),
-            "terminal": "done" if status == "coverage_insufficient" else "not-achieved",
-            "status": "completed" if status == "coverage_insufficient" else "failed",
+            "terminal": {"status": "stopped", "reason": status},
+            "status": "failed",
         }
 
     return node
@@ -266,7 +261,7 @@ def _finish_reported(state: ProductState) -> dict[str, object]:
     tail = reported_tail_result(inspection, report)
     return {
         "tail_result": tail.model_dump(mode="json"),
-        "terminal": "done",
+        "terminal": {"status": "completed", "reason": "done"},
         "status": "completed",
     }
 
@@ -293,7 +288,7 @@ def _finish_blocked(state: ProductState, *, reason: str = "execute tail is block
     tail = ExecuteTailResultV1(status="blocked", inspection=inspection, reason=reason)
     return {
         "tail_result": tail.model_dump(mode="json"),
-        "terminal": "not-achieved",
+        "terminal": {"status": "failed", "reason": "blocked"},
         "status": "failed",
     }
 

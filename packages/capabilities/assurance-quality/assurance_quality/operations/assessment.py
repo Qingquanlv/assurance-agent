@@ -327,6 +327,8 @@ def materialize_assessment_inputs(
         )
     except ValidationError as error:
         raise AssessmentInputError(f"invalid mapping or execution evidence: {error}") from error
+    if evidence.executed_at != request.execution.executed_at:
+        raise AssessmentInputError("execution evidence time differs from its committed cycle")
     if evidence.change_id != request.execution.change_id or evidence.batch_id != request.execution.batch_id:
         raise AssessmentInputError("execution evidence identity does not match the execution cycle")
     if evidence.mapping != mapping:

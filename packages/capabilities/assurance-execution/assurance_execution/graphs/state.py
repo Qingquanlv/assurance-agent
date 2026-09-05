@@ -7,6 +7,10 @@ from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
 
 class ExecutionPublicOutput(FrozenModel):
+    batch_id: str
+    execution_evidence: dict[str, object]
+    execution_digest: str
+    execution_semantic_node_id: Literal["execution.execute", "execution.run"]
     rounds_budget: int
     rounds_used: int
     status: Literal["failed", "passed"]
@@ -31,6 +35,9 @@ class ExecutionState(CheckpointBridgeState, total=False):
     rounds_used: int
     activation: dict[str, str]
     status: Literal["failed", "passed"]
+    execution_evidence: dict[str, object]
+    execution_digest: str
+    execution_semantic_node_id: Literal["execution.execute", "execution.run"]
     attempt_failure: dict[str, object]
 
 

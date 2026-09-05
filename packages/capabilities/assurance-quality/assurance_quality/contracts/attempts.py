@@ -59,7 +59,7 @@ def _job(
         agent_result_model=result_model,
         output_model=output_model or result_model,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
+            parameters={"change_id": "/change_id"},
             reads=("qa",),
             writes=_paths(*outputs),
         ),

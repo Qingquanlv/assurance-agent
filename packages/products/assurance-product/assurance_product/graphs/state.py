@@ -158,7 +158,10 @@ class ProductStateDocument(FrozenModel):
     fix_eligible: bool
     human_action: str
     feature_action: str
-    terminal: str
+    terminal: dict[str, str]
+    execution_evidence: dict[str, Any]
+    execution_digest: str
+    execution_semantic_node_id: str
     families: dict[str, dict[str, bool]]
     selected_families: list[str]
     projection: dict[str, Any]
@@ -252,7 +255,10 @@ class ProductState(CheckpointBridgeState, total=False):
     fix_eligible: bool
     human_action: str
     feature_action: str
-    terminal: str
+    terminal: dict[str, str]
+    execution_evidence: dict[str, object]
+    execution_digest: str
+    execution_semantic_node_id: str
     families: dict[str, dict[str, bool]]
     selected_families: list[str]
     projection: dict[str, object]

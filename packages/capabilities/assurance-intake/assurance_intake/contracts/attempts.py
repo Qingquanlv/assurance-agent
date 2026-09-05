@@ -11,12 +11,13 @@ from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
 from assurance_intake.contracts.agent import (
     ArtifactListResultV1,
+    CaseDesignOutputV1,
     CaseDesignInputV1,
     CaseReviewInputV1,
     ExploreInputV1,
+    FinalizedArtifactsV1,
     IntakeInputV1,
 )
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
 from assurance_intake.contracts.review import CaseReviewResultV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
@@ -56,7 +57,7 @@ def _job(
         agent_result_model=result_model,
         output_model=output_model,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
+            parameters={"change_id": "/change_id"},
             reads=("qa",),
             writes=writes,
         ),
@@ -83,7 +84,7 @@ _JOBS: tuple[
         _DOC_AUTHOR,
         CaseDesignInputV1,
         ArtifactListResultV1,
-        ArtifactListResultV1,
+        CaseDesignOutputV1,
         (".qa.yaml", "proposal.md", "trace/minimum-coverage-matrix.json"),
         ("cases",),
     ),
@@ -102,8 +103,8 @@ _JOBS: tuple[
         "aa-explore",
         _EXPLORER,
         ExploreInputV1,
-        ExploreAdvisoryV1,
-        ExploreAdvisoryV1,
+        ArtifactListResultV1,
+        FinalizedArtifactsV1,
         ("explore/exploration.json",),
         (),
     ),
@@ -113,7 +114,7 @@ _JOBS: tuple[
         _DOC_AUTHOR,
         IntakeInputV1,
         ArtifactListResultV1,
-        ArtifactListResultV1,
+        FinalizedArtifactsV1,
         (".qa.yaml", "requirement.md"),
         (),
     ),

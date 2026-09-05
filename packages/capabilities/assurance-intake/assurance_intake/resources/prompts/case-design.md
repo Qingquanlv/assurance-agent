@@ -19,3 +19,11 @@ Do not invoke plan, codegen, or archive work from this skill.
 Do not create data-knowledge proposal files; record unavailable closed keys in
 `proposal.md` Data Needs and keep their MRC rows as precisely explained
 `skipped_by_scope` rows.
+
+Product source is verification evidence, not a frozen business oracle. Before
+writing outputs, classify every MRC row in one complete pass. For every
+closed-category key missing from DataKnowledge, keep it covered only when the
+locked requirement or resolved Explore `assertion_intent` defines the expected
+behavior; otherwise mark that exact row `skipped_by_scope` and narrow every
+case and proposal assertion that depends on it. Do not defer another observable
+closed-key decision to a later review round.

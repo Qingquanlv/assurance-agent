@@ -239,6 +239,25 @@ async def test_report_prepare_authenticates_the_current_inspection_chain(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_report_finalizer_rejects_wrapped_input(tmp_path: Path) -> None:
+    selected = cast(ReportSkillInputV1, select_report(_state()))
+    result = await execute_task(
+        ReportFinalizeHandler(),
+        cast(
+            JSONValue,
+            {
+                "validated_input": selected.model_dump(mode="json"),
+                "prepared": None,
+                "agent_result": _agent_result(_raw_report(selected)),
+            },
+        ),
+        tmp_path,
+    )
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
 async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path, _CHANGE)
     selected = cast(ReportSkillInputV1, select_report(_state()))
@@ -248,7 +267,7 @@ async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path
         cast(
             JSONValue,
             {
-                "validated_input": selected.model_dump(mode="json"),
+                **selected.model_dump(mode="json"),
                 "agent_result": _agent_result(_raw_report(selected, include_files=False)),
             },
         ),
@@ -263,7 +282,7 @@ async def test_report_finalize_requires_declared_new_report_bytes(tmp_path: Path
         cast(
             JSONValue,
             {
-                "validated_input": selected.model_dump(mode="json"),
+                **selected.model_dump(mode="json"),
                 "agent_result": _agent_result(_raw_report(selected)),
             },
         ),
@@ -289,7 +308,7 @@ async def test_report_bytes_are_finalized_then_bound_to_commit_receipt(tmp_path:
         cast(
             JSONValue,
             {
-                "validated_input": selected.model_dump(mode="json"),
+                **selected.model_dump(mode="json"),
                 "agent_result": _agent_result(_raw_report(selected)),
             },
         ),

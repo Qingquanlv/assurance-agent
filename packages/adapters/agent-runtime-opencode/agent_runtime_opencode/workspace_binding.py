@@ -51,6 +51,7 @@ def workspace_binding_document(
     task_id: str,
     attempt: int,
     attempt_id: str,
+    read_roots: Sequence[str] = (),
 ) -> dict[str, object]:
     if not session_id or session_id.strip() != session_id or any(ch.isspace() for ch in session_id):
         raise ValueError("workspace binding requires a provider session id")
@@ -66,6 +67,12 @@ def workspace_binding_document(
     for item in outputs:
         if not item or item.startswith("/") or "\\" in item or ".." in item.split("/"):
             raise ValueError("allowed outputs must be canonical project-relative paths")
+    roots = tuple(read_roots)
+    if roots != tuple(sorted(roots)) or len(set(roots)) != len(roots):
+        raise ValueError("read roots must be unique sorted exact project-relative paths")
+    for item in roots:
+        if not item or item.startswith("/") or "\\" in item or ".." in item.split("/"):
+            raise ValueError("read roots must be canonical project-relative paths")
     payload: dict[str, object] = {
         "schema_version": "1",
         "session_id": session_id,
@@ -73,6 +80,7 @@ def workspace_binding_document(
         "project_root_digest": canonical_digest(str(project_root.resolve())),
         "write_root": write_root,
         "allowed_outputs": list(outputs),
+        "read_roots": list(roots),
         "task_id": task_id,
         "attempt": attempt,
         "attempt_id": attempt_id,
@@ -99,6 +107,7 @@ def workspace_binding_title(
         task_id=identity.task_id,
         attempt=identity.attempt,
         attempt_id=identity.attempt_id,
+        read_roots=workspace.read_roots,
     )
     return BINDING_TITLE_PREFIX + canonical_json_bytes(document).decode("utf-8")
 

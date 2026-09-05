@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import hashlib
 import importlib.util
+from importlib.resources import files
 import json
+import os
+import shutil
 import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from tests.product.test_phase5_benchmark_manifest import FULL_WORKFLOW_REQUIRED_STEPS, RUNNER_PATH
+from assurance_product.opencode_agents import _opencode_config
+
+from tests.product.test_phase5_benchmark_manifest import (
+    FULL_WORKFLOW_REQUIRED_STEPS,
+    RUNNER_PATH,
+    TEST_RUNTIME_SEED_ROOT,
+)
 
 ITEM_ID = "opencode-ret-dept-management"
 STAMP = "20260826-120000"
@@ -29,6 +41,7 @@ def _load_runner():
 def _make_sut(root: Path) -> Path:
     sut = root / "sut"
     (sut / "app").mkdir(parents=True)
+    (sut / "app" / "__init__.py").write_text("app = object()\n", encoding="utf-8")
     (sut / "web").mkdir()
     (sut / "tests" / "api").mkdir(parents=True)
     (sut / "tests" / "api" / "test_existing.py").write_bytes(ORIGINAL_BYTES)
@@ -85,6 +98,8 @@ def _achieved_status(*, change_id: str) -> dict[str, Any]:
                 "terminal_receipt_digest": "c" * 64,
             }
         ],
+        "execution_gate": None,
+        "quality_gate": None,
         "publication": {"status": "not_ready"},
     }
 
@@ -223,6 +238,8 @@ def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path
         lambda **_kwargs: (python, aa_next),
     )
     monkeypatch.setattr(runner, "_check_opencode", lambda _endpoint: 0)
+    monkeypatch.setattr(runner, "_runtime_environment_errors", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(runner, "_project_opencode_asset_errors", lambda _project: [])
     monkeypatch.setattr(runner, "_check_opencode_agent_profiles", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(runner, "_check_opencode_boundary_plugin", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
@@ -230,7 +247,317 @@ def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path
     )
     monkeypatch.setattr(runner.subprocess, "run", fake.handle_subprocess)
     monkeypatch.setattr(runner, "_load_opencode_secret", lambda _name: None)
+
+    @contextmanager
+    def ready_runtime(**_kwargs):
+        yield runner._SutRuntime(
+            env={},
+            backend_url="http://127.0.0.1:9999",
+            frontend_url="http://127.0.0.1:3100",
+            sqlite_file=Path("/tmp/fake-sut.sqlite3"),
+            backend_log=Path("/tmp/fake-backend.log"),
+            frontend_log=Path("/tmp/fake-frontend.log"),
+            seed_receipt={"schema_version": "vue-fastapi-admin-tests-runtime/v1"},
+        )
+
+    monkeypatch.setattr(runner, "_managed_sut_runtime", ready_runtime)
     monkeypatch.setenv("AA_NEXT_OPENCODE_TOKEN", "test-token")
+
+
+def test_runtime_seed_materializes_support_without_touching_existing_case_tests(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+
+    receipt = runner._materialize_test_runtime_seed(
+        seed_root=TEST_RUNTIME_SEED_ROOT,
+        project_dir=sut,
+    )
+    runner._validate_test_runtime_symbols(
+        python=Path(sys.executable),
+        project_dir=sut,
+        symbols=tuple(receipt["symbols"]),
+        env=os.environ,
+    )
+
+    assert receipt["schema_version"] == "vue-fastapi-admin-tests-runtime/v1"
+    assert receipt["manifest_digest"] == "84c183243ff672bac7eb6e48d0ef4c847fc4332f4d0cdc272bb4e8053f845743"
+    assert (sut / ORIGINAL_TEST).read_bytes() == ORIGINAL_BYTES
+    assert (sut / "tests" / "config.py").is_file()
+    assert (sut / "tests" / "testdata" / "domain" / "dept.py").is_file()
+
+
+def test_runtime_seed_rejects_undeclared_or_tampered_support(tmp_path: Path) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    tampered = tmp_path / "tampered-seed"
+    shutil.copytree(TEST_RUNTIME_SEED_ROOT, tampered)
+    (tampered / "tests" / "config.py").write_text("tampered = True\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="digest mismatch"):
+        runner._materialize_test_runtime_seed(seed_root=tampered, project_dir=sut)
+
+    shutil.copytree(TEST_RUNTIME_SEED_ROOT, tampered, dirs_exist_ok=True)
+    (tampered / "tests" / "api" / "test_hidden_oracle.py").write_text(
+        "def test_hidden(): pass\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="undeclared files"):
+        runner._materialize_test_runtime_seed(seed_root=tampered, project_dir=sut)
+
+
+def test_runtime_seed_rejects_rehashed_manifest_and_existing_support_drift(tmp_path: Path) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    rehashed = tmp_path / "rehashed-seed"
+    shutil.copytree(TEST_RUNTIME_SEED_ROOT, rehashed)
+    config = rehashed / "tests" / "config.py"
+    config.write_text(config.read_text(encoding="utf-8") + "DRIFT = True\n", encoding="utf-8")
+    manifest_path = rehashed / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["tests/config.py"] = hashlib.sha256(config.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="manifest digest"):
+        runner._materialize_test_runtime_seed(seed_root=rehashed, project_dir=sut)
+
+    existing = sut / "tests" / "config.py"
+    existing.parent.mkdir(parents=True, exist_ok=True)
+    existing.write_text("project_owned = True\n", encoding="utf-8")
+    with pytest.raises(SystemExit, match="existing test runtime support differs"):
+        runner._materialize_test_runtime_seed(seed_root=TEST_RUNTIME_SEED_ROOT, project_dir=sut)
+
+
+def test_runtime_seed_rejects_symlinked_parents_and_hardlinked_targets_before_writing(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    symlinked_sut = _make_sut(tmp_path / "symlink")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (symlinked_sut / "tests" / "testdata").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SystemExit, match="symbolic link"):
+        runner._materialize_test_runtime_seed(
+            seed_root=TEST_RUNTIME_SEED_ROOT,
+            project_dir=symlinked_sut,
+        )
+    assert not (symlinked_sut / "tests" / "config.py").exists()
+
+    hardlinked_sut = _make_sut(tmp_path / "hardlink")
+    original = tmp_path / "shared-config.py"
+    config_bytes = (TEST_RUNTIME_SEED_ROOT / "tests" / "config.py").read_bytes()
+    original.write_bytes(config_bytes)
+    os.link(original, hardlinked_sut / "tests" / "config.py")
+    with pytest.raises(SystemExit, match="link count"):
+        runner._materialize_test_runtime_seed(
+            seed_root=TEST_RUNTIME_SEED_ROOT,
+            project_dir=hardlinked_sut,
+        )
+    assert not (hardlinked_sut / "tests" / "e2e" / "conftest.py").exists()
+
+
+def test_managed_sut_is_ready_before_yield_and_cleans_both_groups_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    (sut / "migrations").mkdir()
+    (sut / "migrations" / "seed.py").write_text("migration = 1\n", encoding="utf-8")
+    (sut / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (sut / "pyproject.toml").write_text("[project]\nname='sut'\nversion='0'\n", encoding="utf-8")
+    vite = sut / "web" / "node_modules" / ".bin" / "vite"
+    vite.parent.mkdir(parents=True)
+    vite.write_text("#!/bin/sh\n", encoding="utf-8")
+    vite.chmod(0o755)
+    (sut / "web" / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+    state = {
+        "ports": False,
+        "backend": False,
+        "backend_ready": False,
+        "login": False,
+        "frontend": False,
+        "frontend_ready": False,
+    }
+    stopped: list[str] = []
+
+    class Process:
+        def __init__(self, name: str, pid: int) -> None:
+            self.name = name
+            self.pid = pid
+
+    monkeypatch.setattr(runner, "_prepare_sut_python", lambda **_kwargs: Path(sys.executable))
+    checked_ports: list[int] = []
+
+    def port_available(port: int) -> None:
+        checked_ports.append(port)
+        state["ports"] = checked_ports == [9999, 3100]
+
+    monkeypatch.setattr(runner, "_assert_loopback_port_available", port_available)
+
+    def spawn(*, label: str, command, cwd, env, log_path):
+        del command, cwd, log_path
+        if label == "backend":
+            assert state["ports"]
+            state["backend"] = True
+        else:
+            assert state["login"]
+            assert env["E2E_API_TOKEN"] == "runtime-token"
+            state["frontend"] = True
+        return Process(label, 100 + len(stopped))
+
+    def ready(url: str, *, accept: str, **_kwargs) -> None:
+        if url.endswith("openapi.json"):
+            assert state["backend"]
+            assert accept == "application/json"
+            state["backend_ready"] = True
+        else:
+            assert state["frontend"]
+            assert accept == "text/html,application/xhtml+xml"
+            state["frontend_ready"] = True
+
+    def login(*_args, **_kwargs) -> str:
+        assert state["backend_ready"]
+        state["login"] = True
+        return "runtime-token"
+
+    monkeypatch.setattr(runner, "_spawn_managed_process", spawn)
+    monkeypatch.setattr(runner, "_wait_http_ready", ready)
+    monkeypatch.setattr(runner, "_acquire_admin_token", login)
+    monkeypatch.setattr(
+        runner,
+        "_stop_managed_process",
+        lambda process: stopped.append(process.name),
+    )
+
+    with pytest.raises(RuntimeError, match="benchmark body failed"):
+        with runner._managed_sut_runtime(
+            repo=RUNNER_PATH.parents[2],
+            project_dir=sut,
+            output=tmp_path / "output",
+            env=os.environ,
+        ) as runtime:
+            assert all(state.values())
+            assert runtime.env["BASE_URL"] == "http://127.0.0.1:9999"
+            assert runtime.env["E2E_FRONTEND_URL"] == "http://127.0.0.1:3100"
+            assert runtime.env["QA_FUZZ_SCHEMA_MODE"] == "uri"
+            assert runtime.env["NO_PROXY"] == "127.0.0.1,localhost"
+            assert runtime.env["no_proxy"] == "127.0.0.1,localhost"
+            assert runtime.env["QA_SQLITE_FILE"] == str(runtime.sqlite_file)
+            assert runtime.sqlite_file.parent.joinpath("app", "__init__.py").is_file()
+            assert runtime.sqlite_file.parent.joinpath("migrations", "seed.py").is_file()
+            raise RuntimeError("benchmark body failed")
+
+    assert stopped == ["frontend", "backend"]
+
+
+def test_loopback_port_preflight_rejects_an_existing_listener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _load_runner()
+
+    class Probe:
+        def __init__(self, *, occupied: bool) -> None:
+            self.occupied = occupied
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _seconds: float) -> None:
+            return None
+
+        def connect_ex(self, _address) -> int:
+            return 0 if self.occupied else 61
+
+    monkeypatch.setattr(runner.socket, "socket", lambda: Probe(occupied=True))
+    with pytest.raises(SystemExit, match="already in use"):
+        runner._assert_loopback_port_available(9999)
+
+    monkeypatch.setattr(runner.socket, "socket", lambda: Probe(occupied=False))
+    runner._assert_loopback_port_available(9999)
+
+
+def test_sut_python_environment_uses_an_isolated_frozen_uv_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = tmp_path / "sut"
+    runtime_root = tmp_path / "runtime"
+    sut.mkdir()
+    runtime_root.mkdir()
+    (sut / "pyproject.toml").write_text("[project]\nname='sut'\nversion='0'\n", encoding="utf-8")
+    (sut / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    calls: list[tuple[list[str], Mapping[str, str], str]] = []
+
+    def run_checked(command, *, env, label, **_kwargs):
+        calls.append((list(command), dict(env), label))
+        if label == "managed SUT uv venv":
+            python = runtime_root / "venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("", encoding="utf-8")
+        return _completed(0)
+
+    monkeypatch.setattr(runner, "_run_checked", run_checked)
+
+    python = runner._prepare_sut_python(
+        project_dir=sut,
+        runtime_root=runtime_root,
+        env={"PATH": "/bin"},
+    )
+
+    assert python == runtime_root / "venv" / "bin" / "python"
+    assert calls[0][0] == ["uv", "venv", "--python", "3.11", str(runtime_root / "venv")]
+    assert calls[1][0] == [
+        "uv",
+        "sync",
+        "--active",
+        "--frozen",
+        "--project",
+        str(sut),
+        "--no-install-project",
+    ]
+    assert calls[1][1]["VIRTUAL_ENV"] == str(runtime_root / "venv")
+
+
+def test_managed_process_uses_a_new_session_and_refuses_group_identity_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    observed: dict[str, Any] = {}
+
+    class Process:
+        pid = 4312
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def popen(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    process = runner._spawn_managed_process(
+        label="backend",
+        command=("python", "-m", "uvicorn"),
+        cwd=tmp_path,
+        env={"PATH": "/bin"},
+        log_path=tmp_path / "backend.log",
+    )
+    assert observed["start_new_session"] is True
+    assert observed["stdin"] is subprocess.DEVNULL
+    assert observed["stderr"] is subprocess.STDOUT
+
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(runner.os, "getpgid", lambda _pid: 9999)
+    monkeypatch.setattr(runner.os, "killpg", lambda group, sig: killed.append((group, sig)))
+    with pytest.raises(SystemExit, match="changed group identity"):
+        runner._stop_managed_process(process)
+    assert killed == []
 
 
 def test_runner_has_no_project_copy_or_export_tree_helpers() -> None:
@@ -267,6 +594,37 @@ def test_change_id_is_unique_and_deterministic_from_item_stamp_and_nonce() -> No
     assert "/" not in first
     assert "\\" not in first
     assert " " not in first
+
+
+def test_runtime_environment_contract_is_exact_and_binds_the_run_scoped_database(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    output = tmp_path / "result"
+    required = {
+        "AA_ADMIN_PASSWORD": "123456",
+        "AA_ADMIN_USERNAME": "admin",
+        "AA_BASE_URL": "http://127.0.0.1:9999",
+        "AA_SQLITE_PATH": str(output / "sut-runtime" / "db.sqlite3"),
+        "API_BASE_URL": "http://127.0.0.1:9999",
+        "BASE_URL": "http://127.0.0.1:9999",
+        "E2E_BACKEND_URL": "http://127.0.0.1:9999",
+        "E2E_FRONTEND_URL": "http://127.0.0.1:3100",
+        "FRONTEND_URL": "http://127.0.0.1:3100",
+        "FUZZ_SCHEMA_MODE": "uri",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "QA_ADMIN_PASSWORD": "123456",
+        "QA_ADMIN_USERNAME": "admin",
+        "QA_FUZZ_SCHEMA_MODE": "uri",
+        "QA_SQLITE_FILE": str(output / "sut-runtime" / "db.sqlite3"),
+        "no_proxy": "127.0.0.1,localhost",
+    }
+
+    assert runner._runtime_environment_errors(required, output=output) == []
+    required["BASE_URL"] = "http://127.0.0.1:8000"
+    assert runner._runtime_environment_errors(required, output=output) == [
+        "OpenCode server environment BASE_URL must equal 'http://127.0.0.1:9999'"
+    ]
 
 
 def test_success_uses_real_sut_change_and_exports_once(
@@ -329,6 +687,71 @@ def test_success_uses_real_sut_change_and_exports_once(
     assert Path(evidence["logs"]["run_log"]).is_file()
     assert evidence.get("result_tree_digest") is None
     assert "auto_archive" not in evidence
+
+
+def test_main_keeps_managed_sut_active_from_start_through_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    fake = _FakeAA(
+        sut=sut,
+        change_id=change_id,
+        terminal=_achieved_status(change_id=change_id),
+        export_receipt={"schema_version": "1", "change_id": change_id, "status": "published"},
+    )
+    _wire_fake(runner, monkeypatch, fake, sut)
+    active = False
+    lifecycle: list[str] = []
+
+    @contextmanager
+    def tracked_runtime(**_kwargs):
+        nonlocal active
+        active = True
+        lifecycle.append("entered")
+        try:
+            yield runner._SutRuntime(
+                env={"BASE_URL": "http://127.0.0.1:9999"},
+                backend_url="http://127.0.0.1:9999",
+                frontend_url="http://127.0.0.1:3100",
+                sqlite_file=Path("/tmp/fake-sut.sqlite3"),
+                backend_log=Path("/tmp/fake-backend.log"),
+                frontend_log=Path("/tmp/fake-frontend.log"),
+                seed_receipt={"schema_version": "vue-fastapi-admin-tests-runtime/v1"},
+            )
+        finally:
+            active = False
+            lifecycle.append("exited")
+
+    original_handle = fake.handle_aa
+
+    def require_runtime(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if len(command) > 1 and command[1] in {"start", "run", "status", "export"}:
+            assert active, f"{command[1]} ran outside the managed SUT lifecycle"
+        return original_handle(command)
+
+    fake.handle_aa = require_runtime  # type: ignore[method-assign]
+    monkeypatch.setattr(runner, "_managed_sut_runtime", tracked_runtime)
+
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--output",
+            str(tmp_path / "output"),
+            "--nonce",
+            NONCE,
+            "--stamp",
+            STAMP,
+        ]
+    )
+
+    assert code == 0
+    assert lifecycle == ["entered", "exited"]
+    assert active is False
 
 
 def test_failure_leaves_original_sut_tests_unchanged_and_skips_export(
@@ -455,6 +878,69 @@ def test_preflight_uses_product_locked_profiles_and_does_not_install(
     assert installs == []
     assert not (sut / "opencode.json").exists()
     assert any("prompt" in error for error in errors)
+
+
+def test_project_opencode_asset_preflight_rejects_a_stale_boundary_plugin(
+    tmp_path: Path,
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    (sut / "opencode.json").write_text(_opencode_config(), encoding="utf-8")
+    plugin = sut / ".opencode" / "plugins" / "assurance-boundary.mjs"
+    plugin.parent.mkdir(parents=True)
+    expected_plugin = (
+        files("assurance_product").joinpath("resources", "opencode", "assurance-boundary.mjs").read_bytes()
+    )
+    plugin.write_bytes(expected_plugin)
+    assert runner._project_opencode_asset_errors(sut) == []
+
+    plugin.write_bytes(expected_plugin + b"\n// stale benchmark copy\n")
+
+    assert runner._project_opencode_asset_errors(sut) == [
+        "project OpenCode boundary plugin differs from the installed product"
+    ]
+
+
+def test_stale_project_opencode_asset_blocks_before_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    output = tmp_path / "results" / "stale-plugin"
+    fake = _FakeAA(
+        sut=sut,
+        change_id=change_id,
+        terminal=_achieved_status(change_id=change_id),
+        export_receipt=None,
+    )
+    _wire_fake(runner, monkeypatch, fake, sut)
+    monkeypatch.setattr(
+        runner,
+        "_project_opencode_asset_errors",
+        lambda _project: ["project OpenCode boundary plugin differs from the installed product"],
+    )
+
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--output",
+            str(output),
+            "--nonce",
+            NONCE,
+            "--stamp",
+            STAMP,
+        ]
+    )
+
+    evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
+    assert code == 1
+    assert evidence["outcome"] == "blocked"
+    assert "boundary plugin differs" in evidence["notes"]
+    assert all(command[1] != "start" for command in fake.commands if len(command) > 1)
 
 
 def test_run_scripts_drive_real_adapter_entrypoints() -> None:

@@ -81,6 +81,7 @@ def _workspace(
     *,
     write_root: str = "qa/changes/CH-1/.staging/task-1/attempt-1",
     allowed_outputs: tuple[str, ...] = ("qa/changes/CH-1/proposal.md",),
+    read_roots: tuple[str, ...] = (),
     agent_profile: str = "assurance-v1-doc-author",
 ) -> AgentWorkspaceV1:
     payload = {
@@ -89,6 +90,7 @@ def _workspace(
         "scope_id": "CH-1",
         "write_root": write_root,
         "allowed_outputs": allowed_outputs,
+        "read_roots": read_roots,
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
@@ -220,6 +222,55 @@ def test_agent_workspace_accepts_canonical_relative_write_root_and_sorted_output
     assert request.workspace.write_root == workspace.write_root
     with pytest.raises(ValidationError, match="frozen"):
         request.workspace.write_root = "other"  # type: ignore[misc]
+
+
+def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_roots(
+    tmp_path: Path,
+) -> None:
+    old_write_root = "qa/changes/CH-1/.staging/task-1/attempt-1"
+    old_view = f"{old_write_root}/qa/changes/CH-1/.staging/execution/batch-1"
+    original = _request().model_copy(
+        update={"workspace": _workspace(agent_profile="assurance-v1-executor", read_roots=(old_view,))}
+    )
+    project = tmp_path / "project"
+    new_write_root = project / "qa/changes/CH-1/.staging/task-2/attempt-1"
+    new_write_root.mkdir(parents=True)
+
+    effective = rebind_agent_run_workspace(
+        original,
+        project_root=project,
+        write_root=new_write_root,
+    )
+
+    assert original.workspace.read_roots == (old_view,)
+    assert effective.workspace.read_roots == (
+        "qa/changes/CH-1/.staging/task-2/attempt-1/qa/changes/CH-1/.staging/execution/batch-1",
+    )
+    assert effective.workspace.identity_digest == canonical_digest(
+        effective.workspace.model_dump(mode="json", exclude={"identity_digest"})
+    )
+
+
+@pytest.mark.parametrize(
+    "read_roots",
+    [
+        ("/tmp/view",),
+        ("../view",),
+        ("qa/../view",),
+        ("qa/changes/view-b", "qa/changes/view-a"),
+        ("qa/changes/view-a", "qa/changes/view-a"),
+    ],
+)
+def test_agent_workspace_rejects_noncanonical_read_roots(
+    read_roots: tuple[str, ...],
+) -> None:
+    payload = _workspace().model_dump(mode="json")
+    payload["read_roots"] = list(read_roots)
+    payload.pop("identity_digest")
+    payload["identity_digest"] = canonical_digest(payload)
+
+    with pytest.raises(ValidationError):
+        AgentWorkspaceV1.model_validate(payload)
 
 
 @pytest.mark.parametrize(

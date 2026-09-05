@@ -77,6 +77,8 @@ class PlanReviewPrepareHandler:
 
 
 class PlanReviewFinalizeHandler:
+    input_model = AgentFinalizeInputV1
+
     def __init__(self, family: Family | None = None) -> None:
         self._family: Family | None = None if family is None else closed_family(family)
 
@@ -101,8 +103,6 @@ class PlanReviewFinalizeHandler:
                     document.auto_fix_allowed,
                     document.human_review_required,
                 ),
-                "rounds_used": used if used is not None else 0,
-                "rounds_budget": budget if budget is not None else 2,
             }
             if payload.change_id is not None:
                 if payload.change_id != document.change_id:
@@ -114,7 +114,7 @@ class PlanReviewFinalizeHandler:
                 )
                 input_refs = tuple(evidence_ref(context.project_root, path) for path in input_paths)
                 review_ref = evidence_ref(
-                    context.project_root,
+                    context.write_root,
                     f"qa/changes/{document.change_id}/review/{family}-plan-review.json",
                 )
                 history_relative = (
@@ -129,13 +129,21 @@ class PlanReviewFinalizeHandler:
                     loop_kind="plan_review",
                     family=family,
                     round_index=payload.local_round,
-                    outcome=document.public_outcome or document.decision,
+                    outcome=str(extra["public_outcome"]),
                     input_refs=input_refs,
                     source_refs=(*input_refs, review_ref),
                 )
                 extra["history_ref"] = history_ref.model_dump(mode="json")
                 extra["artifacts"] = [history_ref.model_dump(mode="json")]
-            return TaskOutcome.succeeded(cast(JSONValue, {**document.model_dump(mode="json"), **extra}))
+            return TaskOutcome.succeeded(
+                cast(
+                    JSONValue,
+                    {
+                        **document.model_dump(mode="json", exclude={"rounds_used", "rounds_budget"}),
+                        **extra,
+                    },
+                )
+            )
         except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:

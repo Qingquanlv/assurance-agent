@@ -24,9 +24,9 @@ from assurance_improvement.contracts.delivery import (
     MemoryEvalReceipt,
     MemoryRollbackReceipt,
 )
-from assurance_improvement.contracts.improvements import ImprovementLedgerProjection, ImprovementProjection
+from assurance_improvement.contracts.improvements import ImprovementProjection, ReconcileResultV1
 from assurance_improvement.contracts.retro import RetroBuildSlicesInputV1
-from assurance_improvement.contracts.review import ImprovementAutoReviewStatus
+from assurance_improvement.contracts.review import AppliedAutoReviewV1
 from assurance_improvement.operations.delivery import (
     ApplyMemoryInput,
     EvaluateMemoryInput,
@@ -96,12 +96,12 @@ def test_nine_effectful_improvement_ids_are_task_contracts() -> None:
     expected_models = {
         "assurance.improvement.retro-build-slices": (RetroBuildSlicesInputV1, RetroCollectInput),
         "assurance.improvement.retro-collect-v3": (RetroCollectInput, RetroCollectInput),
-        "assurance.improvement.reconcile-improvements": (ReconcileInput, ImprovementLedgerProjection),
+        "assurance.improvement.reconcile-improvements": (ReconcileInput, ReconcileResultV1),
         "assurance.improvement.evaluate-memory-improvement": (EvaluateMemoryInput, MemoryEvalReceipt),
         "assurance.improvement.export-change-improvement": (ExportChangeInput, ChangeExportReceipt),
         "assurance.improvement.apply-improvement-auto-review": (
             ApplyAutoReviewInput,
-            ImprovementAutoReviewStatus,
+            AppliedAutoReviewV1,
         ),
         "assurance.improvement.apply-improvement-review": (ApplyReviewInput, ImprovementProjection),
         "assurance.improvement.apply-memory-improvement": (ApplyMemoryInput, MemoryApplyReceipt),

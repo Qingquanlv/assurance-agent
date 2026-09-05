@@ -6,6 +6,7 @@ from typing import Literal, Self, cast
 
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic.types import AwareDatetime
+from agent_runtime_contracts import AgentRunResult
 
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest
@@ -59,6 +60,8 @@ class MaterializeAssessmentInputV1(FrozenModel):
             raise ValueError("execution epoch must match the current Reviewed Case")
         if self.execution.mapping_ref != self.generation.mapping_ref:
             raise ValueError("execution mapping must match the generation cycle")
+        if self.execution_at != self.execution.executed_at:
+            raise ValueError("assessment time must match the committed execution time")
         return self
 
 
@@ -111,6 +114,10 @@ class AssessmentSkillInputV1(FrozenModel):
         if self.reviewed_case.coverage_epoch != self.coverage_epoch:
             raise ValueError("Reviewed Case epoch must match the skill input")
         return self
+
+
+class AssessmentFinalizeInputV1(AssessmentSkillInputV1):
+    agent_result: AgentRunResult
 
 
 class FinalizedFactBaselineV1(FrozenModel):
@@ -307,6 +314,10 @@ class ReportSkillInputV1(QualitySkillInputV1):
         if self.purpose == "diagnostic" and self.inspection.disposition == "satisfied":
             raise ValueError("diagnostic report requires a non-success inspection")
         return self
+
+
+class ReportFinalizeInputV1(ReportSkillInputV1):
+    agent_result: AgentRunResult
 
 
 class FinalizedReportV1(FrozenModel):

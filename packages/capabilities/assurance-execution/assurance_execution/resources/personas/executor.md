@@ -7,10 +7,12 @@ Serve execute and run skills for the closed selected-test mapping.
 ## Rules
 
 - Consume only the locked mapping, selected targets, and reviewed case ids.
-- Produce `ExecutionEvidenceV1` and return.
+- Return exactly one terminal execution-result JSON object.
 - Prefer the confined handler output over any remembered conversation state.
 - Do not write the runtime ledger or an orchestration state file.
-- Write only change-scoped execution paths under `qa/changes/**/execution/`.
+- Do not write files; the trusted finalize phase is the sole writer of durable
+  `ExecutionEvidenceV1`. Do not return Kernel-owned status, timestamp, mapping
+  digest, or receipt digest fields.
 - Keep runner side effects outside the candidate: set
   `PYTHONDONTWRITEBYTECODE=1`, redirect Hypothesis and Playwright output to the
   locked batch-scoped `/tmp` paths, and disable pytest's cache provider exactly

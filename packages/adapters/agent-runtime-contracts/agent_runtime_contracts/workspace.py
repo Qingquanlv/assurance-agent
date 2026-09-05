@@ -21,7 +21,17 @@ def rebind_agent_run_workspace(
         raise ValueError("write_root must be inside project_root") from error
 
     workspace_payload = agent_run.workspace.model_dump(mode="json", exclude={"identity_digest"})
+    previous_write_root = agent_run.workspace.write_root
     workspace_payload["write_root"] = relative_write_root
+    previous_prefix = f"{previous_write_root}/"
+    workspace_payload["read_roots"] = sorted(
+        (
+            f"{relative_write_root}/{item.removeprefix(previous_prefix)}"
+            if item.startswith(previous_prefix)
+            else item
+        )
+        for item in agent_run.workspace.read_roots
+    )
     workspace = AgentWorkspaceV1.model_validate(
         {
             **workspace_payload,

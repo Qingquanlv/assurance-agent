@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -11,7 +10,6 @@ from pydantic import ValidationError
 
 from agent_runtime_contracts import (
     AgentRunRequest,
-    AgentRunResult,
     AgentWorkspaceV1,
     InstructionPart,
     ResultContract,
@@ -23,7 +21,7 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_healing.contracts.agent import (
     AgentBindingDataV1,
-    AgentFinalizeInputV1,
+    FixProposalFinalizeInputV1,
     CoverageRepairFinalizeInputV1,
     CoverageRepairInputV1,
     FixProposalInputV1,
@@ -76,6 +74,7 @@ def agent_workspace(
         "scope_id": scope_id,
         "write_root": write_root,
         "allowed_outputs": tuple(sorted(set(allowed_outputs))),
+        "read_roots": (),
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
@@ -168,7 +167,7 @@ def _structured(result: object) -> object:
     return thaw_json(result)
 
 
-def _prepare_lock_fields(payload: AgentFinalizeInputV1 | FixProposalInputV1) -> JSONValue:
+def _prepare_lock_fields(payload: FixProposalFinalizeInputV1 | FixProposalInputV1) -> JSONValue:
     return {
         "baseline_digest": payload.baseline_digest,
         "candidate_digest": payload.candidate_digest,
@@ -179,39 +178,9 @@ def _prepare_lock_fields(payload: AgentFinalizeInputV1 | FixProposalInputV1) -> 
     }
 
 
-def _require_prepare_lock(payload: AgentFinalizeInputV1) -> None:
+def _require_prepare_lock(payload: FixProposalFinalizeInputV1) -> None:
     if engine_digest(_prepare_lock_fields(payload)) != engine_digest(_prepare_lock_fields(payload.prepare)):
         raise InputError("finalize digests do not match the locked prepare payload")
-
-
-def _fix_proposal_finalize_payload(
-    data: object,
-) -> tuple[FixProposalInputV1, AgentRunResult, tuple[str, ...], bool]:
-    try:
-        legacy = validate_input(AgentFinalizeInputV1, data)
-    except InputError:
-        legacy = None
-    if legacy is not None:
-        _require_prepare_lock(legacy)
-        business = FixProposalInputV1.model_validate(
-            {name: getattr(legacy, name) for name in FixProposalInputV1.model_fields}
-        )
-        return business, legacy.agent_result, legacy.artifact_paths, False
-    if not isinstance(data, Mapping):
-        raise InputError("fix proposal finalize input must be an object")
-    validated = data.get("validated_input")
-    agent_result = data.get("agent_result")
-    if not isinstance(validated, Mapping) or agent_result is None:
-        raise InputError("fix proposal finalize input is missing its validated input")
-    try:
-        return (
-            FixProposalInputV1.model_validate(validated),
-            AgentRunResult.model_validate(agent_result),
-            (),
-            True,
-        )
-    except ValidationError as error:
-        raise InputError(str(error)) from error
 
 
 def _brief_locator_ids(brief: CoverageRepairBrief) -> set[str]:
@@ -243,11 +212,13 @@ class FixProposalPrepareHandler:
 
 
 class FixProposalFinalizeHandler:
+    input_model = FixProposalFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business, agent_result, artifact_paths, installed_envelope = _fix_proposal_finalize_payload(
-                request.input
-            )
+            business = validate_input(FixProposalFinalizeInputV1, request.input)
+            _require_prepare_lock(business)
+            agent_result = business.agent_result
             unknown = [
                 item for item in business.claimed_capabilities if item not in business.capability_leafs
             ]
@@ -269,23 +240,19 @@ class FixProposalFinalizeHandler:
                     if path not in allowed or not _under_root(path, business.allowed_roots):
                         raise OutputError(f"undeclared target file: {path}")
                     _workspace_file(context.project_root, path)
-            if artifact_paths:
-                for path in artifact_paths:
-                    _workspace_file(context.project_root, path)
-            if installed_envelope:
-                relative = f"qa/changes/{business.change_id}/healing/fix-proposal.json"
-                staged = _workspace_file(context.write_root, relative)
-                try:
-                    staged_proposal = FixProposalResultV1.model_validate(
-                        json.loads(staged.read_text(encoding="utf-8"))
-                    )
-                except (OSError, json.JSONDecodeError, ValidationError) as error:
-                    raise OutputError("staged fix proposal is not the typed agent result") from error
-                if staged_proposal != proposal:
-                    raise OutputError("staged fix proposal differs from the typed agent result")
-                expected = canonical_json_bytes(cast(JSONValue, proposal.model_dump(mode="json"))) + b"\n"
-                if staged.read_bytes() != expected:
-                    raise OutputError("staged fix proposal must use canonical JSON bytes")
+            relative = f"qa/changes/{business.change_id}/healing/fix-proposal.json"
+            staged = _workspace_file(context.write_root, relative)
+            try:
+                staged_proposal = FixProposalResultV1.model_validate(
+                    json.loads(staged.read_text(encoding="utf-8"))
+                )
+            except (OSError, json.JSONDecodeError, ValidationError) as error:
+                raise OutputError("staged fix proposal is not the typed agent result") from error
+            if staged_proposal != proposal:
+                raise OutputError("staged fix proposal differs from the typed agent result")
+            expected = canonical_json_bytes(cast(JSONValue, proposal.model_dump(mode="json"))) + b"\n"
+            if staged.read_bytes() != expected:
+                raise OutputError("staged fix proposal must use canonical JSON bytes")
             return TaskOutcome.succeeded(cast(JSONValue, proposal.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
@@ -312,6 +279,8 @@ class CoverageRepairPrepareHandler:
 
 
 class CoverageRepairFinalizeHandler:
+    input_model = CoverageRepairFinalizeInputV1
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             payload = validate_input(CoverageRepairFinalizeInputV1, request.input)

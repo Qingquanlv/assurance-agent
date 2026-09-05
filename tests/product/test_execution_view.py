@@ -132,6 +132,67 @@ def test_unchanged_existing_tests_remain_selected(tmp_path: Path) -> None:
     assert support.read_bytes() == b"import pytest\n"
 
 
+def test_authenticated_python_support_is_projected_without_unselected_tests(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    expected_support = {
+        "tests/__init__.py": b"",
+        "tests/config.py": b"BASE_URL = 'http://example.test'\n",
+        "tests/schema_validation.py": b"def validate(value): return value\n",
+        "tests/testdata/domain/dept.py": b"DEPT_ID = 1\n",
+        "tests/api/adapters/dept.py": b"def fetch(): return 1\n",
+        "tests/api/conftest.py": b"import pytest\n",
+    }
+    for relative, payload in expected_support.items():
+        _write(project, relative, payload)
+    _write(project, "tests/api/test_unselected.py", b"raise AssertionError('must not collect')\n")
+    _write(project, "tests/perf/locustfile_unselected.py", b"raise AssertionError('must not run')\n")
+    _write(project, "tests/__pycache__/config.cpython-311.pyc", b"runtime noise\n")
+    _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+
+    view = build_execution_view(
+        project,
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        merged=merged,
+        selected=_selected(CANDIDATE_TARGET),
+    )
+
+    root = project.joinpath(*view.root.split("/"))
+    for relative, payload in expected_support.items():
+        assert root.joinpath(*relative.split("/")).read_bytes() == payload
+    assert not (root / "tests/api/test_unselected.py").exists()
+    assert not (root / "tests/perf/locustfile_unselected.py").exists()
+    assert not (root / "tests/__pycache__").exists()
+
+
+def test_execution_view_digest_authenticates_python_support(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    support = _write(project, "tests/api/adapters/dept.py", b"DEPT_ID = 1\n")
+    _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+
+    first = build_execution_view(
+        project,
+        change_id=CHANGE_ID,
+        batch_id="first",
+        merged=merged,
+        selected=_selected(CANDIDATE_TARGET),
+    )
+    support.write_bytes(b"DEPT_ID = 2\n")
+    second = build_execution_view(
+        project,
+        change_id=CHANGE_ID,
+        batch_id="second",
+        merged=merged,
+        selected=_selected(CANDIDATE_TARGET),
+    )
+
+    assert first.digest != second.digest
+
+
 def test_application_source_is_not_copied_into_the_view(tmp_path: Path) -> None:
     project = _project(tmp_path)
     _write(project, APP_SOURCE, b"SECRET = 1\n")

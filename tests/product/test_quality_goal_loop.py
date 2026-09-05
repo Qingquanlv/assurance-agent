@@ -15,7 +15,7 @@ def test_coverage_reenters_the_same_complete_case_flow(tmp_path):
     assert run.dispatch_count("execution.execute") == 2
     assert run.dispatch_count("quality.inspect") == 2
     assert run.dispatch_count("quality.report") == 1
-    assert run.node_visits.count("retro") == 1
+    assert run.node_visits.count("retro") == 0
     assert run.coverage_epochs == (0, 1)
     assert not any("coverage-repair" in name for name in run.task_dispatches)
     assert run.state["status"] == "completed"

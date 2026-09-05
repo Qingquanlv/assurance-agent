@@ -220,6 +220,31 @@ def _contract() -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult
     )
 
 
+def _contract_with_prepare_write_claim(
+    claim: str,
+) -> AgentExecutionContract[CaseDesignInput, CaseDesignAgentResult, CaseDesignOutput]:
+    return AgentExecutionContract(
+        contract_id="assurance.intake.agent.case-design.v1",
+        owner_id="assurance.intake",
+        prepare_handler_id="assurance.intake.case-design.prepare",
+        finalize_handler_id="assurance.intake.case-design.finalize",
+        skill_id="aa-case-design",
+        agent_profile="assurance-v1-doc-author",
+        input_model=CaseDesignInput,
+        agent_result_model=CaseDesignAgentResult,
+        output_model=CaseDesignOutput,
+        resources=ResourceClaims(writes=(claim,)),
+        retry=AttemptRetryPolicy(max_attempts=1),
+        timeout=AttemptTimeoutPolicy(seconds=60),
+        validators=(),
+        phase_write_claims=AgentPhaseWriteClaims(
+            prepare=(claim,),
+            runtime=(),
+            finalize=(),
+        ),
+    )
+
+
 def _workspace(tmp_path: Path) -> ReadOnlyRawWorkspace:
     root = tmp_path / "raw-workspace"
     root.mkdir()
@@ -288,13 +313,15 @@ def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
         order,
     )
 
-    with pytest.raises((ValidationError, ValueError)):
-        asyncio.run(
-            _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
-                validated_input, _scope(tmp_path)
-            )
+    result = asyncio.run(
+        _executor(prepare=prepare, runtime=runtime, finalize=finalize).execute(
+            validated_input, _scope(tmp_path)
         )
+    )
 
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert "agent result" in result.message
     assert order == ["prepare", "runtime"]
     assert finalize.seen is None
 
@@ -753,4 +780,57 @@ def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path) -> None:
     assert isinstance(result, PermanentTaskFailure)
     assert result.kind == "invalid_output"
     assert "undeclared" in result.message
+    assert order == ["prepare"]
+
+
+def test_directory_phase_write_claim_allows_nested_file(tmp_path: Path) -> None:
+    order: list[str] = []
+    claim = "qa/changes/CH-1/files"
+    executor = ResolvedRawAgentExecutor(
+        _contract_with_prepare_write_claim(claim),
+        prepare=_WritingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"),
+            order,
+            f"{claim}/api/generated.json",
+            b"{}\n",
+        ),
+        runtime=RecordingRuntime(
+            CaseDesignAgentResult(output_files=(f"{claim}/api/generated.json",)).model_dump(),
+            _workspace(tmp_path),
+            order,
+        ),
+        finalize=RecordingFinalize(_success_output(), order),
+    )
+
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+
+    assert isinstance(result, ExecutedAttemptResult)
+    assert order == ["prepare", "runtime", "finalize"]
+
+
+def test_directory_phase_write_claim_rejects_sibling_prefix(tmp_path: Path) -> None:
+    order: list[str] = []
+    claim = "qa/changes/CH-1/files"
+    sibling_path = "qa/changes/CH-1/files-evil/escape.json"
+    executor = ResolvedRawAgentExecutor(
+        _contract_with_prepare_write_claim(claim),
+        prepare=_WritingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"),
+            order,
+            sibling_path,
+            b"{}\n",
+        ),
+        runtime=RecordingRuntime(
+            CaseDesignAgentResult(output_files=(f"{claim}/api/generated.json",)).model_dump(),
+            _workspace(tmp_path),
+            order,
+        ),
+        finalize=RecordingFinalize(_success_output(), order),
+    )
+
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert sibling_path in result.message
     assert order == ["prepare"]

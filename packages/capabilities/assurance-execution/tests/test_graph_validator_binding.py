@@ -10,8 +10,7 @@ from langchain_core.runnables.config import RunnableConfig
 
 from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
-from assurance_execution.contracts.execution import ExecutionManifest
-from assurance_execution.contracts.selection import SelectedTargets
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.graphs.factory import build_execution_graphs
 from assurance_execution.graphs.nodes import publish_execution, select_execute
 from assurance_execution.graphs.state import ExecutionState
@@ -90,7 +89,12 @@ class _RecordingWorkspace:
 
 
 class _StagedWriteExecutor:
-    def __init__(self, workspace: _RecordingWorkspace, relative: str, output: ExecutionManifest) -> None:
+    def __init__(
+        self,
+        workspace: _RecordingWorkspace,
+        relative: str,
+        output: ExecutionEvidenceV1,
+    ) -> None:
         self.workspace = workspace
         self.relative = relative
         self.output = output
@@ -98,7 +102,7 @@ class _StagedWriteExecutor:
 
     async def execute(
         self, validated_input: object, scope: object
-    ) -> ExecutedAttemptResult[ExecutionManifest]:
+    ) -> ExecutedAttemptResult[ExecutionEvidenceV1]:
         del validated_input, scope
         self.calls += 1
         binding = self.workspace.binding
@@ -189,14 +193,48 @@ def _graph_input() -> dict[str, object]:
     }
 
 
-def _output() -> ExecutionManifest:
-    return ExecutionManifest(
-        schema_version="1.0",
-        change_id="CH-DEMO-001",
-        batch_id="20260822T000000Z",
-        selected_targets=SelectedTargets(api=True, e2e=False, fuzz=False, performance=False),
-        result_files={_ACCEPT_PATH: "d" * 64},
-        final_status="PASS",
+def _output() -> ExecutionEvidenceV1:
+    return ExecutionEvidenceV1.model_validate(
+        {
+            "change_id": "CH-DEMO-001",
+            "batch_id": "20260822T000000Z",
+            "executed_at": "2026-08-22T00:00:00Z",
+            "selected_targets": {
+                "api": True,
+                "e2e": False,
+                "fuzz": False,
+                "performance": False,
+            },
+            "mapping": {
+                "selected": ["tests/a.py"],
+                "mappings": [
+                    {
+                        "test": "tests/a.py",
+                        "case_id": "TC_A",
+                        "capability": "entities.item.create",
+                        "layer": "api",
+                    }
+                ],
+            },
+            "mapping_digest": "d" * 64,
+            "baseline_tree_id": "b" * 64,
+            "runner_profile_digest": "c" * 64,
+            "receipt_digest": "e" * 64,
+            "receipt": {
+                "commands": [
+                    {
+                        "family": "api",
+                        "command": ["pytest", "tests/a.py"],
+                        "exit_code": 0,
+                        "collected": 1,
+                        "passed": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                    }
+                ]
+            },
+            "results": [{"test": "tests/a.py", "status": "passed", "duration_ms": 1}],
+        }
     )
 
 

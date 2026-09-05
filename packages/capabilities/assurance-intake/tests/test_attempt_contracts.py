@@ -23,9 +23,11 @@ from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as I
 from assurance_improvement.plugin import ImprovementPlugin
 from assurance_intake.contracts.agent import (
     ArtifactListResultV1,
+    CaseDesignOutputV1,
     CaseDesignInputV1,
     CaseReviewInputV1,
     ExploreInputV1,
+    FinalizedArtifactsV1,
     IntakeInputV1,
 )
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
@@ -34,7 +36,6 @@ from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceOutput,
     advance_review_round,
 )
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.operations.workflow_state import ReviewRoundAdvanceHandler
 from assurance_intake.plugin import IntakePlugin
@@ -103,7 +104,7 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
             "assurance-v1-doc-author",
             CaseDesignInputV1,
             ArtifactListResultV1,
-            ArtifactListResultV1,
+            CaseDesignOutputV1,
         ),
         "case-review": (
             "assurance.intake.agent.case-review.v1",
@@ -118,8 +119,8 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
             "aa-explore",
             "assurance-v1-explorer",
             ExploreInputV1,
-            ExploreAdvisoryV1,
-            ExploreAdvisoryV1,
+            ArtifactListResultV1,
+            FinalizedArtifactsV1,
         ),
         "intake": (
             "assurance.intake.agent.intake.v1",
@@ -127,7 +128,7 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
             "assurance-v1-doc-author",
             IntakeInputV1,
             ArtifactListResultV1,
-            ArtifactListResultV1,
+            FinalizedArtifactsV1,
         ),
     }
     assert set(AGENT_JOB_CONTRACTS) == set(expected)

@@ -22,6 +22,7 @@ _SHA256 = r"^[0-9a-f]{64}$"
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
 TestFamily = Literal["api", "e2e", "fuzz", "performance"]
 _FIELD_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_MRC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 def _sorted_unique(values: tuple[str, ...], *, label: str) -> tuple[str, ...]:
@@ -132,9 +133,11 @@ class ReviewRepairActionV1(FrozenModel):
     @field_validator("allowed_paths")
     @classmethod
     def _allowed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        cleaned = _sorted_unique(value, label="review repair allowed path")
-        if cleaned != value:
-            raise ValueError("review repair allowed_paths must be sorted and unique")
+        cleaned = tuple(item.strip() for item in value)
+        if any(not item for item in cleaned):
+            raise ValueError("review repair allowed path must be a non-empty string")
+        if cleaned != value or len(value) != len(set(value)):
+            raise ValueError("review repair allowed_paths must be trimmed and unique")
         return cleaned
 
     @field_validator("instructions")
@@ -146,11 +149,29 @@ class ReviewRepairActionV1(FrozenModel):
         return cleaned
 
     @model_validator(mode="after")
-    def _case_allowed_paths_are_fields(self) -> ReviewRepairActionV1:
-        if self.artifact.endswith("/case.yaml") and any(
-            _FIELD_PATH.fullmatch(path) is None for path in self.allowed_paths
-        ):
-            raise ValueError("case.yaml repair allowed_paths must be dotted field paths")
+    def _artifact_locator_is_bounded(self) -> ReviewRepairActionV1:
+        if self.artifact.endswith("/case.yaml"):
+            if self.case_id is None:
+                raise ValueError("case.yaml repair requires an exact case_id")
+            if any(_FIELD_PATH.fullmatch(path) is None for path in self.allowed_paths):
+                raise ValueError("case.yaml repair allowed_paths must be dotted field paths")
+        elif self.artifact.endswith("/proposal.md"):
+            if self.case_id is not None:
+                raise ValueError("proposal.md repair case_id must be null")
+            if len(self.allowed_paths) != 1 or not self.allowed_paths[0].startswith("## "):
+                raise ValueError("proposal.md repair requires one full level-two Markdown heading")
+            heading = self.allowed_paths[0]
+            if "\n" in heading or "\r" in heading or not heading[3:].strip():
+                raise ValueError("proposal.md repair requires one full level-two Markdown heading")
+        elif self.artifact.endswith("/trace/minimum-coverage-matrix.json"):
+            if self.case_id is not None:
+                raise ValueError("minimum coverage matrix repair case_id must be null")
+            if any(_MRC_ID.fullmatch(path) is None for path in self.allowed_paths):
+                raise ValueError("minimum coverage matrix repair allowed_paths must be exact mrc_id values")
+        elif self.artifact.endswith("/.qa.yaml"):
+            raise ValueError(".qa.yaml cannot be repaired automatically")
+        else:
+            raise ValueError("review repair artifact type is not supported")
         return self
 
 
@@ -275,6 +296,54 @@ class ArtifactListResultV1(FrozenModel):
     @classmethod
     def _output_files(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_relative_paths(value)
+
+
+class ArtifactDigestV1(FrozenModel):
+    path: str
+    digest: str = Field(pattern=_SHA256)
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, value: str) -> str:
+        return _canonical_relative_paths((value,))[0]
+
+
+class FinalizedArtifactsV1(FrozenModel):
+    artifacts: tuple[ArtifactDigestV1, ...] = Field(min_length=1)
+
+    @field_validator("artifacts")
+    @classmethod
+    def _artifacts(cls, value: tuple[ArtifactDigestV1, ...]) -> tuple[ArtifactDigestV1, ...]:
+        paths = tuple(item.path for item in value)
+        if paths != tuple(sorted(set(paths))):
+            raise ValueError("finalized artifact paths must be sorted and unique")
+        return value
+
+
+class CaseDesignOutputV1(FrozenModel):
+    validation_status: Literal["pass", "needs_fix"]
+    validation_attempt: Literal[0, 1]
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
+    artifacts: tuple[ArtifactDigestV1, ...] = ()
+    review_repair: ReviewRepairContractV1 | None = None
+
+    @field_validator("artifacts")
+    @classmethod
+    def _artifacts(cls, value: tuple[ArtifactDigestV1, ...]) -> tuple[ArtifactDigestV1, ...]:
+        paths = tuple(item.path for item in value)
+        if paths != tuple(sorted(set(paths))):
+            raise ValueError("case-design artifact paths must be sorted and unique")
+        return value
+
+    @model_validator(mode="after")
+    def _status_matches_error(self) -> CaseDesignOutputV1:
+        if self.validation_status == "pass" and self.validation_error is not None:
+            raise ValueError("passing case design cannot carry validation_error")
+        if self.validation_status == "needs_fix" and (
+            self.validation_attempt != 1 or self.validation_error is None
+        ):
+            raise ValueError("case design needing repair requires attempt 1 and validation_error")
+        return self
 
 
 class AgentFinalizeInputV1(FrozenModel):

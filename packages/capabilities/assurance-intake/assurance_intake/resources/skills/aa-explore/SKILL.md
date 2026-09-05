@@ -199,7 +199,8 @@ Read `context.json`, requirement text, **and source code evidence collected in S
 Required top-level fields: `schema_version`, `change_id`, `context_ref`, `generated_at`,
 `executive_summary`, `watchlist`, `evidence_inventory`, `source_code_evidence`,
 `case_design_guidance`, `minimum_required_coverage`, `open_questions_for_case_design`,
-and `test_strategy`. `test_strategy.layer_recommendation` must contain all four layers,
+and `test_strategy`. `schema_version` must be exactly `"1"`.
+`test_strategy.layer_recommendation` must contain all four layers,
 including explicit declined entries when evidence does not support a layer.
 The required `context_ref` value is exactly `"explore/context.json"`.
 
@@ -244,7 +245,8 @@ If a scenario would only restate the PH's wording in different words (no new inp
 |---|---|
 | "update_authorized 传入不存在的 menu_id，应返回 400/404 而非 500" | "PUT /role/authorized body `{menu_ids:[99999]}`（99999 不存在）→ 断言 400，`detail` 含 'menu not found'，且角色原有 menus 不被清空" |
 
-See `schemas/explore-advisory.schema.json` for the MVP advisory shape.
+The fields in this section are the authoritative MVP advisory shape; the product
+finalizer enforces the installed model after read-back.
 
 ### test_strategy — derivation rules (新增)
 

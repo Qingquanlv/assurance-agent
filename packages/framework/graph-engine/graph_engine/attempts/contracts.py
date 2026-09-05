@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Generic, Protocol, TypeAlias, TypeVar
 
 from pydantic import BaseModel, Field
@@ -112,6 +114,7 @@ class ResolvedAttemptContract(Generic[InputT, OutputT]):
     contract: TaskAttemptContract[InputT, OutputT]
     executor: AttemptExecutor[InputT, OutputT]
     contract_digest: str
+    validation_context: Mapping[str, object]
 
     def canonical_projection(self) -> dict[str, JSONValue]:
         return self.contract.canonical_projection()
@@ -121,12 +124,14 @@ def resolve_contract(
     contract: TaskAttemptContract[InputT, OutputT],
     *,
     executor: AttemptExecutor[InputT, OutputT],
+    validation_context: Mapping[str, object] | None = None,
 ) -> ResolvedAttemptContract[InputT, OutputT]:
     projection = contract.canonical_projection()
     return ResolvedAttemptContract(
         contract=contract,
         executor=executor,
         contract_digest=canonical_digest(projection),
+        validation_context=MappingProxyType(dict(validation_context or {})),
     )
 
 

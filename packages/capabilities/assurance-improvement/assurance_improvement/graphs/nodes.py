@@ -19,7 +19,12 @@ from assurance_improvement.contracts.attempts import (
     select_retro_reconcile,
 )
 from assurance_improvement.contracts.delivery import artifact_digest, same_digest
-from assurance_improvement.contracts.improvements import ImprovementLedgerProjection
+from assurance_improvement.contracts.improvements import (
+    ImprovementLedgerProjection,
+    ImprovementProjection,
+    ReconcileResultV1,
+)
+from assurance_improvement.contracts.review import AppliedAutoReviewV1
 from assurance_improvement.contracts.retro import (
     ContextSignalSet,
     DomainAnalysisStatus,
@@ -332,8 +337,14 @@ def select_reconcile(state: Mapping[str, object]):
 
 def publish_reconcile(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del state, receipt
-    ledger = _output_payload(output)
-    return {"ledger": ledger}
+    result = ReconcileResultV1.model_validate(_output_payload(output))
+    ledger = ImprovementLedgerProjection(
+        schema_version=result.schema_version,
+        last_seq=result.last_seq,
+        improvements=result.improvements,
+        by_fingerprint=result.by_fingerprint,
+    )
+    return {"ledger": ledger.model_dump(mode="json")}
 
 
 def select_retro(state: Mapping[str, object]) -> ImprovementSkillInputV1:
@@ -397,16 +408,13 @@ def select_auto_review(state: Mapping[str, object]) -> dict[str, object]:
 
 
 def publish_auto_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    del receipt
-    payload = _output_payload(output)
-    projection = payload.get("projection")
-    lifecycle = payload.get("lifecycle_state")
-    if lifecycle is None and isinstance(projection, Mapping):
-        lifecycle = projection.get("state")
+    del state, receipt
+    result = AppliedAutoReviewV1.model_validate(_output_payload(output))
+    projection = result.projection.model_dump(mode="json")
     return {
-        "lifecycle_state": lifecycle or state.get("lifecycle_state"),
-        "projection": projection or state.get("projection"),
-        "current": projection or state.get("current"),
+        "lifecycle_state": result.projection.state.value,
+        "projection": projection,
+        "current": projection,
     }
 
 
@@ -424,13 +432,13 @@ def select_human_review(state: Mapping[str, object]) -> dict[str, object]:
 
 
 def publish_human_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    del receipt
-    payload = _output_payload(output)
-    lifecycle = payload.get("state") or payload.get("lifecycle_state")
+    del state, receipt
+    result = ImprovementProjection.model_validate(_output_payload(output))
+    projection = result.model_dump(mode="json")
     return {
-        "lifecycle_state": lifecycle or state.get("lifecycle_state"),
-        "projection": payload,
-        "current": payload,
+        "lifecycle_state": result.state.value,
+        "projection": projection,
+        "current": projection,
     }
 
 

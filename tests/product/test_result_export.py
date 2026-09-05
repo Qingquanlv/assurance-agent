@@ -13,6 +13,8 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from tests.product.test_achieved_terminal import (
     CHANGE_ID as ACHIEVED_CHANGE_ID,
     TARGET as ACHIEVED_TARGET,
+    _execute_gate_for,
+    _quality_gate_for,
     _ready_change,
     valid_status,
 )
@@ -62,6 +64,8 @@ def _status_payload(
         "coverage_progress": None,
         "durable_effects": (),
         "adapter_evidence": (),
+        "execution_gate": None,
+        "quality_gate": None,
         "pending_interrupt": None,
         "terminal_reason": None,
         "change": {"change_id": change_id, "state": state},
@@ -171,7 +175,16 @@ def test_publish_writes_exact_manifest_files(tmp_path: Path) -> None:
 
     project = _ready_change(tmp_path).resolve()
     unlisted = _write(project, UNLISTED, b"keep-unlisted\n")
-    finalize_achieved(project, ACHIEVED_CHANGE_ID, ("api",), invocation=valid_status())
+    execution_gate = _execute_gate_for(project)
+    finalize_achieved(
+        project,
+        ACHIEVED_CHANGE_ID,
+        ("api",),
+        invocation=valid_status(
+            execution_gate=execution_gate,
+            quality_gate=_quality_gate_for(project, execution_gate),
+        ),
+    )
 
     receipt = publish_achieved(project, ACHIEVED_CHANGE_ID)
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from functools import partial
+from typing import Any, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -23,6 +24,7 @@ from graph_engine.boot.boot import CapabilityBuildContext
 _EXECUTE_CONTRACT = "assurance.execution.agent.execute.v1"
 _RUN_CONTRACT = "assurance.execution.agent.run.v1"
 _TERMINALS = {"committed": "committed", "failed": "failed"}
+ExecutionSemanticNodeId = Literal["execution.execute", "execution.run"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +56,7 @@ def _compile_graph(
     context: CapabilityBuildContext,
     *,
     contract_id: str,
-    semantic_node_id: str,
+    semantic_node_id: ExecutionSemanticNodeId,
     activation: object,
     select: object,
 ) -> CompiledStateGraph:
@@ -68,7 +70,7 @@ def _compile_graph(
                 semantic_node_id=semantic_node_id,
                 activation=activation,
                 select=select,
-                publish=publish_execution,
+                publish=partial(publish_execution, semantic_node_id=semantic_node_id),
             ),
         ),
     )

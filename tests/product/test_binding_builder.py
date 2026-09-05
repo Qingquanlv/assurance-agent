@@ -375,6 +375,8 @@ def test_output_directory_must_be_empty(tmp_path, opencode_manifest):
 
 
 def test_generated_provider_contributes_exactly_34_semantic_bindings(tmp_path, opencode_manifest):
+    import json
+
     from graph_engine.plugin_api import RegistryPorts
 
     from assurance_product.binding_builder import build_deployment_wheel
@@ -406,6 +408,24 @@ def test_generated_provider_contributes_exactly_34_semantic_bindings(tmp_path, o
     assert contribution.schemas == ()
     assert {binding.capability_id for binding in contribution.bindings} == set(ALL_BINDING_IDS)
     assert len(contribution.bindings) == 34
+    resources = {resource.resource_id: resource for resource in contribution.resources}
+    adapter = resources["assurance.product.agent.adapter-binding"]
+    assert adapter.media_type == "application/json"
+    assert json.loads(adapter.content) == {
+        "adapter_configuration_digest": "b" * 64,
+        "cancel_timeout_seconds": 5.0,
+        "endpoint": "http://127.0.0.1:4096/",
+        "max_response_bytes": 65536,
+        "observation_horizon_seconds": 30.0,
+        "poll_interval_seconds": 0.5,
+        "progress_timeout_seconds": 10.0,
+        "project_scope": "fixture-project",
+        "protocol_profile": "opencode-http-v1",
+        "request_timeout_seconds": 5.0,
+        "schema_version": "1",
+        "secret_handle": "opencode.token",
+        "tls_identity_digest": "a" * 64,
+    }
 
 
 def test_alias_targets_and_binding_data_follow_section_14(tmp_path, opencode_manifest):

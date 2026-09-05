@@ -4,7 +4,7 @@ import ast
 from collections.abc import Iterator
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import BaseModel
@@ -17,7 +17,12 @@ from agent_runtime_contracts import (
     canonical_digest,
 )
 from agent_runtime_contracts.models import AgentRunResult
-from assurance_intake.contracts.agent import ArtifactListResultV1, CaseDesignInputV1
+from assurance_intake.contracts.agent import (
+    ArtifactDigestV1,
+    ArtifactListResultV1,
+    CaseDesignInputV1,
+    CaseDesignOutputV1,
+)
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
@@ -368,7 +373,7 @@ class _RecordingRuntime:
 
 
 class _RecordingFinalize:
-    def __init__(self, output: ArtifactListResultV1) -> None:
+    def __init__(self, output: CaseDesignOutputV1) -> None:
         self.output = output
         self.seen: RawFinalizeBundle[CaseDesignInputV1, dict[str, object], ArtifactListResultV1] | None = None
 
@@ -376,7 +381,7 @@ class _RecordingFinalize:
         self,
         bundle: RawFinalizeBundle[CaseDesignInputV1, dict[str, object], ArtifactListResultV1],
         scope: object,
-    ) -> ArtifactListResultV1:
+    ) -> CaseDesignOutputV1:
         del scope
         self.seen = bundle
         return self.output
@@ -444,14 +449,22 @@ def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
     ],
 )
 async def test_prepared_value_and_agent_result_reach_finalize_through_one_composite_attempt(
-    path: str, semantic_node_id: str, validation_attempt: int, tmp_path: Path
+    path: str,
+    semantic_node_id: str,
+    validation_attempt: Literal[0, 1],
+    tmp_path: Path,
 ) -> None:
     del path
     prepared: dict[str, object] = {"prompt": "design cases", "path": semantic_node_id}
     agent_result = ArtifactListResultV1(output_files=("qa/changes/CH-DEMO-001/proposal.md",))
+    finalized = CaseDesignOutputV1(
+        validation_status="pass",
+        validation_attempt=validation_attempt,
+        artifacts=(ArtifactDigestV1(path="qa/changes/CH-DEMO-001/proposal.md", digest=_SHA),),
+    )
     prepare = _RecordingPrepare(prepared)
     runtime = _RecordingRuntime(agent_result)
-    finalize = _RecordingFinalize(agent_result)
+    finalize = _RecordingFinalize(finalized)
     contract = AGENT_JOB_CONTRACTS["case-design"]
     executor = ResolvedRawAgentExecutor(
         contract,
@@ -472,7 +485,7 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     assert finalize.seen.prepared == prepared
     assert finalize.seen.agent_result == agent_result
     assert isinstance(output, ExecutedAttemptResult)
-    assert output.output == agent_result
+    assert output.output == finalized
     assert isinstance(output.output, BaseModel)
 
 

@@ -27,6 +27,7 @@ def test_coverage_insufficient_returns_without_report() -> None:
     )
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "coverage_insufficient"
+    assert result["terminal"] == {"status": "stopped", "reason": "coverage_insufficient"}
     assert tail.report is None
     assert tail.report_refs == ()
 
@@ -39,6 +40,7 @@ def test_needs_human_returns_without_test_repair_or_report() -> None:
     )
     tail = ExecuteTailResultV1.model_validate(result["tail_result"])
     assert tail.status == "needs_human"
+    assert result["terminal"] == {"status": "stopped", "reason": "needs_human"}
     assert tail.report is None
     assert "repair_result" not in result
 

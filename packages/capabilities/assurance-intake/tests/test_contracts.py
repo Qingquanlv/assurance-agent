@@ -33,7 +33,7 @@ _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.intake.schema.case-review.v1": (
         "1",
-        "f39c10af39534ae25c7daa7be0044c5082d82ab8a4108ad92725219fececefea",
+        "5a32812996fb37f038ebe172f840c9412c917c2f90cc3eb1a1d0b32338c2406d",
     ),
     "assurance.intake.schema.case.v1": (
         "1",
@@ -416,6 +416,8 @@ def test_case_review_result_schema_exposes_typed_finding_locators() -> None:
     schema = CaseReviewResultV1.model_json_schema()
 
     assert schema["properties"]["findings"]["items"] == {"$ref": "#/$defs/CaseReviewFindingV1"}
+    assert "rounds_used" not in schema["properties"]
+    assert "rounds_budget" not in schema["properties"]
     assert any("comma-separated dotted field paths" in note for note in schema["prompt_notes"])
 
 

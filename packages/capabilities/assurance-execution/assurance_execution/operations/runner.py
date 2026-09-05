@@ -271,20 +271,7 @@ def run_closed_mapping(
     mapping = _closed_mapping(payload)
     selected = tuple(mapping.selected)
     if not selected:
-        evidence = normalize_evidence(
-            change_id=payload.change_id,
-            batch_id=payload.batch_id,
-            selected_targets=payload.selected_targets,
-            mapping=mapping,
-            capability_leafs=leafs_of(payload.capability_leafs),
-            case_ids=leafs_of(payload.case_ids),
-            baseline_tree_id=payload.baseline_tree_id,
-            runner_profile_digest=payload.runner_profile_digest,
-            command=(),
-            exit_code=0,
-            report={},
-        )
-        return _run_output(payload, selected, evidence, include_pr_metrics=include_pr_metrics)
+        raise InputError("execution mapping must contain at least one selected test")
     view_root = resolve_execution_view(workspace, payload.change_id, payload.batch_id)
     selected = _authenticate_selected(view_root, mapping)
     argv = build_pytest_argv(

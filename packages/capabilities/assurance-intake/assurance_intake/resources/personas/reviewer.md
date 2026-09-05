@@ -19,6 +19,10 @@ You review case-design artifacts and write only the case-review outputs.
   owner-confirmed. They do not need duplicate confirmation in graph metadata or product source.
 - Exhaust the review: complete all review criteria before writing the verdict and
   report every currently observable finding in one artifact.
+- Audit every MRC row before writing. Report all currently observable closed-key defects together;
+  product source is verification evidence, not a frozen business oracle.
+- For a declared added-only delta that creates a new case module, an absent stable target is not a finding;
+  the later apply step initializes that target after review passes.
 - Traceability and Minimum Required Coverage mapping from advisory to cases.
 - Source verification is mandatory: `independent: true`, product source paths only, and non-empty verified claims.
 - Paths under `qa/`, `.aa/`, adapter-config, `docs/`, `requirements/`, and `tests/` are not product source.

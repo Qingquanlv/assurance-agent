@@ -333,7 +333,19 @@ async def test_auto_review_materializes_authenticated_lifecycle(
     payload = as_object(outcome.output)
     projection = as_object(payload["projection"])
     assert projection["state"] == expected_state
-    assert payload["lifecycle_state"] == expected_state
+    from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
+    from assurance_improvement.graphs.nodes import publish_auto_review
+
+    contract = TASK_ATTEMPT_CONTRACTS["assurance.improvement.apply-improvement-auto-review"]
+    validated = contract.output_model.model_validate(outcome.output)
+    published = publish_auto_review(
+        {"current": improvement_projection(state="proposed", delivery="change_draft")},
+        validated,
+        None,
+    )
+    assert published["current"] == projection
+    assert published["projection"] == projection
+    assert published["lifecycle_state"] == expected_state
     stored = as_object(projection["last_auto_review"])
     assert stored["verdict"] == expected_verdict
     if expected_state == "approved":
@@ -377,9 +389,7 @@ async def test_human_review_persists_distinct_lifecycle(
     assert outcome.status == "succeeded"
     payload = as_object(outcome.output)
     assert payload["state"] == expected_state
-    assert payload["lifecycle_state"] == expected_state
-    assert payload["effect_intents"] == []
-    assert payload["write_authorization"] == []
+    assert outcome.effects == ()
     if action == "approve":
         assert payload["approval_source"] == "human"
         apply_result = _attempt_apply_from_projection(payload)

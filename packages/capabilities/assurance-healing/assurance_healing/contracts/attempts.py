@@ -46,7 +46,7 @@ def _job(
         agent_result_model=result_model,
         output_model=result_model,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
+            parameters={"change_id": "/change_id"},
             reads=("qa",),
             writes=_paths(*outputs),
         ),
@@ -97,7 +97,7 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
             agent_result_model=TestRepairResultV1,
             output_model=VerifiedTestRepairV1,
             resources=ResourceClaimTemplate(
-                parameters={"change_id": "/workspace/scope_id"},
+                parameters={"change_id": "/change_id"},
                 reads=("qa",),
                 writes=_APPLICATION_ROOTS,
             ),

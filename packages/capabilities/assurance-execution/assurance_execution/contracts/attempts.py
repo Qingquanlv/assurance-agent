@@ -9,8 +9,8 @@ from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, Task
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
-from assurance_execution.contracts.agent import ExecuteInputV1, RunSkillInputV1
-from assurance_execution.contracts.execution import ExecutionManifest
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 
 _EXECUTOR = "assurance-v1-executor"
 _RETRY = AttemptRetryPolicy(max_attempts=1)
@@ -28,6 +28,8 @@ def _job(
     outputs: tuple[str, ...],
 ) -> AgentExecutionContract[Any, Any, Any]:
     writes = _paths(*outputs)
+    view_root = "qa/changes/{change_id}/.staging/execution"
+    attempt_writes = tuple(sorted((*writes, view_root)))
     return AgentExecutionContract(
         contract_id=f"assurance.execution.agent.{base}.v1",
         owner_id="assurance.execution",
@@ -36,23 +38,27 @@ def _job(
         skill_id=skill_id,
         agent_profile=_EXECUTOR,
         input_model=input_model,
-        agent_result_model=ExecutionManifest,
-        output_model=ExecutionManifest,
+        agent_result_model=ExecutionAgentResultV1,
+        output_model=ExecutionEvidenceV1,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
+            parameters={"change_id": "/change_id"},
             reads=("qa",),
-            writes=writes,
+            writes=attempt_writes,
         ),
         retry=_RETRY,
         timeout=_TIMEOUT,
         validators=(),
-        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=(), finalize=writes),
+        phase_write_claims=AgentPhaseWriteClaims(
+            prepare=(view_root,),
+            runtime=(),
+            finalize=writes,
+        ),
     )
 
 
 _JOBS: tuple[tuple[str, str, type[Any], tuple[str, ...]], ...] = (
-    ("execute", "aa-execute", ExecuteInputV1, ("execution/execute-result.json",)),
-    ("run", "aa-run", RunSkillInputV1, ("execution/run-result.json",)),
+    ("execute", "aa-execute", ExecutionPrepareInputV1, ("execution/execute-result.json",)),
+    ("run", "aa-run", ExecutionPrepareInputV1, ("execution/run-result.json",)),
 )
 
 AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(

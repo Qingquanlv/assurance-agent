@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from graph_engine.application import AssuranceApplication, StartedInvocation
+from graph_engine.application.status import TerminalEnvelope
 from graph_engine.boot.graph_revision import GraphBuildManifest
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.composition.lock import ProductLock
@@ -43,6 +44,8 @@ from assurance_product.revision_registry import (
 from assurance_product.runtime_ports import ProductRuntimePorts
 from assurance_product.status import (
     archive_published,
+    finalize_achieved,
+    load_persisted_status,
     render_status_from_langgraph,
 )
 
@@ -370,6 +373,15 @@ class AssuranceProductApplication:
                 record=record,
             )
         )
+        self._terminalize_full_if_achieved(
+            workspace=workspace,
+            composition=composition,
+            authorization=authorization,
+            invocation_id=invocation_id,
+            change_id=change_id,
+            record=record,
+            status=status,
+        )
         code, mapped = _LG_EXIT[status]
         return SimpleRun(status=status, terminal_reason=None, actions=(), projection=None), mapped, code
 
@@ -424,8 +436,91 @@ class AssuranceProductApplication:
                 resume=resume_payload,
             )
         )
+        self._terminalize_full_if_achieved(
+            workspace=workspace,
+            composition=composition,
+            authorization=authorization,
+            invocation_id=invocation_id,
+            change_id=workspace.paths.change_root.name,
+            record=record,
+            status=status,
+        )
         code, mapped = _LG_EXIT[status]
         return SimpleRun(status=status, terminal_reason=None, actions=(), projection=None), mapped, code
+
+    def _terminalize_full_if_achieved(
+        self,
+        *,
+        workspace: ChangeWorkspace,
+        composition: Any,
+        authorization: InvocationRuntimeAuthorization,
+        invocation_id: str,
+        change_id: str,
+        record: InvocationIdentityRecord,
+        status: str,
+    ) -> None:
+        if status != "completed" or record.entrypoint != "full":
+            return
+        observed, snapshot, journal_events = asyncio.run(
+            self._status_langgraph(
+                workspace,
+                composition,
+                authorization,
+                invocation_id,
+                record,
+            )
+        )
+        values = getattr(snapshot, "values", None)
+        if observed != "completed" or not isinstance(values, Mapping):
+            raise RuntimeSelectionError("terminal full checkpoint is incomplete")
+        raw_terminal = values.get("terminal")
+        if not isinstance(raw_terminal, Mapping):
+            raise RuntimeSelectionError("terminal full checkpoint is missing its terminal envelope")
+        terminal = TerminalEnvelope.model_validate(raw_terminal)
+        if terminal.status != "completed" or terminal.reason != "achieved":
+            raise RuntimeSelectionError("terminal full checkpoint is not achieved")
+        raw_families = values.get("selected_test_families")
+        if not isinstance(raw_families, list | tuple) or any(
+            not isinstance(item, str) for item in raw_families
+        ):
+            raise ValueError("terminal full snapshot is missing selected test families")
+        families = tuple(raw_families)
+        allowed_families = ("api", "e2e", "fuzz", "performance")
+        if (
+            not families
+            or len(families) != len(set(families))
+            or tuple(item for item in allowed_families if item in families) != families
+        ):
+            raise ValueError("terminal full snapshot selected test families are not canonical")
+        if (
+            _persisted_achieved_full_status(
+                workspace,
+                record,
+                invocation_id=invocation_id,
+                change_id=change_id,
+                families=families,
+            )
+            is not None
+        ):
+            return
+        rendered = render_status_from_langgraph(
+            invocation_id=invocation_id,
+            lock_digest=record.product_lock_digest,
+            root_input_digest=record.root_input_digest,
+            entrypoint=record.entrypoint,
+            change_id=change_id,
+            status=observed,
+            snapshot=snapshot,
+            journal_events=journal_events,
+        )
+        if not rendered.selected_test_families:
+            raise ValueError("terminal full snapshot is missing selected test families")
+        finalize_achieved(
+            workspace.paths.project_root,
+            change_id,
+            rendered.selected_test_families,
+            invocation=rendered,
+        )
 
     def status(
         self,
@@ -451,7 +546,7 @@ class AssuranceProductApplication:
                 record,
             )
         )
-        return render_status_from_langgraph(
+        rendered = render_status_from_langgraph(
             invocation_id=invocation_id,
             lock_digest=record.product_lock_digest,
             root_input_digest=record.root_input_digest,
@@ -461,6 +556,25 @@ class AssuranceProductApplication:
             snapshot=snapshot,
             journal_events=journal_events,
         )
+        if record.entrypoint != "full" or status_name != "completed":
+            return rendered
+        values = getattr(snapshot, "values", None)
+        raw_terminal = values.get("terminal") if isinstance(values, Mapping) else None
+        if not isinstance(raw_terminal, Mapping):
+            raise RuntimeSelectionError("terminal full checkpoint is missing its terminal envelope")
+        terminal = TerminalEnvelope.model_validate(raw_terminal)
+        if terminal.status != "completed" or terminal.reason != "achieved":
+            raise RuntimeSelectionError("terminal full checkpoint is not achieved")
+        persisted = _persisted_achieved_full_status(
+            workspace,
+            record,
+            invocation_id=invocation_id,
+            change_id=change_id,
+            families=rendered.selected_test_families,
+        )
+        if persisted is None:
+            raise RuntimeSelectionError("terminal full finalization evidence is absent")
+        return persisted
 
     def lock_show(
         self,
@@ -758,6 +872,44 @@ class SimpleRun:
     terminal_reason: str | None
     actions: tuple[str, ...]
     projection: object | None
+
+
+def _persisted_achieved_full_status(
+    workspace: ChangeWorkspace,
+    record: InvocationIdentityRecord,
+    *,
+    invocation_id: str,
+    change_id: str,
+    families: tuple[str, ...],
+) -> StatusV1 | None:
+    persisted = load_persisted_status(workspace)
+    if persisted is None:
+        return None
+    expected_identity = (
+        invocation_id,
+        record.product_lock_digest,
+        record.root_input_digest,
+        record.entrypoint,
+        change_id,
+    )
+    actual_identity = (
+        persisted.invocation_id,
+        persisted.lock_digest,
+        persisted.root_input_digest,
+        persisted.entrypoint,
+        persisted.change.change_id,
+    )
+    if actual_identity != expected_identity:
+        return None
+    if (
+        persisted.status != "completed"
+        or persisted.change.state != "achieved"
+        or persisted.apply.manifest_digest is None
+        or persisted.publication.status not in {"ready", "published"}
+        or persisted.selected_test_families != families
+    ):
+        raise RuntimeSelectionError("persisted terminal status is not an achieved full result")
+    return persisted
 
 
 def _load_input(path: Path, *, entrypoint: str, composition: Any) -> ProductInputV1:

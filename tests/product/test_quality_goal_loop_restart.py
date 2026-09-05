@@ -28,7 +28,7 @@ def test_resume_preserves_business_identity_and_committed_writes(tmp_path, cut) 
     assert resumed.dispatch_count("execution.run") == 1
     assert resumed.dispatch_count("quality.inspect") == 3
     assert resumed.dispatch_count("quality.report") == 1
-    assert resumed.node_visits.count("retro") == 1
+    assert resumed.node_visits.count("retro") == 0
 
 
 def test_new_epoch_uses_distinct_case_execution_and_inspect_keys_for_same_case_bytes(tmp_path) -> None:

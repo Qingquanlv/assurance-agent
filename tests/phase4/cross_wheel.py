@@ -658,12 +658,17 @@ def _evidence_payload(leaf: str) -> dict[str, object]:
         "runner_profile_digest": _HEX,
         "receipt_digest": _HEX,
         "receipt": {
-            "command": ["pytest"],
-            "exit_code": 0,
-            "collected": 1,
-            "passed": 1,
-            "failed": 0,
-            "skipped": 0,
+            "commands": [
+                {
+                    "family": "api",
+                    "command": ["pytest"],
+                    "exit_code": 0,
+                    "collected": 1,
+                    "passed": 1,
+                    "failed": 0,
+                    "skipped": 0,
+                }
+            ]
         },
         "results": [
             {

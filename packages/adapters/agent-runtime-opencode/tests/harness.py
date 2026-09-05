@@ -235,6 +235,7 @@ def agent_workspace(
     write_root: str = WRITE_ROOT,
     allowed_outputs: tuple[str, ...] = ALLOWED_OUTPUTS,
     agent_profile: str = "assurance-v1-doc-author",
+    read_roots: tuple[str, ...] = (),
 ) -> AgentWorkspaceV1:
     payload = {
         "schema_version": "1",
@@ -242,6 +243,7 @@ def agent_workspace(
         "scope_id": "CH-1",
         "write_root": write_root,
         "allowed_outputs": allowed_outputs,
+        "read_roots": read_roots,
     }
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
