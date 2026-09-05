@@ -22,6 +22,7 @@ from assurance_healing.graphs.routes import (
     route_admit_failure,
     route_coverage_status,
     route_failure_status,
+    route_proposal_approval,
 )
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef, RejectedTaskResult
@@ -123,6 +124,18 @@ def test_failure_admit_routes_eligible_exhausted_and_not_eligible() -> None:
     assert route_admit_failure({}) == "not-eligible"
 
 
+def test_proposal_approval_routes_only_authenticated_approval_to_application() -> None:
+    assert route_proposal_approval(failure_graph_input(human_action="approve")) == "healing.apply-test-repair"
+    assert (
+        route_proposal_approval(failure_graph_input(human_action="reject", approval_ref=None))
+        == "needs-review"
+    )
+    assert (
+        route_proposal_approval(failure_graph_input(human_action="approve", approval_ref=None))
+        == "needs-review"
+    )
+
+
 def test_coverage_admit_routes_eligible_exhausted_and_not_eligible() -> None:
     assert route_admit_coverage(coverage_graph_input()) == "repair-round-advance"
     assert route_admit_coverage(coverage_graph_input(rounds_used=4, rounds_budget=4)) == "exhausted"
@@ -188,7 +201,7 @@ def test_publish_repair_fails_closed_for_missing_unknown_and_in_progress() -> No
     ).model_dump()
     assert "status" not in failure_model
     published_failure = publish_repair(failure_graph_input(), failure_model, receipt)
-    assert published_failure["status"] == "repaired"
+    assert published_failure["status"] == "failed"
 
 
 def test_publish_repair_uses_kernel_receipt_effect_refs_not_output_extras() -> None:
@@ -302,7 +315,9 @@ async def test_coverage_missing_unknown_in_progress_finalize_fails_closed(status
     assert terminal["status"] != "repaired"
 
 
-async def test_committed_fix_proposal_without_status_terminates_repaired() -> None:
+async def test_committed_fix_proposal_without_application_cannot_terminate_applied() -> None:
+    from graph_engine.attempts.resolutions import RejectedTaskResult
+
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
     bundle = build_healing_graphs(context)
@@ -316,16 +331,17 @@ async def test_committed_fix_proposal_without_status_terminates_repaired() -> No
         bundle.repair_failure,
         input=failure_graph_input(),
         script={
-            "healing.fix-proposal": [committed(output, ReceiptRef(receipt_id="r1", receipt_digest=_SHA))]
+            "healing.fix-proposal": [committed(output, ReceiptRef(receipt_id="r1", receipt_digest=_SHA))],
+            "healing.apply-test-repair": [RejectedTaskResult(reason="no committed test change")],
         },
     )
     published = result.published_update
     assert published is not None
-    assert published["status"] == "repaired"
+    assert "status" not in published
     assert result.terminal is not None
     terminal = result.terminal
     assert isinstance(terminal, dict)
-    assert terminal["status"] == "repaired"
+    assert terminal["status"] == "failed"
 
 
 @pytest.mark.parametrize("status", ("failed", "needs_review", "repaired", "not_eligible", "exhausted"))
@@ -357,4 +373,8 @@ async def test_coverage_finalize_routes_known_statuses(status: str) -> None:
 def test_healing_contracts_keep_empty_validators() -> None:
     contracts: dict[str, TaskAttemptContract[Any, Any]] = healing_contracts()
     assert all(item.validators == () for item in contracts.values())
-    assert set(AGENT_JOB_CONTRACTS) == {"coverage-repair", "fix-proposal"}
+    assert set(AGENT_JOB_CONTRACTS) == {
+        "apply-test-repair",
+        "coverage-repair",
+        "fix-proposal",
+    }

@@ -68,6 +68,8 @@ def intake_graph_input() -> dict[str, object]:
         "allowed_artifact_paths": ["qa/changes"],
         "rounds_used": 0,
         "rounds_budget": 2,
+        "coverage_epoch": 0,
+        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
     }
 
 
@@ -79,14 +81,26 @@ def _artifact_output() -> ArtifactListResultV1:
     return ArtifactListResultV1(output_files=("qa/changes/CH-DEMO-001/proposal.md",))
 
 
-def _review_output(*, decision: str = "pass") -> dict[str, object]:
+def _review_output(
+    *,
+    decision: str = "pass",
+    auto_fix_allowed: bool = False,
+    human_review_required: bool = False,
+    rounds_used: int = 0,
+    rounds_budget: int = 2,
+) -> dict[str, object]:
     return {
         "decision": decision,
-        "auto_fix_allowed": False,
-        "human_review_required": False,
-        "artifacts": [{"path": "qa/changes", "digest": _SHA}],
-        "rounds_used": 0,
-        "rounds_budget": 2,
+        "auto_fix_allowed": auto_fix_allowed,
+        "human_review_required": human_review_required,
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                "digest": _SHA,
+            }
+        ],
+        "rounds_used": rounds_used,
+        "rounds_budget": rounds_budget,
     }
 
 
@@ -96,7 +110,13 @@ def _design_output(*, validation_status: str = "pass") -> dict[str, object]:
         "validation_status": validation_status,
         "validation_attempt": 0 if validation_status == "pass" else 1,
         "validation_error": None if validation_status == "pass" else "authored cases failed validation",
-        "artifacts": [{"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "digest": _SHA,
+            },
+            {"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA},
+        ],
     }
 
 
@@ -148,6 +168,27 @@ def test_intake_factory_exports_prepare_and_case(recording_context) -> None:
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
 
 
+def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
+    bundle = build_intake_graphs(recording_context)
+    names = _node_names(bundle.prepare)
+    assert {"intake", "explore", "prepared"} <= names
+    assert not {"case-design", "case-review", "human-review"} & names
+
+
+def test_shared_case_contains_complete_review_flow(recording_context) -> None:
+    bundle = build_intake_graphs(recording_context)
+    names = _node_names(bundle.case)
+    assert {
+        "case-design",
+        "case-review",
+        "case-design-retry",
+        "case-review-retry",
+        "human-review",
+        "exhausted",
+        "rejected",
+    } <= names
+
+
 def test_target_graphs_contain_no_phase_nodes_or_send(recording_context) -> None:
     bundle = build_intake_graphs(recording_context)
     names = _node_names(bundle.prepare) | _node_names(bundle.case)
@@ -191,7 +232,105 @@ async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_
         _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
     ]
-    assert result.terminal is not None
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "reviewed"
+    reviewed = terminal["reviewed_case"]
+    assert isinstance(reviewed, dict)
+    assert reviewed["coverage_epoch"] == 0
+    assert reviewed["case_refs"] == [
+        {
+            "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+            "digest": _SHA,
+        }
+    ]
+    assert terminal["receipt"] == {
+        "receipt_id": _RECEIPT_ID,
+        "receipt_digest": _SHA,
+    }
+
+
+async def test_case_rejection_is_an_explicit_unsuccessful_terminal() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
+    bundle = build_intake_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.case,
+        input=intake_graph_input(),
+        script={
+            "intake.case-design": [committed(_design_output(), receipt)],
+            "intake.case-review": [committed(_review_output(decision="reject"), receipt)],
+        },
+    )
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "rejected"
+    assert terminal["decision"] == "reject"
+
+
+async def test_case_needs_fix_runs_design_and_review_again() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
+    bundle = build_intake_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.case,
+        input=intake_graph_input(),
+        script={
+            "intake.case-design": [
+                committed(_design_output(), receipt),
+                committed(_design_output(), receipt),
+            ],
+            "intake.case-review": [
+                committed(
+                    _review_output(decision="needs_fix", auto_fix_allowed=True),
+                    receipt,
+                ),
+                committed(_review_output(rounds_used=1), receipt),
+            ],
+        },
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "intake.case-design",
+        "intake.case-review",
+        "intake.case-design",
+        "intake.case-review",
+    ]
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "reviewed"
+    assert terminal["rounds_used"] == 1
+
+
+async def test_case_budget_exhaustion_is_explicit() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
+    bundle = build_intake_graphs(context)
+    receipt = _receipt()
+    graph_input = {**intake_graph_input(), "rounds_used": 2, "rounds_budget": 2}
+    result = await harness.run(
+        bundle.case,
+        input=graph_input,
+        script={
+            "intake.case-design": [committed(_design_output(), receipt)],
+            "intake.case-review": [
+                committed(
+                    _review_output(
+                        decision="needs_fix",
+                        auto_fix_allowed=True,
+                        rounds_used=2,
+                        rounds_budget=2,
+                    ),
+                    receipt,
+                )
+            ],
+        },
+    )
+    terminal = result.terminal
+    assert isinstance(terminal, dict)
+    assert terminal["status"] == "exhausted"
+    assert terminal["rounds_used"] == 2
 
 
 class _RecordingPrepare:
@@ -337,7 +476,7 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     assert isinstance(output.output, BaseModel)
 
 
-async def test_prepare_graph_binds_four_agent_ids_across_five_occurrences() -> None:
+async def test_prepare_graph_runs_only_intake_and_explore() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
     bundle = build_intake_graphs(context)
@@ -348,23 +487,17 @@ async def test_prepare_graph_binds_four_agent_ids_across_five_occurrences() -> N
         script={
             "intake.intake": [committed(_artifact_output(), receipt)],
             "intake.explore": [committed(_artifact_output(), receipt)],
-            "intake.case-design": [committed(_design_output(), receipt)],
-            "intake.case-review": [committed(_review_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "intake.intake",
         "intake.explore",
-        "intake.case-design",
-        "intake.case-review",
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
         _INTAKE_ID,
         _EXPLORE_ID,
-        _CASE_DESIGN_ID,
-        _CASE_REVIEW_ID,
     ]
     assert result.promotion_decision == "committed"
     terminal = result.terminal
     assert isinstance(terminal, dict)
-    assert terminal.get("decision") == "pass"
+    assert terminal.get("status") == "prepared"

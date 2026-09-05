@@ -13,6 +13,10 @@ from graph_engine.plugin_api import FrozenModel
 from graph_engine.frozen_json import FrozenJSONValue
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.workflow import (
+    CaseReworkContextV1,
+    EvidenceArtifactRefV1,
+)
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
@@ -185,6 +189,9 @@ class ReviewRepairContractV1(FrozenModel):
 
 
 class CaseDesignInputV1(_SkillInputV1):
+    coverage_epoch: int = Field(default=0, ge=0)
+    preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    case_rework_context: CaseReworkContextV1 | None = None
     selected_test_families: tuple[TestFamily, ...] = ()
     case_delta_paths: tuple[str, ...] = Field(min_length=1)
     exploration: ExploreAdvisoryV1 | None = None
@@ -208,6 +215,15 @@ class CaseDesignInputV1(_SkillInputV1):
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> CaseDesignInputV1:
         _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        if self.case_rework_context is not None:
+            previous = self.case_rework_context.previous_case
+            if previous.change_id != self.change_id:
+                raise ValueError("case rework change_id must match case design")
+            if self.coverage_epoch != previous.coverage_epoch + 1:
+                raise ValueError("case rework must advance coverage_epoch exactly once")
+            unauthorized = set(self.case_rework_context.target_case_paths) - set(self.case_delta_paths)
+            if unauthorized:
+                raise ValueError("case rework targets must be locked by case_delta_paths")
         if self.validation_attempt == 0 and self.validation_error is not None:
             raise ValueError("validation_error is allowed only for the validation repair attempt")
         if self.validation_attempt == 1 and self.validation_error is None:
@@ -216,6 +232,10 @@ class CaseDesignInputV1(_SkillInputV1):
 
 
 class CaseReviewInputV1(_SkillInputV1):
+    coverage_epoch: int = Field(default=0, ge=0)
+    review_round: int = Field(default=0, ge=0)
+    preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    case_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_delta_paths: tuple[str, ...] = Field(min_length=1)
     review_input_paths: tuple[str, ...] = ()
 
@@ -266,6 +286,11 @@ class AgentFinalizeInputV1(FrozenModel):
     case_delta_paths: tuple[str, ...] = ()
     validation_attempt: Literal[0, 1] = 1
     review_repair: ReviewRepairContractV1 | None = None
+    coverage_epoch: int = Field(default=0, ge=0)
+    review_round: int = Field(default=0, ge=0)
+    preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    case_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    case_rework_context: CaseReworkContextV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod

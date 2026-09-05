@@ -30,15 +30,15 @@ RETAINED_COMPARISON_ASSERTIONS = {
     "coverage": (
         "tests/product/test_coverage_loop.py",
         (
-            "test_low_coverage_reenters_generation_until_policy_passes",
-            "test_coverage_repair_exhaustion_stops_with_a_report",
+            "test_coverage_insufficient_reenters_the_shared_case_flow",
+            "test_exhausted_coverage_budget_stops_without_report_or_retro",
         ),
     ),
     "healing": (
         "tests/product/test_issue_healing_flow.py",
         (
-            "test_issue_path_runs_analysis_and_fix_before_rerun",
-            "test_product_issue_never_runs_the_healing_chain",
+            "test_applied_test_repair_is_the_only_path_to_rerun",
+            "test_fix_proposal_output_cannot_parse_as_applied_repair",
         ),
     ),
     "report": (

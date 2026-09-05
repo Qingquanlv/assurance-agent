@@ -8,6 +8,9 @@ from graph_engine.attempts import TaskAttemptContract
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOB_CONTRACTS
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_AGENT_JOB_CONTRACTS
+from assurance_generation.contracts.attempts import (
+    TASK_ATTEMPT_CONTRACTS as GENERATION_TASK_ATTEMPT_CONTRACTS,
+)
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS as HEALING_AGENT_JOB_CONTRACTS
 from assurance_improvement.contracts.attempts import (
     AGENT_JOB_CONTRACTS as IMPROVEMENT_AGENT_JOB_CONTRACTS,
@@ -17,6 +20,9 @@ from assurance_improvement.contracts.attempts import (
 )
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_AGENT_JOB_CONTRACTS
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOB_CONTRACTS
+from assurance_quality.contracts.attempts import (
+    TASK_ATTEMPT_CONTRACTS as QUALITY_TASK_ATTEMPT_CONTRACTS,
+)
 
 FEATURE_AGENT_JOB_CATALOGS: tuple[Mapping[str, AgentExecutionContract], ...] = (
     INTAKE_AGENT_JOB_CONTRACTS,
@@ -34,7 +40,13 @@ AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyTy
         for contract in catalog.values()
     }
 )
-FEATURE_TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract] = IMPROVEMENT_TASK_ATTEMPT_CONTRACTS
+FEATURE_TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract] = MappingProxyType(
+    {
+        **IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
+        **GENERATION_TASK_ATTEMPT_CONTRACTS,
+        **QUALITY_TASK_ATTEMPT_CONTRACTS,
+    }
+)
 
 
 def all_feature_agent_contracts() -> Mapping[str, AgentExecutionContract]:

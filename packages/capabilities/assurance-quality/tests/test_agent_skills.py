@@ -24,13 +24,11 @@ from assurance_quality.operations.agent_skills import (
     FactBaselineFinalizeHandler,
     FactBaselinePrepareHandler,
     InspectFinalizeHandler,
-    InspectPrepareHandler,
     IssueAnalysisFinalizeHandler,
     IssueAnalysisPrepareHandler,
     IssueTriageFinalizeHandler,
     IssueTriagePrepareHandler,
     ReportFinalizeHandler,
-    ReportPrepareHandler,
 )
 from assurance_quality.resource_loader import resource_bytes
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -238,12 +236,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("handler", "marker"),
-    (
-        (FactBaselinePrepareHandler(), "Capability-owned fact-baseline skill"),
-        (InspectPrepareHandler(), "Capability-owned inspect skill"),
-        (IssueTriagePrepareHandler(), "Capability-owned issue-triage skill"),
-        (ReportPrepareHandler(), "Capability-owned report-generator skill"),
-    ),
+    ((IssueTriagePrepareHandler(), "Capability-owned issue-triage skill"),),
 )
 async def test_each_prepare_locks_skill_persona_and_execution(
     handler: TaskHandler, marker: str, tmp_path: Path
@@ -256,7 +249,7 @@ async def test_each_prepare_locks_skill_persona_and_execution(
 
 
 @pytest.mark.asyncio
-async def test_fact_baseline_finalize_rejects_unowned_source_evidence(tmp_path: Path) -> None:
+async def test_fact_baseline_finalize_requires_authenticated_assessment_input(tmp_path: Path) -> None:
     structured = {
         "source": "seed_file",
         "schema_version": "1.0",
@@ -271,11 +264,11 @@ async def test_fact_baseline_finalize_rejects_unowned_source_evidence(tmp_path: 
         tmp_path,
     )
     assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio
-async def test_inspect_finalize_rejects_unclosed_projection_digest(tmp_path: Path) -> None:
+async def test_inspect_finalize_requires_authenticated_assessment_input(tmp_path: Path) -> None:
     structured = {
         "schema_version": "1.0",
         "change_id": CHANGE_ID,
@@ -295,7 +288,7 @@ async def test_inspect_finalize_rejects_unclosed_projection_digest(tmp_path: Pat
         tmp_path,
     )
     assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.kind == "invalid_input"
 
 
 @pytest.mark.asyncio
@@ -402,7 +395,7 @@ async def test_report_finalize_rejects_unreferenced_projection(tmp_path: Path) -
         tmp_path,
     )
     assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.kind == "invalid_input"
 
 
 def test_quality_resources_forbid_legacy_and_provider_names() -> None:
@@ -492,5 +485,5 @@ async def test_failed_report_validation_leaves_canonical_outputs_unchanged(tmp_p
     )
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.kind == "invalid_input"
     assert canonical.read_bytes() == original

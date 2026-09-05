@@ -56,11 +56,12 @@ def test_four_family_superstep_does_not_write_concurrent_scalar_keys() -> None:
     merged_results = merge_generation_results([], results)
     merged_receipts = merge_generation_receipts([], receipts)
     for item in merged_results:
-        assert set(item) == {"family", "receipt_id", "selected", "status"}
+        assert set(item) == {"coverage_epoch", "family", "receipt_id", "selected", "status"}
     complete = complete_parallel_generation(
         {
             "generation_results": merged_results,
             "generation_receipts": merged_receipts,
+            "coverage_epoch": 0,
             "selected_test_families": ["api", "e2e"],
         }
     )

@@ -8,8 +8,8 @@ EXPECTED_LOOP_SCC_ANCHORS = (
     ("assurance.generation.workflow.graph.generation-fuzz", "plan-round-join"),
     ("assurance.generation.workflow.graph.generation-performance", "plan-round-join"),
     ("assurance.intake.workflow.graph.entry", "advance-join"),
-    ("assurance.product.workflow.graph.product-execute", "coverage-needed"),
-    ("assurance.product.workflow.graph.product-execute", "failed-join"),
+    ("assurance.product.workflow.graph.product-execute", "fix-proposal"),
+    ("assurance.product.workflow.graph.product-full", "advance-coverage"),
 )
 
 
@@ -31,8 +31,8 @@ def _target_test(graph_id: str, anchor_node_id: str) -> str:
     elif graph_id.startswith("assurance.intake."):
         path = "packages/capabilities/assurance-intake/tests/test_graph_join_any.py"
     else:
-        path = "tests/product/test_product_join_any.py"
-    return f"{path}::test_current_trigger[{graph_id}/{anchor_node_id}]"
+        path = "tests/product/test_product_stategraph_flow.py"
+    return f"{path}::test_full_uses_internal_execute_tail_while_public_execute_wraps_it"
 
 
 def collect_loop_scc_rows() -> tuple[LoopSccRow, ...]:
@@ -103,14 +103,14 @@ LOOP_SCC_INVENTORY: tuple[LoopSccRow, ...] = (
     ),
     LoopSccRow(
         "assurance.product.workflow.graph.product-execute",
-        "coverage-needed",
-        ("quality-recheck", "coverage-needed", "coverage-repair"),
-        _target_test("assurance.product.workflow.graph.product-execute", "coverage-needed"),
+        "fix-proposal",
+        ("fix-proposal", "adapt-rerun", "run", "adapt-quality", "quality", "adapt-repair-failure"),
+        _target_test("assurance.product.workflow.graph.product-execute", "fix-proposal"),
     ),
     LoopSccRow(
-        "assurance.product.workflow.graph.product-execute",
-        "failed-join",
-        ("failed-join", "issue-analysis", "fix-proposal", "run"),
-        _target_test("assurance.product.workflow.graph.product-execute", "failed-join"),
+        "assurance.product.workflow.graph.product-full",
+        "advance-coverage",
+        ("advance-coverage", "adapt-case", "case", "adapt-execute-tail", "execute-tail"),
+        _target_test("assurance.product.workflow.graph.product-full", "advance-coverage"),
     ),
 )

@@ -3,7 +3,7 @@
 Capability-owned inspect skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 
-Authenticate closed execution, healing, trace, coverage, and metrics projections,
+Authenticate closed execution, trace, coverage, metrics, sufficiency, and fact-baseline projections,
 then return a typed inspection result. Schema truth is `assurance_quality.contracts`
 for `InspectionResultV1`. Classification of failures is owned by the deterministic
 inspect handler; this skill verifies closure and does not invent categories.
@@ -13,7 +13,8 @@ inspect handler; this skill verifies closure and does not invent categories.
 ### required
 
 - locked change and batch identity
-- exact execution, healing, trace, coverage, and metrics digests
+- exact execution, trace, coverage, metrics, and optional healing digests
+- the committed fact-baseline ref for this assessment
 - closed execution evidence already materialized by the graph
 
 ## Outputs
@@ -23,11 +24,13 @@ inspect handler; this skill verifies closure and does not invent categories.
 - structured `InspectionResultV1`
 - `inspect_mode` is `primary`
 - projection digests echo the locked values exactly
+- absent healing evidence is echoed as `null`
 
 ## Rules
 
 - Do not classify failures yourself. The deterministic inspect handler is the classifier.
 - Do not fabricate a quality gate or rewrite `final_status`.
+- Do not emit `coverage_state`, `disposition`, `route`, or another workflow action.
 - Inspect labels such as `known_product_issue` and `coverage_gap` are classification
   hints only. They do not create Problems or mutate Ledgers.
 - Do not write product trees, tests, cases, plans, or healing files.

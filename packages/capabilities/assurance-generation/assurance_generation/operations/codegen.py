@@ -48,11 +48,15 @@ from assurance_generation.operations.planning import (
     failed_output,
     leafs_of,
     constraints_for_cases,
+    evidence_ref,
     load_family_cases,
+    persist_loop_round_history,
     resolve_family,
+    split_finalize_input,
 )
+from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.resource_loader import resource_bytes, resource_text
-from assurance_intake.contracts import CaseYamlAuthoring
+from assurance_intake.contracts import CaseYamlAuthoring, EvidenceArtifactRefV1
 
 FIX_FAMILIES: tuple[Family, ...] = ("api", "e2e")
 CODEGEN_RESULT_ID = "assurance.generation.result.codegen.v1"
@@ -203,12 +207,26 @@ def validate_codegen_input(
         leafs = leafs_of(business.capability_leafs)
     except ValidationError as error:
         raise InputError(str(error)) from error
+    if business.reviewed_case is not None:
+        try:
+            reviewed = authenticate_reviewed_case(
+                business.reviewed_case,
+                workspace,
+                change_id=business.change_id,
+                coverage_epoch=business.coverage_epoch,
+            )
+        except ValueError as error:
+            raise InputError(str(error)) from error
+        case_paths = tuple(item.path for item in reviewed.case_refs)
+    else:
+        case_paths = None
     if business.reviewed_cases is None:
         cases = load_family_cases(
             workspace,
             change_id=business.change_id,
             family=family,
             capability_leafs=business.capability_leafs,
+            case_paths=case_paths,
         )
     else:
         try:
@@ -525,7 +543,8 @@ class CodegenFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             family = resolve_family(self._family, request)
-            payload = AgentFinalizeInputV1.model_validate(request.input)
+            stripped, _used, _budget = split_finalize_input(request.input)
+            payload = AgentFinalizeInputV1.model_validate(stripped)
             document = _finalize_authoring(payload, family)
             allowed = payload.allowed_paths or payload.artifact_paths
             files = _complete_files(
@@ -626,7 +645,8 @@ class CodegenFixFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             family = closed_fix_family(resolve_family(self._family, request))
-            payload = AgentFinalizeInputV1.model_validate(request.input)
+            stripped, _used, _budget = split_finalize_input(request.input)
+            payload = AgentFinalizeInputV1.model_validate(stripped)
             document = _finalize_authoring(payload, family)
             allowed = payload.allowed_paths or payload.artifact_paths
             if not allowed:
@@ -659,6 +679,44 @@ class CodegenFixFinalizeHandler:
                 document=document,
                 capability_leafs=payload.capability_leafs,
             )
+            if payload.change_id is not None:
+                if payload.change_id != document.change_id:
+                    raise OutputError("codegen fix change_id does not match locked change_id")
+                manifest_ref = evidence_ref(
+                    context.project_root,
+                    f"qa/changes/{document.change_id}/codegen/{family}-generated-files.json",
+                )
+                changed_refs = tuple(
+                    EvidenceArtifactRefV1(
+                        path=staged_generated_path(document.change_id, family, item.repo_path),
+                        digest=item.content_sha256.removeprefix("sha256:"),
+                    )
+                    for item in files
+                )
+                reviewed_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+                if payload.reviewed_case is not None:
+                    reviewed_refs = (
+                        *payload.reviewed_case.preparation_refs,
+                        *payload.reviewed_case.case_refs,
+                        payload.reviewed_case.review_ref,
+                    )
+                input_refs = tuple(sorted((*reviewed_refs, manifest_ref), key=lambda item: item.path))
+                source_by_path = {item.path: item for item in (*input_refs, *changed_refs)}
+                persist_loop_round_history(
+                    context,
+                    relative=(
+                        f"qa/changes/{document.change_id}/codegen/{family}/fixes/epochs/"
+                        f"{payload.coverage_epoch}/rounds/{payload.local_round}.json"
+                    ),
+                    change_id=document.change_id,
+                    coverage_epoch=payload.coverage_epoch,
+                    loop_kind="codegen_fix",
+                    family=family,
+                    round_index=payload.local_round,
+                    outcome="fixed",
+                    input_refs=input_refs,
+                    source_refs=tuple(source_by_path[path] for path in sorted(source_by_path)),
+                )
             return TaskOutcome.succeeded(cast(JSONValue, result.model_dump(mode="json")))
         except (InputError, ValidationError) as error:
             return failed_input(error)

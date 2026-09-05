@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
+from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
+    FinalizedReportV1,
+    InspectionDisposition,
+    InspectionOutcomeV1,
+    MaterializeAssessmentInputV1,
+    ReportOutcomeV1,
+    ReportSkillInputV1,
+)
 from assurance_quality.contracts.decisions import (
     COVERAGE_STATES,
     CoverageAssessmentPublicV1,
@@ -24,6 +33,12 @@ from assurance_quality.contracts.coverage import (
     MinimumCoverageMatrix,
     MinimumCoverageResult,
     MinimumCoverageSummary,
+)
+from assurance_quality.contracts.goal_policy import (
+    ActiveCoverageScopeV1,
+    CoverageFloorsV1,
+    CoverageGoalPolicyV1,
+    SufficiencyPolicyV1,
 )
 from assurance_quality.contracts.inspect import (
     FailureAnalysis,
@@ -82,12 +97,19 @@ from assurance_quality.contracts.trace import (
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
+    "AssessmentInputsV1",
+    "FinalizedReportV1",
     "COVERAGE_STATES",
     "CoverageAssessmentPublicV1",
     "CoverageState",
     "FIX_ELIGIBLE_CLASSIFICATIONS",
     "FailureClassification",
     "IssueAnalysisPublicV1",
+    "InspectionDisposition",
+    "InspectionOutcomeV1",
+    "MaterializeAssessmentInputV1",
+    "ReportOutcomeV1",
+    "ReportSkillInputV1",
     "CHANGE_ISSUE_EVENT_ADAPTER",
     "PROBLEM_EVENT_ADAPTER",
     "AdversarialYieldEvidence",
@@ -103,6 +125,9 @@ __all__ = [
     "CoverageGap",
     "CoverageGapLocator",
     "CoverageGapsDocument",
+    "ActiveCoverageScopeV1",
+    "CoverageFloorsV1",
+    "CoverageGoalPolicyV1",
     "FactBaseline",
     "FactBaselineAuthoring",
     "FactBaselineFull",
@@ -136,6 +161,7 @@ __all__ = [
     "QuarantineEntry",
     "QuarantineProjection",
     "SufficiencyReportV2",
+    "SufficiencyPolicyV1",
     "TraceProjection",
     "TraceProjectionDocument",
     "TraceProjectionV2",

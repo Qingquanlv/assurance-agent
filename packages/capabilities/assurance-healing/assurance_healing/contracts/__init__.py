@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
+from assurance_healing.contracts.application import (
+    AppliedTestRepairV1,
+    ApplyTestRepairInputV1,
+    TestRepairResultV1,
+    VerifiedTestRepairV1,
+)
 from assurance_healing.contracts.coverage_repair import (
     CoverageRepairApplySummary,
     CoverageRepairBaseline,
@@ -40,6 +46,8 @@ from assurance_healing.contracts.status import HealingStatusV1
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
+    "AppliedTestRepairV1",
+    "ApplyTestRepairInputV1",
     "ApiCodegenFixApplyIntentV1",
     "ApplySummary",
     "CodegenFixApplyIntentV1",
@@ -68,5 +76,7 @@ __all__ = [
     "RepairItem",
     "SafetyCheck",
     "TestChangePolicyV1",
+    "TestRepairResultV1",
+    "VerifiedTestRepairV1",
     "attempt_contract_refs",
 ]

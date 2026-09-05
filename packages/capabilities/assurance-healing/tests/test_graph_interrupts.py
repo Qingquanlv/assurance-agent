@@ -13,13 +13,19 @@ from langgraph.types import Command
 from pydantic import ValidationError
 
 from assurance_healing.graphs.factory import build_healing_graphs
-from assurance_healing.graphs.nodes import COVERAGE_REVIEW_ACTIONS, coverage_review
+from assurance_healing.graphs.nodes import (
+    COVERAGE_REVIEW_ACTIONS,
+    PROPOSAL_APPROVAL_ACTIONS,
+    coverage_review,
+    proposal_approval,
+)
 from assurance_healing.graphs.state import HealingState
 from graph_engine.testing import GraphHarness, committed
 from graph_engine.testing.graph_harness import _prepare_anchored_backend
 
 from test_healing_graph_factory import (  # type: ignore[import-not-found]
     EFFECT_IDS,
+    application_output,
     coverage_agent_output,
     coverage_graph_input,
     failure_agent_output,
@@ -63,6 +69,33 @@ def test_coverage_review_accepts_only_approve_reject() -> None:
         assert coverage_review(state) == {"human_action": "approve"}
     with _patch_interrupt(coverage_review, return_value={"action": "reject"}):
         assert coverage_review(state) == {"human_action": "reject"}
+
+
+def test_proposal_approval_requires_an_authenticated_reference_before_application() -> None:
+    assert PROPOSAL_APPROVAL_ACTIONS == ("approve", "reject")
+    state = failure_graph_input(approval_ref=None)
+    with _patch_interrupt(proposal_approval, return_value={"action": "reject"}):
+        assert proposal_approval(state) == {"human_action": "reject", "approval_ref": None}
+    with _patch_interrupt(
+        proposal_approval,
+        return_value={
+            "action": "approve",
+            "approval_ref": {
+                "path": "qa/changes/CH-FIX-001/healing/approval.json",
+                "digest": _SHA,
+            },
+        },
+    ):
+        assert proposal_approval(state) == {
+            "human_action": "approve",
+            "approval_ref": {
+                "path": "qa/changes/CH-FIX-001/healing/approval.json",
+                "digest": _SHA,
+            },
+        }
+    with _patch_interrupt(proposal_approval, return_value={"action": "approve"}):
+        with pytest.raises(ValidationError):
+            proposal_approval(state)
 
 
 def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_interrupt() -> None:
@@ -169,7 +202,10 @@ async def test_published_effect_refs_come_from_kernel_receipt_not_output_extras(
     failure = await harness.run(
         bundle.repair_failure,
         input=failure_graph_input(),
-        script={"healing.fix-proposal": [committed(failure_output, receipt)]},
+        script={
+            "healing.fix-proposal": [committed(failure_output, receipt)],
+            "healing.apply-test-repair": [committed(application_output(), receipt)],
+        },
     )
     coverage = await harness.run(
         bundle.repair_coverage,
@@ -226,6 +262,52 @@ async def test_coverage_review_resume_reuses_interrupt_identity(action: str) -> 
         assert set(value.get("actions") or ()) == {"approve", "reject"}
     resumed = await graph.ainvoke(Command(resume={"action": action}), config=config)
     assert resumed["human_action"] == action
+    assert _interrupt_value(resumed) is None
+
+
+async def test_fix_proposal_waits_for_approval_ref_before_application() -> None:
+    harness = GraphHarness()
+    backend = harness.anchored_memory_checkpointer()
+    await _prepare_anchored_backend(backend)
+    bundle = build_healing_graphs(
+        harness.recording_context(owner_id="assurance.healing", contracts=healing_contracts())
+    )
+    from graph_engine.attempts.resolutions import ReceiptRef
+
+    receipt = ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA)
+    harness._kernel.load_script(
+        {
+            "healing.fix-proposal": [committed(failure_agent_output(), receipt)],
+            "healing.apply-test-repair": [committed(application_output(), receipt)],
+        }
+    )
+    wrapper: StateGraph[HealingState] = StateGraph(HealingState)
+    wrapper.add_node("repair", cast(Any, bundle.repair_failure))
+    wrapper.add_edge(START, "repair")
+    wrapper.add_edge("repair", END)
+    graph = wrapper.compile(checkpointer=backend)
+    config = _config()
+    initial = failure_graph_input(approval_ref=None)
+
+    interrupted = await graph.ainvoke(cast(Any, initial), config=config)
+    value = _interrupt_value(interrupted)
+    assert isinstance(value, dict)
+    assert value["interrupt_id"] == "fix-proposal-approval"
+    assert value["proposal_ref"] is not None
+
+    resumed = await graph.ainvoke(
+        Command(
+            resume={
+                "action": "approve",
+                "approval_ref": {
+                    "path": "qa/changes/CH-FIX-001/healing/approval.json",
+                    "digest": _SHA,
+                },
+            }
+        ),
+        config=config,
+    )
+    assert resumed["status"] == "applied"
     assert _interrupt_value(resumed) is None
 
 

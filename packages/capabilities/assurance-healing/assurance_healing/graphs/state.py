@@ -6,6 +6,7 @@ from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
 from assurance_healing.contracts.coverage_repair import HealingRepairOutcome
+from assurance_healing.contracts.application import AppliedTestRepairStatus
 from assurance_healing.contracts.status import RepairRoundKind
 
 
@@ -15,7 +16,8 @@ class HealingRepairPublicV1(FrozenModel):
     kind: RepairRoundKind
     rounds_budget: int
     rounds_used: int
-    status: HealingRepairOutcome
+    status: HealingRepairOutcome | AppliedTestRepairStatus
+    repair_result: dict[str, object] | None = None
 
 
 class HealingState(CheckpointBridgeState, total=False):
@@ -38,8 +40,20 @@ class HealingState(CheckpointBridgeState, total=False):
     policy_digest: str
     mapping_paths: list[str]
     execution_evidence_digest: str
+    reviewed_case: dict[str, object]
+    proposal_ref: dict[str, str]
+    approval_ref: dict[str, str] | None
+    execution_ref: dict[str, str]
+    mapping_ref: dict[str, str]
+    source_refs: list[dict[str, str]]
+    allowed_test_paths: list[str]
+    coverage_epoch: int
+    repair_round: int
+    proposal_result: dict[str, object]
+    proposal_receipt: dict[str, str]
+    repair_result: dict[str, object]
     brief: dict[str, object]
-    status: HealingRepairOutcome
+    status: HealingRepairOutcome | AppliedTestRepairStatus
     effect_refs: list[dict[str, str]]
     human_action: Literal["approve", "reject"]
     attempt_failure: dict[str, object]

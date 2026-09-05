@@ -158,6 +158,18 @@ def _json_document(path: Path) -> object:
         raise InputError(f"execution input is not valid JSON: {path}") from error
 
 
+def _authenticate_generation_sources(root: ExecutionPrepareInputV1, workspace: Path) -> None:
+    generation = root.generation_result
+    if generation is None:
+        return
+    if generation.change_id != root.change_id or generation.coverage_epoch != root.coverage_epoch:
+        raise InputError("generation result identity does not match execution input")
+    for ref in (generation.mapping_ref, *generation.source_refs):
+        path = _regular_input_file(workspace, ref.path)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
+            raise InputError(f"execution source digest changed: {ref.path}")
+
+
 def _reviewed_cases(
     workspace: Path,
     *,
@@ -234,6 +246,7 @@ def assemble_execution_input(
     except ValidationError:
         pass
     root = validate_input(ExecutionPrepareInputV1, data)
+    _authenticate_generation_sources(root, workspace)
     selected = SelectedTargets(
         **{family: family in root.selected_test_families for family in ("api", "e2e", "fuzz", "performance")}
     )
@@ -294,6 +307,9 @@ def assemble_execution_input(
         selected_targets=selected,
         baseline_tree_id=locked_baseline,
         runner_profile_digest=runner_profile_digest,
+        coverage_epoch=root.coverage_epoch,
+        repair_round=root.repair_round,
+        generation_result=root.generation_result,
     )
 
 

@@ -7,12 +7,18 @@ from typing import Any, cast
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
+from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
 from assurance_generation.contracts.agent import CodegenFixInputV1, CodegenInputV1, PlanInputV1
 from assurance_generation.contracts.codegen import CodegenResultV1
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReview
+from assurance_generation.contracts.workflow import (
+    CompleteGenerationInputV1,
+    GenerationCycleResultV1,
+    ResolveGenerationInputV1,
+)
+from assurance_intake.contracts.workflow import ReviewedCaseV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REVIEWER = "assurance-v1-reviewer"
@@ -80,7 +86,14 @@ def _job(
     claim_outputs = outputs
     if stage in {"codegen", "codegen-fix"}:
         claim_outputs = (*outputs, f"generated/{family}/files")
-    writes = _paths(*claim_outputs)
+    finalize_suffixes: tuple[str, ...] = ()
+    if stage == "plan-review":
+        finalize_suffixes = (f"plan/{family}/reviews",)
+    elif stage == "codegen-fix":
+        finalize_suffixes = (f"codegen/{family}/fixes",)
+    runtime_writes = _paths(*claim_outputs)
+    finalize_writes = _paths(*finalize_suffixes)
+    writes = tuple(sorted((*runtime_writes, *finalize_writes)))
     return AgentExecutionContract(
         contract_id=f"assurance.generation.agent.{base}.v1",
         owner_id="assurance.generation",
@@ -99,7 +112,9 @@ def _job(
         retry=_RETRY,
         timeout=_TIMEOUT,
         validators=(),
-        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=writes, finalize=()),
+        phase_write_claims=AgentPhaseWriteClaims(
+            prepare=(), runtime=runtime_writes, finalize=finalize_writes
+        ),
     )
 
 
@@ -176,12 +191,64 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
     }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {base: _paths(*outputs) for base, _skill, _profile, _input, _result, outputs in _JOBS}
+    {
+        base: tuple(
+            sorted(
+                (
+                    *_paths(*outputs),
+                    *(
+                        (
+                            f"qa/changes/{{change_id}}/plan/{base.partition('.')[0]}/reviews/"
+                            "epochs/{coverage_epoch}/rounds/{review_round}.json",
+                        )
+                        if base.partition(".")[2] == "plan-review"
+                        else (
+                            (
+                                f"qa/changes/{{change_id}}/codegen/{base.partition('.')[0]}/fixes/"
+                                "epochs/{coverage_epoch}/rounds/{review_round}.json",
+                            )
+                            if base.partition(".")[2] == "codegen-fix"
+                            else ()
+                        )
+                    ),
+                )
+            )
+        )
+        for base, _skill, _profile, _input, _result, outputs in _JOBS
+    }
 )
-TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
+_RESOLVE_INPUTS = TaskAttemptContract(
+    contract_id="assurance.generation.resolve-inputs",
+    owner_id="assurance.generation",
+    handler_id="assurance.generation.resolve-inputs.execute",
+    input_model=ResolveGenerationInputV1,
+    output_model=ReviewedCaseV1,
+    resources=ResourceClaims(reads=("qa",)),
+    retry=_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
+_PUBLISH_CYCLE = TaskAttemptContract(
+    contract_id="assurance.generation.publish-cycle",
+    owner_id="assurance.generation",
+    handler_id="assurance.generation.publish-cycle.execute",
+    input_model=CompleteGenerationInputV1,
+    output_model=GenerationCycleResultV1,
+    resources=ResourceClaimTemplate(
+        parameters={"change_id": "/change_id", "coverage_epoch": "/coverage_epoch_token"},
+        reads=("qa/changes/{change_id}",),
+        writes=("qa/changes/{change_id}/generation/epochs/{coverage_epoch}/mapping.json",),
+    ),
+    retry=_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
+TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
+    {"resolve-inputs": _RESOLVE_INPUTS, "publish-cycle": _PUBLISH_CYCLE}
+)
 GENERATION_GRAPH_CONTRACT_IDS: tuple[str, ...] = tuple(
     contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()
-)
+) + (_RESOLVE_INPUTS.contract_id, _PUBLISH_CYCLE.contract_id)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -192,7 +259,7 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
                     contract_id=contract.contract_id,
                     digest=canonical_digest(cast(JSONValue, contract.canonical_projection())),
                 )
-                for contract in AGENT_JOB_CONTRACTS.values()
+                for contract in (*AGENT_JOB_CONTRACTS.values(), *TASK_ATTEMPT_CONTRACTS.values())
             ),
             key=lambda item: item.contract_id,
         )

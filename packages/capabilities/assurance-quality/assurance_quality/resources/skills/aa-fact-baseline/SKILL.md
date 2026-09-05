@@ -10,9 +10,9 @@ Schema truth is `assurance_quality.contracts` for `FactBaselineResultV1`.
 
 ### required
 
-- locked change identity
-- owned source evidence identifiers
-- seed or init sources named in the canonical business input
+- locked change, coverage epoch, and execution batch identity
+- authenticated Reviewed Case, mapping, execution, trace, gap, metrics, and sufficiency refs
+- seed or init sources named in that canonical business input
 
 ### optional
 
@@ -23,8 +23,9 @@ Schema truth is `assurance_quality.contracts` for `FactBaselineResultV1`.
 ### required
 
 - structured `FactBaselineResultV1`
+- `change_id` echoes the locked change exactly
 - `source` is `seed_file`, `db_probe`, `both`, or `unavailable`
-- `source_evidence_ids` lists only owned evidence
+- `source_evidence_ids` lists only evidence present in the locked input
 
 ## Rules
 

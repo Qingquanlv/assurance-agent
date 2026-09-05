@@ -50,11 +50,13 @@ from assurance_improvement.operations.retro import (
     RetroCollectHandler,
     RetroEvidenceGapFallbackHandler,
 )
+from assurance_improvement.operations.retro_slices import RetroBuildSlicesHandler
 
 
 def improvement_handlers() -> Mapping[str, TaskHandler]:
     return MappingProxyType(
         {
+            "assurance.improvement.retro-build-slices.execute": RetroBuildSlicesHandler(),
             "assurance.improvement.apply-improvement-auto-review": ApplyImprovementAutoReviewHandler(),
             "assurance.improvement.apply-improvement-review": ApplyImprovementReviewHandler(),
             "assurance.improvement.apply-memory-improvement": ApplyMemoryImprovementHandler(),

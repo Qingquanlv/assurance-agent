@@ -77,27 +77,32 @@ class TraceOperationInput(BaseModel):
         return frozenset(self.closed_mapping)
 
 
-def _test_name(path: str) -> str:
+def _test_ref(selector: str) -> TraceTestRef:
+    path, separator, symbol = selector.partition("::")
+    if separator:
+        return TraceTestRef(file=path, test_name=symbol)
     stem = PurePosixPath(path).stem
     if stem.startswith("test_") or stem.endswith("_test"):
-        return stem if stem.startswith("test_") else f"test_{stem.removesuffix('_test')}"
-    return f"test_{stem}"
+        name = stem if stem.startswith("test_") else f"test_{stem.removesuffix('_test')}"
+    else:
+        name = f"test_{stem}"
+    return TraceTestRef(file=path, test_name=name)
 
 
 def _observed_in_mapping(payload: TraceOperationInput) -> tuple[str, ...]:
     allowed = payload.closed_paths()
     if payload.execution_evidence is not None:
         return tuple(result.test for result in payload.execution_evidence.results if result.test in allowed)
-    return tuple(path for path in payload.observed if path in allowed)
+    return ()
 
 
 def _status_for(path: str, payload: TraceOperationInput) -> Literal["passed", "failed", "skipped"]:
     if payload.execution_evidence is None:
-        return "passed"
+        return "skipped"
     for result in payload.execution_evidence.results:
         if result.test == path:
             return result.status
-    return "passed"
+    return "skipped"
 
 
 def _mapped_paths(
@@ -124,17 +129,13 @@ def project_trace(payload: TraceOperationInput) -> TraceProjectionV2:
     allowed = payload.closed_paths()
     observed = _observed_in_mapping(payload)
     observed_set = set(observed)
-    cases = payload.cases or (
-        TraceCaseInput(case_id=payload.case_ids[0] if payload.case_ids else "TC_UNBOUND", module="unknown"),
-    )
+    cases = payload.cases
     rows: list[TraceRow] = []
     for case in cases:
         mapped = _mapped_paths(case, payload, allowed, cases)
-        covering = tuple(
-            TraceTestRef(file=path, test_name=_test_name(path)) for path in mapped if path in observed_set
-        )
+        covering = tuple(_test_ref(path) for path in mapped if path in observed_set)
         executed = bool(covering)
-        status = _status_for(covering[0].file, payload) if covering else "skipped"
+        status = _status_for(mapped[0], payload) if covering else "skipped"
         target = _CASE_TYPE_TO_TARGET[case.case_type]
         execution = (
             TraceExecution(

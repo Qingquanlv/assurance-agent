@@ -38,9 +38,29 @@ _PLAN_PROFILE = "assurance-v1-doc-author"
 _CODEGEN_PROFILE = "assurance-v1-test-author"
 
 
-def test_generation_owns_fourteen_agent_contracts() -> None:
+def test_generation_round_history_routes_include_epoch_and_local_round() -> None:
+    from assurance_generation.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    plan_pattern = (
+        "qa/changes/{change_id}/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    )
+    fix_pattern = (
+        "qa/changes/{change_id}/codegen/api/fixes/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    )
+    assert plan_pattern in OUTPUT_ROUTE_TEMPLATES["api.plan-review"]
+    assert fix_pattern in OUTPUT_ROUTE_TEMPLATES["api.codegen-fix"]
+    assert plan_pattern.format(change_id="CH-1", coverage_epoch=0, review_round=0) != plan_pattern.format(
+        change_id="CH-1", coverage_epoch=1, review_round=0
+    )
+
+
+def test_generation_owns_fourteen_agent_contracts_and_two_tasks() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 14
-    assert TASK_ATTEMPT_CONTRACTS == {}
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-inputs", "publish-cycle")
+    resolver = TASK_ATTEMPT_CONTRACTS["resolve-inputs"]
+    assert resolver.contract_id == "assurance.generation.resolve-inputs"
+    assert resolver.handler_id == "assurance.generation.resolve-inputs.execute"
+    assert resolver.owner_id == "assurance.generation"
     for contract in AGENT_JOB_CONTRACTS.values():
         assert isinstance(contract, AgentExecutionContract)
         assert contract.owner_id == "assurance.generation"

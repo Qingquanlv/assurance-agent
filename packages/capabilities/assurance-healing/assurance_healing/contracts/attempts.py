@@ -10,6 +10,11 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
 from assurance_healing.contracts.agent import CoverageRepairInputV1, FixProposalInputV1, FixProposalResultV1
+from assurance_healing.contracts.application import (
+    ApplyTestRepairInputV1,
+    TestRepairResultV1,
+    VerifiedTestRepairV1,
+)
 from assurance_healing.contracts.coverage_repair import CoverageRepairStatus
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
@@ -71,17 +76,58 @@ _JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] =
     ),
 )
 
+_APPLICATION_RUNTIME_ROOTS = ("qa/changes/{change_id}/generated",)
+_APPLICATION_FINALIZE_ROOTS = ("qa/changes/{change_id}/healing/epochs",)
+_APPLICATION_ROOTS = tuple(sorted((*_APPLICATION_RUNTIME_ROOTS, *_APPLICATION_FINALIZE_ROOTS)))
+
 AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
     {
         base: _job(base, skill_id, profile, input_model, result_model, outputs)
         for base, skill_id, profile, input_model, result_model, outputs in _JOBS
     }
+    | {
+        "apply-test-repair": AgentExecutionContract(
+            contract_id="assurance.healing.agent.apply-test-repair.v1",
+            owner_id="assurance.healing",
+            prepare_handler_id="assurance.healing.apply-test-repair.prepare",
+            finalize_handler_id="assurance.healing.apply-test-repair.finalize",
+            skill_id="aa-apply-test-repair",
+            agent_profile=_TEST_AUTHOR,
+            input_model=ApplyTestRepairInputV1,
+            agent_result_model=TestRepairResultV1,
+            output_model=VerifiedTestRepairV1,
+            resources=ResourceClaimTemplate(
+                parameters={"change_id": "/workspace/scope_id"},
+                reads=("qa",),
+                writes=_APPLICATION_ROOTS,
+            ),
+            retry=_RETRY,
+            timeout=_TIMEOUT,
+            validators=(),
+            phase_write_claims=AgentPhaseWriteClaims(
+                prepare=(),
+                runtime=_APPLICATION_RUNTIME_ROOTS,
+                finalize=_APPLICATION_FINALIZE_ROOTS,
+            ),
+        )
+    }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {base: _paths(*outputs) for base, _skill, _profile, _input, _result, outputs in _JOBS}
+    | {
+        "apply-test-repair": tuple(
+            sorted(
+                (
+                    *_APPLICATION_RUNTIME_ROOTS,
+                    "qa/changes/{change_id}/healing/epochs/{coverage_epoch}/rounds/{repair_round}",
+                )
+            )
+        )
+    }
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
 HEALING_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
+    "assurance.healing.agent.apply-test-repair.v1",
     "assurance.healing.agent.coverage-repair.v1",
     "assurance.healing.agent.fix-proposal.v1",
 )

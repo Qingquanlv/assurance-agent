@@ -219,6 +219,8 @@ def _prepare_input() -> dict[str, object]:
         "allowed_artifact_paths": ["qa/changes"],
         "rounds_used": 0,
         "rounds_budget": 2,
+        "coverage_epoch": 0,
+        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
     }
 
 
@@ -230,7 +232,12 @@ def _design() -> dict[str, object]:
     return {
         "output_files": ["qa/changes/CH-DEMO-001/proposal.md"],
         "validation_status": "pass",
-        "artifacts": [{"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "digest": _SHA,
+            }
+        ],
     }
 
 
@@ -245,7 +252,12 @@ def _review(
         "decision": decision,
         "auto_fix_allowed": auto_fix,
         "human_review_required": False,
-        "artifacts": [{"path": "qa/changes", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                "digest": _SHA,
+            }
+        ],
         "rounds_used": used,
         "rounds_budget": budget,
     }
@@ -413,13 +425,13 @@ async def test_compiled_graph_dispatch_cursor_never_reclaims_consumed_arrival() 
         )
 
 
-async def test_compiled_prepare_first_arrival_is_exact_current_trigger() -> None:
+async def test_compiled_case_first_arrival_is_exact_current_trigger() -> None:
     harness = GraphHarness()
     bundle = build_intake_graphs(
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_prepare_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
@@ -444,13 +456,13 @@ async def test_compiled_prepare_first_arrival_is_exact_current_trigger() -> None
     assert [call.semantic_node_id for call in result.semantic_calls].count("intake.case-design") == 2
 
 
-async def test_compiled_prepare_repeated_epochs_preserve_exact_rounds() -> None:
+async def test_compiled_case_repeated_epochs_preserve_exact_rounds() -> None:
     harness = GraphHarness()
     bundle = build_intake_graphs(
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_prepare_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],

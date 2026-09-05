@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 from langgraph.graph import END, START, StateGraph
 
-from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_generation.graphs.factory import build_generation_graphs
 from assurance_generation.graphs.nodes import apply_current_trigger, complete_generation_node, plan_round_join
 from assurance_generation.graphs.state import (
@@ -56,8 +56,15 @@ def _arrival(
     )
 
 
-def _result(family: str, *, selected: bool = True, receipt_id: str | None = None) -> FamilyLaneResult:
+def _result(
+    family: str,
+    *,
+    selected: bool = True,
+    receipt_id: str | None = None,
+    coverage_epoch: int = 0,
+) -> FamilyLaneResult:
     return make_family_lane_result(
+        coverage_epoch=coverage_epoch,
         family=family,
         receipt_id=receipt_id or f"receipt-{family}",
         selected=selected,
@@ -66,7 +73,11 @@ def _result(family: str, *, selected: bool = True, receipt_id: str | None = None
 
 
 def _contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    contracts = {
+        contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
+    }
+    contracts.update({contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()})
+    return contracts
 
 
 def _family_input(family: str) -> dict[str, object]:
@@ -312,7 +323,7 @@ def test_four_family_superstep_does_not_write_concurrent_scalar_keys() -> None:
     merged = merge_family_results([], results)
     assert {item["family"] for item in merged} == set(GENERATION_FAMILIES)
     for item in merged:
-        assert set(item) == {"family", "receipt_id", "selected", "status"}
+        assert set(item) == {"coverage_epoch", "family", "receipt_id", "selected", "status"}
     complete = complete_generation_node({"family_results": merged, "selected_test_families": ["api", "e2e"]})
     assert set(complete) == {"families", "selected_families"}
     assert complete["selected_families"] == ["api", "e2e"]
@@ -330,6 +341,19 @@ def test_completion_runs_only_after_exactly_one_result_for_each_family() -> None
     assert isinstance(families, dict)
     assert families["api"] == {"completed": True}
     assert "performance" not in families
+
+
+def test_old_epoch_family_arrivals_cannot_complete_current_barrier() -> None:
+    old = [_result(family, coverage_epoch=0) for family in GENERATION_FAMILIES]
+    current = [_result("api", coverage_epoch=1, receipt_id="receipt-api-1")]
+    with pytest.raises(ValueError, match="one result for each family"):
+        complete_generation_node(
+            {
+                "coverage_epoch": 1,
+                "family_results": [*old, *current],
+                "selected_test_families": ["api"],
+            }
+        )
 
 
 def test_arrival_contains_required_identity_fields() -> None:

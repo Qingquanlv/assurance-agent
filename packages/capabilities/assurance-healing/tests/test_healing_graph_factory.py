@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from collections.abc import Iterator
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -16,13 +17,15 @@ from assurance_healing.graphs.nodes import activation_repair, advance_repair_rou
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.testing import GraphHarness, committed
 
 _SHA = "a" * 64
 _RECEIPT_ID = "receipt-1"
 _COVERAGE_ID = "assurance.healing.agent.coverage-repair.v1"
 _FIX_PROPOSAL_ID = "assurance.healing.agent.fix-proposal.v1"
-_GRAPH_CONTRACT_IDS = (_COVERAGE_ID, _FIX_PROPOSAL_ID)
+_APPLICATION_ID = "assurance.healing.agent.apply-test-repair.v1"
+_GRAPH_CONTRACT_IDS = (_APPLICATION_ID, _COVERAGE_ID, _FIX_PROPOSAL_ID)
 _ADVANCE_ID = "assurance.healing.repair-round.advance"
 EFFECT_IDS = (
     "assurance.healing.effect.allocation.v2",
@@ -71,6 +74,7 @@ def _coverage_brief(*, change_id: str = "CH-COV-002") -> dict[str, object]:
 
 
 def failure_graph_input(**overrides: object) -> dict[str, object]:
+    source = "qa/changes/CH-FIX-001/generated/api/files/tests/api/test_items.py"
     payload: dict[str, object] = {
         "change_id": "CH-FIX-001",
         "capability_leafs": ["entities.item.create"],
@@ -90,6 +94,35 @@ def failure_graph_input(**overrides: object) -> dict[str, object]:
         "policy_digest": "d" * 64,
         "mapping_paths": ["qa/changes/CH-FIX-001/plans/api-codegen-mapping.json"],
         "execution_evidence_digest": "e" * 64,
+        "coverage_epoch": 0,
+        "reviewed_case": {
+            "change_id": "CH-FIX-001",
+            "coverage_epoch": 0,
+            "preparation_refs": [{"path": "qa/changes/CH-FIX-001/intake/prepare.json", "digest": _SHA}],
+            "case_refs": [{"path": "qa/changes/CH-FIX-001/cases/api/case.yaml", "digest": _SHA}],
+            "review_ref": {
+                "path": "qa/changes/CH-FIX-001/review/case-review.json",
+                "digest": _SHA,
+            },
+        },
+        "proposal_ref": {
+            "path": "qa/changes/CH-FIX-001/healing/fix-proposal.json",
+            "digest": _SHA,
+        },
+        "approval_ref": {
+            "path": "qa/changes/CH-FIX-001/healing/approval.json",
+            "digest": _SHA,
+        },
+        "execution_ref": {
+            "path": "qa/changes/CH-FIX-001/execution/execute-result.json",
+            "digest": _SHA,
+        },
+        "mapping_ref": {
+            "path": "qa/changes/CH-FIX-001/generated/mapping.json",
+            "digest": _SHA,
+        },
+        "source_refs": [{"path": source, "digest": _SHA}],
+        "allowed_test_paths": [source],
     }
     payload.update(overrides)
     return payload
@@ -119,14 +152,41 @@ def _receipt() -> ReceiptRef:
     return ReceiptRef(receipt_id=_RECEIPT_ID, receipt_digest=_SHA)
 
 
-def failure_agent_output(*, status: str = "repaired") -> dict[str, object]:
+def failure_agent_output() -> dict[str, object]:
     return {
         "schema_version": "1",
         "change_id": "CH-FIX-001",
-        "status": status,
-        "effect_refs": _effect_refs(),
-        "summary": {"proposal_count": 1, "needs_review": False},
+        "summary": {"eligible_count": 1},
         "proposals": [],
+    }
+
+
+def test_proposal_publisher_exposes_the_committed_proposal_reference() -> None:
+    from assurance_healing.graphs.nodes import publish_proposal
+
+    output = failure_agent_output()
+    published = publish_proposal(failure_graph_input(), output, _receipt())
+    assert published["proposal_ref"] == {
+        "path": "qa/changes/CH-FIX-001/healing/fix-proposal.json",
+        "digest": hashlib.sha256(canonical_json_bytes(cast(JSONValue, output)) + b"\n").hexdigest(),
+    }
+
+
+def application_output() -> dict[str, object]:
+    return {
+        "change_id": "CH-FIX-001",
+        "coverage_epoch": 0,
+        "repair_round": 1,
+        "changed_test_refs": [
+            {
+                "path": "qa/changes/CH-FIX-001/generated/api/files/tests/api/test_items.py",
+                "digest": _SHA,
+            }
+        ],
+        "mapping_ref": {
+            "path": "qa/changes/CH-FIX-001/generated/mapping.json",
+            "digest": _SHA,
+        },
     }
 
 
@@ -187,6 +247,7 @@ def test_healing_factory_exports_two_independent_graphs(recording_context) -> No
     assert not hasattr(bundle, "nodes")
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
     assert recording_context.bound_contract_ids.count(_FIX_PROPOSAL_ID) == 1
+    assert recording_context.bound_contract_ids.count(_APPLICATION_ID) == 1
     assert recording_context.bound_contract_ids.count(_COVERAGE_ID) == 1
     assert _ADVANCE_ID not in recording_context.bound_contract_ids
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
@@ -262,20 +323,31 @@ async def test_repair_exports_run_independently_and_publish_typed_output() -> No
     failure = await harness.run(
         bundle.repair_failure,
         input=failure_graph_input(),
-        script={"healing.fix-proposal": [committed(failure_agent_output(), receipt)]},
+        script={
+            "healing.fix-proposal": [committed(failure_agent_output(), receipt)],
+            "healing.apply-test-repair": [committed(application_output(), receipt)],
+        },
     )
-    assert [call.semantic_node_id for call in failure.semantic_calls] == ["healing.fix-proposal"]
-    assert [call.contract_id for call in failure.semantic_calls] == [_FIX_PROPOSAL_ID]
+    assert [call.semantic_node_id for call in failure.semantic_calls] == [
+        "healing.fix-proposal",
+        "healing.apply-test-repair",
+    ]
+    assert [call.contract_id for call in failure.semantic_calls] == [
+        _FIX_PROPOSAL_ID,
+        _APPLICATION_ID,
+    ]
     published = failure.published_update
     assert published is not None
     assert published["change_id"] == "CH-FIX-001"
     assert published["kind"] == "failure"
-    assert published["status"] == "repaired"
+    assert published["status"] == "applied"
     assert published["rounds_used"] == 1
     assert published["rounds_budget"] == 2
     refs = published["effect_refs"]
     assert isinstance(refs, list)
     assert refs == []
+    repair_result = cast(dict[str, object], published["repair_result"])
+    assert repair_result["receipt"] == receipt.model_dump(mode="json")
     assert failure.terminal is not None
 
     coverage = await harness.run(

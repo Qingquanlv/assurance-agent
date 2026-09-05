@@ -9,8 +9,8 @@ declaration_path: PACKAGE/assurance-deployment-plugin.json
 distribution: assurance-product-bindings-<digest-prefix>
 import_package: assurance_product_bindings_<digest-prefix>
 contributes:
-  aliases: 99
-  prepare_assignments: 33
+  aliases: 102
+  prepare_assignments: 34
   task_handlers: []
   commit_validators: []
   schemas: []

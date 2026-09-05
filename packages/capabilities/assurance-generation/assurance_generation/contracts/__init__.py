@@ -46,6 +46,7 @@ from assurance_generation.contracts.reviews import (
     ReviewDecision,
     ReviewFinding,
 )
+from assurance_generation.contracts.workflow import GenerationCycleResultV1, ResolveGenerationInputV1
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
@@ -69,6 +70,7 @@ __all__ = [
     "FuzzGeneratedFilesV1",
     "GeneratedFileEntryV1",
     "GeneratedFilesV1",
+    "GenerationCycleResultV1",
     "KNOWN_PLAN_CHECK_IDS",
     "LayerApplicability",
     "LayerName",
@@ -80,6 +82,7 @@ __all__ = [
     "PlanReviewAuthoring",
     "ReviewDecision",
     "ReviewFinding",
+    "ResolveGenerationInputV1",
     "advance_review_round",
     "attempt_contract_refs",
     "complete_generation",

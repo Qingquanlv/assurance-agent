@@ -232,6 +232,35 @@ async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_fix_proposal_finalize_accepts_installed_runtime_envelope_before_approval(
+    tmp_path: Path,
+) -> None:
+    project, write_root = dual_roots(tmp_path)
+    target = project / "tests/api/test_users.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def test_ok():\n    assert True\n")
+    proposal = valid_proposal()
+    proposal_path = write_root / "qa/changes/CH-DEMO-001/healing/fix-proposal.json"
+    proposal_path.parent.mkdir(parents=True)
+    proposal_path.write_bytes(canonical_json_bytes(cast(JSONValue, proposal)) + b"\n")
+    legacy = fake_agent_result(proposal)
+
+    outcome = await execute_task(
+        FixProposalFinalizeHandler(),
+        {
+            "agent_result": legacy["agent_result"],
+            "prepared": {},
+            "validated_input": proposal_input(),
+        },
+        project,
+        write_root=write_root,
+    )
+
+    assert outcome.status == "succeeded"
+    assert as_object(outcome.output)["proposals"][0]["proposal_id"] == "P1"
+
+
+@pytest.mark.asyncio
 async def test_fix_proposal_finalize_rejects_rewritten_baseline_digest(tmp_path: Path) -> None:
     (tmp_path / "tests/api").mkdir(parents=True)
     (tmp_path / "tests/api/test_users.py").write_text("def test_ok():\n    assert True\n")
@@ -478,9 +507,11 @@ def test_healing_resources_forbid_legacy_and_provider_names() -> None:
     required = (
         "skills/aa-fix-proposal/SKILL.md",
         "skills/aa-coverage-repair/SKILL.md",
+        "skills/aa-apply-test-repair/SKILL.md",
         "personas/fix-proposer.md",
         "result-contracts/fix-proposal.v1.schema.json",
         "result-contracts/coverage-repair.v1.schema.json",
+        "result-contracts/applied-test-repair.v1.schema.json",
     )
     missing = [item for item in required if not (_RESOURCES / item).is_file()]
     assert missing == []
@@ -501,10 +532,14 @@ def test_healing_resources_forbid_legacy_and_provider_names() -> None:
 
 def test_result_contracts_match_typed_models() -> None:
     from assurance_healing.contracts import CoverageRepairApplySummary
+    from assurance_healing.contracts.application import TestRepairResultV1
 
     assert resource_bytes("result-contracts/fix-proposal.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, FixProposalResultV1.model_json_schema())
     )
     assert resource_bytes("result-contracts/coverage-repair.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, CoverageRepairApplySummary.model_json_schema())
+    )
+    assert resource_bytes("result-contracts/applied-test-repair.v1.schema.json") == canonical_json_bytes(
+        cast(JSONValue, TestRepairResultV1.model_json_schema())
     )

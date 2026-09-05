@@ -15,6 +15,7 @@ from assurance_quality.operations.agent_skills import (
     ReportFinalizeHandler,
     ReportPrepareHandler,
 )
+from assurance_quality.operations.assessment import MaterializeAssessmentHandler
 from assurance_quality.operations.coverage import (
     BuildCoverageGapsHandler,
     CollectDiffCoverageHandler,
@@ -88,6 +89,7 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
             "assurance.quality.issue-triage.prepare": IssueTriagePrepareHandler(),
             "assurance.quality.load-latest-pr-metrics": LoadLatestPrMetricsHandler(),
             "assurance.quality.load-problem-review-context": LoadProblemReviewContextHandler(),
+            "assurance.quality.materialize-assessment-inputs.execute": MaterializeAssessmentHandler(),
             "assurance.quality.materialize-c-layer-metrics": MaterializeCLayerMetricsHandler(),
             "assurance.quality.materialize-minimum-coverage": MaterializeMinimumCoverageHandler(),
             "assurance.quality.materialize-pr-metrics": MaterializePrMetricsHandler(),
@@ -137,6 +139,7 @@ __all__ = [
     "LoadLatestPrMetricsHandler",
     "LoadProblemReviewContextHandler",
     "MaterializeCLayerMetricsHandler",
+    "MaterializeAssessmentHandler",
     "MaterializeMinimumCoverageHandler",
     "MaterializePrMetricsHandler",
     "MaterializeQuarantineProjectionHandler",

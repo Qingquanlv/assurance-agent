@@ -48,6 +48,8 @@ def _input() -> dict[str, object]:
         "allowed_artifact_paths": ["qa/changes"],
         "rounds_used": 0,
         "rounds_budget": 2,
+        "coverage_epoch": 0,
+        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
     }
 
 
@@ -59,7 +61,12 @@ def _design() -> dict[str, object]:
     return {
         "output_files": ["qa/changes/CH-DEMO-001/proposal.md"],
         "validation_status": "pass",
-        "artifacts": [{"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "digest": _SHA,
+            }
+        ],
     }
 
 
@@ -75,7 +82,12 @@ def _review(
         "decision": decision,
         "auto_fix_allowed": auto_fix,
         "human_review_required": human,
-        "artifacts": [{"path": "qa/changes", "digest": _SHA}],
+        "artifacts": [
+            {
+                "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                "digest": _SHA,
+            }
+        ],
         "rounds_used": used,
         "rounds_budget": budget,
     }
@@ -110,6 +122,12 @@ def _review_result_v1(
                 "reviewed_source_files": ["src/app.py"],
                 "verified_claims": [{"claim": "create item persists", "evidence_files": ["src/app.py"]}],
             },
+            "artifacts": [
+                {
+                    "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                    "digest": _SHA,
+                }
+            ],
         }
     )
 
@@ -200,7 +218,7 @@ async def test_pass_completes_without_advance() -> None:
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
@@ -220,7 +238,7 @@ async def test_automatic_fix_advances_exactly_once() -> None:
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
@@ -247,7 +265,7 @@ async def test_automatic_fix_advances_when_review_result_nulls_rounds() -> None:
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
@@ -274,7 +292,7 @@ async def test_reject_is_explicit_terminal() -> None:
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
@@ -293,7 +311,7 @@ async def test_budget_exhaustion_is_explicit_after_two_advances() -> None:
         harness.recording_context(owner_id="assurance.intake", contracts=_contracts())
     )
     result = await harness.run(
-        bundle.prepare,
+        bundle.case,
         input=_input(),
         script={
             "intake.intake": [committed(_artifact(), _RECEIPT)],
@@ -325,7 +343,7 @@ def _interrupt_value(result: object) -> object | None:
     return getattr(first, "value", first)
 
 
-async def test_request_rework_on_prepare_graph_advances_once_through_inbox() -> None:
+async def test_request_rework_on_case_graph_advances_once_through_inbox() -> None:
     harness = GraphHarness()
     backend = harness.anchored_memory_checkpointer()
     await _prepare_anchored_backend(backend)
@@ -344,9 +362,9 @@ async def test_request_rework_on_prepare_graph_advances_once_through_inbox() -> 
         }
     )
     wrapper: StateGraph[IntakeState] = StateGraph(IntakeState)
-    wrapper.add_node("prepare", bundle.prepare)
-    wrapper.add_edge(START, "prepare")
-    wrapper.add_edge("prepare", END)
+    wrapper.add_node("case", bundle.case)
+    wrapper.add_edge(START, "case")
+    wrapper.add_edge("case", END)
     graph = wrapper.compile(checkpointer=backend)
     config = _config()
     interrupted: object | None
@@ -388,9 +406,9 @@ async def test_request_rework_advances_when_review_result_nulls_rounds() -> None
         }
     )
     wrapper: StateGraph[IntakeState] = StateGraph(IntakeState)
-    wrapper.add_node("prepare", bundle.prepare)
-    wrapper.add_edge(START, "prepare")
-    wrapper.add_edge("prepare", END)
+    wrapper.add_node("case", bundle.case)
+    wrapper.add_edge(START, "case")
+    wrapper.add_edge("case", END)
     graph = wrapper.compile(checkpointer=backend)
     config = _config()
     interrupted: object | None

@@ -65,6 +65,10 @@ HEALING_RESOURCE_FILES: dict[str, str] = {
     "assurance.healing.policy.test-change-policy.v1": "policy/test-change-policy.v1.json",
     "assurance.healing.result.coverage-repair.v1": "result-contracts/coverage-repair.v1.schema.json",
     "assurance.healing.result.fix-proposal.v1": "result-contracts/fix-proposal.v1.schema.json",
+    "assurance.healing.result.applied-test-repair.v1": (
+        "result-contracts/applied-test-repair.v1.schema.json"
+    ),
+    "assurance.healing.skill.aa-apply-test-repair.v1": "skills/aa-apply-test-repair/SKILL.md",
     "assurance.healing.skill.aa-coverage-repair.v1": "skills/aa-coverage-repair/SKILL.md",
     "assurance.healing.skill.aa-fix-proposal.v1": "skills/aa-fix-proposal/SKILL.md",
 }

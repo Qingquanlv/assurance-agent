@@ -4,6 +4,10 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from assurance_quality.contracts.assessment import (
+    FailureClassificationFactsV1,
+    InspectionDisposition,
+)
 from assurance_quality.contracts.coverage import COVERAGE_STATES, CoverageState
 
 FailureClassification = Literal[
@@ -40,6 +44,26 @@ class CoverageAssessmentPublicV1(BaseModel):
     rounds_used: int
 
 
+def classify_inspection_disposition(
+    *,
+    facts: FailureClassificationFactsV1,
+    coverage_state: CoverageState | None,
+) -> InspectionDisposition:
+    if not facts.identity_valid:
+        return "blocked"
+    if facts.blocking_failure:
+        return "blocked"
+    if facts.needs_human:
+        return "needs_human"
+    if facts.repairable_failure:
+        return "repairable_execution_failure"
+    if coverage_state == "repair_required":
+        return "coverage_insufficient"
+    if coverage_state == "satisfied":
+        return "satisfied"
+    return "blocked"
+
+
 __all__ = [
     "COVERAGE_STATES",
     "CoverageAssessmentPublicV1",
@@ -47,4 +71,5 @@ __all__ = [
     "FIX_ELIGIBLE_CLASSIFICATIONS",
     "FailureClassification",
     "IssueAnalysisPublicV1",
+    "classify_inspection_disposition",
 ]

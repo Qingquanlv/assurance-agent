@@ -107,7 +107,7 @@ async def test_coverage_gaps_fold_on_closed_projection() -> None:
         change_id=CHANGE_ID,
         batch_id=BATCH_ID,
     )
-    assert tuple(gap.kind for gap in new_gaps.gaps) == ()
+    assert tuple(gap.kind for gap in new_gaps.gaps) == ("uncovered_required_case",)
 
 
 async def test_closed_mapping_is_stricter_than_observed_list() -> None:
@@ -120,7 +120,7 @@ async def test_closed_mapping_is_stricter_than_observed_list() -> None:
         outcome.output,
         context={"capability_leafs": frozenset(catalog_leafs())},
     )
-    assert tuple(row.test_path for row in trace.rows) == ("tests/generated.py",)
+    assert tuple(row.test_path for row in trace.rows) == ("",)
     assert trace.unmapped_tests == ()
 
 

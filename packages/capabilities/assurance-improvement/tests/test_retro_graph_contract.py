@@ -18,6 +18,7 @@ from assurance_improvement.contracts.improvements import ImprovementLedgerProjec
 from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     IssueEvidenceSlice,
+    RetroBuildSlicesInputV1,
     SignalDocumentV3,
     WorkflowEvidenceSlice,
 )
@@ -346,10 +347,14 @@ def test_digests_originate_from_authenticated_receipt_state_not_filesystem() -> 
 
 
 def test_collect_and_reconcile_contracts_stay_unbound() -> None:
+    build = TASK_ATTEMPT_CONTRACTS["assurance.improvement.retro-build-slices"]
     collect = TASK_ATTEMPT_CONTRACTS["assurance.improvement.retro-collect-v3"]
     reconcile = TASK_ATTEMPT_CONTRACTS["assurance.improvement.reconcile-improvements"]
     assert collect.validators == ()
     assert reconcile.validators == ()
     assert collect.input_model is RetroCollectInput
+    assert build.contract_id == "assurance.improvement.retro-build-slices"
+    assert build.input_model is RetroBuildSlicesInputV1
+    assert build.output_model is RetroCollectInput
     closed = close_improvement_task("assurance.improvement.retro-collect-v3")
     assert closed.handler_id == "assurance.improvement.retro-collect-v3"

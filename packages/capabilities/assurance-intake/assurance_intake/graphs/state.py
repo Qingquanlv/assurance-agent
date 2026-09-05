@@ -149,6 +149,13 @@ class IntakeState(CheckpointBridgeState, total=False):
     current_trigger: CaseReviewArrival | None
     status: str
     attempt_failure: dict[str, object]
+    coverage_epoch: int
+    preparation_refs: list[dict[str, str]]
+    case_refs: list[dict[str, str]]
+    case_rework_context: dict[str, object] | None
+    reviewed_case: dict[str, object]
+    case_receipt: dict[str, str]
+    receipt: dict[str, str]
 
 
 __all__ = [

@@ -630,10 +630,18 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
             "assurance-v1-doc-author",
             ("qa/changes/{change_id}/healing/fix-proposal.json",),
         ),
+        "apply-test-repair": (
+            "aa-apply-test-repair",
+            "assurance-v1-test-author",
+            (
+                "qa/changes/{change_id}/generated",
+                "qa/changes/{change_id}/healing/epochs/{coverage_epoch}/rounds/{repair_round}",
+            ),
+        ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
     assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
-    assert len(AGENT_JOB_CONTRACTS) == 2
+    assert len(AGENT_JOB_CONTRACTS) == 3
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
     assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
     for base, (skill_id, agent_profile, writes) in expected.items():
@@ -641,7 +649,19 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
         assert contract.contract_id == f"assurance.healing.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
-        assert contract.resources.writes == writes
+        expected_claims = (
+            tuple(
+                sorted(
+                    (
+                        "qa/changes/{change_id}/generated",
+                        "qa/changes/{change_id}/healing/epochs",
+                    )
+                )
+            )
+            if base == "apply-test-repair"
+            else writes
+        )
+        assert contract.resources.writes == expected_claims
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped

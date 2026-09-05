@@ -14,7 +14,7 @@ from graph_engine.plugin_api import (
     ValidationContext,
 )
 
-from assurance_execution.contracts.selection import _safe_project_relative_path
+from assurance_generation.contracts.mapping import _safe_project_relative_path
 from assurance_execution.operations.paths import resolve_selected_file
 from assurance_execution.validators.mapping import ClosedMappingValidator
 from assurance_generation.contracts.plans import canonical_relative_path
@@ -25,6 +25,8 @@ from assurance_improvement.validators.delivery import DeliveryValidator
 from assurance_improvement.validators.paths import canonical_relative as improvement_canonical
 from assurance_intake.operations.finalize import _workspace_file as intake_workspace_file
 from assurance_intake.validators.cases import CaseCandidateValidator
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_quality.operations.assessment import _read_ref as quality_workspace_file
 from assurance_quality.validators.paths import canonical_relative as quality_canonical
 from assurance_quality.validators.report import ReportValidator
 
@@ -48,8 +50,8 @@ WHEELS = (
 )
 STRING_CASES = frozenset({"absolute", "parent-dotdot", "windows-drive", "undeclared-write-root"})
 FILESYSTEM_CASES = frozenset({"symlink-file", "symlink-parent", "hard-link", "path-swap"})
-WORKSPACE_OPEN_WHEELS = frozenset({"intake", "generation", "execution", "healing"})
-NO_WORKSPACE_OPEN_WHEELS = frozenset({"quality", "improvement"})
+WORKSPACE_OPEN_WHEELS = frozenset({"intake", "generation", "execution", "healing", "quality"})
+NO_WORKSPACE_OPEN_WHEELS = frozenset({"improvement"})
 
 _SHA = "a" * 64
 _STRING_PATHS = {
@@ -95,17 +97,6 @@ def assert_no_write_outside_workspace(observed: PathObservation) -> None:
 
 
 def assert_no_workspace_open_seam(wheel: str) -> None:
-    if wheel == "quality":
-        from assurance_quality.operations import agent_skills
-        from assurance_quality.validators import paths
-
-        assert not hasattr(paths, "authenticate_workspace_path")
-        module_source = inspect.getsource(agent_skills)
-        assert "_workspace_file" not in module_source
-        finalize = inspect.getsource(agent_skills.InspectFinalizeHandler.execute)
-        assert "del context" in finalize
-        assert "workspace_root" not in finalize
-        return
     if wheel == "improvement":
         from assurance_improvement.operations import agent as improvement_agent
         from assurance_improvement.validators import paths
@@ -189,6 +180,11 @@ def _workspace_rejected(wheel: str, workspace: Path, relative: str, hook: PathPr
             resolve_selected_file(workspace, relative)
         elif wheel == "healing":
             healing_workspace_file(workspace, relative)
+        elif wheel == "quality":
+            quality_workspace_file(
+                workspace,
+                EvidenceArtifactRefV1(path=relative, digest=_SHA),
+            )
         else:
             raise ValueError(wheel)
     except (ValueError, OSError, FileNotFoundError):

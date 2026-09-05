@@ -67,6 +67,13 @@
         "healing_rounds": { "type": "integer", "minimum": 0 },
         "execution_retries": { "type": "integer", "minimum": 0 }
       }
+    },
+    "retro_window": {
+      "anyOf": [
+        { "$ref": "#/$defs/retroWindow" },
+        { "type": "null" }
+      ],
+      "default": null
     }
   },
   "not": {
@@ -87,6 +94,52 @@
       "properties": {
         "resource_id": { "type": "string", "minLength": 1 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "retroSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["change_ids", "time_range", "last"] },
+        "requested_change_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "requested_since": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "requested_until": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "requested_last": { "anyOf": [{ "type": "integer" }, { "type": "null" }], "default": null }
+      }
+    },
+    "retroBatchMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["change_id", "execution_status", "evidence_availability"],
+      "properties": {
+        "change_id": { "type": "string", "minLength": 1 },
+        "execution_status": { "enum": ["completed", "failed", "stopped", "hard_timeout", "cancelled", "running", "not_started"] },
+        "evidence_availability": { "enum": ["complete", "partial", "absent"] }
+      }
+    },
+    "retroBatchScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["batch_id", "status"],
+      "properties": {
+        "schema_version": { "const": "1", "default": "1" },
+        "batch_id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["complete", "incomplete"] },
+        "members": { "type": "array", "items": { "$ref": "#/$defs/retroBatchMember" }, "default": [] }
+      }
+    },
+    "retroWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selection", "change_ids"],
+      "properties": {
+        "selection": { "$ref": "#/$defs/retroSelection" },
+        "change_ids": { "type": "array", "items": { "type": "string" } },
+        "since": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "until": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "project_event_through": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "batch_scope": { "anyOf": [{ "$ref": "#/$defs/retroBatchScope" }, { "type": "null" }], "default": null }
       }
     }
   }

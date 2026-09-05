@@ -1,101 +1,62 @@
 from __future__ import annotations
 
-import pytest
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_product.graphs.factory import invoke_product_root
+from assurance_product.graphs.routes import route_applied_repair
+from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 
-from tests.product.execution_loop import (
-    assert_each_repair_is_preceded_by_one_advance,
-    bind_installed_sources,
-    drive_execution_loop,
-    drive_failed_execution,
+from tests.product.test_product_stategraph_flow import (
+    _applied,
+    _flow_features,
+    _inspection,
+    _product_graphs,
+    _public_input,
 )
 
-pytestmark = pytest.mark.usefixtures("installed_sources")
 
-
-@pytest.fixture(autouse=True)
-def _bind_sources(installed_sources) -> None:
-    bind_installed_sources(installed_sources)
-
-
-def test_issue_path_runs_analysis_and_fix_before_rerun() -> None:
-    trace = drive_failed_execution(
-        classification="test",
-        fix_eligible=True,
-        execution_sequence=("failed", "passed"),
+def test_applied_test_repair_is_the_only_path_to_rerun() -> None:
+    result = invoke_product_root(
+        _product_graphs(
+            _flow_features(
+                assess=(_inspection(disposition="repairable_execution_failure"), _inspection()),
+                repair_failure=_applied(),
+            )
+        ),
+        "execute",
+        _public_input("execute"),
     )
-    assert "quality.issue-analyze" in trace.public_exports
-    assert "healing.repair-failure" in trace.public_exports
-    assert "execution.rerun" in trace.public_exports
-    assert_each_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert trace.advance_outputs == ({"kind": "failure", "rounds_used": 1, "rounds_budget": 1},)
+    execution = ExecutionCycleResultV1.model_validate(result["execution_result"])
+    assert execution.repair_round == 1
+    assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "reported"
 
 
-def test_fix_eligible_test_data_failure_enters_healing() -> None:
-    trace = drive_failed_execution(
-        classification="test-data",
-        fix_eligible=True,
-        execution_sequence=("failed", "passed"),
+def test_fix_proposal_output_cannot_parse_as_applied_repair() -> None:
+    proposal_only = {
+        "proposal_result": {"schema_version": "1", "change_id": "CH-DEMO-001"},
+        "status": "passed",
+    }
+    assert route_applied_repair(proposal_only) == "blocked"
+    result = invoke_product_root(
+        _product_graphs(
+            _flow_features(
+                assess=_inspection(disposition="repairable_execution_failure"),
+                repair_failure=proposal_only,
+            )
+        ),
+        "execute",
+        _public_input("execute"),
     )
-    assert "healing.repair-failure" in trace.public_exports
-    assert_each_repair_is_preceded_by_one_advance(trace.task_capabilities)
+    assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "blocked"
+    assert ExecutionCycleResultV1.model_validate(result["execution_result"]).repair_round == 0
 
 
-def test_product_issue_never_runs_the_healing_chain() -> None:
-    trace = drive_failed_execution(classification="product_bug", fix_eligible=False)
-    assert "quality.issue-analyze" in trace.public_exports
-    assert "healing.repair-failure" not in trace.public_exports
-    assert "execution.rerun" not in trace.public_exports
-    assert trace.advance_outputs == ()
-
-
-def test_healed_rerun_passed_reaches_quality() -> None:
-    trace = drive_failed_execution(
-        classification="test",
-        fix_eligible=True,
-        execution_sequence=("failed", "passed"),
-    )
-    assert "execution.rerun" in trace.public_exports
-    assert "quality.assess" in trace.public_exports
-    assert trace.advance_outputs[0]["rounds_used"] == 1
-
-
-def test_healed_rerun_still_failed_is_classified_again() -> None:
-    trace = drive_execution_loop(
-        execution_sequence=("failed", "failed"),
-        classifications=("test", "test"),
-        fix_eligible=(True, True),
-        healing_rounds=2,
-    )
-    assert trace.public_exports.count("quality.issue-analyze") >= 1 or "quality.issue-analyze" in (
-        trace.public_exports
-    )
-    analyze_count = sum(1 for item in trace.task_capabilities if item.endswith("issue-analysis.finalize"))
-    assert analyze_count >= 2
-    assert_each_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert tuple(item["rounds_used"] for item in trace.advance_outputs) == (1, 2)
-    assert all(item["rounds_budget"] == 2 for item in trace.advance_outputs)
-
-
-def test_failed_rerun_does_not_reset_the_counter() -> None:
-    trace = drive_execution_loop(
-        execution_sequence=("failed", "failed"),
-        classifications=("test", "test"),
-        fix_eligible=(True, True),
-        healing_rounds=2,
-    )
-    assert tuple(item["rounds_used"] for item in trace.advance_outputs) == (1, 2)
-    assert all(item["kind"] == "failure" for item in trace.advance_outputs)
-
-
-def test_healing_budget_exhausted_terminates_before_another_repair() -> None:
-    trace = drive_execution_loop(
-        execution_sequence=("failed", "failed"),
-        classifications=("test", "test"),
-        fix_eligible=(True, True),
-        healing_rounds=1,
-    )
-    assert_each_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert tuple(item["rounds_used"] for item in trace.advance_outputs) == (1,)
-    assert trace.terminal != "achieved"
-    repair_count = sum(1 for item in trace.task_capabilities if item.endswith("fix-proposal.finalize"))
-    assert repair_count == 1
+def test_non_applied_repair_status_is_blocked() -> None:
+    repair = {
+        "repair_result": {
+            "change_id": "CH-DEMO-001",
+            "coverage_epoch": 0,
+            "repair_round": 1,
+            "status": "exhausted",
+        }
+    }
+    assert route_applied_repair(repair) == "blocked"

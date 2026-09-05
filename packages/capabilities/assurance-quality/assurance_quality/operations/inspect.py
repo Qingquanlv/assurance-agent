@@ -12,6 +12,7 @@ from graph_engine.plugin_api import FrozenModel, TaskContext, TaskOutcome, TaskR
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_healing.contracts.status import HealingStatusV1
+from assurance_quality.contracts.assessment import FailureClassificationFactsV1
 from assurance_quality.contracts.common import CoverageThreshold, FunctionalCounts, FunctionalDimension
 from assurance_quality.contracts.inspect import (
     CoverageDimensionV2,
@@ -27,6 +28,7 @@ from assurance_quality.contracts.inspect import (
     QualityGateResultV2,
 )
 from assurance_quality.contracts.sufficiency import SufficiencyReportV2
+from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.operations.common import InputError, failed_input, validate_input
 
 TargetName = Literal["api", "e2e", "fuzz", "performance", "coverage"]
@@ -302,6 +304,65 @@ def _layer_for(test: str, evidence: ExecutionEvidenceV1) -> str:
         if entry.test == test:
             return entry.layer
     return "api"
+
+
+_BLOCKING_FAILURE_CATEGORIES = frozenset(
+    {
+        "business_logic_failure",
+        "environment_failure",
+        "known_product_issue",
+        "manifest_asset_missing",
+        "perf_environment",
+    }
+)
+_REPAIRABLE_FAILURE_CATEGORIES = frozenset(
+    category for category, eligible in _FIX_PROPOSAL.items() if eligible is True
+)
+
+
+def build_failure_classification_facts(
+    execution: ExecutionEvidenceV1,
+    metrics: MetricsDocument,
+    *,
+    adversarial_required: bool,
+) -> tuple[FailureClassificationFactsV1, tuple[str, ...]]:
+    """Reduce authenticated evidence to facts without choosing a workflow route."""
+
+    blocking = False
+    needs_human = False
+    repairable = False
+    reason_codes: set[str] = set()
+    for result in execution.results:
+        if result.status != "failed":
+            continue
+        target = _layer_for(result.test, execution)
+        category = classify_failure(message=result.message, target=target).category
+        reason_codes.add(f"execution.{category}")
+        if category in _BLOCKING_FAILURE_CATEGORIES:
+            blocking = True
+        elif category in _REPAIRABLE_FAILURE_CATEGORIES:
+            repairable = True
+        else:
+            needs_human = True
+
+    adversarial = metrics.metrics["adversarial_clean"]
+    identity_valid = True
+    if adversarial.status == "evaluated" and adversarial.holds is False:
+        blocking = True
+        reason_codes.add("adversarial.open_counterexample")
+    elif adversarial_required and adversarial.status != "evaluated":
+        identity_valid = False
+        reason_codes.add("adversarial.required_evidence_missing")
+
+    return (
+        FailureClassificationFactsV1(
+            identity_valid=identity_valid,
+            blocking_failure=blocking,
+            needs_human=needs_human,
+            repairable_failure=repairable,
+        ),
+        tuple(sorted(reason_codes)),
+    )
 
 
 def _counts(evidence: ExecutionEvidenceV1, target: str) -> FunctionalCounts:

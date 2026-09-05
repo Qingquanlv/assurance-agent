@@ -198,14 +198,12 @@ class _ScriptedTaskHost:
             rounds_budget = int(cast(int, echoed.get("rounds_budget", self._coverage_rounds)))
             self._inspect_count += 1
             self._last_measured = measured
-            from assurance_quality.contracts.coverage import classify_coverage_state
-
-            coverage_state = classify_coverage_state(
-                measured=measured,
-                threshold=self._threshold,
-                rounds_used=rounds_used,
-                rounds_budget=rounds_budget,
-            )
+            if measured >= self._threshold:
+                coverage_state = "satisfied"
+            elif rounds_budget <= 0 or rounds_used >= rounds_budget:
+                coverage_state = "exhausted"
+            else:
+                coverage_state = "repair_required"
             decision = coverage_state == "satisfied"
             self._exhausted = coverage_state == "exhausted"
             return TaskOutcome.succeeded(

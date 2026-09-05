@@ -145,16 +145,73 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
         base.update(
             {
                 "change_id": "CH-DEMO-001",
+                "coverage_epoch": 0,
                 "batch_id": "batch-1",
-                "execution_digest": _HEX,
-                "healing_digest": _HEX,
-                "trace_digest": _HEX,
-                "coverage_digest": _HEX,
-                "metrics_digest": _HEX,
-                "case_digest": _HEX,
-                "plan_digest": _HEX,
-                "mapping_digest": _HEX,
-                "issue_digest": _HEX,
+                "assessment": {
+                    "change_id": "CH-DEMO-001",
+                    "coverage_epoch": 0,
+                    "batch_id": "batch-1",
+                    "scope": {
+                        "change_id": "CH-DEMO-001",
+                        "coverage_epoch": 0,
+                        "required_case_ids": ["TC-1"],
+                        "selected_families": ["api"],
+                        "applicable_goals": ["constraint_coverage"],
+                        "applicability_refs": [
+                            {"path": "qa/changes/CH-DEMO-001/cases/api/case.yaml", "digest": _HEX}
+                        ],
+                        "risk_tier": "low",
+                        "policy_digest": _HEX,
+                    },
+                    "policy": {
+                        "coverage_floor_by_tier": {
+                            "low": 0.8,
+                            "medium": 0.8,
+                            "high": 0.8,
+                            "critical": 0.8,
+                        }
+                    },
+                    "trace_ref": {
+                        "path": "qa/changes/CH-DEMO-001/inspect/trace.json",
+                        "digest": _HEX,
+                    },
+                    "gaps_ref": {
+                        "path": "qa/changes/CH-DEMO-001/inspect/gaps.json",
+                        "digest": _HEX,
+                    },
+                    "metrics_ref": {
+                        "path": "qa/changes/CH-DEMO-001/inspect/metrics.json",
+                        "digest": _HEX,
+                    },
+                    "sufficiency_ref": {
+                        "path": "qa/changes/CH-DEMO-001/inspect/sufficiency.json",
+                        "digest": _HEX,
+                    },
+                    "execution_ref": {
+                        "path": "qa/changes/CH-DEMO-001/execution/result.json",
+                        "digest": _HEX,
+                    },
+                },
+                "reviewed_case": {
+                    "change_id": "CH-DEMO-001",
+                    "coverage_epoch": 0,
+                    "preparation_refs": [
+                        {"path": "qa/changes/CH-DEMO-001/intake/prepare.json", "digest": _HEX}
+                    ],
+                    "case_refs": [{"path": "qa/changes/CH-DEMO-001/cases/api/case.yaml", "digest": _HEX}],
+                    "review_ref": {
+                        "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                        "digest": _HEX,
+                    },
+                },
+                "mapping_ref": {
+                    "path": "qa/changes/CH-DEMO-001/generated/mapping.json",
+                    "digest": _HEX,
+                },
+                "fact_baseline_ref": {
+                    "path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json",
+                    "digest": _HEX,
+                },
             }
         )
     if wheel == "improvement":

@@ -8,24 +8,50 @@ from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import CapabilityBuildContext
 
-from assurance_quality.contracts.decisions import COVERAGE_STATES
+from assurance_quality.contracts.assessment import InspectionDisposition
 from assurance_quality.graphs.nodes import (
     activation_assess,
+    activation_materialize_assessment,
     publish_fact_baseline,
     publish_inspect,
-    select_quality,
+    publish_materialize_assessment,
+    select_materialize_assessment,
+    select_fact_baseline,
+    select_inspect,
     terminal_done,
 )
-from assurance_quality.graphs.routes import route_coverage
+from assurance_quality.graphs.routes import route_attempt, route_coverage
 from assurance_quality.graphs.state import QualityState
 
 _FACT_BASELINE_ID = "assurance.quality.agent.fact-baseline.v1"
 _INSPECT_ID = "assurance.quality.agent.inspect.v1"
-_COVERAGE_PATHS: dict[Hashable, str] = {name: name for name in (*COVERAGE_STATES, "failed")}
+_MATERIALIZE_ID = "assurance.quality.materialize-assessment-inputs"
+_DISPOSITIONS: tuple[InspectionDisposition, ...] = (
+    "satisfied",
+    "coverage_insufficient",
+    "repairable_execution_failure",
+    "needs_human",
+    "blocked",
+)
+_COVERAGE_PATHS: dict[Hashable, str] = {name: name for name in (*_DISPOSITIONS, "failed")}
+_ATTEMPT_PATHS: dict[Hashable, str] = {"ready": "quality.fact-baseline", "failed": "failed"}
 
 
 def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[QualityState] = StateGraph(QualityState)
+    builder.add_node(
+        "quality.materialize-assessment-inputs",
+        cast(
+            Callable[..., Any],
+            context.attempt(
+                _MATERIALIZE_ID,
+                semantic_node_id="quality.materialize-assessment-inputs",
+                activation=activation_materialize_assessment,
+                select=select_materialize_assessment,
+                publish=publish_materialize_assessment,
+            ),
+        ),
+    )
     builder.add_node(
         "quality.fact-baseline",
         cast(
@@ -34,7 +60,7 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
                 _FACT_BASELINE_ID,
                 semantic_node_id="quality.fact-baseline",
                 activation=activation_assess,
-                select=select_quality,
+                select=select_fact_baseline,
                 publish=publish_fact_baseline,
             ),
         ),
@@ -47,7 +73,7 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
                 _INSPECT_ID,
                 semantic_node_id="quality.inspect",
                 activation=activation_assess,
-                select=select_quality,
+                select=select_inspect,
                 publish=publish_inspect,
             ),
         ),
@@ -55,8 +81,17 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     for name in _COVERAGE_PATHS:
         builder.add_node(str(name), cast(Callable[..., Any], terminal_done))
         builder.add_edge(str(name), END)
-    builder.add_edge(START, "quality.fact-baseline")
-    builder.add_edge("quality.fact-baseline", "quality.inspect")
+    builder.add_edge(START, "quality.materialize-assessment-inputs")
+    builder.add_conditional_edges(
+        "quality.materialize-assessment-inputs",
+        cast(Callable[..., Any], route_attempt),
+        _ATTEMPT_PATHS,
+    )
+    builder.add_conditional_edges(
+        "quality.fact-baseline",
+        cast(Callable[..., Any], route_attempt),
+        {"ready": "quality.inspect", "failed": "failed"},
+    )
     builder.add_conditional_edges(
         "quality.inspect",
         cast(Callable[..., Any], route_coverage),

@@ -12,11 +12,18 @@ import yaml
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_intake.contracts import CaseReviewResultV1, CaseYaml, CaseYamlAuthoring, QaYaml
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
 from assurance_intake.contracts.review import normalized_auto_fix_edits
+from assurance_intake.contracts.workflow import (
+    CaseFlowResultV1,
+    CaseReworkContextV1,
+    EvidenceArtifactRefV1,
+    ReviewedCaseV1,
+)
 from assurance_intake.plugin import IntakePlugin
 
 _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
@@ -58,6 +65,63 @@ _TESTS_ROOT = Path(__file__).resolve().parent
 _WHEEL_ROOT = _TESTS_ROOT.parent
 VALID_LEAFS = frozenset({"entities.item.create", "auth.session.create"})
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
+_SHA = "a" * 64
+
+
+def _reviewed_case() -> ReviewedCaseV1:
+    return ReviewedCaseV1(
+        change_id="CH-DEMO-001",
+        coverage_epoch=0,
+        preparation_refs=(EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/requirement.md", digest=_SHA),),
+        case_refs=(EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/cases/menus/case.yaml", digest=_SHA),),
+        review_ref=EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/review/case-review.json", digest=_SHA),
+    )
+
+
+def test_reviewed_result_requires_review_evidence() -> None:
+    with pytest.raises(ValidationError):
+        CaseFlowResultV1(status="reviewed", reviewed_case=None, receipt=None)
+
+
+def test_unsuccessful_case_result_cannot_carry_success_evidence() -> None:
+    with pytest.raises(ValidationError):
+        CaseFlowResultV1(
+            status="rejected",
+            reviewed_case=_reviewed_case(),
+            receipt=ReceiptRef(receipt_id="review", receipt_digest=_SHA),
+        )
+
+
+@pytest.mark.parametrize("field", ["preparation_refs", "case_refs"])
+def test_reviewed_case_requires_all_version_refs(field: str) -> None:
+    payload = _reviewed_case().model_dump(mode="json")
+    payload[field] = []
+    with pytest.raises(ValidationError):
+        ReviewedCaseV1.model_validate(payload)
+
+
+def test_case_rework_targets_stay_inside_the_current_change() -> None:
+    gap = EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/inspect/coverage-gaps.json", digest=_SHA)
+    with pytest.raises(ValidationError):
+        CaseReworkContextV1(
+            previous_case=_reviewed_case(),
+            inspect_receipt=ReceiptRef(receipt_id="inspect", receipt_digest=_SHA),
+            assessment_refs=(gap,),
+            gaps_ref=gap,
+            target_case_paths=("qa/changes/OTHER/cases/menus/case.yaml",),
+        )
+
+
+def test_case_rework_can_describe_a_missing_requirement_through_gap_evidence() -> None:
+    gap = EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/inspect/coverage-gaps.json", digest=_SHA)
+    context = CaseReworkContextV1(
+        previous_case=_reviewed_case(),
+        inspect_receipt=ReceiptRef(receipt_id="inspect", receipt_digest=_SHA),
+        assessment_refs=(gap,),
+        gaps_ref=gap,
+        target_case_paths=("qa/changes/CH-DEMO-001/cases/menus/case.yaml",),
+    )
+    assert context.gaps_ref == gap
 
 
 def load_fixture(name: str) -> object:
@@ -475,10 +539,13 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
             "aa-case-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/changes/{change_id}/cases/reviewed-case.json",
+                "qa/changes/{change_id}/cases/reviews",
                 "qa/changes/{change_id}/review/case-review-summary.md",
                 "qa/changes/{change_id}/review/case-review.json",
             ),
             (
+                "qa/changes/{change_id}/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/changes/{change_id}/review/case-review-summary.md",
                 "qa/changes/{change_id}/review/case-review.json",
             ),

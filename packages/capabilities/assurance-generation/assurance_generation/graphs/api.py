@@ -8,6 +8,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from assurance_generation.graphs.nodes import (
     activation_codegen,
+    activation_codegen_fix,
     activation_plan,
     activation_plan_review,
     codegen_round_advance,
@@ -236,7 +237,7 @@ def compile_family_pair(
             context,
             family=family,
             stage="codegen-fix",
-            activation=activation_codegen,
+            activation=activation_codegen_fix,
             select=select_codegen_fix,
             publish=publish_codegen,
         )

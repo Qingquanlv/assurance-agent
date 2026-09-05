@@ -56,6 +56,7 @@ from assurance_improvement.operations.review import ApplyAutoReviewInput, ApplyR
 from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     IssueEvidenceSlice,
+    RetroBuildSlicesInputV1,
     WorkflowEvidenceSlice,
 )
 
@@ -162,6 +163,17 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
     {
+        "assurance.improvement.retro-build-slices": TaskAttemptContract(
+            contract_id="assurance.improvement.retro-build-slices",
+            owner_id="assurance.improvement",
+            handler_id="assurance.improvement.retro-build-slices.execute",
+            input_model=RetroBuildSlicesInputV1,
+            output_model=RetroCollectInput,
+            resources=ResourceClaims(reads=("issues", "qa")),
+            retry=_RETRY,
+            timeout=_TIMEOUT,
+            validators=(),
+        ),
         "assurance.improvement.apply-improvement-auto-review": _task(
             "assurance.improvement.apply-improvement-auto-review",
             ApplyAutoReviewInput,

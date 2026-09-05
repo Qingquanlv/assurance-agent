@@ -194,8 +194,8 @@ def runtime_bindings_from_composition(
         contracts,
         adapter=_PROVIDER,
     )
-    if len(resolved) != 33:
-        raise ValueError("composition runtime binding set is not the exact 33 Agent contracts")
+    if len(resolved) != 34:
+        raise ValueError("composition runtime binding set is not the exact 34 Agent contracts")
     return MappingProxyType(resolved)
 
 
@@ -408,7 +408,7 @@ class DeterministicTaskExecutor:
         self.dispatch_count += 1
         request = _task_request(
             capability_id=self.handler_id,
-            payload=validated_input.model_dump(mode="json"),
+            payload=validated_input.model_dump(mode="json", exclude_computed_fields=True),
             scope=scope,
             task_id=scope.execution.attempt_key.digest,
         )
@@ -505,8 +505,8 @@ def boot_semantic_attempt_contracts(
         resolved[contract_id] = _resolve_agent_contract(agents[contract_id], binding, composition)
     for contract in all_feature_task_contracts().values():
         resolved[contract.contract_id] = _resolve_task_contract(contract, composition)
-    if len(resolved) != 41:
-        raise ValueError(f"semantic attempt registry must contain 41 contracts, got {len(resolved)}")
+    if len(resolved) != 46:
+        raise ValueError(f"semantic attempt registry must contain 46 contracts, got {len(resolved)}")
     return MappingProxyType(resolved)
 
 

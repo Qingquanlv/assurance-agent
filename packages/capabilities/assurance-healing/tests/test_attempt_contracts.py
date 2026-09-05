@@ -11,6 +11,11 @@ from graph_engine.plugin_api import AttemptContractRef, TaskContext
 
 from agent_runtime_contracts import AgentExecutionContract
 from assurance_healing.contracts.agent import CoverageRepairInputV1, FixProposalInputV1, FixProposalResultV1
+from assurance_healing.contracts.application import (
+    ApplyTestRepairInputV1,
+    TestRepairResultV1 as RepairAgentResultV1,
+    VerifiedTestRepairV1,
+)
 from assurance_healing.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
     TASK_ATTEMPT_CONTRACTS,
@@ -23,8 +28,8 @@ from assurance_healing.plugin import HealingPlugin
 from tests.product.test_change_local_output_routing import execute_task
 
 
-def test_healing_owns_two_agent_contracts() -> None:
-    assert len(AGENT_JOB_CONTRACTS) == 2
+def test_healing_owns_three_agent_contracts() -> None:
+    assert len(AGENT_JOB_CONTRACTS) == 3
     assert TASK_ATTEMPT_CONTRACTS == {}
     expected = {
         "coverage-repair": (
@@ -39,6 +44,12 @@ def test_healing_owns_two_agent_contracts() -> None:
             FixProposalInputV1,
             FixProposalResultV1,
         ),
+        "apply-test-repair": (
+            "aa-apply-test-repair",
+            "assurance-v1-test-author",
+            ApplyTestRepairInputV1,
+            RepairAgentResultV1,
+        ),
     }
     assert set(AGENT_JOB_CONTRACTS) == set(expected)
     for base, (skill_id, profile, input_model, result_model) in expected.items():
@@ -52,12 +63,14 @@ def test_healing_owns_two_agent_contracts() -> None:
         assert contract.agent_profile == profile
         assert contract.input_model is input_model
         assert contract.agent_result_model is result_model
-        assert contract.output_model is result_model
+        expected_output_model = VerifiedTestRepairV1 if base == "apply-test-repair" else result_model
+        assert contract.output_model is expected_output_model
         assert contract.validators == ()
         assert contract.retry.max_attempts == 1
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
-        assert set(claims.runtime) == set(contract.resources.writes)
+        assert set(claims.runtime) | set(claims.finalize) == set(contract.resources.writes)
+        assert not (set(claims.runtime) & set(claims.finalize))
 
 
 def test_healing_plugin_projects_authenticated_attempt_contracts() -> None:

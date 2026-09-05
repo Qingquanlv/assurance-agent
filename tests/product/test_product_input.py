@@ -90,8 +90,52 @@ def test_product_input_document_satisfies_model_and_schema():
     assert "capability_leafs" in required
     assert "capability_leafs" in properties
     assert "case_delta_paths" in properties
+    assert "retro_window" in properties
     assert value.capability_leafs == ("auth.session", "entities.user")
     assert document["capability_leafs"] == ("auth.session", "entities.user")
+
+
+def test_only_retro_entrypoint_accepts_retro_window() -> None:
+    from assurance_product.models import ProductInputV1
+
+    window = {
+        "selection": {
+            "mode": "change_ids",
+            "requested_change_ids": ["CH-DEMO-001", "CH-DEMO-002"],
+        },
+        "change_ids": ["CH-DEMO-001", "CH-DEMO-002"],
+    }
+    value = ProductInputV1.model_validate(valid_product_input(retro_window=window))
+    value.validate_for_entrypoint("retro")
+    with pytest.raises(ValueError, match="does not consume retro_window"):
+        value.validate_for_entrypoint("archive")
+
+
+def test_standalone_retro_preserves_an_explicit_window() -> None:
+    from assurance_product.graphs.entrypoints import adapt_retro
+    from assurance_improvement.contracts.retro import RetroSelectionSnapshot, RetroWindow
+
+    window = RetroWindow(
+        selection=RetroSelectionSnapshot(
+            mode="change_ids", requested_change_ids=("CH-DEMO-001", "CH-DEMO-002")
+        ),
+        change_ids=("CH-DEMO-001", "CH-DEMO-002"),
+    )
+    state = valid_product_input(retro_window=window.model_dump(mode="json"))
+    result = adapt_retro(state)  # type: ignore[arg-type]
+    assert result["window"] == window.model_dump(mode="json")
+
+
+def test_full_retro_uses_the_current_change_and_report_receipt_identity() -> None:
+    from assurance_product.graphs.entrypoints import adapt_retro
+
+    report_receipt = {"receipt_id": "report-1", "receipt_digest": "b" * 64}
+    state = valid_product_input()
+    state["report_outcome"] = {"report_receipt": report_receipt}
+    first = adapt_retro(state)  # type: ignore[arg-type]
+    second = adapt_retro(state)  # type: ignore[arg-type]
+    assert first["window"]["change_ids"] == ["CH-DEMO-001"]  # type: ignore[index]
+    assert first["retro_id"] == second["retro_id"]
 
 
 def test_product_input_rejects_auto_archive():

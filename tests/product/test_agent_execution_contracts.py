@@ -41,6 +41,7 @@ EXPECTED_AGENT_PROFILES = {
     "assurance.execution.agent.run.v1": "assurance-v1-executor",
     "assurance.healing.agent.coverage-repair.v1": "assurance-v1-test-author",
     "assurance.healing.agent.fix-proposal.v1": "assurance-v1-doc-author",
+    "assurance.healing.agent.apply-test-repair.v1": "assurance-v1-test-author",
     "assurance.quality.agent.fact-baseline.v1": "assurance-v1-doc-author",
     "assurance.quality.agent.inspect.v1": "assurance-v1-reviewer",
     "assurance.quality.agent.issue-analysis.v1": "assurance-v1-reporter",
@@ -315,8 +316,8 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     from assurance_product.models import all_binding_ids
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
-    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 33
-    assert len(all_feature_agent_contracts()) == 33
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 34
+    assert len(all_feature_agent_contracts()) == 34
     assert set(all_feature_agent_contracts()) == set(all_binding_ids())
     assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
@@ -381,6 +382,7 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     )
     extra_claims = {
         "assurance.intake.agent.case-design.v1": (f"qa/changes/{change_id}/cases",),
+        "assurance.intake.agent.case-review.v1": (f"qa/changes/{change_id}/cases/reviewed-case.json",),
         "assurance.intake.agent.explore.v1": (f"qa/changes/{change_id}/explore/context.json",),
     }
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
@@ -388,11 +390,21 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         assert contract.resources.parameters == {"change_id": "/workspace/scope_id"}
         resolved = contract.resources.resolve({"workspace": {"scope_id": change_id}})
         extra = extra_claims.get(contract_id, ())
+        if contract_id == "assurance.intake.agent.case-review.v1":
+            extra = (*extra, f"qa/changes/{change_id}/cases/reviews")
         body = contract_id.removeprefix("assurance.").removesuffix(".v1")
         feature, _, rest = body.partition(".agent.")
         family, _, job = rest.rpartition(".")
         if feature == "generation" and job in {"codegen", "codegen-fix"}:
             extra = (*extra, f"qa/changes/{change_id}/generated/{family}/files")
+        if feature == "generation" and job == "plan-review":
+            extra = (*extra, f"qa/changes/{change_id}/plan/{family}/reviews")
+        if feature == "generation" and job == "codegen-fix":
+            extra = (*extra, f"qa/changes/{change_id}/codegen/{family}/fixes")
+        if contract_id == "assurance.healing.agent.apply-test-repair.v1":
+            extra = (*extra, f"qa/changes/{change_id}/healing/epochs")
+        extra_set = set(extra)
+        extra = tuple(path for path in resolved.writes if path in extra_set)
         outputs = catalog.outputs(contract_id, change_id)
         assert outputs == tuple(path for path in resolved.writes if path not in extra)
         assert extra == tuple(path for path in resolved.writes if path not in outputs)

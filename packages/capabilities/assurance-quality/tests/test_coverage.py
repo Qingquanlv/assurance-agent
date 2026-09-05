@@ -107,10 +107,9 @@ async def test_combined_trace_and_gaps_exclude_old_tests(tmp_path: Path) -> None
     )
     assert outcome.status == "succeeded"
     payload = as_object(outcome.output)
-    assert [row["covering_tests"][0]["file"] for row in as_object(payload["trace"])["rows"]] == [
-        "tests/generated.py"
-    ]
-    CoverageGapsDocument.model_validate(payload["gaps"])
+    assert [row["covering_tests"] for row in as_object(payload["trace"])["rows"]] == [[]]
+    gaps = CoverageGapsDocument.model_validate(payload["gaps"])
+    assert tuple(item.kind for item in gaps.gaps) == ("uncovered_required_case",)
 
 
 @pytest.mark.asyncio
@@ -381,43 +380,6 @@ def test_constraint_auth_journey_slack_persist_source_digest() -> None:
     assert auth.source_digest == "deadbeef"
     assert journey.source_digest == "deadbeef"
     assert slack.source_digest == "deadbeef"
-
-
-@pytest.mark.parametrize(
-    ("measured", "threshold", "rounds_used", "rounds_budget", "signal", "expected"),
-    [
-        (0.91, 0.90, 0, 2, "measured", "satisfied"),
-        (0.90, 0.90, 0, 2, "measured", "satisfied"),
-        (0.40, 0.90, 0, 2, "measured", "repair_required"),
-        (0.40, 0.90, 0, 0, "measured", "exhausted"),
-        (0.40, 0.90, 1, 1, "measured", "exhausted"),
-        (0.40, 0.90, 2, 2, "measured", "exhausted"),
-        (0.40, 0.90, 0, 2, "needs_human", "needs_human"),
-        (0.95, 0.90, 0, 2, "needs_human", "needs_human"),
-        (0.40, 0.90, 0, 2, "inconclusive", "inconclusive"),
-        (0.95, 0.90, 0, 2, "inconclusive", "inconclusive"),
-    ],
-)
-def test_classify_coverage_state_table(
-    measured: float,
-    threshold: float,
-    rounds_used: int,
-    rounds_budget: int,
-    signal: str,
-    expected: str,
-) -> None:
-    from assurance_quality.contracts.coverage import classify_coverage_state
-
-    assert (
-        classify_coverage_state(
-            measured=measured,
-            threshold=threshold,
-            rounds_used=rounds_used,
-            rounds_budget=rounds_budget,
-            signal=signal,  # type: ignore[arg-type]
-        )
-        == expected
-    )
 
 
 def test_minimum_coverage_matrix_requires_structured_rows() -> None:

@@ -41,6 +41,9 @@ _BUNDLE_TYPES: Mapping[str, type] = {
     "assurance.healing": HealingGraphs,
     "assurance.improvement": ImprovementGraphs,
 }
+_FORBIDDEN_PRODUCT_TAIL_NODES = frozenset(
+    {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +97,7 @@ def build_thin_entrypoint_graphs(
 ) -> ThinEntrypointGraphs:
     bundles = coerce_feature_bundles(features)
     entrypoints = {
-        "intake": build_intake_root(context, bundles.intake.prepare),
+        "intake": build_intake_root(context, bundles.intake.prepare, bundles.intake.case),
         "case": build_case_root(context, bundles.intake.case),
         "archive": build_archive_root(context, bundles.improvement.archive),
         "retro": build_retro_root(context, bundles.improvement.retro),
@@ -140,7 +143,7 @@ def build_product_graphs(
     context: GraphBuildContext,
     features: Mapping[str, object],
 ) -> ProductGraphs:
-    from assurance_product.graphs.execute import build_execute_root
+    from assurance_product.graphs.execute import build_execute_root, build_execute_tail
     from assurance_product.graphs.full import build_full_root
 
     bundles = coerce_feature_bundles(features)
@@ -148,8 +151,11 @@ def build_product_graphs(
     thin_names = tuple(thin.entrypoints)
     if len(thin_names) != len(set(thin_names)):
         raise ValueError("duplicate product roots")
-    execute = build_execute_root(context, bundles)
-    execute_tail = build_execute_root(context, bundles)
+    execute_tail = build_execute_tail(bundles)
+    stale_tail_nodes = _FORBIDDEN_PRODUCT_TAIL_NODES.intersection(execute_tail.nodes)
+    if stale_tail_nodes:
+        raise ValueError(f"obsolete Product coverage nodes are reachable: {sorted(stale_tail_nodes)}")
+    execute = build_execute_root(context, bundles, execute_tail)
     full = build_full_root(context, bundles, execute_tail)
     entrypoints = {
         **dict(thin.entrypoints),

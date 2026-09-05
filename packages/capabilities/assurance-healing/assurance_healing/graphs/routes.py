@@ -81,8 +81,28 @@ def route_admit_coverage(state: Mapping[str, object]) -> str:
 
 def failure_status_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     current = state.get("status")
-    repaired = current == "repaired" or (current is None and state.get("kind") == "failure")
-    return {"repaired": "done" if repaired else None}
+    return {
+        "applied": "done" if current == "applied" else None,
+        "needs_review": "needs-review" if current == "needs_review" else None,
+        "not_eligible": "not-eligible" if current == "not_eligible" else None,
+        "exhausted": "exhausted" if current == "exhausted" else None,
+        "failed": "failed" if current == "failed" else None,
+    }
+
+
+def route_proposal_status(state: Mapping[str, object]) -> str:
+    return "failed" if state.get("attempt_failure") else "approval"
+
+
+def route_proposal_approval(state: Mapping[str, object]) -> str:
+    approved = state.get("human_action") == "approve" and isinstance(state.get("approval_ref"), Mapping)
+    return select_exclusive_route(
+        {
+            "apply": "healing.apply-test-repair" if approved else None,
+            "review": "needs-review" if not approved else None,
+        },
+        otherwise="needs-review",
+    )
 
 
 def route_coverage_status(state: Mapping[str, object]) -> str:
@@ -93,6 +113,9 @@ def route_coverage_status(state: Mapping[str, object]) -> str:
 
 def route_failure_status(state: Mapping[str, object]) -> str:
     if state.get("attempt_failure"):
+        failure = state.get("attempt_failure")
+        if isinstance(failure, Mapping) and failure.get("kind") == "invalid_output":
+            return "needs-review"
         return _STATUS_OTHERWISE
     return select_exclusive_route(failure_status_named_matches(state), otherwise=_STATUS_OTHERWISE)
 
@@ -106,4 +129,6 @@ __all__ = [
     "route_admit_failure",
     "route_coverage_status",
     "route_failure_status",
+    "route_proposal_approval",
+    "route_proposal_status",
 ]

@@ -12,12 +12,14 @@ from assurance_improvement.graphs.nodes import (
     activation_one_shot,
     assemble_analyses,
     publish_collect,
+    publish_build_slices,
     publish_eval_analysis,
     publish_issue_analysis,
     publish_reconcile,
     publish_retro,
     publish_workflow_analysis,
     select_collect,
+    select_build_slices,
     select_eval_analysis,
     select_issue_analysis,
     select_reconcile,
@@ -30,6 +32,7 @@ from assurance_improvement.graphs.routes import route_committed
 from assurance_improvement.graphs.state import ImprovementState
 
 _COLLECT_ID = "assurance.improvement.task.retro-collect-v3"
+_BUILD_SLICES_ID = "assurance.improvement.retro-build-slices"
 _RECONCILE_ID = "assurance.improvement.task.reconcile-improvements"
 _EVAL_ID = "assurance.improvement.agent.retro-eval-analysis.v1"
 _ISSUE_ID = "assurance.improvement.agent.retro-issue-analysis.v1"
@@ -61,6 +64,19 @@ def _attempt(
 
 def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     builder: StateGraph[ImprovementState] = StateGraph(ImprovementState)
+    builder.add_node(
+        "improvement.retro-build-slices",
+        cast(
+            Callable[..., Any],
+            _attempt(
+                context,
+                _BUILD_SLICES_ID,
+                "improvement.retro-build-slices",
+                select_build_slices,
+                publish_build_slices,
+            ),
+        ),
+    )
     builder.add_node(
         "improvement.retro-collect",
         cast(
@@ -125,7 +141,12 @@ def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
     )
     builder.add_node("done", cast(Callable[..., Any], terminal_done))
     builder.add_node("failed", cast(Callable[..., Any], terminal_failed))
-    builder.add_edge(START, "improvement.retro-collect")
+    builder.add_edge(START, "improvement.retro-build-slices")
+    builder.add_conditional_edges(
+        "improvement.retro-build-slices",
+        cast(Callable[..., Any], route_committed),
+        {"done": "improvement.retro-collect", "failed": "failed"},
+    )
     builder.add_conditional_edges(
         "improvement.retro-collect", cast(Callable[..., Any], route_committed), _AFTER_COLLECT
     )

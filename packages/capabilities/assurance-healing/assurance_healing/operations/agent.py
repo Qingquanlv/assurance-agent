@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
+from agent_runtime_contracts import (
+    AgentRunRequest,
+    AgentRunResult,
+    AgentWorkspaceV1,
+    InstructionPart,
+    ResultContract,
+)
 from agent_runtime_contracts.schema import canonical_digest
-from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
+from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -30,7 +37,6 @@ from assurance_healing.operations.common import (
     failed_output,
     validate_input,
 )
-from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.resource_loader import resource_bytes, resource_text
 
 FIX_PROPOSAL_SKILL = "skills/aa-fix-proposal/SKILL.md"
@@ -178,30 +184,34 @@ def _require_prepare_lock(payload: AgentFinalizeInputV1) -> None:
         raise InputError("finalize digests do not match the locked prepare payload")
 
 
-def _authenticate_approval(payload: AgentFinalizeInputV1, proposal: FixProposalResultV1) -> None:
-    if not payload.require_approval:
-        return
-    if payload.approval is None:
-        raise InputError("require_approval requires an authenticated approval binding")
-    proposal_digest = engine_digest(proposal.model_dump(mode="json"))
-    expected = derive_approval_id(
-        owner_id=payload.owner_id,
-        candidate_digest=payload.prepare.candidate_digest,
-        baseline_digest=payload.prepare.baseline_digest,
-        policy_digest=payload.prepare.policy_digest,
-        proposal_digest=proposal_digest,
-    )
-    approval = payload.approval
-    if (
-        approval.approval_id != expected
-        or approval.baseline_digest != payload.prepare.baseline_digest
-        or approval.candidate_digest != payload.prepare.candidate_digest
-        or approval.policy_digest != payload.prepare.policy_digest
-        or approval.proposal_digest != proposal_digest
-        or approval.change_id != payload.prepare.change_id
-        or approval.owner_id != payload.prepare.owner_id
-    ):
-        raise InputError("approval binding is not authentic")
+def _fix_proposal_finalize_payload(
+    data: object,
+) -> tuple[FixProposalInputV1, AgentRunResult, tuple[str, ...], bool]:
+    try:
+        legacy = validate_input(AgentFinalizeInputV1, data)
+    except InputError:
+        legacy = None
+    if legacy is not None:
+        _require_prepare_lock(legacy)
+        business = FixProposalInputV1.model_validate(
+            {name: getattr(legacy, name) for name in FixProposalInputV1.model_fields}
+        )
+        return business, legacy.agent_result, legacy.artifact_paths, False
+    if not isinstance(data, Mapping):
+        raise InputError("fix proposal finalize input must be an object")
+    validated = data.get("validated_input")
+    agent_result = data.get("agent_result")
+    if not isinstance(validated, Mapping) or agent_result is None:
+        raise InputError("fix proposal finalize input is missing its validated input")
+    try:
+        return (
+            FixProposalInputV1.model_validate(validated),
+            AgentRunResult.model_validate(agent_result),
+            (),
+            True,
+        )
+    except ValidationError as error:
+        raise InputError(str(error)) from error
 
 
 def _brief_locator_ids(brief: CoverageRepairBrief) -> set[str]:
@@ -235,38 +245,47 @@ class FixProposalPrepareHandler:
 class FixProposalFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(AgentFinalizeInputV1, request.input)
-            _require_prepare_lock(payload)
-            unknown = [item for item in payload.claimed_capabilities if item not in payload.capability_leafs]
+            business, agent_result, artifact_paths, installed_envelope = _fix_proposal_finalize_payload(
+                request.input
+            )
+            unknown = [
+                item for item in business.claimed_capabilities if item not in business.capability_leafs
+            ]
             if unknown:
                 raise OutputError(f"unknown capability: {unknown[0]}")
             try:
-                proposal = FixProposalResultV1.model_validate(
-                    _structured(payload.agent_result.result_payload)
-                )
+                proposal = FixProposalResultV1.model_validate(_structured(agent_result.result_payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
-            if proposal.change_id != payload.change_id:
+            if proposal.change_id != business.change_id:
                 raise OutputError("proposal change_id does not match the locked change")
-            _authenticate_approval(payload, proposal)
-            allowed = set(payload.allowed_paths) | set(payload.mapping_paths)
-            mapping_targets = {entry.target_file for entry in payload.mapping.entries}
+            allowed = set(business.allowed_paths)
             for item in proposal.proposals:
                 if not item.eligible:
                     continue
                 if not item.files_to_modify:
                     raise OutputError("eligible proposal requires files_to_modify")
                 for path in item.files_to_modify:
-                    if (
-                        path not in allowed
-                        or path not in mapping_targets
-                        or not _under_root(path, payload.allowed_roots)
-                    ):
+                    if path not in allowed or not _under_root(path, business.allowed_roots):
                         raise OutputError(f"undeclared target file: {path}")
                     _workspace_file(context.project_root, path)
-            if payload.artifact_paths:
-                for path in payload.artifact_paths:
+            if artifact_paths:
+                for path in artifact_paths:
                     _workspace_file(context.project_root, path)
+            if installed_envelope:
+                relative = f"qa/changes/{business.change_id}/healing/fix-proposal.json"
+                staged = _workspace_file(context.write_root, relative)
+                try:
+                    staged_proposal = FixProposalResultV1.model_validate(
+                        json.loads(staged.read_text(encoding="utf-8"))
+                    )
+                except (OSError, json.JSONDecodeError, ValidationError) as error:
+                    raise OutputError("staged fix proposal is not the typed agent result") from error
+                if staged_proposal != proposal:
+                    raise OutputError("staged fix proposal differs from the typed agent result")
+                expected = canonical_json_bytes(cast(JSONValue, proposal.model_dump(mode="json"))) + b"\n"
+                if staged.read_bytes() != expected:
+                    raise OutputError("staged fix proposal must use canonical JSON bytes")
             return TaskOutcome.succeeded(cast(JSONValue, proposal.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)

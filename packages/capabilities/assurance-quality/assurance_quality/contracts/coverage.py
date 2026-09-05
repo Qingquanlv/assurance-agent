@@ -13,6 +13,9 @@ from typing import Any, Literal, Self, get_args
 from pydantic import BaseModel, ConfigDict, RootModel, field_validator, model_validator
 
 from assurance_intake.contracts import NonEmptyStr
+from assurance_quality.contracts.goal_policy import ActiveCoverageScopeV1, CoverageGoalPolicyV1
+from assurance_quality.contracts.metrics import MetricsDocument
+from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -33,21 +36,41 @@ CoverageSignal = Literal["inconclusive", "measured", "needs_human"]
 
 def classify_coverage_state(
     *,
-    measured: float,
-    threshold: float,
-    rounds_used: int,
-    rounds_budget: int,
-    signal: CoverageSignal = "measured",
+    metrics: MetricsDocument,
+    sufficiency: TraceSufficiencyFacts,
+    scope: ActiveCoverageScopeV1,
+    policy: CoverageGoalPolicyV1,
 ) -> CoverageState:
-    if signal == "needs_human":
-        return "needs_human"
-    if signal == "inconclusive":
+    identity_matches = metrics.change_id == sufficiency.change_id == scope.change_id
+    policy_matches = (
+        metrics.policy_digest == scope.policy_digest and sufficiency.policy_digest == scope.policy_digest
+    )
+    if (
+        not identity_matches
+        or not policy_matches
+        or sufficiency.error_code is not None
+        or sufficiency.integrity_blocks_routing
+        or sufficiency.integrity == "incomplete"
+        or not sufficiency.authoritative_batch_id
+        or metrics.risk_tier != scope.risk_tier
+    ):
         return "inconclusive"
-    if measured >= threshold:
-        return "satisfied"
-    if rounds_budget <= 0 or rounds_used >= rounds_budget:
-        return "exhausted"
-    return "repair_required"
+    if sufficiency.has_open_problems:
+        return "inconclusive"
+    required = set(scope.required_case_ids)
+    insufficient = {item.case_id for item in sufficiency.insufficient_cases}
+    if not insufficient <= required:
+        return "inconclusive"
+    if not sufficiency.sufficient or insufficient:
+        return "repair_required"
+    floor = policy.floor_for(scope.risk_tier)
+    for goal in scope.applicable_goals:
+        entry = metrics.metrics[goal]
+        if entry.status != "evaluated" or entry.value is None or entry.declared is None:
+            return "inconclusive"
+        if entry.value < floor:
+            return "repair_required"
+    return "satisfied"
 
 
 # Closed vocabulary — unknown kinds fail validation (fail-closed).

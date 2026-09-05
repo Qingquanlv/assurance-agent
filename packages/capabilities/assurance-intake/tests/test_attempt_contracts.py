@@ -47,7 +47,7 @@ EXPECTED_AGENT_COUNTS = {
     "assurance.generation": 14,
     "assurance.execution": 2,
     "assurance.quality": 5,
-    "assurance.healing": 2,
+    "assurance.healing": 3,
     "assurance.improvement": 6,
 }
 
@@ -70,6 +70,16 @@ _PURE_IDS = frozenset(
 )
 
 
+def test_review_history_identity_includes_epoch() -> None:
+    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    pattern = "qa/changes/{change_id}/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    assert pattern in OUTPUT_ROUTE_TEMPLATES["case-review"]
+    first = pattern.format(change_id="CH-1", coverage_epoch=0, review_round=0)
+    second = pattern.format(change_id="CH-1", coverage_epoch=1, review_round=0)
+    assert first != second
+
+
 def test_feature_agent_counts_are_frozen() -> None:
     catalogs = {
         "assurance.intake": AGENT_JOB_CONTRACTS,
@@ -82,7 +92,7 @@ def test_feature_agent_counts_are_frozen() -> None:
     for owner, expected in EXPECTED_AGENT_COUNTS.items():
         assert len(catalogs[owner]) == expected
         assert all(contract.owner_id == owner for contract in catalogs[owner].values())
-    assert sum(EXPECTED_AGENT_COUNTS.values()) == 33
+    assert sum(EXPECTED_AGENT_COUNTS.values()) == 34
 
 
 def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> None:
@@ -195,11 +205,11 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert contract.validators == ()
         effectful += 1
     assert registered == 25
-    assert effectful == 41
+    assert effectful == 43
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 
-def test_semantic_agent_contracts_are_thirty_three() -> None:
+def test_semantic_agent_contracts_are_thirty_four() -> None:
     catalogs = (
         AGENT_JOB_CONTRACTS,
         GENERATION_AGENT_JOBS,
@@ -208,7 +218,7 @@ def test_semantic_agent_contracts_are_thirty_three() -> None:
         HEALING_AGENT_JOBS,
         IMPROVEMENT_AGENT_JOBS,
     )
-    assert sum(len(catalog) for catalog in catalogs) == 33
+    assert sum(len(catalog) for catalog in catalogs) == 34
 
 
 def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:

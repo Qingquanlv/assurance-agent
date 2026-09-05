@@ -588,6 +588,14 @@ def test_raw_executor_uses_three_disjoint_staging_phases(raw_executor_fixture) -
     )
 
 
+def test_phase_write_claims_cover_descendant_files() -> None:
+    from agent_runtime_contracts.attempt_executor import _covered_by_claims
+
+    claims = {"qa/changes/CH-1/generated"}
+    assert _covered_by_claims("qa/changes/CH-1/generated/api/files/tests/test_a.py", claims)
+    assert not _covered_by_claims("qa/changes/CH-1/cases/api/case.yaml", claims)
+
+
 def test_raw_executor_persists_phase_deltas_into_host_receipt(
     raw_executor_fixture: _RawExecutorFixture,
 ) -> None:

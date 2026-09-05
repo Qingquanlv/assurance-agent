@@ -32,6 +32,7 @@ class ImprovementState(CheckpointBridgeState, total=False):
     artifact_paths: list[str]
     owned_evidence_ids: list[str]
     evidence_refs: list[dict[str, str]]
+    source_refs: list[dict[str, str]]
     lifecycle_state: str
     source_manifest: dict[str, object]
     context_digest: str

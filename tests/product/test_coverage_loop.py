@@ -1,218 +1,81 @@
 from __future__ import annotations
 
-import pytest
+from typing import cast
 
-from tests.product.execution_loop import (
-    assert_each_coverage_repair_is_preceded_by_one_advance,
-    bind_installed_sources,
-    completed_node_ids,
-    drive_coverage_loop,
-    execute_tail_coverage_state,
+from assurance_intake.graphs.factory import IntakeGraphs
+from assurance_product.graphs.factory import invoke_product_root
+from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
+
+from tests.product.test_product_stategraph_flow import (
+    _case,
+    _execution,
+    _flow_features,
+    _generation,
+    _inspection,
+    _product_graphs,
+    _public_input,
+    _report,
 )
 
-pytestmark = pytest.mark.usefixtures("installed_sources", "product_runner")
 
-
-@pytest.fixture(autouse=True)
-def _bind_sources(installed_sources) -> None:
-    bind_installed_sources(installed_sources)
-
-
-def test_low_coverage_reenters_generation_until_policy_passes(product_runner):
-    trace = product_runner(coverage_sequence=(0.40, 0.72, 0.91), threshold=0.90).run_to_report()
-    assert trace.activations("assurance.healing.coverage-repair") == 2
-    assert trace.report.coverage == 0.91
-    assert trace.status == "succeeded"
-    assert trace.report.exists
-
-
-def test_coverage_repair_exhaustion_stops_with_a_report(product_runner):
-    trace = product_runner(
-        coverage_sequence=(0.40, 0.41, 0.42),
-        threshold=0.90,
-        coverage_rounds=1,
-    ).run_to_report()
-    assert trace.activations("assurance.healing.coverage-repair") == 1
-    assert trace.status in {"stopped", "succeeded"}
-    assert trace.report.exists
-    assert "quality.report" in trace.logical_steps
-
-
-def test_measured_above_threshold_is_satisfied_without_repair() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("satisfied",),
-        measured_sequence=(0.91,),
-        coverage_rounds=2,
+def test_coverage_insufficient_reenters_the_shared_case_flow() -> None:
+    features = _flow_features(
+        case=(_case(0), _case(1)),
+        generation=(_generation(0), _generation(1)),
+        execute=(_execution(0), _execution(1)),
+        assess=(_inspection(0, "coverage_insufficient"), _inspection(1)),
+        report=_report(1),
     )
-    assert "quality.assess" in trace.public_exports
-    assert "healing.repair-coverage" not in trace.public_exports
-    assert trace.advance_outputs == ()
-    assert trace.terminal != "not-achieved"
-    assert "quality.report" in trace.public_exports
+    result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
+    assert result["terminal"] == "achieved"
+    assert result["coverage_epoch"] == 1
+    assert result["case_rework_context"]["previous_case"]["coverage_epoch"] == 0
+    assert result["reviewed_case"]["coverage_epoch"] == 1
 
 
-def test_measured_equal_threshold_is_satisfied_without_repair() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("satisfied",),
-        measured_sequence=(0.90,),
-        threshold=0.90,
-        coverage_rounds=2,
+def test_exhausted_coverage_budget_stops_without_report_or_retro() -> None:
+    result = invoke_product_root(
+        _product_graphs(_flow_features(assess=_inspection(0, "coverage_insufficient"))),
+        "full",
+        _public_input(
+            "full",
+            budgets={
+                "review_rounds": 2,
+                "coverage_rounds": 0,
+                "healing_rounds": 1,
+                "execution_retries": 1,
+            },
+        ),
     )
-    assert "healing.repair-coverage" not in trace.public_exports
-    assert trace.advance_outputs == ()
-    assert "quality.report" in trace.public_exports
+    assert result["terminal"] == "not-achieved"
+    assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "coverage_insufficient"
+    assert result.get("report_outcome") in (None, {})
+    assert "projection" not in result
 
 
-def test_below_threshold_with_budget_repairs_then_reassesses() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("repair_required", "satisfied"),
-        repair_statuses=("repaired",),
-        measured_sequence=(0.40, 0.91),
-        coverage_rounds=2,
-    )
-    assert "healing.repair-coverage" in trace.public_exports
-    assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert trace.advance_outputs == ({"kind": "coverage", "rounds_used": 1, "rounds_budget": 2},)
-    assert "quality.report" in trace.public_exports
-    assert trace.terminal != "not-achieved"
+def test_compiled_product_graph_has_no_coverage_repair_route() -> None:
+    graphs = _product_graphs()
+    full = graphs.entrypoints["full"]
+    tail_node = full.nodes["execute-tail"]
+    runnable = getattr(tail_node, "runnable", tail_node)
+    nested = getattr(runnable, "bound", runnable)
+    nodes = getattr(nested, "nodes", None)
+    if nodes is None:
+        inner = getattr(runnable, "afunc", None) or getattr(runnable, "func", None)
+        nodes = getattr(inner, "nodes", {})
+    assert not {
+        "coverage-repair",
+        "coverage-repair-brief",
+        "quality-recheck",
+        "coverage-needed",
+    }.intersection(nodes)
+    assert "advance-coverage" in full.nodes
 
 
-def test_zero_budget_is_exhausted_without_advance_or_repair() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("exhausted",),
-        measured_sequence=(0.40,),
-        coverage_rounds=0,
-    )
-    assert "healing.repair-coverage" not in trace.public_exports
-    assert trace.advance_outputs == ()
-    assert not any(item.endswith("coverage-repair.finalize") for item in trace.task_capabilities)
-    assert not any(item.endswith("repair-round.advance") for item in trace.task_capabilities)
-    assert trace.terminal != "achieved"
-
-
-def test_exhausted_budget_does_not_dispatch_another_repair() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("repair_required", "exhausted"),
-        repair_statuses=("repaired",),
-        measured_sequence=(0.40, 0.41),
-        coverage_rounds=1,
-    )
-    assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert tuple(item["rounds_used"] for item in trace.advance_outputs) == (1,)
-    assert all(item["kind"] == "coverage" for item in trace.advance_outputs)
-    assert all(int(item["rounds_used"]) <= int(item["rounds_budget"]) for item in trace.advance_outputs)
-    assert trace.terminal != "achieved"
-    assert "quality.report" in trace.public_exports
-
-
-def test_needs_human_interrupts_without_repair() -> None:
-    trace = drive_coverage_loop(coverage_states=("needs_human",), measured_sequence=(0.40,))
-    assert "healing.repair-coverage" not in trace.public_exports
-    assert trace.advance_outputs == ()
-    assert trace.status == "interrupted"
-    assert trace.terminal != "achieved"
-
-
-def test_inconclusive_reports_without_reaching_achieved() -> None:
-    trace = drive_coverage_loop(coverage_states=("inconclusive",), measured_sequence=(0.40,))
-    assert "healing.repair-coverage" not in trace.public_exports
-    assert trace.advance_outputs == ()
-    assert "quality.report" in trace.public_exports
-    assert trace.terminal != "achieved"
-
-
-@pytest.mark.parametrize("status", ["not_eligible", "exhausted", "failed"])
-def test_non_repaired_coverage_outcome_is_explicit_non_achieved(status: str) -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("repair_required",),
-        repair_statuses=(status,),
-        measured_sequence=(0.40,),
-        coverage_rounds=2,
-    )
-    assert "healing.repair-coverage" in trace.public_exports
-    assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert tuple(item["rounds_used"] for item in trace.advance_outputs) == (1,)
-    assert "quality.report" in trace.public_exports
-    assert trace.terminal != "achieved"
-
-
-def test_needs_review_interrupts_after_authenticated_advance() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("repair_required",),
-        repair_statuses=("needs_review",),
-        measured_sequence=(0.40,),
-        coverage_rounds=2,
-    )
-    assert "healing.repair-coverage" in trace.public_exports
-    assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert trace.advance_outputs == ({"kind": "coverage", "rounds_used": 1, "rounds_budget": 2},)
-    assert trace.status == "interrupted"
-    assert trace.terminal != "achieved"
-
-
-def test_repaired_rounds_are_monotonic_and_never_exceed_budget() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("repair_required", "repair_required", "satisfied"),
-        repair_statuses=("repaired", "repaired"),
-        measured_sequence=(0.40, 0.72, 0.91),
-        coverage_rounds=2,
-    )
-    used = tuple(item["rounds_used"] for item in trace.advance_outputs)
-    assert used == (1, 2)
-    assert used == tuple(sorted(used))
-    assert all(item["kind"] == "coverage" for item in trace.advance_outputs)
-    assert all(int(item["rounds_used"]) <= int(item["rounds_budget"]) == 2 for item in trace.advance_outputs)
-    assert_each_coverage_repair_is_preceded_by_one_advance(trace.task_capabilities)
-    assert "quality.report" in trace.public_exports
-
-
-@pytest.mark.parametrize(
-    ("coverage_states", "repair_statuses", "coverage_rounds", "terminal", "assess_state"),
-    [
-        (("satisfied",), (), 2, "achieved", "satisfied"),
-        (("repair_required", "satisfied"), ("repaired",), 2, "achieved", "satisfied"),
-        (("exhausted",), (), 0, "not-achieved", "exhausted"),
-        (("repair_required", "exhausted"), ("repaired",), 1, "not-achieved", "exhausted"),
-        (("inconclusive",), (), 1, "not-achieved", "inconclusive"),
-        (("repair_required",), ("failed",), 2, "not-achieved", "repair_required"),
-        (("repair_required",), ("not_eligible",), 2, "not-achieved", "repair_required"),
-        (("repair_required",), ("exhausted",), 2, "not-achieved", "repair_required"),
-    ],
-)
-def test_full_retro_and_achieved_require_fresh_assess_satisfied(
-    coverage_states: tuple[str, ...],
-    repair_statuses: tuple[str, ...],
-    coverage_rounds: int,
-    terminal: str,
-    assess_state: str,
-) -> None:
-    trace = drive_coverage_loop(
-        coverage_states=coverage_states,
-        repair_statuses=repair_statuses,
-        coverage_rounds=coverage_rounds,
-        measured_sequence=(0.40, 0.41, 0.91)[: max(len(coverage_states), 1)],
-        entrypoint="full",
-    )
-    nodes = completed_node_ids(trace.projection)
-    assert execute_tail_coverage_state(trace.projection) == assess_state
-    assert trace.terminal == terminal
-    if terminal == "achieved":
-        assert "retro" in nodes
-        assert "achieved" in nodes
-        return
-    assert "retro" not in nodes
-    assert "achieved" not in nodes
-
-
-def test_full_needs_human_does_not_reach_achieved() -> None:
-    trace = drive_coverage_loop(
-        coverage_states=("needs_human",),
-        measured_sequence=(0.40,),
-        entrypoint="full",
-    )
-    nodes = completed_node_ids(trace.projection)
-    assert trace.status == "interrupted"
-    assert trace.terminal != "achieved"
-    assert "retro" not in nodes
-    assert "achieved" not in nodes
-    assert execute_tail_coverage_state(trace.projection) is None
+def test_same_case_graph_object_handles_initial_and_rework_inputs() -> None:
+    features = _flow_features()
+    intake = cast(IntakeGraphs, features["assurance.intake"])
+    graphs = _product_graphs(features)
+    assert graphs.entrypoints["full"].nodes["case"] is not None
+    assert intake.case is not None
+    assert set(graphs.entrypoints["full"].nodes).isdisjoint({"case-rework", "coverage-case"})
