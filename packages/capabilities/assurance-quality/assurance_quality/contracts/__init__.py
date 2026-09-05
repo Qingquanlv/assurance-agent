@@ -26,6 +26,12 @@ from assurance_quality.contracts.coverage import (
     MinimumCoverageResult,
     MinimumCoverageSummary,
 )
+from assurance_quality.contracts.goal_policy import (
+    ActiveCoverageScopeV1,
+    CoverageFloorsV1,
+    CoverageGoalPolicyV1,
+    SufficiencyPolicyV1,
+)
 from assurance_quality.contracts.inspect import (
     FailureAnalysis,
     QualityGateResult,
@@ -106,6 +112,9 @@ __all__ = [
     "CoverageGap",
     "CoverageGapLocator",
     "CoverageGapsDocument",
+    "ActiveCoverageScopeV1",
+    "CoverageFloorsV1",
+    "CoverageGoalPolicyV1",
     "FactBaseline",
     "FactBaselineAuthoring",
     "FactBaselineFull",
@@ -139,6 +148,7 @@ __all__ = [
     "QuarantineEntry",
     "QuarantineProjection",
     "SufficiencyReportV2",
+    "SufficiencyPolicyV1",
     "TraceProjection",
     "TraceProjectionDocument",
     "TraceProjectionV2",

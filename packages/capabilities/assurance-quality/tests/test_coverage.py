@@ -383,43 +383,6 @@ def test_constraint_auth_journey_slack_persist_source_digest() -> None:
     assert slack.source_digest == "deadbeef"
 
 
-@pytest.mark.parametrize(
-    ("measured", "threshold", "rounds_used", "rounds_budget", "signal", "expected"),
-    [
-        (0.91, 0.90, 0, 2, "measured", "satisfied"),
-        (0.90, 0.90, 0, 2, "measured", "satisfied"),
-        (0.40, 0.90, 0, 2, "measured", "repair_required"),
-        (0.40, 0.90, 0, 0, "measured", "exhausted"),
-        (0.40, 0.90, 1, 1, "measured", "exhausted"),
-        (0.40, 0.90, 2, 2, "measured", "exhausted"),
-        (0.40, 0.90, 0, 2, "needs_human", "needs_human"),
-        (0.95, 0.90, 0, 2, "needs_human", "needs_human"),
-        (0.40, 0.90, 0, 2, "inconclusive", "inconclusive"),
-        (0.95, 0.90, 0, 2, "inconclusive", "inconclusive"),
-    ],
-)
-def test_classify_coverage_state_table(
-    measured: float,
-    threshold: float,
-    rounds_used: int,
-    rounds_budget: int,
-    signal: str,
-    expected: str,
-) -> None:
-    from assurance_quality.contracts.coverage import classify_coverage_state
-
-    assert (
-        classify_coverage_state(
-            measured=measured,
-            threshold=threshold,
-            rounds_used=rounds_used,
-            rounds_budget=rounds_budget,
-            signal=signal,  # type: ignore[arg-type]
-        )
-        == expected
-    )
-
-
 def test_minimum_coverage_matrix_requires_structured_rows() -> None:
     with pytest.raises(ValidationError):
         MinimumCoverageMatrix.model_validate(

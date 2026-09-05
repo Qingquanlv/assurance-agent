@@ -12,6 +12,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts import RiskTier
+from assurance_intake.contracts.cases import CaseEntryAuthoring
 from assurance_quality.contracts.metrics import (
     METRIC_KEYS,
     MetricEntry,
@@ -72,6 +73,48 @@ class BoundRisk:
 
 def _rank(tier: RiskTier) -> int:
     return ("low", "medium", "high", "critical").index(tier)
+
+
+_PRIORITY_BOUND: Mapping[str, RiskTier] = {
+    "P0": "critical",
+    "P1": "high",
+    "P2": "medium",
+    "P3": "low",
+}
+_SEVERITY_BOUND: Mapping[str, RiskTier] = {
+    "blocker": "critical",
+    "critical": "high",
+    "major": "medium",
+    "minor": "low",
+}
+
+
+def resolve_case_risk(cases: tuple[CaseEntryAuthoring, ...]) -> BoundRisk:
+    if not cases:
+        raise ValueError("risk resolution requires at least one reviewed Case")
+    lower_bound: RiskTier = "low"
+    declared: RiskTier = "low"
+    lowered: list[RiskDeclarationLowered] = []
+    for case in cases:
+        case_bound = max(
+            (_PRIORITY_BOUND[case.priority], _SEVERITY_BOUND[case.severity]),
+            key=_rank,
+        )
+        lower_bound = max((lower_bound, case_bound), key=_rank)
+        declared = max((declared, case.risk.level), key=_rank)
+        if _rank(case.risk.level) < _rank(case_bound):
+            lowered.append(
+                RiskDeclarationLowered(
+                    case_id=case.case_id,
+                    declared=case.risk.level,
+                    lower_bound=case_bound,
+                )
+            )
+    return BoundRisk(
+        lower_bound=lower_bound,
+        declared=declared,
+        lowered=tuple(sorted(lowered, key=lambda item: item.case_id)),
+    )
 
 
 class RiskInput(BaseModel):
