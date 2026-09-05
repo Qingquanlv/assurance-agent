@@ -13,6 +13,7 @@ from typing import Any, Literal, Self, get_args
 from pydantic import BaseModel, ConfigDict, RootModel, field_validator, model_validator
 
 from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts.quality_goals import MrcCategory, MrcLayer
 from assurance_quality.contracts.goal_policy import ActiveCoverageScopeV1, CoverageGoalPolicyV1
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
@@ -199,8 +200,6 @@ Unknown closed-key citations are mechanical findings via
 ``mrc_closed_key_findings`` — they do not rewrite the join.
 """
 
-MrcCategory = Literal["api", "e2e", "e2e_if_enabled", "negative", "data_integrity"]
-MrcLayer = Literal["api", "e2e", "both"]
 MrcItemStatus = Literal[
     "covered",
     "covered_but_failing",
