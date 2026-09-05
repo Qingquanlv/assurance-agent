@@ -30,6 +30,7 @@ class PlanRoundInbox(TypedDict):
 
 
 class FamilyLaneResult(TypedDict):
+    coverage_epoch: int
     family: str
     receipt_id: str
     selected: bool
@@ -66,12 +67,14 @@ def make_plan_round_arrival(
 
 def make_family_lane_result(
     *,
+    coverage_epoch: int = 0,
     family: str,
     receipt_id: str,
     selected: bool,
     status: str,
 ) -> FamilyLaneResult:
     return {
+        "coverage_epoch": coverage_epoch,
         "family": family,
         "receipt_id": receipt_id,
         "selected": selected,
@@ -157,13 +160,17 @@ def _as_results(raw: object) -> list[FamilyLaneResult]:
 
 
 def merge_family_results(left: object, right: object) -> list[FamilyLaneResult]:
-    by_key: dict[tuple[str, str], FamilyLaneResult] = {}
+    by_key: dict[tuple[int, str, str], FamilyLaneResult] = {}
     for item in [*_as_results(left), *_as_results(right)]:
-        by_key[(str(item["family"]), str(item["receipt_id"]))] = item
+        by_key[(int(item.get("coverage_epoch", 0)), str(item["family"]), str(item["receipt_id"]))] = item
     order = {name: index for index, name in enumerate(GENERATION_FAMILIES)}
     return sorted(
         by_key.values(),
-        key=lambda item: (order.get(str(item["family"]), 99), str(item["receipt_id"])),
+        key=lambda item: (
+            int(item.get("coverage_epoch", 0)),
+            order.get(str(item["family"]), 99),
+            str(item["receipt_id"]),
+        ),
     )
 
 
@@ -172,6 +179,9 @@ class FamilyLaneOutput(TypedDict, total=False):
 
 
 class GenerationState(CheckpointBridgeState, total=False):
+    coverage_epoch: int
+    reviewed_case: dict[str, object]
+    source_artifacts: list[dict[str, str]]
     change_id: str
     selected_test_families: list[str]
     capability_leafs: list[str]

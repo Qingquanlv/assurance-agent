@@ -32,6 +32,7 @@ from assurance_generation.operations.workflow_state import (
     GenerationCompleteHandler,
     GenerationReviewRoundAdvanceHandler,
 )
+from assurance_generation.operations.resolve_inputs import ResolveGenerationInputsHandler
 
 
 def planning_handlers() -> Mapping[str, TaskHandler]:
@@ -62,6 +63,7 @@ def generation_handlers() -> Mapping[str, TaskHandler]:
             **codegen_handlers(),
             GENERATION_COMPLETE_ID: GenerationCompleteHandler(),
             REVIEW_ROUND_ADVANCE_ID: GenerationReviewRoundAdvanceHandler(),
+            "assurance.generation.resolve-inputs.execute": ResolveGenerationInputsHandler(),
         }
     )
 
@@ -73,6 +75,7 @@ __all__ = [
     "GenerationCompleteHandler",
     "GenerationReviewRoundAdvanceHandler",
     "REVIEW_ROUND_ADVANCE_ID",
+    "ResolveGenerationInputsHandler",
     "CodegenFinalizeHandler",
     "CodegenFixFinalizeHandler",
     "CodegenFixPrepareHandler",

@@ -11,7 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 from pydantic import ValidationError
 
-from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_generation.contracts.decisions import GenerationReviewRoundAdvanceOutput, advance_review_round
 from assurance_generation.graphs.factory import build_generation_graphs
 from assurance_generation.graphs.nodes import (
@@ -33,7 +33,11 @@ _FAMILIES = ("api", "e2e", "fuzz", "performance")
 
 
 def _contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    contracts = {
+        contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
+    }
+    contracts.update({contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()})
+    return contracts
 
 
 def _input(family: str) -> dict[str, object]:
@@ -81,6 +85,24 @@ def _codegen(family: str) -> dict[str, object]:
     if family in {"api", "e2e"}:
         return {"schema_version": "2", "verdict": "accepted"}
     return {"schema_version": "1", "needs_fix": False}
+
+
+def _reviewed_case() -> dict[str, object]:
+    return {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 0,
+        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+        "case_refs": [
+            {
+                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "digest": _SHA,
+            }
+        ],
+        "review_ref": {
+            "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+            "digest": _SHA,
+        },
+    }
 
 
 def _family_graph(bundle: object, family: str) -> object:
@@ -379,6 +401,7 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt() -> None:
         harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
     )
     script: dict[str, list[AttemptResolution]] = {
+        "generation.resolve-inputs": [committed(_reviewed_case(), _RECEIPT)],
         "generation.api.plan": [committed(_plan(), _RECEIPT)],
         "generation.api.plan-review": [committed(_review("needs_human_review", human=True), _RECEIPT)],
         "generation.api.codegen": [committed(_codegen("api"), _RECEIPT)],
@@ -397,6 +420,8 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt() -> None:
         "allowed_artifact_paths": ["qa/changes"],
         "rounds_used": 0,
         "rounds_budget": 2,
+        "coverage_epoch": 0,
+        "reviewed_case": _reviewed_case(),
     }
     interrupted: object | None
     try:

@@ -9,9 +9,9 @@ import pytest
 
 from pydantic import ValidationError
 
-from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
-from assurance_generation.graphs.nodes import select_codegen_fix, terminal_done
+from assurance_generation.graphs.nodes import activation_codegen, select_codegen_fix, terminal_done
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.testing import GraphHarness, committed
@@ -38,8 +38,30 @@ _PURE_IDS = (
 _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_generation" / "graphs"
 
 
+def _reviewed_case() -> dict[str, object]:
+    return {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 0,
+        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+        "case_refs": [
+            {
+                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "digest": _SHA,
+            }
+        ],
+        "review_ref": {
+            "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+            "digest": _SHA,
+        },
+    }
+
+
 def generation_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    contracts = {
+        contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
+    }
+    contracts.update({contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()})
+    return contracts
 
 
 def generation_graph_input(
@@ -52,6 +74,8 @@ def generation_graph_input(
         "allowed_artifact_paths": ["qa/changes"],
         "rounds_used": 0,
         "rounds_budget": 2,
+        "coverage_epoch": 0,
+        "reviewed_case": _reviewed_case(),
     }
 
 
@@ -178,9 +202,12 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
-    assert len(recording_context.bound_contract_ids) == 14
-    assert len(unique) == 14
-    assert set(unique) == {contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()}
+    assert len(recording_context.bound_contract_ids) == 15
+    assert len(unique) == 15
+    assert set(unique) == {
+        *(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()),
+        *(contract.contract_id for contract in TASK_ATTEMPT_CONTRACTS.values()),
+    }
     assert all(item not in unique for item in _PURE_IDS)
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
 
@@ -216,6 +243,34 @@ def test_terminal_done_without_family_does_not_write_api_lane() -> None:
     update = terminal_done({"family_results": [skipped], "decision": "pass"})
     assert "family_results" not in update
     assert update.get("status") == "passed"
+
+
+def test_codegen_activation_changes_across_coverage_epochs() -> None:
+    state = {
+        "coverage_epoch": 0,
+        "family": "api",
+        "rounds_used": 0,
+        "reviewed_case": _reviewed_case(),
+    }
+    first = activation_codegen(state)
+    second = activation_codegen({**state, "coverage_epoch": 1})
+    assert first != second
+    assert activation_codegen(dict(state)) == first
+
+
+def test_codegen_activation_changes_when_same_case_path_has_new_bytes() -> None:
+    reviewed = _reviewed_case()
+    state = {
+        "coverage_epoch": 0,
+        "family": "api",
+        "rounds_used": 0,
+        "reviewed_case": reviewed,
+    }
+    changed = {
+        **reviewed,
+        "case_refs": [{**reviewed["case_refs"][0], "digest": "b" * 64}],  # type: ignore[index]
+    }
+    assert activation_codegen(state) != activation_codegen({**state, "reviewed_case": changed})
 
 
 def test_select_codegen_fix_fails_closed_without_published_fields() -> None:
@@ -398,6 +453,7 @@ async def test_root_done_does_not_overwrite_skipped_api_result() -> None:
         bundle.generation,
         input=generation_graph_input(selected=("e2e",)),
         script={
+            "generation.resolve-inputs": [committed(_reviewed_case(), receipt)],
             _semantic("e2e", "plan"): [committed(_plan_output(), receipt)],
             _semantic("e2e", "plan-review"): [committed(_review_output(), receipt)],
             _semantic("e2e", "codegen"): [committed(_codegen_output(), receipt)],

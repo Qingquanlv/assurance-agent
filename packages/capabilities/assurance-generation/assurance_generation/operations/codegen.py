@@ -51,6 +51,7 @@ from assurance_generation.operations.planning import (
     load_family_cases,
     resolve_family,
 )
+from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
 
@@ -203,12 +204,26 @@ def validate_codegen_input(
         leafs = leafs_of(business.capability_leafs)
     except ValidationError as error:
         raise InputError(str(error)) from error
+    if business.reviewed_case is not None:
+        try:
+            reviewed = authenticate_reviewed_case(
+                business.reviewed_case,
+                workspace,
+                change_id=business.change_id,
+                coverage_epoch=business.coverage_epoch,
+            )
+        except ValueError as error:
+            raise InputError(str(error)) from error
+        case_paths = tuple(item.path for item in reviewed.case_refs)
+    else:
+        case_paths = None
     if business.reviewed_cases is None:
         cases = load_family_cases(
             workspace,
             change_id=business.change_id,
             family=family,
             capability_leafs=business.capability_leafs,
+            case_paths=case_paths,
         )
     else:
         try:

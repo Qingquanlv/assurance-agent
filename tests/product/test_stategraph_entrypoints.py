@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
 from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
+from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS as GENERATION_TASKS
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS as HEALING_JOBS
 from assurance_healing.graphs.factory import HealingGraphs, build_healing_graphs
@@ -86,7 +87,10 @@ def _contracts_for(owner_id: str) -> dict[str, TaskAttemptContract[Any, Any]]:
     if owner_id == "assurance.intake":
         return _job_contracts(INTAKE_JOBS)
     if owner_id == "assurance.generation":
-        return _job_contracts(GENERATION_JOBS)
+        return {
+            **_job_contracts(GENERATION_JOBS),
+            **{task.contract_id: task for task in GENERATION_TASKS.values()},
+        }
     if owner_id == "assurance.execution":
         return _job_contracts(EXECUTION_JOBS)
     if owner_id == "assurance.quality":

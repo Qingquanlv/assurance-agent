@@ -421,8 +421,8 @@ def check_compile_ok(
         raise SystemExit(f"14 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
     if len(contracts) != 33:
         raise SystemExit(f"33 Agent contracts expected, found {len(contracts)}")
-    if len(contracts) + len(tasks) != 41:
-        raise SystemExit(f"41 Attempt contracts expected, found {len(contracts) + len(tasks)}")
+    if len(contracts) + len(tasks) != 42:
+        raise SystemExit(f"42 Attempt contracts expected, found {len(contracts) + len(tasks)}")
     if not callable(runtime_bindings_from_composition):
         raise SystemExit("runtime_bindings_from_composition is missing")
     if not callable(raw_agent_runtime_binding_rows):

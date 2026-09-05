@@ -38,9 +38,13 @@ _PLAN_PROFILE = "assurance-v1-doc-author"
 _CODEGEN_PROFILE = "assurance-v1-test-author"
 
 
-def test_generation_owns_fourteen_agent_contracts() -> None:
+def test_generation_owns_fourteen_agent_contracts_and_input_resolver() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 14
-    assert TASK_ATTEMPT_CONTRACTS == {}
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-inputs",)
+    resolver = TASK_ATTEMPT_CONTRACTS["resolve-inputs"]
+    assert resolver.contract_id == "assurance.generation.resolve-inputs"
+    assert resolver.handler_id == "assurance.generation.resolve-inputs.execute"
+    assert resolver.owner_id == "assurance.generation"
     for contract in AGENT_JOB_CONTRACTS.values():
         assert isinstance(contract, AgentExecutionContract)
         assert contract.owner_id == "assurance.generation"

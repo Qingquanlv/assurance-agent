@@ -7,12 +7,14 @@ from typing import Any, cast
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
+from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
 from assurance_generation.contracts.agent import CodegenFixInputV1, CodegenInputV1, PlanInputV1
 from assurance_generation.contracts.codegen import CodegenResultV1
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReview
+from assurance_generation.contracts.workflow import ResolveGenerationInputV1
+from assurance_intake.contracts.workflow import ReviewedCaseV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REVIEWER = "assurance-v1-reviewer"
@@ -178,10 +180,23 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {base: _paths(*outputs) for base, _skill, _profile, _input, _result, outputs in _JOBS}
 )
-TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
+_RESOLVE_INPUTS = TaskAttemptContract(
+    contract_id="assurance.generation.resolve-inputs",
+    owner_id="assurance.generation",
+    handler_id="assurance.generation.resolve-inputs.execute",
+    input_model=ResolveGenerationInputV1,
+    output_model=ReviewedCaseV1,
+    resources=ResourceClaims(reads=("qa",)),
+    retry=_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
+TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
+    {"resolve-inputs": _RESOLVE_INPUTS}
+)
 GENERATION_GRAPH_CONTRACT_IDS: tuple[str, ...] = tuple(
     contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()
-)
+) + (_RESOLVE_INPUTS.contract_id,)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -192,7 +207,7 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
                     contract_id=contract.contract_id,
                     digest=canonical_digest(cast(JSONValue, contract.canonical_projection())),
                 )
-                for contract in AGENT_JOB_CONTRACTS.values()
+                for contract in (*AGENT_JOB_CONTRACTS.values(), *TASK_ATTEMPT_CONTRACTS.values())
             ),
             key=lambda item: item.contract_id,
         )

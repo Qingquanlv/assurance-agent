@@ -28,6 +28,7 @@ from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
+from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 
 Family = LayerName
 FAMILIES: tuple[Family, ...] = LAYER_NAMES
@@ -282,13 +283,18 @@ def load_family_cases(
     change_id: str,
     family: Family,
     capability_leafs: tuple[str, ...],
+    case_paths: tuple[str, ...] | None = None,
 ) -> CaseYamlAuthoring:
     cases_root = _change_root(workspace, change_id) / "cases"
     if not cases_root.is_dir() or cases_root.is_symlink():
         raise InputError(f"reviewed case directory is missing: qa/changes/{change_id}/cases")
     selected: dict[str, list[object]] = {"added": [], "modified": []}
     schema_versions: set[str] = set()
-    paths = tuple(sorted(cases_root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
+    paths = (
+        tuple(workspace.joinpath(*PurePosixPath(path).parts) for path in case_paths)
+        if case_paths is not None
+        else tuple(sorted(cases_root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
+    )
     if not paths:
         raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
     for path in paths:
@@ -376,12 +382,26 @@ def validate_plan_input(
         business = PlanInputV1.model_validate(data)
     except ValidationError as error:
         raise InputError(str(error)) from error
+    if business.reviewed_case is not None:
+        try:
+            reviewed = authenticate_reviewed_case(
+                business.reviewed_case,
+                workspace,
+                change_id=business.change_id,
+                coverage_epoch=business.coverage_epoch,
+            )
+        except ValueError as error:
+            raise InputError(str(error)) from error
+        case_paths = tuple(item.path for item in reviewed.case_refs)
+    else:
+        case_paths = None
     if business.reviewed_cases is None:
         cases = load_family_cases(
             workspace,
             change_id=business.change_id,
             family=family,
             capability_leafs=business.capability_leafs,
+            case_paths=case_paths,
         )
     else:
         try:

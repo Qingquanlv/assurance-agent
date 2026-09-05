@@ -505,8 +505,8 @@ def boot_semantic_attempt_contracts(
         resolved[contract_id] = _resolve_agent_contract(agents[contract_id], binding, composition)
     for contract in all_feature_task_contracts().values():
         resolved[contract.contract_id] = _resolve_task_contract(contract, composition)
-    if len(resolved) != 41:
-        raise ValueError(f"semantic attempt registry must contain 41 contracts, got {len(resolved)}")
+    if len(resolved) != 42:
+        raise ValueError(f"semantic attempt registry must contain 42 contracts, got {len(resolved)}")
     return MappingProxyType(resolved)
 
 

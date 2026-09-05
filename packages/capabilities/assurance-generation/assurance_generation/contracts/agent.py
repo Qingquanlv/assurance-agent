@@ -11,7 +11,7 @@ from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.plans import canonical_relative_path
-from assurance_intake.contracts import RiskTier
+from assurance_intake.contracts import ReviewedCaseV1, RiskTier
 
 _SHA256 = r"^[0-9a-f]{64}$"
 
@@ -83,6 +83,9 @@ class PlanInputV1(FrozenModel):
     artifact_paths: tuple[str, ...]
     reviewed_cases: dict[str, Any] | None = None
     family_constraints: FamilyConstraintsV1 | None = None
+    coverage_epoch: int = Field(default=0, ge=0)
+    local_round: int = Field(default=0, ge=0)
+    reviewed_case: ReviewedCaseV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod
@@ -133,6 +136,9 @@ class CodegenInputV1(FrozenModel):
     reviewed_cases: dict[str, Any] | None = None
     family_constraints: FamilyConstraintsV1 | None = None
     baseline_tree_id: str | None = Field(default=None, pattern=_SHA256)
+    coverage_epoch: int = Field(default=0, ge=0)
+    local_round: int = Field(default=0, ge=0)
+    reviewed_case: ReviewedCaseV1 | None = None
 
     @field_validator("capability_leafs")
     @classmethod
