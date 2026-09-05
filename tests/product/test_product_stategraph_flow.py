@@ -340,12 +340,13 @@ def test_full_case_rejection_does_not_enter_generation() -> None:
     assert "families" not in result
 
 
-def test_full_execute_tail_uses_compile_root_and_validates_execute_schema() -> None:
+def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None:
     factory = (_GRAPHS_ROOT / "factory.py").read_text(encoding="utf-8")
-    assert "validate=False" not in factory
-    assert ".compile(checkpointer=None)" not in factory
+    assert "build_execute_tail" in factory
     graphs = _product_graphs()
-    assert "validate" in graphs.entrypoints["execute"].nodes
+    assert {"validate", "adapt-tail", "execute-tail", "publish"} <= set(
+        graphs.entrypoints["execute"].nodes
+    )
     tail = graphs.entrypoints["full"].nodes["execute-tail"]
     runnable = getattr(tail, "runnable", tail)
     nested = getattr(runnable, "bound", runnable)
@@ -353,7 +354,8 @@ def test_full_execute_tail_uses_compile_root_and_validates_execute_schema() -> N
     if nested_nodes is None:
         inner = getattr(runnable, "afunc", None) or getattr(runnable, "func", None)
         nested_nodes = getattr(inner, "nodes", {})
-    assert "validate" in set(nested_nodes)
+    assert "validate" not in set(nested_nodes)
+    assert "adapt-generation" in set(nested_nodes)
 
 
 def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runtime() -> None:

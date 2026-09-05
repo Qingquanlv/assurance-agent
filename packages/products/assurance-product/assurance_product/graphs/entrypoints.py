@@ -70,6 +70,8 @@ def validate_public_input(entrypoint: str):
 def adapt_intake(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
     artifact_refs = [item.model_dump(mode="json") for item in payload.artifacts]
+    rework_context = state.get("case_rework_context")
+    coverage_epoch = int(state.get("coverage_epoch", 0)) if rework_context is not None else 0
     preparation_refs = [
         item
         for item in artifact_refs
@@ -86,9 +88,13 @@ def adapt_intake(state: ProductState) -> dict[str, object]:
         "rounds_used": 0,
         "decision": payload.decision,
         "artifacts": artifact_refs,
-        "coverage_epoch": 0,
+        "coverage_epoch": coverage_epoch,
+        "healing_rounds_used": 0,
         "preparation_refs": preparation_refs,
+        "source_artifacts": artifact_refs,
     }
+    if rework_context is not None:
+        feature_input["case_rework_context"] = rework_context
     return {**feature_input, "feature_input": feature_input}
 
 

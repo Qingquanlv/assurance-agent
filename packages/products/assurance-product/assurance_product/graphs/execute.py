@@ -36,6 +36,7 @@ from assurance_product.graphs.state import (
     offer_coverage_needed_arrival,
     offer_failed_join_arrival,
 )
+from assurance_product.graphs.tail_contracts import ExecuteTailInputV1
 from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.plugin_api import FrozenModel
 
@@ -46,10 +47,58 @@ class CoverageDecisionV1(FrozenModel):
     action: Literal["approve", "reject"]
 
 
+def adapt_execute_tail_input(
+    state: ProductState,
+    *,
+    standalone: bool,
+) -> dict[str, object]:
+    payload = _input_from_state(state)
+    reviewed_case: object = None if standalone else state.get("reviewed_case")
+    if reviewed_case is None and not standalone:
+        case_result = state.get("case_result")
+        if isinstance(case_result, Mapping):
+            reviewed_case = case_result.get("reviewed_case")
+    source_artifacts = state.get("source_artifacts")
+    if not isinstance(source_artifacts, list):
+        source_artifacts = [item.model_dump(mode="json") for item in payload.artifacts]
+    tail_input = ExecuteTailInputV1.model_validate(
+        {
+            "change_id": payload.change_id,
+            "requirement": payload.requirement,
+            "run_mode": payload.run_mode,
+            "coverage_epoch": 0 if standalone else state.get("coverage_epoch", 0),
+            "reviewed_case": reviewed_case,
+            "source_artifacts": source_artifacts,
+            "selected_test_families": payload.selected_test_families,
+            "capability_leafs": payload.capability_leafs,
+            "capability_catalog": payload.capability_catalog,
+            "product_policy": payload.product_policy,
+            "data_knowledge": payload.data_knowledge,
+            "allowed_artifact_paths": payload.allowed_artifact_paths,
+            "budgets": payload.budgets,
+            "decision": payload.decision,
+        }
+    )
+    update = tail_input.model_dump(mode="json")
+    update["artifacts"] = list(update["source_artifacts"])
+    update["healing_rounds_used"] = 0
+    return update
+
+
+def adapt_public_execute_tail(state: ProductState) -> dict[str, object]:
+    return adapt_execute_tail_input(state, standalone=True)
+
+
 def adapt_generation(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
+    source_artifacts = state.get("source_artifacts")
+    if not isinstance(source_artifacts, list):
+        source_artifacts = [item.model_dump(mode="json") for item in payload.artifacts]
     feature_input = {
         "change_id": payload.change_id,
+        "coverage_epoch": int(state.get("coverage_epoch", 0)),
+        "reviewed_case": state.get("reviewed_case"),
+        "source_artifacts": source_artifacts,
         "selected_test_families": list(payload.selected_test_families),
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
@@ -70,9 +119,14 @@ def adapt_execution(state: ProductState) -> dict[str, object]:
         "change_id": payload.change_id,
         "capability_leafs": list(payload.capability_leafs),
         "selected_test_families": list(payload.selected_test_families),
+        "coverage_epoch": int(state.get("coverage_epoch", 0)),
+        "repair_round": 0,
         "rounds_budget": payload.budgets.healing_rounds,
         "rounds_used": 0,
     }
+    generation_result = state.get("generation_result")
+    if generation_result is not None:
+        feature_input["generation_result"] = generation_result
     return {**feature_input, "feature_input": feature_input}
 
 
@@ -82,9 +136,14 @@ def adapt_rerun(state: ProductState) -> dict[str, object]:
         "change_id": payload.change_id,
         "capability_leafs": list(payload.capability_leafs),
         "selected_test_families": list(payload.selected_test_families),
+        "coverage_epoch": int(state.get("coverage_epoch", 0)),
+        "repair_round": int(state.get("healing_rounds_used") or state.get("rounds_used") or 0),
         "rounds_budget": int(state.get("rounds_budget") or payload.budgets.healing_rounds),
         "rounds_used": int(state.get("rounds_used") or 0),
     }
+    generation_result = state.get("generation_result")
+    if generation_result is not None:
+        feature_input["generation_result"] = generation_result
     return {**feature_input, "feature_input": feature_input}
 
 
@@ -422,7 +481,13 @@ def resume_product_interrupts(
 
 
 def complete_parallel_generation(state: Mapping[str, object]) -> dict[str, object]:
-    results = state.get("generation_results") or []
+    epoch = _as_int(state.get("coverage_epoch", 0), name="coverage_epoch")
+    raw_results = state.get("generation_results") or []
+    results = [
+        item
+        for item in raw_results
+        if isinstance(item, Mapping) and int(item.get("coverage_epoch", 0)) == epoch
+    ] if isinstance(raw_results, list) else []
     if not isinstance(results, list) or len(results) != 4:
         raise ValueError("generation completion requires one result per family")
     selected = state.get("selected_test_families") or []
@@ -440,13 +505,13 @@ def complete_parallel_generation(state: Mapping[str, object]) -> dict[str, objec
 
 
 def _terminal_done(state: ProductState) -> dict[str, object]:
-    published = publish_public_output(cast(ProductState, {**dict(state), "status": "completed"}))
-    return {**published, "terminal": "done", "status": "completed"}
+    del state
+    return {"terminal": "done", "status": "completed"}
 
 
 def _terminal_not_achieved(state: ProductState) -> dict[str, object]:
-    published = publish_public_output(cast(ProductState, {**dict(state), "status": "failed"}))
-    return {**published, "terminal": "not-achieved", "status": "failed"}
+    del state
+    return {"terminal": "not-achieved", "status": "failed"}
 
 
 def _adapt_report_unsatisfied_repair(state: ProductState) -> dict[str, object]:
@@ -611,12 +676,32 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     return builder
 
 
-def build_execute_root(context: GraphBuildContext, bundles: object) -> CompiledStateGraph:
-    return context.compile_root(build_execute_graph(bundles))
+def build_execute_tail(bundles: object) -> CompiledStateGraph:
+    return build_execute_graph(bundles, validate=False).compile(checkpointer=None)
+
+
+def build_execute_root(
+    context: GraphBuildContext,
+    bundles: object,
+    execute_tail: CompiledStateGraph | None = None,
+) -> CompiledStateGraph:
+    tail = execute_tail or build_execute_tail(bundles)
+    builder: StateGraph[ProductState] = StateGraph(ProductState)
+    builder.add_node("validate", validate_public_input("execute"))
+    builder.add_node("adapt-tail", cast(Any, adapt_public_execute_tail))
+    builder.add_node("execute-tail", tail)
+    builder.add_node("publish", publish_public_output)
+    builder.add_edge(START, "validate")
+    builder.add_edge("validate", "adapt-tail")
+    builder.add_edge("adapt-tail", "execute-tail")
+    builder.add_edge("execute-tail", "publish")
+    builder.add_edge("publish", END)
+    return context.compile_root(builder)
 
 
 __all__ = [
     "adapt_execution",
+    "adapt_execute_tail_input",
     "adapt_generation",
     "adapt_issue_analyze",
     "adapt_quality_assess",
@@ -630,6 +715,7 @@ __all__ = [
     "apply_failed_join_trigger",
     "build_execute_graph",
     "build_execute_root",
+    "build_execute_tail",
     "complete_parallel_generation",
     "coverage_human_interrupt",
     "coverage_needed_join",

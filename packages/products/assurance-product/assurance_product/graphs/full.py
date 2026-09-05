@@ -12,14 +12,14 @@ from assurance_product.graphs.entrypoints import (
     publish_public_output,
     validate_public_input,
 )
+from assurance_product.graphs.execute import adapt_execute_tail_input
 from assurance_product.graphs.routes import route_case, route_execute_tail, route_prepare
 from assurance_product.graphs.state import ProductState
 from graph_engine.boot.boot import GraphBuildContext
 
 
 def adapt_execute_tail(state: ProductState) -> dict[str, object]:
-    del state
-    return {"case_delta_paths": []}
+    return adapt_execute_tail_input(state, standalone=False)
 
 
 def _terminal_achieved(state: ProductState) -> dict[str, object]:

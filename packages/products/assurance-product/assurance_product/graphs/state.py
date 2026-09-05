@@ -4,7 +4,13 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, Literal, TypedDict
 
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
+
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_intake.contracts.workflow import CaseFlowResultV1, CaseReworkContextV1, ReviewedCaseV1
+from assurance_quality.contracts.assessment import InspectionOutcomeV1
 
 FAILED_JOIN_PREDECESSORS = ("execute", "run")
 COVERAGE_NEEDED_PREDECESSORS = ("quality", "quality-recheck")
@@ -41,6 +47,7 @@ class AssessmentTrigger(TypedDict):
 
 
 class GenerationLaneResult(TypedDict):
+    coverage_epoch: int
     family: str
     receipt_id: str
     selected: bool
@@ -274,6 +281,8 @@ def merge_assessment_trigger(left: object, right: object) -> AssessmentTrigger:
     right_empty = right in (None, {})
     if left_empty and right_empty:
         return {}  # type: ignore[return-value]
+    if right is None:
+        return {}  # type: ignore[return-value]
     if left_empty:
         return _as_trigger(right)
     if right_empty:
@@ -291,12 +300,14 @@ def merge_assessment_trigger(left: object, right: object) -> AssessmentTrigger:
 
 def make_generation_lane_result(
     *,
+    coverage_epoch: int = 0,
     family: str,
     receipt_id: str,
     selected: bool,
     status: str,
 ) -> GenerationLaneResult:
     return {
+        "coverage_epoch": coverage_epoch,
         "family": family,
         "receipt_id": receipt_id,
         "selected": selected,
@@ -315,13 +326,19 @@ def _as_results(raw: object) -> list[GenerationLaneResult]:
 
 
 def merge_generation_results(left: object, right: object) -> list[GenerationLaneResult]:
-    by_key: dict[tuple[str, str], GenerationLaneResult] = {}
+    by_key: dict[tuple[int, str, str], GenerationLaneResult] = {}
     for item in [*_as_results(left), *_as_results(right)]:
-        by_key[(str(item["family"]), str(item["receipt_id"]))] = item
+        by_key[
+            (int(item.get("coverage_epoch", 0)), str(item["family"]), str(item["receipt_id"]))
+        ] = item
     order = {name: index for index, name in enumerate(GENERATION_FAMILIES)}
     return sorted(
         by_key.values(),
-        key=lambda item: (order.get(str(item["family"]), 99), str(item["receipt_id"])),
+        key=lambda item: (
+            int(item.get("coverage_epoch", 0)),
+            order.get(str(item["family"]), 99),
+            str(item["receipt_id"]),
+        ),
     )
 
 
@@ -404,6 +421,19 @@ class ProductStateDocument(FrozenModel):
     staged_sha256: str
     baseline_sha256: str | None
     target_digest: str
+    coverage_epoch: int
+    healing_rounds_used: int
+    reviewed_case: ReviewedCaseV1
+    source_artifacts: list[dict[str, str]]
+    case_result: CaseFlowResultV1
+    generation_result: GenerationCycleResultV1
+    execution_result: ExecutionCycleResultV1
+    inspection_outcome: InspectionOutcomeV1
+    tail_result: dict[str, Any]
+    case_rework_context: CaseReworkContextV1
+    last_coverage_source_receipt: ReceiptRef | None
+    report_refs: list[dict[str, str]]
+    report_receipt: ReceiptRef | None
 
 
 class ProductState(CheckpointBridgeState, total=False):
@@ -453,6 +483,19 @@ class ProductState(CheckpointBridgeState, total=False):
     staged_sha256: str
     baseline_sha256: str | None
     target_digest: str
+    coverage_epoch: int
+    healing_rounds_used: int
+    reviewed_case: ReviewedCaseV1
+    source_artifacts: list[dict[str, str]]
+    case_result: CaseFlowResultV1
+    generation_result: GenerationCycleResultV1
+    execution_result: ExecutionCycleResultV1
+    inspection_outcome: InspectionOutcomeV1
+    tail_result: dict[str, object]
+    case_rework_context: CaseReworkContextV1
+    last_coverage_source_receipt: ReceiptRef | None
+    report_refs: list[dict[str, str]]
+    report_receipt: ReceiptRef | None
 
 
 __all__ = [

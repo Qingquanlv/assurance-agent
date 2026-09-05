@@ -140,7 +140,7 @@ def build_product_graphs(
     context: GraphBuildContext,
     features: Mapping[str, object],
 ) -> ProductGraphs:
-    from assurance_product.graphs.execute import build_execute_root
+    from assurance_product.graphs.execute import build_execute_root, build_execute_tail
     from assurance_product.graphs.full import build_full_root
 
     bundles = coerce_feature_bundles(features)
@@ -148,8 +148,8 @@ def build_product_graphs(
     thin_names = tuple(thin.entrypoints)
     if len(thin_names) != len(set(thin_names)):
         raise ValueError("duplicate product roots")
-    execute = build_execute_root(context, bundles)
-    execute_tail = build_execute_root(context, bundles)
+    execute_tail = build_execute_tail(bundles)
+    execute = build_execute_root(context, bundles, execute_tail)
     full = build_full_root(context, bundles, execute_tail)
     entrypoints = {
         **dict(thin.entrypoints),
