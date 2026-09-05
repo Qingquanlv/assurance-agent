@@ -48,6 +48,18 @@ _LAYERS = {
 }
 
 
+def test_quality_reexports_intake_owned_policy_types() -> None:
+    from assurance_intake.contracts.quality_goals import (
+        CoverageFloorsV1 as IntakeFloors,
+        CoverageGoalPolicyV1 as IntakeGoalPolicy,
+        SufficiencyPolicyV1 as IntakeSufficiencyPolicy,
+    )
+
+    assert CoverageFloorsV1 is IntakeFloors
+    assert CoverageGoalPolicyV1 is IntakeGoalPolicy
+    assert SufficiencyPolicyV1 is IntakeSufficiencyPolicy
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), -0.01, 1.01])
 def test_floor_must_be_finite_unit_interval(value: float) -> None:
     with pytest.raises(ValidationError):

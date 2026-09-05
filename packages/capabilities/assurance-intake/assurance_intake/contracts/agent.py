@@ -13,14 +13,13 @@ from graph_engine.plugin_api import FrozenModel
 from graph_engine.frozen_json import FrozenJSONValue
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.common import TestFamily, validate_family_tuple
 from assurance_intake.contracts.workflow import (
     CaseReworkContextV1,
     EvidenceArtifactRefV1,
 )
 
 _SHA256 = r"^[0-9a-f]{64}$"
-_FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
-TestFamily = Literal["api", "e2e", "fuzz", "performance"]
 _FIELD_PATH = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _MRC_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -48,12 +47,7 @@ def _canonical_relative_paths(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _canonical_test_families(values: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
-    if len(values) != len(set(values)):
-        raise ValueError("selected_test_families must not contain duplicates")
-    expected = tuple(family for family in _FAMILY_ORDER if family in values)
-    if values != expected:
-        raise ValueError("selected_test_families must use canonical family order")
-    return values
+    return validate_family_tuple(values)
 
 
 def _validate_case_delta_paths(change_id: str, paths: tuple[str, ...]) -> tuple[str, ...]:
