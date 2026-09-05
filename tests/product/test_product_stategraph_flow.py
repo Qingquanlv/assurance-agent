@@ -344,9 +344,7 @@ def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None
     factory = (_GRAPHS_ROOT / "factory.py").read_text(encoding="utf-8")
     assert "build_execute_tail" in factory
     graphs = _product_graphs()
-    assert {"validate", "adapt-tail", "execute-tail", "publish"} <= set(
-        graphs.entrypoints["execute"].nodes
-    )
+    assert {"validate", "adapt-tail", "execute-tail", "publish"} <= set(graphs.entrypoints["execute"].nodes)
     tail = graphs.entrypoints["full"].nodes["execute-tail"]
     runnable = getattr(tail, "runnable", tail)
     nested = getattr(runnable, "bound", runnable)

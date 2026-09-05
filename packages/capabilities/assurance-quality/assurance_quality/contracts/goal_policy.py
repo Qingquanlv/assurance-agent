@@ -78,9 +78,7 @@ class ActiveCoverageScopeV1(FrozenModel):
 
     @field_validator("selected_families")
     @classmethod
-    def _families_are_canonical(
-        cls, value: tuple[SelectedFamily, ...]
-    ) -> tuple[SelectedFamily, ...]:
+    def _families_are_canonical(cls, value: tuple[SelectedFamily, ...]) -> tuple[SelectedFamily, ...]:
         rank = {name: index for index, name in enumerate(_FAMILY_ORDER)}
         if value != tuple(sorted(set(value), key=rank.__getitem__)):
             raise ValueError("selected_families must be sorted and unique")

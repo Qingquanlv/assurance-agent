@@ -107,10 +107,9 @@ async def test_combined_trace_and_gaps_exclude_old_tests(tmp_path: Path) -> None
     )
     assert outcome.status == "succeeded"
     payload = as_object(outcome.output)
-    assert [row["covering_tests"][0]["file"] for row in as_object(payload["trace"])["rows"]] == [
-        "tests/generated.py"
-    ]
-    CoverageGapsDocument.model_validate(payload["gaps"])
+    assert [row["covering_tests"] for row in as_object(payload["trace"])["rows"]] == [[]]
+    gaps = CoverageGapsDocument.model_validate(payload["gaps"])
+    assert tuple(item.kind for item in gaps.gaps) == ("uncovered_required_case",)
 
 
 @pytest.mark.asyncio

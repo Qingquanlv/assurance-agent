@@ -9,21 +9,23 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.keys import BusinessActivation
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.testing import GraphHarness, committed
 
 _SHA = "a" * 64
 _RECEIPT_ID = "receipt-1"
 _FACT_BASELINE_ID = "assurance.quality.agent.fact-baseline.v1"
 _INSPECT_ID = "assurance.quality.agent.inspect.v1"
+_MATERIALIZE_ID = "assurance.quality.materialize-assessment-inputs"
 _ISSUE_TRIAGE_ID = "assurance.quality.agent.issue-triage.v1"
 _ISSUE_ANALYSIS_ID = "assurance.quality.agent.issue-analysis.v1"
 _REPORT_ID = "assurance.quality.agent.report.v1"
 _GRAPH_CONTRACT_IDS = (
+    _MATERIALIZE_ID,
     _FACT_BASELINE_ID,
     _INSPECT_ID,
     _ISSUE_TRIAGE_ID,
@@ -46,7 +48,11 @@ _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_quality" / "grap
 
 
 def quality_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    contracts = {
+        contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
+    }
+    contracts.update({contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()})
+    return contracts
 
 
 def _skill_digests() -> dict[str, str]:
@@ -94,7 +100,47 @@ def quality_graph_input(
 
 
 def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, object]:
-    return quality_graph_input(activation={"kind": kind, "value": value})
+    payload = quality_graph_input(activation={"kind": kind, "value": value})
+    ref = lambda path: {"path": path, "digest": _SHA}  # noqa: E731
+    reviewed = {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 2,
+        "preparation_refs": [ref("qa/changes/CH-DEMO-001/requirement.md")],
+        "case_refs": [ref("qa/changes/CH-DEMO-001/cases/items/case.yaml")],
+        "review_ref": ref("qa/changes/CH-DEMO-001/review/case-review.json"),
+    }
+    generation = {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 2,
+        "reviewed_case": reviewed,
+        "mapping_ref": ref("qa/changes/CH-DEMO-001/codegen/closed-mapping.json"),
+        "source_refs": [ref("qa/changes/CH-DEMO-001/generated/api/files/tests/a.py")],
+        "plan_refs": [ref("qa/changes/CH-DEMO-001/plans/api-plan.md")],
+    }
+    payload.update(
+        {
+            "coverage_epoch": 2,
+            "reviewed_case": reviewed,
+            "generation_result": generation,
+            "execution_result": {
+                "change_id": "CH-DEMO-001",
+                "coverage_epoch": 2,
+                "repair_round": 0,
+                "batch_id": "20260822T000000Z",
+                "final_status": "PASS",
+                "evidence_ref": ref("qa/changes/CH-DEMO-001/execution/execute-result.json"),
+                "mapping_ref": generation["mapping_ref"],
+                "source_refs": generation["source_refs"],
+                "receipt": {"receipt_id": "execution", "receipt_digest": _SHA},
+            },
+            "policy_resource_id": "assurance.product.configuration.product-policy",
+            "policy_sha256": _SHA,
+            "execution_at": "2026-08-22T00:00:00Z",
+            "healing_ref": None,
+            "issue_ref": None,
+        }
+    )
+    return payload
 
 
 def _receipt() -> ReceiptRef:
@@ -105,6 +151,43 @@ def _fact_baseline_output() -> dict[str, object]:
     return {
         "source": "unavailable",
         "evidence_refs": [{"path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json", "digest": _SHA}],
+    }
+
+
+def _assessment_output() -> dict[str, object]:
+    base = "qa/changes/CH-DEMO-001/inspect/epochs/2/batches/20260822T000000Z"
+    return {
+        "change_id": "CH-DEMO-001",
+        "coverage_epoch": 2,
+        "batch_id": "20260822T000000Z",
+        "scope": {
+            "change_id": "CH-DEMO-001",
+            "coverage_epoch": 2,
+            "required_case_ids": ["TC_ITEM_001"],
+            "selected_families": ["api"],
+            "applicable_goals": ["constraint_coverage"],
+            "applicability_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+            "risk_tier": "high",
+            "policy_digest": _SHA,
+        },
+        "policy": {
+            "coverage_floor_by_tier": {
+                "low": 0.7,
+                "medium": 0.8,
+                "high": 0.9,
+                "critical": 1.0,
+            }
+        },
+        "trace_ref": {"path": f"{base}/trace.json", "digest": _SHA},
+        "gaps_ref": {"path": f"{base}/coverage-gaps.json", "digest": _SHA},
+        "metrics_ref": {"path": f"{base}/metrics.json", "digest": _SHA},
+        "sufficiency_ref": {"path": f"{base}/trace-sufficiency.json", "digest": _SHA},
+        "execution_ref": {
+            "path": "qa/changes/CH-DEMO-001/execution/execute-result.json",
+            "digest": _SHA,
+        },
+        "healing_ref": None,
+        "issue_ref": None,
     }
 
 
@@ -194,7 +277,7 @@ def test_quality_factory_exports_five_public_graphs(recording_context) -> None:
     assert isinstance(bundle, QualityGraphs)
     assert not hasattr(bundle, "nodes")
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
-    assert len(set(recording_context.bound_contract_ids)) == 5
+    assert len(set(recording_context.bound_contract_ids)) == 6
     assert recording_context.bound_contract_ids.count(_ISSUE_ANALYSIS_ID) == 2
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
 
@@ -241,15 +324,21 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
         bundle.assess,
         input=assess_graph_input(),
         script={
+            "quality.materialize-assessment-inputs": [committed(_assessment_output(), receipt)],
             "quality.fact-baseline": [committed(_fact_baseline_output(), receipt)],
             "quality.inspect": [committed(_inspect_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "quality.materialize-assessment-inputs",
         "quality.fact-baseline",
         "quality.inspect",
     ]
-    assert [call.contract_id for call in result.semantic_calls] == [_FACT_BASELINE_ID, _INSPECT_ID]
+    assert [call.contract_id for call in result.semantic_calls] == [
+        _MATERIALIZE_ID,
+        _FACT_BASELINE_ID,
+        _INSPECT_ID,
+    ]
     published = result.published_update
     assert published is not None
     assert published["coverage_state"] == "satisfied"
@@ -257,6 +346,25 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     assert published["rounds_used"] == 0
     assert published["evidence_refs"] == [
         {"path": "qa/changes/CH-DEMO-001/inspect/inspection.json", "digest": _SHA}
+    ]
+    assert result.terminal is not None
+
+
+async def test_assess_stops_before_fact_baseline_when_materialization_fails() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
+    bundle = build_quality_graphs(context)
+    result = await harness.run(
+        bundle.assess,
+        input=assess_graph_input(),
+        script={
+            "quality.materialize-assessment-inputs": [
+                PermanentTaskFailure(kind="invalid_input", message="digest drift")
+            ]
+        },
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        "quality.materialize-assessment-inputs"
     ]
     assert result.terminal is not None
 

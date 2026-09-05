@@ -10,7 +10,7 @@ from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import CaseFlowResultV1, CaseReworkContextV1, ReviewedCaseV1
-from assurance_quality.contracts.assessment import InspectionOutcomeV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1, InspectionOutcomeV1
 
 FAILED_JOIN_PREDECESSORS = ("execute", "run")
 COVERAGE_NEEDED_PREDECESSORS = ("quality", "quality-recheck")
@@ -328,9 +328,7 @@ def _as_results(raw: object) -> list[GenerationLaneResult]:
 def merge_generation_results(left: object, right: object) -> list[GenerationLaneResult]:
     by_key: dict[tuple[int, str, str], GenerationLaneResult] = {}
     for item in [*_as_results(left), *_as_results(right)]:
-        by_key[
-            (int(item.get("coverage_epoch", 0)), str(item["family"]), str(item["receipt_id"]))
-        ] = item
+        by_key[(int(item.get("coverage_epoch", 0)), str(item["family"]), str(item["receipt_id"]))] = item
     order = {name: index for index, name in enumerate(GENERATION_FAMILIES)}
     return sorted(
         by_key.values(),
@@ -428,6 +426,7 @@ class ProductStateDocument(FrozenModel):
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
     execution_result: ExecutionCycleResultV1
+    assessment_inputs: AssessmentInputsV1
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, Any]
     case_rework_context: CaseReworkContextV1
@@ -490,6 +489,7 @@ class ProductState(CheckpointBridgeState, total=False):
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
     execution_result: ExecutionCycleResultV1
+    assessment_inputs: AssessmentInputsV1
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, object]
     case_rework_context: CaseReworkContextV1

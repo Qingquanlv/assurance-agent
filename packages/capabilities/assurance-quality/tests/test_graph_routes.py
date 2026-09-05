@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.decisions import COVERAGE_STATES, FailureClassification
 from assurance_quality.graphs.factory import build_quality_graphs
 from assurance_quality.graphs.routes import (
@@ -22,7 +22,11 @@ from graph_engine.testing import GraphHarness
 
 
 def quality_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    contracts = {
+        contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
+    }
+    contracts.update({contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()})
+    return contracts
 
 
 _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_quality" / "graphs"

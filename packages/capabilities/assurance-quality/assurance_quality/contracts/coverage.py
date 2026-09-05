@@ -43,8 +43,7 @@ def classify_coverage_state(
 ) -> CoverageState:
     identity_matches = metrics.change_id == sufficiency.change_id == scope.change_id
     policy_matches = (
-        metrics.policy_digest == scope.policy_digest
-        and sufficiency.policy_digest == scope.policy_digest
+        metrics.policy_digest == scope.policy_digest and sufficiency.policy_digest == scope.policy_digest
     )
     if (
         not identity_matches

@@ -25,6 +25,7 @@ from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_JO
 from assurance_intake.graphs.factory import build_intake_graphs
 from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_JOBS
+from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS as QUALITY_TASKS
 from assurance_quality.graphs.factory import build_quality_graphs
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.boot.graph_revision import FeatureFactoryRef
@@ -137,7 +138,10 @@ def _contracts_for(owner_id: str) -> dict[str, TaskAttemptContract[Any, Any]]:
     if owner_id == "assurance.execution":
         return _job_contracts(EXECUTION_JOBS)
     if owner_id == "assurance.quality":
-        return _job_contracts(QUALITY_JOBS)
+        return {
+            **_job_contracts(QUALITY_JOBS),
+            **{task.contract_id: task for task in QUALITY_TASKS.values()},
+        }
     if owner_id == "assurance.healing":
         return _job_contracts(HEALING_JOBS)
     contracts = _job_contracts(IMPROVEMENT_JOBS)

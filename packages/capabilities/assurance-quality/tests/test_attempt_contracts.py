@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.plugin_api import AttemptContractRef
+from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
 from agent_runtime_contracts import AgentExecutionContract
 from assurance_quality.contracts.agent import (
@@ -22,7 +22,25 @@ from assurance_quality.plugin import QualityPlugin
 
 def test_quality_owns_five_agent_contracts() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 5
-    assert TASK_ATTEMPT_CONTRACTS == {}
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("materialize-assessment-inputs",)
+    materialize = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
+    assert materialize.contract_id == "assurance.quality.materialize-assessment-inputs"
+    assert materialize.handler_id == "assurance.quality.materialize-assessment-inputs.execute"
+    assert isinstance(materialize.resources, ResourceClaimTemplate)
+    resolved = materialize.resources.resolve(
+        {
+            "coverage_epoch_token": "2",
+            "reviewed_case": {"change_id": "CH-1", "coverage_epoch": 2},
+            "execution": {"batch_id": "B-1"},
+        }
+    )
+    assert resolved.reads == (".aa/policy.yaml", "issues", "qa/changes/CH-1")
+    assert resolved.writes == (
+        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/coverage-gaps.json",
+        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/metrics.json",
+        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
+        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace.json",
+    )
     expected = {
         "fact-baseline": ("aa-fact-baseline", "assurance-v1-doc-author", FactBaselineResultV1),
         "inspect": ("aa-inspect", "assurance-v1-reviewer", InspectionResultV1),

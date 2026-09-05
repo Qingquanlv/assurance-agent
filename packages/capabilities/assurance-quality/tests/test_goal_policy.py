@@ -62,9 +62,7 @@ def test_goal_and_sufficiency_policy_are_closed_and_explicit() -> None:
     with pytest.raises(ValidationError):
         SufficiencyPolicyV1(recency_hours=0, require_current_batch=True)
     with pytest.raises(ValidationError):
-        SufficiencyPolicyV1.model_validate(
-            {"recency_hours": 24, "require_current_batch": False}
-        )
+        SufficiencyPolicyV1.model_validate({"recency_hours": 24, "require_current_batch": False})
 
 
 def test_goal_policies_extract_from_full_product_policy_without_hidden_defaults() -> None:
@@ -177,11 +175,7 @@ def _sufficiency(
     integrity: str = "complete",
 ) -> TraceSufficiencyFacts:
     insufficient = (
-        (
-            TraceInsufficientCase.model_validate(
-                {"case_id": _CASE, "reason_codes": (reason,)}
-            ),
-        )
+        (TraceInsufficientCase.model_validate({"case_id": _CASE, "reason_codes": (reason,)}),)
         if reason is not None
         else ()
     )
@@ -217,49 +211,66 @@ def _sufficiency(
     ),
 )
 def test_every_sufficiency_shortfall_requires_case_rework(reason: SufficiencyReasonCode) -> None:
-    selected = ("api", "fuzz") if reason == "fuzz_run_missing" else (
-        ("api", "performance") if reason == "perf_run_missing" else ("api",)
+    selected = (
+        ("api", "fuzz")
+        if reason == "fuzz_run_missing"
+        else (("api", "performance") if reason == "perf_run_missing" else ("api",))
     )
-    assert classify_coverage_state(
-        metrics=_metrics(),
-        sufficiency=_sufficiency(reason=reason),
-        scope=_scope(selected=selected),
-        policy=_policy(),
-    ) == "repair_required"
+    assert (
+        classify_coverage_state(
+            metrics=_metrics(),
+            sufficiency=_sufficiency(reason=reason),
+            scope=_scope(selected=selected),
+            policy=_policy(),
+        )
+        == "repair_required"
+    )
 
 
 @pytest.mark.parametrize("status", ("skipped", "not_evaluated", "collection_failed"))
 def test_applicable_metric_without_a_measurement_is_inconclusive(status: str) -> None:
-    assert classify_coverage_state(
-        metrics=_metrics(status=status),
-        sufficiency=_sufficiency(),
-        scope=_scope(),
-        policy=_policy(),
-    ) == "inconclusive"
+    assert (
+        classify_coverage_state(
+            metrics=_metrics(status=status),
+            sufficiency=_sufficiency(),
+            scope=_scope(),
+            policy=_policy(),
+        )
+        == "inconclusive"
+    )
 
 
 def test_risk_floor_is_inclusive_and_below_floor_requires_case_rework() -> None:
-    assert classify_coverage_state(
-        metrics=_metrics(value=0.90),
-        sufficiency=_sufficiency(),
-        scope=_scope(),
-        policy=_policy(),
-    ) == "satisfied"
-    assert classify_coverage_state(
-        metrics=_metrics(value=0.80),
-        sufficiency=_sufficiency(),
-        scope=_scope(),
-        policy=_policy(),
-    ) == "repair_required"
+    assert (
+        classify_coverage_state(
+            metrics=_metrics(value=0.90),
+            sufficiency=_sufficiency(),
+            scope=_scope(),
+            policy=_policy(),
+        )
+        == "satisfied"
+    )
+    assert (
+        classify_coverage_state(
+            metrics=_metrics(value=0.80),
+            sufficiency=_sufficiency(),
+            scope=_scope(),
+            policy=_policy(),
+        )
+        == "repair_required"
+    )
 
 
 def test_no_applicable_numeric_goal_can_pass_with_bound_applicability() -> None:
-    assert classify_coverage_state(
-        metrics=_metrics(status="skipped"),
-        sufficiency=_sufficiency(),
-        scope=_scope(goals=()),
-        policy=_policy(),
-    ) == "satisfied"
+    assert (
+        classify_coverage_state(
+            metrics=_metrics(status="skipped"),
+            sufficiency=_sufficiency(),
+            scope=_scope(goals=()),
+            policy=_policy(),
+        )
+        == "satisfied"
+    )
 
 
 @pytest.mark.parametrize(
@@ -277,12 +288,15 @@ def test_identity_integrity_and_policy_mismatch_are_inconclusive(
     sufficiency: TraceSufficiencyFacts,
     scope: ActiveCoverageScopeV1,
 ) -> None:
-    assert classify_coverage_state(
-        metrics=metrics,
-        sufficiency=sufficiency,
-        scope=scope,
-        policy=_policy(),
-    ) == "inconclusive"
+    assert (
+        classify_coverage_state(
+            metrics=metrics,
+            sufficiency=sufficiency,
+            scope=scope,
+            policy=_policy(),
+        )
+        == "inconclusive"
+    )
 
 
 def _case(*, priority: str, severity: str, declared: str) -> CaseEntryAuthoring:

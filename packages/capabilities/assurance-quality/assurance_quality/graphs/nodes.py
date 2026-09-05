@@ -5,8 +5,10 @@ from collections.abc import Mapping
 from pydantic import BaseModel
 
 from graph_engine.attempts.keys import BusinessActivation
+from graph_engine.canonical import canonical_digest
 
 from assurance_quality.contracts.agent import QualitySkillInputV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
 from assurance_quality.contracts.decisions import CoverageAssessmentPublicV1, IssueAnalysisPublicV1
 from assurance_quality.graphs.state import (
     QualityAssessPublicV1,
@@ -76,6 +78,21 @@ def select_quality(state: Mapping[str, object]) -> QualitySkillInputV1:
     return QualitySkillInputV1.model_validate(_skill_payload(state))
 
 
+def select_materialize_assessment(state: Mapping[str, object]) -> MaterializeAssessmentInputV1:
+    return MaterializeAssessmentInputV1.model_validate(
+        {
+            "reviewed_case": state.get("reviewed_case"),
+            "generation": state.get("generation_result"),
+            "execution": state.get("execution_result"),
+            "policy_resource_id": state.get("policy_resource_id"),
+            "policy_sha256": state.get("policy_sha256"),
+            "execution_at": state.get("execution_at"),
+            "healing_ref": state.get("healing_ref"),
+            "issue_ref": state.get("issue_ref"),
+        }
+    )
+
+
 def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
     if "coverage_state" not in state:
         raise ValueError("report requires a coverage reference")
@@ -101,6 +118,39 @@ def activation_assess(state: Mapping[str, object]) -> BusinessActivation:
     if kind == "trigger":
         return BusinessActivation.for_trigger(value)
     raise ValueError("assess business activation is not canonical")
+
+
+def activation_materialize_assessment(state: Mapping[str, object]) -> BusinessActivation:
+    epoch = state.get("coverage_epoch")
+    batch_id = state.get("batch_id")
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        raise ValueError("assessment coverage_epoch must be a non-negative int")
+    if not isinstance(batch_id, str) or not batch_id:
+        raise ValueError("assessment batch_id must be non-empty")
+    batch_token = canonical_digest(batch_id)[:16]
+    return BusinessActivation.for_trigger(f"coverage.{epoch}.assessment.{batch_token}")
+
+
+def publish_materialize_assessment(
+    state: Mapping[str, object],
+    output: object,
+    receipt: object,
+) -> dict[str, object]:
+    del state, receipt
+    assessment = AssessmentInputsV1.model_validate(output)
+    return {
+        "assessment_inputs": assessment.model_dump(mode="json"),
+        "evidence_refs": [
+            ref.model_dump(mode="json")
+            for ref in (
+                assessment.trace_ref,
+                assessment.gaps_ref,
+                assessment.metrics_ref,
+                assessment.sufficiency_ref,
+                assessment.execution_ref,
+            )
+        ],
+    }
 
 
 def publish_fact_baseline(
@@ -195,12 +245,15 @@ def terminal_done(state: QualityState) -> dict[str, object]:
 
 __all__ = [
     "activation_assess",
+    "activation_materialize_assessment",
     "activation_one_shot",
     "publish_fact_baseline",
     "publish_inspect",
+    "publish_materialize_assessment",
     "publish_issue",
     "publish_report",
     "select_quality",
+    "select_materialize_assessment",
     "select_report",
     "terminal_done",
 ]

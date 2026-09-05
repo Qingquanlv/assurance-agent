@@ -17,6 +17,7 @@ from assurance_quality.contracts.agent import (
     QualitySkillInputV1,
     ReportResultV1,
 )
+from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REPORTER = "assurance-v1-reporter"
@@ -87,8 +88,35 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {base: _paths(*outputs) for base, _skill, _profile, _result, outputs in _JOBS}
 )
-TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
+_MATERIALIZE_ASSESSMENT = TaskAttemptContract(
+    contract_id="assurance.quality.materialize-assessment-inputs",
+    owner_id="assurance.quality",
+    handler_id="assurance.quality.materialize-assessment-inputs.execute",
+    input_model=MaterializeAssessmentInputV1,
+    output_model=AssessmentInputsV1,
+    resources=ResourceClaimTemplate(
+        parameters={
+            "batch_id": "/execution/batch_id",
+            "change_id": "/reviewed_case/change_id",
+            "coverage_epoch": "/coverage_epoch_token",
+        },
+        reads=(".aa/policy.yaml", "issues", "qa/changes/{change_id}"),
+        writes=(
+            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
+            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
+            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
+            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",
+        ),
+    ),
+    retry=_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
+TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
+    {"materialize-assessment-inputs": _MATERIALIZE_ASSESSMENT}
+)
 QUALITY_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
+    _MATERIALIZE_ASSESSMENT.contract_id,
     "assurance.quality.agent.fact-baseline.v1",
     "assurance.quality.agent.inspect.v1",
     "assurance.quality.agent.issue-triage.v1",
@@ -112,7 +140,7 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
                     contract_id=contract.contract_id,
                     digest=canonical_digest(cast(JSONValue, contract.canonical_projection())),
                 )
-                for contract in AGENT_JOB_CONTRACTS.values()
+                for contract in (*AGENT_JOB_CONTRACTS.values(), *TASK_ATTEMPT_CONTRACTS.values())
             ),
             key=lambda item: item.contract_id,
         )

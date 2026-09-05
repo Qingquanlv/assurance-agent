@@ -13,7 +13,12 @@ from assurance_quality.contracts.trace import (
     TraceProjectionV2,
     TraceTestRef,
 )
-from assurance_quality.operations.trace import MaterializeTraceHandler, TraceOperationInput, project_trace
+from assurance_quality.operations.trace import (
+    MaterializeTraceHandler,
+    TraceCaseInput,
+    TraceOperationInput,
+    project_trace,
+)
 from quality_fixtures import (  # pyright: ignore[reportMissingImports]
     BATCH_ID,
     CHANGE_ID,
@@ -106,7 +111,9 @@ async def test_trace_operation_excludes_unmapped_old_tests(tmp_path: Path) -> No
         outcome.output,
         context={"capability_leafs": frozenset(catalog_leafs())},
     )
-    assert tuple(row.test_path for row in trace.rows) == ("tests/generated.py",)
+    assert tuple(row.test_path for row in trace.rows) == ("",)
+    assert trace.rows[0].coverage_state == "uncovered"
+    assert trace.rows[0].latest_execution is None
 
 
 def test_trace_without_execution_evidence_does_not_copy_allowlist_onto_every_case() -> None:
@@ -150,10 +157,34 @@ def test_trace_without_execution_evidence_does_not_copy_allowlist_onto_every_cas
             }
         )
     )
-    assert [tuple(ref.file for ref in row.covering_tests) for row in mapped.rows] == [
-        ("tests/a.py",),
-        ("tests/b.py",),
-    ]
+    assert [tuple(ref.file for ref in row.covering_tests) for row in mapped.rows] == [(), ()]
+
+
+def test_real_unexecuted_case_never_becomes_passing_trace() -> None:
+    payload = TraceOperationInput(
+        change_id="CH-1",
+        batch_id="B-1",
+        closed_mapping=(),
+        cases=(TraceCaseInput(case_id="TC_A", capability="entities.item.create"),),
+        capability_leafs=("entities.item.create",),
+    )
+    projection = project_trace(payload)
+    assert [row.case_id for row in projection.rows] == ["TC_A"]
+    assert "TC_UNBOUND" not in {row.case_id for row in projection.rows}
+    assert projection.rows[0].latest_execution is None
+    assert projection.rows[0].freshest_pass is None
+
+
+def test_empty_case_inventory_does_not_synthesize_an_unbound_case() -> None:
+    projection = project_trace(
+        TraceOperationInput(
+            change_id="CH-1",
+            batch_id="B-1",
+            closed_mapping=(),
+            capability_leafs=("entities.item.create",),
+        )
+    )
+    assert projection.rows == ()
 
 
 @pytest.mark.asyncio

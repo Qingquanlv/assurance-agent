@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
 from langchain_core.runnables.config import RunnableConfig
@@ -149,6 +150,9 @@ def adapt_rerun(state: ProductState) -> dict[str, object]:
 
 def adapt_quality_assess(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
+    execution = state.get("execution_result")
+    generation = state.get("generation_result")
+    reviewed = state.get("reviewed_case")
     feature_input = {
         "change_id": payload.change_id,
         "capability_leafs": list(payload.capability_leafs),
@@ -159,6 +163,36 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "evidence_refs": [],
         "execution_status": "passed",
     }
+    cycle_parts = (reviewed, generation, execution)
+    if any(item is not None for item in cycle_parts):
+        if any(item is None for item in cycle_parts):
+            raise ValueError("quality assessment cycle evidence must be complete")
+        execution_payload = (
+            execution.model_dump(mode="json") if isinstance(execution, FrozenModel) else execution
+        )
+        if not isinstance(execution_payload, Mapping):
+            raise TypeError("execution_result must be a mapping")
+        batch_id = execution_payload.get("batch_id")
+        if not isinstance(batch_id, str):
+            raise TypeError("execution_result batch_id must be a string")
+        try:
+            execution_at = datetime.strptime(batch_id, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+        except ValueError as error:
+            raise ValueError("execution batch_id must carry the locked UTC execution time") from error
+        feature_input.update(
+            {
+                "batch_id": batch_id,
+                "coverage_epoch": int(state.get("coverage_epoch", 0)),
+                "reviewed_case": reviewed,
+                "generation_result": generation,
+                "execution_result": execution,
+                "policy_resource_id": payload.product_policy.resource_id,
+                "policy_sha256": payload.product_policy.sha256,
+                "execution_at": execution_at.isoformat(),
+                "healing_ref": state.get("healing_ref"),
+                "issue_ref": state.get("issue_ref"),
+            }
+        )
     public = {
         "schema_version": payload.schema_version,
         "change_id": payload.change_id,
@@ -179,18 +213,7 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
 
 
 def adapt_quality_recheck(state: ProductState) -> dict[str, object]:
-    payload = _input_from_state(state)
-    feature_input = {
-        "change_id": payload.change_id,
-        "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
-        "budgets": payload.budgets.model_dump(mode="json"),
-        "rounds_budget": int(state.get("rounds_budget") or payload.budgets.coverage_rounds),
-        "rounds_used": int(state.get("rounds_used") or 0),
-        "evidence_refs": [],
-        "execution_status": "passed",
-    }
-    return {**feature_input, "feature_input": feature_input}
+    return adapt_quality_assess(state)
 
 
 def adapt_issue_analyze(state: ProductState) -> dict[str, object]:
@@ -483,11 +506,15 @@ def resume_product_interrupts(
 def complete_parallel_generation(state: Mapping[str, object]) -> dict[str, object]:
     epoch = _as_int(state.get("coverage_epoch", 0), name="coverage_epoch")
     raw_results = state.get("generation_results") or []
-    results = [
-        item
-        for item in raw_results
-        if isinstance(item, Mapping) and int(item.get("coverage_epoch", 0)) == epoch
-    ] if isinstance(raw_results, list) else []
+    results = (
+        [
+            item
+            for item in raw_results
+            if isinstance(item, Mapping) and int(item.get("coverage_epoch", 0)) == epoch
+        ]
+        if isinstance(raw_results, list)
+        else []
+    )
     if not isinstance(results, list) or len(results) != 4:
         raise ValueError("generation completion requires one result per family")
     selected = state.get("selected_test_families") or []

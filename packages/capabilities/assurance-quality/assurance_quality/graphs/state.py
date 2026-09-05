@@ -5,6 +5,10 @@ from typing import Literal
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1
 from assurance_quality.contracts.decisions import CoverageState, FailureClassification
 
 
@@ -34,6 +38,16 @@ class QualityReportPublicV1(FrozenModel):
 class QualityState(CheckpointBridgeState, total=False):
     change_id: str
     batch_id: str
+    coverage_epoch: int
+    reviewed_case: ReviewedCaseV1
+    generation_result: GenerationCycleResultV1
+    execution_result: ExecutionCycleResultV1
+    policy_resource_id: str
+    policy_sha256: str
+    execution_at: str
+    healing_ref: EvidenceArtifactRefV1 | None
+    issue_ref: EvidenceArtifactRefV1 | None
+    assessment_inputs: AssessmentInputsV1
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]
     evidence_refs: list[dict[str, str]]

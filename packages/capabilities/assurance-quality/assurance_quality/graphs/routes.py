@@ -34,6 +34,10 @@ def route_coverage(state: Mapping[str, object]) -> str:
     return select_exclusive_route(coverage_named_matches(state), otherwise=_COVERAGE_OTHERWISE)
 
 
+def route_attempt(state: Mapping[str, object]) -> str:
+    return "failed" if state.get("attempt_failure") else "ready"
+
+
 def route_failure(state: Mapping[str, object]) -> str:
     if state.get("attempt_failure"):
         return _FAILURE_OTHERWISE
@@ -44,5 +48,6 @@ __all__ = [
     "coverage_named_matches",
     "failure_named_matches",
     "route_coverage",
+    "route_attempt",
     "route_failure",
 ]
