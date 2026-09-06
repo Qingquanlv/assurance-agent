@@ -229,3 +229,163 @@ $ uv run pytest tests/product/test_acg_plan_loading.py tests/product/test_acg_pl
 ## Concerns
 
 None.
+
+---
+
+## Review Fix Round
+
+### Implementation
+
+- Bound every accepted source to independently authenticated preparation refs.
+  A requirement source must match the one frozen current-change requirement.md
+  ref exactly; a reviewed_input source must bind both its content and review ref
+  to admitted requirement/review evidence.
+- Derived sidecar revision from the frozen v2 verification profile and
+  spec_digest from the frozen plan requirement_digest. Finalize no longer uses
+  the sidecar's own values as their expected values.
+- Re-authenticated authority bytes during design finalize and authenticated
+  case, matrix, and sidecar bytes during review finalize. Review prepare now
+  parses cases and sidecars through the same typed provenance closure.
+- Required exactly one locked sidecar path per locked case path for v2 plans in
+  both design and review prepare/finalize. Legacy v1 plans still admit legacy
+  authoring without sidecars.
+- Preserved authority refs through the validation-repair selector.
+- Kept resolved-assurance-plan.v1.schema.json unchanged and added a separately
+  registered resolved-assurance-plan.v2.schema.json. Version projection tests
+  enforce semantic model/schema consistency for both versions.
+
+### TDD RED Evidence
+
+Independent source authority was missing:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_verification_contracts.py::test_assertion_source_ref_must_match_an_independently_admitted_requirement -q
+F                                                                        [100%]
+E   TypeError: validate_assertion_provenance() got an unexpected keyword argument 'requirement_ref'
+1 failed in 0.41s
+~~~
+
+Published plan version models/schema were missing:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_verification_contracts.py::test_assertion_source_ref_must_match_an_independently_admitted_requirement packages/capabilities/assurance-intake/tests/test_resolve_plan.py::test_published_plan_schemas_match_each_version_and_validate_both_profiles -q
+ERROR: found no collectors for .../test_resolve_plan.py::test_published_plan_schemas_match_each_version_and_validate_both_profiles
+E   ImportError: cannot import name 'ResolvedAssurancePlanV1' from 'assurance_intake.contracts.plan'
+1 error in 0.47s
+~~~
+
+New-profile design and review could omit sidecars:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_agent_skills.py::test_verified_case_design_prepare_requires_one_source_sidecar_per_case packages/capabilities/assurance-intake/tests/test_agent_skills.py::test_verified_case_review_prepare_requires_one_source_sidecar_per_case -q
+FF                                                                       [100%]
+E   AssertionError: assert 'succeeded' == 'failed'
+E   AssertionError: assert 'succeeded' == 'failed'
+2 failed in 0.92s
+~~~
+
+Review prepare authenticated bytes but did not parse typed provenance:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_agent_skills.py::test_verified_case_review_prepare_rejects_invalid_typed_sidecar -q
+F                                                                        [100%]
+E   AssertionError: assert 'succeeded' == 'failed'
+1 failed in 0.89s
+~~~
+
+The validation-repair selector dropped frozen authority refs:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_verification_contracts.py::test_verified_case_design_repair_preserves_frozen_authority_refs -q
+F                                                                        [100%]
+E   AssertionError: assert [] == [{'path': 'qa/changes/CH-1/requirement.md', 'digest': 'cccc...'}]
+1 failed in 0.41s
+~~~
+
+### TDD GREEN Evidence
+
+The source authority, schema, and v2 prepare slices first turned green together:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_verification_contracts.py packages/capabilities/assurance-intake/tests/test_resolve_plan.py packages/capabilities/assurance-intake/tests/test_agent_skills.py::test_verified_case_design_prepare_requires_one_source_sidecar_per_case packages/capabilities/assurance-intake/tests/test_agent_skills.py::test_verified_case_review_prepare_requires_one_source_sidecar_per_case -q
+..............................                                           [100%]
+30 passed in 0.87s
+~~~
+
+Real design/review prepare/finalize mutation coverage then passed:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_agent_skills.py -q -k 'verified_case_design_prepare_requires_one_source_sidecar_per_case or verified_case_review_prepare_requires_one_source_sidecar_per_case or verified_case_design_finalize_rejects_sidecar_authority_mutation_after_prepare or verified_case_review_finalize_rejects_sidecar_changed_after_prepare or verified_case_review_prepare_rejects_invalid_typed_sidecar'
+.........                                                                [100%]
+9 passed, 77 deselected in 0.84s
+~~~
+
+Repair propagation passed:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_verification_contracts.py::test_verified_case_design_repair_preserves_frozen_authority_refs -q
+.                                                                        [100%]
+1 passed in 0.37s
+~~~
+
+The final mutation matrix covers post-prepare authority bytes, source-ref
+digest, revision, spec digest, origin, decision, and review-sidecar byte drift:
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_agent_skills.py -q -k 'verified_case_design_finalize_rejects_sidecar_authority_mutation_after_prepare or verified_case_review_finalize_rejects_sidecar_changed_after_prepare or verified_case_review_prepare_rejects_invalid_typed_sidecar'
+........                                                                 [100%]
+8 passed, 79 deselected in 1.02s
+~~~
+
+### Final Verification
+
+~~~text
+$ uv run ruff format --check packages/capabilities/assurance-intake/assurance_intake packages/capabilities/assurance-intake/tests tests/acg_plan_fixture.py
+50 files already formatted
+
+$ uv run ruff check packages/capabilities/assurance-intake/assurance_intake packages/capabilities/assurance-intake/tests tests/acg_plan_fixture.py
+All checks passed!
+
+$ uv run pyright packages/capabilities/assurance-intake/assurance_intake packages/capabilities/assurance-intake/tests tests/acg_plan_fixture.py
+0 errors, 0 warnings, 0 informations
+
+$ uv run pytest packages/capabilities/assurance-intake/tests -q
+........................................................................ [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+...............................................................          [100%]
+279 passed in 2.59s
+
+$ uv run pytest tests/product/test_acg_plan_loading.py tests/product/test_acg_plan_recovery.py tests/product/test_agent_execution_contracts.py tests/product/test_graph_revision_contracts.py -q
+..............................                                           [100%]
+30 passed in 15.77s
+~~~
+
+### Files Changed in Fix Round
+
+- Provenance and version contracts: contracts/verification.py and
+  contracts/plan.py.
+- Prepare/finalize and selection: operations/agent_skills.py,
+  operations/finalize.py, and graphs/nodes.py.
+- Published schema registration:
+  resources/schemas/resolved-assurance-plan.v2.schema.json, plugin.py, and
+  plugin-declaration.json.
+- Coverage: test_verification_contracts.py, test_resolve_plan.py,
+  test_agent_skills.py, test_contracts.py, and tests/acg_plan_fixture.py.
+
+### Fix-round Self-review
+
+- The sidecar cannot select its own expected revision or spec digest, and an
+  Agent-authored decision=accepted has no authority without matching frozen
+  refs and authenticated bytes.
+- Review prepare and finalize both parse typed assertions and source sidecars;
+  review finalize also rejects sidecar byte changes after prepare.
+- V2 omission fails at prepare and finalize. V1 empty-sidecar behavior remains
+  unchanged.
+- The old v1 schema file and ID were not rewritten; v2 has its own file and ID.
+- No Task 2 machine plan, runtime switching, SUT identity, or execution ID was
+  introduced.
+
+### Fix-round Concerns
+
+None.

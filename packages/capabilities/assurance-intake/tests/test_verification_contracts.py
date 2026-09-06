@@ -19,7 +19,9 @@ from assurance_intake.contracts.verification import (
     LiteralExpectedV1,
     validate_assertion_provenance,
 )
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.plugin import IntakePlugin
+from assurance_intake.graphs.nodes import select_case_design_repair
 from assurance_intake.operations.agent_skills import case_design_outputs, case_review_inputs
 from assurance_intake.resource_loader import resource_bytes
 from tests.verification_support import read_fixture
@@ -101,6 +103,8 @@ def test_user_fixture_freezes_the_eight_reviewed_business_assertions() -> None:
         spec_digest="1" * 64,
         assertions=assertions,
         sources=sources,
+        requirement_ref=sources.sources[0].content_ref,
+        authority_refs=(sources.sources[0].content_ref,),
     )
 
     assert [assertion.assertion_id for assertion in validated] == [
@@ -147,6 +151,8 @@ def test_reviewed_requirement_true_is_not_replaced_by_current_source_false() -> 
         spec_digest=str(case["spec_digest"]),
         assertions=assertions,
         sources=sources,
+        requirement_ref=sources.sources[0].content_ref,
+        authority_refs=(sources.sources[0].content_ref,),
     )
     expected = next(item.expected for item in validated if item.assertion_id == "user.is_active")
 
@@ -175,6 +181,8 @@ def test_provenance_version_or_digest_mismatch_is_not_ready(
             spec_digest=spec_digest,
             assertions=assertions,
             sources=sources,
+            requirement_ref=sources.sources[0].content_ref,
+            authority_refs=(sources.sources[0].content_ref,),
         )
 
 
@@ -188,6 +196,8 @@ def test_duplicate_assertion_id_is_not_ready() -> None:
             spec_digest="1" * 64,
             assertions=(*assertions, assertions[0]),
             sources=sources,
+            requirement_ref=sources.sources[0].content_ref,
+            authority_refs=(sources.sources[0].content_ref,),
         )
 
 
@@ -202,6 +212,36 @@ def test_assertion_without_a_reviewed_source_is_not_ready() -> None:
             spec_digest="1" * 64,
             assertions=(missing, *assertions[1:]),
             sources=sources,
+            requirement_ref=sources.sources[0].content_ref,
+            authority_refs=(sources.sources[0].content_ref,),
+        )
+
+
+def test_assertion_source_ref_must_match_an_independently_admitted_requirement() -> None:
+    _, assertions, sources = _user_contract()
+    admitted = EvidenceArtifactRefV1(
+        path="qa/changes/CH-USER-001/requirement.md",
+        digest="2" * 64,
+    )
+    forged = sources.model_copy(
+        update={
+            "sources": (
+                sources.sources[0].model_copy(
+                    update={"content_ref": admitted.model_copy(update={"digest": "3" * 64})}
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="authenticated requirement"):
+        validate_assertion_provenance(
+            case_id="TC_USER_CREATE_001",
+            revision="1",
+            spec_digest="1" * 64,
+            assertions=assertions,
+            sources=forged,
+            requirement_ref=admitted,
+            authority_refs=(admitted,),
         )
 
 
@@ -261,3 +301,29 @@ def test_assertion_sidecar_must_match_an_exact_locked_case_directory() -> None:
                 "assertion_source_paths": ("qa/changes/CH-1/cases/system/other/assertion-sources.json",),
             }
         )
+
+
+def test_verified_case_design_repair_preserves_frozen_authority_refs() -> None:
+    requirement_ref = {
+        "path": "qa/changes/CH-1/requirement.md",
+        "digest": "c" * 64,
+    }
+    repaired = select_case_design_repair(
+        {
+            "change_id": "CH-1",
+            "capability_leafs": ["entities.user.create"],
+            "allowed_artifact_paths": ["qa/changes"],
+            "plan_digest": "a" * 64,
+            "plan_ref": {
+                "path": f"qa/changes/CH-1/plan/{'a' * 64}/resolved-assurance-plan.json",
+                "digest": "b" * 64,
+            },
+            "selected_test_families": ["api"],
+            "case_delta_paths": ["qa/changes/CH-1/cases/system/user/case.yaml"],
+            "assertion_source_paths": ["qa/changes/CH-1/cases/system/user/assertion-sources.json"],
+            "preparation_refs": [requirement_ref],
+            "validation_error": "repair the invalid typed sidecar",
+        }
+    )
+
+    assert [ref.model_dump(mode="json") for ref in repaired.preparation_refs] == [requirement_ref]

@@ -199,6 +199,9 @@ def select_case_design_repair(state: Mapping[str, object]) -> CaseDesignInputV1:
             "selected_test_families": state["selected_test_families"],
             "case_delta_paths": state["case_delta_paths"],
             "assertion_source_paths": state.get("assertion_source_paths", ()),
+            "coverage_epoch": state.get("coverage_epoch", 0),
+            "preparation_refs": state.get("preparation_refs", ()),
+            "case_rework_context": state.get("case_rework_context"),
             "validation_attempt": 1,
             "validation_error": state["validation_error"],
         }

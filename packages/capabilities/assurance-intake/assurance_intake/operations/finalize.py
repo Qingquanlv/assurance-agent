@@ -40,7 +40,7 @@ from assurance_intake.contracts.review import (
     normalized_auto_fix_edits,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.contracts.verification import (
     AssertionSourcesV1,
     BusinessAssertionV1,
@@ -392,6 +392,10 @@ def _validate_assertion_sidecars(
     *,
     authored: CaseYamlAuthoring,
     source_paths: tuple[str, ...],
+    revision: str,
+    spec_digest: str,
+    requirement_ref: EvidenceArtifactRefV1,
+    authority_refs: tuple[EvidenceArtifactRefV1, ...],
     images: Mapping[str, bytes] | None = None,
 ) -> None:
     if not source_paths:
@@ -418,16 +422,56 @@ def _validate_assertion_sidecars(
             assertions = tuple(BusinessAssertionV1.model_validate(item) for item in entry.assertions)
             validate_assertion_provenance(
                 case_id=entry.case_id,
-                revision=sources.revision,
-                spec_digest=sources.spec_digest,
+                revision=revision,
+                spec_digest=spec_digest,
                 assertions=assertions,
                 sources=sources,
+                requirement_ref=requirement_ref,
+                authority_refs=authority_refs,
             )
         except (ValidationError, ValueError) as error:
             raise OutputError(f"invalid typed assertions for {sources.case_id}: {error}") from error
     if seen_cases != set(entries):
         missing = sorted(set(entries) - seen_cases)
         raise OutputError(f"typed assertion sources are missing for authored cases: {missing}")
+
+
+def _verification_revision(plan: ResolvedAssurancePlan) -> str | None:
+    if plan.verification_policy is None:
+        return None
+    return plan.verification_policy.validation_profile.rsplit(".v", maxsplit=1)[1]
+
+
+def _verification_authority(
+    workspace: Path,
+    *,
+    plan: ResolvedAssurancePlan,
+    payload: CaseFinalizeInputV1,
+    change_id: str,
+) -> tuple[str, EvidenceArtifactRefV1, tuple[EvidenceArtifactRefV1, ...]] | None:
+    revision = _verification_revision(plan)
+    if revision is None:
+        return None
+    if len(payload.assertion_source_paths) != len(payload.case_delta_paths):
+        raise InputError("verified plan requires exactly one assertion source sidecar per case")
+    requirement_path = f"qa/changes/{change_id}/requirement.md"
+    requirement_refs = tuple(ref for ref in payload.preparation_refs if ref.path == requirement_path)
+    if len(requirement_refs) != 1:
+        raise InputError("verified plan requires one authenticated requirement ref")
+    review_prefix = f"qa/changes/{change_id}/review/"
+    review_history_marker = f"qa/changes/{change_id}/cases/reviews/"
+    authority_refs = tuple(
+        ref
+        for ref in payload.preparation_refs
+        if ref.path == requirement_path
+        or ref.path.startswith(review_prefix)
+        or ref.path.startswith(review_history_marker)
+    )
+    for ref in authority_refs:
+        data = _read_regular_bytes(workspace, ref.path, kind="business assertion authority")
+        if _file_digest(data) != ref.digest:
+            raise OutputError(f"business assertion authority digest mismatch: {ref.path}")
+    return revision, requirement_refs[0], authority_refs
 
 
 def _load_minimum_coverage_matrix(
@@ -511,8 +555,11 @@ def _read_case_review_inputs(
     matrix_refs = tuple(ref for ref in payload.preparation_refs if ref.path == matrix_relative)
     if len(matrix_refs) != 1:
         raise InputError("preparation_refs must authenticate the minimum coverage matrix for case review")
+    source_refs = tuple(ref for ref in payload.preparation_refs if ref.path in payload.assertion_source_paths)
+    if {ref.path for ref in source_refs} != set(payload.assertion_source_paths):
+        raise InputError("preparation_refs must authenticate every assertion source sidecar")
     images: dict[str, bytes] = {}
-    for ref in (*payload.case_refs, *matrix_refs):
+    for ref in (*payload.case_refs, *matrix_refs, *source_refs):
         data = _read_regular_bytes(workspace, ref.path, kind="case-review input")
         if _file_digest(data) != ref.digest:
             raise OutputError(f"case-review input digest mismatch: {ref.path}")
@@ -864,6 +911,12 @@ class CaseDesignFinalizeHandler:
                 raise InputError("frozen assurance plan does not match case input")
             if plan.selected_test_families != payload.selected_test_families:
                 raise InputError("case selected families do not match frozen assurance plan")
+            authority = _verification_authority(
+                context.project_root,
+                plan=plan,
+                payload=payload,
+                change_id=change_id,
+            )
             capability_leafs = _leafs(payload.capability_leafs)
             receipt = _artifact_list(payload)
             change_root = f"qa/changes/{change_id}"
@@ -933,12 +986,19 @@ class CaseDesignFinalizeHandler:
                 capability_leafs=capability_leafs,
                 images=images,
             )
-            _validate_assertion_sidecars(
-                context.write_root,
-                authored=authored,
-                source_paths=payload.assertion_source_paths,
-                images=images,
-            )
+            if payload.assertion_source_paths:
+                if authority is None:
+                    raise InputError("typed assertion sidecars require a verified plan")
+                _validate_assertion_sidecars(
+                    context.write_root,
+                    authored=authored,
+                    source_paths=payload.assertion_source_paths,
+                    revision=authority[0],
+                    spec_digest=plan.requirement_digest,
+                    requirement_ref=authority[1],
+                    authority_refs=authority[2],
+                    images=images,
+                )
             if payload.selected_test_families:
                 _require_selected_test_families(authored, payload.selected_test_families)
             if authored.added or authored.modified:
@@ -998,6 +1058,12 @@ class CaseReviewFinalizeHandler:
                 raise OutputError("case review change_id does not match locked change_id")
             if plan.change_id != change_id:
                 raise InputError("frozen assurance plan does not match case review change_id")
+            authority = _verification_authority(
+                context.project_root,
+                plan=plan,
+                payload=payload,
+                change_id=change_id,
+            )
             _validate_case_review_repair_scope(document, payload, change_id=change_id)
             matrix_relative = f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json"
             images = _read_case_review_inputs(context.project_root, payload, matrix_relative)
@@ -1009,6 +1075,19 @@ class CaseReviewFinalizeHandler:
                 capability_leafs=_leafs(payload.capability_leafs),
                 images=images,
             )
+            if payload.assertion_source_paths:
+                if authority is None:
+                    raise InputError("typed assertion sidecars require a verified plan")
+                _validate_assertion_sidecars(
+                    context.project_root,
+                    authored=authored,
+                    source_paths=payload.assertion_source_paths,
+                    revision=authority[0],
+                    spec_digest=plan.requirement_digest,
+                    requirement_ref=authority[1],
+                    authority_refs=authority[2],
+                    images=images,
+                )
             _require_selected_test_families(authored, plan.selected_test_families)
             matrix = _load_minimum_coverage_matrix(
                 context.project_root,

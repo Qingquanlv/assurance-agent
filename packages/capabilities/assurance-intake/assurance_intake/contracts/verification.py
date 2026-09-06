@@ -139,6 +139,8 @@ def validate_assertion_provenance(
     spec_digest: str,
     assertions: tuple[BusinessAssertionV1, ...],
     sources: AssertionSourcesV1,
+    requirement_ref: EvidenceArtifactRefV1,
+    authority_refs: tuple[EvidenceArtifactRefV1, ...],
 ) -> tuple[BusinessAssertionV1, ...]:
     """Authenticate one case's frozen assertions against its formal sidecar."""
     if sources.case_id != case_id or sources.revision != revision or sources.spec_digest != spec_digest:
@@ -152,6 +154,29 @@ def validate_assertion_provenance(
     missing = sorted(assertion.source_id for assertion in assertions if assertion.source_id not in source_ids)
     if missing:
         raise ValueError(f"business assertion has missing authoritative source: {missing[0]}")
+    admitted = {(ref.path, ref.digest) for ref in authority_refs}
+    requirement_identity = (requirement_ref.path, requirement_ref.digest)
+    if requirement_identity not in admitted:
+        raise ValueError("requirement_ref must be an independently authenticated authority ref")
+    for source in sources.sources:
+        content_identity = (source.content_ref.path, source.content_ref.digest)
+        if source.origin == "requirement":
+            if content_identity != requirement_identity:
+                raise ValueError("requirement source must bind the authenticated requirement")
+            if source.review_ref is not None:
+                raise ValueError("requirement source cannot carry a review_ref")
+            continue
+        if content_identity not in admitted:
+            raise ValueError("reviewed input source content_ref is not authenticated")
+        if (
+            source.review_ref is None
+            or (
+                source.review_ref.path,
+                source.review_ref.digest,
+            )
+            not in admitted
+        ):
+            raise ValueError("reviewed input source review_ref is not authenticated")
     return assertions
 
 

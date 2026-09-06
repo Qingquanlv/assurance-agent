@@ -65,6 +65,7 @@
       "assurance.intake.schema.case.v1",
       "assurance.intake.schema.qa-change.v1",
       "assurance.intake.schema.resolved-assurance-plan.v1",
+      "assurance.intake.schema.resolved-assurance-plan.v2",
       "assurance.intake.workflow.case.input.v1",
       "assurance.intake.workflow.case.output.v1",
       "assurance.intake.workflow.prepare.input.v1",

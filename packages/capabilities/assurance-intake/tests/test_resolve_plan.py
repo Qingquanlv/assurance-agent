@@ -11,11 +11,14 @@ from assurance_intake.contracts.plan import (
     PlanBudgetsV1,
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
+    ResolvedAssurancePlanV1,
+    ResolvedAssurancePlanV2,
     TestFamilyPolicyV1 as FamilyPolicy,
     decode_plan,
     plan_artifact_ref,
     plan_bytes,
 )
+from assurance_intake.resource_loader import resource_bytes
 from assurance_intake.contracts.quality_goals import (
     CoverageFloorsV1,
     CoverageGoalPolicyV1,
@@ -241,3 +244,26 @@ def test_explicit_authenticated_verification_policy_versions_the_root_plan() -> 
     assert "technical_config_digest" not in type(verified).model_fields
     assert decode_plan(plan_bytes(legacy), plan_artifact_ref(legacy)) == legacy
     assert decode_plan(plan_bytes(verified), plan_artifact_ref(verified)) == verified
+
+
+def test_published_plan_schemas_match_each_version_and_validate_both_profiles() -> None:
+    legacy = resolve_plan(request=_request(), proposed=("api",), quality_goal=_goal())
+    policy = BusinessVerificationPolicyV1(
+        validation_profile="api_db.v1",
+        resource_id="assurance.product.configuration.verification-policy",
+        digest="c" * 64,
+    )
+    verified = resolve_plan(
+        request=_request(verification_policy=policy),
+        proposed=("api",),
+        quality_goal=_goal(),
+    )
+
+    assert json.loads(resource_bytes("schemas/resolved-assurance-plan.v1.schema.json")) == (
+        ResolvedAssurancePlanV1.model_json_schema()
+    )
+    assert json.loads(resource_bytes("schemas/resolved-assurance-plan.v2.schema.json")) == (
+        ResolvedAssurancePlanV2.model_json_schema()
+    )
+    assert ResolvedAssurancePlanV1.model_validate_json(plan_bytes(legacy)).schema_version == "1"
+    assert ResolvedAssurancePlanV2.model_validate_json(plan_bytes(verified)).schema_version == "2"

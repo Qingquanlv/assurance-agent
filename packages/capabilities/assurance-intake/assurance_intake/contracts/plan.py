@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Literal, Self, cast
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from pydantic_core import to_jsonable_python
 
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
@@ -182,6 +182,36 @@ class ResolvedAssurancePlan(FrozenModel):
         return self
 
 
+class _ResolvedAssurancePlanVersion(FrozenModel):
+    """Published schema projection shared by immutable plan versions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, title="ResolvedAssurancePlan")
+
+    change_id: str = Field(min_length=1)
+    requirement_digest: str = Field(pattern=_SHA256)
+    gdt: Literal["in-execution"] = "in-execution"
+    gpm: Literal["select"] = "select"
+    candidate_test_families: tuple[TestFamily, ...]
+    proposed_test_families: tuple[TestFamily, ...]
+    selected_test_families: tuple[TestFamily, ...] = Field(min_length=1)
+    quality_goal: PreparedQualityGoalV1
+    resolved_budgets: PlanBudgetsV1
+    policy_resource_id: str
+    policy_digest: str = Field(pattern=_SHA256)
+    exploration_ref: EvidenceArtifactRefV1
+    plan_digest: str = Field(pattern=_SHA256)
+    resolution_reasons: tuple[ResolutionReasonV1, ...]
+
+
+class ResolvedAssurancePlanV1(_ResolvedAssurancePlanVersion):
+    schema_version: Literal["1"] = "1"
+
+
+class ResolvedAssurancePlanV2(_ResolvedAssurancePlanVersion):
+    schema_version: Literal["2"] = "2"
+    verification_policy: BusinessVerificationPolicyV1
+
+
 class ResolvePlanInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     requirement_digest: str = Field(pattern=_SHA256)
@@ -335,6 +365,8 @@ __all__ = [
     "ResolvePlanInputV1",
     "ResolvePlanOutputV1",
     "ResolvedAssurancePlan",
+    "ResolvedAssurancePlanV1",
+    "ResolvedAssurancePlanV2",
     "TestFamilyPolicyV1",
     "decode_plan",
     "plan_artifact_ref",

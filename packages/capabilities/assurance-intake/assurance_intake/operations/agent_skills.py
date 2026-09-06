@@ -25,8 +25,14 @@ from assurance_intake.contracts.agent import (
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
+from assurance_intake.contracts.cases import CaseEntryAuthoring, CaseYamlAuthoring
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
+from assurance_intake.contracts.verification import (
+    AssertionSourcesV1,
+    BusinessAssertionV1,
+    validate_assertion_provenance,
+)
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, build_explore_context
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
@@ -169,6 +175,90 @@ def _authenticate_plan(
     if plan.change_id != change_id or plan.plan_digest != plan_digest:
         raise InputError("frozen assurance plan does not match case input")
     return plan
+
+
+def _require_verified_sidecars(
+    plan: ResolvedAssurancePlan,
+    *,
+    case_paths: tuple[str, ...],
+    source_paths: tuple[str, ...],
+) -> None:
+    if plan.verification_policy is not None and len(source_paths) != len(case_paths):
+        raise InputError("verified plan requires exactly one assertion source sidecar per case")
+
+
+def _require_verified_requirement_ref(
+    plan: ResolvedAssurancePlan,
+    *,
+    change_id: str,
+    refs: tuple[EvidenceArtifactRefV1, ...],
+) -> None:
+    if plan.verification_policy is None:
+        return
+    requirement_path = f"qa/changes/{change_id}/requirement.md"
+    if sum(ref.path == requirement_path for ref in refs) != 1:
+        raise InputError("verified plan requires one authenticated requirement ref")
+
+
+def _validate_review_verification_inputs(
+    project_root: Path,
+    *,
+    plan: ResolvedAssurancePlan,
+    business: CaseReviewInputV1,
+) -> None:
+    policy = plan.verification_policy
+    if policy is None:
+        return
+    requirement_path = f"qa/changes/{business.change_id}/requirement.md"
+    requirement_ref = next(ref for ref in business.preparation_refs if ref.path == requirement_path)
+    review_prefix = f"qa/changes/{business.change_id}/review/"
+    review_history_marker = f"qa/changes/{business.change_id}/cases/reviews/"
+    authority_refs = tuple(
+        ref
+        for ref in business.preparation_refs
+        if ref.path == requirement_path
+        or ref.path.startswith(review_prefix)
+        or ref.path.startswith(review_history_marker)
+    )
+    entries: dict[str, CaseEntryAuthoring] = {}
+    try:
+        for relative in business.case_delta_paths:
+            raw = yaml.safe_load(project_root.joinpath(*relative.split("/")).read_bytes())
+            document = CaseYamlAuthoring.model_validate(
+                raw,
+                context={"capability_leafs": frozenset(business.capability_leafs)},
+            )
+            for entry in (*document.added, *document.modified):
+                if entry.case_id in entries:
+                    raise ValueError(f"duplicate authored case: {entry.case_id}")
+                entries[entry.case_id] = entry
+        seen: set[str] = set()
+        revision = policy.validation_profile.rsplit(".v", maxsplit=1)[1]
+        for relative in business.assertion_source_paths:
+            sources = AssertionSourcesV1.model_validate_json(
+                project_root.joinpath(*relative.split("/")).read_bytes()
+            )
+            entry = entries.get(sources.case_id)
+            if entry is None:
+                raise ValueError(
+                    f"assertion-sources.json references unknown authored case: {sources.case_id}"
+                )
+            seen.add(sources.case_id)
+            assertions = tuple(BusinessAssertionV1.model_validate(item) for item in entry.assertions)
+            validate_assertion_provenance(
+                case_id=sources.case_id,
+                revision=revision,
+                spec_digest=plan.requirement_digest,
+                assertions=assertions,
+                sources=sources,
+                requirement_ref=requirement_ref,
+                authority_refs=authority_refs,
+            )
+        if seen != set(entries):
+            missing = sorted(set(entries) - seen)
+            raise ValueError(f"typed assertion sources are missing for authored cases: {missing}")
+    except (OSError, yaml.YAMLError, ValidationError, TypeError, ValueError) as error:
+        raise InputError(f"invalid typed assertion provenance: {error}") from error
 
 
 def _review_repair_contract(
@@ -413,7 +503,17 @@ class CaseDesignPrepareHandler:
             )
             if business.selected_test_families != plan.selected_test_families:
                 raise InputError("case selected families do not match frozen assurance plan")
+            _require_verified_sidecars(
+                plan,
+                case_paths=business.case_delta_paths,
+                source_paths=business.assertion_source_paths,
+            )
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
+            _require_verified_requirement_ref(
+                plan,
+                change_id=business.change_id,
+                refs=business.preparation_refs,
+            )
             if business.case_rework_context is not None:
                 rework = business.case_rework_context
                 _authenticate_evidence_refs(context.project_root, rework.assessment_refs)
@@ -463,13 +563,23 @@ class CaseReviewPrepareHandler:
         try:
             business = validate_input(CaseReviewInputV1, request.input)
             binding = validate_binding(request.binding_data)
-            _authenticate_plan(
+            plan = _authenticate_plan(
                 context.project_root,
                 change_id=business.change_id,
                 plan_digest=business.plan_digest,
                 plan_ref=business.plan_ref,
             )
+            _require_verified_sidecars(
+                plan,
+                case_paths=business.case_delta_paths,
+                source_paths=business.assertion_source_paths,
+            )
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
+            _require_verified_requirement_ref(
+                plan,
+                change_id=business.change_id,
+                refs=business.preparation_refs,
+            )
             _authenticate_evidence_refs(context.project_root, business.case_refs)
             if business.case_refs and {item.path for item in business.case_refs} != set(
                 business.case_delta_paths
@@ -482,6 +592,11 @@ class CaseReviewPrepareHandler:
             )
             for relative in review_inputs:
                 _require_regular_project_input(context.project_root, relative)
+            _validate_review_verification_inputs(
+                context.project_root,
+                plan=plan,
+                business=business,
+            )
             business = CaseReviewInputV1.model_validate(
                 {**business.model_dump(mode="json"), "review_input_paths": review_inputs}
             )

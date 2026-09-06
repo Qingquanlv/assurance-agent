@@ -14,6 +14,7 @@ from graph_engine.canonical import JSONValue, canonical_json_bytes
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import (
+    BusinessVerificationPolicyV1,
     PlanBudgetsV1,
     ResolvePlanInputV1,
     ResolvedAssurancePlan,
@@ -60,6 +61,7 @@ def install_plan(
     candidates: tuple[TestFamily, ...] = ("api",),
     proposed: tuple[TestFamily, ...] = ("api",),
     policy: Mapping[str, object] = DEFAULT_POLICY,
+    verification_policy: BusinessVerificationPolicyV1 | None = None,
 ) -> tuple[ResolvedAssurancePlan, dict[str, str]]:
     capability_leafs = tuple(sorted(set(capability_leafs)))
     policy_bytes = yaml.safe_dump(dict(policy), sort_keys=True).encode()
@@ -68,6 +70,13 @@ def install_plan(
     catalog_digest = _write(root, ".aa/capability-catalog.json", catalog_bytes)
     knowledge_bytes = yaml.safe_dump({"journeys": list(journeys)}, sort_keys=True).encode()
     knowledge_digest = _write(root, ".aa/data-knowledge.yaml", knowledge_bytes)
+    if verification_policy is not None:
+        verification_bytes = yaml.safe_dump(
+            {"validation_profile": verification_policy.validation_profile},
+            sort_keys=True,
+        ).encode()
+        verification_digest = _write(root, ".aa/verification-policy.yaml", verification_bytes)
+        verification_policy = verification_policy.model_copy(update={"digest": verification_digest})
 
     coverage = (
         dict(minimum_required_coverage)
@@ -138,6 +147,7 @@ def install_plan(
         ),
         source_resource_digests=source_digests,
         capability_leafs=capability_leafs,
+        verification_policy=verification_policy,
     )
     advisory, quality_goal = prepare_quality_goal(request, project_root=root)
     selected = tuple(

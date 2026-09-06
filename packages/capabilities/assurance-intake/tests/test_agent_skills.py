@@ -30,9 +30,15 @@ from assurance_intake.operations import (
 )
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_intake.contracts.plan import BusinessVerificationPolicyV1
 from assurance_intake.resource_loader import resource_text
 
 _SHA = "a" * 64
+_VERIFICATION_POLICY = BusinessVerificationPolicyV1(
+    validation_profile="api_db.v1",
+    resource_id="assurance.product.configuration.verification-policy",
+    digest="c" * 64,
+)
 _PLAN_DIGEST = "31e8e6ccff373c935bf09f5f83763f327bd54bc3c96a11b9db3bca1b7b22fa00"
 _PLAN_REF: dict[str, JSONValue] = {
     "path": f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
@@ -77,6 +83,7 @@ async def run_prepare(
     binding: JSONValue,
     workspace: Path,
     write_root: Path | None = None,
+    verification_policy: BusinessVerificationPolicyV1 | None = None,
 ) -> Any:
     if type(handler).__name__.startswith("Case"):
         exploration = workspace / "qa/changes/CH-DEMO-001/explore/exploration.json"
@@ -96,6 +103,7 @@ async def run_prepare(
             "CH-DEMO-001",
             capability_leafs=VALID_LEAFS,
             minimum_required_coverage=minimum_required_coverage,
+            verification_policy=verification_policy,
         )
         if isinstance(payload, dict):
             payload = {
@@ -663,6 +671,23 @@ async def test_case_design_prepare_reads_plan_bound_exploration_for_standalone_c
 
 
 @pytest.mark.asyncio
+async def test_verified_case_design_prepare_requires_one_source_sidecar_per_case(
+    tmp_path: Path,
+) -> None:
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        CASE_INPUT,
+        BINDING,
+        tmp_path,
+        verification_policy=_VERIFICATION_POLICY,
+    )
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert "requires exactly one assertion source sidecar per case" in prepared.failure.message
+
+
+@pytest.mark.asyncio
 async def test_case_design_prepare_rejects_mismatched_exploration_identity(tmp_path: Path) -> None:
     relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
     path = tmp_path / relative
@@ -708,6 +733,35 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
         "qa/changes/CH-DEMO-001/requirement.md",
         "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
     )
+
+
+@pytest.mark.asyncio
+async def test_verified_case_review_prepare_requires_one_source_sidecar_per_case(
+    tmp_path: Path,
+) -> None:
+    change_root = tmp_path / "qa/changes/CH-DEMO-001"
+    (change_root / "trace").mkdir(parents=True)
+    (change_root / "cases/menus").mkdir(parents=True)
+    (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
+    (change_root / "requirement.md").write_text("# Requirement\n", encoding="utf-8")
+    (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
+    (change_root / "trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    (change_root / "cases/menus/case.yaml").write_text(
+        "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
+        encoding="utf-8",
+    )
+
+    prepared = await run_prepare(
+        CaseReviewPrepareHandler(),
+        CASE_REVIEW_INPUT,
+        BINDING,
+        tmp_path,
+        verification_policy=_VERIFICATION_POLICY,
+    )
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert "requires exactly one assertion source sidecar per case" in prepared.failure.message
 
 
 @pytest.mark.asyncio
@@ -875,6 +929,8 @@ async def _finalize_files(
     review_round: int = 0,
     preparation_refs: list[dict[str, str]] | None = None,
     case_refs: list[dict[str, str]] | None = None,
+    assertion_source_paths: list[str] | None = None,
+    verification_policy: BusinessVerificationPolicyV1 | None = None,
 ) -> Any:
     result = fake_agent_result(structured_result)
     plan = None
@@ -887,6 +943,7 @@ async def _finalize_files(
             capability_leafs=VALID_LEAFS,
             candidates=selected,
             proposed=selected,
+            verification_policy=verification_policy,
         )
     bound_preparation_refs = list(preparation_refs or [])
     if plan_ref is not None and plan_ref not in bound_preparation_refs:
@@ -906,6 +963,7 @@ async def _finalize_files(
                 else []
             )
         ),
+        "assertion_source_paths": assertion_source_paths or [],
         **({"change_id": change_id} if change_id is not None else {}),
         **({"validation_attempt": validation_attempt} if validation_attempt is not None else {}),
         **({"review_repair": review_repair} if review_repair is not None else {}),
@@ -1006,6 +1064,247 @@ def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
         matrix_relative,
         relative,
     ]
+
+
+def _verified_case_document() -> dict[str, Any]:
+    document = deepcopy(
+        cast(dict[str, Any], yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text()))
+    )
+    document["added"][0]["assertions"] = [
+        {
+            "assertion_id": "api.http_status",
+            "statement": "Creating a menu returns HTTP status 200.",
+            "source_id": "requirement.menu.create",
+            "subject": "create.response.http_status",
+            "comparator": "eq",
+            "expected": {"kind": "literal", "value": 200},
+        }
+    ]
+    return document
+
+
+def _verified_source_payload(requirement_ref: dict[str, str]) -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "case_id": "TC_MENU_001",
+        "revision": "1",
+        "spec_digest": hashlib.sha256(b"requirement").hexdigest(),
+        "sources": [
+            {
+                "source_id": "requirement.menu.create",
+                "origin": "requirement",
+                "reference": "Menu creation requirement",
+                "summary": "The admitted requirement fixes the create response.",
+                "decision": "accepted",
+                "content_ref": requirement_ref,
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    ["ref_bytes", "digest", "revision", "spec_digest", "origin", "decision"],
+)
+async def test_verified_case_design_finalize_rejects_sidecar_authority_mutation_after_prepare(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    requirement_relative = "qa/changes/CH-DEMO-001/requirement.md"
+    requirement_path = tmp_path / requirement_relative
+    requirement_path.parent.mkdir(parents=True, exist_ok=True)
+    requirement_path.write_bytes(b"requirement")
+    requirement_ref = {
+        "path": requirement_relative,
+        "digest": hashlib.sha256(requirement_path.read_bytes()).hexdigest(),
+    }
+    case_relative = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    source_relative = "qa/changes/CH-DEMO-001/cases/menus/assertion-sources.json"
+    business = {
+        **CASE_INPUT,
+        "preparation_refs": [requirement_ref],
+        "assertion_source_paths": [source_relative],
+    }
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        cast(JSONValue, business),
+        BINDING,
+        tmp_path,
+        verification_policy=_VERIFICATION_POLICY,
+    )
+    assert prepared.status == "succeeded", prepared.failure
+
+    outputs = _write_case_design_outputs(tmp_path, _verified_case_document())
+    source = _verified_source_payload(requirement_ref)
+    if mutation == "ref_bytes":
+        requirement_path.write_bytes(b"requirement changed after prepare")
+    elif mutation == "digest":
+        source["sources"][0]["content_ref"]["digest"] = "d" * 64
+    elif mutation == "revision":
+        source["revision"] = "2"
+    elif mutation == "spec_digest":
+        source["spec_digest"] = "e" * 64
+    elif mutation == "origin":
+        source["sources"][0]["origin"] = "reviewed_input"
+    else:
+        source["sources"][0]["decision"] = "rejected"
+    source_path = tmp_path / source_relative
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        {"output_files": [*outputs, source_relative]},
+        tmp_path,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        case_delta_paths=[case_relative],
+        assertion_source_paths=[source_relative],
+        preparation_refs=[requirement_ref],
+        verification_policy=_VERIFICATION_POLICY,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
+async def test_verified_case_review_finalize_rejects_sidecar_changed_after_prepare(
+    tmp_path: Path,
+) -> None:
+    project, write_root = dual_roots(tmp_path)
+    requirement_relative = "qa/changes/CH-DEMO-001/requirement.md"
+    requirement_path = project / requirement_relative
+    requirement_path.parent.mkdir(parents=True, exist_ok=True)
+    requirement_path.write_bytes(b"requirement")
+    requirement_ref = {
+        "path": requirement_relative,
+        "digest": hashlib.sha256(requirement_path.read_bytes()).hexdigest(),
+    }
+    outputs = _write_case_design_outputs(project, _verified_case_document())
+    case_relative = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    source_relative = "qa/changes/CH-DEMO-001/cases/menus/assertion-sources.json"
+    source_path = project / source_relative
+    source_path.write_text(json.dumps(_verified_source_payload(requirement_ref)), encoding="utf-8")
+    matrix_relative = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    source_ref = {
+        "path": source_relative,
+        "digest": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    }
+    matrix_ref = {
+        "path": matrix_relative,
+        "digest": hashlib.sha256((project / matrix_relative).read_bytes()).hexdigest(),
+    }
+    case_ref = {
+        "path": case_relative,
+        "digest": hashlib.sha256((project / case_relative).read_bytes()).hexdigest(),
+    }
+    review_input = {
+        **CASE_REVIEW_INPUT,
+        "preparation_refs": [requirement_ref, matrix_ref, source_ref],
+        "case_refs": [case_ref],
+        "assertion_source_paths": [source_relative],
+    }
+    prepared = await run_prepare(
+        CaseReviewPrepareHandler(),
+        cast(JSONValue, review_input),
+        BINDING,
+        project,
+        write_root,
+        verification_policy=_VERIFICATION_POLICY,
+    )
+    assert prepared.status == "succeeded", prepared.failure
+    changed = _verified_source_payload(requirement_ref)
+    changed["sources"][0]["summary"] = "changed after prepare"
+    source_path.write_text(json.dumps(changed), encoding="utf-8")
+
+    review_document = _case_review_document(missing=[])
+    review_relative = "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = write_root / review_relative
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(review_document), encoding="utf-8")
+    summary_relative = "qa/changes/CH-DEMO-001/review/case-review-summary.md"
+    (write_root / summary_relative).write_text("# Case review\n", encoding="utf-8")
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        cast(JSONValue, review_document),
+        project,
+        ["qa/changes"],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+        case_delta_paths=[case_relative],
+        assertion_source_paths=[source_relative],
+        preparation_refs=[requirement_ref, matrix_ref, source_ref],
+        case_refs=[case_ref],
+        verification_policy=_VERIFICATION_POLICY,
+    )
+
+    assert outputs
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "assertion-sources.json" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_case_review_prepare_rejects_invalid_typed_sidecar(
+    tmp_path: Path,
+) -> None:
+    requirement_relative = "qa/changes/CH-DEMO-001/requirement.md"
+    requirement_path = tmp_path / requirement_relative
+    requirement_path.parent.mkdir(parents=True, exist_ok=True)
+    requirement_path.write_bytes(b"requirement")
+    requirement_ref = {
+        "path": requirement_relative,
+        "digest": hashlib.sha256(requirement_path.read_bytes()).hexdigest(),
+    }
+    _write_case_design_outputs(tmp_path, _verified_case_document())
+    case_relative = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    source_relative = "qa/changes/CH-DEMO-001/cases/menus/assertion-sources.json"
+    invalid = _verified_source_payload(requirement_ref)
+    invalid["revision"] = "2"
+    source_path = tmp_path / source_relative
+    source_path.write_text(json.dumps(invalid), encoding="utf-8")
+    matrix_relative = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    preparation_refs = [
+        requirement_ref,
+        {
+            "path": matrix_relative,
+            "digest": hashlib.sha256((tmp_path / matrix_relative).read_bytes()).hexdigest(),
+        },
+        {
+            "path": source_relative,
+            "digest": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+        },
+    ]
+    case_refs = [
+        {
+            "path": case_relative,
+            "digest": hashlib.sha256((tmp_path / case_relative).read_bytes()).hexdigest(),
+        }
+    ]
+
+    prepared = await run_prepare(
+        CaseReviewPrepareHandler(),
+        cast(
+            JSONValue,
+            {
+                **CASE_REVIEW_INPUT,
+                "preparation_refs": preparation_refs,
+                "case_refs": case_refs,
+                "assertion_source_paths": [source_relative],
+            },
+        ),
+        BINDING,
+        tmp_path,
+        verification_policy=_VERIFICATION_POLICY,
+    )
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert "assertion provenance does not match" in prepared.failure.message
 
 
 def _write_fixable_case_review(

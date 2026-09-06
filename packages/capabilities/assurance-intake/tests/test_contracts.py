@@ -51,6 +51,10 @@ _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
         "1",
         "0a095b5f9b45699c07e2d1c3ee67c5f3fa09c78a72f695191278587de289a499",
     ),
+    "assurance.intake.schema.resolved-assurance-plan.v2": (
+        "1",
+        "892035b1cd8c632eef1ef2b58fb2adc6ae643f2e6afebc5faa160ddd598f07ef",
+    ),
     "assurance.intake.workflow.case.input.v1": (
         "1",
         "2eba0cec702a8417a5d8ad5f95713c2d6f2721a308a621cd81cd862d9d9f1d93",
