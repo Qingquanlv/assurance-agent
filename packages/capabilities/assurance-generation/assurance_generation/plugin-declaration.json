@@ -1,136 +1,20 @@
 {
   "descriptor": {
-    "attempt_contracts": [
-      {
-        "contract_id": "assurance.generation.agent.api.codegen-fix.v1",
-        "digest": "c590a1b4db27e2c0eddb948e62a2d3459eb65fc694d56d96f53a534711dc9179"
-      },
-      {
-        "contract_id": "assurance.generation.agent.api.codegen.v1",
-        "digest": "961a47f338b856136a4eab9215653849ff82fbfc1e4b2bffcbd3744e26205ffa"
-      },
-      {
-        "contract_id": "assurance.generation.agent.api.plan-review.v1",
-        "digest": "1c61dd1d34ed93ffbc92ad596ecea814250535df99ab39ed604f962953019947"
-      },
-      {
-        "contract_id": "assurance.generation.agent.api.plan.v1",
-        "digest": "fd760dc54e94bd956850e8505c58bcf9d1d27ac7366563bf0bbdc93b1446dea3"
-      },
-      {
-        "contract_id": "assurance.generation.agent.e2e.codegen-fix.v1",
-        "digest": "76618020631c9833cf04bb3439b6de64420bffd7edcdec443d57f72ce0234a46"
-      },
-      {
-        "contract_id": "assurance.generation.agent.e2e.codegen.v1",
-        "digest": "62b3719da9b1d47cdc880f8946312ffeb2f053c097e04236d4715fea15b49abe"
-      },
-      {
-        "contract_id": "assurance.generation.agent.e2e.plan-review.v1",
-        "digest": "0513d25c36e68820e7302acc2cc2e95a93c3091adb9ee73a4929da10375d3f20"
-      },
-      {
-        "contract_id": "assurance.generation.agent.e2e.plan.v1",
-        "digest": "e07a50139e62887f8130bff3e85c2d247d975f5e8d6e82c688f6ca6079a7dd61"
-      },
-      {
-        "contract_id": "assurance.generation.agent.fuzz.codegen.v1",
-        "digest": "ce2047619e3bab46b91fd5b724494518f77ba7d13f44a596c0f57592da2b0c17"
-      },
-      {
-        "contract_id": "assurance.generation.agent.fuzz.plan-review.v1",
-        "digest": "fb73fbc1280a52c430b2a4a32808b97f65d7049f1b97be766618008646c03579"
-      },
-      {
-        "contract_id": "assurance.generation.agent.fuzz.plan.v1",
-        "digest": "5ff86c759571293c2e5e0fc4ad95b444edd2cc1bbf92cf2237a724bf6b8f9f23"
-      },
-      {
-        "contract_id": "assurance.generation.agent.performance.codegen.v1",
-        "digest": "40689eb5d6da0d32c9e65be610667fa9bd5d0b667a2c16b869fdaf0a698a519c"
-      },
-      {
-        "contract_id": "assurance.generation.agent.performance.plan-review.v1",
-        "digest": "251188148aaf183abce72f64512b0b6b841e6c9db666117583949a19c39521d9"
-      },
-      {
-        "contract_id": "assurance.generation.agent.performance.plan.v1",
-        "digest": "737f195b1765f8a1693932bd56dd99bce9f1a947a894c47cb2ff1b83ce5eae84"
-      },
-      {
-        "contract_id": "assurance.generation.publish-cycle",
-        "digest": "c98ad7cbc2617a9fd64b04c3d9770c33ce3885a6b38dd788b79e91e5a2bb037d"
-      },
-      {
-        "contract_id": "assurance.generation.resolve-inputs",
-        "digest": "4da5c5c788481163b59896ad2f6833cf8ac0874ffea5ca54530ce877d2f1c38c"
-      }
-    ],
-    "bindings": [],
-    "commit_validators": [
-      "assurance.generation.validator.api-plan.v1",
-      "assurance.generation.validator.codegen-fix-candidate.v1",
-      "assurance.generation.validator.codegen-mapping.v1",
-      "assurance.generation.validator.e2e-plan.v1",
-      "assurance.generation.validator.fuzz-plan.v1",
-      "assurance.generation.validator.generated-files.v1",
-      "assurance.generation.validator.performance-plan.v1",
-      "assurance.generation.validator.plan-mechanical.v1"
-    ],
-    "dependencies": [
-      {
-        "plugin_id": "assurance.intake",
-        "version_specifier": "==0.2.0"
-      }
-    ],
-    "effects": [],
-    "engine_api": "2.0",
-    "plugin_id": "assurance.generation",
-    "plugin_version": "0.2.0",
-    "resources": [
-      "assurance.generation.persona.reviewer.v1",
-      "assurance.generation.persona.test-author.v1",
-      "assurance.generation.result.codegen-fix.v1",
-      "assurance.generation.result.codegen.v1",
-      "assurance.generation.result.plan-review.v1",
-      "assurance.generation.result.plan.v1",
-      "assurance.generation.skill.aa-api-codegen-fixer.v1",
-      "assurance.generation.skill.aa-api-codegen.v1",
-      "assurance.generation.skill.aa-api-plan-reviewer.v1",
-      "assurance.generation.skill.aa-api-plan.v1",
-      "assurance.generation.skill.aa-e2e-codegen-fixer.v1",
-      "assurance.generation.skill.aa-e2e-codegen.v1",
-      "assurance.generation.skill.aa-e2e-plan-reviewer.v1",
-      "assurance.generation.skill.aa-e2e-plan.v1",
-      "assurance.generation.skill.aa-fuzz-codegen.v1",
-      "assurance.generation.skill.aa-fuzz-plan-reviewer.v1",
-      "assurance.generation.skill.aa-fuzz-plan.v1",
-      "assurance.generation.skill.aa-performance-codegen.v1",
-      "assurance.generation.skill.aa-performance-plan-reviewer.v1",
-      "assurance.generation.skill.aa-performance-plan.v1"
-    ],
     "schema_version": "1",
-    "schemas": [
-      "assurance.generation.schema.case-execution-plan.v1",
-      "assurance.generation.schema.codegen-mapping.v1",
-      "assurance.generation.schema.discovery-campaign.v1",
-      "assurance.generation.schema.generated-files.v1",
-      "assurance.generation.schema.plan-check.v1",
-      "assurance.generation.schema.plan-review.v1",
-      "assurance.generation.workflow.generate.input.v1",
-      "assurance.generation.workflow.generate.output.v1"
-    ],
     "source": {
-      "declaration_path": "assurance_generation/plugin-declaration.json",
       "distribution": "assurance-generation",
+      "version": "0.2.0",
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "generation",
       "entrypoint_value": "assurance_generation.plugin:GenerationPlugin",
+      "declaration_path": "assurance_generation/plugin-declaration.json",
       "import_roots": [
         ""
-      ],
-      "version": "0.2.0"
+      ]
     },
+    "plugin_id": "assurance.generation",
+    "plugin_version": "0.2.0",
+    "engine_api": "2.0",
     "task_handlers": [
       "assurance.generation.api.codegen-fix.finalize",
       "assurance.generation.api.codegen-fix.prepare",
@@ -164,6 +48,122 @@
       "assurance.generation.publish-cycle.execute",
       "assurance.generation.resolve-inputs.execute",
       "assurance.generation.review-round.advance"
+    ],
+    "commit_validators": [
+      "assurance.generation.validator.api-plan.v1",
+      "assurance.generation.validator.codegen-fix-candidate.v1",
+      "assurance.generation.validator.codegen-mapping.v1",
+      "assurance.generation.validator.e2e-plan.v1",
+      "assurance.generation.validator.fuzz-plan.v1",
+      "assurance.generation.validator.generated-files.v1",
+      "assurance.generation.validator.performance-plan.v1",
+      "assurance.generation.validator.plan-mechanical.v1"
+    ],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.2.0"
+      }
+    ],
+    "schemas": [
+      "assurance.generation.schema.case-execution-plan.v1",
+      "assurance.generation.schema.codegen-mapping.v1",
+      "assurance.generation.schema.discovery-campaign.v1",
+      "assurance.generation.schema.generated-files.v1",
+      "assurance.generation.schema.plan-check.v1",
+      "assurance.generation.schema.plan-review.v1",
+      "assurance.generation.workflow.generate.input.v1",
+      "assurance.generation.workflow.generate.output.v1"
+    ],
+    "resources": [
+      "assurance.generation.persona.reviewer.v1",
+      "assurance.generation.persona.test-author.v1",
+      "assurance.generation.result.codegen-fix.v1",
+      "assurance.generation.result.codegen.v1",
+      "assurance.generation.result.plan-review.v1",
+      "assurance.generation.result.plan.v1",
+      "assurance.generation.skill.aa-api-codegen-fixer.v1",
+      "assurance.generation.skill.aa-api-codegen.v1",
+      "assurance.generation.skill.aa-api-plan-reviewer.v1",
+      "assurance.generation.skill.aa-api-plan.v1",
+      "assurance.generation.skill.aa-e2e-codegen-fixer.v1",
+      "assurance.generation.skill.aa-e2e-codegen.v1",
+      "assurance.generation.skill.aa-e2e-plan-reviewer.v1",
+      "assurance.generation.skill.aa-e2e-plan.v1",
+      "assurance.generation.skill.aa-fuzz-codegen.v1",
+      "assurance.generation.skill.aa-fuzz-plan-reviewer.v1",
+      "assurance.generation.skill.aa-fuzz-plan.v1",
+      "assurance.generation.skill.aa-performance-codegen.v1",
+      "assurance.generation.skill.aa-performance-plan-reviewer.v1",
+      "assurance.generation.skill.aa-performance-plan.v1"
+    ],
+    "effects": [],
+    "bindings": [],
+    "attempt_contracts": [
+      {
+        "contract_id": "assurance.generation.agent.api.codegen-fix.v1",
+        "digest": "3dd37745ec297c4ea71fda9c04c3eec7413d78d4021085fa462020254e7546aa"
+      },
+      {
+        "contract_id": "assurance.generation.agent.api.codegen.v1",
+        "digest": "41cd5899672b356411da6348c61fb0b6307c4c3313b9e0090f5bdadc1c7491ca"
+      },
+      {
+        "contract_id": "assurance.generation.agent.api.plan-review.v1",
+        "digest": "1c61dd1d34ed93ffbc92ad596ecea814250535df99ab39ed604f962953019947"
+      },
+      {
+        "contract_id": "assurance.generation.agent.api.plan.v1",
+        "digest": "fd760dc54e94bd956850e8505c58bcf9d1d27ac7366563bf0bbdc93b1446dea3"
+      },
+      {
+        "contract_id": "assurance.generation.agent.e2e.codegen-fix.v1",
+        "digest": "33c41fb13279898f3318c503bd0ae3290140156388b8b2b240774ede20f52e33"
+      },
+      {
+        "contract_id": "assurance.generation.agent.e2e.codegen.v1",
+        "digest": "56d355d9aaff962160b32b57f241135cd3be95107ff7f929c080a3a0a252bad1"
+      },
+      {
+        "contract_id": "assurance.generation.agent.e2e.plan-review.v1",
+        "digest": "0513d25c36e68820e7302acc2cc2e95a93c3091adb9ee73a4929da10375d3f20"
+      },
+      {
+        "contract_id": "assurance.generation.agent.e2e.plan.v1",
+        "digest": "e07a50139e62887f8130bff3e85c2d247d975f5e8d6e82c688f6ca6079a7dd61"
+      },
+      {
+        "contract_id": "assurance.generation.agent.fuzz.codegen.v1",
+        "digest": "0b21b07ca72af0485b7c580aefd21e3004ce46850812d11c9773b1e2ad0a53e7"
+      },
+      {
+        "contract_id": "assurance.generation.agent.fuzz.plan-review.v1",
+        "digest": "fb73fbc1280a52c430b2a4a32808b97f65d7049f1b97be766618008646c03579"
+      },
+      {
+        "contract_id": "assurance.generation.agent.fuzz.plan.v1",
+        "digest": "5ff86c759571293c2e5e0fc4ad95b444edd2cc1bbf92cf2237a724bf6b8f9f23"
+      },
+      {
+        "contract_id": "assurance.generation.agent.performance.codegen.v1",
+        "digest": "b33db57ec64afe939c86e447eb0f6d1d21190bee46ec7ad07faf65df051e06da"
+      },
+      {
+        "contract_id": "assurance.generation.agent.performance.plan-review.v1",
+        "digest": "251188148aaf183abce72f64512b0b6b841e6c9db666117583949a19c39521d9"
+      },
+      {
+        "contract_id": "assurance.generation.agent.performance.plan.v1",
+        "digest": "737f195b1765f8a1693932bd56dd99bce9f1a947a894c47cb2ff1b83ce5eae84"
+      },
+      {
+        "contract_id": "assurance.generation.publish-cycle",
+        "digest": "aee31de5307dac0e301802e680dbaa15026f6a7cbcae3dc332bb2c6527be8790"
+      },
+      {
+        "contract_id": "assurance.generation.resolve-inputs",
+        "digest": "4da5c5c788481163b59896ad2f6833cf8ac0874ffea5ca54530ce877d2f1c38c"
+      }
     ]
   },
   "kind": "plugin",

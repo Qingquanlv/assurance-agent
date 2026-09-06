@@ -11,7 +11,7 @@ from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
-from assurance_execution.contracts.verification import ExecutionTaskOutputV1
+from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 
 _EXECUTOR = "assurance-v1-executor"
 _RETRY = AttemptRetryPolicy(max_attempts=1)
@@ -75,7 +75,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
             owner_id="assurance.execution",
             handler_id="assurance.execution.verified-attempt",
             input_model=ExecutionPrepareInputV1,
-            output_model=ExecutionTaskOutputV1,
+            output_model=ExecutionDispatchResultV1,
             resources=ResourceClaimTemplate(
                 parameters={"change_id": "/change_id"},
                 reads=("qa",),

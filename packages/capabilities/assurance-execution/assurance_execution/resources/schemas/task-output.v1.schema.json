@@ -1,5 +1,20 @@
 {
   "$defs": {
+    "AttemptKey": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest"
+      ],
+      "title": "AttemptKey",
+      "type": "object"
+    },
     "ClosedMappingEntryV1": {
       "additionalProperties": false,
       "description": "One selected test bound to an existing case and typed capability leaf.",
@@ -428,6 +443,59 @@
       "title": "RawTestResultV1",
       "type": "object"
     },
+    "ReviewedCaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "change_id": {
+          "minLength": 1,
+          "title": "Change Id",
+          "type": "string"
+        },
+        "coverage_epoch": {
+          "minimum": 0,
+          "title": "Coverage Epoch",
+          "type": "integer"
+        },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
+          "type": "string"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "preparation_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Preparation Refs",
+          "type": "array"
+        },
+        "case_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Case Refs",
+          "type": "array"
+        },
+        "review_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        }
+      },
+      "required": [
+        "change_id",
+        "coverage_epoch",
+        "plan_digest",
+        "plan_ref",
+        "preparation_refs",
+        "case_refs",
+        "review_ref"
+      ],
+      "title": "ReviewedCaseV1",
+      "type": "object"
+    },
     "SelectedTargets": {
       "additionalProperties": false,
       "description": "Which of the four execution layers were selected for a batch.",
@@ -514,6 +582,143 @@
       ],
       "title": "VerificationEvidenceV1",
       "type": "object"
+    },
+    "VerifiedExecutionResultV1": {
+      "additionalProperties": false,
+      "description": "Authenticated host dispatch result; it carries completion, never a business verdict.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "validation_profile": {
+          "enum": [
+            "api_db.v1",
+            "api_db_trace.v1"
+          ],
+          "title": "Validation Profile",
+          "type": "string"
+        },
+        "change_id": {
+          "minLength": 1,
+          "title": "Change Id",
+          "type": "string"
+        },
+        "case_id": {
+          "minLength": 1,
+          "title": "Case Id",
+          "type": "string"
+        },
+        "reviewed_case": {
+          "$ref": "#/$defs/ReviewedCaseV1"
+        },
+        "coverage_epoch": {
+          "minimum": 0,
+          "title": "Coverage Epoch",
+          "type": "integer"
+        },
+        "repair_round": {
+          "minimum": 0,
+          "title": "Repair Round",
+          "type": "integer"
+        },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
+          "type": "string"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "case_execution_plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "case_execution_plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Case Execution Plan Digest",
+          "type": "string"
+        },
+        "spec_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Spec Digest",
+          "type": "string"
+        },
+        "execution_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "attempt_key": {
+          "$ref": "#/$defs/AttemptKey"
+        },
+        "batch_id": {
+          "minLength": 1,
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "mapping_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Mapping Digest",
+          "type": "string"
+        },
+        "manifest_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "evidence_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "raw_evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Raw Evidence Refs",
+          "type": "array"
+        },
+        "executed_at": {
+          "format": "date-time",
+          "title": "Executed At",
+          "type": "string"
+        },
+        "completion_status": {
+          "enum": [
+            "collected",
+            "incomplete"
+          ],
+          "title": "Completion Status",
+          "type": "string"
+        },
+        "evidence": {
+          "$ref": "#/$defs/VerificationEvidenceV1"
+        }
+      },
+      "required": [
+        "validation_profile",
+        "change_id",
+        "case_id",
+        "reviewed_case",
+        "coverage_epoch",
+        "repair_round",
+        "plan_digest",
+        "plan_ref",
+        "case_execution_plan_ref",
+        "case_execution_plan_digest",
+        "spec_digest",
+        "execution_id",
+        "attempt_key",
+        "batch_id",
+        "mapping_digest",
+        "manifest_ref",
+        "evidence_ref",
+        "raw_evidence_refs",
+        "executed_at",
+        "completion_status",
+        "evidence"
+      ],
+      "title": "VerifiedExecutionResultV1",
+      "type": "object"
     }
   },
   "anyOf": [
@@ -521,9 +726,9 @@
       "$ref": "#/$defs/ExecutionEvidenceV1"
     },
     {
-      "$ref": "#/$defs/VerificationEvidenceV1"
+      "$ref": "#/$defs/VerifiedExecutionResultV1"
     }
   ],
-  "description": "Fixed facade schema, shared by legacy and verified delegates.",
-  "title": "ExecutionTaskOutputV1"
+  "description": "Fixed facade output: legacy evidence or a host-authenticated verified result.",
+  "title": "ExecutionDispatchResultV1"
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import yaml
@@ -10,7 +11,8 @@ from pydantic import ValidationError
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
-from assurance_generation.contracts.codegen import staged_generated_path
+from assurance_generation.contracts.codegen import CodegenAuthoringV1, staged_generated_path
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from assurance_generation.contracts.mapping import ClosedMappingEntryV1, ClosedMappingV1
 from assurance_generation.contracts.workflow import CompleteGenerationInputV1, GenerationCycleResultV1
 from assurance_generation.operations.planning import evidence_ref
@@ -50,6 +52,27 @@ def complete_generation_cycle(
         if family.coverage_epoch != request.coverage_epoch or family.mapping.layer != family.family:
             raise ValueError("generation family identity does not match the current cycle")
         targets = {item.target_file for item in family.mapping.entries}
+        manifest_path = f"qa/changes/{request.change_id}/codegen/{family.family}-generated-files.json"
+        manifest_ref = evidence_ref(project_root, manifest_path)
+        manifest = CodegenAuthoringV1.model_validate(
+            json.loads((project_root / manifest_path).read_bytes()),
+            context={"capability_leafs": leafs},
+        )
+        if (
+            manifest.change_id != request.change_id
+            or manifest.layer != family.family
+            or manifest.mapping != family.mapping
+        ):
+            raise ValueError("committed generated-files manifest differs from finalized codegen")
+        expected_file_rows = {
+            (item.repo_path, item.disposition, item.role, tuple(item.case_ids)) for item in family.files
+        }
+        manifest_file_rows = {
+            (item.repo_path, item.disposition, item.role, tuple(item.case_ids)) for item in manifest.files
+        }
+        if expected_file_rows != manifest_file_rows:
+            raise ValueError("committed generated-files entries differ from finalized codegen")
+        sources[manifest_path] = manifest_ref
         for file in family.files:
             path = staged_generated_path(request.change_id, family.family, file.repo_path)
             ref = evidence_ref(project_root, path)
@@ -70,6 +93,29 @@ def complete_generation_cycle(
             if machine_plan_ref is not None and machine_plan_ref != committed_ref:
                 raise ValueError("generation cycle has conflicting case execution plans")
             machine_plan_ref = committed_ref
+            mapping = family.mapping
+            if (
+                mapping.validation_profile is None
+                or mapping.reviewed_case != reviewed
+                or mapping.coverage_epoch != request.coverage_epoch
+                or mapping.plan_digest != request.plan_digest
+                or mapping.plan_ref != request.plan_ref
+                or mapping.case_execution_plan_ref != committed_ref
+                or mapping.case_execution_plan_digest != committed_ref.digest
+            ):
+                raise ValueError("verified generated mapping differs from frozen generation inputs")
+            machine_plans = CaseExecutionPlanSetV1.model_validate_json(
+                (project_root / committed_ref.path).read_bytes()
+            )
+            planned_ids = {plan.case_id for plan in machine_plans.cases}
+            if planned_ids != {item.case_id for item in mapping.entries}:
+                raise ValueError("verified generated mapping omits a machine-plan Case")
+            assert mapping.case_spec_digests is not None
+            if any(
+                mapping.case_spec_digests.get(plan.case_id) != plan.spec_digest
+                for plan in machine_plans.cases
+            ):
+                raise ValueError("verified generated mapping carries a stale spec digest")
         for item in family.mapping.entries:
             case = cases.get(item.case_id)
             if case is None or case.type.lower() != family.family:

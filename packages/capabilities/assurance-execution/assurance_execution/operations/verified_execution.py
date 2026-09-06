@@ -46,6 +46,7 @@ from assurance_execution.contracts.verification import (
     ObservationV1,
     VerificationEvidenceV1,
     EvidenceCompletionV1,
+    VerifiedExecutionResultV1,
 )
 from assurance_execution.execution_view import ExecutionView, authenticate_execution_view
 from assurance_execution.operations.managed_sut import (
@@ -474,6 +475,92 @@ def _outcome(journal: ActionJournal, plan: CaseExecutionPlanV1, reason: str | No
     return outcome
 
 
+def _journal_refs(journal: ActionJournal) -> tuple[EvidenceArtifactRefV1, ...]:
+    refs: list[EvidenceArtifactRefV1] = []
+    for name in ("action_started", "action_terminal", "process_terminal", "cleanup_terminal"):
+        path = journal.root / f"{name}.json"
+        if path.is_file() and not path.is_symlink() and path.stat().st_nlink == 1:
+            refs.append(
+                EvidenceArtifactRefV1(
+                    path=f"{journal.manifest.evidence_root}/{name}.json",
+                    digest=hashlib.sha256(path.read_bytes()).hexdigest(),
+                )
+            )
+    return tuple(sorted(refs, key=lambda item: (item.path, item.digest)))
+
+
+def _verified_outcome(
+    outcome: TaskOutcome,
+    *,
+    request: TaskRequest,
+    context: TaskContext,
+    payload: VerifiedExecutionInputV1,
+    manifest: VerificationManifestV1,
+    plan: CaseExecutionPlanV1,
+    journal: ActionJournal,
+) -> TaskOutcome:
+    evidence = VerificationEvidenceV1.model_validate(outcome.output)
+    if payload.view.executed_at is None:
+        raise ValueError("verified execution view is missing its preparation time")
+    outcome_path = journal.root / "outcome.json"
+    if not outcome_path.is_file() or outcome_path.is_symlink() or outcome_path.stat().st_nlink != 1:
+        raise ValueError("verified immutable outcome is unavailable")
+    verified = VerifiedExecutionResultV1(
+        validation_profile=manifest.validation_profile,
+        change_id=manifest.change_id,
+        case_id=manifest.case_id,
+        reviewed_case=plan.reviewed_case,
+        coverage_epoch=manifest.coverage_epoch,
+        repair_round=manifest.repair_round,
+        plan_digest=manifest.plan_digest,
+        plan_ref=EvidenceArtifactRefV1(path=manifest.plan_ref, digest=manifest.plan_digest),
+        case_execution_plan_ref=payload.verification.case_execution_plan_ref,
+        case_execution_plan_digest=manifest.case_execution_plan_digest,
+        spec_digest=manifest.spec_digest,
+        execution_id=manifest.execution_id,
+        attempt_key=manifest.attempt_key,
+        batch_id=payload.view.batch_id,
+        mapping_digest=manifest.mapping_digest,
+        manifest_ref=payload.manifest_ref,
+        evidence_ref=EvidenceArtifactRefV1(
+            path=f"{manifest.evidence_root}/outcome.json",
+            digest=hashlib.sha256(outcome_path.read_bytes()).hexdigest(),
+        ),
+        raw_evidence_refs=_journal_refs(journal),
+        executed_at=payload.view.executed_at,
+        completion_status=evidence.state,
+        evidence=evidence,
+    )
+    filename = "run-result.json" if request.node_id == "execution.run" else "execute-result.json"
+    current = context.write_root / f"qa/changes/{manifest.change_id}/execution/{filename}"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(verified.model_dump(mode="json"), indent=2) + "\n").encode()
+    if current.exists():
+        if current.is_symlink() or not current.is_file() or current.stat().st_nlink != 1:
+            raise ValueError("verified execution current pointer is not a regular file")
+        if current.read_bytes() == encoded:
+            return TaskOutcome.succeeded(verified.model_dump(mode="json"))
+    temporary = current.with_name(f".{current.name}.{os.getpid()}.tmp")
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            remaining = memoryview(encoded)
+            while remaining:
+                remaining = remaining[os.write(descriptor, remaining) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, current)
+        directory = os.open(current.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return TaskOutcome.succeeded(verified.model_dump(mode="json"))
+
+
 class VerifiedExecutionHandler:
     """Recoverable production handler: dispatch history never permits a replayed action."""
 
@@ -537,13 +624,21 @@ class VerifiedExecutionHandler:
             cancel_requested=context.cancel_requested,
         )
         journal.write("process_terminal", receipt.model_dump(mode="json"))
-        return _outcome(journal, plan)
+        return _verified_outcome(
+            _outcome(journal, plan),
+            request=request,
+            context=context,
+            payload=payload,
+            manifest=manifest,
+            plan=plan,
+            journal=journal,
+        )
 
     async def reconcile(
         self, request: TaskRequest, context: TaskContext, activity: TaskActivitySnapshot
     ) -> TaskActivityReconcileResult:
         try:
-            _, manifest, plan, journal = _authenticate(request, context)
+            payload, manifest, plan, journal = _authenticate(request, context)
             if context.activity is None or activity != context.activity.snapshot:
                 raise ValueError("activity snapshot does not match live production activity")
             if activity.state == "prepared":
@@ -578,7 +673,17 @@ class VerifiedExecutionHandler:
                     {"container_name": "aa-verify-" + manifest.execution_id, "confirmed": True},
                 )
             return TaskActivityReconcileResult(
-                status="terminal", reference=reference, outcome=_outcome(journal, plan)
+                status="terminal",
+                reference=reference,
+                outcome=_verified_outcome(
+                    _outcome(journal, plan),
+                    request=request,
+                    context=context,
+                    payload=payload,
+                    manifest=manifest,
+                    plan=plan,
+                    journal=journal,
+                ),
             )
         except (ValueError, OSError, ValidationError) as error:
             return TaskActivityReconcileResult(status="indeterminate", reason=str(error))

@@ -11,6 +11,8 @@ from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.plans import canonical_relative_path
 from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1, require_same_plan
+from assurance_generation.contracts.execution_plan import ValidationProfile
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -117,13 +119,64 @@ class CodegenMapping(BaseModel):
     layer: CodegenLayer
     entries: tuple[CodegenMappingEntry, ...] = Field(min_length=1)
     schema_case_ids: tuple[NonEmptyStr, ...] | None = None
+    validation_profile: ValidationProfile | None = None
+    coverage_epoch: int | None = Field(default=None, ge=0)
+    plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1 | None = None
+    reviewed_case: ReviewedCaseV1 | None = None
+    case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
+    case_execution_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    case_spec_digests: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def _unique_case_ids(self) -> Self:
         ids = tuple(item.case_id for item in self.entries)
         if len(ids) != len(set(ids)):
             raise ValueError("entries case_id values must be unique")
+        verified = (
+            self.validation_profile,
+            self.coverage_epoch,
+            self.plan_digest,
+            self.plan_ref,
+            self.reviewed_case,
+            self.case_execution_plan_ref,
+            self.case_execution_plan_digest,
+            self.case_spec_digests,
+        )
+        if any(value is not None for value in verified):
+            if any(value is None for value in verified):
+                raise ValueError("verified mapping identity must be supplied as one complete group")
+            assert self.plan_digest is not None
+            assert self.plan_ref is not None
+            assert self.reviewed_case is not None
+            assert self.coverage_epoch is not None
+            assert self.case_execution_plan_ref is not None
+            assert self.case_execution_plan_digest is not None
+            assert self.case_spec_digests is not None
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.reviewed_case.plan_digest,
+                self.reviewed_case.plan_ref,
+            )
+            if self.reviewed_case.coverage_epoch != self.coverage_epoch:
+                raise ValueError("verified mapping ReviewedCase epoch does not match coverage epoch")
+            if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+                raise ValueError("verified mapping machine plan ref and digest do not match")
+            if set(self.case_spec_digests) != set(ids):
+                raise ValueError("verified mapping spec digests must exactly cover mapped Case IDs")
+            if any(not key or key != key.strip() for key in self.case_spec_digests):
+                raise ValueError("verified mapping Case IDs must be non-empty canonical strings")
+            if any(
+                len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+                for value in self.case_spec_digests.values()
+            ):
+                raise ValueError("verified mapping spec digest must be a sha256 digest")
         return self
+
+    @property
+    def is_verified(self) -> bool:
+        return self.validation_profile is not None
 
 
 def _require_exact_leafs(keys: tuple[str, ...], info: ValidationInfo) -> None:

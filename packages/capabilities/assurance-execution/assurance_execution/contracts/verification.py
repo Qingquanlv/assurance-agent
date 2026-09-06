@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Self
 
-from pydantic import Field, RootModel, field_validator, model_validator
+from pydantic import AwareDatetime, Field, RootModel, field_validator, model_validator
 
 from graph_engine.attempts import AttemptKey, BusinessActivation
 from graph_engine.frozen_json import FrozenJSONValue
@@ -12,7 +12,11 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.execution_plan import ValidationProfile
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.contracts.workflow import (
+    EvidenceArtifactRefV1,
+    ReviewedCaseV1,
+    require_same_plan,
+)
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _TAGGED_SHA256 = r"^sha256:[0-9a-f]{64}$"
@@ -260,6 +264,61 @@ class VerifiedProcessReceiptV1(FrozenModel):
     cleanup_confirmed: bool
 
 
+class VerifiedExecutionResultV1(FrozenModel):
+    """Authenticated host dispatch result; it carries completion, never a business verdict."""
+
+    schema_version: Literal["1"] = "1"
+    validation_profile: ValidationProfile
+    change_id: str = Field(min_length=1)
+    case_id: str = Field(min_length=1)
+    reviewed_case: ReviewedCaseV1
+    coverage_epoch: int = Field(ge=0)
+    repair_round: int = Field(ge=0)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
+    case_execution_plan_ref: EvidenceArtifactRefV1
+    case_execution_plan_digest: str = Field(pattern=_SHA256)
+    spec_digest: str = Field(pattern=_SHA256)
+    execution_id: str = Field(pattern=_EXECUTION_ID)
+    attempt_key: AttemptKey
+    batch_id: str = Field(min_length=1)
+    mapping_digest: str = Field(pattern=_SHA256)
+    manifest_ref: EvidenceArtifactRefV1
+    evidence_ref: EvidenceArtifactRefV1
+    raw_evidence_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
+    executed_at: AwareDatetime
+    completion_status: Literal["collected", "incomplete"]
+    evidence: VerificationEvidenceV1
+
+    @model_validator(mode="after")
+    def _authenticated_identity(self) -> Self:
+        if (
+            self.reviewed_case.change_id != self.change_id
+            or self.reviewed_case.coverage_epoch != self.coverage_epoch
+        ):
+            raise ValueError("verified result ReviewedCase identity does not match")
+        require_same_plan(
+            self.plan_digest,
+            self.plan_ref,
+            self.reviewed_case.plan_digest,
+            self.reviewed_case.plan_ref,
+        )
+        if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+            raise ValueError("verified result machine plan ref and digest do not match")
+        if self.evidence.execution_id != self.execution_id or self.evidence.state != self.completion_status:
+            raise ValueError("verified result evidence identity/completion does not match")
+        if self.evidence.receipt_ref not in self.raw_evidence_refs:
+            raise ValueError("verified result is missing its process receipt evidence")
+        prefix = f"qa/changes/{self.change_id}/"
+        refs = (self.manifest_ref, self.evidence_ref, *self.raw_evidence_refs)
+        if any(not item.path.startswith(prefix) for item in refs):
+            raise ValueError("verified result evidence must belong to the current change")
+        ordered = tuple(sorted(self.raw_evidence_refs, key=lambda item: (item.path, item.digest)))
+        if self.raw_evidence_refs != ordered or len({item.path for item in ordered}) != len(ordered):
+            raise ValueError("verified raw evidence refs must be sorted with one digest per path")
+        return self
+
+
 __all__ = [
     "EvidenceCompletionV1",
     "FrozenUserInputsV1",
@@ -274,8 +333,13 @@ __all__ = [
     "VerificationManifestV1",
     "VerifiedProcessLimitsV1",
     "VerifiedProcessReceiptV1",
+    "VerifiedExecutionResultV1",
 ]
 
 
-class ExecutionTaskOutputV1(RootModel[ExecutionEvidenceV1 | VerificationEvidenceV1]):
-    """Fixed facade schema, shared by legacy and verified delegates."""
+class ExecutionDispatchResultV1(RootModel[ExecutionEvidenceV1 | VerifiedExecutionResultV1]):
+    """Fixed facade output: legacy evidence or a host-authenticated verified result."""
+
+
+# Compatibility name retained for installed Task 5 declarations.
+ExecutionTaskOutputV1 = ExecutionDispatchResultV1

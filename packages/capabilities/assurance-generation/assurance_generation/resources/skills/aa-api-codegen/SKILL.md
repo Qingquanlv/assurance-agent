@@ -44,6 +44,15 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 - `qa/changes/<change-id>/codegen/api-generated-files.json`
 - generated or updated test files under `qa/changes/<change-id>/generated/api/files/tests/api/**`
 
+When `verified_codegen.validation_profile` is present, every mapped test is a
+thin entrypoint containing only the exact installed bridge import and one
+`execute_case("<mapped-case-id>")` call. Copy every field of the supplied
+`verified_codegen` identity into the mapping and add `case_spec_digests` from
+the authenticated machine plan. Do not issue HTTP requests, open SQLite,
+implement Trace/oracle comparisons, embed expected values, paths, credentials,
+execution IDs or runtime verdicts, or add Python assertions. The parent host
+owns all runtime facts and verdict inputs.
+
 ### conditional
 
 - `qa/changes/<change-id>/generated/api/files/tests/testdata/domain/**` when the
@@ -121,7 +130,8 @@ This verification is read-only and is not test execution.
 ## Generated-files Manifest Rules
 
 - Include exactly `schema_version`, `change_id`, `layer`, `files`, `mapping`,
-  and `required_capabilities`. The manifest `mapping` and
+  and `required_capabilities`. In verified mode the mapping also carries the
+  supplied frozen identity and per-case spec digests. The manifest `mapping` and
   `required_capabilities` must exactly match the final structured result.
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
   exactly match the codegen mapping for that path.

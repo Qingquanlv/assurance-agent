@@ -172,7 +172,13 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
     assert result["coverage_epoch"] == coverage_epoch
     mapping = json.loads((project / result["mapping_ref"]["path"]).read_bytes())
     assert {entry["layer"] for entry in mapping["mappings"]} == {"api", "e2e"}
-    assert len(result["source_refs"]) == 2
+    assert len(result["source_refs"]) == 4
+    assert {
+        ref["path"] for ref in result["source_refs"] if ref["path"].endswith("-generated-files.json")
+    } == {
+        "qa/changes/CH-DEMO-001/codegen/api-generated-files.json",
+        "qa/changes/CH-DEMO-001/codegen/e2e-generated-files.json",
+    }
     assert len(result["plan_refs"]) == 2
     assert state["generation_receipt"]["receipt_digest"] != "a" * 64
     assert executor.dispatch_count == 1

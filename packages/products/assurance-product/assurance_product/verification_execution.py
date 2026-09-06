@@ -28,7 +28,7 @@ from graph_engine.attempts.secret_sources import (
     authorize_binding_secret_handles,
 )
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
-from assurance_execution.contracts.verification import ExecutionTaskOutputV1
+from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
 from assurance_execution.operations.readiness import authenticate_host_readiness, HostReadinessError
 from assurance_execution.operations.host_secrets import HostSecretDocumentError
@@ -242,7 +242,7 @@ class ProfiledExecutionExecutor:
 
         failure = _outcome_failure(outcome)
         return failure or ExecutedAttemptResult(
-            output=ExecutionTaskOutputV1.model_validate(outcome.output), effects=outcome.effects
+            output=ExecutionDispatchResultV1.model_validate(outcome.output), effects=outcome.effects
         )
 
     async def execute(self, validated_input: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope) -> Any:
@@ -251,7 +251,7 @@ class ProfiledExecutionExecutor:
             result = await self._legacy.execute(validated_input, scope)
             if isinstance(result, ExecutedAttemptResult):
                 return result.model_copy(
-                    update={"output": ExecutionTaskOutputV1.model_validate(result.output)}
+                    update={"output": ExecutionDispatchResultV1.model_validate(result.output)}
                 )
             return result
         result = (
@@ -269,7 +269,7 @@ class ProfiledExecutionExecutor:
             result = await self._legacy.reconcile(validated_input, scope, snapshot)
             if isinstance(result, ExecutedAttemptResult):
                 return result.model_copy(
-                    update={"output": ExecutionTaskOutputV1.model_validate(result.output)}
+                    update={"output": ExecutionDispatchResultV1.model_validate(result.output)}
                 )
             return result
         call = self._call(validated_input, scope)

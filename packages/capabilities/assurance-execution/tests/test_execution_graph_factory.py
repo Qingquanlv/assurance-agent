@@ -10,7 +10,7 @@ from langchain_core.runnables.config import RunnableConfig
 from pydantic import BaseModel
 
 from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
-from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
@@ -50,7 +50,7 @@ from tests.acg_plan_fixture import install_plan
 
 _SHA = "a" * 64
 _RECEIPT = ReceiptRef(receipt_id="receipt-1", receipt_digest="b" * 64)
-_RUN_ID = "assurance.execution.agent.run.v1"
+_RUN_ID = "assurance.execution.task.run.v1"
 
 
 def bundle_fields(bundle: ExecutionGraphs) -> tuple[str, ...]:
@@ -159,7 +159,7 @@ def execution_manifest(*, change_id: str = "CH-DEMO-001") -> ExecutionManifest:
 
 
 def execution_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    return {contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()}
 
 
 def generation_result() -> dict[str, object]:
@@ -198,8 +198,8 @@ def test_execution_factory_exports_execute_and_rerun(recording_context) -> None:
     bundle = build_execution_graphs(recording_context)
     assert bundle_fields(bundle) == ("execute", "rerun")
     assert recording_context.bound_contract_ids == (
-        "assurance.execution.agent.execute.v1",
-        "assurance.execution.agent.run.v1",
+        "assurance.execution.task.execute.v1",
+        "assurance.execution.task.run.v1",
     )
     assert recording_context.compiled_subgraph_checkpointers == (None, None)
 
@@ -440,14 +440,13 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
     output = execution_evidence()
     writer = _WritingExecutor(workspace, output)
-    core = _boot_resolved_execute()
     writable = ResourceClaims(writes=("tests",))
     execute_contract = resolve_contract(
-        replace(core.contract, resources=writable),
+        replace(TASK_ATTEMPT_CONTRACTS["assurance.execution.task.execute.v1"], resources=writable),
         executor=writer,
     )
     run_contract = resolve_contract(
-        replace(AGENT_JOB_CONTRACTS["run"].to_task_contract(), resources=writable),
+        replace(TASK_ATTEMPT_CONTRACTS["assurance.execution.task.run.v1"], resources=writable),
         executor=writer,
     )
     journal = MemoryAttemptJournal()
@@ -493,17 +492,17 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
         await bundle.rerun.ainvoke(second_rerun, config=_invoke_config(entrypoint="rerun"))
         assert writer.calls == 3
 
-        selected = AGENT_JOB_CONTRACTS["run"].input_model.model_validate(
+        selected = TASK_ATTEMPT_CONTRACTS[_RUN_ID].input_model.model_validate(
             {
                 key: first_rerun[key]
-                for key in AGENT_JOB_CONTRACTS["run"].input_model.model_fields
+                for key in TASK_ATTEMPT_CONTRACTS[_RUN_ID].input_model.model_fields
                 if key in first_rerun
             }
         )
-        selected_second = AGENT_JOB_CONTRACTS["run"].input_model.model_validate(
+        selected_second = TASK_ATTEMPT_CONTRACTS[_RUN_ID].input_model.model_validate(
             {
                 key: second_rerun[key]
-                for key in AGENT_JOB_CONTRACTS["run"].input_model.model_fields
+                for key in TASK_ATTEMPT_CONTRACTS[_RUN_ID].input_model.model_fields
                 if key in second_rerun
             }
         )

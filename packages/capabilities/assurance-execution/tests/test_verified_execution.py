@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal, cast
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_execution.contracts.verification import VerificationEvidenceV1
+from assurance_execution.contracts.verification import (
+    VerificationEvidenceV1,
+    VerifiedExecutionResultV1,
+)
+from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
+from assurance_execution.graphs.nodes import publish_execution
 
 import httpx
 import pytest
@@ -21,6 +27,120 @@ from tests.verification_support import read_fixture
 
 REPO = Path(__file__).resolve().parents[4]
 _ACTIVITY_OWNERS: list[Any] = []
+
+
+def _verified_dispatch_result(
+    *, completion_status: Literal["collected", "incomplete"] = "incomplete"
+) -> VerifiedExecutionResultV1:
+    plan = formal_plan()
+    execution_id = "12345678-1234-4123-8123-123456789abc"
+    evidence_ref = EvidenceArtifactRefV1(
+        path=f"qa/changes/{plan.change_id}/execution/{execution_id}/outcome.json",
+        digest="8" * 64,
+    )
+    manifest_ref = EvidenceArtifactRefV1(
+        path=f"qa/changes/{plan.change_id}/.staging/execution/manifest.json",
+        digest="7" * 64,
+    )
+    process_ref = EvidenceArtifactRefV1(
+        path=f"qa/changes/{plan.change_id}/execution/{execution_id}/process_terminal.json",
+        digest="6" * 64,
+    )
+    evidence = VerificationEvidenceV1.model_validate(
+        {
+            "execution_id": execution_id,
+            "manifest_digest": "7" * 64,
+            "receipt_ref": process_ref.model_dump(mode="json"),
+            "observations": [],
+            "host_completion": {"state": "error", "reason": "bridge_not_called"},
+            "collector_completion": {"state": "not_required"},
+            "state": completion_status,
+        }
+    )
+    return VerifiedExecutionResultV1(
+        validation_profile="api_db.v1",
+        change_id=plan.change_id,
+        case_id=plan.case_id,
+        reviewed_case=plan.reviewed_case,
+        coverage_epoch=plan.coverage_epoch,
+        repair_round=3,
+        plan_digest=plan.plan_digest,
+        plan_ref=plan.plan_ref,
+        case_execution_plan_ref=EvidenceArtifactRefV1(
+            path=f"qa/changes/{plan.change_id}/plans/api-case-execution-plan.json",
+            digest="5" * 64,
+        ),
+        case_execution_plan_digest="5" * 64,
+        spec_digest=plan.spec_digest,
+        execution_id=execution_id,
+        attempt_key=AttemptKey(digest="4" * 64),
+        batch_id="verified-batch",
+        mapping_digest="3" * 64,
+        manifest_ref=manifest_ref,
+        evidence_ref=evidence_ref,
+        raw_evidence_refs=(process_ref,),
+        executed_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+        completion_status=completion_status,
+        evidence=evidence,
+    )
+
+
+def test_verified_publish_emits_a_separate_cycle_with_kernel_receipt() -> None:
+    output = _verified_dispatch_result()
+    generation = {
+        "change_id": output.change_id,
+        "coverage_epoch": output.coverage_epoch,
+        "reviewed_case": output.reviewed_case.model_dump(mode="json"),
+        "plan_digest": output.plan_digest,
+        "plan_ref": output.plan_ref.model_dump(mode="json"),
+        "mapping_ref": {
+            "path": f"qa/changes/{output.change_id}/generation/epochs/2/mapping.json",
+            "digest": output.mapping_digest,
+        },
+        "source_refs": [
+            {
+                "path": f"qa/changes/{output.change_id}/generated/api/files/tests/api/test_user.py",
+                "digest": "1" * 64,
+            }
+        ],
+        "plan_refs": [output.case_execution_plan_ref.model_dump(mode="json")],
+        "case_execution_plan_ref": output.case_execution_plan_ref.model_dump(mode="json"),
+        "case_execution_plan_digest": output.case_execution_plan_digest,
+    }
+    published = publish_execution(
+        {
+            "validation_profile": "api_db.v1",
+            "generation_result": generation,
+            "coverage_epoch": output.coverage_epoch,
+            "repair_round": output.repair_round,
+            "rounds_budget": 2,
+            "rounds_used": 1,
+        },
+        output,
+        {"receipt_id": "kernel-receipt", "receipt_digest": "9" * 64},
+    )
+
+    cycle = VerifiedExecutionCycleResultV1.model_validate(published["execution_result"])
+    assert cycle.completion_status == "incomplete"
+    assert cycle.execution_id == output.execution_id
+    assert cycle.receipt.receipt_id == "kernel-receipt"
+    assert cycle.mapping_digest == output.mapping_digest
+    assert published["status"] == "incomplete"
+
+
+def test_verified_publish_rejects_agent_all_pass_without_host_evidence() -> None:
+    from test_execution_graph_factory import execution_evidence  # pyright: ignore[reportMissingImports]
+
+    with pytest.raises(ValueError, match="verified host"):
+        publish_execution(
+            {
+                "validation_profile": "api_db.v1",
+                "rounds_budget": 2,
+                "rounds_used": 0,
+            },
+            execution_evidence(),
+            {"receipt_id": "kernel-receipt", "receipt_digest": "9" * 64},
+        )
 
 
 @pytest.mark.parametrize("record", ["action_terminal", "process_terminal", "outcome"])
@@ -514,7 +634,7 @@ def handler_case(managed_sut, suffix, source=None, store=None):
     from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
     from assurance_execution.operations.verified_execution import VerifiedExecutionInputV1
     from assurance_execution.operations.verification_manifest import build_managed_sut_authority
-    from assurance_execution.execution_view import build_execution_view
+    from assurance_execution.execution_view import build_or_authenticate_execution_view
     from assurance_execution.generated_merge import GeneratedFileV2, MergedGeneratedSet, staged_generated_path
     from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
     from graph_engine.canonical import canonical_digest
@@ -522,8 +642,11 @@ def handler_case(managed_sut, suffix, source=None, store=None):
 
     workspace, prepared, started, token = managed_sut
     project = workspace
-    write_root = project / suffix
+    write_root = project
     plan, manifest, _, _ = setup_action(write_root, managed_sut, suffix)
+    artifact_root = f"qa/changes/{manifest.change_id}/.staging/execution/{suffix}"
+    plan_relative = f"{artifact_root}/case-plan.json"
+    manifest_relative = f"{artifact_root}/manifest.json"
     raw = {
         "task_id": manifest.attempt_key.digest,
         "attempt": 1,
@@ -544,8 +667,7 @@ def handler_case(managed_sut, suffix, source=None, store=None):
             output_paths=(
                 manifest.evidence_root,
                 execution_view_relative(manifest.change_id, suffix, manifest.execution_id),
-                "case-plan.json",
-                "manifest.json",
+                f"qa/changes/{manifest.change_id}/execution/execute-result.json",
             ),
         )
         identity, write_root = binding.identity, binding.write_root
@@ -559,7 +681,8 @@ def handler_case(managed_sut, suffix, source=None, store=None):
             "workspace_identity_digest": identity.identity_digest,
         }
     )
-    plan_ref_path = write_root / "case-plan.json"
+    plan_ref_path = project / plan_relative
+    plan_ref_path.parent.mkdir(parents=True, exist_ok=True)
     plan_bytes = CaseExecutionPlanSetV1(change_id=plan.change_id, cases=(plan,)).model_dump_json().encode()
     plan_ref_path.write_bytes(plan_bytes)
     manifest = manifest.model_copy(
@@ -571,7 +694,7 @@ def handler_case(managed_sut, suffix, source=None, store=None):
             "case_execution_plan_digest": hashlib.sha256(plan_bytes).hexdigest(),
         }
     )
-    manifest_path = write_root / "manifest.json"
+    manifest_path = project / manifest_relative
     manifest_path.write_text(manifest.model_dump_json())
     authority_token = project / "run/.ownership-token"
     token_stat = authority_token.stat()
@@ -629,7 +752,7 @@ def handler_case(managed_sut, suffix, source=None, store=None):
         family="api",
     )
     merged = MergedGeneratedSet(files=(item,), digest=canonical_digest([item.model_dump(mode="json")]))
-    view = build_execution_view(
+    view = build_or_authenticate_execution_view(
         project,
         write_root=write_root,
         request=merged.execution_view_input(
@@ -682,7 +805,7 @@ def test_full_parent_handler_real_pipe_http_sqlite_and_recovery(managed_sut):
     assert context.activity is not None
     handler = VerifiedExecutionHandler(process_host=RealPipeHost())
     first = asyncio.run(handler.execute(request, context))
-    evidence = VerificationEvidenceV1.model_validate(first.output)
+    evidence = VerifiedExecutionResultV1.model_validate(first.output).evidence
     assert evidence.state == "collected"
     observations = {item.obligation_id: item.actual for item in evidence.observations}
     assert observations["user.dept_id"] is None
@@ -801,7 +924,7 @@ def test_production_handler_recovery_cuts_never_repeat_post(managed_sut, monkeyp
     recovered = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
     assert recovered.status == "terminal"
     assert recovered.outcome is not None
-    assert VerificationEvidenceV1.model_validate(recovered.outcome.output).state == (
+    assert VerifiedExecutionResultV1.model_validate(recovered.outcome.output).completion_status == (
         "collected" if cut in {"before_seal", "after_promotion", "partial_outcome"} else "incomplete"
     )
     again = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
@@ -831,7 +954,7 @@ def test_unbridged_pytest_pass_is_incomplete_and_secrets_never_leak(managed_sut)
         managed_sut, "no_bridge", "def test_case():\n    assert True\n"
     )
     outcome = asyncio.run(VerifiedExecutionHandler(process_host=RealPipeHost()).execute(request, context))
-    assert VerificationEvidenceV1.model_validate(outcome.output).state == "incomplete"
+    assert VerifiedExecutionResultV1.model_validate(outcome.output).completion_status == "incomplete"
     root = context.write_root / manifest.evidence_root
     assert not (root / "action_started.json").exists()
     for path in root.rglob("*.json"):
@@ -839,6 +962,27 @@ def test_unbridged_pytest_pass_is_incomplete_and_secrets_never_leak(managed_sut)
         assert "task4-host-only-canary" not in contents
         assert "host-password" not in contents
         assert managed_sut[3] not in contents
+
+
+def test_current_pointer_tracks_only_the_latest_attempt(managed_sut):
+    from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
+
+    handler = VerifiedExecutionHandler(process_host=RealPipeHost())
+    results = []
+    manifests = []
+    for suffix in ("current-first", "current-second"):
+        request, context, manifest, _ = handler_case(
+            managed_sut, suffix, "def test_case():\n    assert True\n"
+        )
+        results.append(
+            VerifiedExecutionResultV1.model_validate(asyncio.run(handler.execute(request, context)).output)
+        )
+        manifests.append(manifest)
+    first, second = results
+    assert first.execution_id != second.execution_id
+    current = managed_sut[0] / "qa/changes/CH-USER-001/execution/execute-result.json"
+    assert VerifiedExecutionResultV1.model_validate_json(current.read_bytes()) == second
+    assert all((managed_sut[0] / manifest.evidence_root / "outcome.json").is_file() for manifest in manifests)
 
 
 def test_recovery_rejects_unauthenticated_activity(managed_sut):

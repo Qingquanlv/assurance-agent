@@ -197,13 +197,9 @@ class AgentFinalizeInputV1(FrozenModel):
                 self.reviewed_case.plan_digest,
                 self.reviewed_case.plan_ref,
             )
-        machine_inputs = (
-            self.case_plan_context,
-            self.assertion_sources,
-            self.validation_profile,
-        )
+        machine_inputs = (self.case_plan_context, self.assertion_sources)
         if any(value is not None for value in machine_inputs):
-            if any(value is None for value in machine_inputs):
+            if any(value is None for value in machine_inputs) or self.validation_profile is None:
                 raise ValueError("machine plan inputs must be supplied together")
             assert self.case_plan_context is not None
             if self.change_id is not None and self.case_plan_context.change_id != self.change_id:
@@ -227,6 +223,9 @@ class AgentFinalizeInputV1(FrozenModel):
                     raise ValueError("case execution plan ref does not match current change")
             if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
                 raise ValueError("case execution plan ref and digest do not match")
+        verified_codegen = self.validation_profile is not None and self.case_plan_context is None
+        if verified_codegen and (self.reviewed_case is None or self.case_execution_plan_ref is None):
+            raise ValueError("verified codegen requires ReviewedCase and case execution plan")
         return self
 
 
@@ -243,6 +242,7 @@ class CodegenInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
+    validation_profile: ValidationProfile | None = None
     case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
     case_execution_plan_digest: str | None = Field(default=None, pattern=_SHA256)
 
@@ -289,6 +289,11 @@ class CodegenInputV1(FrozenModel):
                 raise ValueError("case execution plan ref does not match current change")
             if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
                 raise ValueError("case execution plan ref and digest do not match")
+        verified = self.validation_profile is not None
+        if verified != (self.reviewed_case is not None and self.case_execution_plan_ref is not None):
+            raise ValueError(
+                "verified codegen requires validation profile, ReviewedCase, and case execution plan"
+            )
         return self
 
 

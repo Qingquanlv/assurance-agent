@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables.config import RunnableConfig
 
 from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
-from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.graphs.factory import build_execution_graphs
 from assurance_execution.graphs.nodes import publish_execution, select_execute
@@ -327,12 +327,13 @@ async def _run_parity_candidate(
     )
     shipped_context = GraphHarness().recording_context(
         owner_id="assurance.execution",
-        contracts={
-            contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
-        },
+        contracts={contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()},
     )
     build_execution_graphs(shipped_context)
-    assert shipped_context.bound_contract_ids == (_EXECUTE_ID, "assurance.execution.agent.run.v1")
+    assert shipped_context.bound_contract_ids == (
+        "assurance.execution.task.execute.v1",
+        "assurance.execution.task.run.v1",
+    )
     factory = AttemptNodeFactory(journal=journal, kernel=kernel)
     context = RecordingCapabilityBuildContext(
         owner_id="assurance.execution",

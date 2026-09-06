@@ -40,7 +40,7 @@ _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.generation.schema.codegen-mapping.v1": (
         "1",
-        "9d623c3f691070097c9d3f120877db09596ef1dbdd060814e82d16e9876a44d1",
+        "2e31cf93d870683158c5db9f340e43a7c1b9603f79abfa2c19ba7285bd395b90",
     ),
     "assurance.generation.schema.discovery-campaign.v1": (
         "1",

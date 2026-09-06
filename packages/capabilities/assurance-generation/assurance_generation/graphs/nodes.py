@@ -173,6 +173,7 @@ def select_codegen(state: Mapping[str, object]) -> CodegenInputV1:
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": state.get("rounds_used", 0),
             "reviewed_case": state.get("reviewed_case"),
+            "validation_profile": state.get("validation_profile"),
             "case_execution_plan_ref": state.get("case_execution_plan_ref"),
             "case_execution_plan_digest": state.get("case_execution_plan_digest"),
         }
@@ -196,6 +197,7 @@ def select_codegen_fix(state: Mapping[str, object]) -> CodegenFixInputV1:
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": state.get("rounds_used", 0),
             "reviewed_case": state.get("reviewed_case"),
+            "validation_profile": state.get("validation_profile"),
             "case_execution_plan_ref": state.get("case_execution_plan_ref"),
             "case_execution_plan_digest": state.get("case_execution_plan_digest"),
         }

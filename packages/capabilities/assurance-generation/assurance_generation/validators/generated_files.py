@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 from collections.abc import Mapping
@@ -57,6 +58,7 @@ _DIGEST_REASON = "generated-file digest does not match workspace bytes: {path}"
 _UNAPPROVED_REASON = "codegen fix proposal is not approved"
 _BASELINE_REASON = "codegen fix baseline tree does not match the approved proposal"
 _ALLOWED_REASON = "codegen fix write is not in the allowed file set: {path}"
+_BRIDGE_REASON = "verified API test must contain only execute_case for its mapped Case: {path}"
 
 
 def _canonical_relative(path: str) -> bool:
@@ -114,6 +116,66 @@ def _mapping_targets(mapping: CodegenMapping | None) -> set[str]:
     if mapping is None:
         return set()
     return {item.target_file for item in mapping.entries}
+
+
+def _verified_bridge_closure(
+    mapping: CodegenMapping, file_bytes: Mapping[str, bytes]
+) -> ValidationResult | None:
+    if not mapping.is_verified:
+        return None
+    if mapping.layer != "api":
+        return ValidationResult(accepted=False, reason="verified mapping must use the API family")
+    by_target: dict[str, dict[str, str]] = {}
+    for entry in mapping.entries:
+        by_target.setdefault(entry.target_file, {})[entry.symbol] = entry.case_id
+    for target, expected in by_target.items():
+        payload = file_bytes.get(target)
+        if payload is None:
+            payload = next(
+                (value for path, value in file_bytes.items() if logical_generated_target(path) == target),
+                None,
+            )
+        if payload is None:
+            continue
+        try:
+            module = ast.parse(payload, filename=target)
+        except (SyntaxError, ValueError):
+            return ValidationResult(accepted=False, reason=_BRIDGE_REASON.format(path=target))
+        imports = [node for node in module.body if isinstance(node, ast.ImportFrom)]
+        functions = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+        if (
+            len(imports) != 1
+            or imports[0].module != "assurance_execution.bridge"
+            or imports[0].level != 0
+            or [(item.name, item.asname) for item in imports[0].names] != [("execute_case", None)]
+            or len(module.body) != len(functions) + 1
+            or len(functions) != len(expected)
+            or {item.name for item in functions} != set(expected)
+        ):
+            return ValidationResult(accepted=False, reason=_BRIDGE_REASON.format(path=target))
+        for function in functions:
+            args = function.args
+            statement = function.body[0] if len(function.body) == 1 else None
+            call = statement.value if isinstance(statement, ast.Expr) else None
+            if (
+                function.decorator_list
+                or function.returns is not None
+                or function.type_comment is not None
+                or args.posonlyargs
+                or args.args
+                or args.vararg is not None
+                or args.kwonlyargs
+                or args.kwarg is not None
+                or not isinstance(call, ast.Call)
+                or not isinstance(call.func, ast.Name)
+                or call.func.id != "execute_case"
+                or call.keywords
+                or len(call.args) != 1
+                or not isinstance(call.args[0], ast.Constant)
+                or call.args[0].value != expected[function.name]
+            ):
+                return ValidationResult(accepted=False, reason=_BRIDGE_REASON.format(path=target))
+    return None
 
 
 def _load_mapping(file_bytes: Mapping[str, bytes]) -> CodegenMapping | None:
@@ -196,6 +258,9 @@ class GeneratedFilesValidator:
             mapping_check = _mapping_closure(staged, mapping, self._file_bytes)
             if mapping_check is not None:
                 return mapping_check
+            bridge_check = _verified_bridge_closure(mapping, self._file_bytes)
+            if bridge_check is not None:
+                return bridge_check
         try:
             document = _load_result(self._file_bytes, capability_leafs=self._capability_leafs)
         except ValidationError as error:
@@ -335,7 +400,11 @@ class CodegenMappingValidator:
             if "unique" in message:
                 return ValidationResult(accepted=False, reason=_DUPLICATE_REASON)
             return ValidationResult(accepted=False, reason=message)
-        return _mapping_closure(staged, mapping, self._file_bytes) or ValidationResult(accepted=True)
+        return (
+            _mapping_closure(staged, mapping, self._file_bytes)
+            or _verified_bridge_closure(mapping, self._file_bytes)
+            or ValidationResult(accepted=True)
+        )
 
 
 class CodegenFixCandidateValidator:

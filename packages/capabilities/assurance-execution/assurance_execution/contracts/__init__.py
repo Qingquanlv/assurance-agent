@@ -13,8 +13,13 @@ from assurance_execution.contracts.selection import (
     ClosedMappingV1,
     SelectedTargets,
 )
-from assurance_execution.contracts.workflow import ExecutionCycleInputV1, ExecutionCycleResultV1
+from assurance_execution.contracts.workflow import (
+    ExecutionCycleInputV1,
+    ExecutionCycleResultV1,
+    VerifiedExecutionCycleResultV1,
+)
 from assurance_execution.contracts.verification import (
+    ExecutionDispatchResultV1,
     EvidenceCompletionV1,
     FrozenUserInputsV1,
     ManagedSutAuthorityV1,
@@ -25,6 +30,7 @@ from assurance_execution.contracts.verification import (
     SqliteObservationMetadataV1,
     VerificationEvidenceV1,
     VerificationManifestV1,
+    VerifiedExecutionResultV1,
     VerifiedProcessLimitsV1,
     VerifiedProcessReceiptV1,
 )
@@ -36,8 +42,10 @@ __all__ = [
     "ExecutionAgentResultV1",
     "ExecutionCommandReceiptV1",
     "ExecutionEvidenceV1",
+    "ExecutionDispatchResultV1",
     "ExecutionCycleInputV1",
     "ExecutionCycleResultV1",
+    "VerifiedExecutionCycleResultV1",
     "ExecutionManifest",
     "ExecutionReceiptV1",
     "RawTestResultV1",
@@ -52,6 +60,7 @@ __all__ = [
     "SqliteObservationMetadataV1",
     "VerificationEvidenceV1",
     "VerificationManifestV1",
+    "VerifiedExecutionResultV1",
     "VerifiedProcessLimitsV1",
     "VerifiedProcessReceiptV1",
     "attempt_contract_refs",

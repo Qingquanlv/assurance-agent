@@ -22,20 +22,72 @@ class VerifiedHostProbe:
         assert not context.cancel_requested()
         context.activity.mark_dispatch_started({"execution_id": "probe"})
         context.activity.bind({"execution_id": "probe"})
-        return self.outcome()
+        return self.outcome(request)
 
-    def outcome(self):
+    def outcome(self, request):
+        from datetime import datetime, timezone
+
+        from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+        from assurance_execution.contracts.verification import (
+            EvidenceCompletionV1,
+            VerificationEvidenceV1,
+            VerifiedExecutionResultV1,
+        )
+        from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+        from graph_engine.attempts import AttemptKey
+
+        payload = ExecutionPrepareInputV1.model_validate(request.input)
+        assert payload.verification is not None
+        execution_id = "00000000-0000-4000-8000-000000000001"
+        receipt_ref = EvidenceArtifactRefV1(path="qa/changes/c/execution/probe.json", digest="e" * 64)
+        evidence = VerificationEvidenceV1(
+            execution_id=execution_id,
+            manifest_digest="d" * 64,
+            receipt_ref=receipt_ref,
+            observations=(),
+            host_completion=EvidenceCompletionV1(state="error", reason="test_probe"),
+            collector_completion=EvidenceCompletionV1(state="not_required"),
+            state="incomplete",
+        )
+        reviewed = ReviewedCaseV1(
+            change_id=payload.change_id,
+            coverage_epoch=payload.coverage_epoch,
+            plan_digest=payload.plan_digest,
+            plan_ref=payload.plan_ref,
+            preparation_refs=(payload.plan_ref,),
+            case_refs=(
+                EvidenceArtifactRefV1(path="qa/changes/c/cases/system/user/case.yaml", digest="1" * 64),
+            ),
+            review_ref=EvidenceArtifactRefV1(path="qa/changes/c/review/case-review.json", digest="2" * 64),
+        )
         return TaskOutcome.succeeded(
-            {
-                "schema_version": "1",
-                "execution_id": "00000000-0000-4000-8000-000000000001",
-                "manifest_digest": "d" * 64,
-                "receipt_ref": {"path": "qa/changes/c/execution/probe.json", "digest": "e" * 64},
-                "observations": [],
-                "host_completion": {"state": "error", "reason": "test_probe"},
-                "collector_completion": {"state": "not_required"},
-                "state": "incomplete",
-            }
+            VerifiedExecutionResultV1(
+                validation_profile=payload.verification.validation_profile,
+                change_id=payload.change_id,
+                case_id="TC_PROBE",
+                reviewed_case=reviewed,
+                coverage_epoch=payload.coverage_epoch,
+                repair_round=payload.repair_round,
+                plan_digest=payload.plan_digest,
+                plan_ref=payload.plan_ref,
+                case_execution_plan_ref=payload.verification.case_execution_plan_ref,
+                case_execution_plan_digest=payload.verification.case_execution_plan_ref.digest,
+                spec_digest="3" * 64,
+                execution_id=execution_id,
+                attempt_key=AttemptKey(digest="a" * 64),
+                batch_id="probe",
+                mapping_digest="4" * 64,
+                manifest_ref=EvidenceArtifactRefV1(
+                    path="qa/changes/c/execution/manifest.json", digest="d" * 64
+                ),
+                evidence_ref=EvidenceArtifactRefV1(
+                    path="qa/changes/c/execution/outcome.json", digest="5" * 64
+                ),
+                raw_evidence_refs=(receipt_ref,),
+                executed_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
+                completion_status="incomplete",
+                evidence=evidence,
+            ).model_dump(mode="json")
         )
 
     async def reconcile(self, request, context, activity):
@@ -44,7 +96,7 @@ class VerifiedHostProbe:
         if activity.state == "prepared":
             return TaskActivityReconcileResult(status="not_dispatched")
         return TaskActivityReconcileResult(
-            status="terminal", outcome=self.outcome(), reference=activity.reference
+            status="terminal", outcome=self.outcome(request), reference=activity.reference
         )
 
 
@@ -212,7 +264,7 @@ async def _run_host(tmp_path: Path, monkeypatch, cut):
             result = await executor.execute(value, scope)
         else:
             result = await executor.reconcile(value, scope, await journal.load(key))
-        assert result.output.root.state == "incomplete"
+        assert result.output.root.completion_status == "incomplete"
         if cut in {"sealed", "promoted"}:
             staged = store.seal(workspace.identity)
             if cut == "promoted":

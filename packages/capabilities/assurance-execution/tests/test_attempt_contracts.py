@@ -11,12 +11,16 @@ from assurance_execution.contracts.attempts import (
     attempt_contract_refs,
 )
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
+from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 from assurance_execution.plugin import ExecutionPlugin
 
 
 def test_execution_owns_two_agent_contracts() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 2
-    assert TASK_ATTEMPT_CONTRACTS == {}
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == (
+        "assurance.execution.task.execute.v1",
+        "assurance.execution.task.run.v1",
+    )
     expected = {
         "execute": ("aa-execute", ExecutionPrepareInputV1),
         "run": ("aa-run", ExecutionPrepareInputV1),
@@ -44,6 +48,10 @@ def test_execution_owns_two_agent_contracts() -> None:
             f"qa/changes/{{change_id}}/execution/{'run' if base == 'run' else 'execute'}-result.json",
         )
         assert set((*claims.prepare, *claims.finalize)) == set(contract.resources.writes)
+        task = TASK_ATTEMPT_CONTRACTS[f"assurance.execution.task.{base}.v1"]
+        assert task.handler_id == "assurance.execution.verified-attempt"
+        assert task.output_model is ExecutionDispatchResultV1
+        assert task.validators == ()
 
 
 def test_execution_plugin_projects_authenticated_attempt_contracts() -> None:

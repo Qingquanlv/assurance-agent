@@ -44,6 +44,13 @@ or modified test path. Physical writes stay under
 
 Do not modify product source.
 
+When `verified_codegen.validation_profile` is present, preserve its complete
+root-plan, ReviewedCase/epoch, machine-plan and spec-digest identity exactly.
+Every mapped test must remain only the installed
+`assurance_execution.bridge.execute_case("<mapped-case-id>")` entrypoint. Do
+not add HTTP, SQLite, Trace, expected values, credentials, execution IDs,
+runtime verdicts or Python assertions.
+
 Do not invent a broader write set than the approved proposal.
 
 The graph owns phase state. Do not write an orchestration state file.
