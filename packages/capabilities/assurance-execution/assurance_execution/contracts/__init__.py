@@ -25,6 +25,8 @@ from assurance_execution.contracts.verification import (
     SqliteObservationMetadataV1,
     VerificationEvidenceV1,
     VerificationManifestV1,
+    VerifiedProcessLimitsV1,
+    VerifiedProcessReceiptV1,
 )
 
 __all__ = [
@@ -50,5 +52,7 @@ __all__ = [
     "SqliteObservationMetadataV1",
     "VerificationEvidenceV1",
     "VerificationManifestV1",
+    "VerifiedProcessLimitsV1",
+    "VerifiedProcessReceiptV1",
     "attempt_contract_refs",
 ]

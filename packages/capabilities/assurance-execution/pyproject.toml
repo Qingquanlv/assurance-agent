@@ -9,6 +9,7 @@ dependencies = [
     "assurance-intake==0.2.0",
     "graph-engine",
     "langgraph==1.2.11",
+    "httpx==0.28.1",
     "pydantic>=2.7",
     "pyyaml>=6.0",
 ]

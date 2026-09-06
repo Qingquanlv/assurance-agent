@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
@@ -198,7 +198,7 @@ class ObservationV1(FrozenModel):
     @model_validator(mode="after")
     def _state_shape(self) -> Self:
         if self.state == "observed":
-            if self.actual is None or self.evidence_ref is None or self.reason is not None:
+            if "actual" not in self.model_fields_set or self.evidence_ref is None or self.reason is not None:
                 raise ValueError("observed facts require actual and evidence, without a reason")
         elif self.reason is None:
             raise ValueError("non-observed facts require a reason")
@@ -241,6 +241,24 @@ class VerificationEvidenceV1(FrozenModel):
         return self
 
 
+class VerifiedProcessLimitsV1(FrozenModel):
+    timeout_seconds: float = Field(default=60, gt=0, le=60)
+    max_frame_bytes: int = Field(default=256 * 1024, gt=0, le=256 * 1024)
+    max_stderr_bytes: int = Field(default=8 * 1024 * 1024, gt=0, le=8 * 1024 * 1024)
+
+
+class VerifiedProcessReceiptV1(FrozenModel):
+    schema_version: Literal["1"] = "1"
+    command: tuple[str, ...]
+    limits: VerifiedProcessLimitsV1
+    exit_code: int | None
+    report: dict[str, Any] | None
+    reason: str | None
+    request_count: int = Field(ge=0)
+    stderr: str
+    cleanup_confirmed: bool
+
+
 __all__ = [
     "EvidenceCompletionV1",
     "FrozenUserInputsV1",
@@ -253,4 +271,6 @@ __all__ = [
     "SqliteObservationMetadataV1",
     "VerificationEvidenceV1",
     "VerificationManifestV1",
+    "VerifiedProcessLimitsV1",
+    "VerifiedProcessReceiptV1",
 ]

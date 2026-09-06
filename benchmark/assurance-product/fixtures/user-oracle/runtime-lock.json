@@ -4,6 +4,8 @@
     "qualify_runtime.py": "sha256:c79d7f765f10f20c61b15c34cebdff5b82de52670c505ffe83c62ae490447e6c",
     "requirements.in": "sha256:e17eddeb2c9287b97ff96706f6d86b92544614513003036941c3568bf4e541e4",
     "requirements.lock": "sha256:eaef97429f3ec14a2aa52bece450f7d6db48ce9e0f8022c0fd88158900b88d8f",
+    "runner-lock.json": "sha256:3cc3a4ceaeea265f100d0264e8d6b749bc4fa18c6b5068e95b582e720a7d4875",
+    "runner.Dockerfile": "sha256:b4bc65e1ffb55f6e4ad4e631860b85bac2c2df2c5679c1a5dd4aa9d5850ce9c6",
     "sut-source/LICENSE": "sha256:039a35a9044e5abb50f7ae240eefb2bfa4ea7aee5de59b67d993194314194cfb",
     "sut-source/PROVENANCE.md": "sha256:3bdf4eb0e22cbb0074f004f39bbe03cc1b7fb77b934470578d5fb9ddba5f917a",
     "sut-source/app/__init__.py": "sha256:504121276110ad852edf13da13a5455ec90fb3e7eade9708704f542ecb04bcbe",
@@ -57,7 +59,7 @@
     "sut-source/migrations/models/0_20260721171822_init.py": "sha256:f82edb0659574631dfdc2020dee7690df275355c495459ce4ce662f765ad8810",
     "sut-source/run.py": "sha256:f14a471ba7782cababe5bc7cf57fe4a726c5ba4f8cedb09f3333d644753b59bb"
   },
-  "runtime_digest": "sha256:816c1efdfdab99ef959168d372c18a6baa4900b91dc3d50fcdac68b57084d278",
+  "runtime_digest": "sha256:a2815f6a92a96d05e2c5dbfec06bfee30b0bfae48b5986d957c23484bfb16006",
   "schema_version": "1",
   "source_digest": "sha256:8bf423ea07910f54acc14ad28b95afdff5e6b2cb2754bf3d74535c1ab5461384"
 }

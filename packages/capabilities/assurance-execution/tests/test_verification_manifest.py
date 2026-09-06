@@ -314,3 +314,27 @@ def test_observation_and_evidence_reject_expected_passed_and_duplicate_obligatio
             collector_completion=EvidenceCompletionV1(state="not_required"),
             state="collected",
         )
+
+
+def test_observed_json_null_roundtrips_without_becoming_missing() -> None:
+    payload = {
+        "schema_version": "1",
+        "execution_id": "4af0e98c-fabe-4123-8123-000000000001",
+        "obligation_id": "user.dept_id",
+        "state": "observed",
+        "actual": None,
+        "evidence_ref": {"path": "evidence/action.json", "digest": "a" * 64},
+    }
+    observation = ObservationV1.model_validate(payload)
+    assert observation.actual is None
+    assert ObservationV1.model_validate_json(observation.model_dump_json()) == observation
+    with pytest.raises(ValidationError, match="actual"):
+        ObservationV1.model_validate({key: value for key, value in payload.items() if key != "actual"})
+    with pytest.raises(ValidationError, match="evidence"):
+        ObservationV1.model_validate({**payload, "evidence_ref": None})
+
+
+def test_allocated_user_email_uses_deliverability_independent_valid_domain() -> None:
+    inputs = allocate_user_inputs(lambda username, email: False, token_factory=lambda: "a" * 30)
+    assert inputs.email == inputs.username + "@example.com"
+    assert len(inputs.username) == 20

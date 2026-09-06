@@ -184,7 +184,7 @@ def allocate_user_inputs(
         if not token or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789" for character in token):
             raise ValueError("generated User token is not canonical")
         username = f"qa_{token}"[:20]
-        email = f"{username}@example.test"
+        email = f"{username}@example.com"
         if not collides(username, email):
             return FrozenUserInputsV1(username=username, email=email)
     raise ValueError("could not allocate User inputs after three collision checks")

@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = ">=3.11,<4.0"
 
 [dependency-groups]
+verification-runner = ["pytest==9.1.1", "pytest-json-report==1.5.0"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
