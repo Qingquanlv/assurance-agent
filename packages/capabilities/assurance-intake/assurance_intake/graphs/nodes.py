@@ -20,7 +20,6 @@ from assurance_intake.contracts.workflow import (
 )
 from assurance_intake.contracts.plan import (
     LoadPlanInputV1,
-    PlanBudgetsV1,
     ResolvePlanInputV1,
     ResolvePlanOutputV1,
 )
@@ -65,10 +64,6 @@ def select_explore(state: Mapping[str, object]) -> ExploreInputV1:
     )
 
 
-def _plan_budgets(state: Mapping[str, object]) -> PlanBudgetsV1:
-    return PlanBudgetsV1.model_validate(state["budgets"])
-
-
 def _requirement_digest(state: Mapping[str, object]) -> str:
     requirement = state.get("requirement")
     if not isinstance(requirement, str):
@@ -99,7 +94,7 @@ def select_resolve_plan(state: Mapping[str, object]) -> ResolvePlanInputV1:
             "change_id": state["change_id"],
             "requirement_digest": _requirement_digest(state),
             "candidate_test_families": state["candidate_test_families"],
-            "budgets": _plan_budgets(state),
+            "budgets": state["budgets"],
             "policy_resource_id": policy["resource_id"],
             "policy_digest": policy["sha256"],
             "family_policy": state["family_policy"],
@@ -126,7 +121,7 @@ def select_load_plan(state: Mapping[str, object]) -> LoadPlanInputV1:
             "change_id": state["change_id"],
             "requirement_digest": _requirement_digest(state),
             "resolved_plan_ref": state["resolved_plan_ref"],
-            "budgets": _plan_budgets(state),
+            "budgets": state["budgets"],
             "policy_resource_id": policy["resource_id"],
             "policy_digest": policy["sha256"],
             "source_resource_digests": (
@@ -148,7 +143,6 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     refs.append(resolved.plan_ref.model_dump(mode="json"))
     by_path = {str(item["path"]): item for item in refs}
     return {
-        "resolved_assurance_plan": resolved.plan.model_dump(mode="json"),
         "selected_test_families": list(resolved.plan.selected_test_families),
         "plan_digest": resolved.plan.plan_digest,
         "plan_ref": resolved.plan_ref.model_dump(mode="json"),

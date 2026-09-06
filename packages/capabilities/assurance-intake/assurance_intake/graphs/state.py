@@ -133,7 +133,6 @@ class IntakeState(CheckpointBridgeState, total=False):
     requirement: str
     candidate_test_families: list[str]
     resolved_plan_ref: dict[str, str]
-    resolved_assurance_plan: dict[str, object]
     capability_catalog: dict[str, str]
     product_policy: dict[str, str]
     data_knowledge: dict[str, str]

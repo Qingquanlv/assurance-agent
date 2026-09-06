@@ -69,7 +69,7 @@ from assurance_quality.operations.metrics import (
 from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
 from assurance_quality.operations.common import json_digest
-from assurance_quality.operations.goal_scope import goal_case_map, has_layer_evidence, obligation_goal
+from assurance_quality.operations.goal_scope import has_layer_evidence, obligation_goal
 
 
 class AssessmentInputError(ValueError):
@@ -324,7 +324,6 @@ def _metrics(
     projection: TraceProjectionV2,
     policy_digest: str,
     computed_at: datetime,
-    baseline: tuple[PreparedObligationV1, ...],
     reviewed: Mapping[CoverageGoal, Mapping[str, tuple[str, ...]]],
     required_layers: Mapping[str, MrcLayer],
 ) -> MetricsDocument:
@@ -336,16 +335,16 @@ def _metrics(
     }
     case_layers = {case.case_id: case.type.lower() for case in cases}
 
-    def covered(key: str, case_ids: frozenset[str]) -> bool:
-        evidence = case_ids & passed
+    def covered(key: str, case_ids: tuple[str, ...]) -> bool:
+        evidence = set(case_ids) & passed
         layer = required_layers.get(key)
         return bool(evidence) if layer is None else has_layer_evidence(layer, evidence, case_layers)
 
     def scope(goal: CoverageGoal) -> MetricScope | None:
-        obligations = goal_case_map(goal, baseline=baseline, reviewed=reviewed[goal])
+        obligations = reviewed[goal]
         if not obligations:
             return None
-        uncovered = tuple(key for key, case_ids in obligations.items() if not covered(key, case_ids))
+        uncovered = tuple(key for key, case_ids in sorted(obligations.items()) if not covered(key, case_ids))
         return MetricScope.of(
             total=len(obligations),
             covered=len(obligations) - len(uncovered),
@@ -592,19 +591,10 @@ def materialize_assessment_inputs(
         projection=projection,
         policy_digest=request.policy_sha256,
         computed_at=request.execution_at,
-        baseline=baseline,
         reviewed=reviewed_goal_maps,
         required_layers={obligation.key: obligation.layer for obligation in obligations},
     )
-    goals = tuple(
-        goal
-        for goal in _GOAL_ORDER
-        if goal_case_map(
-            cast(CoverageGoal, goal),
-            baseline=baseline,
-            reviewed=reviewed_goal_maps[cast(CoverageGoal, goal)],
-        )
-    )
+    goals = tuple(goal for goal in _GOAL_ORDER if reviewed_goal_maps[cast(CoverageGoal, goal)])
     selected = {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
     applicability_refs = (
         *request.reviewed_case.preparation_refs,

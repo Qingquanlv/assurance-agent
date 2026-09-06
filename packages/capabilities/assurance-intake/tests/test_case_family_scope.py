@@ -181,7 +181,7 @@ async def test_finalize_blocks_required_case_outside_frozen_scope(
     plan_path = project / plan_ref["path"]
     frozen = plan_path.read_bytes()
     source = stage if phase == "design" else project
-    outputs = _write_outputs(source, e2e_required=True)
+    outputs = _write_outputs(source, e2e_required=True, matrix_e2e_required=False)
     inputs = {relative: (source / relative).read_bytes() for relative in outputs}
 
     outcome = await _finalize(

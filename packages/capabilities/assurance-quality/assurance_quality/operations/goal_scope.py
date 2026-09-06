@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 
-from assurance_intake.contracts.quality_goals import CoverageGoal, MrcCategory, MrcLayer, PreparedObligationV1
+from assurance_intake.contracts.quality_goals import CoverageGoal, MrcCategory, MrcLayer
 
 
 def obligation_goal(*, key: str, category: MrcCategory) -> CoverageGoal | None:
@@ -22,17 +22,4 @@ def has_layer_evidence(layer: MrcLayer, case_ids: Iterable[str], case_layers: Ma
     return required <= {case_layers.get(case_id) for case_id in case_ids}
 
 
-def goal_case_map(
-    goal: CoverageGoal,
-    *,
-    baseline: tuple[PreparedObligationV1, ...],
-    reviewed: Mapping[str, tuple[str, ...]],
-) -> dict[str, frozenset[str]]:
-    scope = {key: frozenset(case_ids) for key, case_ids in reviewed.items()}
-    for obligation in baseline:
-        if obligation.required and obligation_goal(key=obligation.key, category=obligation.category) == goal:
-            scope.setdefault(obligation.key, frozenset())
-    return dict(sorted(scope.items()))
-
-
-__all__ = ["goal_case_map", "has_layer_evidence", "obligation_goal"]
+__all__ = ["has_layer_evidence", "obligation_goal"]

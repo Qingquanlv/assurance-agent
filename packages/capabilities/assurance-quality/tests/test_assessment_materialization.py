@@ -578,18 +578,20 @@ async def test_reviewed_e2e_case_requires_a_known_journey_mapping(tmp_path: Path
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case_count", [1, 2])
+@pytest.mark.parametrize("unmapped_journey", [False, True])
 async def test_known_journey_is_one_obligation_but_each_required_e2e_case_needs_evidence(
-    tmp_path: Path, case_count: int
+    tmp_path: Path, case_count: int, unmapped_journey: bool
 ) -> None:
     cases = [_case(f"TC_ITEM_00{index}", CAPABILITY) for index in range(1, case_count + 1)]
     for case in cases:
         case["type"] = "E2E"
         cast(dict[str, object], case["automation"])["framework"] = "pytest-playwright"
+    journeys = ("checkout", "refund") if unmapped_journey else ("checkout",)
     request = _workspace_input(
         tmp_path,
         family="e2e",
-        journeys=("checkout",),
-        minimum_required_coverage={"e2e": ["checkout"]},
+        journeys=journeys,
+        minimum_required_coverage={"e2e": list(journeys)},
         case_entries=cases,
         matrix_rows=[
             _matrix_row(
@@ -605,8 +607,9 @@ async def test_known_journey_is_one_obligation_but_each_required_e2e_case_needs_
     metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
     journey = metrics.metrics["journey_coverage"]
     assert journey.declared is not None
-    assert journey.declared.total == 1
-    assert journey.value == 1.0
+    assert journey.declared.total == len(journeys)
+    assert journey.declared.uncovered == (("refund",) if unmapped_journey else ())
+    assert journey.value == (0.5 if unmapped_journey else 1.0)
     sufficiency = TraceSufficiencyFacts.model_validate(
         json.loads(result.workspace_bytes[output.sufficiency_ref.path])
     )
@@ -616,7 +619,7 @@ async def test_known_journey_is_one_obligation_but_each_required_e2e_case_needs_
     )
     assert classify_coverage_state(
         metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
-    ) == ("satisfied" if case_count == 1 else "repair_required")
+    ) == ("satisfied" if case_count == 1 and not unmapped_journey else "repair_required")
 
 
 @pytest.mark.asyncio
