@@ -14,6 +14,15 @@ from assurance_execution.contracts.selection import (
     SelectedTargets,
 )
 from assurance_execution.contracts.workflow import ExecutionCycleInputV1, ExecutionCycleResultV1
+from assurance_execution.contracts.verification import (
+    EvidenceCompletionV1,
+    FrozenUserInputsV1,
+    ManagedSutV1,
+    ObservationV1,
+    SqliteFileIdentityV1,
+    VerificationEvidenceV1,
+    VerificationManifestV1,
+)
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
@@ -28,5 +37,12 @@ __all__ = [
     "ExecutionReceiptV1",
     "RawTestResultV1",
     "SelectedTargets",
+    "EvidenceCompletionV1",
+    "FrozenUserInputsV1",
+    "ManagedSutV1",
+    "ObservationV1",
+    "SqliteFileIdentityV1",
+    "VerificationEvidenceV1",
+    "VerificationManifestV1",
     "attempt_contract_refs",
 ]

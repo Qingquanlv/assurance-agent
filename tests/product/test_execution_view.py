@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from typing import cast
+from pydantic import ValidationError
 
 from assurance_product.generated_merge import (
     GeneratedFileV2,
@@ -15,6 +16,7 @@ from assurance_product.generated_merge import (
     merge_generated,
 )
 from assurance_product.execution_view import ExecutionView, build_execution_view, discard_execution_view
+from assurance_execution.generated_merge import ExecutionViewInputV1
 
 CHANGE_ID = "CH-DEMO-001"
 BATCH_ID = "20260822T000000Z"
@@ -306,3 +308,72 @@ def test_execution_view_digest_covers_selected_materialized_files(tmp_path: Path
     assert view.digest
     assert view.digest != merged.digest
     assert isinstance(view.digest, str)
+
+
+def test_verified_view_is_execution_scoped_and_read_only(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    original = _write(project, SUPPORT_TARGET, b"import pytest\n")
+    original.chmod(0o640)
+    _promote(project, "api", CANDIDATE_TARGET, b"def test_ok():\n    assert True\n")
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+    execution_id = "01234567-89ab-4def-8123-456789abcdef"
+    request = merged.execution_view_input(
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        execution_id=execution_id,
+        selected=(f"{CANDIDATE_TARGET}::test_ok[param=one]",),
+    )
+
+    view = build_execution_view(project, request=request)
+
+    assert view.execution_id == execution_id
+    assert view.mode == "verified"
+    assert view.root.endswith(f"/{BATCH_ID}/{execution_id}")
+    root = project.joinpath(*view.root.split("/"))
+    assert stat.S_IMODE(root.stat().st_mode) == 0o555
+    assert stat.S_IMODE((root / CANDIDATE_TARGET).stat().st_mode) == 0o444
+    assert stat.S_IMODE((root / SUPPORT_TARGET).stat().st_mode) == 0o444
+    assert stat.S_IMODE(original.stat().st_mode) == 0o640
+
+
+def test_verified_view_input_authenticates_generated_descriptors(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _promote(project, "api", CANDIDATE_TARGET, b"def test_ok():\n    assert True\n")
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+    request = merged.execution_view_input(
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        execution_id="01234567-89ab-4def-8123-456789abcdef",
+        selected=(f"{CANDIDATE_TARGET}::test_ok",),
+    )
+    staged = project.joinpath(*merged.files[0].staged_path.split("/"))
+    staged.write_text("def test_ok():\n    assert False\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="descriptor"):
+        build_execution_view(project, request=request)
+
+
+def test_verified_view_input_is_closed_and_distinguishes_real_reruns(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _promote(project, "api", CANDIDATE_TARGET, b"def test_ok():\n    assert True\n")
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+    first_request = merged.execution_view_input(
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        execution_id="01234567-89ab-4def-8123-456789abcdef",
+        selected=(f"{CANDIDATE_TARGET}::test_ok[one]",),
+    )
+    second_request = merged.execution_view_input(
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        execution_id="11234567-89ab-4def-8123-456789abcdef",
+        selected=(f"{CANDIDATE_TARGET}::test_ok[two]",),
+    )
+
+    first = build_execution_view(project, request=first_request)
+    second = build_execution_view(project, request=second_request)
+
+    assert first.root != second.root
+    assert first.digest != second.digest
+    with pytest.raises(ValidationError):
+        ExecutionViewInputV1.model_validate({**first_request.model_dump(mode="json"), "passed": True})

@@ -1,5 +1,6 @@
 from assurance_execution.generated_merge import (
     FAMILIES,
+    ExecutionViewInputV1,
     GeneratedFileV2,
     GeneratedOperation,
     MergedGeneratedSet,
@@ -10,6 +11,7 @@ from assurance_execution.generated_merge import (
 
 __all__ = [
     "FAMILIES",
+    "ExecutionViewInputV1",
     "GeneratedFileV2",
     "GeneratedOperation",
     "MergedGeneratedSet",

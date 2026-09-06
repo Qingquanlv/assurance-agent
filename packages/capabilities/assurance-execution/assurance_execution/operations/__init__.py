@@ -17,6 +17,13 @@ from assurance_execution.operations.runner import (
     RunTestsHandler,
 )
 from assurance_execution.operations.selection import SelectHandler
+from assurance_execution.operations.sqlite_oracle import observe_user
+from assurance_execution.operations.verification_manifest import (
+    allocate_user_inputs,
+    authenticate_verification_manifest,
+    build_verification_manifest,
+    sqlite_file_identity,
+)
 
 
 def execution_handlers(
@@ -51,5 +58,10 @@ __all__ = [
     "RunTestsAndCollectPrMetricsHandler",
     "RunTestsHandler",
     "SelectHandler",
+    "allocate_user_inputs",
+    "authenticate_verification_manifest",
+    "build_verification_manifest",
     "execution_handlers",
+    "observe_user",
+    "sqlite_file_identity",
 ]

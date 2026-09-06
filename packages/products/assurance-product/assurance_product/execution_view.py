@@ -1,5 +1,6 @@
 from assurance_execution.execution_view import (
     ExecutionView,
+    ExecutionViewInputV1,
     authenticate_execution_view,
     build_execution_view,
     build_or_authenticate_execution_view,
@@ -10,6 +11,7 @@ from assurance_execution.execution_view import (
 
 __all__ = [
     "ExecutionView",
+    "ExecutionViewInputV1",
     "authenticate_execution_view",
     "build_execution_view",
     "build_or_authenticate_execution_view",
