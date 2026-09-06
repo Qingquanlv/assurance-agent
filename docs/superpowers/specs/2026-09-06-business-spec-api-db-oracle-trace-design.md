@@ -1,10 +1,14 @@
-# 业务规格驱动的 API→DB 验证与业务 Trace 检查点
+# 业务规格驱动的 User 全流程验证：DB oracle 与 OTel 链路
 
-日期：2026-09-06  
-状态：Draft — 待评审的实施规格；本文件不表示功能已经实现  
-范围：阶段一「规格、机器计划、权威执行、一个 DB oracle」；阶段二「同一流程增加一个必需业务 OTel 检查点」  
-基准项目：当前仓库的 `benchmark/vue-fastapi-admin`  
-首条业务流程：`POST /api/v1/dept/create` 创建根部门
+日期：2026-09-06
+
+状态：Draft — 待评审的实施规格；本文件不表示功能已经实现
+
+范围：阶段一「规格、机器计划、权威执行、一个 DB oracle」；阶段二「同一流程接入实际 DB 的 OTel 插桩及一个必需业务检查点」
+
+基准项目：当前仓库的 `benchmark/vue-fastapi-admin`
+
+首条业务流程：`POST /api/v1/user/create` 创建用户；两阶段均通过完整 Assurance workflow 验收
 
 ## 1. 问题与目标
 
@@ -16,7 +20,7 @@
 
 人可读业务用例是预期的来源；机器计划是派生产物。代码证据用于定位路由、数据库字段和插桩位置，不自动决定什么行为正确。最终结果由已安装执行模块采集的证据和确定性裁判计算。
 
-两阶段均须通过实际 benchmark 验收，不能只完成 schema、提示词或 mock 单元测试。第一阶段不要求 OTel；第二阶段沿用同一业务预期和同一 DB oracle，仅新增冻结的 Trace 义务。
+两阶段均须从 User 的需求输入走实际 benchmark 的完整产品 workflow：用例设计、机器计划、测试生成、权威执行、质量判定、适用的修复与重跑、报告及交付。不能从手工准备好的计划直接调用 runner，就宣称全流程完成。第一阶段不要求 OTel；第二阶段沿用同一业务预期和同一 DB oracle，新增冻结的业务与数据库 Trace 义务。
 
 ## 2. 范围与方案选择
 
@@ -32,6 +36,8 @@
 
 新模式使用两个显式 profile：`api_db.v1` 与 `api_db_trace.v1`。profile 在计划编译前选择并冻结；执行失败后不得自动从后者降级到前者。
 
+这里的 full workflow 指所选 User API 用例经过完整产品生命周期，不表示本次同时实现所有测试类型，或强制走完所有条件分支。验收项选择 `system/user`、`selected_test_families=[api]`，将首个交付目标明确限定为创建用户并正确持久化。现有 User 需求中的更新、删除、密码重置、权限及角色关联等其余场景保留为后续范围，不能宣称已验证整个 User 模块。
+
 第一版不实现 UI 驱动接入、Redis、Kafka、Fuzz、Performance、跨服务消息拓扑、通用 SQL DSL、APM 管理界面或自动业务规则推断。现有其他测试能力继续工作，但不能被标记为已获得新验证保证。
 
 ## 3. Benchmark 事实与业务规格来源
@@ -40,25 +46,29 @@
 
 当前 benchmark 使用 FastAPI 0.111.0、Tortoise ORM 0.23.0、aiosqlite 0.20.0 与 SQLite。当前 app 和依赖中没有发现 OTel 插桩，第二阶段需要新增接入。
 
-根部门创建路由先等待 controller，再返回成功响应；响应没有新建实体 ID。controller 的 `create_dept` 使用 `@atomic()`，在事务中先创建 Dept，再建立 DeptClosure 关系。第一版按唯一业务名称关联实体，不为获取 ID 修改公开响应契约。
+User 模型的表名为 `user`，模型默认连接是 `sqlite`，使用 `tortoise.backends.sqlite`，文件为运行实例的 `BASE_DIR/db.sqlite3`。因此第二阶段必须沿 **FastAPI → Tortoise ORM → aiosqlite → SQLite** 的实际调用路径接入；不得接一套无关的 PostgreSQL/MySQL 样例来替代。
 
-选择创建根部门而非部门重新挂载，是因为创建流程更短且已有事务；当前重新挂载的闭包更新顺序存在额外业务问题，应由其他测试暴露，本功能不顺带修复它。
+创建路由先按 email 查重，controller 对密码做 hash 并保存 User，再清理和设置角色，最后返回成功 envelope；响应没有新建实体 ID。实际 API 前缀是单数 `/api/v1/user`。第一版按本次唯一 username 与 email 关联实体，不为获取 ID 修改公开响应契约。
 
-现有 benchmark 需求要求验证部门创建正确性，但没有定义闭包表行数或原子性细节。本 spec 明确补充下述最小成功创建验收语义，评审后作为规范来源冻结；这些预期不得伪称由当前实现自动证明。DeptClosure 的物理行形状不进入第一版业务 oracle。
+当前 User 创建路由与 controller 没有覆盖整个创建及角色更新的 `@atomic`/`in_transaction`；SQLite backend 默认自动提交。不能将“函数成功返回”解释为已有跨步骤事务，也不能把写入之后抛异常当成实际回滚。第 12.3 节单独定义真实回滚故障变体。
+
+现有 benchmark 的 User 需求覆盖 CRUD、邮箱唯一性、角色和部门关联、密码重置。本 spec 明确补充下述最小成功创建验收语义，评审后作为规范来源冻结；实现中的默认值、当前返回结果不自动成为预期正确性的来源。
 
 ### 3.2 首条人可读业务用例
 
 | 项目 | 冻结的业务约束 |
 | --- | --- |
-| 目标 | 管理员创建一个此前不存在的根部门，并在操作成功后持久保存输入字段 |
-| 初态 | 本次唯一部门名称不存在；合法测试管理员可调用创建接口 |
-| 输入 | 每个测试尝试唯一的 name、固定 desc、合法 order、parent_id=0；name 不超过当前 20 字符约束 |
+| 目标 | 管理员创建一个此前不存在的用户，并在操作成功后持久保存本次约定的账户字段 |
+| 初态 | 本次 username 和 email 均不存在；合法测试管理员可调用创建接口 |
+| 输入 | 每个测试尝试唯一的 username（不超过 20 字符）与合法 email；明确 is_active=true、is_superuser=false、dept_id=null、role_ids=[]；密码引用运行期测试凭据 |
 | API 预期 | HTTP 200，响应业务 code=200；不依赖成功文案原样匹配 |
-| DB 预期 | 在独立连接读取已提交状态：该 name 恰好一行；name、desc、order、parent_id 与本次冻结输入相等，is_deleted=false |
-| Trace 预期 | 仅阶段二要求：同一 API 动作下观察到 `dept.create.committed` 检查点，与同一业务名称、SUT 实例关联 |
+| DB 预期 | 独立连接读取已提交状态：以 username 或 email 命中的集合恰好一行；username、email、is_active、is_superuser、dept_id 与本次冻结输入相等 |
+| Trace 预期 | 仅阶段二要求：当前 HTTP 动作关联到 SUT 的真实 SQLite 用户持久化调用，并观察到 `user.create.completed` 业务检查点；两者属于同一 action 与 SUT 实例 |
 | 完成 | 同步 API 动作已有终态；独立 DB 查询完成；阶段二还需必需 Trace 证据到达并完成采集封存 |
 
-name 由执行模块生成不超过 20 字符的运行标记。实例绑定冻结前最多尝试分配 3 次以避开碰撞；选定后写入本次实例绑定并冻结。冻结后的初态检查若发现同名记录，必须阻止动作，不能再悄悄换名或复用记录。每个参数实例和显式重试使用新的名称。
+username 由执行模块生成不超过 20 字符的运行标记，email 使用同次生成的唯一标记和符合 EmailStr 校验的测试域名，总长不超过 255 字符。实例绑定冻结前最多尝试分配 3 次以避开碰撞；选定后将二者写入本次实例绑定并冻结。冻结后的初态检查若发现任一值已有记录，必须阻止动作，不能再悄悄换值或复用记录。每个参数实例和显式重试使用新的 username/email。
+
+SQL oracle 只选择上述业务列；禁止导出 password、认证 token 或请求凭据。密码 hash 正确性、角色关联表和跨步骤原子性不属于本条用例已验证的业务义务，不能由这一条通过推导出来。
 
 DB 的预期是明确的业务字段及存在性，不包括固定主键值、生成时间、ORM 方法名、SQL 文本或 SQL 调用次数。字段与表的对应关系属于实现绑定，可以在保持业务语义的重构后更新。
 
@@ -109,10 +119,10 @@ DB 的预期是明确的业务字段及存在性，不包括固定主键值、�
 | --- | --- |
 | 规格绑定 | case ID、规格引用/摘要、预期来源摘要、选定 profile、义务目录摘要 |
 | 实现绑定 | SUT 版本、支持的动作/observer/checkpoint ID 与版本、配置摘要 |
-| 实例输入 | 参数声明和来源、运行期允许绑定的唯一业务名称；禁止绑定时改写业务预期 |
+| 实例输入 | 参数声明和来源、运行期允许绑定的 username/email 与受控凭据引用；禁止绑定时改写业务预期 |
 | 动作 | action ID、已安装的 HTTP driver、method/path、请求参数、响应预期 ID |
 | DB oracle | oracle ID、初态检查、已安装 SQLite observer、参数化只读查询绑定、结果比较和预期 ID |
-| Trace | 阶段二的必需检查点 ID、语义版本、关联约束；阶段一明确 not_required |
+| Trace | 阶段二的业务检查点 ID/版本、SQLite 持久化调用义务、插桩绑定及关联约束；阶段一明确 not_required |
 | 完成 | 同步动作语义、各等待上限、证据完成要求、缺失处理 |
 | 闭集映射 | 每项必需义务到一个受支持执行绑定；关联现有 Case ID → test symbol/file mapping |
 
@@ -138,9 +148,9 @@ pytest 原始报告先作为子进程输出接纳，只证明测试收集与 run
 
 每次真实运行生成新的 run ID；保留具体参数化 nodeid，不只聚合到函数。身份链为 run → case instance → test attempt → action，并记录引擎 invocation/task/attempt。
 
-当前 batch ID 是输入内容摘要，继续用于内容身份；不得充当唯一运行 ID。每条动作、DB 观察、Trace 关联都绑定本次实例、尝试和业务名称，旧尝试证据不能补齐新尝试。
+当前 batch ID 是输入内容摘要，继续用于内容身份；不得充当唯一运行 ID。每条动作、DB 观察、Trace 关联都绑定本次实例、尝试和唯一用户业务键，旧尝试证据不能补齐新尝试。
 
-第一版不自动重试业务 POST。动作已开始但终态 receipt 丢失时，不根据缺失结果直接重新发送请求；先记录不完整。用户或调度策略发起的新尝试必须使用新的身份、名称和受控环境。恢复仅可复用同一身份下已落盘且匹配摘要的证据。
+第一版不自动重试业务 POST。动作已开始但终态 receipt 丢失时，不根据缺失结果直接重新发送请求；先记录不完整。用户或调度策略发起的新尝试必须使用新的身份、username/email 和受控环境。恢复仅可复用同一身份下已落盘且匹配摘要的证据。
 
 ### 7.3 SUT 与 SQLite 隔离
 
@@ -148,13 +158,13 @@ pytest 原始报告先作为子进程输出接纳，只证明测试收集与 run
 
 执行者和 SQLite observer 必须确认同一个环境绑定。复制初始数据库应使用 SQLite 一致性备份或已停止的种子库，不能忽略 WAL 后直接复制活跃主文件。不得读取或修改 benchmark 原始数据库来完成业务动作。
 
-初始准备只提供管理员和必要基础数据，不预先创建目标部门。独立只读连接先确认本次 name 不存在，API 动作后重新读取已提交状态；不得复用 SUT ORM session、未提交事务或响应缓存作为 DB oracle。
+初始准备只提供管理员和必要基础数据，不预先创建目标用户。独立只读连接先确认本次 username 和 email 均不存在，API 动作后重新读取已提交状态；不得复用 SUT ORM session、未提交事务或响应缓存作为 DB oracle。服务端实际连接文件和 observer 文件绑定必须一致；测试身份或 OTel 属性中的路径声明不能单独替代环境核验。
 
 环境不匹配、初态不满足、数据库不可读均不得运行或宣称通过；归为执行环境证据错误，不自动生成业务缺陷。证据先封存再清理；失败/不完整尝试保留诊断材料，清理不得篡改判定。
 
 ## 8. 阶段一：独立 DB oracle
 
-第一版实现一个 SQLite observer 能力，承担本用例初态与后态读取。初态须确认目标 name 为零行；后态查询必须返回原始有限 rowset，再由固定比较器检查恰好一行与字段值。
+第一版实现一个 SQLite observer 能力，承担本用例初态与后态读取。初态须确认 username 或 email 命中为零行；后态以同一组冻结参数查询 `user` 表的约定列，必须返回原始有限 rowset，再由固定比较器检查恰好一行与字段值。使用 OR 同时捕获两种业务键的碰撞，不以仅查询一个字段掩盖另一字段错误。
 
 后态读取发生在同步 HTTP 动作已有终态之后。成功响应承诺已提交，因此目标记录不存在或字段错误是业务失败；不通过反复等待把同步提交错误掩盖成最终成功。
 
@@ -164,37 +174,58 @@ HTTP 超时且执行是否完成未知时，不把当时查不到行直接解释
 
 阶段一通过的声明仅为「API 动作与 DB 业务契约已验证」，Trace 状态为 not_required，不显示“完整链路已验证”。
 
-## 9. 阶段二：一个业务 OTel 检查点
+## 9. 阶段二：实际 SQLite 插桩与一个业务 OTel 检查点
 
 ### 9.1 接入方式
 
-按 benchmark 的 Python/FastAPI 技术栈接入 OTel Python SDK、FastAPI instrumentation 与 OTLP HTTP exporter。第一版不依赖 Tortoise/aiosqlite 自动 SQL 插桩；DB 正确性仍由阶段一 observer 验证。
+按 benchmark 的实际技术栈接入 OTel Python SDK、FastAPI instrumentation、官方 `opentelemetry-instrumentation-tortoiseorm` 与 OTLP HTTP exporter。官方 Tortoise 插桩覆盖 SQLite backend 的异步 execute 方法，在调用方上下文创建 CLIENT span 并等待真实数据库调用返回；它符合当前 Tortoise → aiosqlite 路径，优先复用，不另建通用驱动插件。
 
-权威 HTTP driver 创建本次动作的 client span 并通过 W3C trace context 注入请求。FastAPI 创建 server span；受控请求 hook 仅传播允许的测试身份字段。业务检查点在同一请求上下文中产生。测试身份不是业务预期，不能把 expected 值或通过结论注入 SUT。
+不能只安装 `opentelemetry-instrumentation-sqlite3` 就声明链路接通：当前 aiosqlite 使用工作线程及连接快捷执行方法，须避免上下文丢失和未经过被包装 cursor 的旁路。实施前锁定兼容版本，以当前 Tortoise 0.23.0 / aiosqlite 0.20.0 的真实 User.save 验证父链、成功/异常及事务变体。库的支持声明不能代替此兼容验收。
+
+权威 HTTP driver 创建本次动作的 client span 并通过 W3C trace context 注入请求。FastAPI 创建 server span；受控请求 hook 仅传播允许的测试身份字段。真实 SQLite 调用与业务检查点在同一请求上下文中产生。测试身份不是业务预期，不能把 expected 值或通过结论注入 SUT。
+
+必需链路如下；业务检查点可以是请求下的独立子 span，不要求它是先前 DB 调用的父节点。
+
+```mermaid
+flowchart LR
+    A[权威 HTTP client span] --> B[FastAPI server span]
+    B --> C[Tortoise SQLite CLIENT span]
+    C --> D[(本次 SUT 的 SQLite user 表)]
+    B --> E[user.create.completed]
+    O[独立只读 DB oracle] --> D
+```
+
+图中 oracle 是独立状态读取，不属于待验证的 SUT 写入链路。即使 observer 自身也被插桩，其 service/scope 和角色须标为 oracle；它的 SELECT span 不能满足 SUT 用户持久化义务。
 
 第一版采用运行期独占的上游 OpenTelemetry Collector，接收 OTLP HTTP 并通过 file exporter 保存原始 OTLP JSONL。执行模块读取并归一化；不自建 APM 查询服务，不以 debug 日志文本作为 Trace 数据接口。
 
 该 exporter 当前为 alpha，因此 SDK/instrumentation/Collector 必须锁定具体版本及 Collector 制品摘要，以样本兼容测试验证 JSONL 解析；运行时版本不支持则预检失败，不静默跳过。file exporter 的原始格式不是本产品的业务契约，产品只公开自己的版本化归一模型。每次尝试使用新文件，不复用旧内容。
 
-### 9.2 检查点语义
+### 9.2 业务检查点与 DB 调用约束
 
-唯一新增的业务检查点类型为 `dept.create.committed`，语义版本为 1。它表达当前创建事务已成功返回给请求处理层，不声称所有业务字段正确。
+唯一新增的业务检查点类型为 `user.create.completed`，语义版本为 1，表达本次创建处理的既定步骤正常返回，不声称所有业务字段正确，也不声称 User 与角色更新具有跨步骤原子性。
 
-它必须在路由等待 `dept_controller.create_dept(...)` 正常返回之后产生，或在重构后的等价提交后位置产生。不能放在 `@atomic()` 函数体尾部就标记 committed，因为此时事务可能尚未退出提交。
+它必须在路由等待 `user_controller.create_user(...)` 与 `user_controller.update_roles(...)` 均正常返回之后、返回成功 envelope 之前产生，或在重构后的等价处理完成位置产生。不得为获得该检查点而改变正常 SUT 的事务语义。
 
-记录稳定检查点 ID/版本、实际业务 name、parent_id、动作关联及 SUT instance。不改变公开创建响应，不依赖新增实体 ID，也不把 Python 函数名作为稳定检查点身份。
+检查点记录稳定 ID/版本、实际创建对象的 username、动作关联及 SUT instance。DB span 记录实际 SQLite 类型、当前数据库绑定、数据库调用角色，以及可识别用户持久化操作的归一化属性。username 只能作为关联，不能作为“已经写入成功”的证据；不改变公开响应，也不把函数名当成稳定检查点身份。
 
-匹配条件为：来自本次绑定的 SUT 实例、同一业务名称与 action，且通过实际父子祖先关系关联到该 HTTP 动作。仅业务名称相同、仅时间相近或仅拥有某个旧 trace ID 都不够。允许中间增加辅助 spans；不要求完整树形状、固定直接父节点、SQL 文本或 span 总数。
+检查点与 DB 调用均须来自本次绑定的 SUT 实例与 action，并分别通过实际父子祖先关系关联到同一个 HTTP server span 及权威 client span。检查点的实际 username 必须匹配冻结实例。仅名称相同、时间相近或拥有旧 trace ID 都不够。必须是 SUT 实际 backend 调用产生的 SQLite CLIENT span；在业务代码中手工发一个名为 SQL 的 span 不满足此义务。
 
-要求至少一个去重后的匹配检查点，去重按 trace ID/span ID；第一版不以 span 次数证明 exactly-once 业务效果。SpanStatus.OK 或 committed 属性不能覆盖 DB oracle 的失败。
+至少需要一个匹配业务检查点和一个成功结束的用户持久化 DB 调用，按 trace ID/span ID 去重。当前绑定识别对 `user` 表的写入，不能用查重 SELECT、角色关联表操作或 oracle SELECT 替代。成功结束不要求 SDK 显式设置 SpanStatus.OK；正常 UNSET 与 ERROR 按锁定版本语义归一。DB 调用 span 只证明客户端执行调用，不证明事务最终提交；落库正确性仍由独立 DB oracle 判断。
+
+允许中间增加辅助 spans，不约束完整树形状、直接父节点、SQL 原文、固定 SQL 条数或完整函数覆盖。当前表/操作识别由固定适配根据真实数据库调用信息产生；预期仍来自规格。等价 SQL/ORM 重构可更新技术绑定并重新编译，但必须继续观察实际用户持久化调用。DB 模型映射或属性格式发生不支持的变化时，返回 NOT_READY/INCOMPLETE，不能放宽为“任意 DB span 即可”。
+
+Tortoise 插桩不自动保证所有事务 commit/rollback 或被子类覆写的方法都有 span。第一版不以事务 span 缺失推断回滚；第 12.3 节的真实回滚由 harness 事实及独立状态证明，仍要求写入调用已被观察到。跨事务全拓扑不在本次支持声明中。
+
+禁止捕获 SQL 参数值，设置 `capture_parameters=false`；出站遥测及 HTTP receipt 使用字段白名单，在落盘前移除密码、认证头及可能包含字面量的 SQL 原文。所需表/操作属性在受控出口归一后保留，并对原始 OTLP 文件做凭据不泄漏验收。第一版不以 span 数量证明 exactly-once；SpanStatus.OK、completed 属性或 SQL span 的存在都不能覆盖 DB oracle 的失败。
 
 ### 9.3 采集完成
 
-测试流量配置全量采样，仍需检测导出/读取错误。原始证据保留 resource attributes、spans、events、links 与丢弃计数等可用信息；第一版仅断言本同步流程的必要关系，未实现的消息 links 裁判不得宣称支持。
+测试流量配置全量采样，仍需检测导出/读取错误。原始证据指上述受控出口允许导出的 OTLP，保留可用的 resource attributes、spans、events、links 与丢弃计数；第一版仅断言本同步流程的必要关系，未实现的消息 links 裁判不得宣称支持。
 
 API 终态、DB 观察与 telemetry drain 是不同检查点。第一版在动作终态结束 HTTP driver 的 client span；随后在同一完成预算内排空 driver 所属 TracerProvider，并通过 managed SUT 的受控关闭生命周期排空 SUT 的 TracerProvider，两侧都执行适用的 flush/shutdown。两侧完成或得到明确失败/超时后，才有序停止 Collector 并封存文件。执行模块分别记录 driver、SUT、Collector 的完成/失败 receipt；任一必需排空步骤失败不得宣称证据完整。仅等待固定 sleep 或只看“最近无新 span”不能代替该过程。
 
-封存前归一化必须排除旧尝试/其他动作的证据。缺少 server/业务检查点关联、必需字段丢失、文件截断或 drain 超时均不得补成完整。晚到证据不能直接覆盖已封存结果；重算必须显式产生同一原始材料集合对应的新评价记录，或启动新尝试。
+封存前归一化必须排除旧尝试/其他动作的证据。缺少 server、业务检查点或 SUT 数据库调用的必需关联、字段丢失、文件截断或 drain 超时均不得补成完整。晚到证据不能直接覆盖已封存结果；重算必须显式产生同一原始材料集合对应的新评价记录，或启动新尝试。
 
 “完整”仅指冻结契约所需的正向证据齐全且收集过程成功，不是所有真实操作均被无损观测的全局承诺。
 
@@ -214,7 +245,7 @@ API 终态、DB 观察与 telemetry drain 是不同检查点。第一版在动�
 
 quality 从冻结计划与执行证据纯计算结果，策略只决定后续路由。INCOMPLETE 是有效的执行事实，不应因为它不是业务通过而拒绝保存。格式/身份错误拒绝证据接纳，并报告明确完整性原因。
 
-产品的质量门禁、状态页、问题分类、导出和 achieved 判定都消费新结果。选中新模式用例存在 NOT_READY/INCOMPLETE/SKIPPED 或 FAILED 时，不得宣称该验证目标 achieved；诊断材料可以导出，但须保留未验证/失败状态。
+产品的质量门禁、状态页、问题分类、导出和 achieved 判定都消费新结果。选中新模式用例存在 NOT_READY/INCOMPLETE/SKIPPED 或 FAILED 时，不得宣称该验证目标 achieved。`aa export` 沿用只发布 achieved 结果的约束；失败/不完整运行保留可读取的诊断材料，不以成功发布回执呈现。
 
 ## 11. 产物、模块归属与修复约束
 
@@ -224,11 +255,11 @@ quality 从冻结计划与执行证据纯计算结果，策略只决定后续路
 | --- | --- |
 | intake | 业务断言 ID、规范来源与评审状态；冻结可读业务预期 |
 | generation | 派生机器计划、闭集义务绑定与 readiness；生成 pytest 桥接入口 |
-| execution | 权威 subprocess/HTTP driver、SQLite observer、实例身份、Collector 生命周期和证据封存 |
+| execution | 权威 subprocess/HTTP driver、SQLite observer、实例身份、数据库 span 归一、Collector 生命周期和证据封存 |
 | quality | 确定性业务与证据判定、义务覆盖及新状态投影 |
 | healing | 检测并拒绝验收义务降级，允许不改变语义的执行绑定修复 |
 | assurance-product | 安装声明、profile 配置、工作流接线、状态/导出/achieved 集成 |
-| benchmark | 明确的业务样例、独占 SUT 环境、业务插桩和验证故障变体 |
+| benchmark | User full-workflow 验收项、独占 SUT 环境、真实 Tortoise/SQLite 与业务插桩、故障变体及工作流证据检查 |
 
 `.aa/` 仅保存声明式绑定与策略，扩展闭合配置 schema；observer、validator、gate 等能力由已安装 wheels 提供。不得扫描 SUT 加载任意 Python 插件。
 
@@ -240,13 +271,42 @@ trace.v2 保持需求—用例—测试—问题追溯用途，新增材料通�
 
 ## 12. 验收测试
 
-优先通过最高层的「冻结计划 → managed benchmark 执行 → 权威证据 → 最终 verdict」验证行为。复用已有 execution host seam 和结果映射测试；对裁判使用同一公共评价入口。内部函数调用次数不作为本功能验收。
+最高层验收必须是「User 需求 → full workflow 生成与评审 → managed benchmark 真实执行 → 权威证据与质量门禁 → 产品收尾与发布」。runner/evaluator 契约测试用于定位故障，不能替代产品端到端验收；内部函数调用次数不作为功能完成依据。
 
-### 12.1 必需验收矩阵
+### 12.1 Full workflow 的入口与证据
+
+复用当前 `benchmark/assurance-product/run_item.py` 的安装产品、构建 bindings、compile、生成输入、start、run/status、achieved 后 export 路径。增加 User 创建专用的两阶段验收项，引用 `RET-user-management` 的需求来源及本 spec 的收窄业务目标；不能直接执行现有固定 Department 项的 `run-opencode.sh` 并宣称 User 验收完成。
+
+两项配置都使用 `entrypoint=full`、`case_modules=[system/user]`、`selected_test_families=[api]`，分别选择 `api_db.v1` 与 `api_db_trace.v1`。这里 `full` 是 CLI 工作流入口，不是将 ProductInputV1.run_mode 填成 full；正常用例输入沿用合法的 `run_mode=case`。完整输入的 catalog、policy、data knowledge、资源 SHA、budgets 与允许写入路径由编译产物产生，不能手填假摘要。
+
+当前产品允许 full 只选 API，但 benchmark harness 额外硬编码 full 必须四种 family，需要改为校验各 item 明确声明的选择。现有 Dept item 继续声明原范围；历史 `benchmark.user-only.env` 仅作为 User item 意图参考，它包含四 family 且旧脚本使用过时 CLI，不能作为无需修改即可验收的承诺。
+
+正常样例必须由真实配置的 Agent 完成当前产品主链，并由真实执行模块驱动 SUT：
+
+```text
+aa compile → aa start --entrypoint full → aa run / aa status
+  intake.intake → intake.explore → intake.case-design → intake.case-review
+  → generation.api.plan → generation.api.plan-review → generation.api.codegen
+  → execution.execute → quality.fact-baseline → quality.inspect → quality.report
+  → improvement.retro → improvement.apply → product-full achieved
+→ aa export
+```
+
+以上是命令/节点顺序示意，不是省略输入参数也能运行的完整 shell 命令。机器计划及确定性 oracle/Trace 判定接入对应真实节点与门禁；编译后的图可以有更多内部步骤。新能力不另起一个绕开 full 的调度流程。healthy 首跑不强求 healing 的 `execution.run` 分支出现；触发修复时才要求沿现有修复与重跑分支验证。
+
+每次 full 验收必须保存并核对：
+
+1. **新运行初态**：新的 change/invocation，冻结需求和产品 lock；该 change 初始没有预填 case、plan、generated tests、accepted review 或 inspection。凭据与基础数据库可以准备，但不得预建目标用户。
+2. **真实节点与门禁**：读取 engine ledger/projection，验证上述必经节点真正 succeeded，case/plan review 获得所需通过结论，codegen 被接纳，执行与质量门禁采用新证据判定；同时检查因果顺序。仅有文件、required_steps 名称或 finalize 记录不够；当前 harness 将 stopped 也计入步骤的检查必须加强。
+3. **同一次派生与执行**：需求/业务义务摘要 → 本次 case/review → plan/review → 生成测试及映射摘要 → runtime action/oracle/Trace → quality/report 必须可追溯。至少一个本次生成的 User 创建测试真实执行，不能空 mapping、全 skipped 或复用上轮通过结果。
+4. **最终交付一致**：正常运行达到 achieved，`aa export` 的 publish receipt 与 apply manifest、导出文件及证据引用摘要一致；成功报告必须包含逐项义务结果。不能只在 staging 留下测试文件。
+5. **异常留在产品判定内**：负向场景同样从 full 入口驱动，到对应阻塞点保存结果。NOT_READY 在生成/编译阶段停止即可；业务失败或证据缺失必须进入相应产品状态/门禁，不得 achieved 或成功 export。使用有限修复预算，不能无限循环等待故障消失，也不能修掉故障测试所要求检测的义务。
+
+### 12.2 必需验收矩阵
 
 | ID | 场景 | 必须观察到的结果 |
 | --- | --- | --- |
-| A01 | 阶段一正常创建 | API 与 DB oracle 均满足，PASSED，Trace 为 not_required |
+| A01 | 阶段一通过 full 创建 User | 完成本次设计/评审/计划/生成及真实执行；API 与 DB oracle 均满足，PASSED，Trace 为 not_required；最终 achieved/export |
 | A02 | 从计划遗漏必需 DB binding 或 expected 引用 | 编译 NOT_READY，没有 HTTP 动作 receipt |
 | A03 | pytest 通过但没有触发计划执行 | INCOMPLETE，必需动作/oracle 未执行，不补写完成记录 |
 | A04 | 动作执行后跳过必需 DB observer | INCOMPLETE，即使 HTTP 200/pytest exit 0 |
@@ -254,30 +314,42 @@ trace.v2 保持需求—用例—测试—问题追溯用途，新增材料通�
 | A06 | 事务真实写入后回滚 | 同步正向创建规格不成立，FAILED；独立 DB 连接确认目标记录未提交 |
 | A07 | 真实回滚后故障变体仍返回成功 envelope | HTTP 检查满足，DB oracle 仍 FAILED；不能只依赖 HTTP 错误发现问题 |
 | A08 | DB 不可读或 observer 超时 | INCOMPLETE，不当成零行成功读取 |
-| A09 | 冻结实例的目标名称已存在或服务/数据库绑定不一致 | 动作前阻止执行，记录环境原因，不能读取旧行获得通过；冻结前的有限碰撞重分配另作准备逻辑测试 |
-| A10 | 阶段二正常创建 | 同一 DB oracle 满足、匹配提交后检查点存在且证据封存成功，PASSED |
+| A09 | 冻结实例的 username 或 email 已存在，或服务/数据库绑定不一致 | 动作前阻止执行，记录环境原因，不能读取旧行获得通过；冻结前的有限碰撞重分配另作准备逻辑测试 |
+| A10 | 阶段二通过 full 创建同一规格的 User | 同一 DB oracle 满足、真实 SUT SQLite 用户写入 span 与 user.create.completed 均关联到本次 API、证据封存成功；PASSED，最终 achieved/export |
 | A11 | 阶段二丢弃业务 span 或导出链路失败 | DB 可满足，但 Trace 证据不完整，INCOMPLETE |
 | A12 | 使用旧 attempt 的 span 或中断 HTTP context 传播 | 不满足当前关联约束，INCOMPLETE |
-| A13 | 在实际回滚前错误发出 committed span | 即使 span 存在，DB oracle 仍使正向创建 FAILED |
+| A13 | 在实际回滚前错误发出 completed 检查点 | 即使业务检查点和成功写入调用 span 均存在，DB oracle 仍使正向创建 FAILED |
 | A14 | 改函数名、提取 helper、改变等价 ORM 写法、增加辅助 spans | 保持业务规格摘要与检查点语义不变，针对新 SUT 制品重新校验绑定并编译新计划后仍 PASSED；旧制品摘要绑定不得直接复用 |
 | A15 | 删除 oracle、required 改 optional、放宽预期/等待条件 | 修复提交或重用计划被拒绝，不能以此获得通过 |
-| A16 | 同版本再次执行 | 新 run/attempt/业务名称；旧证据不可补齐新尝试 |
+| A16 | 同版本再次执行 | 新 run/attempt/username/email；旧证据不可补齐新尝试 |
 | A17 | HTTP 终态未知或执行中断 | INCOMPLETE；恢复不得隐式重复 POST |
 | A18 | Agent 手写全通过结果、测试写入伪造证据、权威材料缺失/被更改 | 验证 IPC/写集隔离与父级接纳路径，不接受自报结果；不能仅凭可同时改写的文件及摘要通过 |
 | A19 | 薄 pytest 入口没有显式 assert，但权威执行完成全部义务 | 合法 PASSED；证明不以 assert 语法计数代替有效性 |
 | A20 | 第二阶段失败后尝试降级或套用 legacy 结果 | 不能满足原 profile，也不能显示原目标 achieved |
+| A21 | 阶段二只丢弃 SUT 的用户写入 span，保留成功响应、业务检查点和正确 DB 状态 | Trace INCOMPLETE；不能以业务 span 或 oracle 查询 span 补齐，full 不得 achieved/export |
+| A22 | 跳过实际 User 写入但仍运行 observer；存在查重/审计日志/fixture/cleanup/角色表等 DB spans | 它们均不能满足用户持久化义务；独立状态不符合正向目标，FAILED，同时记录用户写入证据缺失 |
+| A23 | 预填 case/plan/tests、跳过 review/codegen，或把 stopped 节点计为已完成 | full 验收拒绝；即使单独 runner PASSED 也不能证明生成到执行闭环 |
+| A24 | full 正常生成后，在执行时触发已冻结配置的错误字段或遥测缺失变体，继续质量/修复分支 | 对应 FAILED/INCOMPLETE 保留在产品记录中；修复不得弱化冻结义务，故障保留时不能 achieved/export |
+| A25 | 新增 profile 的报告显示正确，但最终 achieved 仍仅读取旧 passed 字段 | 验收失败；最终交付门禁必须核对新契约，不能靠展示层阻止误通过 |
+| A26 | 真实 User.save 在锁定 Tortoise/aiosqlite 版本及真实事务变体下执行 | 验证 SQLite CLIENT span 的来源与 HTTP 祖先关系；无凭据/SQL 参数泄漏，observer/准备/清理的 spans 不冒充业务写入 |
 
-### 12.2 故障变体与回滚的准确含义
+### 12.3 故障变体与回滚的准确含义
 
-回滚变体在真实 `@atomic` 内、首次 Dept 写入之后、关系写入完成之前注入指定异常，必须确实执行数据库写入后再回滚，不能在发请求前抛错替代。
+正常 User 创建目前没有覆盖整条操作的事务。真实回滚验收使用 harness 专属变体：在独占运行副本中，为原 `UserController.create_user` 调用显式增加 `in_transaction("sqlite")`，确认原逻辑通过此事务连接实际执行 User 写入，随后抛出指定异常并退出事务回滚。不能在发请求前抛错，也不能在自动提交完成后抛错并称为回滚。
 
-故障注入由版本化、固定的 benchmark 验证 harness 在运行副本中装配，不给普通 HTTP 请求增加任意 failpoint 参数，也不允许项目配置加载 Python 插件。A07 在事务退出已回滚后，由验证变体返回原成功 envelope；它不修改正常产品行为。
+故障注入由版本化、固定的 benchmark 验证 harness 在运行副本中装配，变体及触发配置在本次 full 启动前绑定并冻结，执行阶段仅触发已声明行为，不在生成后偷偷修改 SUT 文件。不为普通 HTTP 请求增加任意 failpoint 参数，也不允许项目配置加载 Python 插件。A06 返回明确失败；A07 在该显式事务退出并已回滚后，由外层变体返回原成功 envelope；A13 还在事务内提前发出错误的 completed 检查点。都保持同一正向业务规格与 DB oracle，不修改正常 SUT 的事务语义。
+
+A03/A04 等生成或执行故障也使用预先声明的 harness 边界；涉及生成文件的变体必须经过正常产物接纳与摘要计算，不得修改已接纳文件后手工补写摘要。身份/摘要不匹配被提前拒绝是另一项保护，不能替代“身份有效但必需检查实际未执行”的运行态验收。
+
+必须独立验证 harness 的写入调用确实发生、使用该事务连接且已结束回滚，再由新只读连接确认目标用户不存在。阶段二应仍能看到事务中的真实 User 写入 CLIENT span；不能要求官方未覆盖的 rollback span 才承认回滚，也不能仅凭一个 span 或空表证明 harness 确实执行过写入。
 
 单独验证故障 harness 的事务回滚事实，和执行正向业务规格是两个判定：harness 能正确制造回滚，其自身验证通过；正向创建目标未持久化，业务用例仍失败。本 spec 不规定所有 rollback 都失败；未来若规格要求拒绝且不写入，回滚可以满足该负向规格。
 
-### 12.3 阶段交付门槛
+### 12.4 阶段交付门槛
 
-阶段一完成 A01–A09、A15–A19 的适用部分，并通过正常产品执行链验证新状态不会被 exit code 覆盖。阶段二在同一业务用例上完成全部矩阵，包含真实 OTLP/Collector 文件采集和故障变体，不能用人工构造 span JSON 替代端到端验收。
+阶段一完成 A01–A09、A15–A19、A22–A25 的适用部分；其中 Trace 义务尚不启用，遥测变体留到第二阶段。阶段二在同一 User 业务用例上完成全部矩阵，包含真实 Tortoise/SQLite 插桩、OTLP/Collector 文件采集及故障变体，不能用人工构造 span JSON 替代端到端验收。
+
+两阶段都必须满足第 12.1 节 full workflow 证据要求。每个故障的注入点和预期停止位置固定：编译缺项、生成入口空执行、DB 业务违反、遥测缺失分别在真实产品路径内验证；低层 mock 测试可以补充，但不能作为这些门槛的唯一证据。
 
 每次验收保存规格/计划摘要、环境绑定、原始动作与 DB 证据、阶段二原始 OTLP、收集关闭 receipt 和最终评价。测试执行耗时、接入改动和误报记录进入结果摘要，不预设未经测量的性能提升。
 
@@ -285,19 +357,23 @@ trace.v2 保持需求—用例—测试—问题追溯用途，新增材料通�
 
 旧 case/plan/result 继续按既有版本读取；新 profile 必须经过显式迁移补齐断言来源与义务，不从旧 `passed`、`covered` 或 strong tally 自动补全。旧结果标识 legacy/unverified，不贡献新契约的验证覆盖。
 
-不包含：修复部门 reparent 已知问题、重写整个 Explore、构造任意业务 DSL、全量 SQL/函数覆盖、生产部署、远程 APM 支持、跨 DB 支持、恶意 SUT 证明，以及 UI/Redis/Kafka/Fuzz/Performance 扩展。
+不包含：为正常 User 流程新增跨步骤业务事务、一次覆盖 User 全部 CRUD/权限/角色/密码规则、重写整个 Explore、构造任意业务 DSL、全量 SQL/函数覆盖、生产部署、远程 APM 支持、跨 DB 支持、恶意 SUT 证明，以及 UI/Redis/Kafka/Fuzz/Performance 扩展。
 
-实施交付物为：版本化规格/计划/证据契约，现有模块内的执行与裁判接线，一个 SQLite oracle，一个受控 benchmark OTel 检查点，正常/故障验证 harness，产品门禁与导出兼容，以及可复现实验材料。任何一项只有文档或提示词而没有实际执行验收，都不能视为本功能完成。
+实施交付物为：版本化规格/计划/证据契约，full workflow 内的生成/执行/裁判接线，一个 SQLite oracle，真实 Tortoise/SQLite OTel 接入及一个 User 业务检查点，两个阶段的 User benchmark 项和正常/故障 harness，产品门禁与导出兼容，以及可复现实验材料。任何一项只有文档或提示词而没有实际执行验收，都不能视为本功能完成。
 
 ## 14. 依据与既有约束
 
-以下是制定本 spec 时核对的资料；本地源码只支持实现位置和现状判断。外部 OTel 文档只支持接入可行性，不为部门业务预期提供依据。
+以下是制定本 spec 时核对的资料；本地源码只支持实现位置和现状判断。外部 OTel 文档只支持接入可行性，不为 User 业务预期提供依据。本文基于源码和官方资料核验；本次编写/修订未安装 OTel、启动 SUT 或实际运行 full workflow，不将设计可行性当成实施验收已通过。
 
 - [当前缺口分析](/Users/lvqingquan/agent/assurance-agent/docs/research/2026-09-06-business-spec-execution-contract-gaps.md)、[空校验审查](/Users/lvqingquan/agent/assurance-agent/docs/research/2026-09-06-generated-tests-oracle-audit.md)。
-- [部门业务需求](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/benchmark/requirements/dept-management.md:10)、[创建路由](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/api/v1/depts/depts.py:27)、[事务实现](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/controllers/dept.py:56)、[Dept 模型](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/models/admin.py:62)。
+- [User 业务需求](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/benchmark/requirements/user-management.md:7)、[创建路由](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/api/v1/users/users.py:49)、[User controller](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/controllers/user.py:25)、[User 模型](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/models/admin.py:9)、[SQLite 配置](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/app/settings/config.py:26)。
+- [User 历史 benchmark 项](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/benchmark/benchmark.user-only.env:7)、[当前产品 full 图](/Users/lvqingquan/agent/assurance-agent/packages/products/assurance-product/assurance_product/resources/workflow/main.yaml:149)、[产品输入约束](/Users/lvqingquan/agent/assurance-agent/packages/products/assurance-product/assurance_product/models.py:601)、[当前 benchmark 的 family 限制](/Users/lvqingquan/agent/assurance-agent/benchmark/assurance-product/run_item.py:178)、[步骤判定现状](/Users/lvqingquan/agent/assurance-agent/benchmark/assurance-product/run_item.py:684)。
+- [产品交付门禁](/Users/lvqingquan/agent/assurance-agent/packages/products/assurance-product/assurance_product/status.py:448)、[export 前提](/Users/lvqingquan/agent/assurance-agent/packages/products/assurance-product/assurance_product/export.py:262)。
 - [benchmark 环境准备](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/benchmark/run-workflow-loop.sh:166)、[当前 ready 服务复用](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/benchmark/run-workflow-loop.sh:206)、[依赖版本](/Users/lvqingquan/agent/assurance-agent/benchmark/vue-fastapi-admin/pyproject.toml:10)。
 - [代码生成写入边界](/Users/lvqingquan/agent/assurance-agent/packages/capabilities/assurance-generation/assurance_generation/resources/skills/aa-api-codegen/SKILL.md:55)、[当前执行 finalize](/Users/lvqingquan/agent/assurance-agent/packages/capabilities/assurance-execution/assurance_execution/operations/agent_skills.py:369)、[安装式扩展规则](/Users/lvqingquan/agent/assurance-agent/AGENTS.md:33)。
 - [结构化产物流水线规格](/Users/lvqingquan/agent/assurance-agent/docs/superpowers/specs/2026-09-01-structured-artifact-pipeline-design.md)：新机器材料遵循 typed artifact 与 runtime materialization，业务语义检查不被形状检查替代。
 - [OTel FastAPI instrumentation](https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/fastapi/fastapi.html)：支持请求插桩与 hooks。
+- [官方 Tortoise ORM instrumentation](https://opentelemetry-python-contrib.readthedocs.io/en/latest/instrumentation/tortoiseorm/tortoiseorm.html)、[其异步 backend 包装实现](https://opentelemetry-python-contrib.readthedocs.io/en/latest/_modules/opentelemetry/instrumentation/tortoiseorm.html)：SQLite 接入与 CLIENT span 边界；需在 benchmark 的锁定版本实测。
+- [aiosqlite 0.20.0 调度实现](https://github.com/omnilib/aiosqlite/blob/v0.20.0/aiosqlite/core.py#L87)、[OTel DBAPI 包装实现](https://opentelemetry-python-contrib.readthedocs.io/en/latest/_modules/opentelemetry/instrumentation/dbapi.html)：同步 sqlite3 插桩不能直接视为当前异步路径已覆盖的依据。
 - [OTel Python exporters](https://opentelemetry.io/docs/languages/python/exporters/)：提供 OTLP 导出与 Collector 接入。
 - [Collector file exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/fileexporter/README.md)：支持逐行 JSON 导出；当前为 alpha，格式兼容需绑定版本验证。
