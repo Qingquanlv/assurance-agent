@@ -16,7 +16,7 @@ import yaml
 from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.attempts import AttemptKey
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     TaskContext,
@@ -266,9 +266,13 @@ def _json_document(path: Path) -> object:
         raise InputError(f"execution input is not valid JSON: {path}") from error
 
 
-def _authenticate_generation_sources(root: ExecutionPrepareInputV1, workspace: Path) -> None:
+def authenticate_generation_result(root: ExecutionPrepareInputV1, workspace: Path) -> None:
+    """Authenticate the accepted generation closure before verified host dispatch."""
+
     generation = root.generation_result
     if generation is None:
+        if root.validation_profile is not None:
+            raise InputError("verified execution requires the accepted generation result")
         return
     if generation.change_id != root.change_id or generation.coverage_epoch != root.coverage_epoch:
         raise InputError("generation result identity does not match execution input")
@@ -278,6 +282,161 @@ def _authenticate_generation_sources(root: ExecutionPrepareInputV1, workspace: P
         path = _regular_input_file(workspace, ref.path)
         if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
             raise InputError(f"execution source digest changed: {ref.path}")
+    if root.validation_profile is None:
+        return
+    profile = root.verification
+    if profile is None or profile.validation_profile != root.validation_profile:
+        raise InputError("verified execution profile is incomplete")
+    reviewed = generation.reviewed_case
+    if reviewed.change_id != root.change_id or reviewed.coverage_epoch != root.coverage_epoch:
+        raise InputError("generation ReviewedCase identity does not match execution input")
+    for ref in (
+        reviewed.plan_ref,
+        *reviewed.preparation_refs,
+        *reviewed.case_refs,
+        reviewed.review_ref,
+    ):
+        path = _regular_input_file(workspace, ref.path)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
+            raise InputError(f"generation ReviewedCase digest changed: {ref.path}")
+    case_root = workspace / "qa" / "changes" / root.change_id / "cases"
+    if not case_root.is_dir() or case_root.is_symlink():
+        raise InputError("generation ReviewedCase directory is unavailable")
+    actual_case_paths = {
+        item.relative_to(workspace).as_posix()
+        for item in case_root.glob("**/case.yaml")
+        if item.is_file() and not item.is_symlink() and item.stat().st_nlink == 1
+    }
+    if actual_case_paths != {item.path for item in reviewed.case_refs}:
+        raise InputError("generation ReviewedCase file closure changed")
+
+    documents: list[CodegenAuthoringV1] = []
+    expected_sources: list[EvidenceArtifactRefV1] = []
+    for family in root.selected_test_families:
+        manifest_relative = f"qa/changes/{root.change_id}/codegen/{family}-generated-files.json"
+        manifest_path = _regular_input_file(workspace, manifest_relative)
+        expected_sources.append(
+            EvidenceArtifactRefV1(
+                path=manifest_relative,
+                digest=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            )
+        )
+        try:
+            document = CodegenAuthoringV1.model_validate(
+                _json_document(manifest_path),
+                context={"capability_leafs": leafs_of(root.capability_leafs)},
+            )
+        except ValidationError as error:
+            raise InputError(
+                f"accepted generation manifest is invalid: {manifest_relative}: {error}"
+            ) from error
+        if document.change_id != root.change_id or document.layer != family:
+            raise InputError(f"accepted generation manifest identity changed: {manifest_relative}")
+        documents.append(document)
+        for item in document.files:
+            relative = f"qa/changes/{root.change_id}/generated/{family}/files/{item.repo_path}"
+            path = _regular_input_file(workspace, relative)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            expected_sources.append(EvidenceArtifactRefV1(path=relative, digest=digest))
+    expected_source_tuple = tuple(sorted(expected_sources, key=lambda item: item.path))
+    if generation.source_refs != expected_source_tuple:
+        raise InputError("accepted generation source closure differs from committed manifests")
+
+    cases = _reviewed_cases(
+        workspace,
+        change_id=root.change_id,
+        capability_leafs=root.capability_leafs,
+    )
+    selected = SelectedTargets(
+        **{family: family in root.selected_test_families for family in ("api", "e2e", "fuzz", "performance")}
+    )
+    case_ids = tuple(
+        sorted(
+            {
+                item.case_id
+                for item in (*cases.added, *cases.modified)
+                if item.type.lower() in root.selected_test_families
+            }
+        )
+    )
+    closed = close_mappings(
+        SelectInputV1(
+            change_id=root.change_id,
+            selected_targets=selected,
+            mappings=tuple(item.mapping.model_dump(mode="json") for item in documents),
+            reviewed_cases=cases.model_dump(mode="json"),
+            capability_leafs=root.capability_leafs,
+            case_ids=case_ids,
+        )
+    )
+    expected_mapping_path = (
+        f"qa/changes/{root.change_id}/generation/epochs/{root.coverage_epoch}/mapping.json"
+    )
+    if generation.mapping_ref.path != expected_mapping_path:
+        raise InputError("accepted generation mapping belongs to another coverage epoch")
+    mapping_path = _regular_input_file(workspace, generation.mapping_ref.path)
+    try:
+        accepted_mapping = ClosedMappingV1.model_validate_json(mapping_path.read_bytes())
+    except ValidationError as error:
+        raise InputError(f"accepted generation mapping is invalid: {error}") from error
+    expected_mapping_bytes = (
+        canonical_json_bytes(cast(JSONValue, accepted_mapping.model_dump(mode="json"))) + b"\n"
+    )
+    if mapping_path.read_bytes() != expected_mapping_bytes or accepted_mapping != closed:
+        raise InputError("accepted generation mapping closure changed")
+
+    machine_ref = generation.case_execution_plan_ref
+    if (
+        machine_ref is None
+        or generation.case_execution_plan_digest != machine_ref.digest
+        or machine_ref != profile.case_execution_plan_ref
+        or machine_ref not in generation.plan_refs
+    ):
+        raise InputError("accepted generation machine plan identity changed")
+    for ref in generation.plan_refs:
+        path = _regular_input_file(workspace, ref.path)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
+            raise InputError(f"accepted generation plan digest changed: {ref.path}")
+    try:
+        machine_plans = CaseExecutionPlanSetV1.model_validate_json(
+            _regular_input_file(workspace, machine_ref.path).read_bytes()
+        )
+    except ValidationError as error:
+        raise InputError(f"accepted generation machine plan is invalid: {error}") from error
+    api_documents = [item for item in documents if item.layer == "api"]
+    if len(api_documents) != 1:
+        raise InputError("verified execution requires one accepted API generation manifest")
+    api_mapping = api_documents[0].mapping
+    if (
+        not api_mapping.is_verified
+        or api_mapping.validation_profile != root.validation_profile
+        or api_mapping.reviewed_case != reviewed
+        or api_mapping.coverage_epoch != root.coverage_epoch
+        or api_mapping.plan_digest != root.plan_digest
+        or api_mapping.plan_ref != root.plan_ref
+        or api_mapping.case_execution_plan_ref != machine_ref
+        or api_mapping.case_execution_plan_digest != machine_ref.digest
+    ):
+        raise InputError("accepted API generation identity changed")
+    planned_ids = {item.case_id for item in machine_plans.cases}
+    if planned_ids != {item.case_id for item in api_mapping.entries}:
+        raise InputError("accepted API mapping differs from the machine plan")
+    if api_mapping.case_spec_digests is None:
+        raise InputError("accepted API mapping is missing CaseSpec identities")
+    for plan in machine_plans.cases:
+        if (
+            plan.reviewed_case != reviewed
+            or plan.change_id != root.change_id
+            or plan.coverage_epoch != root.coverage_epoch
+            or plan.plan_digest != root.plan_digest
+            or plan.plan_ref != root.plan_ref
+            or plan.validation_profile != root.validation_profile
+            or api_mapping.case_spec_digests.get(plan.case_id) != plan.spec_digest
+        ):
+            raise InputError("accepted machine plan CaseSpec identity changed")
+    mapped_case = next((item.case_id for item in closed.mappings if item.test == profile.nodeid), None)
+    if mapped_case is None or mapped_case not in planned_ids:
+        raise InputError("verified execution nodeid is outside the accepted generation mapping")
 
 
 def _reviewed_cases(
@@ -473,7 +632,7 @@ def assemble_execution_input(
         raise InputError("execution plan digest does not match frozen plan")
     if plan.selected_test_families != root.selected_test_families:
         raise InputError("execution families differ from frozen plan")
-    _authenticate_generation_sources(root, workspace)
+    authenticate_generation_result(root, workspace)
     selected = SelectedTargets(
         **{family: family in root.selected_test_families for family in ("api", "e2e", "fuzz", "performance")}
     )

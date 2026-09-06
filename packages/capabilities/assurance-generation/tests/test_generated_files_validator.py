@@ -187,6 +187,28 @@ def test_mapping_validator_rejects_missing_extra_stale_and_duplicate() -> None:
         CodegenMapping.model_validate(raw)
 
 
+def test_committed_files_reject_two_cases_collapsed_to_one_bridge() -> None:
+    target = family_test_file("api")
+    raw = mapping_document("api", target_file=target)
+    raw["entries"] = [
+        raw["entries"][0],
+        {**raw["entries"][0], "case_id": "TC_API_002"},
+    ]
+    mapping_path = "qa/changes/CH-DEMO-001/plans/api-codegen-mapping.json"
+    result = GeneratedFilesValidator(
+        family="api",
+        file_bytes={mapping_path: json.dumps(raw).encode()},
+        write_roots=("tests/api/", "qa/changes/"),
+    ).validate(
+        candidate_with(staged_generated_file("api", target), mapping_path),
+        validation_context(),
+    )
+
+    assert result.accepted is False
+    assert result.reason is not None
+    assert "target_file" in result.reason
+
+
 def test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set() -> None:
     path = family_test_file("api")
     mapping = CodegenMapping.model_validate(mapping_document("api", target_file=path))

@@ -183,11 +183,8 @@ def _load_mapping(file_bytes: Mapping[str, bytes]) -> CodegenMapping | None:
         name = PurePosixPath(path).name
         if not name.endswith("-codegen-mapping.json") and name != "codegen-mapping.json":
             continue
-        try:
-            raw = json.loads(payload.decode("utf-8"))
-            return CodegenMapping.model_validate(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError):
-            continue
+        raw = json.loads(payload.decode("utf-8"))
+        return CodegenMapping.model_validate(raw)
     return None
 
 
@@ -240,7 +237,10 @@ class GeneratedFilesValidator:
 
     def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
         del context
-        mapping = self._mapping or _load_mapping(self._file_bytes)
+        try:
+            mapping = self._mapping or _load_mapping(self._file_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as error:
+            return ValidationResult(accepted=False, reason=str(error))
         mapped = _mapping_targets(mapping)
         listed = tuple(item.path for item in staged.files)
         for path in listed:
@@ -390,7 +390,10 @@ class CodegenMappingValidator:
         for path in listed:
             if not _accepts_generated_write(path, self._write_roots):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
-        mapping = self._mapping or _load_mapping(self._file_bytes)
+        try:
+            mapping = self._mapping or _load_mapping(self._file_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as error:
+            return ValidationResult(accepted=False, reason=str(error))
         if mapping is None:
             return ValidationResult(accepted=True)
         try:
@@ -443,7 +446,10 @@ class CodegenFixCandidateValidator:
             and getattr(staged, "baseline_tree_id", None) != self._baseline_tree_id
         ):
             return ValidationResult(accepted=False, reason=_BASELINE_REASON)
-        mapping = self._mapping or _load_mapping(self._file_bytes)
+        try:
+            mapping = self._mapping or _load_mapping(self._file_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError) as error:
+            return ValidationResult(accepted=False, reason=str(error))
         if mapping is not None:
             if self._family is not None and mapping.layer != self._family:
                 return ValidationResult(

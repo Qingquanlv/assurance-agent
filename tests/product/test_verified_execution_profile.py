@@ -321,7 +321,6 @@ def test_legacy_facade_rejects_verified_root_plan(opencode_composition, tmp_path
     import asyncio
     from types import SimpleNamespace
     from assurance_execution.contracts.agent import ExecutionPrepareInputV1
-    from assurance_intake.contracts.plan import BusinessVerificationPolicyV1
     from agent_runtime_contracts import ResolvedRawAgentExecutor
     from graph_engine.attempts import PermanentTaskFailure
     from tests.acg_plan_fixture import install_plan
@@ -329,11 +328,11 @@ def test_legacy_facade_rejects_verified_root_plan(opencode_composition, tmp_path
     plan, ref = install_plan(
         tmp_path,
         "c",
-        verification_policy=BusinessVerificationPolicyV1(
-            validation_profile="api_db.v1",
-            resource_id="assurance.product.configuration.verification-policy",
-            digest="a" * 64,
-        ),
+        verification_policy={
+            "validation_profile": "api_db.v1",
+            "resource_id": "assurance.product.configuration.verification-policy",
+            "digest": "a" * 64,
+        },
     )
     value = ExecutionPrepareInputV1.model_validate(
         {

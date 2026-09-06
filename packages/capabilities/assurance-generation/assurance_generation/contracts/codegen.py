@@ -133,6 +133,9 @@ class CodegenMapping(BaseModel):
         ids = tuple(item.case_id for item in self.entries)
         if len(ids) != len(set(ids)):
             raise ValueError("entries case_id values must be unique")
+        bridge_ids = tuple((item.target_file, item.symbol) for item in self.entries)
+        if len(bridge_ids) != len(set(bridge_ids)):
+            raise ValueError("entries (target_file, symbol) values must be unique")
         verified = (
             self.validation_profile,
             self.coverage_epoch,

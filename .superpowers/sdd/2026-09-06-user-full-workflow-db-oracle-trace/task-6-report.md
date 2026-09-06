@@ -31,3 +31,33 @@
 - Real OpenTelemetry qualification is unavailable in this environment and was not claimed.
 - The final diff was inspected for generated execution identity, secrets, schema/declaration drift, and Task 7 logic. Execution IDs remain host-owned inputs; no credentials or Task 7 verdict logic were added.
 - Running package contract tests and product extracted-composition tests in one combined pytest process exposes an existing module-reload/Pydantic class-identity pollution issue. The brief's required suite and the affected product suites pass in their intended separate process boundaries; no compatibility path was added to hide the pollution.
+
+## Review fix round 1
+
+### RED evidence
+
+- Duplicate bridge identity: the new ordinary-finalize, fixer-finalize, and committed-file tests all failed. Both finalize paths accepted two different Case IDs mapped to the same `(target_file, symbol)`, and the committed validator returned accepted.
+- Product composition: `uv run pytest -v tests/product/test_feature_graph_bundles.py` initially produced 6 failures and 3 passes because the test composition installed only the two legacy execution Agent contracts; graph construction correctly required the Task facade contracts.
+- Verified side-effect boundary: the first direct missing-`generation_result` test reached both the Task facade host-call builder and its production host (`["host-call", "host"]`). This proved that verified dispatch had no accepted-generation authentication boundary.
+
+### Changes and GREEN evidence
+
+- `CodegenMapping` now rejects duplicate `(target_file, symbol)` identities in addition to duplicate Case IDs, before either dictionary bridge is built. Ordinary finalize, fixer finalize, and committed-file regression tests pass.
+- The product feature-bundle test composition now installs execution `TASK_ATTEMPT_CONTRACTS` beside `AGENT_JOB_CONTRACTS`. The graph continues to bind Task facade contracts, and the installed Agent binding inventory remains exactly 34. The file passes standalone: 9 passed.
+- Verified Task dispatch now requires `generation_result` for `api_db.v1` and `api_db_trace.v1`, then authenticates the ReviewedCase/change/epoch closure, root plan, independent machine plan, committed source and mapping closure, CaseSpec identities, profile, and mapped node against frozen execution input. Legacy profile `None` retains its optional generation input.
+- Ten direct negative categories cover missing generation, stale epoch, ReviewedCase drift, root-plan drift, machine-plan drift, mapping drift, generated-source drift, CaseSpec drift, profile drift, and old-epoch replay. Every case invokes both the actual `ProfiledExecutionExecutor` Task facade and actual `VerifiedAttemptHandler`; facade `_call`/host counts remain zero, HTTP count remains zero, and no `action_started.json` is written. Together with the valid closure case: 11 passed.
+- Recovery fixtures now install a real accepted generation closure instead of bypassing authentication. The five production host cut/reconcile stages pass standalone.
+- Final focused regression across verified execution, product graph/recovery, codegen, and committed validation: 170 passed in 55.94s. Generation's broader verified/codegen/validator run: 119 passed. Task 6 broader focused run before the shared fixture cleanup: 221 passed in 48.75s.
+- Final static checks after implementation: Ruff passed; Ruff format reported 808 files already formatted; Pyright reported 0 errors, 0 warnings, 0 informations; lint-imports kept all 13 contracts with 0 broken; `git diff --check` passed.
+
+### Full-suite qualification
+
+- The first `uv run pytest -v` collected 4,543 tests and reached 30%. It exposed five recovery-fixture failures at 29%, caused by the fixture's obsolete generation-authentication bypass interacting with installed-wheel module replacement. The bypass was removed and replaced with a real accepted generation closure; the file then passed 5/5.
+- A clean standard full-suite rerun was started after that fix; final result is recorded below before commit.
+
+### Isolation correction and final gates
+
+- The first complete run finished with 4,481 passed, 23 skipped, 38 failed, and 1 error. The 38 failures were all caused by extracted-wheel tests purging and re-importing workspace package modules without restoring the original module objects. That left later tests holding Pydantic classes from different module instances. The test composition harness now activates extracted modules only for each product test module and restores the exact original workspace module objects afterward; no production class-identity compatibility path was added.
+- The pollution source plus execution recovery reproducer passed 13 tests in one process after the restoration fix. A broader product-to-package sequence covering plan loading, feature graph bundles, verified recovery/profile, verified execution, codegen, and generated-file validation passed 191 tests in 139.09s.
+- The clean standard `uv run pytest -v` rerun finished with 4,519 passed, 23 skipped, and the single expected environment-only error in 1,101.60s. The error is `test_real_oci_isolation_and_parent_http_sqlite`: `dist/verification-runner/qualification.json` is absent, so the real OCI runner cannot preflight. No qualification artifact or Docker result was fabricated.
+- Final post-isolation static gates: `uv run ruff check .` passed; `uv run ruff format --check .` reported 809 files already formatted; `uv run pyright` reported 0 errors, 0 warnings, 0 informations; and `uv run lint-imports` kept all 13 contracts with 0 broken.

@@ -112,8 +112,6 @@ async def _run_host(tmp_path: Path, monkeypatch, cut):
         HANDLER_ID,
     )
     from assurance_product.models import VerificationHostConfigV1
-    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
-    from assurance_intake.contracts.plan import BusinessVerificationPolicyV1
     from graph_engine.attempts import AttemptExecutionContext, AttemptKey, AuthorizedAttemptScope
     from graph_engine.attempts.activity import journal_backed_activity_factory
     from graph_engine.attempts.events import (
@@ -132,49 +130,16 @@ async def _run_host(tmp_path: Path, monkeypatch, cut):
     )
     from graph_engine.canonical import JSONValue, canonical_digest
     from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
-    from tests.acg_plan_fixture import install_plan
+    from tests.verified_generation_fixture import accepted_verified_execution_input
 
     project = tmp_path / "project"
     project.mkdir()
-    plan, ref = install_plan(
-        project,
-        "c",
-        verification_policy=BusinessVerificationPolicyV1(
-            validation_profile="api_db.v1",
-            resource_id="assurance.product.configuration.verification-policy",
-            digest="f" * 64,
-        ),
-    )
+    value = accepted_verified_execution_input(project, change_id="c")
     config = VerificationConfiguration(
         validation_profile="api_db.v1",
         host=VerificationHostConfigV1(
             managed_sut_authority_handle="sut.authority", credential_handle="sut.credential"
         ),
-    )
-    value = ExecutionPrepareInputV1.model_validate(
-        {
-            "change_id": "c",
-            "plan_digest": plan.plan_digest,
-            "plan_ref": ref,
-            "selected_test_families": ["api"],
-            "capability_leafs": ["entities.item.constraints.name"],
-            "validation_profile": "api_db.v1",
-            "verification_config_digest": "b" * 64,
-            "verification": {
-                "validation_profile": "api_db.v1",
-                "case_execution_plan_ref": {"path": "qa/changes/c/machine.json", "digest": "f" * 64},
-                "nodeid": "tests/test_user.py::test_create",
-                "business_activation": {"kind": "trigger", "value": "coverage.0.execute"},
-                "sut_instance_id": "sut-1",
-                "sut_base_url": "http://127.0.0.1:32123",
-                "managed_sqlite_path": str(project / "db.sqlite3"),
-                "observer_sqlite_path": str(project / "db.sqlite3"),
-                "user_inputs": {"username": "probe", "email": "probe@example.test"},
-                "managed_sut_prepare_receipt_ref": {"path": "qa/prepare.json", "digest": "f" * 64},
-                "managed_sut_start_receipt_ref": {"path": "qa/start.json", "digest": "f" * 64},
-                "managed_sut_authority_handle": "sut.authority",
-            },
-        }
     )
     key = AttemptKey(digest="a" * 64)
     store = TaskWorkspaceStore(project, project / ".attempts", project / ".receipts")
@@ -239,7 +204,7 @@ async def _run_host(tmp_path: Path, monkeypatch, cut):
     )
     executor = ProfiledExecutionExecutor(
         config=config,
-        config_digest="b" * 64,
+        config_digest="c" * 64,
         legacy=None,
         callable_path="tests.product.test_verified_attempt_recovery:VerifiedHostProbe.execute",
     ).with_host(host, graph_revision="f" * 64, product_lock_digest="c" * 64)

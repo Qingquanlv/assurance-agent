@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS as EXECUTION_TASKS
 from assurance_execution.graphs.factory import build_execution_graphs
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
 from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS as GENERATION_TASKS
@@ -140,7 +141,10 @@ def _contracts_for(owner_id: str) -> dict[str, TaskAttemptContract[Any, Any]]:
             **{task.contract_id: task for task in GENERATION_TASKS.values()},
         }
     if owner_id == "assurance.execution":
-        return _job_contracts(EXECUTION_JOBS)
+        return {
+            **_job_contracts(EXECUTION_JOBS),
+            **{task.contract_id: task for task in EXECUTION_TASKS.values()},
+        }
     if owner_id == "assurance.quality":
         return {
             **_job_contracts(QUALITY_JOBS),
@@ -224,15 +228,20 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
         "assurance.intake.agent.case-design.v1",
         "assurance.quality.agent.issue-analysis.v1",
     }
+    task_facade_delegates = {
+        "assurance.execution.agent.execute.v1",
+        "assurance.execution.agent.run.v1",
+    }
+    assert len(agent_contract_ids) == 34
     expected = Counter(
         {
             contract_id: 2 if contract_id in duplicated_contract_ids else 1
-            for contract_id in agent_contract_ids
+            for contract_id in agent_contract_ids - task_facade_delegates
         }
     )
 
     assert Counter(occurrences) == expected
-    assert expected.total() == 36
+    assert expected.total() == 34
 
 
 def test_product_allowlist_pairs_match_the_six_factory_builders() -> None:

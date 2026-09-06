@@ -120,7 +120,7 @@ def boot_artifact() -> BootArtifact:
     return BootArtifact(attempt_contracts=contracts)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def compiled_artifacts(installed_sources, opencode_composition):
     import assurance_product.application as application_module
     from assurance_product.application import AssuranceProductApplication

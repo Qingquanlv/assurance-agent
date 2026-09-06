@@ -32,6 +32,7 @@ from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
 from assurance_execution.operations.readiness import authenticate_host_readiness, HostReadinessError
 from assurance_execution.operations.host_secrets import HostSecretDocumentError
+from assurance_execution.operations.agent_skills import authenticate_generation_result
 from assurance_execution.operations.verified_process import DockerVerificationHost
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_product.models import VerificationHostConfigV1
@@ -172,6 +173,7 @@ class ProfiledExecutionExecutor:
             != value.validation_profile
         ):
             raise ValueError("root plan validation profile disagrees with frozen delegate")
+        authenticate_generation_result(value, scope.workspace.project_root)
 
     def _call(self, value: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope) -> TaskHostExecuteCall:
         from assurance_product.runtime_bindings import _attempt_root, _task_request

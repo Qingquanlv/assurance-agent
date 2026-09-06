@@ -61,9 +61,11 @@ def install_plan(
     candidates: tuple[TestFamily, ...] = ("api",),
     proposed: tuple[TestFamily, ...] = ("api",),
     policy: Mapping[str, object] = DEFAULT_POLICY,
-    verification_policy: BusinessVerificationPolicyV1 | None = None,
+    verification_policy: BusinessVerificationPolicyV1 | Mapping[str, object] | None = None,
 ) -> tuple[ResolvedAssurancePlan, dict[str, str]]:
     capability_leafs = tuple(sorted(set(capability_leafs)))
+    if isinstance(verification_policy, Mapping):
+        verification_policy = BusinessVerificationPolicyV1.model_validate(verification_policy)
     policy_bytes = yaml.safe_dump(dict(policy), sort_keys=True).encode()
     policy_digest = _write(root, ".aa/policy.yaml", policy_bytes)
     catalog_bytes = canonical_json_bytes(cast(JSONValue, {"typed_leafs": list(capability_leafs)}))

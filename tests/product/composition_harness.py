@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from types import ModuleType
 from typing import Literal, cast
 import zipfile
 
@@ -48,6 +49,7 @@ class InstalledSources:
     configuration_tree: ConfigTreePluginSource
     wheels: dict[str, Path]
     extract_roots: dict[str, Path]
+    original_modules: dict[str, ModuleType]
 
 
 def evict_generated_binding_modules() -> None:
@@ -74,7 +76,7 @@ def build_installed_sources(root: Path) -> InstalledSources:
     deployments: dict[str, WheelPluginSource] = {}
     extract_roots: dict[str, Path] = {}
     _extract_workspace_wheels(root, extract_roots)
-    _import_extracted_workspace_packages()
+    original_modules = _import_extracted_workspace_packages()
     from assurance_product.binding_builder import build_deployment_wheel
 
     for adapter in ("opencode",):
@@ -95,6 +97,7 @@ def build_installed_sources(root: Path) -> InstalledSources:
         configuration_tree=ConfigTreePluginSource(path=_CONFIG_FIXTURE.resolve()),
         wheels=wheels,
         extract_roots=extract_roots,
+        original_modules=original_modules,
     )
 
 
@@ -149,7 +152,7 @@ def _evict_workspace_packages() -> None:
             del sys.modules[module_name]
 
 
-def _import_extracted_workspace_packages() -> None:
+def _import_extracted_workspace_packages() -> dict[str, ModuleType]:
     """Load extracted wheels with standard loaders, not pytest assertion rewriting."""
     prefixes = tuple(name.replace("-", "_") for name, _ in _WORKSPACE_WHEELS)
     loaded_modules = tuple(
@@ -162,6 +165,7 @@ def _import_extracted_workspace_packages() -> None:
             key=lambda module_name: (module_name.count("."), module_name),
         )
     )
+    original_modules = {name: sys.modules[name] for name in loaded_modules}
     _evict_workspace_packages()
     hooks = [finder for finder in sys.meta_path if type(finder).__name__ == "AssertionRewritingHook"]
     for hook in hooks:
@@ -176,6 +180,13 @@ def _import_extracted_workspace_packages() -> None:
         for hook in reversed(hooks):
             if hook not in sys.meta_path:
                 sys.meta_path.insert(0, hook)
+    return original_modules
+
+
+def _restore_workspace_packages(original_modules: dict[str, ModuleType]) -> None:
+    _evict_workspace_packages()
+    sys.modules.update(original_modules)
+    importlib.invalidate_caches()
 
 
 def _extract_wheel(wheel: Path, destination: Path) -> Path:
@@ -190,8 +201,11 @@ def _extract_wheel(wheel: Path, destination: Path) -> Path:
 
 
 @pytest.fixture(scope="session")
-def installed_sources(tmp_path_factory: pytest.TempPathFactory) -> Iterator[InstalledSources]:
+def _installed_source_artifacts(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[InstalledSources]:
     sources = build_installed_sources(tmp_path_factory.mktemp("assurance-composition"))
+    _restore_workspace_packages(sources.original_modules)
     try:
         yield sources
     finally:
@@ -201,7 +215,16 @@ def installed_sources(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Inst
                 sys.path.remove(extract)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
+def installed_sources(_installed_source_artifacts: InstalledSources) -> Iterator[InstalledSources]:
+    original_modules = _import_extracted_workspace_packages()
+    try:
+        yield _installed_source_artifacts
+    finally:
+        _restore_workspace_packages(original_modules)
+
+
+@pytest.fixture(scope="module")
 def opencode_composition(installed_sources: InstalledSources) -> FrozenComposition:
     from assurance_product.product import resolve_assurance_composition
 

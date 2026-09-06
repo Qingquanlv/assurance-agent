@@ -84,6 +84,23 @@ def _write_plan_mapping(workspace: Path, family: str, targets: list[str]) -> Non
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
+def _collapsed_symbol_result() -> dict[str, object]:
+    target = family_test_file("api")
+    payload = codegen_result(files=[target])
+    mapping = cast(dict[str, object], payload["mapping"])
+    entries = cast(list[dict[str, object]], mapping["entries"])
+    entry = entries[0]
+    mapping["entries"] = [
+        entry,
+        {**entry, "case_id": "TC_API_002"},
+    ]
+    cast(list[dict[str, object]], payload["files"])[0]["case_ids"] = [
+        family_case_id("api"),
+        "TC_API_002",
+    ]
+    return cast(dict[str, object], payload)
+
+
 def test_codegen_input_rejects_reviewed_plan_for_a_different_change(tmp_path: Path) -> None:
     payload = codegen_input("api")
     payload["reviewed_plan"]["change_id"] = "CH-OTHER-001"
@@ -303,6 +320,26 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_codegen_finalize_rejects_two_cases_collapsed_to_one_bridge(tmp_path: Path) -> None:
+    target = family_test_file("api")
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, "api", target)
+    payload = _collapsed_symbol_result()
+    _write_manifest(write_root, payload)
+
+    executed = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(payload),
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "target_file" in executed.failure.message
+
+
+@pytest.mark.asyncio
 async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Path) -> None:
     mapped = family_test_file("api")
     support = "tests/api/conftest.py"
@@ -392,6 +429,26 @@ async def test_codegen_fix_finalize_authenticates_attempt_bytes(family: str, tmp
     assert output["family"] == family
     files = cast(list[dict[str, object]], output["files"])
     assert files[0]["content_sha256"] == digest
+
+
+@pytest.mark.asyncio
+async def test_codegen_fix_finalize_rejects_two_cases_collapsed_to_one_bridge(tmp_path: Path) -> None:
+    target = family_test_file("api")
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, "api", target)
+    payload = _collapsed_symbol_result()
+    _write_manifest(write_root, payload)
+
+    executed = await execute_task(
+        codegen_fix_finalize_handler("api"),
+        fake_agent_result(payload, allowed_paths=[target], baseline_tree_id="0" * 64),
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "target_file" in executed.failure.message
 
 
 @pytest.mark.asyncio

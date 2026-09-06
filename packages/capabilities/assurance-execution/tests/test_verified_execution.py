@@ -358,6 +358,194 @@ def formal_plan(profile: Literal["api_db.v1", "api_db_trace.v1"] = "api_db.v1"):
     )
 
 
+def _accepted_verified_root(project: Path):
+    from tests.verified_generation_fixture import accepted_verified_execution_input
+
+    return accepted_verified_execution_input(project)
+
+
+def _damage_generation(project: Path, root, fault: str):
+    raw = root.model_dump(mode="json")
+    generation = cast(dict[str, Any], raw["generation_result"])
+    if fault == "missing":
+        raw["generation_result"] = None
+    elif fault == "epoch":
+        generation["coverage_epoch"] = 1
+        reviewed = cast(dict[str, Any], generation["reviewed_case"])
+        reviewed["coverage_epoch"] = 1
+    elif fault == "reviewed_case":
+        ref = cast(dict[str, str], cast(dict[str, Any], generation["reviewed_case"])["case_refs"][0])
+        (project / ref["path"]).write_bytes(b"stale reviewed case\n")
+    elif fault == "root_plan":
+        (project / root.plan_ref.path).write_bytes(b"stale root plan\n")
+    elif fault == "machine_plan":
+        assert root.verification is not None
+        (project / root.verification.case_execution_plan_ref.path).write_bytes(b"stale machine plan\n")
+    elif fault == "mapping":
+        (project / generation["mapping_ref"]["path"]).write_bytes(b"{}\n")
+    elif fault == "source":
+        source = next(item for item in generation["source_refs"] if "/generated/api/files/" in item["path"])
+        (project / source["path"]).write_bytes(b"stale generated source\n")
+    elif fault in {"spec", "profile"}:
+        manifest = next(
+            item for item in generation["source_refs"] if item["path"].endswith("-generated-files.json")
+        )
+        path = project / manifest["path"]
+        document = json.loads(path.read_bytes())
+        if fault == "spec":
+            document["mapping"]["case_spec_digests"]["TC_USER_CREATE_001"] = "0" * 64
+        else:
+            document["mapping"]["validation_profile"] = "api_db_trace.v1"
+        encoded = json.dumps(document, sort_keys=True).encode()
+        path.write_bytes(encoded)
+        manifest["digest"] = hashlib.sha256(encoded).hexdigest()
+    elif fault == "replay":
+        replay = project / "qa/changes/CH-USER-001/generation/epochs/1/mapping.json"
+        replay.parent.mkdir(parents=True, exist_ok=True)
+        replay.write_bytes((project / generation["mapping_ref"]["path"]).read_bytes())
+        generation["mapping_ref"] = {
+            "path": replay.relative_to(project).as_posix(),
+            "digest": hashlib.sha256(replay.read_bytes()).hexdigest(),
+        }
+    return raw
+
+
+def test_accepted_generation_closure_authenticates_before_verified_dispatch(tmp_path: Path) -> None:
+    from assurance_execution.operations.agent_skills import authenticate_generation_result
+
+    root = _accepted_verified_root(tmp_path)
+
+    authenticate_generation_result(root, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing",
+        "epoch",
+        "reviewed_case",
+        "root_plan",
+        "machine_plan",
+        "mapping",
+        "source",
+        "spec",
+        "profile",
+        "replay",
+    ],
+)
+def test_task_facade_and_verified_attempt_reject_generation_drift_before_side_effects(
+    tmp_path: Path, monkeypatch, fault: str
+) -> None:
+    from types import SimpleNamespace
+
+    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+    from assurance_execution.operations import verified_attempt, verified_execution
+    from assurance_execution.operations.verified_attempt import VerifiedAttemptHandler
+    from assurance_product.models import VerificationHostConfigV1
+    from assurance_product.verification_execution import ProfiledExecutionExecutor, VerificationConfiguration
+    from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest, TaskWorkspaceIdentity
+    from graph_engine.canonical import canonical_digest
+
+    root = _accepted_verified_root(tmp_path)
+    damaged = ExecutionPrepareInputV1.model_validate(_damage_generation(tmp_path, root, fault))
+    calls: list[str] = []
+    facade = ProfiledExecutionExecutor(
+        config=VerificationConfiguration(
+            validation_profile="api_db.v1",
+            host=VerificationHostConfigV1(
+                managed_sut_authority_handle="sut.authority", credential_handle="sut.credential"
+            ),
+        ),
+        config_digest="c" * 64,
+        legacy=None,
+        callable_path="assurance_execution.operations.verified_attempt:VerifiedAttemptHandler.execute",
+    )
+
+    class Host:
+        async def execute(self, call):
+            calls.append("host")
+            return SimpleNamespace(outcome=None)
+
+    def host_call(value, scope):
+        calls.append("host-call")
+        return SimpleNamespace()
+
+    facade._host = Host()
+    facade._call = host_call  # type: ignore[method-assign]
+    with pytest.raises(ValueError):
+        asyncio.run(
+            facade.execute(
+                damaged,
+                cast(Any, SimpleNamespace(workspace=SimpleNamespace(project_root=tmp_path))),
+            )
+        )
+    assert calls == []
+
+    qualification = tmp_path / "qualification.json"
+    qualification.write_bytes(b"qualified fixture")
+    identity_raw = {
+        "task_id": "d" * 64,
+        "attempt": 1,
+        "attempt_id": "attempt-1",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "b" * 64,
+        "layout_schema_version": "1",
+    }
+    identity = TaskWorkspaceIdentity(**identity_raw, identity_digest=canonical_digest(identity_raw))
+    invocation = InvocationMetadata(
+        invocation_id="inv", lock_digest="a" * 64, composition_digest="b" * 64, entrypoint="full"
+    )
+    request = TaskRequest(
+        invocation_id="inv",
+        task_id="task",
+        graph_instance_id="graph",
+        node_id="execution.execute",
+        capability_id="assurance.execution.verified-attempt",
+        invocation=invocation,
+        attempt=1,
+        input=damaged.model_dump(mode="json"),
+        binding_data={
+            "verification_runner": {
+                "source_root": str(REPO),
+                "qualification_path": str(qualification),
+                "qualification_digest": hashlib.sha256(qualification.read_bytes()).hexdigest(),
+            },
+            "readiness": {
+                "selection_handle": "sut.selection",
+                "authority_handle": "sut.authority",
+                "collector_handle": None,
+                "configuration_digest": "c" * 64,
+                "validation_profile": "api_db.v1",
+            },
+        },
+    )
+    context = TaskContext(
+        project_root=tmp_path,
+        write_root=tmp_path,
+        workspace_identity=identity,
+        heartbeat=lambda: None,
+        cancel_requested=lambda: False,
+        invocation=invocation,
+        secrets=Secrets({}),
+    )
+    assert damaged.verification is not None
+    selection = SimpleNamespace(
+        workspace_root=str(tmp_path.resolve()),
+        verification=damaged.verification,
+        execution_id="00000000-0000-4000-8000-000000000001",
+    )
+    monkeypatch.setattr(verified_attempt, "authenticate_host_readiness", lambda *args, **kwargs: selection)
+    posts: list[str] = []
+    monkeypatch.setattr(verified_execution, "_post", lambda *args, **kwargs: posts.append("http"))
+    handler = VerifiedAttemptHandler()
+    with pytest.raises(ValueError):
+        asyncio.run(handler.execute(request, context))
+    assert posts == []
+    assert list(tmp_path.rglob("action_started.json")) == []
+
+
 @pytest.fixture(scope="module")
 def managed_sut(tmp_path_factory):
     from assurance_execution.operations.managed_sut import ManagedUserSutHost
