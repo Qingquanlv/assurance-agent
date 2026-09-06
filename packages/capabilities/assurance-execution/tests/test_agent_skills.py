@@ -30,6 +30,8 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     InvocationMetadata,
     ResourceClaimTemplate,
+    SecretHandleUnauthorized,
+    SecretPort,
     TaskActivitySnapshot,
     TaskContext,
     TaskOutcome,
@@ -39,6 +41,7 @@ from graph_engine.plugin_api import (
 from assurance_execution.contracts import ExecutionAgentResultV1
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_execution.contracts.verification import ManagedSutAuthorityV1
 from assurance_execution.operations import agent_skills
 from assurance_execution.operations import build_managed_sut_authority
 from assurance_execution.operations.agent_skills import (
@@ -78,6 +81,24 @@ _TOKEN = re.compile(
     r"assurance_agent|opencode|\bcursor\b|workflow-state\.json|aa risk|claude code|\bcodex\b",
     re.IGNORECASE,
 )
+
+
+class _VerifiedPayload(dict[str, Any]):
+    def __init__(self, payload: dict[str, Any], *, authority_handle: str, authority_bytes: bytes) -> None:
+        super().__init__(payload)
+        self.host_authority_handle = authority_handle
+        self.host_authority_bytes = authority_bytes
+
+
+class _ExactSecretPort:
+    def __init__(self, authorized: dict[str, bytes]) -> None:
+        self._authorized = dict(authorized)
+
+    def resolve(self, handle: str) -> bytes:
+        try:
+            return bytes(self._authorized[handle])
+        except KeyError as error:
+            raise SecretHandleUnauthorized(f"unauthorized secret handle: {handle}") from error
 
 
 def _skill_input() -> dict[str, Any]:
@@ -159,7 +180,7 @@ def _seal_test_receipt(document: Mapping[str, Any], ownership_token: bytes) -> d
     }
 
 
-def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
+def _verified_prepare_input(project: Path, db: Path) -> _VerifiedPayload:
     payload = _prepare_input(project)
     case = read_fixture("user-case.json")
     case["case_id"] = "TC_A"
@@ -286,6 +307,7 @@ def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
         authorization_scope_digest="0" * 64,
         activity_receipt_digest="0" * 64,
     )
+    authority_handle = "managed-sut-authority.test"
     payload["verification"] = {
         "validation_profile": "api_db.v1",
         "case_execution_plan_ref": {
@@ -307,9 +329,13 @@ def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
             "path": start_receipt.relative_to(project).as_posix(),
             "digest": hashlib.sha256(start_bytes).hexdigest(),
         },
-        "managed_sut_authority": authority.model_dump(mode="json"),
+        "managed_sut_authority_handle": authority_handle,
     }
-    return payload
+    return _VerifiedPayload(
+        payload,
+        authority_handle=authority_handle,
+        authority_bytes=canonical_json_bytes(cast(JSONValue, authority.model_dump(mode="json"))),
+    )
 
 
 class _ActivityPort:
@@ -327,12 +353,10 @@ def _bind_test_managed_sut_authority(
     node_id: str,
     workspace_identity_digest: str,
 ) -> None:
-    profile = cast(dict[str, Any], payload["verification"])
-    if "managed_sut_authority" not in profile:
+    if not isinstance(payload, _VerifiedPayload):
         return
-    authority = cast(dict[str, Any], profile["managed_sut_authority"])
-    authority["authorization_scope_digest"] = workspace_identity_digest
-    authority["activity_receipt_digest"] = agent_skills.canonical_digest(
+    authority = ManagedSutAuthorityV1.model_validate_json(payload.host_authority_bytes)
+    activity_digest = agent_skills.canonical_digest(
         {
             "attempt_key": attempt_key,
             "invocation_id": invocation_id,
@@ -342,6 +366,13 @@ def _bind_test_managed_sut_authority(
             "workspace_identity_digest": workspace_identity_digest,
         }
     )
+    bound = authority.model_copy(
+        update={
+            "authorization_scope_digest": workspace_identity_digest,
+            "activity_receipt_digest": activity_digest,
+        }
+    )
+    payload.host_authority_bytes = canonical_json_bytes(cast(JSONValue, bound.model_dump(mode="json")))
 
 
 async def _execute_verified(
@@ -349,6 +380,8 @@ async def _execute_verified(
     payload: dict[str, Any],
     *,
     attempt_key: str,
+    expose_authority: bool = True,
+    bind_authority: bool = True,
 ) -> TaskOutcome:
     attempt_token = attempt_key[:12]
     write_root = project / "qa/changes/CH-DEMO-001/.staging" / attempt_token
@@ -373,15 +406,16 @@ async def _execute_verified(
         composition_digest="b" * 64,
         entrypoint="full",
     )
-    _bind_test_managed_sut_authority(
-        payload,
-        attempt_key=attempt_key,
-        invocation_id=invocation.invocation_id,
-        task_id="verified-task",
-        graph_instance_id="verified-graph",
-        node_id="execution.execute",
-        workspace_identity_digest=identity.identity_digest,
-    )
+    if bind_authority:
+        _bind_test_managed_sut_authority(
+            payload,
+            attempt_key=attempt_key,
+            invocation_id=invocation.invocation_id,
+            task_id="verified-task",
+            graph_instance_id="verified-graph",
+            node_id="execution.execute",
+            workspace_identity_digest=identity.identity_digest,
+        )
     request = TaskRequest(
         invocation_id=invocation.invocation_id,
         task_id="verified-task",
@@ -399,6 +433,9 @@ async def _execute_verified(
         workspace_identity=identity,
         state="prepared",
     )
+    secrets: SecretPort | None = None
+    if expose_authority and isinstance(payload, _VerifiedPayload):
+        secrets = _ExactSecretPort({payload.host_authority_handle: payload.host_authority_bytes})
     return await ExecutePrepareHandler().execute(
         request,
         TaskContext(
@@ -409,11 +446,15 @@ async def _execute_verified(
             cancel_requested=lambda: False,
             invocation=invocation,
             activity=cast(Any, _ActivityPort(snapshot)),
+            secrets=secrets,
         ),
     )
 
 
 class _ExecutorVerifiedPrepare:
+    def __init__(self, secrets: SecretPort) -> None:
+        self._secrets = secrets
+
     async def execute(
         self,
         validated_input: ExecutionPrepareInputV1,
@@ -453,6 +494,7 @@ class _ExecutorVerifiedPrepare:
                 heartbeat=lambda: None,
                 cancel_requested=lambda: False,
                 invocation=invocation,
+                secrets=self._secrets,
             ),
         )
         if outcome.failure is not None:
@@ -494,8 +536,8 @@ class _UndeclaredWritingPrepare(_ExecutorVerifiedPrepare):
 
 def _verified_executor_scope(
     project: Path,
-    payload: dict[str, Any],
-) -> tuple[TaskWorkspaceStore, TaskWorkspaceProvider, AuthorizedAttemptScope]:
+    payload: _VerifiedPayload,
+) -> tuple[TaskWorkspaceStore, TaskWorkspaceProvider, AuthorizedAttemptScope, SecretPort]:
     change_root = project / "qa/changes/CH-DEMO-001"
     store = TaskWorkspaceStore(
         project,
@@ -539,7 +581,8 @@ def _verified_executor_scope(
         node_id=scope.execution.semantic_node_id,
         workspace_identity_digest=binding.identity.identity_digest,
     )
-    return store, provider, scope
+    secrets = _ExactSecretPort({payload.host_authority_handle: payload.host_authority_bytes})
+    return store, provider, scope, secrets
 
 
 async def _prepared_finalize_payload(project: Path) -> tuple[dict[str, object], dict[str, Any]]:
@@ -707,7 +750,8 @@ async def test_verified_prepare_freezes_manifest_and_uses_execution_scoped_view(
     second = await _execute_verified(tmp_path, payload, attempt_key="1" * 64)
 
     assert first.status == second.status == "succeeded"
-    first_business = _business_payload(AgentRunRequest.model_validate(first.output))
+    first_request = AgentRunRequest.model_validate(first.output)
+    first_business = _business_payload(first_request)
     second_business = _business_payload(AgentRunRequest.model_validate(second.output))
     assert first_business == second_business
     execution_id = cast(str, first_business["execution_id"])
@@ -716,6 +760,12 @@ async def test_verified_prepare_freezes_manifest_and_uses_execution_scoped_view(
     manifest_ref = cast(dict[str, str], first_business["verification_manifest_ref"])
     assert "/.staging/execution/_verification/" in manifest_ref["path"]
     manifest = json.loads((tmp_path / manifest_ref["path"]).read_text())
+    independent_receipt = (tmp_path / manifest_ref["path"]).with_name("verification-prepare-receipt.json")
+    emitted = first_request.canonical_bytes() + (tmp_path / manifest_ref["path"]).read_bytes()
+    emitted += independent_receipt.read_bytes()
+    assert payload.host_authority_bytes not in emitted
+    assert b"task-3-managed-sut-owner-token!!" not in emitted
+    assert b'"ownership_token"' not in emitted
     assert manifest["execution_id"] == execution_id
     assert manifest["attempt_key"] == {"digest": "1" * 64}
     assert manifest["nodeid"] == "tests/api/test_generated.py::test_tc_a_001__ok"
@@ -733,13 +783,43 @@ async def test_verified_prepare_rejects_fabricated_self_consistent_sut_bundle(
     tmp_path: Path,
 ) -> None:
     trusted = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    trusted_profile = cast(dict[str, Any], trusted["verification"])
-    trusted_authority = json.loads(json.dumps(trusted_profile["managed_sut_authority"]))
     payload = _verified_prepare_input(tmp_path, tmp_path / ".fabricated/sut/db.sqlite3")
     fabricated_profile = cast(dict[str, Any], payload["verification"])
-    fabricated_profile["managed_sut_authority"] = trusted_authority
+    fabricated_profile["managed_sut_authority_handle"] = trusted.host_authority_handle
+    payload.host_authority_handle = trusted.host_authority_handle
+    payload.host_authority_bytes = trusted.host_authority_bytes
 
     outcome = await _execute_verified(tmp_path, payload, attempt_key="d" * 64)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "independent managed SUT authority" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["absent", "unknown", "malformed", "incorrect"])
+async def test_verified_prepare_requires_host_secret_authority(tmp_path: Path, mode: str) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    profile = cast(dict[str, Any], payload["verification"])
+    expose_authority = True
+    bind_authority = True
+    if mode == "absent":
+        expose_authority = False
+    elif mode == "unknown":
+        profile["managed_sut_authority_handle"] = "managed-sut-authority.unknown"
+    elif mode == "malformed":
+        payload.host_authority_bytes = b"{}"
+        bind_authority = False
+    else:
+        bind_authority = False
+
+    outcome = await _execute_verified(
+        tmp_path,
+        payload,
+        attempt_key="0" * 64,
+        expose_authority=expose_authority,
+        bind_authority=bind_authority,
+    )
 
     assert outcome.status == "failed"
     assert outcome.failure is not None
@@ -753,11 +833,11 @@ async def test_verified_prepare_passes_raw_executor_claim_validation_and_promoti
     project = tmp_path / "project"
     project.mkdir()
     payload = _verified_prepare_input(project, project / ".managed/sut/db.sqlite3")
-    store, provider, scope = _verified_executor_scope(project, payload)
+    store, provider, scope, secrets = _verified_executor_scope(project, payload)
     contract = AGENT_JOB_CONTRACTS["execute"]
     executor = ResolvedRawAgentExecutor(
         contract,
-        prepare=cast(Any, _ExecutorVerifiedPrepare()),
+        prepare=cast(Any, _ExecutorVerifiedPrepare(secrets)),
         runtime=cast(Any, _StopAfterPrepare()),
         finalize=cast(Any, _UnusedFinalize()),
     )
@@ -790,10 +870,10 @@ async def test_raw_executor_rejects_verified_prepare_undeclared_write(tmp_path: 
     project = tmp_path / "project"
     project.mkdir()
     payload = _verified_prepare_input(project, project / ".managed/sut/db.sqlite3")
-    store, _, scope = _verified_executor_scope(project, payload)
+    store, _, scope, secrets = _verified_executor_scope(project, payload)
     executor = ResolvedRawAgentExecutor(
         AGENT_JOB_CONTRACTS["execute"],
-        prepare=cast(Any, _UndeclaredWritingPrepare()),
+        prepare=cast(Any, _UndeclaredWritingPrepare(secrets)),
         runtime=cast(Any, _StopAfterPrepare()),
         finalize=cast(Any, _UnusedFinalize()),
     )
@@ -908,9 +988,18 @@ async def test_verified_prepare_rejects_authenticated_non_sqlite_sut_config(tmp_
     start_bytes = (json.dumps(started, indent=2, sort_keys=True) + "\n").encode()
     start_path.write_bytes(start_bytes)
     start_ref["digest"] = hashlib.sha256(start_bytes).hexdigest()
-    authority = cast(dict[str, Any], profile["managed_sut_authority"])
-    authority["prepare_receipt_digest"] = prepare_ref["digest"]
-    authority["start_receipt_digest"] = start_ref["digest"]
+    authority = ManagedSutAuthorityV1.model_validate_json(payload.host_authority_bytes)
+    payload.host_authority_bytes = canonical_json_bytes(
+        cast(
+            JSONValue,
+            authority.model_copy(
+                update={
+                    "prepare_receipt_digest": prepare_ref["digest"],
+                    "start_receipt_digest": start_ref["digest"],
+                }
+            ).model_dump(mode="json"),
+        )
+    )
 
     outcome = await _execute_verified(tmp_path, payload, attempt_key="a" * 64)
 

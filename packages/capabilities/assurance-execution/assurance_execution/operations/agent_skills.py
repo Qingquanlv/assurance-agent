@@ -20,7 +20,13 @@ from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.attempts import AttemptKey
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import (
+    SecretHandleUnauthorized,
+    SecretPort,
+    TaskContext,
+    TaskOutcome,
+    TaskRequest,
+)
 
 from assurance_execution.contracts.agent import (
     AgentBindingDataV1,
@@ -641,9 +647,10 @@ def _prepare_verified_execution(
             "workspace_identity_digest": context.workspace_identity.identity_digest,
         }
     )
-    managed_path, observer_path, database_identity = _authenticate_managed_sut_receipts(
+    managed_path, observer_path, database_identity, authority_digest = _authenticate_managed_sut_receipts(
         workspace,
         profile,
+        secret_port=context.secrets,
         authorization_scope_digest=authorization_digest,
         activity_receipt_digest=activity_digest,
     )
@@ -704,7 +711,8 @@ def _prepare_verified_execution(
         "inputs": profile.user_inputs.model_dump(mode="json"),
         "managed_sut_prepare_receipt_ref": profile.managed_sut_prepare_receipt_ref.model_dump(mode="json"),
         "managed_sut_start_receipt_ref": profile.managed_sut_start_receipt_ref.model_dump(mode="json"),
-        "managed_sut_authority": profile.managed_sut_authority.model_dump(mode="json"),
+        "managed_sut_authority_handle": profile.managed_sut_authority_handle,
+        "managed_sut_authority_digest": authority_digest,
     }
     receipt_bytes = (json.dumps(receipt_document, indent=2, sort_keys=True) + "\n").encode()
     if manifest_path.exists():
@@ -845,10 +853,21 @@ def _authenticate_managed_sut_receipts(
     workspace: Path,
     profile: VerifiedExecutionPrepareV1,
     *,
+    secret_port: SecretPort | None,
     authorization_scope_digest: str,
     activity_receipt_digest: str,
-) -> tuple[Path, Path, SqliteFileIdentityV1]:
-    authority = profile.managed_sut_authority
+) -> tuple[Path, Path, SqliteFileIdentityV1, str]:
+    if secret_port is None:
+        raise InputError("independent managed SUT authority secret port is unavailable")
+    try:
+        authority_bytes = secret_port.resolve(profile.managed_sut_authority_handle)
+    except (SecretHandleUnauthorized, KeyError, ValueError) as error:
+        raise InputError("independent managed SUT authority handle is unavailable") from error
+    try:
+        authority = ManagedSutAuthorityV1.model_validate_json(authority_bytes)
+    except ValidationError as error:
+        raise InputError("independent managed SUT authority is invalid") from error
+    authority_digest = hashlib.sha256(authority_bytes).hexdigest()
     if (
         authority.authorization_scope_digest != authorization_scope_digest
         or authority.activity_receipt_digest != activity_receipt_digest
@@ -926,7 +945,7 @@ def _authenticate_managed_sut_receipts(
         or started.get("base_url") != profile.sut_base_url
     ):
         raise InputError("managed SUT receipt identity does not match profile")
-    return managed_path, observer_path, identity
+    return managed_path, observer_path, identity, authority_digest
 
 
 def _finalize_payload(
