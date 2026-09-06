@@ -216,8 +216,11 @@ def common_lifecycle_args(
     extra: Mapping[str, object] | None = None,
 ) -> tuple[list[str], Path, str]:
     project_dir = write_project_dir(tmp_path / "project")
+    candidate_families = families
+    if entrypoint in {"full", "intake"} and not candidate_families:
+        candidate_families = ("api",)
     overrides = {
-        "selected_test_families": families,
+        "candidate_test_families": (candidate_families if entrypoint in {"full", "intake"} else ()),
         "change_id": change_id,
         "case_delta_paths": (
             (f"qa/changes/{change_id}/cases/system/dept/case.yaml",)

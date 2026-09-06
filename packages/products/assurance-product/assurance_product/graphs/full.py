@@ -8,7 +8,8 @@ from langgraph.graph.state import CompiledStateGraph
 
 from assurance_intake.contracts.workflow import CaseFlowResultV1
 from assurance_product.graphs.entrypoints import (
-    adapt_intake,
+    adapt_case,
+    adapt_prepare,
     publish_public_output,
     validate_public_input,
 )
@@ -86,9 +87,9 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     typed = cast(Any, bundles)
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     builder.add_node("validate", validate_public_input("full"))
-    builder.add_node("adapt-prepare", cast(Any, adapt_intake))
+    builder.add_node("adapt-prepare", cast(Any, adapt_prepare))
     builder.add_node("prepare", typed.intake.prepare)
-    builder.add_node("adapt-case", cast(Any, adapt_intake))
+    builder.add_node("adapt-case", cast(Any, adapt_case))
     builder.add_node("case", typed.intake.case)
     builder.add_node("advance-coverage", cast(Any, advance_coverage))
     builder.add_node("adapt-execute-tail", cast(Any, adapt_execute_tail))

@@ -22,6 +22,7 @@ from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPR
 from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASKS
 from assurance_improvement.graphs.factory import build_improvement_graphs
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_JOBS
+from assurance_intake.contracts.attempts import TASK_ATTEMPT_CONTRACTS as INTAKE_TASKS
 from assurance_intake.graphs.factory import build_intake_graphs
 from assurance_product.graph_factories import FEATURE_GRAPH_FACTORIES
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_JOBS
@@ -33,7 +34,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
 PUBLIC_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
-    "assurance.intake": ("prepare", "case"),
+    "assurance.intake": ("prepare", "load_plan", "case"),
     "assurance.generation": ("generation",),
     "assurance.execution": ("execute", "rerun"),
     "assurance.quality": ("assess", "issue_review", "issue_analyze", "issue_reconcile", "report"),
@@ -50,7 +51,7 @@ PUBLIC_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 EXPECTED_BUNDLE_COUNTS = {
-    "assurance.intake": 2,
+    "assurance.intake": 3,
     "assurance.generation": 1,
     "assurance.execution": 2,
     "assurance.quality": 5,
@@ -59,7 +60,7 @@ EXPECTED_BUNDLE_COUNTS = {
 }
 
 IMPLEMENTED_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
-    "assurance.intake": ("prepare", "case"),
+    "assurance.intake": ("prepare", "load_plan", "case"),
     "assurance.generation": ("generation", "api", "e2e", "fuzz", "performance"),
     "assurance.execution": ("execute", "rerun"),
     "assurance.quality": ("assess", "issue_review", "issue_analyze", "issue_reconcile", "report"),
@@ -129,7 +130,10 @@ def _job_contracts(jobs: Mapping[str, Any]) -> dict[str, TaskAttemptContract[Any
 
 def _contracts_for(owner_id: str) -> dict[str, TaskAttemptContract[Any, Any]]:
     if owner_id == "assurance.intake":
-        return _job_contracts(INTAKE_JOBS)
+        return {
+            **_job_contracts(INTAKE_JOBS),
+            **{task.contract_id: task for task in INTAKE_TASKS.values()},
+        }
     if owner_id == "assurance.generation":
         return {
             **_job_contracts(GENERATION_JOBS),

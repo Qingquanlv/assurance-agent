@@ -19,6 +19,8 @@ from graph_engine.canonical import JSONValue, canonical_digest
 
 _SKILL_FIELDS = (
     "change_id",
+    "plan_digest",
+    "plan_ref",
     "capability_leafs",
     "selected_test_families",
     "coverage_epoch",
@@ -98,6 +100,8 @@ def publish_execution(
         )
         cycle = ExecutionCycleResultV1(
             change_id=evidence.change_id,
+            plan_digest=evidence.plan_digest,
+            plan_ref=evidence.plan_ref,
             coverage_epoch=generation.coverage_epoch,
             repair_round=_int(state, "repair_round"),
             batch_id=evidence.batch_id,

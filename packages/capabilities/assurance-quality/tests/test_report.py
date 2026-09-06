@@ -105,6 +105,11 @@ def report_input(**overrides: JSONValue) -> JSONValue:
     payload: dict[str, JSONValue] = {
         "change_id": CHANGE_ID,
         "batch_id": BATCH_ID,
+        "plan_digest": HEX_A,
+        "plan_ref": {
+            "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_A}/resolved-assurance-plan.json",
+            "digest": HEX_B,
+        },
         "quality_gate": _gate(),
         "analysis": _analysis(),
         "metrics": {"schema_version": "1.0", "metrics": {}},
@@ -170,6 +175,7 @@ async def test_generate_report_uses_gate_status_not_issue_risk() -> None:
     assert payload["schema_version"] == "1.1"
     assert payload["final_status"] == "FAIL"
     assert payload["quality_score"] == 0
+    assert payload["plan"]["plan_digest"] == HEX_A
     assert payload["recommendation"].startswith("Do not release")
     assert "session" not in str(payload).lower()
     assert "secret" not in str(payload).lower()
@@ -232,6 +238,7 @@ async def test_report_markdown_is_a_deterministic_human_projection() -> None:
     assert first == second
     assert first.startswith(b"# Quality Report\n")
     assert b"Final status: FAIL" in first
+    assert f"Plan: {HEX_A}".encode() in first
     assert b"Execution: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in first
 
 

@@ -762,8 +762,8 @@ def boot_semantic_attempt_contracts(
             composition,
             validation_context,
         )
-    if len(resolved) != 46:
-        raise ValueError(f"semantic attempt registry must contain 46 contracts, got {len(resolved)}")
+    if len(resolved) != 48:
+        raise ValueError(f"semantic attempt registry must contain 48 contracts, got {len(resolved)}")
     return MappingProxyType(resolved)
 
 

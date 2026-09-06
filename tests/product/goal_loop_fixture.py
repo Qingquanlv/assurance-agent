@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 import subprocess
 import sys
@@ -15,6 +16,7 @@ from assurance_generation.graphs.factory import GenerationGraphs
 from assurance_healing.graphs.factory import HealingGraphs
 from assurance_improvement.graphs.factory import ImprovementGraphs
 from assurance_intake.graphs.factory import IntakeGraphs
+from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_product.graphs.factory import build_product_graphs, invoke_product_root, product_invoke_config
 from assurance_quality.graphs.factory import QualityGraphs
 from langchain_core.runnables.config import RunnableConfig
@@ -35,6 +37,7 @@ from tests.product.test_product_stategraph_flow import (
     _report,
     _reviewed,
 )
+from tests.acg_plan_fixture import install_plan
 
 CrashPoint = Literal[
     "after_coverage_advance",
@@ -66,6 +69,8 @@ class GoalLoopScenario:
     proposal_only: bool = False
     unchanged_case_bytes: bool = False
     entrypoint: Literal["full", "execute"] = "full"
+    candidate_families: tuple[str, ...] = ("api", "e2e")
+    proposed_families: tuple[str, ...] = ("api",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +106,55 @@ def _read_events(root: Path) -> tuple[dict[str, object], ...]:
 def _state_epoch(state: Mapping[str, object]) -> int:
     value = state.get("coverage_epoch", 0)
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _scenario_plan(root: Path, scenario: GoalLoopScenario) -> tuple[ResolvedAssurancePlan, dict[str, str]]:
+    return install_plan(
+        root,
+        "CH-DEMO-001",
+        candidates=cast(Any, scenario.candidate_families),
+        proposed=cast(Any, scenario.proposed_families),
+    )
+
+
+def _bind_plan(
+    value: Mapping[str, object],
+    plan: ResolvedAssurancePlan,
+    ref: Mapping[str, str],
+) -> dict[str, object]:
+    result = deepcopy(dict(value))
+    plan_digest = str(getattr(plan, "plan_digest"))
+
+    def visit(item: object) -> None:
+        if isinstance(item, dict):
+            if "plan_digest" in item:
+                item["plan_digest"] = plan_digest
+            if "plan_ref" in item:
+                item["plan_ref"] = dict(ref)
+            if "selected_test_families" in item:
+                item["selected_test_families"] = list(getattr(plan, "selected_test_families"))
+            preparation = item.get("preparation_refs")
+            if isinstance(preparation, list):
+                without_plan = [
+                    candidate
+                    for candidate in preparation
+                    if not isinstance(candidate, Mapping) or "/plan/" not in str(candidate.get("path", ""))
+                ]
+                item["preparation_refs"] = sorted(
+                    [dict(ref), *without_plan],
+                    key=lambda candidate: (
+                        str(candidate.get("path", "")),
+                        str(candidate.get("digest", "")),
+                    ),
+                )
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(result)
+    return result
 
 
 def _recording_graph(
@@ -157,46 +211,90 @@ def _scenario_features(
     crash_at: CrashPoint | None = None,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
 ) -> dict[str, object]:
+    plan, plan_ref = _scenario_plan(root, scenario)
     coverage = scenario.coverage_values or (1.0,)
     epochs = min(len(coverage), scenario.coverage_rounds + 1)
-    cases = tuple(_case(epoch) for epoch in range(epochs))
-    generations = tuple(_generation(epoch) for epoch in range(epochs))
+    cases = tuple(_bind_plan(_case(epoch), plan, plan_ref) for epoch in range(epochs))
+    generations = tuple(_bind_plan(_generation(epoch), plan, plan_ref) for epoch in range(epochs))
     executions: list[Mapping[str, object]] = []
     inspections: list[Mapping[str, object]] = []
     if scenario.execution_failures:
-        executions.append(_execution(0, status="FAIL"))
-        inspections.append(_inspection(0, scenario.execution_disposition))
-        executions.append(_execution(0, repair_round=1))
+        executions.append(_bind_plan(_execution(0, status="FAIL"), plan, plan_ref))
+        inspections.append(_bind_plan(_inspection(0, scenario.execution_disposition), plan, plan_ref))
+        executions.append(_bind_plan(_execution(0, repair_round=1), plan, plan_ref))
         inspections.append(
-            _inspection(
-                0,
-                "satisfied" if coverage[0] >= 0.90 else "coverage_insufficient",
+            _bind_plan(
+                _inspection(
+                    0,
+                    "satisfied" if coverage[0] >= 0.90 else "coverage_insufficient",
+                ),
+                plan,
+                plan_ref,
             )
         )
         for epoch, value in enumerate(coverage[1:epochs], start=1):
-            executions.append(_execution(epoch))
-            inspections.append(_inspection(epoch, "satisfied" if value >= 0.90 else "coverage_insufficient"))
+            executions.append(_bind_plan(_execution(epoch), plan, plan_ref))
+            inspections.append(
+                _bind_plan(
+                    _inspection(epoch, "satisfied" if value >= 0.90 else "coverage_insufficient"),
+                    plan,
+                    plan_ref,
+                )
+            )
     else:
         for epoch, value in enumerate(coverage[:epochs]):
-            executions.append(_execution(epoch))
-            inspections.append(_inspection(epoch, "satisfied" if value >= 0.90 else "coverage_insufficient"))
+            executions.append(_bind_plan(_execution(epoch), plan, plan_ref))
+            inspections.append(
+                _bind_plan(
+                    _inspection(epoch, "satisfied" if value >= 0.90 else "coverage_insufficient"),
+                    plan,
+                    plan_ref,
+                )
+            )
     report_epoch = max(0, epochs - 1)
     features = _flow_features()
     features["assurance.intake"] = IntakeGraphs(
         prepare=_recording_graph(
             root=root,
             label="prepare",
-            semantic_id="intake.prepare",
+            semantic_id="intake.resolve-plan",
             updates=(
                 {
+                    "plan_digest": plan.plan_digest,
+                    "plan_ref": plan_ref,
+                    "selected_test_families": list(plan.selected_test_families),
                     "status": "prepared",
-                    "preparation_refs": [ref.model_dump(mode="json") for ref in _reviewed().preparation_refs],
+                    "preparation_refs": _bind_plan(
+                        {
+                            "preparation_refs": [
+                                ref.model_dump(mode="json") for ref in _reviewed().preparation_refs
+                            ]
+                        },
+                        plan,
+                        plan_ref,
+                    )["preparation_refs"],
                 },
             ),
             visits=visits,
             dispatches=dispatches,
             attempt_keys=attempt_keys,
             select_index=lambda state: 0,
+        ),
+        load_plan=_recording_graph(
+            root=root,
+            label="load-plan",
+            semantic_id="intake.load-plan",
+            updates=(
+                {
+                    "plan_digest": plan.plan_digest,
+                    "plan_ref": plan_ref,
+                    "selected_test_families": list(plan.selected_test_families),
+                    "status": "prepared",
+                },
+            ),
+            visits=visits,
+            dispatches=dispatches,
+            attempt_keys=attempt_keys,
         ),
         case=_recording_graph(
             root=root,
@@ -284,7 +382,7 @@ def _scenario_features(
             updates=(
                 {"status": "failed", "attempt_failure": {"kind": "runtime"}}
                 if scenario.report_fails
-                else _report(report_epoch),
+                else _bind_plan(_report(report_epoch), plan, plan_ref),
             ),
             visits=visits,
             dispatches=dispatches,
@@ -296,7 +394,7 @@ def _scenario_features(
         {"proposal_result": {"change_id": "CH-DEMO-001"}, "status": "passed"}
         if scenario.proposal_only
         else (
-            _applied()
+            _bind_plan(_applied(), plan, plan_ref)
             if scenario.healing_rounds > 0
             else {
                 "repair_result": {
@@ -397,6 +495,8 @@ def _load_scenario(root: Path) -> tuple[GoalLoopScenario, CrashPoint | None]:
     document = json.loads((root / _SCENARIO_FILE).read_text(encoding="utf-8"))
     raw = dict(document["scenario"])
     raw["coverage_values"] = tuple(raw["coverage_values"])
+    raw["candidate_families"] = tuple(raw["candidate_families"])
+    raw["proposed_families"] = tuple(raw["proposed_families"])
     return GoalLoopScenario(**raw), cast(CrashPoint | None, document.get("crash_at"))
 
 
@@ -427,8 +527,13 @@ def _invoke_persisted(
         if resume:
             state = graph.invoke(None, config=config)
         else:
+            _plan, plan_ref = _scenario_plan(root, scenario)
             payload = _public_input(
                 scenario.entrypoint,
+                candidate_test_families=(
+                    scenario.candidate_families if scenario.entrypoint == "full" else ()
+                ),
+                resolved_plan_ref=(plan_ref if scenario.entrypoint == "execute" else None),
                 budgets={
                     "review_rounds": 2,
                     "coverage_rounds": scenario.coverage_rounds,
@@ -480,8 +585,11 @@ async def run_goal_loop(
     keys: dict[str, list[str]] = {}
     features = _scenario_features(root, scenario, visits, dispatches, keys)
     graphs = build_product_graphs(context=_build_context(), features=features)
+    _plan, plan_ref = _scenario_plan(root, scenario)
     payload = _public_input(
         scenario.entrypoint,
+        candidate_test_families=(scenario.candidate_families if scenario.entrypoint == "full" else ()),
+        resolved_plan_ref=(plan_ref if scenario.entrypoint == "execute" else None),
         budgets={
             "review_rounds": 2,
             "coverage_rounds": scenario.coverage_rounds,

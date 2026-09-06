@@ -22,6 +22,7 @@ from assurance_product.models import (
     ENGINE_API,
     ProjectConfigV1,
 )
+from assurance_intake.contracts.quality_goals import journey_keys_from_document
 
 ConfigTree = ConfigTreePluginSource
 
@@ -135,6 +136,11 @@ def capability_leafs_from_knowledge(document: Mapping[str, object]) -> tuple[str
         if isinstance(value, Mapping):
             leafs.add(f"capabilities.cleanup.{name}")
     return tuple(sorted(leafs))
+
+
+def journey_keys_from_knowledge(document: Mapping[str, object]) -> tuple[str, ...]:
+    """Return the separately declared closed journey-key projection."""
+    return journey_keys_from_document(document)
 
 
 def parse_project_config(document: Mapping[str, object] | object) -> ProjectConfigV1:

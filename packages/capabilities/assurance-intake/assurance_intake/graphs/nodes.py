@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, cast
 
 from langgraph.types import interrupt
 from pydantic import BaseModel
@@ -18,6 +18,11 @@ from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
 )
+from assurance_intake.contracts.plan import (
+    LoadPlanInputV1,
+    ResolvePlanInputV1,
+    ResolvePlanOutputV1,
+)
 from assurance_intake.graphs.state import (
     CaseReviewArrival,
     consume_case_review_trigger,
@@ -27,6 +32,7 @@ from assurance_intake.graphs.state import (
 )
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
 HUMAN_REVIEW_ACTIONS = ("approve", "reject", "request_rework")
@@ -50,13 +56,107 @@ def select_intake(state: Mapping[str, object]) -> IntakeInputV1:
 
 
 def select_explore(state: Mapping[str, object]) -> ExploreInputV1:
-    return ExploreInputV1.model_validate(_skill_payload(state))
+    return ExploreInputV1.model_validate(
+        {
+            **_skill_payload(state),
+            "candidate_test_families": state["candidate_test_families"],
+        }
+    )
+
+
+def _requirement_digest(state: Mapping[str, object]) -> str:
+    requirement = state.get("requirement")
+    if not isinstance(requirement, str):
+        raise ValueError("plan resolution requires the normalized requirement")
+    return canonical_digest(cast(JSONValue, {"requirement": requirement}))
+
+
+def _resource(state: Mapping[str, object], name: str) -> Mapping[str, object]:
+    value = state.get(name)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"plan resolution requires {name}")
+    return value
+
+
+def _preparation_refs(state: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    value = state.get("preparation_refs")
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("plan resolution requires preparation_refs")
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def select_resolve_plan(state: Mapping[str, object]) -> ResolvePlanInputV1:
+    policy = _resource(state, "product_policy")
+    catalog = _resource(state, "capability_catalog")
+    knowledge = _resource(state, "data_knowledge")
+    return ResolvePlanInputV1.model_validate(
+        {
+            "change_id": state["change_id"],
+            "requirement_digest": _requirement_digest(state),
+            "candidate_test_families": state["candidate_test_families"],
+            "budgets": state["budgets"],
+            "policy_resource_id": policy["resource_id"],
+            "policy_digest": policy["sha256"],
+            "family_policy": state["family_policy"],
+            "exploration_ref": next(
+                item
+                for item in _preparation_refs(state)
+                if item["path"] == f"qa/changes/{state['change_id']}/explore/exploration.json"
+            ),
+            "source_resource_digests": (
+                (catalog["resource_id"], catalog["sha256"]),
+                (knowledge["resource_id"], knowledge["sha256"]),
+            ),
+            "capability_leafs": state["capability_leafs"],
+        }
+    )
+
+
+def select_load_plan(state: Mapping[str, object]) -> LoadPlanInputV1:
+    policy = _resource(state, "product_policy")
+    catalog = _resource(state, "capability_catalog")
+    knowledge = _resource(state, "data_knowledge")
+    return LoadPlanInputV1.model_validate(
+        {
+            "change_id": state["change_id"],
+            "requirement_digest": _requirement_digest(state),
+            "resolved_plan_ref": state["resolved_plan_ref"],
+            "budgets": state["budgets"],
+            "policy_resource_id": policy["resource_id"],
+            "policy_digest": policy["sha256"],
+            "source_resource_digests": (
+                (catalog["resource_id"], catalog["sha256"]),
+                (knowledge["resource_id"], knowledge["sha256"]),
+            ),
+            "capability_leafs": state["capability_leafs"],
+        }
+    )
+
+
+def publish_plan(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
+    del receipt
+    resolved = ResolvePlanOutputV1.model_validate(output)
+    current = state.get("plan_digest")
+    if current is not None and current != resolved.plan.plan_digest:
+        raise ValueError("frozen assurance plan cannot be replaced")
+    refs = _mapping_items(state.get("preparation_refs"))
+    refs.append(resolved.plan_ref.model_dump(mode="json"))
+    by_path = {str(item["path"]): item for item in refs}
+    return {
+        "selected_test_families": list(resolved.plan.selected_test_families),
+        "plan_digest": resolved.plan.plan_digest,
+        "plan_ref": resolved.plan_ref.model_dump(mode="json"),
+        "policy_digest": resolved.plan.policy_digest,
+        "preparation_refs": [by_path[path] for path in sorted(by_path)],
+    }
 
 
 def select_case_design(state: Mapping[str, object]) -> CaseDesignInputV1:
     return CaseDesignInputV1.model_validate(
         {
             **_skill_payload(state),
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "selected_test_families": state["selected_test_families"],
             "case_delta_paths": state["case_delta_paths"],
             "coverage_epoch": state.get("coverage_epoch", 0),
@@ -75,6 +175,8 @@ def select_case_design_repair(state: Mapping[str, object]) -> CaseDesignInputV1:
     return CaseDesignInputV1.model_validate(
         {
             **_skill_payload(state),
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "selected_test_families": state["selected_test_families"],
             "case_delta_paths": state["case_delta_paths"],
             "validation_attempt": 1,
@@ -87,6 +189,8 @@ def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
     return CaseReviewInputV1.model_validate(
         {
             **_skill_payload(state),
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "case_delta_paths": state["case_delta_paths"],
             "coverage_epoch": state.get("coverage_epoch", 0),
             "review_round": state.get("rounds_used", 0),
@@ -179,12 +283,21 @@ def publish_case_design(state: Mapping[str, object], output: object, receipt: ob
         for item in artifacts
         if isinstance(item, Mapping) and str(item.get("path", "")).endswith("/case.yaml")
     ]
+    preparation_refs = [
+        EvidenceArtifactRefV1.model_validate(item).model_dump(mode="json")
+        for item in (*_mapping_items(state.get("preparation_refs")), *artifacts)
+        if isinstance(item, Mapping)
+        and isinstance(item.get("digest"), str)
+        and not str(item.get("path", "")).endswith("/case.yaml")
+    ]
+    preparation_by_path = {str(item["path"]): item for item in preparation_refs}
     return {
         "validation_status": payload.get("validation_status", "pass"),
         "validation_attempt": payload.get("validation_attempt", 0),
         "validation_error": payload.get("validation_error"),
         "artifacts": artifacts,
         "case_refs": sorted(case_refs, key=lambda item: (item["path"], item["digest"])),
+        "preparation_refs": [preparation_by_path[path] for path in sorted(preparation_by_path)],
         "rounds_used": state.get("rounds_used", 0),
         "rounds_budget": state.get("rounds_budget", 2),
     }
@@ -217,6 +330,8 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
         {
             "change_id": state["change_id"],
             "coverage_epoch": state.get("coverage_epoch", 0),
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "preparation_refs": state.get("preparation_refs", ()),
             "case_refs": state.get("case_refs", ()),
             "review_ref": review_ref,
@@ -399,6 +514,9 @@ __all__ = [
     "select_case_design_retry",
     "select_case_review",
     "select_explore",
+    "select_load_plan",
+    "select_resolve_plan",
+    "publish_plan",
     "select_intake",
     "terminal_failed",
     "terminal_done",

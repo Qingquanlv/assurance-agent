@@ -24,6 +24,10 @@ _TESTS_ROOT = Path(__file__).resolve().parent
 _WHEEL_ROOT = _TESTS_ROOT.parent
 VALID_LEAFS = frozenset({"entities.item.create", "auth.session.create"})
 VALID_CASES = frozenset({"TC_A", "TC_B"})
+_PLAN_REF = {
+    "path": f"qa/changes/CH-DEMO-001/plan/{'a' * 64}/resolved-assurance-plan.json",
+    "digest": "a" * 64,
+}
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
 _ALLOWED_ASSURANCE = (
     "assurance_intake.contracts",
@@ -81,6 +85,8 @@ def valid_evidence(
     tests = selected or ["tests/a.py"]
     return {
         "change_id": "CH-DEMO-001",
+        "plan_digest": "a" * 64,
+        "plan_ref": _PLAN_REF,
         "batch_id": "20260822T000000Z",
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
         "mapping": valid_mapping_payload(selected=tests),

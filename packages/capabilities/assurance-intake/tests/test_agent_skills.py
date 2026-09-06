@@ -16,6 +16,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
+from tests.acg_plan_fixture import install_plan
 
 from assurance_intake.operations import (
     CaseDesignFinalizeHandler,
@@ -32,6 +33,11 @@ from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.resource_loader import resource_text
 
 _SHA = "a" * 64
+_PLAN_DIGEST = "31e8e6ccff373c935bf09f5f83763f327bd54bc3c96a11b9db3bca1b7b22fa00"
+_PLAN_REF: dict[str, JSONValue] = {
+    "path": f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+    "digest": "a50f41ee57345754b5d4f2f3609baef0d8fe1ba9c0e50abaf09902d37e4150e2",
+}
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
 VALID_LEAFS = ("auth.session.create", "entities.item.create")
 BINDING: dict[str, JSONValue] = {
@@ -49,7 +55,9 @@ CASE_INPUT: dict[str, JSONValue] = {
     "change_id": "CH-DEMO-001",
     "capability_leafs": list(VALID_LEAFS),
     "artifact_paths": ["qa/changes/CH-DEMO-001/explore/advisory.json"],
-    "selected_test_families": ["api", "e2e", "fuzz", "performance"],
+    "selected_test_families": ["api"],
+    "plan_digest": _PLAN_DIGEST,
+    "plan_ref": _PLAN_REF,
     "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
 }
 CASE_REVIEW_INPUT: dict[str, JSONValue] = {
@@ -70,6 +78,35 @@ async def run_prepare(
     workspace: Path,
     write_root: Path | None = None,
 ) -> Any:
+    if type(handler).__name__.startswith("Case"):
+        exploration = workspace / "qa/changes/CH-DEMO-001/explore/exploration.json"
+        minimum_required_coverage = None
+        mismatched_exploration: bytes | None = None
+        if exploration.is_file():
+            existing_bytes = exploration.read_bytes()
+            existing = json.loads(existing_bytes)
+            if isinstance(existing, Mapping):
+                candidate = existing.get("minimum_required_coverage")
+                if isinstance(candidate, Mapping):
+                    minimum_required_coverage = candidate
+                if existing.get("change_id") != "CH-DEMO-001":
+                    mismatched_exploration = existing_bytes
+        plan, plan_ref = install_plan(
+            workspace,
+            "CH-DEMO-001",
+            capability_leafs=VALID_LEAFS,
+            minimum_required_coverage=minimum_required_coverage,
+        )
+        if isinstance(payload, dict):
+            payload = {
+                **payload,
+                "plan_digest": plan.plan_digest,
+                "plan_ref": cast(JSONValue, plan_ref),
+            }
+        if mismatched_exploration is not None:
+            exploration.write_bytes(mismatched_exploration)
+    if type(handler).__name__.startswith("Explore") and isinstance(payload, dict):
+        payload = {**payload, "candidate_test_families": ["api"]}
     return await execute_task(handler, payload, workspace, binding_data=binding, write_root=write_root)
 
 
@@ -79,13 +116,21 @@ async def run_finalize(
     workspace: Path,
     write_root: Path | None = None,
 ) -> TaskOutcome:
+    business: dict[str, JSONValue] = {
+        "agent_result": result.model_dump(mode="json"),
+        "capability_leafs": list(VALID_LEAFS),
+        "artifact_paths": [],
+    }
+    if type(handler).__name__.startswith("Case"):
+        install_plan(
+            workspace,
+            "CH-DEMO-001",
+            capability_leafs=VALID_LEAFS,
+        )
+        business.update({"plan_digest": _PLAN_DIGEST, "plan_ref": _PLAN_REF})
     executed = await execute_task(
         handler,
-        {
-            "agent_result": result.model_dump(mode="json"),
-            "capability_leafs": list(VALID_LEAFS),
-            "artifact_paths": [],
-        },
+        business,
         workspace,
         write_root=write_root,
     )
@@ -606,7 +651,7 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
 
 
 @pytest.mark.asyncio
-async def test_case_design_prepare_allows_missing_exploration_for_standalone_case(
+async def test_case_design_prepare_reads_plan_bound_exploration_for_standalone_case(
     tmp_path: Path,
 ) -> None:
     prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
@@ -614,7 +659,7 @@ async def test_case_design_prepare_allows_missing_exploration_for_standalone_cas
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
     business = cast(Mapping[str, object], request.instructions[2].json_content)
-    assert business["exploration"] is None
+    assert isinstance(business["exploration"], Mapping)
 
 
 @pytest.mark.asyncio
@@ -704,8 +749,9 @@ async def test_case_review_finalize_accepts_mrc_key_that_is_not_a_capability_lea
     tmp_path: Path,
 ) -> None:
     _write_review_matrix(tmp_path, missing=["entities.fake"])
-    result = fake_agent_result(_case_review_document(missing=["entities.fake"]))
-    outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
+    outcome = await _finalize_review_with_written_cases(
+        tmp_path, _case_review_document(missing=["entities.fake"])
+    )
     assert outcome.status == "succeeded"
 
 
@@ -723,7 +769,7 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
     payload = cast(Mapping[str, object], business.json_content)
     leafs = payload["capability_leafs"]
     assert payload["change_id"] == "CH-DEMO-001"
-    assert payload["selected_test_families"] == ("api", "e2e", "fuzz", "performance")
+    assert payload["selected_test_families"] == ("api",)
     assert isinstance(leafs, list | tuple)
     assert tuple(leafs) == VALID_LEAFS
     encoded = request.canonical_bytes().decode("utf-8").lower()
@@ -831,6 +877,21 @@ async def _finalize_files(
     case_refs: list[dict[str, str]] | None = None,
 ) -> Any:
     result = fake_agent_result(structured_result)
+    plan = None
+    plan_ref = None
+    if type(handler).__name__.startswith("Case"):
+        selected = tuple(cast(Any, selected_test_families or ["api"]))
+        plan, plan_ref = install_plan(
+            workspace,
+            change_id or "CH-DEMO-001",
+            capability_leafs=VALID_LEAFS,
+            candidates=selected,
+            proposed=selected,
+        )
+    bound_preparation_refs = list(preparation_refs or [])
+    if plan_ref is not None and plan_ref not in bound_preparation_refs:
+        bound_preparation_refs.append(plan_ref)
+        bound_preparation_refs.sort(key=lambda item: (item["path"], item["digest"]))
     finalize_input: dict[str, object] = {
         "agent_result": result.model_dump(mode="json"),
         "capability_leafs": list(VALID_LEAFS),
@@ -850,8 +911,13 @@ async def _finalize_files(
         **({"review_repair": review_repair} if review_repair is not None else {}),
         "coverage_epoch": coverage_epoch,
         "review_round": review_round,
-        "preparation_refs": preparation_refs or [],
+        "preparation_refs": bound_preparation_refs,
         "case_refs": case_refs or [],
+        **(
+            {"plan_digest": plan.plan_digest, "plan_ref": plan_ref}
+            if plan is not None and plan_ref is not None
+            else {}
+        ),
     }
     executed = await execute_task(
         handler,
@@ -868,6 +934,44 @@ def _write_case_delta(workspace: Path, document: object) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
     return relative
+
+
+async def _finalize_review_with_written_cases(
+    workspace: Path,
+    document: JSONValue,
+) -> TaskOutcome:
+    _, write_root = dual_roots(workspace)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    case_relative = _write_case_delta(workspace, authored)
+    matrix_relative = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    review_relative = "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = write_root / review_relative
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(document), encoding="utf-8")
+    summary_relative = "qa/changes/CH-DEMO-001/review/case-review-summary.md"
+    (write_root / summary_relative).write_text("# Case review\n", encoding="utf-8")
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        document,
+        workspace,
+        [review_relative, summary_relative],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+        case_delta_paths=[case_relative],
+        case_refs=[
+            {
+                "path": case_relative,
+                "digest": hashlib.sha256((workspace / case_relative).read_bytes()).hexdigest(),
+            }
+        ],
+        preparation_refs=[
+            {
+                "path": matrix_relative,
+                "digest": hashlib.sha256((workspace / matrix_relative).read_bytes()).hexdigest(),
+            }
+        ],
+    )
+    return executed.outcome
 
 
 def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
@@ -1857,7 +1961,7 @@ async def test_case_design_finalize_requires_every_locked_case_yaml(
         project,
         ["qa/changes"],
         change_id="CH-DEMO-001",
-        selected_test_families=[],
+        selected_test_families=["api"],
         write_root=write_root,
     )
 
@@ -1895,12 +1999,7 @@ async def test_case_design_finalize_rejects_invalid_written_case_yaml(tmp_path: 
 @pytest.mark.asyncio
 async def test_case_review_finalize_accepts_typed_review(tmp_path: Path) -> None:
     _write_review_matrix(tmp_path, missing=[])
-    executed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
-        _case_review_document(missing=[]),
-        tmp_path,
-        [],
-    )
+    executed = await _finalize_review_with_written_cases(tmp_path, _case_review_document(missing=[]))
     assert executed.status == "succeeded"
     output = executed.output
     assert isinstance(output, dict)
@@ -1919,7 +2018,7 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
-    case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
+    case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
     review_document = _case_review_document(missing=[])
     review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1929,7 +2028,13 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
         {
             "path": requirement.relative_to(project).as_posix(),
             "digest": hashlib.sha256(requirement.read_bytes()).hexdigest(),
-        }
+        },
+        {
+            "path": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+            "digest": hashlib.sha256(
+                (change_root / "trace/minimum-coverage-matrix.json").read_bytes()
+            ).hexdigest(),
+        },
     ]
     case_refs = [
         {
@@ -1944,6 +2049,7 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
         project,
         ["qa/changes"],
         change_id="CH-DEMO-001",
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -1968,10 +2074,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
-    case_path.write_text(
-        "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n",
-        encoding="utf-8",
-    )
+    case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
     review_document = _case_review_document(missing=[])
     review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1981,7 +2084,13 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         {
             "path": requirement.relative_to(project).as_posix(),
             "digest": hashlib.sha256(requirement.read_bytes()).hexdigest(),
-        }
+        },
+        {
+            "path": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+            "digest": hashlib.sha256(
+                (change_root / "trace/minimum-coverage-matrix.json").read_bytes()
+            ).hexdigest(),
+        },
     ]
     case_refs = [
         {
@@ -1998,6 +2107,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -2013,6 +2123,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -2025,6 +2136,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         change_id="CH-DEMO-001",
         coverage_epoch=1,
         review_round=0,
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -2125,8 +2237,9 @@ async def test_case_review_finalize_replaces_projection_drift_from_authenticated
     tmp_path: Path,
 ) -> None:
     _write_review_matrix(tmp_path, missing=["skipped_item"])
-    result = fake_agent_result(_case_review_document(missing=["entities.item"]))
-    outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
+    outcome = await _finalize_review_with_written_cases(
+        tmp_path, _case_review_document(missing=["entities.item"])
+    )
     assert outcome.status == "succeeded"
     output = outcome.output
     assert isinstance(output, dict)

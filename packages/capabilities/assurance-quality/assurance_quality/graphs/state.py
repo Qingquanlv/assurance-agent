@@ -102,6 +102,7 @@ class QualityState(CheckpointBridgeState, total=False):
     metrics_digest: str
     case_digest: str
     plan_digest: str
+    plan_ref: EvidenceArtifactRefV1
     mapping_digest: str
     issue_digest: str | None
     status: str

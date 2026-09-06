@@ -21,10 +21,12 @@ def build_prepare_graph(
     *,
     intake: CompiledStateGraph,
     explore: CompiledStateGraph,
+    resolve_plan: CompiledStateGraph,
 ) -> CompiledStateGraph:
     builder: StateGraph[IntakeState] = StateGraph(IntakeState)
     builder.add_node("intake", intake)
     builder.add_node("explore", explore)
+    builder.add_node("resolve-plan", resolve_plan)
     builder.add_node("prepared", _node(terminal_prepared))
     builder.add_node("failed", _node(terminal_failed))
     builder.add_edge(START, "intake")
@@ -36,6 +38,11 @@ def build_prepare_graph(
     builder.add_conditional_edges(
         "explore",
         cast(Callable[..., Any], route_preparation_attempt),
+        {"committed": "resolve-plan", "failed": "failed"},
+    )
+    builder.add_conditional_edges(
+        "resolve-plan",
+        cast(Callable[..., Any], route_preparation_attempt),
         {"committed": "prepared", "failed": "failed"},
     )
     builder.add_edge("prepared", END)
@@ -43,4 +50,24 @@ def build_prepare_graph(
     return context.compile_subgraph(builder)
 
 
-__all__ = ["build_prepare_graph"]
+def build_load_plan_graph(
+    context: CapabilityBuildContext,
+    *,
+    load_plan: CompiledStateGraph,
+) -> CompiledStateGraph:
+    builder: StateGraph[IntakeState] = StateGraph(IntakeState)
+    builder.add_node("load-plan", load_plan)
+    builder.add_node("prepared", _node(terminal_prepared))
+    builder.add_node("failed", _node(terminal_failed))
+    builder.add_edge(START, "load-plan")
+    builder.add_conditional_edges(
+        "load-plan",
+        cast(Callable[..., Any], route_preparation_attempt),
+        {"committed": "prepared", "failed": "failed"},
+    )
+    builder.add_edge("prepared", END)
+    builder.add_edge("failed", END)
+    return context.compile_subgraph(builder)
+
+
+__all__ = ["build_load_plan_graph", "build_prepare_graph"]

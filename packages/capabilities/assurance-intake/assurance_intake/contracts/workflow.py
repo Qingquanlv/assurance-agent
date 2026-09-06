@@ -36,6 +36,17 @@ class EvidenceArtifactRefV1(FrozenModel):
         return _canonical_relative(value)
 
 
+def require_same_plan(
+    left_digest: str,
+    left_ref: EvidenceArtifactRefV1,
+    right_digest: str,
+    right_ref: EvidenceArtifactRefV1,
+) -> None:
+    """Reject any attempt to combine evidence from two frozen plans."""
+    if left_digest != right_digest or left_ref != right_ref:
+        raise ValueError("plan binding does not match")
+
+
 def _canonical_refs(
     refs: tuple[EvidenceArtifactRefV1, ...], *, label: str, required: bool = True
 ) -> tuple[EvidenceArtifactRefV1, ...]:
@@ -58,6 +69,8 @@ def _case_path(change_id: str, path: str) -> bool:
 class ReviewedCaseV1(FrozenModel):
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     case_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     review_ref: EvidenceArtifactRefV1
@@ -81,6 +94,11 @@ class ReviewedCaseV1(FrozenModel):
 
     @model_validator(mode="after")
     def _refs_match_change(self) -> Self:
+        plan_path = f"qa/changes/{self.change_id}/plan/{self.plan_digest}/resolved-assurance-plan.json"
+        if self.plan_ref.path != plan_path:
+            raise ValueError("plan_ref must bind the current frozen plan")
+        if self.plan_ref not in self.preparation_refs:
+            raise ValueError("preparation_refs must include plan_ref")
         if any(not _case_path(self.change_id, item.path) for item in self.case_refs):
             raise ValueError("case_refs must contain exact current-change case.yaml paths")
         review_path = f"qa/changes/{self.change_id}/review/case-review.json"
@@ -139,4 +157,5 @@ __all__ = [
     "CaseReworkContextV1",
     "EvidenceArtifactRefV1",
     "ReviewedCaseV1",
+    "require_same_plan",
 ]

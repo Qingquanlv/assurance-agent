@@ -19,6 +19,9 @@ from assurance_improvement.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
 )
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_AGENT_JOB_CONTRACTS
+from assurance_intake.contracts.attempts import (
+    TASK_ATTEMPT_CONTRACTS as INTAKE_TASK_ATTEMPT_CONTRACTS,
+)
 from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOB_CONTRACTS
 from assurance_quality.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS as QUALITY_TASK_ATTEMPT_CONTRACTS,
@@ -42,6 +45,7 @@ AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyTy
 )
 FEATURE_TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract] = MappingProxyType(
     {
+        **INTAKE_TASK_ATTEMPT_CONTRACTS,
         **IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
         **GENERATION_TASK_ATTEMPT_CONTRACTS,
         **QUALITY_TASK_ATTEMPT_CONTRACTS,

@@ -7,7 +7,7 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 
 from assurance_intake.contracts.agent import ArtifactListResultV1
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_intake.graphs.factory import build_intake_graphs
 from assurance_intake.graphs.nodes import (
     advance_join,
@@ -179,6 +179,11 @@ def test_downstream_case_design_retry_reads_current_trigger_value_only() -> None
     inbox = offer_case_review_arrival(empty_case_review_inbox(), arrival)
     state: dict[str, Any] = {
         "change_id": "CH-DEMO-001",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "selected_test_families": ["api"],
         "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
         "capability_leafs": ["entities.item.create"],
@@ -206,13 +211,21 @@ _RECEIPT = ReceiptRef(receipt_id="receipt-1", receipt_digest=_SHA)
 
 
 def _contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    return {
+        **{contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()},
+        **{contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()},
+    }
 
 
 def _prepare_input() -> dict[str, object]:
     return {
         "change_id": "CH-DEMO-001",
         "requirement": "Cover department CRUD.",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "selected_test_families": ["api"],
         "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
         "capability_leafs": ["entities.item.create"],
@@ -220,7 +233,13 @@ def _prepare_input() -> dict[str, object]:
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,
-        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+        "preparation_refs": [
+            {
+                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                "digest": _SHA,
+            },
+            {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
+        ],
     }
 
 

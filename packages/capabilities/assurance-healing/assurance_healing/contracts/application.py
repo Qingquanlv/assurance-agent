@@ -10,7 +10,11 @@ from pydantic import Field, field_validator, model_validator
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.contracts.workflow import (
+    EvidenceArtifactRefV1,
+    ReviewedCaseV1,
+    require_same_plan,
+)
 
 AppliedTestRepairStatus = Literal["applied", "needs_review", "not_eligible", "exhausted", "failed"]
 
@@ -45,6 +49,8 @@ def _canonical_refs(
 
 class ApplyTestRepairInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     coverage_epoch: int = Field(ge=0)
     repair_round: int = Field(ge=1)
     reviewed_case: ReviewedCaseV1
@@ -71,6 +77,12 @@ class ApplyTestRepairInputV1(FrozenModel):
             raise ValueError("reviewed case change_id does not match repair")
         if self.reviewed_case.coverage_epoch != self.coverage_epoch:
             raise ValueError("reviewed case coverage_epoch does not match repair")
+        require_same_plan(
+            self.plan_digest,
+            self.plan_ref,
+            self.reviewed_case.plan_digest,
+            self.reviewed_case.plan_ref,
+        )
         prefix = f"qa/changes/{self.change_id}/"
         refs = (
             self.proposal_ref,
@@ -101,6 +113,8 @@ class TestRepairResultV1(FrozenModel):
 
 class VerifiedTestRepairV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     coverage_epoch: int = Field(ge=0)
     repair_round: int = Field(ge=1)
     changed_test_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
@@ -114,6 +128,8 @@ class VerifiedTestRepairV1(FrozenModel):
 
 class AppliedTestRepairV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     coverage_epoch: int = Field(ge=0)
     repair_round: int = Field(ge=1)
     status: AppliedTestRepairStatus

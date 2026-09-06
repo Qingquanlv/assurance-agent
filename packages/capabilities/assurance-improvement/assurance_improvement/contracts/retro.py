@@ -178,6 +178,14 @@ class RetroSourceDescriptor(BaseModel):
     head_event_id: str | None = None
     sha256: str
     evidence_ids: tuple[str, ...] = ()
+    plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1 | None = None
+
+    @model_validator(mode="after")
+    def validate_plan_binding(self) -> Self:
+        if (self.plan_digest is None) != (self.plan_ref is None):
+            raise ValueError("Retro source plan_digest and plan_ref must appear together")
+        return self
 
 
 class RetroIntegrity(BaseModel):

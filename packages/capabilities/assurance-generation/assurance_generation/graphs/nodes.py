@@ -70,6 +70,8 @@ def select_plan(state: Mapping[str, object]) -> PlanInputV1:
     return PlanInputV1.model_validate(
         {
             "change_id": state["change_id"],
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "capability_leafs": state["capability_leafs"],
             "artifact_paths": state["allowed_artifact_paths"],
             "coverage_epoch": state.get("coverage_epoch", 0),
@@ -83,6 +85,8 @@ def select_generation_inputs(state: Mapping[str, object]) -> ResolveGenerationIn
     return ResolveGenerationInputV1.model_validate(
         {
             "change_id": state["change_id"],
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "coverage_epoch": state.get("coverage_epoch", 0),
             "reviewed_case": state.get("reviewed_case"),
             "source_artifacts": state.get("source_artifacts") or state.get("artifacts") or (),
@@ -120,6 +124,8 @@ def select_generation_cycle(state: Mapping[str, object]) -> CompleteGenerationIn
     return CompleteGenerationInputV1.model_validate(
         {
             "change_id": state["change_id"],
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "coverage_epoch": epoch,
             "reviewed_case": state["reviewed_case"],
             "selected_test_families": state["selected_test_families"],
@@ -149,6 +155,8 @@ def select_codegen(state: Mapping[str, object]) -> CodegenInputV1:
     return CodegenInputV1.model_validate(
         {
             "change_id": state["change_id"],
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "capability_leafs": state["capability_leafs"],
             "artifact_paths": state.get("allowed_artifact_paths") or (),
             "coverage_epoch": state.get("coverage_epoch", 0),
@@ -162,6 +170,8 @@ def select_codegen_fix(state: Mapping[str, object]) -> CodegenFixInputV1:
     return CodegenFixInputV1.model_validate(
         {
             "change_id": state["change_id"],
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "capability_leafs": state["capability_leafs"],
             "artifact_paths": state.get("allowed_artifact_paths") or (),
             "reviewed_plan": state.get("reviewed_plan"),

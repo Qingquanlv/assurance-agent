@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from assurance_execution.contracts.execution import (
     EXECUTION_FAMILIES,
@@ -12,7 +12,7 @@ from assurance_execution.contracts.execution import (
     RawTestResultV1,
 )
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
-from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -85,6 +85,8 @@ class ExecutionEvidenceV1(_ExecutionResultBase):
     """Committed execution facts plus Kernel-derived authority fields."""
 
     status: Literal["passed", "failed"] = "passed"
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     executed_at: AwareDatetime | None = None
     mapping_digest: NonEmptyStr
     receipt_digest: NonEmptyStr

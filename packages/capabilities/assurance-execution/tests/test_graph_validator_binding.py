@@ -169,6 +169,11 @@ def _revision() -> str:
 def _graph_input() -> dict[str, object]:
     return {
         "change_id": "CH-DEMO-001",
+        "plan_digest": "a" * 64,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{'a' * 64}/resolved-assurance-plan.json",
+            "digest": "a" * 64,
+        },
         "batch_id": "20260822T000000Z",
         "selected_test_families": ["api"],
         "capability_leafs": ["entities.item.create"],
@@ -197,6 +202,11 @@ def _output() -> ExecutionEvidenceV1:
     return ExecutionEvidenceV1.model_validate(
         {
             "change_id": "CH-DEMO-001",
+            "plan_digest": "a" * 64,
+            "plan_ref": {
+                "path": f"qa/changes/CH-DEMO-001/plan/{'a' * 64}/resolved-assurance-plan.json",
+                "digest": "a" * 64,
+            },
             "batch_id": "20260822T000000Z",
             "executed_at": "2026-08-22T00:00:00Z",
             "selected_targets": {

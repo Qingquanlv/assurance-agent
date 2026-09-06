@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Literal, Self, cast
+from typing import Literal, Self
 
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic.types import AwareDatetime
 from agent_runtime_contracts import AgentRunResult
 
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.contracts.workflow import (
+    EvidenceArtifactRefV1,
+    ReviewedCaseV1,
+    require_same_plan,
+)
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
     InspectionResultV1,
@@ -36,6 +39,8 @@ ReportPurpose = Literal["normal", "diagnostic"]
 
 
 class MaterializeAssessmentInputV1(FrozenModel):
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     reviewed_case: ReviewedCaseV1
     generation: GenerationCycleResultV1
     execution: ExecutionCycleResultV1
@@ -62,6 +67,12 @@ class MaterializeAssessmentInputV1(FrozenModel):
             raise ValueError("execution mapping must match the generation cycle")
         if self.execution_at != self.execution.executed_at:
             raise ValueError("assessment time must match the committed execution time")
+        for digest, ref in (
+            (self.reviewed_case.plan_digest, self.reviewed_case.plan_ref),
+            (self.generation.plan_digest, self.generation.plan_ref),
+            (self.execution.plan_digest, self.execution.plan_ref),
+        ):
+            require_same_plan(self.plan_digest, self.plan_ref, digest, ref)
         return self
 
 
@@ -69,6 +80,8 @@ class AssessmentInputsV1(FrozenModel):
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     scope: ActiveCoverageScopeV1
     policy: CoverageGoalPolicyV1
     trace_ref: EvidenceArtifactRefV1
@@ -94,6 +107,8 @@ class AssessmentSkillInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
     assessment: AssessmentInputsV1
@@ -113,6 +128,18 @@ class AssessmentSkillInputV1(FrozenModel):
             raise ValueError("Reviewed Case change_id must match the skill input")
         if self.reviewed_case.coverage_epoch != self.coverage_epoch:
             raise ValueError("Reviewed Case epoch must match the skill input")
+        require_same_plan(
+            self.plan_digest,
+            self.plan_ref,
+            self.reviewed_case.plan_digest,
+            self.reviewed_case.plan_ref,
+        )
+        require_same_plan(
+            self.plan_digest,
+            self.plan_ref,
+            self.assessment.plan_digest,
+            self.assessment.plan_ref,
+        )
         return self
 
 
@@ -195,6 +222,8 @@ class InspectionOutcomeV1(FrozenModel):
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     disposition: InspectionDisposition
     inspection_receipt: ReceiptRef
     reviewed_case: ReviewedCaseV1
@@ -209,6 +238,12 @@ class InspectionOutcomeV1(FrozenModel):
             raise ValueError("inspection Reviewed Case change_id must match")
         if self.reviewed_case.coverage_epoch != self.coverage_epoch:
             raise ValueError("inspection Reviewed Case epoch must match")
+        require_same_plan(
+            self.plan_digest,
+            self.plan_ref,
+            self.reviewed_case.plan_digest,
+            self.reviewed_case.plan_ref,
+        )
         if self.disposition == "satisfied" and self.coverage_state != "satisfied":
             raise ValueError("satisfied inspection requires satisfied coverage")
         if self.disposition == "coverage_insufficient" and self.coverage_state not in {
@@ -298,11 +333,12 @@ class ReportSkillInputV1(QualitySkillInputV1):
             raise ValueError("report mapping digest does not match the current inspection")
         if self.case_digest != self.inspection.reviewed_case.review_ref.digest:
             raise ValueError("report case digest does not match the current Reviewed Case")
-        plan_digest = canonical_digest(
-            cast(JSONValue, [ref.model_dump(mode="json") for ref in self.generation.plan_refs])
+        require_same_plan(
+            self.plan_digest,
+            self.plan_ref,
+            self.generation.plan_digest,
+            self.generation.plan_ref,
         )
-        if self.plan_digest != plan_digest:
-            raise ValueError("report plan digest does not match the current generation cycle")
         healing_digest = (
             self.assessment.healing_ref.digest if self.assessment.healing_ref is not None else None
         )
@@ -325,6 +361,8 @@ class FinalizedReportV1(FrozenModel):
     coverage_epoch: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
     purpose: ReportPurpose
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     inspection_receipt: ReceiptRef
     report_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
 
@@ -346,6 +384,8 @@ class ReportOutcomeV1(FrozenModel):
     coverage_epoch: int = Field(ge=0)
     batch_id: str = Field(min_length=1)
     inspection_receipt: ReceiptRef
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     report_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     report_receipt: ReceiptRef
 

@@ -64,6 +64,27 @@ def test_finalize_achieved_accepts_the_bound_quality_outcomes(tmp_path: Path) ->
     assert status.change.state == "achieved"
 
 
+def test_finalize_achieved_rejects_modified_plan_bytes(tmp_path: Path) -> None:
+    from assurance_product.status import finalize_achieved
+
+    project = _ready_change(tmp_path)
+    gate, _ = _install_quality(project)
+    refs = gate["inspection"]["reviewed_case"]["preparation_refs"]
+    plan_ref = next(ref for ref in refs if "/plan/" in ref["path"])
+    (project / plan_ref["path"]).write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="quality|plan|inspection"):
+        finalize_achieved(
+            project,
+            CHANGE_ID,
+            ("api",),
+            invocation=valid_status(
+                execution_gate=_execute_gate_for(project),
+                quality_gate=gate,
+            ),
+        )
+
+
 @pytest.mark.parametrize("tamper", ["mapping", "case", "report", "batch", "execution", "receipt", "epoch"])
 def test_finalize_achieved_rejects_tampered_or_stale_quality_evidence(
     tmp_path: Path,

@@ -70,7 +70,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.coverage-gaps.v1": (
         "1",
-        "51bb0de88c1ed4f411df62fd09d6e16414188e4ef439968930784116d0f258d2",
+        "6562dc9ff64c98c27e720f5b91bfdf225a416d7c555085769b68ea68a3c44f20",
     ),
     "assurance.quality.schema.fact-baseline.v1": (
         "1",
@@ -114,7 +114,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.report.v1": (
         "1",
-        "fc1adf8af4622a5358bb569220f74175e08ccaaec0ee645844c35a16bfb3da54",
+        "4a93f202bb07571a20cfddc3cc37e498e920cd4494d10a8957c78c839924d37e",
     ),
     "assurance.quality.schema.sufficiency.v2": (
         "1",
@@ -130,11 +130,11 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.workflow.assess.input.v1": (
         "1",
-        "e6f50c51ed709017a64029b2add4f3addb4e260c2a0271600be0b2a6baf5855d",
+        "1082fea0fd50a41ccf4ecfa10d51b07bf13d8817af26e90aef0e4df927c95028",
     ),
     "assurance.quality.workflow.assess.output.v1": (
         "1",
-        "baef6e7877d31cc0ffebfd6ae27104601e7a6c252f7dac3d4e2096ffba3d4300",
+        "b454175dbb5cd1f283affabfd4f238692cf3c98d76af8cc856ee4cecd3edbfa3",
     ),
     "assurance.quality.workflow.issue-analyze.input.v1": (
         "1",
@@ -162,11 +162,11 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.workflow.report.input.v1": (
         "1",
-        "5cfc6099c71286680d5bca66335472347f205f074de0e84c6184e98680a36b8b",
+        "7d0088873d1a5935243f3cfb071a58b9df8bb868927f3fd4027e3678cb46df95",
     ),
     "assurance.quality.workflow.report.output.v1": (
         "1",
-        "c34faec147d426b2e49a9d6e99ec1abc57e317530d81fc1f03ca21498c5d4e57",
+        "878092885436e105a48e0478983f4d6799a350e29a8b1452aea1fa72acca2706",
     ),
 }
 

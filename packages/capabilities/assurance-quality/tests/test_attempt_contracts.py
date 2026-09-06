@@ -41,7 +41,13 @@ def test_quality_owns_five_agent_contracts() -> None:
             "execution": {"batch_id": "B-1"},
         }
     )
-    assert resolved.reads == (".aa/policy.yaml", "issues", "qa/changes/CH-1")
+    assert resolved.reads == (
+        ".aa/capability-catalog.json",
+        ".aa/data-knowledge.yaml",
+        ".aa/policy.yaml",
+        "issues",
+        "qa/changes/CH-1",
+    )
     assert resolved.writes == (
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/coverage-gaps.json",
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/metrics.json",

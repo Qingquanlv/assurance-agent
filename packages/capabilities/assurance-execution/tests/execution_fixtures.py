@@ -31,6 +31,11 @@ from assurance_product.generated_merge import MergedGeneratedSet
 VALID_LEAFS = ("auth.session.create", "entities.item.create")
 VALID_CASES = ("TC_A", "TC_B")
 _SHA = "a" * 64
+PLAN_DIGEST = _SHA
+PLAN_REF = {
+    "path": f"qa/changes/CH-DEMO-001/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
+    "digest": _SHA,
+}
 BINDING: dict[str, Any] = {
     "agent_profile": "aa-executor",
     "execution": {
@@ -71,6 +76,8 @@ def run_request(
 ) -> dict[str, Any]:
     return {
         "change_id": change_id,
+        "plan_digest": PLAN_DIGEST,
+        "plan_ref": PLAN_REF,
         "batch_id": batch_id,
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
         "mapping": closed_mapping(selected),

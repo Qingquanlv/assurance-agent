@@ -13,6 +13,7 @@ from typing import Any, Literal, Self, get_args
 from pydantic import BaseModel, ConfigDict, RootModel, field_validator, model_validator
 
 from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts.quality_goals import MrcCategory, MrcLayer
 from assurance_quality.contracts.goal_policy import ActiveCoverageScopeV1, CoverageGoalPolicyV1
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
@@ -143,6 +144,13 @@ class CoverageGapsDocument(BaseModel):
     projection_digest: NonEmptyStr
     gaps: tuple[CoverageGap, ...] = ()
     computed_at: datetime | None = None
+    minimum_coverage: MinimumCoverageResult | None = None
+
+    @model_validator(mode="after")
+    def _minimum_coverage_matches_change(self) -> Self:
+        if self.minimum_coverage is not None and self.minimum_coverage.change_id != self.change_id:
+            raise ValueError("minimum coverage result must belong to the coverage gap change")
+        return self
 
     @field_validator("gaps", mode="after")
     @classmethod
@@ -199,8 +207,6 @@ Unknown closed-key citations are mechanical findings via
 ``mrc_closed_key_findings`` — they do not rewrite the join.
 """
 
-MrcCategory = Literal["api", "e2e", "e2e_if_enabled", "negative", "data_integrity"]
-MrcLayer = Literal["api", "e2e", "both"]
 MrcItemStatus = Literal[
     "covered",
     "covered_but_failing",
@@ -468,6 +474,9 @@ def mrc_closed_key_findings(
         elif category in _JOURNEY_CATEGORIES and key not in journey_keys:
             bad.add(key)
     return tuple(MrcFinding(code="unknown_closed_key", key=key) for key in sorted(bad))
+
+
+CoverageGapsDocument.model_rebuild()
 
 
 __all__ = [

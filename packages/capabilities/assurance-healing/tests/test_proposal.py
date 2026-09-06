@@ -60,6 +60,11 @@ def _resource_files() -> Iterator[Path]:
 def proposal_input() -> dict[str, Any]:
     return {
         "change_id": "CH-DEMO-001",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "owner_id": "assurance.healing",
         "capability_leafs": ["entities.item.create"],
         "allowed_paths": ["tests/api/test_users.py"],
@@ -219,6 +224,11 @@ async def test_fix_proposal_finalize_rejects_rewritten_baseline_digest(tmp_path:
 async def test_allocate_returns_effect_intent_without_writing(tmp_path: Path) -> None:
     payload = {
         "change_id": "CH-DEMO-001",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "owner_id": "assurance.healing",
         "attempt_number": 1,
         "source_batch_id": "batch-1",
@@ -243,6 +253,11 @@ async def test_record_approval_and_apply_emit_intents_only(tmp_path: Path) -> No
         RecordFixerApprovalHandler(),
         {
             "change_id": "CH-DEMO-001",
+            "plan_digest": _SHA,
+            "plan_ref": {
+                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                "digest": _SHA,
+            },
             "owner_id": "assurance.healing",
             "root_invocation_id": "inv-1",
             "interrupt_task_id": "task-1",
@@ -265,6 +280,11 @@ async def test_record_approval_and_apply_emit_intents_only(tmp_path: Path) -> No
         RecordCodegenFixApplyHandler(),
         {
             "change_id": "CH-DEMO-001",
+            "plan_digest": _SHA,
+            "plan_ref": {
+                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                "digest": _SHA,
+            },
             "owner_id": "assurance.healing",
             "target": "api",
             "entry_batch_id": "batch-1",

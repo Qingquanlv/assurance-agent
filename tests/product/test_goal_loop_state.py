@@ -17,6 +17,7 @@ from assurance_quality.contracts.assessment import InspectionOutcomeV1
 from tests.product.test_product_input import valid_product_input
 
 _SHA = "a" * 64
+_PLAN_DIGEST = "b" * 64
 
 
 def _ref(path: str, digest: str = _SHA) -> EvidenceArtifactRefV1:
@@ -27,11 +28,23 @@ def _receipt(name: str = "inspect-0") -> ReceiptRef:
     return ReceiptRef(receipt_id=name, receipt_digest=_SHA)
 
 
+def _plan_ref() -> EvidenceArtifactRefV1:
+    return _ref(
+        f"qa/changes/CH-1/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+        "c" * 64,
+    )
+
+
 def _reviewed_case(epoch: int = 0) -> ReviewedCaseV1:
     return ReviewedCaseV1(
         change_id="CH-1",
         coverage_epoch=epoch,
-        preparation_refs=(_ref("qa/changes/CH-1/preparation/context.json"),),
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
+        preparation_refs=(
+            _plan_ref(),
+            _ref("qa/changes/CH-1/preparation/context.json"),
+        ),
         case_refs=(_ref("qa/changes/CH-1/cases/system/case.yaml"),),
         review_ref=_ref("qa/changes/CH-1/review/case-review.json"),
     )
@@ -43,6 +56,8 @@ def _inspection(epoch: int = 0, receipt: ReceiptRef | None = None) -> Inspection
         change_id=reviewed.change_id,
         coverage_epoch=epoch,
         batch_id=f"batch-{epoch}",
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         disposition="coverage_insufficient",
         inspection_receipt=receipt or _receipt(),
         reviewed_case=reviewed,
@@ -72,7 +87,12 @@ def test_coverage_budget_counts_additional_iterations() -> None:
 
 def test_advance_coverage_switches_epoch_without_changing_review_budget() -> None:
     budgets = _budgets(2)
-    tail = ExecuteTailResultV1(status="coverage_insufficient", inspection=_inspection())
+    tail = ExecuteTailResultV1(
+        status="coverage_insufficient",
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
+        inspection=_inspection(),
+    )
     state = {
         "coverage_epoch": 0,
         "healing_rounds_used": 1,
@@ -104,7 +124,12 @@ def test_advance_coverage_switches_epoch_without_changing_review_budget() -> Non
 def test_same_inspection_receipt_cannot_advance_coverage_twice() -> None:
     receipt = _receipt("inspect-replayed")
     inspection = _inspection(receipt=receipt)
-    tail = ExecuteTailResultV1(status="coverage_insufficient", inspection=inspection)
+    tail = ExecuteTailResultV1(
+        status="coverage_insufficient",
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
+        inspection=inspection,
+    )
     state = {
         "coverage_epoch": 0,
         "budgets": _budgets(2).model_dump(mode="json"),
@@ -126,14 +151,26 @@ def test_current_cycle_clear_preserves_epoch_scoped_reducer_history() -> None:
 
 
 def test_tail_result_status_and_evidence_round_trip() -> None:
-    result = ExecuteTailResultV1(status="coverage_insufficient", inspection=_inspection())
+    result = ExecuteTailResultV1(
+        status="coverage_insufficient",
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
+        inspection=_inspection(),
+    )
     assert ExecuteTailResultV1.model_validate(result.model_dump(mode="json")) == result
 
     with pytest.raises(ValidationError, match="committed Report"):
-        ExecuteTailResultV1(status="reported", inspection=None)
+        ExecuteTailResultV1(
+            status="reported",
+            plan_digest=_PLAN_DIGEST,
+            plan_ref=_plan_ref(),
+            inspection=None,
+        )
 
     blocked = ExecuteTailResultV1(
         status="blocked",
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=_plan_ref(),
         inspection=_inspection().model_copy(update={"disposition": "blocked", "coverage_state": None}),
         reason="inspection policy blocked progression",
     )
@@ -141,18 +178,32 @@ def test_tail_result_status_and_evidence_round_trip() -> None:
 
     for status in ("repairable_execution_failure", "needs_human"):
         inspection = _inspection().model_copy(update={"disposition": status, "coverage_state": None})
-        unresolved = ExecuteTailResultV1(status=status, inspection=inspection)  # type: ignore[arg-type]
+        unresolved = ExecuteTailResultV1(
+            status=status,  # type: ignore[arg-type]
+            plan_digest=_PLAN_DIGEST,
+            plan_ref=_plan_ref(),
+            inspection=inspection,
+        )
         assert ExecuteTailResultV1.model_validate(unresolved.model_dump(mode="json")) == unresolved
 
 
 def test_public_execute_adapter_initializes_standalone_tail_from_artifacts() -> None:
     artifact = {"path": "qa/changes/CH-DEMO-001/cases/reviewed-case.json", "digest": _SHA}
     payload = valid_product_input(
-        selected_test_families=("api",),
+        resolved_plan_ref={
+            "path": f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+            "digest": "c" * 64,
+        },
         capability_leafs=("auth.session",),
         artifacts=(artifact,),
     )
-    adapted = adapt_public_execute_tail(payload)  # type: ignore[arg-type]
+    state = {
+        **payload,
+        "plan_digest": _PLAN_DIGEST,
+        "plan_ref": payload["resolved_plan_ref"],
+        "selected_test_families": ["api"],
+    }
+    adapted = adapt_public_execute_tail(state)  # type: ignore[arg-type]
     assert adapted["coverage_epoch"] == 0
     assert adapted["healing_rounds_used"] == 0
     assert adapted["reviewed_case"] is None
@@ -163,16 +214,34 @@ def test_full_tail_adapter_preserves_case_scope_and_current_epoch() -> None:
     reviewed = ReviewedCaseV1(
         change_id="CH-DEMO-001",
         coverage_epoch=1,
-        preparation_refs=(_ref("qa/changes/CH-DEMO-001/preparation/context.json"),),
+        plan_digest=_PLAN_DIGEST,
+        plan_ref=EvidenceArtifactRefV1(
+            path=f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+            digest="c" * 64,
+        ),
+        preparation_refs=(
+            EvidenceArtifactRefV1(
+                path=f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+                digest="c" * 64,
+            ),
+            _ref("qa/changes/CH-DEMO-001/preparation/context.json"),
+        ),
         case_refs=(_ref("qa/changes/CH-DEMO-001/cases/system/case.yaml"),),
         review_ref=_ref("qa/changes/CH-DEMO-001/review/case-review.json"),
     )
     payload = valid_product_input(
-        selected_test_families=("api",),
+        candidate_test_families=("api",),
         case_delta_paths=("qa/changes/CH-DEMO-001/cases/system/case.yaml",),
         capability_leafs=("auth.session",),
     )
-    state = {**payload, "coverage_epoch": 1, "reviewed_case": reviewed.model_dump(mode="json")}
+    state = {
+        **payload,
+        "coverage_epoch": 1,
+        "plan_digest": _PLAN_DIGEST,
+        "plan_ref": reviewed.plan_ref.model_dump(mode="json"),
+        "selected_test_families": ["api"],
+        "reviewed_case": reviewed.model_dump(mode="json"),
+    }
     adapted = adapt_execute_tail_input(state, standalone=False)  # type: ignore[arg-type]
     assert adapted["coverage_epoch"] == 1
     assert adapted["reviewed_case"] == reviewed.model_dump(mode="json")

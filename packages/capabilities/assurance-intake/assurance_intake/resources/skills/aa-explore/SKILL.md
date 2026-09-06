@@ -164,13 +164,18 @@ Move actually-read items from `not_inspected` to `available`:
 
 Read `context.json`, requirement text, **and source code evidence collected in Step 3**. Produce `exploration.json` only.
 
+Also read the candidate test families and authenticated goal-source identities from
+the graph input. Candidates bound what the deterministic resolver may choose after
+Explore; they do not state the selected families and must not suppress applicable
+business obligations.
+
 ### LLM Hard Rules
 
 1. All numbers, `case_id`, `issue_id`, module names **must** come from `context.json` fields (`evidence[]`, `impact.*`, `historical_issues[]`, `case_signals[]`) **or from source code evidence (SC-* IDs) collected in Step 3**.
 2. Every `priority_hint` / watchlist item **must** reference ≥1 evidence ID (`context.evidence[].id` or Step 3 `SC-*` ID) via `evidence_ids[]`.
 3. No `evidence_ids` → item MUST be `confidence: low`. Do not generate `priority_hint`/watchlist items with no evidence.
 4. `case_design_guidance` is an **evidence-anchored channel** — never write case files. `priority_hints` is the **sole channel for risk-area signals** (there is no separate `hotspots` array — every `priority_hint` carries its own `confidence`, following the same §5.7 rules as watchlist). When ALL evidence (historical AND source code) is empty, set `priority_hints`, `suggested_scenarios`, and `regression_focus` to `[]`. Do **not** fill them with generic advice — generic "at least cover" guidance belongs exclusively in `minimum_required_coverage`; degraded disclaimers belong exclusively in `executive_summary`.
-4a. `test_strategy` is the **macro plan channel** — scope / data focus / layer recommendation / approach. It is a **proposal**, not a decision: `aa-case-design` confirms or overrides it during its own clarifying questions. Never ask the user about scope/data/layer/approach as an `open_questions_for_case_design` item — that question belongs to `aa-case-design`, not explore. `test_strategy.layer_recommendation` MUST enumerate all four layers (`API`, `E2E`, `Fuzz`, `Performance`) with explicit `recommended: true|false` and `rationale`; when evidence is empty, emit all four as `recommended: false` with the evidence-limit reason and leave `scope`/`approach` unset rather than guessing.
+4a. `test_strategy` is the **macro plan channel** — scope / data focus / layer recommendation / approach. It is a proposal consumed once by the deterministic resolver, which preserves required obligations and policy within the candidate families. Case design consumes the frozen result. Never ask the user about scope/data/layer/approach as an `open_questions_for_case_design` item. `test_strategy.layer_recommendation` MUST enumerate all four layers (`API`, `E2E`, `Fuzz`, `Performance`) with explicit `recommended: true|false` and `rationale`; when evidence is empty, emit all four as `recommended: false` with the evidence-limit reason and leave `scope`/`approach` unset rather than guessing. Keep applicable required obligations even when their layer is not recommended.
 5. Respect `parse_confidence_cap` on evidence — do not exceed cap in item confidence. All `source: "source_code"` evidence has cap `medium`; do not assign `high` confidence to any item backed only by SC-* evidence.
 6. Use `evidence[]` IDs only — do not use unstable path expressions like `context.test_health[menus].pass_rate`.
 7. If `context.staleness.stale == true` → cap all confidence at `medium`; add staleness disclaimer to Executive Summary.
@@ -187,7 +192,7 @@ Read `context.json`, requirement text, **and source code evidence collected in S
 10a. **`priority_hints` vs `watchlist` (deciding which channel):** use `watchlist` when the risk item maps cleanly to one of the 8 case-design clarifying categories (`maps_to_clarifying_categories`) AND you want `aa-case-reviewer`'s downstream gate to enforce disposition (high-confidence watchlist items must appear in `proposal.md` as `adopted`/`override`). Use `priority_hints` for everything else — general risk-area signals, code-structure-only findings, or items that don't need a hard reviewer gate. When in doubt, prefer `priority_hints` (lighter-weight, no enforced gate).
 11. When producing items backed exclusively by `source: "source_code"` evidence (SC-* IDs), add `"source_basis": "code_structure_only"` to each such `case_design_guidance` item, and note in `executive_summary` that results are derived from code structure analysis with no historical execution data.
 12. `open_questions_for_case_design` items are advisory draft only in Step 4. Set `status: "unanswered"` and leave `answer`, `answer_text`, `assertion_intent`, `answered_via`, and `deferred_reason` as `null`; they are resolved in Step 5 according to `run_context.interaction_mode`.
-13. Every `open_questions_for_case_design` item MUST set `pitfall_ref` to the guidance id it resolves (`PH-*` or `WL-*` preferred; `SC-*` only when no PH/WL exists yet). Each item asks: should we ignore the assertion for this discovered pitfall, or what should it assert (known-bug behavior vs ideal behavior). Do **not** generate open_questions about module confirmation, change type, test types, data needs, or target selection/depth — those macro decisions belong exclusively in `test_strategy` for `aa-case-design` to resolve. After Step 5, the answer MUST be propagated into the linked `priority_hint` / `watchlist` / `suggested_scenario` per the reconciliation table — an answered OQ must never contradict its linked guidance item.
+13. Every `open_questions_for_case_design` item MUST set `pitfall_ref` to the guidance id it resolves (`PH-*` or `WL-*` preferred; `SC-*` only when no PH/WL exists yet). Each item asks: should we ignore the assertion for this discovered pitfall, or what should it assert (known-bug behavior vs ideal behavior). Do **not** generate open_questions about module confirmation, change type, test types, data needs, or target selection/depth — those proposals belong exclusively in `test_strategy`. After Step 5, the answer MUST be propagated into the linked `priority_hint` / `watchlist` / `suggested_scenario` per the reconciliation table — an answered OQ must never contradict its linked guidance item.
 14. If a `confidence: low` or `confidence: medium` guidance item already contains an assertion direction, it MUST have a linked `open_question` and must not bypass Step 5 resolution. `validate the explore advisory artifact` enforces this.
 15. `context_ref` is a locked artifact-local reference. Set it to the exact string
     `"explore/context.json"`. Do not expand it to
@@ -270,7 +275,7 @@ Layer recommendation triggers:
 | Fuzz | Endpoints accept user-input schemas (create/update bodies, query parsers, file/import input) |
 | Performance | A high-frequency, core, or heavy-query path is identified in scope |
 
-Silent omission of a layer is invalid. If evidence is insufficient to recommend a layer, include it as `recommended: false` with the reason. These are advisory recommendations only — `aa-case-design` still owns the user-facing test-type decision and must offer Fuzz/Performance opt-in regardless of what is recommended here.
+Silent omission of a layer is invalid. If evidence is insufficient to recommend a layer, include it as `recommended: false` with the reason. Normally decline non-candidate families. The deterministic resolver freezes the family set before Case design; recommendations cannot remove required obligations, expand candidates, or authorize later family changes.
 
 ### Required degraded-output metadata
 
@@ -310,30 +315,34 @@ Three buckets; populate dynamically for every change, do **not** copy-paste the 
 
 #### minimum_required_coverage — derivation rules
 
-Generate from the **module's domain shape** (CRUD operations + tree/hierarchy if applicable + RBAC/auth + negative/integrity), not from a fixed literal list. The four sub-arrays are:
+Generate applicable obligations from the **module's domain shape** (CRUD operations + tree/hierarchy if applicable + RBAC/auth + negative/integrity), the requirement, and authenticated catalog/data knowledge. Populate these four sub-arrays, using `[]` for a category with no applicable obligations:
 
 | Sub-array | What to include |
 |-----------|----------------|
 | `api` | One entry per main API operation the module exposes (CRUD + any module-specific queries). Name in snake_case (`verb_noun`). |
-| `e2e_if_enabled` | Only if E2E is in scope; cover admin happy-path flows + role-based visibility. Omit or set `[]` if E2E is excluded. |
-| `negative` | Missing required fields, invalid foreign-key refs, boundary violations, unauthorized access. |
-| `data_integrity` | Consistency invariants specific to this module (tree consistency, sort order, join-table consistency). |
+| `e2e` | Every applicable business-required user journey, using an exact key from authenticated data knowledge's `journeys`. A `recommended: false` E2E row must not erase a required journey. |
+| `negative` | Exact authenticated capability-catalog leaf keys for required-field, foreign-key, boundary, or authorization obligations. Do not invent scenario names as keys. |
+| `data_integrity` | Exact authenticated capability-catalog leaf keys for consistency invariants, such as hierarchy, ordering, or relationship constraints. Do not invent scenario names as keys. |
 
-*Example (menu-management):*
+Resolve conditional requiredness/applicability from requirement and authenticated policy/data evidence before finalizing. Write resolved required E2E journeys under `e2e`, regardless of the recommendation or candidate family set. An unresolved condition blocks plan freezing; do not turn it into `required: false`, erase it, or use a family recommendation as its condition. The legacy `e2e_if_enabled` category may be absent or `[]`; non-empty entries are unresolved and rejected.
+
+An entry is either a canonical non-empty key string (required by default) or a closed object with only `id`, `key`, `category`, `required`, and `layer`. `category`, if present, must match its containing sub-array. `layer` defaults to `e2e` for `e2e` and `api` for the other categories; use `both` only when both kinds of evidence are required. Resolve `required` to a boolean using the evidence above. Keep IDs and keys unique across all categories. If a required closed key is unavailable, report the unresolved obligation instead of inventing a key or silently omitting it.
+
+*Example (menu-management, only when these exact catalog leaves and journey keys are authenticated):*
 ```json
 "minimum_required_coverage": {
   "api": ["create_menu", "list_menu_tree", "get_menu_detail",
-          "update_menu", "delete_menu", "unauthorized_access"],
-  "e2e_if_enabled": ["admin_can_enter_menu_management",
-                     "admin_creates_menu_and_sees_navigation",
-                     "role_based_menu_visibility",
-                     "non_admin_cannot_access_menu_management"],
-  "negative": ["missing_required_fields", "invalid_parent_id",
-               "delete_parent_menu_with_children",
-               "unauthorized_menu_management_api_access"],
-  "data_integrity": ["parent_child_tree_consistency",
-                     "sort_order_consistency",
-                     "role_menu_relation_consistency"]
+          "update_menu", "delete_menu"],
+  "e2e": ["admin_can_enter_menu_management",
+          "admin_creates_menu_and_sees_navigation",
+          "role_based_menu_visibility",
+          "non_admin_cannot_access_menu_management"],
+  "negative": ["entities.menu.constraints.name_required",
+               "entities.menu.constraints.parent_exists",
+               "auth.menu.manage"],
+  "data_integrity": ["entities.menu.constraints.parent_child_tree",
+                     "entities.menu.constraints.sort_order",
+                     "entities.menu.constraints.role_relation"]
 }
 ```
 
