@@ -11,6 +11,7 @@ from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
+from assurance_execution.contracts.verification import ExecutionTaskOutputV1
 
 _EXECUTOR = "assurance-v1-executor"
 _RETRY = AttemptRetryPolicy(max_attempts=1)
@@ -67,7 +68,28 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {base: _paths(*outputs) for base, _skill, _input, outputs in _JOBS}
 )
-TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType({})
+TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
+    {
+        f"assurance.execution.task.{base}.v1": TaskAttemptContract(
+            contract_id=f"assurance.execution.task.{base}.v1",
+            owner_id="assurance.execution",
+            handler_id="assurance.execution.verified-attempt",
+            input_model=ExecutionPrepareInputV1,
+            output_model=ExecutionTaskOutputV1,
+            resources=ResourceClaimTemplate(
+                parameters={"change_id": "/change_id"},
+                reads=("qa",),
+                # The explicit result leaf preserves the legacy finalize phase claim.
+                writes=_paths(".staging/execution", "execution", f"execution/{base}-result.json"),
+            ),
+            retry=_RETRY,
+            # Covers all three legacy host phases, each bounded at 3600 seconds.
+            timeout=AttemptTimeoutPolicy(seconds=10800),
+            validators=(),
+        )
+        for base in ("execute", "run")
+    }
+)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
@@ -78,7 +100,7 @@ def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:
                     contract_id=contract.contract_id,
                     digest=canonical_digest(cast(JSONValue, contract.canonical_projection())),
                 )
-                for contract in AGENT_JOB_CONTRACTS.values()
+                for contract in (*AGENT_JOB_CONTRACTS.values(), *TASK_ATTEMPT_CONTRACTS.values())
             ),
             key=lambda item: item.contract_id,
         )

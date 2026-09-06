@@ -421,8 +421,9 @@ def check_compile_ok(
         raise SystemExit(f"14 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
     if len(contracts) != 34:
         raise SystemExit(f"34 Agent contracts expected, found {len(contracts)}")
-    if len(contracts) + len(tasks) != 48:
-        raise SystemExit(f"48 Attempt contracts expected, found {len(contracts) + len(tasks)}")
+    expected_contract_ids = set(contracts) | {task.contract_id for task in tasks.values()}
+    if set(graph_manifest["attempt_contract_digests"]) != expected_contract_ids:
+        raise SystemExit("Attempt contracts must match the exact installed catalog")
     if not callable(runtime_bindings_from_composition):
         raise SystemExit("runtime_bindings_from_composition is missing")
     if not callable(raw_agent_runtime_binding_rows):

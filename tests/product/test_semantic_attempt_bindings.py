@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from assurance_product.agent_contracts import all_semantic_contract_ids
+
 import asyncio
 import inspect
 from pathlib import Path
@@ -44,7 +46,7 @@ def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) ->
 
     # The two Intake plan Tasks enter the live registry when Task 11 wires their
     # semantic nodes into the public graphs.
-    assert len(runtime_registry) == 48
+    assert set(runtime_registry) == all_semantic_contract_ids()
     assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 34
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
@@ -72,7 +74,7 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 48
+    assert set(composition.semantic_attempt_contracts) == all_semantic_contract_ids()
     assert len(AGENT_EXECUTION_CONTRACTS) == 34
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
@@ -126,7 +128,7 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 48
+    assert set(resolved) == all_semantic_contract_ids()
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
@@ -173,14 +175,18 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
     assert len(agents) == 34
-    assert len(tasks) == 14
+    assert {task.contract_id for task in tasks.values()} == all_semantic_contract_ids() - set(agents)
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
     for contract_id in agents:
         assert isinstance(resolved[contract_id].executor, ResolvedRawAgentExecutor)
     for contract_id in task_ids:
         assert not isinstance(resolved[contract_id].executor, ResolvedRawAgentExecutor)
-        assert type(resolved[contract_id].executor).__name__ == "DeterministicTaskExecutor"
+        assert type(resolved[contract_id].executor).__name__ == (
+            "ProfiledExecutionExecutor"
+            if contract_id in {"assurance.execution.task.execute.v1", "assurance.execution.task.run.v1"}
+            else "DeterministicTaskExecutor"
+        )
 
 
 @pytest.mark.parametrize(

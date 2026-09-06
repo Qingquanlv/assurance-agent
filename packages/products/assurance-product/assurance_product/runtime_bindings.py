@@ -722,6 +722,35 @@ def _resolve_task_contract(
     composition: FrozenComposition,
     validation_context: Mapping[str, object],
 ) -> ResolvedAttemptContract[Any, Any]:
+    from assurance_product.verification_execution import (
+        FACADE_DELEGATES,
+        ProfiledExecutionExecutor,
+        verification_configuration,
+    )
+
+    if contract.contract_id in FACADE_DELEGATES:
+        config, digest = verification_configuration(composition)
+        agent_id = FACADE_DELEGATES[contract.contract_id]
+        agent = all_feature_agent_contracts()[agent_id]
+        legacy = (
+            _resolve_agent_contract(
+                agent,
+                runtime_bindings_from_composition(composition)[agent_id],
+                composition,
+                _adapter_binding_from_composition(composition),
+                validation_context,
+            ).executor
+            if config.validation_profile is None
+            else None
+        )
+        _, callable_path = _installed_handler(composition, contract.handler_id)
+        return resolve_contract(
+            contract,
+            executor=ProfiledExecutionExecutor(
+                config=config, config_digest=digest, legacy=legacy, callable_path=callable_path
+            ),
+            validation_context=validation_context,
+        )
     handler = composition.registries.capabilities.task_handlers[contract.handler_id]
     return resolve_contract(
         contract,
@@ -762,8 +791,10 @@ def boot_semantic_attempt_contracts(
             composition,
             validation_context,
         )
-    if len(resolved) != 48:
-        raise ValueError(f"semantic attempt registry must contain 48 contracts, got {len(resolved)}")
+    if set(resolved) != set(agents) | {
+        contract.contract_id for contract in all_feature_task_contracts().values()
+    }:
+        raise ValueError("semantic attempt registry does not match the exact installed catalog")
     return MappingProxyType(resolved)
 
 

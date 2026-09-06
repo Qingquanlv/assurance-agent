@@ -1,0 +1,409 @@
+{
+  "$defs": {
+    "BusinessActivation": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "root",
+            "round",
+            "trigger"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "BusinessActivation",
+      "type": "object"
+    },
+    "EvidenceArtifactRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "digest"
+      ],
+      "title": "EvidenceArtifactRefV1",
+      "type": "object"
+    },
+    "FrozenUserInputsV1": {
+      "additionalProperties": false,
+      "properties": {
+        "username": {
+          "maxLength": 20,
+          "minLength": 1,
+          "title": "Username",
+          "type": "string"
+        },
+        "email": {
+          "maxLength": 255,
+          "minLength": 3,
+          "title": "Email",
+          "type": "string"
+        },
+        "is_active": {
+          "const": true,
+          "default": true,
+          "title": "Is Active",
+          "type": "boolean"
+        },
+        "is_superuser": {
+          "const": false,
+          "default": false,
+          "title": "Is Superuser",
+          "type": "boolean"
+        },
+        "dept_id": {
+          "default": null,
+          "title": "Dept Id",
+          "type": "null"
+        }
+      },
+      "required": [
+        "username",
+        "email"
+      ],
+      "title": "FrozenUserInputsV1",
+      "type": "object"
+    },
+    "GenerationCycleResultV1": {
+      "additionalProperties": false,
+      "properties": {
+        "change_id": {
+          "minLength": 1,
+          "title": "Change Id",
+          "type": "string"
+        },
+        "coverage_epoch": {
+          "minimum": 0,
+          "title": "Coverage Epoch",
+          "type": "integer"
+        },
+        "reviewed_case": {
+          "$ref": "#/$defs/ReviewedCaseV1"
+        },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
+          "type": "string"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "mapping_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "source_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "plan_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Plan Refs",
+          "type": "array"
+        },
+        "case_execution_plan_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceArtifactRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "case_execution_plan_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Case Execution Plan Digest"
+        }
+      },
+      "required": [
+        "change_id",
+        "coverage_epoch",
+        "reviewed_case",
+        "plan_digest",
+        "plan_ref",
+        "mapping_ref",
+        "source_refs",
+        "plan_refs"
+      ],
+      "title": "GenerationCycleResultV1",
+      "type": "object"
+    },
+    "ReviewedCaseV1": {
+      "additionalProperties": false,
+      "properties": {
+        "change_id": {
+          "minLength": 1,
+          "title": "Change Id",
+          "type": "string"
+        },
+        "coverage_epoch": {
+          "minimum": 0,
+          "title": "Coverage Epoch",
+          "type": "integer"
+        },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
+          "type": "string"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "preparation_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Preparation Refs",
+          "type": "array"
+        },
+        "case_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Case Refs",
+          "type": "array"
+        },
+        "review_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        }
+      },
+      "required": [
+        "change_id",
+        "coverage_epoch",
+        "plan_digest",
+        "plan_ref",
+        "preparation_refs",
+        "case_refs",
+        "review_ref"
+      ],
+      "title": "ReviewedCaseV1",
+      "type": "object"
+    },
+    "VerifiedExecutionPrepareV1": {
+      "additionalProperties": false,
+      "description": "Host-owned runtime inputs that opt one prepare into verified mode.",
+      "properties": {
+        "validation_profile": {
+          "enum": [
+            "api_db.v1",
+            "api_db_trace.v1"
+          ],
+          "title": "Validation Profile",
+          "type": "string"
+        },
+        "case_execution_plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "nodeid": {
+          "minLength": 1,
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "business_activation": {
+          "$ref": "#/$defs/BusinessActivation"
+        },
+        "sut_instance_id": {
+          "minLength": 1,
+          "title": "Sut Instance Id",
+          "type": "string"
+        },
+        "sut_base_url": {
+          "pattern": "^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$",
+          "title": "Sut Base Url",
+          "type": "string"
+        },
+        "managed_sqlite_path": {
+          "minLength": 1,
+          "title": "Managed Sqlite Path",
+          "type": "string"
+        },
+        "observer_sqlite_path": {
+          "minLength": 1,
+          "title": "Observer Sqlite Path",
+          "type": "string"
+        },
+        "user_inputs": {
+          "$ref": "#/$defs/FrozenUserInputsV1"
+        },
+        "managed_sut_prepare_receipt_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "managed_sut_start_receipt_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "managed_sut_authority_handle": {
+          "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$",
+          "title": "Managed Sut Authority Handle",
+          "type": "string"
+        }
+      },
+      "required": [
+        "validation_profile",
+        "case_execution_plan_ref",
+        "nodeid",
+        "business_activation",
+        "sut_instance_id",
+        "sut_base_url",
+        "managed_sqlite_path",
+        "observer_sqlite_path",
+        "user_inputs",
+        "managed_sut_prepare_receipt_ref",
+        "managed_sut_start_receipt_ref",
+        "managed_sut_authority_handle"
+      ],
+      "title": "VerifiedExecutionPrepareV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Root data from which prepare locks the executable test selection.",
+  "properties": {
+    "validation_profile": {
+      "anyOf": [
+        {
+          "enum": [
+            "api_db.v1",
+            "api_db_trace.v1"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Validation Profile"
+    },
+    "verification_config_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Verification Config Digest"
+    },
+    "change_id": {
+      "minLength": 1,
+      "title": "Change Id",
+      "type": "string"
+    },
+    "plan_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Plan Digest",
+      "type": "string"
+    },
+    "plan_ref": {
+      "$ref": "#/$defs/EvidenceArtifactRefV1"
+    },
+    "selected_test_families": {
+      "items": {
+        "enum": [
+          "api",
+          "e2e",
+          "fuzz",
+          "performance"
+        ],
+        "type": "string"
+      },
+      "title": "Selected Test Families",
+      "type": "array"
+    },
+    "capability_leafs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Capability Leafs",
+      "type": "array"
+    },
+    "coverage_epoch": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Coverage Epoch",
+      "type": "integer"
+    },
+    "repair_round": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Repair Round",
+      "type": "integer"
+    },
+    "generation_result": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GenerationCycleResultV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verification": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/VerifiedExecutionPrepareV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "change_id",
+    "plan_digest",
+    "plan_ref",
+    "selected_test_families",
+    "capability_leafs"
+  ],
+  "title": "ExecutionPrepareInputV1",
+  "type": "object"
+}

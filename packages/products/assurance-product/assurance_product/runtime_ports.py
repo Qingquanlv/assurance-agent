@@ -309,7 +309,7 @@ class ProductRuntimePorts:
                 invocation_root=workspace.paths.change_root,
             )
             network = _preflight_selected_root(typed_composition, auth, reachable)
-            expected_allow = any(".agent." in contract_id for contract_id in reachable)
+            expected_allow = _requires_opencode(typed_composition, reachable)
             if network.allow_opencode != expected_allow:
                 raise ValueError("network policy does not match selected root")
             kernel = AssuranceAttemptKernel(
@@ -572,12 +572,29 @@ def _preflight_selected_root(
     reachable: Sequence[str],
 ) -> NetworkPolicy:
     semantic = getattr(composition, "semantic_attempt_contracts", {})
-    if len(semantic) != 48:
-        raise ValueError("composition must resolve all 46 semantic contracts")
+    from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
+    from assurance_product.verification_execution import (
+        FACADE_DELEGATES,
+        verification_configuration,
+        preflight_verification,
+    )
+
+    if set(semantic) != set(all_feature_agent_contracts()) | {
+        contract.contract_id for contract in all_feature_task_contracts().values()
+    }:
+        raise ValueError("composition must resolve the exact installed semantic contract catalog")
     missing_reachable = tuple(contract_id for contract_id in reachable if contract_id not in semantic)
     if missing_reachable:
         raise ValueError(f"missing required port for contract {missing_reachable[0]}")
-    agents = tuple(contract_id for contract_id in reachable if ".agent." in contract_id)
+    config, _ = verification_configuration(composition)
+    expanded = set(reachable)
+    selected_facades = expanded & set(FACADE_DELEGATES)
+    if selected_facades:
+        if config.validation_profile is None:
+            expanded.update(FACADE_DELEGATES[item] for item in selected_facades)
+        else:
+            preflight_verification(config, authorization)
+    agents = tuple(sorted(expanded & set(all_feature_agent_contracts())))
     policy = NetworkPolicy(allow_opencode=bool(agents))
     if not agents:
         return policy
@@ -596,3 +613,14 @@ def _preflight_selected_root(
 
 
 __all__ = ["AuthorizedSecretResolver", "NetworkPolicy", "ProductRuntimePorts", "ProductionObserverError"]
+
+
+def _requires_opencode(composition: FrozenComposition, reachable: Sequence[str]) -> bool:
+    from assurance_product.agent_contracts import all_feature_agent_contracts
+    from assurance_product.verification_execution import FACADE_DELEGATES, verification_configuration
+
+    config, _ = verification_configuration(composition)
+    expanded = set(reachable)
+    if config.validation_profile is None:
+        expanded.update(FACADE_DELEGATES[item] for item in reachable if item in FACADE_DELEGATES)
+    return bool(expanded & set(all_feature_agent_contracts()))

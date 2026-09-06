@@ -118,6 +118,8 @@ class SelectInputV1(FrozenModel):
 class ExecutionPrepareInputV1(FrozenModel):
     """Root data from which prepare locks the executable test selection."""
 
+    validation_profile: ValidationProfile | None = None
+    verification_config_digest: str | None = Field(default=None, pattern=_SHA256)
     change_id: str = Field(min_length=1)
     plan_digest: str = Field(pattern=_SHA256)
     plan_ref: EvidenceArtifactRefV1

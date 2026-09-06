@@ -227,6 +227,11 @@ class ProductStateDocument(FrozenModel):
 
 
 class ProductState(CheckpointBridgeState, total=False):
+    validation_profile: str | None
+    verification_config_digest: str | None
+    verification_policy: dict[str, str] | None
+    verification: dict[str, object]
+
     schema_version: str
     change_id: str
     requirement: str

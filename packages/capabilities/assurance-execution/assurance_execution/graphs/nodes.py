@@ -27,6 +27,8 @@ _SKILL_FIELDS = (
     "repair_round",
     "generation_result",
     "verification",
+    "validation_profile",
+    "verification_config_digest",
 )
 
 

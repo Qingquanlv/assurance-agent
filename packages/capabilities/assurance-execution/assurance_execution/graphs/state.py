@@ -20,6 +20,8 @@ class ExecutionState(CheckpointBridgeState, total=False):
     coverage_epoch: int
     repair_round: int
     generation_result: dict[str, object]
+    validation_profile: str | None
+    verification_config_digest: str | None
     verification: dict[str, object]
     execution_result: dict[str, object]
     change_id: str

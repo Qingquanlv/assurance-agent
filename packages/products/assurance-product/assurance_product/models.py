@@ -191,7 +191,23 @@ class OpenCodeBindingV1(FrozenModel):
         return value
 
 
+class VerificationRunnerConfigV1(FrozenModel):
+    qualification_digest: str = Field(pattern=_SHA256)
+    source_root: str = Field(min_length=1)
+    qualification_path: str = Field(min_length=1)
+
+
+class VerificationHostConfigV1(FrozenModel):
+    runner: VerificationRunnerConfigV1 | None = None
+    managed_sut_authority_handle: str | None = None
+    credential_handle: str | None = None
+    collector_readiness_handle: str | None = None
+
+
 class DeploymentBindingsV1(FrozenModel):
+    validation_profile: Literal["api_db.v1", "api_db_trace.v1"] | None = None
+    verification_host: VerificationHostConfigV1 = Field(default_factory=VerificationHostConfigV1)
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["1"]
     runtime_plugin_id: Literal["runtime.opencode"]
@@ -425,6 +441,10 @@ class ArtifactRefV1(FrozenModel):
 
 
 class ProductInputV1(FrozenModel):
+    validation_profile: Literal["api_db.v1", "api_db_trace.v1"] | None = None
+    verification_config_digest: str | None = Field(default=None, pattern=_SHA256)
+    verification_policy: ResourceRefV1 | None = None
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["1"]
     change_id: str
@@ -532,6 +552,16 @@ def validate_entrypoint_families(
 
 
 def authenticate_product_input_resources(value: ProductInputV1, composition: object) -> None:
+    from assurance_product.verification_execution import verification_configuration
+
+    config, digest = verification_configuration(composition)
+    if value.validation_profile != config.validation_profile:
+        raise ValueError("validation profile disagrees with authenticated deployment")
+    if value.validation_profile is not None:
+        if value.verification_config_digest != digest or value.verification_policy is None:
+            raise ValueError("verification configuration digest or policy disagrees with deployment")
+    elif value.verification_config_digest is not None or value.verification_policy is not None:
+        raise ValueError("legacy input cannot carry verification configuration")
     resources = getattr(getattr(getattr(composition, "registries", None), "resources", None), "entries", None)
     if not isinstance(resources, Mapping):
         raise ValueError("composition resource registry is unavailable")
@@ -539,6 +569,7 @@ def authenticate_product_input_resources(value: ProductInputV1, composition: obj
         value.capability_catalog,
         value.product_policy,
         value.data_knowledge,
+        *((value.verification_policy,) if value.verification_policy is not None else ()),
     )
     seen: set[str] = set()
     for ref in refs:
@@ -551,6 +582,15 @@ def authenticate_product_input_resources(value: ProductInputV1, composition: obj
         digest = getattr(entry, "sha256", None)
         if digest != ref.sha256:
             raise ValueError(f"resource digest drifted: {ref.resource_id}")
+    if value.verification_policy is not None:
+        if value.verification_policy.resource_id != "assurance.product.configuration.verification-policy":
+            raise ValueError("verification policy resource identity drifted")
+        policy_entry = resources[value.verification_policy.resource_id]
+        import yaml
+
+        policy = yaml.safe_load(policy_entry.content)
+        if not isinstance(policy, Mapping) or policy.get("validation_profile") != value.validation_profile:
+            raise ValueError("verification policy profile disagrees with authenticated deployment")
     catalog_entry = resources.get(value.capability_catalog.resource_id)
     if catalog_entry is None:
         raise ValueError("capability catalog is not registered")

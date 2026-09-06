@@ -116,6 +116,9 @@ def adapt_execution(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
     feature_input = {
         "change_id": payload.change_id,
+        "validation_profile": payload.validation_profile,
+        "verification_config_digest": payload.verification_config_digest,
+        "verification": state.get("verification"),
         "plan_digest": state.get("plan_digest"),
         "plan_ref": state.get("plan_ref"),
         "capability_leafs": list(payload.capability_leafs),
@@ -146,6 +149,9 @@ def adapt_rerun(state: ProductState) -> dict[str, object]:
     repair_round = int(state.get("healing_rounds_used") or state.get("rounds_used") or 0)
     feature_input = {
         "change_id": payload.change_id,
+        "validation_profile": payload.validation_profile,
+        "verification_config_digest": payload.verification_config_digest,
+        "verification": state.get("verification"),
         "plan_digest": state.get("plan_digest"),
         "plan_ref": state.get("plan_ref"),
         "capability_leafs": list(payload.capability_leafs),

@@ -646,6 +646,16 @@ def _resource_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, objec
             "content": bindings.adapter_binding.model_dump(mode="json"),
         }
     ]
+    documents.append(
+        {
+            "resource_id": "assurance.product.agent.verification-execution",
+            "media_type": "application/json",
+            "content": {
+                "validation_profile": bindings.validation_profile,
+                "host": bindings.verification_host.model_dump(mode="json"),
+            },
+        }
+    )
     for resource_id, profile in sorted(bindings.permission_profiles.items()):
         documents.append(
             {

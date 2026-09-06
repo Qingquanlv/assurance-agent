@@ -10,6 +10,7 @@ from assurance_execution.operations.agent_skills import (
     RunPrepareHandler,
 )
 from assurance_execution.operations.normalize import NormalizeHandler
+from assurance_execution.operations.verified_attempt import VerifiedAttemptHandler
 from assurance_execution.operations.runner import (
     ConfinedExecutionProcessHost,
     ExecutionProcessHost,
@@ -51,6 +52,7 @@ def execution_handlers(
             "assurance.execution.run.finalize": RunFinalizeHandler(),
             "assurance.execution.run.prepare": RunPrepareHandler(),
             "assurance.execution.select": SelectHandler(),
+            "assurance.execution.verified-attempt": VerifiedAttemptHandler(),
         }
     )
 

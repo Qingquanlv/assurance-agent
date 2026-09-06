@@ -18,6 +18,9 @@
     "budgets"
   ],
   "properties": {
+    "validation_profile": { "enum": [null, "api_db.v1", "api_db_trace.v1"], "default": null },
+    "verification_config_digest": { "anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}], "default": null },
+    "verification_policy": { "anyOf": [{"$ref": "#/$defs/resourceRef"}, {"type": "null"}], "default": null },
     "schema_version": { "const": "1" },
     "change_id": { "type": "string", "minLength": 1, "pattern": "^\\S+$" },
     "requirement": { "type": "string", "minLength": 1 },

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, RootModel, field_validator, model_validator
 
 from graph_engine.attempts import AttemptKey, BusinessActivation
 from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.execution_plan import ValidationProfile
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 _SHA256 = r"^[0-9a-f]{64}$"
@@ -274,3 +275,7 @@ __all__ = [
     "VerifiedProcessLimitsV1",
     "VerifiedProcessReceiptV1",
 ]
+
+
+class ExecutionTaskOutputV1(RootModel[ExecutionEvidenceV1 | VerificationEvidenceV1]):
+    """Fixed facade schema, shared by legacy and verified delegates."""

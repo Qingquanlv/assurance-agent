@@ -7,6 +7,7 @@ from agent_runtime_contracts import AgentExecutionContract
 from graph_engine.attempts import TaskAttemptContract
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOB_CONTRACTS
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS as EXECUTION_TASK_ATTEMPT_CONTRACTS
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_AGENT_JOB_CONTRACTS
 from assurance_generation.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS as GENERATION_TASK_ATTEMPT_CONTRACTS,
@@ -46,6 +47,7 @@ AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyTy
 FEATURE_TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract] = MappingProxyType(
     {
         **INTAKE_TASK_ATTEMPT_CONTRACTS,
+        **EXECUTION_TASK_ATTEMPT_CONTRACTS,
         **IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
         **GENERATION_TASK_ATTEMPT_CONTRACTS,
         **QUALITY_TASK_ATTEMPT_CONTRACTS,
@@ -74,3 +76,9 @@ __all__ = [
     "all_feature_task_contracts",
     "is_agent_contract",
 ]
+
+
+def all_semantic_contract_ids() -> frozenset[str]:
+    return frozenset(AGENT_EXECUTION_CONTRACTS) | frozenset(
+        contract.contract_id for contract in FEATURE_TASK_ATTEMPT_CONTRACTS.values()
+    )

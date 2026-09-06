@@ -30,6 +30,9 @@ _FEATURE_STATUS_TO_PRODUCT: Mapping[str, ProductStatus] = {
 }
 
 _INPUT_KEYS = (
+    "validation_profile",
+    "verification_config_digest",
+    "verification_policy",
     "schema_version",
     "change_id",
     "requirement",
@@ -101,6 +104,16 @@ def adapt_prepare(state: ProductState) -> dict[str, object]:
         "budgets": payload.budgets.model_dump(mode="json"),
         "family_policy": state.get("family_policy"),
     }
+    if payload.validation_profile is not None:
+        feature_input.update(
+            {
+                "validation_profile": payload.validation_profile,
+                "verification_config_digest": payload.verification_config_digest,
+                "verification_policy": payload.verification_policy.model_dump(mode="json")
+                if payload.verification_policy
+                else None,
+            }
+        )
     return {**feature_input, "feature_input": feature_input}
 
 
@@ -119,6 +132,16 @@ def adapt_load_plan(state: ProductState) -> dict[str, object]:
         "budgets": payload.budgets.model_dump(mode="json"),
         "preparation_refs": [item.model_dump(mode="json") for item in payload.artifacts],
     }
+    if payload.validation_profile is not None:
+        feature_input.update(
+            {
+                "validation_profile": payload.validation_profile,
+                "verification_config_digest": payload.verification_config_digest,
+                "verification_policy": payload.verification_policy.model_dump(mode="json")
+                if payload.verification_policy
+                else None,
+            }
+        )
     return {**feature_input, "feature_input": feature_input}
 
 

@@ -8,6 +8,14 @@
       {
         "contract_id": "assurance.execution.agent.run.v1",
         "digest": "b3344c11b11abf3c472df925781aab869ed5e86d1b6da8252f184f888ec0d891"
+      },
+      {
+        "contract_id": "assurance.execution.task.execute.v1",
+        "digest": "e96a8090e3678308b7f29743f62873db3a9b1294af50171f9e1f61e49ae93c6a"
+      },
+      {
+        "contract_id": "assurance.execution.task.run.v1",
+        "digest": "b01931a502f1ee2920cd2614a9de767693285d9dd812672be2084855582a15c4"
       }
     ],
     "bindings": [],
@@ -41,6 +49,8 @@
       "assurance.execution.schema.execution-evidence.v1",
       "assurance.execution.schema.execution-manifest.v1",
       "assurance.execution.schema.selected-targets.v1",
+      "assurance.execution.schema.task-input.v1",
+      "assurance.execution.schema.task-output.v1",
       "assurance.execution.workflow.execute.input.v1",
       "assurance.execution.workflow.execute.output.v1",
       "assurance.execution.workflow.rerun.input.v1",
@@ -65,7 +75,8 @@
       "assurance.execution.run-tests-and-collect-pr-metrics",
       "assurance.execution.run.finalize",
       "assurance.execution.run.prepare",
-      "assurance.execution.select"
+      "assurance.execution.select",
+      "assurance.execution.verified-attempt"
     ]
   },
   "kind": "plugin",

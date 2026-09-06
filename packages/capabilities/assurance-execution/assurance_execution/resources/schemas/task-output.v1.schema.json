@@ -1,0 +1,529 @@
+{
+  "$defs": {
+    "ClosedMappingEntryV1": {
+      "additionalProperties": false,
+      "description": "One selected test bound to an existing case and typed capability leaf.",
+      "properties": {
+        "test": {
+          "minLength": 1,
+          "title": "Test",
+          "type": "string"
+        },
+        "case_id": {
+          "pattern": "^[A-Za-z0-9_]+$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "capability": {
+          "minLength": 1,
+          "title": "Capability",
+          "type": "string"
+        },
+        "layer": {
+          "enum": [
+            "api",
+            "e2e",
+            "fuzz",
+            "performance"
+          ],
+          "title": "Layer",
+          "type": "string"
+        }
+      },
+      "required": [
+        "test",
+        "case_id",
+        "capability",
+        "layer"
+      ],
+      "title": "ClosedMappingEntryV1",
+      "type": "object"
+    },
+    "ClosedMappingV1": {
+      "additionalProperties": false,
+      "description": "Closed selected-test set: every selected path appears in mappings exactly once.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selected": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Selected",
+          "type": "array"
+        },
+        "mappings": {
+          "items": {
+            "$ref": "#/$defs/ClosedMappingEntryV1"
+          },
+          "title": "Mappings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "selected",
+        "mappings"
+      ],
+      "title": "ClosedMappingV1",
+      "type": "object"
+    },
+    "EvidenceArtifactRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "digest"
+      ],
+      "title": "EvidenceArtifactRefV1",
+      "type": "object"
+    },
+    "EvidenceCompletionV1": {
+      "additionalProperties": false,
+      "properties": {
+        "state": {
+          "enum": [
+            "complete",
+            "error",
+            "timeout",
+            "not_required"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "EvidenceCompletionV1",
+      "type": "object"
+    },
+    "ExecutionCommandReceiptV1": {
+      "additionalProperties": false,
+      "description": "Facts from one selected family's confined execution spawn.",
+      "properties": {
+        "family": {
+          "enum": [
+            "api",
+            "e2e",
+            "fuzz",
+            "performance"
+          ],
+          "title": "Family",
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Command",
+          "type": "array"
+        },
+        "exit_code": {
+          "title": "Exit Code",
+          "type": "integer"
+        },
+        "collected": {
+          "minimum": 0,
+          "title": "Collected",
+          "type": "integer"
+        },
+        "passed": {
+          "minimum": 0,
+          "title": "Passed",
+          "type": "integer"
+        },
+        "failed": {
+          "minimum": 0,
+          "title": "Failed",
+          "type": "integer"
+        },
+        "skipped": {
+          "minimum": 0,
+          "title": "Skipped",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "family",
+        "command",
+        "exit_code",
+        "collected",
+        "passed",
+        "failed",
+        "skipped"
+      ],
+      "title": "ExecutionCommandReceiptV1",
+      "type": "object"
+    },
+    "ExecutionEvidenceV1": {
+      "additionalProperties": false,
+      "description": "Committed execution facts plus Kernel-derived authority fields.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "change_id": {
+          "minLength": 1,
+          "title": "Change Id",
+          "type": "string"
+        },
+        "batch_id": {
+          "minLength": 1,
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "selected_targets": {
+          "$ref": "#/$defs/SelectedTargets"
+        },
+        "mapping": {
+          "$ref": "#/$defs/ClosedMappingV1"
+        },
+        "baseline_tree_id": {
+          "minLength": 1,
+          "title": "Baseline Tree Id",
+          "type": "string"
+        },
+        "runner_profile_digest": {
+          "minLength": 1,
+          "title": "Runner Profile Digest",
+          "type": "string"
+        },
+        "receipt": {
+          "$ref": "#/$defs/ExecutionReceiptV1"
+        },
+        "results": {
+          "items": {
+            "$ref": "#/$defs/RawTestResultV1"
+          },
+          "title": "Results",
+          "type": "array"
+        },
+        "status": {
+          "default": "passed",
+          "enum": [
+            "passed",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
+          "type": "string"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "executed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Executed At"
+        },
+        "mapping_digest": {
+          "minLength": 1,
+          "title": "Mapping Digest",
+          "type": "string"
+        },
+        "receipt_digest": {
+          "minLength": 1,
+          "title": "Receipt Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "change_id",
+        "batch_id",
+        "selected_targets",
+        "mapping",
+        "baseline_tree_id",
+        "runner_profile_digest",
+        "receipt",
+        "results",
+        "plan_digest",
+        "plan_ref",
+        "mapping_digest",
+        "receipt_digest"
+      ],
+      "title": "ExecutionEvidenceV1",
+      "type": "object"
+    },
+    "ExecutionReceiptV1": {
+      "additionalProperties": false,
+      "description": "One Agent activity containing ordered per-family command receipts.",
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/ExecutionCommandReceiptV1"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Commands",
+          "type": "array"
+        }
+      },
+      "required": [
+        "commands"
+      ],
+      "title": "ExecutionReceiptV1",
+      "type": "object"
+    },
+    "ObservationV1": {
+      "additionalProperties": false,
+      "description": "One observed runtime fact. Expected values and verdicts are deliberately absent.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "execution_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "obligation_id": {
+          "minLength": 1,
+          "title": "Obligation Id",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "observed",
+            "missing",
+            "error",
+            "timeout",
+            "skipped"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "actual": {
+          "default": null,
+          "title": "Actual"
+        },
+        "evidence_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceArtifactRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "execution_id",
+        "obligation_id",
+        "state"
+      ],
+      "title": "ObservationV1",
+      "type": "object"
+    },
+    "RawTestResultV1": {
+      "additionalProperties": false,
+      "description": "One normalized test outcome from a confined runner.",
+      "properties": {
+        "test": {
+          "minLength": 1,
+          "title": "Test",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "skipped"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "case_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9_]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Case Id"
+        }
+      },
+      "required": [
+        "test",
+        "status",
+        "duration_ms"
+      ],
+      "title": "RawTestResultV1",
+      "type": "object"
+    },
+    "SelectedTargets": {
+      "additionalProperties": false,
+      "description": "Which of the four execution layers were selected for a batch.",
+      "properties": {
+        "api": {
+          "title": "Api",
+          "type": "boolean"
+        },
+        "e2e": {
+          "title": "E2E",
+          "type": "boolean"
+        },
+        "fuzz": {
+          "title": "Fuzz",
+          "type": "boolean"
+        },
+        "performance": {
+          "title": "Performance",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "api",
+        "e2e",
+        "fuzz",
+        "performance"
+      ],
+      "title": "SelectedTargets",
+      "type": "object"
+    },
+    "VerificationEvidenceV1": {
+      "additionalProperties": false,
+      "description": "Host-collected evidence index. It carries facts, never an asserted verdict.",
+      "properties": {
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "execution_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "manifest_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Digest",
+          "type": "string"
+        },
+        "receipt_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "observations": {
+          "items": {
+            "$ref": "#/$defs/ObservationV1"
+          },
+          "title": "Observations",
+          "type": "array"
+        },
+        "host_completion": {
+          "$ref": "#/$defs/EvidenceCompletionV1"
+        },
+        "collector_completion": {
+          "$ref": "#/$defs/EvidenceCompletionV1"
+        },
+        "state": {
+          "enum": [
+            "collected",
+            "incomplete"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution_id",
+        "manifest_digest",
+        "receipt_ref",
+        "observations",
+        "host_completion",
+        "collector_completion",
+        "state"
+      ],
+      "title": "VerificationEvidenceV1",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/ExecutionEvidenceV1"
+    },
+    {
+      "$ref": "#/$defs/VerificationEvidenceV1"
+    }
+  ],
+  "description": "Fixed facade schema, shared by legacy and verified delegates.",
+  "title": "ExecutionTaskOutputV1"
+}
