@@ -40,6 +40,7 @@ _RESOURCE_PATHS = {
     "assurance.product.configuration.data-knowledge": ".aa/data-knowledge.yaml",
 }
 _POLICY_PATH = ".aa/policy.yaml"
+_VERIFICATION_POLICY_PATH = ".aa/verification-policy.yaml"
 
 
 def _read_regular_bytes(root: Path, relative: str, expected_digest: str) -> bytes:
@@ -106,6 +107,18 @@ def prepare_quality_goal(
     family_policy = TestFamilyPolicyV1.model_validate(policy.get("test_family_policy"))
     if family_policy != request.family_policy:
         raise ValueError("admitted family policy does not match authenticated policy")
+
+    if request.verification_policy is not None:
+        verification = _mapping_yaml(
+            _read_regular_bytes(
+                project_root,
+                _VERIFICATION_POLICY_PATH,
+                request.verification_policy.digest,
+            ),
+            "verification policy",
+        )
+        if verification.get("validation_profile") != request.verification_policy.validation_profile:
+            raise ValueError("validation profile does not match authenticated verification policy")
 
     source_bytes: dict[str, bytes] = {}
     for resource_id, digest in request.source_resource_digests:
@@ -197,6 +210,8 @@ def load_plan_artifact(
         raise ValueError("plan policy identity does not match loader input")
     if plan.quality_goal.source_resource_digests != request.source_resource_digests:
         raise ValueError("plan source identities do not match loader input")
+    if plan.verification_policy != request.verification_policy:
+        raise ValueError("plan verification policy identity does not match loader input")
 
     policy = _mapping_yaml(
         _read_regular_bytes(project_root, _POLICY_PATH, request.policy_digest),
@@ -214,6 +229,7 @@ def load_plan_artifact(
         exploration_ref=plan.exploration_ref,
         source_resource_digests=request.source_resource_digests,
         capability_leafs=request.capability_leafs,
+        verification_policy=request.verification_policy,
     )
     advisory, goal = prepare_quality_goal(resolve_input, project_root=project_root)
     expected = resolve_plan(

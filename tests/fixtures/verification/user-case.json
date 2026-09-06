@@ -1,0 +1,79 @@
+{
+  "schema_version": "2.0",
+  "case_id": "TC_USER_CREATE_001",
+  "revision": "1",
+  "spec_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+  "inputs": {
+    "username": "oracle_user",
+    "email": "oracle_user@example.test",
+    "is_active": true,
+    "is_superuser": false,
+    "dept_id": null
+  },
+  "assertions": [
+    {
+      "assertion_id": "api.http_status",
+      "statement": "Creating the user returns HTTP status 200.",
+      "source_id": "requirement.user.create",
+      "subject": "create.response.http_status",
+      "comparator": "eq",
+      "expected": {"kind": "literal", "value": 200}
+    },
+    {
+      "assertion_id": "api.code",
+      "statement": "Creating the user returns business code 200.",
+      "source_id": "requirement.user.create",
+      "subject": "create.response.business_code",
+      "comparator": "eq",
+      "expected": {"kind": "literal", "value": 200}
+    },
+    {
+      "assertion_id": "user.row_count",
+      "statement": "Exactly one created User row exists.",
+      "source_id": "requirement.user.create",
+      "subject": "created_user.count",
+      "comparator": "row_count_eq",
+      "expected": {"kind": "literal", "value": 1}
+    },
+    {
+      "assertion_id": "user.username",
+      "statement": "The created User stores the requested username.",
+      "source_id": "requirement.user.create",
+      "subject": "created_user.username",
+      "comparator": "eq",
+      "expected": {"kind": "input", "key": "username"}
+    },
+    {
+      "assertion_id": "user.email",
+      "statement": "The created User stores the requested email.",
+      "source_id": "requirement.user.create",
+      "subject": "created_user.email",
+      "comparator": "eq",
+      "expected": {"kind": "input", "key": "email"}
+    },
+    {
+      "assertion_id": "user.is_active",
+      "statement": "The created User remains active as requested.",
+      "source_id": "requirement.user.create",
+      "subject": "created_user.is_active",
+      "comparator": "eq",
+      "expected": {"kind": "input", "key": "is_active"}
+    },
+    {
+      "assertion_id": "user.is_superuser",
+      "statement": "The created User remains a non-superuser as requested.",
+      "source_id": "requirement.user.create",
+      "subject": "created_user.is_superuser",
+      "comparator": "eq",
+      "expected": {"kind": "input", "key": "is_superuser"}
+    },
+    {
+      "assertion_id": "user.dept_id",
+      "statement": "The created User retains the requested null department.",
+      "source_id": "requirement.user.create",
+      "subject": "created_user.dept_id",
+      "comparator": "eq",
+      "expected": {"kind": "input", "key": "dept_id"}
+    }
+  ]
+}

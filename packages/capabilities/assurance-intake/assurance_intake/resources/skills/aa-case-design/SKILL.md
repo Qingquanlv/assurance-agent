@@ -286,7 +286,10 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
      - `project/relative/product/source.py`
    ```
    List only product source files read directly during this invocation. Do not cite requirements, Explore artifacts, QA cases, tests, plans, generated files, or documentation as product source. Omitting the section, repeating it, setting `independently_read` to false, or providing an empty/non-product path list makes the proposal invalid.
-10. **Write case delta YAML** — to every exact graph-provided `case_delta_paths` path
+10. **Write case delta YAML** — to every exact graph-provided `case_delta_paths` path. When
+    `assertion_source_paths` is non-empty, also write every exact formal
+    `assertion-sources.json` sidecar. Only authenticated requirement content or reviewed
+    input may authorize expected values; product source and `decision=accepted` alone may not.
 11. **Self-review case delta YAML** — validate schema; **case.yaml MUST NOT contain advisory metadata** (see below)
 12. **Hand off** — report completion; orchestrator invokes `aa-case-reviewer`
 
@@ -298,6 +301,10 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
 - `evidence_ids[]`, `adopted[]`, `override[]`, `gap[]`
 - `explore`, `advisory_input`, or Reconcile blocks
 - `test_strategy`, `pitfall_ref`, `assertion_intent`, or any `OQ-*` id
+
+Formal `assertion-sources.json` sidecars supplied through `assertion_source_paths` are the
+sole exception to this advisory-metadata prohibition. They contain only the published
+assertion-source contract and are not implementation evidence.
 
 **Only** user-approved case business fields (priority, type, assertions, automation, etc.).
 

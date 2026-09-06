@@ -89,48 +89,66 @@ def select_resolve_plan(state: Mapping[str, object]) -> ResolvePlanInputV1:
     policy = _resource(state, "product_policy")
     catalog = _resource(state, "capability_catalog")
     knowledge = _resource(state, "data_knowledge")
-    return ResolvePlanInputV1.model_validate(
-        {
-            "change_id": state["change_id"],
-            "requirement_digest": _requirement_digest(state),
-            "candidate_test_families": state["candidate_test_families"],
-            "budgets": state["budgets"],
-            "policy_resource_id": policy["resource_id"],
-            "policy_digest": policy["sha256"],
-            "family_policy": state["family_policy"],
-            "exploration_ref": next(
-                item
-                for item in _preparation_refs(state)
-                if item["path"] == f"qa/changes/{state['change_id']}/explore/exploration.json"
-            ),
-            "source_resource_digests": (
-                (catalog["resource_id"], catalog["sha256"]),
-                (knowledge["resource_id"], knowledge["sha256"]),
-            ),
-            "capability_leafs": state["capability_leafs"],
+    payload: dict[str, object] = {
+        "change_id": state["change_id"],
+        "requirement_digest": _requirement_digest(state),
+        "candidate_test_families": state["candidate_test_families"],
+        "budgets": state["budgets"],
+        "policy_resource_id": policy["resource_id"],
+        "policy_digest": policy["sha256"],
+        "family_policy": state["family_policy"],
+        "exploration_ref": next(
+            item
+            for item in _preparation_refs(state)
+            if item["path"] == f"qa/changes/{state['change_id']}/explore/exploration.json"
+        ),
+        "source_resource_digests": (
+            (catalog["resource_id"], catalog["sha256"]),
+            (knowledge["resource_id"], knowledge["sha256"]),
+        ),
+        "capability_leafs": state["capability_leafs"],
+    }
+    verification_policy = state.get("verification_policy")
+    validation_profile = state.get("validation_profile")
+    if verification_policy is not None or validation_profile is not None:
+        if not isinstance(verification_policy, Mapping) or not isinstance(validation_profile, str):
+            raise ValueError("verified plan requires profile and authenticated verification policy")
+        payload["verification_policy"] = {
+            "validation_profile": validation_profile,
+            "resource_id": verification_policy["resource_id"],
+            "digest": verification_policy["sha256"],
         }
-    )
+    return ResolvePlanInputV1.model_validate(payload)
 
 
 def select_load_plan(state: Mapping[str, object]) -> LoadPlanInputV1:
     policy = _resource(state, "product_policy")
     catalog = _resource(state, "capability_catalog")
     knowledge = _resource(state, "data_knowledge")
-    return LoadPlanInputV1.model_validate(
-        {
-            "change_id": state["change_id"],
-            "requirement_digest": _requirement_digest(state),
-            "resolved_plan_ref": state["resolved_plan_ref"],
-            "budgets": state["budgets"],
-            "policy_resource_id": policy["resource_id"],
-            "policy_digest": policy["sha256"],
-            "source_resource_digests": (
-                (catalog["resource_id"], catalog["sha256"]),
-                (knowledge["resource_id"], knowledge["sha256"]),
-            ),
-            "capability_leafs": state["capability_leafs"],
+    payload: dict[str, object] = {
+        "change_id": state["change_id"],
+        "requirement_digest": _requirement_digest(state),
+        "resolved_plan_ref": state["resolved_plan_ref"],
+        "budgets": state["budgets"],
+        "policy_resource_id": policy["resource_id"],
+        "policy_digest": policy["sha256"],
+        "source_resource_digests": (
+            (catalog["resource_id"], catalog["sha256"]),
+            (knowledge["resource_id"], knowledge["sha256"]),
+        ),
+        "capability_leafs": state["capability_leafs"],
+    }
+    verification_policy = state.get("verification_policy")
+    validation_profile = state.get("validation_profile")
+    if verification_policy is not None or validation_profile is not None:
+        if not isinstance(verification_policy, Mapping) or not isinstance(validation_profile, str):
+            raise ValueError("verified plan requires profile and authenticated verification policy")
+        payload["verification_policy"] = {
+            "validation_profile": validation_profile,
+            "resource_id": verification_policy["resource_id"],
+            "digest": verification_policy["sha256"],
         }
-    )
+    return LoadPlanInputV1.model_validate(payload)
 
 
 def publish_plan(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
@@ -159,6 +177,7 @@ def select_case_design(state: Mapping[str, object]) -> CaseDesignInputV1:
             "plan_ref": state["plan_ref"],
             "selected_test_families": state["selected_test_families"],
             "case_delta_paths": state["case_delta_paths"],
+            "assertion_source_paths": state.get("assertion_source_paths", ()),
             "coverage_epoch": state.get("coverage_epoch", 0),
             "preparation_refs": state.get("preparation_refs", ()),
             "case_rework_context": state.get("case_rework_context"),
@@ -179,6 +198,7 @@ def select_case_design_repair(state: Mapping[str, object]) -> CaseDesignInputV1:
             "plan_ref": state["plan_ref"],
             "selected_test_families": state["selected_test_families"],
             "case_delta_paths": state["case_delta_paths"],
+            "assertion_source_paths": state.get("assertion_source_paths", ()),
             "validation_attempt": 1,
             "validation_error": state["validation_error"],
         }
@@ -192,6 +212,7 @@ def select_case_review(state: Mapping[str, object]) -> CaseReviewInputV1:
             "plan_digest": state["plan_digest"],
             "plan_ref": state["plan_ref"],
             "case_delta_paths": state["case_delta_paths"],
+            "assertion_source_paths": state.get("assertion_source_paths", ()),
             "coverage_epoch": state.get("coverage_epoch", 0),
             "review_round": state.get("rounds_used", 0),
             "preparation_refs": state.get("preparation_refs", ()),

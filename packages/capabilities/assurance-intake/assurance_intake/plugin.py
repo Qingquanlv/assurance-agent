@@ -60,6 +60,7 @@ INTAKE_RESOURCE_FILES: dict[str, str] = {
 }
 
 _SCHEMA_FILES: dict[str, str] = {
+    "assurance.intake.schema.assertion-sources.v1": "schemas/assertion-sources.v1.schema.json",
     "assurance.intake.schema.resolved-assurance-plan.v1": ("schemas/resolved-assurance-plan.v1.schema.json"),
     "assurance.intake.schema.case-authoring.v1": "schemas/case-authoring.v1.schema.json",
     "assurance.intake.schema.case-review.v1": "schemas/case-review.v1.schema.json",

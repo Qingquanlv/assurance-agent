@@ -27,6 +27,10 @@ from assurance_intake.contracts.workflow import (
 from assurance_intake.plugin import IntakePlugin
 
 _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
+    "assurance.intake.schema.assertion-sources.v1": (
+        "1",
+        "4ff817ef8cb5ac652299cd168fbba872c211f5b713866a27fcbd4c738300dd70",
+    ),
     "assurance.intake.schema.case-authoring.v1": (
         "1",
         "93b83ab51c63145bc1d7a90f6be6c79ccef64e106aabcb5eee4d9ef75bbcbe2f",

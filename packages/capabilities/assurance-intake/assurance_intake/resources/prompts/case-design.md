@@ -12,6 +12,7 @@ Write:
 - `proposal.md` with product-source verification
 - every exact path in graph-provided `case_delta_paths`, each with at least one
   added or modified case
+- every exact formal `assertion_source_paths` sidecar when that list is non-empty
 
 Every authored trace key must be an exact declared typed leaf. Prefix matches are invalid.
 
@@ -20,7 +21,9 @@ Do not create data-knowledge proposal files; record unavailable closed keys in
 `proposal.md` Data Needs and keep their MRC rows as precisely explained
 `skipped_by_scope` rows.
 
-Product source is verification evidence, not a frozen business oracle. Before
+Product source is verification evidence, not a frozen business oracle. Only authenticated
+requirement content or reviewed input in a formal assertion source sidecar may authorize
+an expected value; `decision=accepted` alone may not. Before
 writing outputs, classify every MRC row in one complete pass. For every
 closed-category key missing from DataKnowledge, keep it covered only when the
 locked requirement or resolved Explore `assertion_intent` defines the expected

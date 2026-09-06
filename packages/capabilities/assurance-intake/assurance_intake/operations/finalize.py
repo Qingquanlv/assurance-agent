@@ -41,6 +41,11 @@ from assurance_intake.contracts.review import (
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.verification import (
+    AssertionSourcesV1,
+    BusinessAssertionV1,
+    validate_assertion_provenance,
+)
 from assurance_intake.operations.agent_skills import InputError, failed_input, validate_input
 from assurance_intake.operations.agent_skills import case_review_outputs
 
@@ -380,6 +385,49 @@ def _load_authored_case_delta(
         )
     except ValidationError as error:
         raise OutputError(f"invalid aggregate written case delta: {error}") from error
+
+
+def _validate_assertion_sidecars(
+    workspace: Path,
+    *,
+    authored: CaseYamlAuthoring,
+    source_paths: tuple[str, ...],
+    images: Mapping[str, bytes] | None = None,
+) -> None:
+    if not source_paths:
+        return
+    entries = {entry.case_id: entry for entry in (*authored.added, *authored.modified)}
+    seen_cases: set[str] = set()
+    for relative in source_paths:
+        try:
+            data = (
+                images[relative]
+                if images is not None
+                else _read_regular_bytes(workspace, relative, kind="assertion source sidecar")
+            )
+            sources = AssertionSourcesV1.model_validate_json(data)
+        except (KeyError, OSError, ValidationError, ValueError) as error:
+            raise OutputError(f"invalid assertion-sources.json {relative}: {error}") from error
+        entry = entries.get(sources.case_id)
+        if entry is None:
+            raise OutputError(f"assertion-sources.json references unknown authored case: {sources.case_id}")
+        if sources.case_id in seen_cases:
+            raise OutputError(f"duplicate assertion-sources.json for case: {sources.case_id}")
+        seen_cases.add(sources.case_id)
+        try:
+            assertions = tuple(BusinessAssertionV1.model_validate(item) for item in entry.assertions)
+            validate_assertion_provenance(
+                case_id=entry.case_id,
+                revision=sources.revision,
+                spec_digest=sources.spec_digest,
+                assertions=assertions,
+                sources=sources,
+            )
+        except (ValidationError, ValueError) as error:
+            raise OutputError(f"invalid typed assertions for {sources.case_id}: {error}") from error
+    if seen_cases != set(entries):
+        missing = sorted(set(entries) - seen_cases)
+        raise OutputError(f"typed assertion sources are missing for authored cases: {missing}")
 
 
 def _load_minimum_coverage_matrix(
@@ -848,6 +896,13 @@ class CaseDesignFinalizeHandler:
                     "case-design receipt case paths do not match locked case_delta_paths; "
                     f"missing={missing_cases}, unexpected={unexpected_cases}"
                 )
+            declared_sources = {
+                relative for relative in receipt.output_files if relative.endswith("/assertion-sources.json")
+            }
+            if declared_sources != set(payload.assertion_source_paths):
+                raise OutputError(
+                    "case-design receipt assertion source paths do not match locked assertion_source_paths"
+                )
             if payload.review_repair is not None:
                 if tuple(receipt.output_files) != tuple(payload.review_repair.baseline_file_digests):
                     raise OutputError(
@@ -876,6 +931,12 @@ class CaseDesignFinalizeHandler:
                 locked=payload.artifact_paths,
                 declared=receipt.output_files,
                 capability_leafs=capability_leafs,
+                images=images,
+            )
+            _validate_assertion_sidecars(
+                context.write_root,
+                authored=authored,
+                source_paths=payload.assertion_source_paths,
                 images=images,
             )
             if payload.selected_test_families:

@@ -156,9 +156,11 @@ def test_goal_normalization_fails_closed(mrc: dict[str, object], message: str) -
 
 
 @pytest.mark.parametrize("empty_legacy_category", [False, True])
+@pytest.mark.parametrize("validation_profile", [None, "api_db.v1"])
 def test_prepare_quality_goal_authenticates_every_source(
     tmp_path: Path,
     empty_legacy_category: bool,
+    validation_profile: str | None,
 ) -> None:
     project = tmp_path
     explore_path = project / "qa/changes/CH-1/explore/exploration.json"
@@ -209,36 +211,47 @@ def test_prepare_quality_goal_authenticates_every_source(
     (aa / "policy.yaml").write_bytes(policy_bytes)
     (aa / "data-knowledge.yaml").write_bytes(knowledge_bytes)
     (aa / "capability-catalog.json").write_bytes(catalog_bytes)
+    verification_bytes = yaml.safe_dump(
+        {"schema_version": "1", "validation_profile": validation_profile},
+        sort_keys=True,
+    ).encode()
+    if validation_profile is not None:
+        (aa / "verification-policy.yaml").write_bytes(verification_bytes)
 
     source_digests = (
         ("assurance.product.configuration.capability-catalog", _sha(catalog_bytes)),
         ("assurance.product.configuration.data-knowledge", _sha(knowledge_bytes)),
     )
-    request = ResolvePlanInputV1.model_validate(
-        {
-            "change_id": "CH-1",
-            "requirement_digest": "a" * 64,
-            "candidate_test_families": ("api", "e2e"),
-            "budgets": {
-                "review_rounds": 1,
-                "coverage_rounds": 2,
-                "healing_rounds": 1,
-                "execution_retries": 0,
-            },
-            "policy_resource_id": "assurance.product.configuration.product-policy",
-            "policy_digest": _sha(policy_bytes),
-            "family_policy": {"required": (), "allowed": ("api", "e2e")},
-            "exploration_ref": {
-                "path": explore_path.relative_to(project).as_posix(),
-                "digest": _sha(explore_bytes),
-            },
-            "source_resource_digests": source_digests,
-            "capability_leafs": (
-                "entities.item.constraints.name",
-                "entities.item.constraints.parent",
-            ),
+    request_payload: dict[str, object] = {
+        "change_id": "CH-1",
+        "requirement_digest": "a" * 64,
+        "candidate_test_families": ("api", "e2e"),
+        "budgets": {
+            "review_rounds": 1,
+            "coverage_rounds": 2,
+            "healing_rounds": 1,
+            "execution_retries": 0,
+        },
+        "policy_resource_id": "assurance.product.configuration.product-policy",
+        "policy_digest": _sha(policy_bytes),
+        "family_policy": {"required": (), "allowed": ("api", "e2e")},
+        "exploration_ref": {
+            "path": explore_path.relative_to(project).as_posix(),
+            "digest": _sha(explore_bytes),
+        },
+        "source_resource_digests": source_digests,
+        "capability_leafs": (
+            "entities.item.constraints.name",
+            "entities.item.constraints.parent",
+        ),
+    }
+    if validation_profile is not None:
+        request_payload["verification_policy"] = {
+            "validation_profile": validation_profile,
+            "resource_id": "assurance.product.configuration.verification-policy",
+            "digest": _sha(verification_bytes),
         }
-    )
+    request = ResolvePlanInputV1.model_validate(request_payload)
 
     advisory, goal = prepare_quality_goal(request, project_root=project)
     assert advisory.change_id == "CH-1"
@@ -265,6 +278,7 @@ def test_prepare_quality_goal_authenticates_every_source(
     assert isinstance(plan, dict)
     assert plan["proposed_test_families"] == ["api"]
     assert plan["selected_test_families"] == ["api", "e2e"]
+    assert plan["schema_version"] == ("2" if validation_profile is not None else "1")
     quality_goal = plan["quality_goal"]
     assert isinstance(quality_goal, dict)
     assert quality_goal["required_test_families"] == ["api", "e2e"]
@@ -287,6 +301,7 @@ def test_prepare_quality_goal_authenticates_every_source(
         policy_digest=request.policy_digest,
         source_resource_digests=request.source_resource_digests,
         capability_leafs=request.capability_leafs,
+        verification_policy=request.verification_policy,
     )
     load_stage = project / "load-stage"
     load_stage.mkdir()
@@ -306,3 +321,9 @@ def test_prepare_quality_goal_authenticates_every_source(
     (aa / "policy.yaml").write_bytes(policy_bytes + b"\n")
     with pytest.raises(ValueError, match="digest"):
         prepare_quality_goal(request, project_root=project)
+
+    if validation_profile is not None:
+        (aa / "policy.yaml").write_bytes(policy_bytes)
+        (aa / "verification-policy.yaml").write_bytes(verification_bytes + b"\n")
+        with pytest.raises(ValueError, match="digest"):
+            prepare_quality_goal(request, project_root=project)

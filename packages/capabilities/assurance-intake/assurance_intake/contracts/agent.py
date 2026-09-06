@@ -59,6 +59,20 @@ def _validate_case_delta_paths(change_id: str, paths: tuple[str, ...]) -> tuple[
     return paths
 
 
+def _validate_assertion_source_paths(
+    case_paths: tuple[str, ...],
+    source_paths: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not source_paths:
+        return ()
+    expected = tuple(
+        sorted(str(PurePosixPath(path).with_name("assertion-sources.json")) for path in case_paths)
+    )
+    if source_paths != expected:
+        raise ValueError("assertion_source_paths must exactly match locked case directories")
+    return source_paths
+
+
 class AgentBindingDataV1(FrozenModel):
     agent_profile: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
     execution: FrozenExecutionSelection
@@ -216,6 +230,7 @@ class CaseDesignInputV1(_SkillInputV1):
     case_rework_context: CaseReworkContextV1 | None = None
     selected_test_families: tuple[TestFamily, ...] = ()
     case_delta_paths: tuple[str, ...] = Field(min_length=1)
+    assertion_source_paths: tuple[str, ...] = ()
     exploration: ExploreAdvisoryV1 | None = None
     validation_attempt: Literal[0, 1] = 0
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
@@ -226,7 +241,7 @@ class CaseDesignInputV1(_SkillInputV1):
     def _selected_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
         return _canonical_test_families(value)
 
-    @field_validator("case_delta_paths")
+    @field_validator("case_delta_paths", "assertion_source_paths")
     @classmethod
     def _case_delta_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         canonical = _canonical_relative_paths(value)
@@ -237,6 +252,7 @@ class CaseDesignInputV1(_SkillInputV1):
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> CaseDesignInputV1:
         _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        _validate_assertion_source_paths(self.case_delta_paths, self.assertion_source_paths)
         if self.case_rework_context is not None:
             previous = self.case_rework_context.previous_case
             if previous.change_id != self.change_id:
@@ -261,9 +277,10 @@ class CaseReviewInputV1(_SkillInputV1):
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_delta_paths: tuple[str, ...] = Field(min_length=1)
+    assertion_source_paths: tuple[str, ...] = ()
     review_input_paths: tuple[str, ...] = ()
 
-    @field_validator("case_delta_paths", "review_input_paths")
+    @field_validator("case_delta_paths", "assertion_source_paths", "review_input_paths")
     @classmethod
     def _review_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         canonical = _canonical_relative_paths(value)
@@ -274,6 +291,7 @@ class CaseReviewInputV1(_SkillInputV1):
     @model_validator(mode="after")
     def _paths_match_change(self) -> CaseReviewInputV1:
         _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+        _validate_assertion_source_paths(self.case_delta_paths, self.assertion_source_paths)
         if self.review_input_paths:
             change_root = f"qa/changes/{self.change_id}"
             expected = tuple(
@@ -281,6 +299,7 @@ class CaseReviewInputV1(_SkillInputV1):
                     (
                         f"{change_root}/.qa.yaml",
                         *self.case_delta_paths,
+                        *self.assertion_source_paths,
                         f"{change_root}/proposal.md",
                         f"{change_root}/requirement.md",
                         f"{change_root}/trace/minimum-coverage-matrix.json",
@@ -356,6 +375,7 @@ class AgentFinalizeInputV1(FrozenModel):
     artifact_paths: tuple[str, ...]
     selected_test_families: tuple[TestFamily, ...] = ()
     case_delta_paths: tuple[str, ...] = ()
+    assertion_source_paths: tuple[str, ...] = ()
     validation_attempt: Literal[0, 1] = 1
     review_repair: ReviewRepairContractV1 | None = None
     coverage_epoch: int = Field(default=0, ge=0)
@@ -379,7 +399,7 @@ class AgentFinalizeInputV1(FrozenModel):
     def _selected_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
         return _canonical_test_families(value)
 
-    @field_validator("case_delta_paths")
+    @field_validator("case_delta_paths", "assertion_source_paths")
     @classmethod
     def _case_delta_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if not value:
@@ -395,6 +415,9 @@ class AgentFinalizeInputV1(FrozenModel):
             if self.change_id is None:
                 raise ValueError("change_id is required with case_delta_paths")
             _validate_case_delta_paths(self.change_id, self.case_delta_paths)
+            _validate_assertion_source_paths(self.case_delta_paths, self.assertion_source_paths)
+        elif self.assertion_source_paths:
+            raise ValueError("assertion_source_paths require case_delta_paths")
         return self
 
 

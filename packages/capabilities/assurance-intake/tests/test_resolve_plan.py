@@ -7,6 +7,7 @@ import pytest
 from assurance_intake.contracts.explore import TestStrategyV1 as Strategy
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.plan import (
+    BusinessVerificationPolicyV1,
     PlanBudgetsV1,
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
@@ -90,32 +91,34 @@ def _request(
     candidate: tuple[TestFamily, ...] = ("api", "e2e"),
     allowed: tuple[TestFamily, ...] = ("api", "e2e"),
     required: tuple[TestFamily, ...] = (),
+    verification_policy: BusinessVerificationPolicyV1 | None = None,
 ) -> ResolvePlanInputV1:
-    return ResolvePlanInputV1.model_validate(
-        {
-            "change_id": "CH-1",
-            "requirement_digest": _SHA_A,
-            "candidate_test_families": candidate,
-            "budgets": PlanBudgetsV1(
-                review_rounds=1,
-                coverage_rounds=2,
-                healing_rounds=1,
-                execution_retries=0,
-            ),
-            "policy_resource_id": "assurance.product.configuration.product-policy",
-            "policy_digest": _SHA_B,
-            "family_policy": FamilyPolicy(required=required, allowed=allowed),
-            "exploration_ref": {
-                "path": "qa/changes/CH-1/explore/exploration.json",
-                "digest": _SHA_A,
-            },
-            "source_resource_digests": (
-                ("assurance.product.configuration.capability-catalog", _SHA_A),
-                ("assurance.product.configuration.data-knowledge", _SHA_B),
-            ),
-            "capability_leafs": ("cart.read",),
-        }
-    )
+    payload: dict[str, object] = {
+        "change_id": "CH-1",
+        "requirement_digest": _SHA_A,
+        "candidate_test_families": candidate,
+        "budgets": PlanBudgetsV1(
+            review_rounds=1,
+            coverage_rounds=2,
+            healing_rounds=1,
+            execution_retries=0,
+        ),
+        "policy_resource_id": "assurance.product.configuration.product-policy",
+        "policy_digest": _SHA_B,
+        "family_policy": FamilyPolicy(required=required, allowed=allowed),
+        "exploration_ref": {
+            "path": "qa/changes/CH-1/explore/exploration.json",
+            "digest": _SHA_A,
+        },
+        "source_resource_digests": (
+            ("assurance.product.configuration.capability-catalog", _SHA_A),
+            ("assurance.product.configuration.data-knowledge", _SHA_B),
+        ),
+        "capability_leafs": ("cart.read",),
+    }
+    if verification_policy is not None:
+        payload["verification_policy"] = verification_policy.model_dump(mode="json")
+    return ResolvePlanInputV1.model_validate(payload)
 
 
 def test_proposal_is_derived_from_the_four_typed_rows() -> None:
@@ -215,3 +218,26 @@ def test_goal_change_changes_the_plan_identity() -> None:
     second = resolve_plan(request=request, proposed=("api",), quality_goal=_goal("e2e"))
     assert first.plan_digest != second.plan_digest
     assert plan_artifact_ref(first) != plan_artifact_ref(second)
+
+
+def test_explicit_authenticated_verification_policy_versions_the_root_plan() -> None:
+    legacy = resolve_plan(request=_request(), proposed=("api",), quality_goal=_goal())
+    policy = BusinessVerificationPolicyV1(
+        validation_profile="api_db.v1",
+        resource_id="assurance.product.configuration.verification-policy",
+        digest="c" * 64,
+    )
+    verified = resolve_plan(
+        request=_request(verification_policy=policy),
+        proposed=("api",),
+        quality_goal=_goal(),
+    )
+
+    assert legacy.schema_version == "1"
+    assert verified.schema_version == "2"
+    assert verified.verification_policy == policy
+    assert verified.plan_digest != legacy.plan_digest
+    assert "sut_digest" not in type(verified).model_fields
+    assert "technical_config_digest" not in type(verified).model_fields
+    assert decode_plan(plan_bytes(legacy), plan_artifact_ref(legacy)) == legacy
+    assert decode_plan(plan_bytes(verified), plan_artifact_ref(verified)) == verified

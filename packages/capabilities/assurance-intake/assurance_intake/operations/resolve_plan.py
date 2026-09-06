@@ -136,7 +136,7 @@ def resolve_plan(
     reasons.sort(key=resolution_reason_sort_key)
     return seal_plan(
         {
-            "schema_version": "1",
+            "schema_version": "2" if request.verification_policy is not None else "1",
             "change_id": request.change_id,
             "requirement_digest": request.requirement_digest,
             "gdt": "in-execution",
@@ -150,6 +150,11 @@ def resolve_plan(
             "policy_digest": request.policy_digest,
             "exploration_ref": request.exploration_ref.model_dump(mode="json"),
             "resolution_reasons": [reason.model_dump(mode="json") for reason in reasons],
+            "verification_policy": (
+                request.verification_policy.model_dump(mode="json")
+                if request.verification_policy is not None
+                else None
+            ),
         }
     )
 

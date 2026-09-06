@@ -75,11 +75,16 @@ def explore_outputs(change_id: str) -> tuple[str, ...]:
     return (f"qa/changes/{change_id}/explore/exploration.json",)
 
 
-def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
+def case_design_outputs(
+    change_id: str,
+    case_delta_paths: tuple[str, ...],
+    assertion_source_paths: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     return tuple(
         sorted(
             (
                 *case_delta_paths,
+                *assertion_source_paths,
                 f"qa/changes/{change_id}/.qa.yaml",
                 f"qa/changes/{change_id}/proposal.md",
                 f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
@@ -99,13 +104,18 @@ def case_review_outputs(change_id: str) -> tuple[str, ...]:
     )
 
 
-def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
+def case_review_inputs(
+    change_id: str,
+    case_delta_paths: tuple[str, ...],
+    assertion_source_paths: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     change_root = f"qa/changes/{change_id}"
     return tuple(
         sorted(
             (
                 f"{change_root}/.qa.yaml",
                 *case_delta_paths,
+                *assertion_source_paths,
                 f"{change_root}/proposal.md",
                 f"{change_root}/requirement.md",
                 f"{change_root}/trace/minimum-coverage-matrix.json",
@@ -221,7 +231,11 @@ def _review_repair_contract(
     if not actions:
         raise InputError("needs_fix case-review must provide at least one bounded repair action")
 
-    outputs = case_design_outputs(business.change_id, business.case_delta_paths)
+    outputs = case_design_outputs(
+        business.change_id,
+        business.case_delta_paths,
+        business.assertion_source_paths,
+    )
     allowed = set(outputs)
     for action in actions:
         if action.artifact not in allowed:
@@ -437,6 +451,7 @@ class CaseDesignPrepareHandler:
                 allowed_outputs=case_design_outputs(
                     business.change_id,
                     business.case_delta_paths,
+                    business.assertion_source_paths,
                 ),
             )
         except (InputError, ValidationError) as error:
@@ -460,7 +475,11 @@ class CaseReviewPrepareHandler:
                 business.case_delta_paths
             ):
                 raise InputError("case_refs must bind every locked case_delta_path exactly once")
-            review_inputs = case_review_inputs(business.change_id, business.case_delta_paths)
+            review_inputs = case_review_inputs(
+                business.change_id,
+                business.case_delta_paths,
+                business.assertion_source_paths,
+            )
             for relative in review_inputs:
                 _require_regular_project_input(context.project_root, relative)
             business = CaseReviewInputV1.model_validate(

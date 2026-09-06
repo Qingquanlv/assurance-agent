@@ -22,6 +22,9 @@ Do not rely on prior conversation context.
    files may be absent from search results. The set contains `.qa.yaml`,
    `requirement.md`, `proposal.md`, `trace/minimum-coverage-matrix.json`, and every exact
    `cases/<module>/case.yaml` path locked by `case_delta_paths`.
+   Read every formal `assertion-sources.json` path in that set. Require authenticated
+   requirement content or reviewed input for each typed assertion; an agent-authored
+   `decision=accepted` or product-source observation alone is never authority.
 4. Independently read the relevant **product source code** for every product fact used in the verdict. At minimum inspect the implementation entry point plus the controller/service/schema/model or frontend component needed to verify the proposed scenarios. Do not treat proposal, case, Explore advisory, requirements, docs, or tests as product-fact evidence.
    A glob result of `No files found` is not evidence that product source is absent.
    Repository search may hide ignored product source even though exact reads and

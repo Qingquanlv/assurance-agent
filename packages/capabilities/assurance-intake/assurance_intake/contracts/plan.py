@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Literal, Self, cast
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_core import to_jsonable_python
 
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
@@ -68,6 +68,12 @@ class PlanBudgetsV1(FrozenModel):
     execution_retries: int = Field(ge=0)
 
 
+class BusinessVerificationPolicyV1(FrozenModel):
+    validation_profile: Literal["api_db.v1", "api_db_trace.v1"]
+    resource_id: Literal["assurance.product.configuration.verification-policy"]
+    digest: str = Field(pattern=_SHA256)
+
+
 ResolutionReasonCode = Literal[
     "accepted_proposal",
     "fallback_all_candidates",
@@ -105,7 +111,7 @@ def resolution_reason_sort_key(reason: ResolutionReasonV1) -> tuple[int, int]:
 
 
 class ResolvedAssurancePlan(FrozenModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["1", "2"] = "1"
     change_id: str = Field(min_length=1)
     requirement_digest: str = Field(pattern=_SHA256)
     gdt: Literal["in-execution"] = "in-execution"
@@ -120,6 +126,7 @@ class ResolvedAssurancePlan(FrozenModel):
     exploration_ref: EvidenceArtifactRefV1
     plan_digest: str = Field(pattern=_SHA256)
     resolution_reasons: tuple[ResolutionReasonV1, ...]
+    verification_policy: BusinessVerificationPolicyV1 | None = None
 
     @field_validator("change_id")
     @classmethod
@@ -141,7 +148,9 @@ class ResolvedAssurancePlan(FrozenModel):
         return _qualified_id(value, "policy_resource_id")
 
     @model_validator(mode="after")
-    def _plan_invariants(self) -> Self:
+    def _plan_invariants(self, info: ValidationInfo) -> Self:
+        if (self.schema_version == "2") != (self.verification_policy is not None):
+            raise ValueError("plan schema version 2 requires an explicit verification policy")
         if not set(self.selected_test_families) <= set(self.candidate_test_families):
             raise ValueError("selected_test_families must be candidates")
         if not set(self.quality_goal.required_test_families) <= set(self.selected_test_families):
@@ -161,10 +170,15 @@ class ResolvedAssurancePlan(FrozenModel):
             self.resolution_reasons
         ):
             raise ValueError("resolution_reasons must be sorted and unique")
-        payload = self.model_dump(mode="json")
+        if isinstance(info.context, dict) and info.context.get("skip_plan_digest") is True:
+            return self
+        payload = self.model_dump(mode="json", exclude_none=True)
         payload.pop("plan_digest")
-        if self.plan_digest != canonical_digest(cast(JSONValue, payload)):
-            raise ValueError("plan_digest does not match the plan projection")
+        expected_digest = canonical_digest(cast(JSONValue, payload))
+        if self.plan_digest != expected_digest:
+            raise ValueError(
+                f"plan_digest does not match the plan projection: {self.plan_digest} != {expected_digest}"
+            )
         return self
 
 
@@ -179,6 +193,7 @@ class ResolvePlanInputV1(FrozenModel):
     exploration_ref: EvidenceArtifactRefV1
     source_resource_digests: tuple[tuple[str, str], ...]
     capability_leafs: tuple[str, ...]
+    verification_policy: BusinessVerificationPolicyV1 | None = None
 
     @field_validator("candidate_test_families")
     @classmethod
@@ -228,6 +243,7 @@ class LoadPlanInputV1(FrozenModel):
     policy_digest: str = Field(pattern=_SHA256)
     source_resource_digests: tuple[tuple[str, str], ...]
     capability_leafs: tuple[str, ...]
+    verification_policy: BusinessVerificationPolicyV1 | None = None
 
     @field_validator("change_id")
     @classmethod
@@ -266,13 +282,21 @@ class ResolvePlanOutputV1(FrozenModel):
 def seal_plan(payload: dict[str, object]) -> ResolvedAssurancePlan:
     if "plan_digest" in payload:
         raise ValueError("unsealed plan payload cannot supply plan_digest")
-    projection = cast(JSONValue, to_jsonable_python(payload))
+    normalized = {key: value for key, value in payload.items() if value is not None}
+    unsealed = ResolvedAssurancePlan.model_validate(
+        {**normalized, "plan_digest": "0" * 64},
+        context={"skip_plan_digest": True},
+    )
+    projection = cast(
+        JSONValue,
+        to_jsonable_python(unsealed.model_dump(mode="json", exclude={"plan_digest"}, exclude_none=True)),
+    )
     digest = canonical_digest(projection)
-    return ResolvedAssurancePlan.model_validate({**payload, "plan_digest": digest})
+    return ResolvedAssurancePlan.model_validate({**normalized, "plan_digest": digest})
 
 
 def plan_bytes(plan: ResolvedAssurancePlan) -> bytes:
-    return canonical_json_bytes(cast(JSONValue, plan.model_dump(mode="json")))
+    return canonical_json_bytes(cast(JSONValue, plan.model_dump(mode="json", exclude_none=True)))
 
 
 def plan_artifact_ref(plan: ResolvedAssurancePlan) -> EvidenceArtifactRefV1:
@@ -301,6 +325,7 @@ def decode_plan(data: bytes, ref: EvidenceArtifactRefV1) -> ResolvedAssurancePla
 
 
 __all__ = [
+    "BusinessVerificationPolicyV1",
     "FallbackDetail",
     "LoadPlanInputV1",
     "PlanBudgetsV1",

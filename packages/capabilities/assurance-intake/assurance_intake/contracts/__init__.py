@@ -24,6 +24,7 @@ from assurance_intake.contracts.common import (
     TestFamily,
 )
 from assurance_intake.contracts.plan import (
+    BusinessVerificationPolicyV1,
     LoadPlanInputV1,
     PlanBudgetsV1,
     PreparedQualityGoalV1,
@@ -46,9 +47,21 @@ from assurance_intake.contracts.workflow import (
     ReviewedCaseV1,
 )
 from assurance_intake.contracts.loop_history import LoopRoundHistoryV1, build_loop_round_history
+from assurance_intake.contracts.verification import (
+    AssertionSourceV1,
+    AssertionSourcesV1,
+    BusinessAssertionV1,
+    InputExpectedV1,
+    LiteralExpectedV1,
+    validate_assertion_provenance,
+)
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
+    "AssertionSourceV1",
+    "AssertionSourcesV1",
+    "BusinessAssertionV1",
+    "BusinessVerificationPolicyV1",
     "CaseEntry",
     "CaseEntryAuthoring",
     "CaseFlowResultV1",
@@ -86,6 +99,9 @@ __all__ = [
     "TestFamilyPolicyV1",
     "advance_review_round",
     "LoopRoundHistoryV1",
+    "InputExpectedV1",
+    "LiteralExpectedV1",
     "build_loop_round_history",
     "attempt_contract_refs",
+    "validate_assertion_provenance",
 ]

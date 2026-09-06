@@ -1,0 +1,19 @@
+{
+  "schema_version": "1",
+  "case_id": "TC_USER_CREATE_001",
+  "revision": "1",
+  "spec_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+  "sources": [
+    {
+      "source_id": "requirement.user.create",
+      "origin": "requirement",
+      "reference": "User creation acceptance criteria",
+      "summary": "A reviewed requirement fixes the create response and persisted User values.",
+      "decision": "accepted",
+      "content_ref": {
+        "path": "qa/changes/CH-USER-001/requirement.md",
+        "digest": "2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    }
+  ]
+}
