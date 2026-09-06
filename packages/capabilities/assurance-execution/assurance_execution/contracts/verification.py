@@ -39,8 +39,6 @@ class SqliteFileIdentityV1(FrozenModel):
     path: str = Field(min_length=1)
     device: int = Field(ge=0)
     inode: int = Field(ge=0)
-    size: int = Field(ge=0)
-    mtime_ns: int = Field(ge=0)
 
     @field_validator("path")
     @classmethod
@@ -50,6 +48,11 @@ class SqliteFileIdentityV1(FrozenModel):
         if not Path(value).is_absolute() or str(Path(value)) != value:
             raise ValueError("SQLite path must be canonical and absolute")
         return value
+
+
+class SqliteObservationMetadataV1(FrozenModel):
+    size: int = Field(ge=0)
+    mtime_ns: int = Field(ge=0)
 
 
 class ManagedSutV1(FrozenModel):
@@ -197,6 +200,7 @@ __all__ = [
     "ObservationState",
     "ObservationV1",
     "SqliteFileIdentityV1",
+    "SqliteObservationMetadataV1",
     "VerificationEvidenceV1",
     "VerificationManifestV1",
 ]

@@ -53,6 +53,7 @@ def _manifest(tmp_path: Path, *, nodeid: str = "tests/api/test_user.py::test_cre
         validation_profile="api_db.v1",
         sut_base_url="http://127.0.0.1:32123",
         sut_instance_id="sut-1",
+        sut_sqlite_path=db,
         sqlite_path=db,
         username="qa_t1",
         email="qa_t1@example.com",
@@ -201,6 +202,28 @@ def test_recovery_rejects_a_replaced_database_file_even_at_the_same_path(tmp_pat
             authorization_scope_digest="3" * 64,
             activity_receipt_digest="4" * 64,
         )
+
+
+def test_recovery_accepts_normal_committed_writes_to_the_same_database_file(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    digest = canonical_digest(manifest.model_dump(mode="json"))
+    with Path(manifest.sqlite.path).open("ab") as stream:
+        stream.write(b"committed mutation")
+
+    recovered = authenticate_verification_manifest(
+        manifest,
+        manifest_digest=digest,
+        attempt_key=manifest.attempt_key,
+        invocation_id=manifest.invocation_id,
+        nodeid=manifest.nodeid,
+        sqlite_path=Path(manifest.sqlite.path),
+        username=manifest.inputs.username,
+        email=manifest.inputs.email,
+        authorization_scope_digest="3" * 64,
+        activity_receipt_digest="4" * 64,
+    )
+
+    assert recovered is manifest
 
 
 def test_input_allocation_stops_after_three_collisions() -> None:

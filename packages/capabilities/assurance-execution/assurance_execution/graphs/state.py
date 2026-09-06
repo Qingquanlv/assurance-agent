@@ -20,6 +20,7 @@ class ExecutionState(CheckpointBridgeState, total=False):
     coverage_epoch: int
     repair_round: int
     generation_result: dict[str, object]
+    verification: dict[str, object]
     execution_result: dict[str, object]
     change_id: str
     plan_digest: str

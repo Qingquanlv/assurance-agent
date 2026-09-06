@@ -34,8 +34,6 @@ def sqlite_file_identity(path: Path) -> SqliteFileIdentityV1:
         path=str(resolved),
         device=int(details.st_dev),
         inode=int(details.st_ino),
-        size=int(details.st_size),
-        mtime_ns=int(details.st_mtime_ns),
     )
 
 
@@ -64,12 +62,14 @@ def build_verification_manifest(
     validation_profile: ValidationProfile,
     sut_base_url: str,
     sut_instance_id: str,
+    sut_sqlite_path: Path,
     sqlite_path: Path,
     username: str,
     email: str,
     evidence_root: str,
 ) -> VerificationManifestV1:
     execution_id = str(uuid.uuid4())
+    managed_sqlite = Path(sut_sqlite_path).resolve(strict=True)
     sqlite = sqlite_file_identity(sqlite_path)
     root = f"{evidence_root.rstrip('/')}/{execution_id}"
     return VerificationManifestV1(
@@ -98,7 +98,7 @@ def build_verification_manifest(
         sut=ManagedSutV1(
             instance_id=sut_instance_id,
             base_url=sut_base_url,
-            sqlite_path=sqlite.path,
+            sqlite_path=str(managed_sqlite),
         ),
         sqlite=sqlite,
         inputs=FrozenUserInputsV1(username=username, email=email),

@@ -26,6 +26,7 @@ _SKILL_FIELDS = (
     "coverage_epoch",
     "repair_round",
     "generation_result",
+    "verification",
 )
 
 

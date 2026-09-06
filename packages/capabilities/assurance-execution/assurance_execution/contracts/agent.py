@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.attempts import BusinessActivation
 
 from assurance_execution.contracts.execution import ExecutionReceiptV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_generation.contracts.execution_plan import ValidationProfile
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, require_same_plan
 
 _SHA256 = r"^[0-9a-f]{64}$"
@@ -45,6 +47,34 @@ class AgentBindingDataV1(FrozenModel):
     execution: FrozenExecutionSelection
     request_policy_digest: str = Field(pattern=_SHA256)
     request_config_digest: str = Field(pattern=_SHA256)
+
+
+class VerifiedExecutionPrepareV1(FrozenModel):
+    """Host-owned runtime inputs that opt one prepare into verified mode."""
+
+    validation_profile: ValidationProfile
+    case_execution_plan_ref: EvidenceArtifactRefV1
+    nodeid: str = Field(min_length=1)
+    business_activation: BusinessActivation
+    sut_instance_id: str = Field(min_length=1)
+    sut_base_url: str = Field(pattern=r"^http://127\.0\.0\.1:[1-9][0-9]{0,4}$")
+    managed_sqlite_path: str = Field(min_length=1)
+    observer_sqlite_path: str = Field(min_length=1)
+
+    @field_validator("nodeid")
+    @classmethod
+    def _full_nodeid(cls, value: str) -> str:
+        if not value.startswith("tests/") or "::" not in value or "\n" in value:
+            raise ValueError("verified execution nodeid must be a full pytest nodeid")
+        return value
+
+    @field_validator("managed_sqlite_path", "observer_sqlite_path")
+    @classmethod
+    def _canonical_sqlite_path(cls, value: str) -> str:
+        path = Path(value)
+        if not path.is_absolute() or str(path) != value:
+            raise ValueError("verified SQLite paths must be canonical and absolute")
+        return value
 
 
 class SelectInputV1(FrozenModel):
@@ -91,6 +121,7 @@ class ExecutionPrepareInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     repair_round: int = Field(default=0, ge=0)
     generation_result: GenerationCycleResultV1 | None = None
+    verification: VerifiedExecutionPrepareV1 | None = None
 
     @field_validator("selected_test_families")
     @classmethod
@@ -195,6 +226,17 @@ class SkillInputV1(FrozenModel):
     execution_view_root: str
     execution_view_digest: str = Field(pattern=_SHA256)
     executed_at: AwareDatetime
+    execution_id: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    )
+    verification_manifest_ref: EvidenceArtifactRefV1 | None = None
+
+    @model_validator(mode="after")
+    def _verified_identity_group(self) -> SkillInputV1:
+        if (self.execution_id is None) != (self.verification_manifest_ref is None):
+            raise ValueError("verified execution identity and manifest ref must be supplied together")
+        return self
 
     @field_validator("capability_leafs")
     @classmethod

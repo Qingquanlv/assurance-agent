@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Iterator, Mapping
@@ -15,7 +17,16 @@ import yaml
 
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.attempts import BusinessActivation
 from graph_engine.frozen_json import thaw_json
+from graph_engine.plugin_api import (
+    InvocationMetadata,
+    TaskActivitySnapshot,
+    TaskContext,
+    TaskOutcome,
+    TaskRequest,
+    TaskWorkspaceIdentity,
+)
 from assurance_execution.contracts import ExecutionAgentResultV1
 from assurance_execution.operations import agent_skills
 from assurance_execution.operations.agent_skills import (
@@ -25,6 +36,9 @@ from assurance_execution.operations.agent_skills import (
     RunPrepareHandler,
 )
 from assurance_execution.resource_loader import resource_bytes
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1, CasePlanContextV1
+from assurance_generation.operations.execution_plan import compile_case_plan
+from assurance_intake.contracts.verification import AssertionSourcesV1
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     VALID_LEAFS,
@@ -36,6 +50,7 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     reviewed_cases,
 )
 from tests.acg_plan_fixture import install_plan
+from tests.verification_support import read_fixture
 
 _RESOURCES = Path(__file__).resolve().parent.parent / "assurance_execution" / "resources"
 _FORBIDDEN = (
@@ -121,6 +136,136 @@ def _business_payload(request: AgentRunRequest) -> dict[str, object]:
     thawed = thaw_json(value)
     assert isinstance(thawed, dict)
     return thawed
+
+
+def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
+    payload = _prepare_input(project)
+    case = read_fixture("user-case.json")
+    case["case_id"] = "TC_A"
+    sources_payload = read_fixture("user-sources.json")
+    sources_payload["case_id"] = "TC_A"
+    source = AssertionSourcesV1.model_validate(sources_payload)
+    raw_plan = read_fixture("user-plan.json")
+    context_payload = cast(dict[str, Any], raw_plan["context"])
+    context_payload["change_id"] = payload["change_id"]
+    context_payload["coverage_epoch"] = 0
+    context_payload["plan_digest"] = payload["plan_digest"]
+    context_payload["plan_ref"] = payload["plan_ref"]
+    reviewed = cast(dict[str, Any], context_payload["reviewed_case"])
+    reviewed["change_id"] = payload["change_id"]
+    reviewed["coverage_epoch"] = 0
+    reviewed["plan_digest"] = payload["plan_digest"]
+    reviewed["plan_ref"] = payload["plan_ref"]
+    reviewed["preparation_refs"] = [payload["plan_ref"]]
+    reviewed["case_refs"] = [
+        {
+            "path": "qa/changes/CH-DEMO-001/cases/items/case.yaml",
+            "digest": "b" * 64,
+        }
+    ]
+    reviewed["review_ref"] = {
+        "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+        "digest": "c" * 64,
+    }
+    context = CasePlanContextV1.model_validate(context_payload)
+    formal = compile_case_plan(
+        case,
+        source,
+        cast(dict[str, object], raw_plan["bindings"]),
+        "api_db.v1",
+        context=context,
+    )
+    plan_set = CaseExecutionPlanSetV1(change_id=cast(str, payload["change_id"]), cases=(formal,))
+    plan_relative = "qa/changes/CH-DEMO-001/plans/api-case-execution-plan.json"
+    plan_path = project / plan_relative
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_bytes = canonical_json_bytes(cast(JSONValue, plan_set.model_dump(mode="json")))
+    plan_path.write_bytes(plan_bytes)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            'CREATE TABLE "user" (username TEXT, email TEXT, is_active INTEGER, '
+            "is_superuser INTEGER, dept_id INTEGER)"
+        )
+    payload["verification"] = {
+        "validation_profile": "api_db.v1",
+        "case_execution_plan_ref": {
+            "path": plan_relative,
+            "digest": hashlib.sha256(plan_bytes).hexdigest(),
+        },
+        "nodeid": "tests/api/test_generated.py::test_tc_a_001__ok",
+        "business_activation": BusinessActivation.for_trigger("coverage.0.execute").model_dump(mode="json"),
+        "sut_instance_id": "managed-sut-1",
+        "sut_base_url": "http://127.0.0.1:32123",
+        "managed_sqlite_path": str(db.resolve()),
+        "observer_sqlite_path": str(db.resolve()),
+    }
+    return payload
+
+
+class _ActivityPort:
+    def __init__(self, snapshot: TaskActivitySnapshot) -> None:
+        self.snapshot = snapshot
+
+
+async def _execute_verified(
+    project: Path,
+    payload: dict[str, Any],
+    *,
+    attempt_key: str,
+) -> TaskOutcome:
+    attempt_token = attempt_key[:12]
+    write_root = project / "qa/changes/CH-DEMO-001/.staging" / attempt_token
+    write_root.mkdir(parents=True, exist_ok=True)
+    identity_payload = {
+        "task_id": attempt_key,
+        "attempt": 1,
+        "attempt_id": f"attempt-{attempt_token}",
+        "output_paths": [],
+        "baseline_files": [],
+        "project_digest": "a" * 64,
+        "write_root_digest": "a" * 64,
+        "layout_schema_version": "1",
+    }
+    identity = TaskWorkspaceIdentity(
+        **identity_payload,
+        identity_digest=agent_skills.canonical_digest(identity_payload),
+    )
+    invocation = InvocationMetadata(
+        invocation_id="verified-invocation",
+        lock_digest="a" * 64,
+        composition_digest="b" * 64,
+        entrypoint="full",
+    )
+    request = TaskRequest(
+        invocation_id=invocation.invocation_id,
+        task_id="verified-task",
+        graph_instance_id="verified-graph",
+        node_id="execution.execute",
+        capability_id="assurance.execution.agent.execute.v1",
+        binding_data=BINDING,
+        invocation=invocation,
+        attempt=1,
+        input=cast(JSONValue, payload),
+    )
+    snapshot = TaskActivitySnapshot(
+        activity_id=attempt_key,
+        request_digest="c" * 64,
+        workspace_identity=identity,
+        state="prepared",
+    )
+    return await ExecutePrepareHandler().execute(
+        request,
+        TaskContext(
+            project_root=project,
+            write_root=write_root,
+            workspace_identity=identity,
+            heartbeat=lambda: None,
+            cancel_requested=lambda: False,
+            invocation=invocation,
+            activity=cast(Any, _ActivityPort(snapshot)),
+        ),
+    )
 
 
 async def _prepared_finalize_payload(project: Path) -> tuple[dict[str, object], dict[str, Any]]:
@@ -276,6 +421,78 @@ async def test_execute_prepare_replay_authenticates_the_existing_attempt_view(tm
     assert "execution_view_root" in _business_payload(first_request)
     assert _business_payload(first_request) == _business_payload(second_request)
     assert first_request.canonical_bytes() == second_request.canonical_bytes()
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_freezes_manifest_and_uses_execution_scoped_view(
+    tmp_path: Path,
+) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+
+    first = await _execute_verified(tmp_path, payload, attempt_key="1" * 64)
+    second = await _execute_verified(tmp_path, payload, attempt_key="1" * 64)
+
+    assert first.status == second.status == "succeeded"
+    first_business = _business_payload(AgentRunRequest.model_validate(first.output))
+    second_business = _business_payload(AgentRunRequest.model_validate(second.output))
+    assert first_business == second_business
+    execution_id = cast(str, first_business["execution_id"])
+    assert execution_id
+    assert execution_id in cast(str, first_business["execution_view_root"])
+    manifest_ref = cast(dict[str, str], first_business["verification_manifest_ref"])
+    manifest = json.loads((tmp_path / manifest_ref["path"]).read_text())
+    assert manifest["execution_id"] == execution_id
+    assert manifest["attempt_key"] == {"digest": "1" * 64}
+    assert manifest["nodeid"] == "tests/api/test_generated.py::test_tc_a_001__ok"
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_recovery_rejects_unfrozen_manifest(tmp_path: Path) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    first = await _execute_verified(tmp_path, payload, attempt_key="6" * 64)
+    assert first.status == "succeeded"
+    business = _business_payload(AgentRunRequest.model_validate(first.output))
+    manifest_ref = cast(dict[str, str], business["verification_manifest_ref"])
+    manifest_path = tmp_path / manifest_ref["path"]
+    manifest_path.chmod(0o600)
+
+    recovery = await _execute_verified(tmp_path, payload, attempt_key="6" * 64)
+
+    assert recovery.status == "failed"
+    assert recovery.failure is not None
+    assert "not a frozen single-link file" in recovery.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_partial_or_mismatched_profile(tmp_path: Path) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    partial = dict(payload)
+    partial["verification"] = {"validation_profile": "api_db.v1"}
+
+    partial_outcome = await _execute_verified(tmp_path, partial, attempt_key="2" * 64)
+
+    assert partial_outcome.status == "failed"
+    assert partial_outcome.failure is not None
+    assert partial_outcome.failure.kind == "invalid_input"
+    mismatched = cast(dict[str, Any], payload["verification"])
+    mismatched["validation_profile"] = "api_db_trace.v1"
+    mismatch_outcome = await _execute_verified(tmp_path, payload, attempt_key="3" * 64)
+    assert mismatch_outcome.status == "failed"
+    assert mismatch_outcome.failure is not None
+    assert "frozen machine plan" in mismatch_outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_real_rerun_gets_new_execution_id(tmp_path: Path) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+
+    first = await _execute_verified(tmp_path, payload, attempt_key="4" * 64)
+    rerun = await _execute_verified(tmp_path, payload, attempt_key="5" * 64)
+
+    assert first.status == rerun.status == "succeeded"
+    first_id = _business_payload(AgentRunRequest.model_validate(first.output))["execution_id"]
+    rerun_id = _business_payload(AgentRunRequest.model_validate(rerun.output))["execution_id"]
+    assert first_id != rerun_id
 
 
 @pytest.mark.asyncio

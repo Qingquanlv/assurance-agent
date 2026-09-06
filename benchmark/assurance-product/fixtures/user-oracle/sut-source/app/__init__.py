@@ -1,4 +1,9 @@
 from contextlib import asynccontextmanager
+import hashlib
+import hmac
+import json
+import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from tortoise import Tortoise
@@ -20,6 +25,25 @@ except ImportError:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_data()
+    marker = Path(os.environ["AA_SUT_LIVE_MARKER"])
+    identity = {
+        "instance_id": os.environ["AA_SUT_INSTANCE_ID"],
+        "pid": os.getpid(),
+        "sqlite_path": settings.SQLITE_PATH,
+    }
+    encoded = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
+    token = bytes.fromhex(os.environ["AA_SUT_OWNERSHIP_TOKEN"])
+    marker.write_text(
+        json.dumps(
+            {
+                **identity,
+                "proof": f"hmac-sha256:{hmac.new(token, encoded, hashlib.sha256).hexdigest()}",
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     yield
     await Tortoise.close_connections()
 

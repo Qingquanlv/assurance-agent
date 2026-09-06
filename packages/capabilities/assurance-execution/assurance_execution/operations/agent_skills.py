@@ -14,6 +14,7 @@ import yaml
 
 from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
+from graph_engine.attempts import AttemptKey
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
@@ -25,9 +26,11 @@ from assurance_execution.contracts.agent import (
     ExecuteInputV1,
     RunSkillInputV1,
     SelectInputV1,
+    VerifiedExecutionPrepareV1,
 )
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
+from assurance_execution.contracts.verification import VerificationManifestV1
 from assurance_execution.execution_view import (
     ExecutionView,
     build_or_authenticate_execution_view,
@@ -49,9 +52,21 @@ from assurance_execution.operations.common import (
 from assurance_execution.operations.paths import resolve_canonical_evidence
 from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
-from assurance_generation.contracts import CodegenAuthoringV1
+from assurance_execution.operations.sqlite_oracle import observe_user
+from assurance_execution.operations.verification_manifest import (
+    allocate_user_inputs,
+    authenticate_verification_manifest,
+    build_verification_manifest,
+    sqlite_file_identity,
+)
+from assurance_generation.contracts import (
+    CaseExecutionPlanSetV1,
+    CaseExecutionPlanV1,
+    CodegenAuthoringV1,
+)
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_execution.resource_loader import resource_bytes, resource_text
 
 EXECUTE_SKILL = "skills/aa-execute/SKILL.md"
@@ -442,6 +457,8 @@ def assemble_execution_input(
     workspace: Path,
     write_root: Path,
     model: type[ExecuteInputV1] | type[RunSkillInputV1],
+    request: TaskRequest | None = None,
+    context: TaskContext | None = None,
 ) -> ExecuteInputV1 | RunSkillInputV1:
     root = validate_input(ExecutionPrepareInputV1, data)
     try:
@@ -512,14 +529,35 @@ def assemble_execution_input(
                 "runner_profile_digest": runner_profile_digest,
             }
         )
-        view = build_or_authenticate_execution_view(
-            workspace,
+        verified = _prepare_verified_execution(
+            root,
+            workspace=workspace,
             write_root=write_root,
-            change_id=root.change_id,
-            batch_id=batch_id,
-            merged=merged,
-            selected=closed.selected,
+            closed=closed,
+            request=request,
+            context=context,
         )
+        if verified is None:
+            view = build_or_authenticate_execution_view(
+                workspace,
+                write_root=write_root,
+                change_id=root.change_id,
+                batch_id=batch_id,
+                merged=merged,
+                selected=closed.selected,
+            )
+        else:
+            manifest, _ = verified
+            view = build_or_authenticate_execution_view(
+                workspace,
+                write_root=write_root,
+                request=merged.execution_view_input(
+                    change_id=root.change_id,
+                    batch_id=batch_id,
+                    execution_id=manifest.execution_id,
+                    selected=closed.selected,
+                ),
+            )
         physical_view = write_root.joinpath(*PurePosixPath(view.root).parts)
         execution_view_root = physical_view.resolve().relative_to(workspace.resolve()).as_posix()
         if view.executed_at is None:
@@ -544,6 +582,180 @@ def assemble_execution_input(
         execution_view_root=execution_view_root,
         execution_view_digest=view.digest,
         executed_at=view.executed_at,
+        execution_id=None if verified is None else verified[0].execution_id,
+        verification_manifest_ref=None if verified is None else verified[1],
+    )
+
+
+def _prepare_verified_execution(
+    root: ExecutionPrepareInputV1,
+    *,
+    workspace: Path,
+    write_root: Path,
+    closed: ClosedMappingV1,
+    request: TaskRequest | None,
+    context: TaskContext | None,
+) -> tuple[VerificationManifestV1, EvidenceArtifactRefV1] | None:
+    profile = root.verification
+    if profile is None:
+        return None
+    if request is None or context is None or context.activity is None:
+        raise InputError("verified execution requires authenticated task and activity context")
+    snapshot = context.activity.snapshot
+    if snapshot.workspace_identity != context.workspace_identity:
+        raise InputError("verified execution activity workspace identity does not match")
+    try:
+        attempt_key = AttemptKey(digest=context.workspace_identity.task_id)
+    except ValidationError as error:
+        raise InputError("verified execution workspace does not carry an AttemptKey") from error
+    if profile.nodeid not in closed.selected:
+        raise InputError("verified execution nodeid is outside the closed mapping")
+    plan_path = _regular_input_file(workspace, profile.case_execution_plan_ref.path)
+    plan_bytes = plan_path.read_bytes()
+    if hashlib.sha256(plan_bytes).hexdigest() != profile.case_execution_plan_ref.digest:
+        raise InputError("case execution plan digest changed before verified prepare")
+    try:
+        plan_set = CaseExecutionPlanSetV1.model_validate_json(plan_bytes)
+    except ValidationError as error:
+        raise InputError(f"case execution plan is invalid: {error}") from error
+    if len(plan_set.cases) != 1:
+        raise InputError("verified execution requires exactly one case execution plan")
+    plan = plan_set.cases[0]
+    mapped_case = next(item.case_id for item in closed.mappings if item.test == profile.nodeid)
+    if (
+        plan_set.change_id != root.change_id
+        or plan.case_id != mapped_case
+        or plan.plan_ref != root.plan_ref
+        or plan.plan_digest != root.plan_digest
+        or plan.coverage_epoch != root.coverage_epoch
+        or plan.validation_profile != profile.validation_profile
+    ):
+        raise InputError("verified execution profile does not match the frozen machine plan")
+    managed_path = Path(profile.managed_sqlite_path).resolve(strict=True)
+    observer_path = Path(profile.observer_sqlite_path).resolve(strict=True)
+    if managed_path != observer_path:
+        raise InputError("managed SUT and observer SQLite paths do not match")
+    database_identity = sqlite_file_identity(observer_path)
+    authorization_digest = context.workspace_identity.identity_digest
+    activity_digest = canonical_digest(snapshot.model_dump(mode="json"))
+    manifest_path = write_root / "verified-execution" / "verification-manifest.json"
+    manifest_ref_path = manifest_path.resolve(strict=False).relative_to(workspace.resolve()).as_posix()
+    if manifest_path.exists():
+        try:
+            manifest_stat = manifest_path.stat()
+            if (
+                manifest_path.is_symlink()
+                or not manifest_path.is_file()
+                or manifest_stat.st_nlink != 1
+                or manifest_stat.st_mode & 0o777 != 0o400
+            ):
+                raise ValueError("verification manifest is not a frozen single-link file")
+            manifest_bytes = manifest_path.read_bytes()
+            manifest = VerificationManifestV1.model_validate_json(manifest_bytes)
+            manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+            authenticate_verification_manifest(
+                manifest,
+                manifest_digest=canonical_digest(manifest.model_dump(mode="json")),
+                attempt_key=attempt_key,
+                invocation_id=request.invocation_id,
+                nodeid=profile.nodeid,
+                sqlite_path=observer_path,
+                username=manifest.inputs.username,
+                email=manifest.inputs.email,
+                authorization_scope_digest=authorization_digest,
+                activity_receipt_digest=activity_digest,
+            )
+        except (OSError, ValidationError, ValueError) as error:
+            raise InputError(f"verification manifest recovery failed: {error}") from error
+        if not _manifest_matches_plan(manifest, plan, root, profile, request, closed):
+            raise InputError("verification manifest does not match the frozen prepare input")
+    else:
+
+        def collides(username: str, email: str) -> bool:
+            observation = observe_user(
+                observer_path,
+                username,
+                email,
+                expected_identity=database_identity,
+            )
+            if observation["state"] != "observed":
+                raise ValueError(f"SQLite allocation observation failed: {observation['reason']}")
+            return bool(observation["rows"])
+
+        try:
+            inputs = allocate_user_inputs(collides)
+            manifest = build_verification_manifest(
+                change_id=root.change_id,
+                case_id=plan.case_id,
+                nodeid=profile.nodeid,
+                invocation_id=request.invocation_id,
+                task_id=request.task_id,
+                graph_instance_id=request.graph_instance_id,
+                attempt_key=attempt_key,
+                business_activation=profile.business_activation,
+                coverage_epoch=root.coverage_epoch,
+                repair_round=root.repair_round,
+                authorization_scope_digest=authorization_digest,
+                activity_receipt_digest=activity_digest,
+                plan_ref=root.plan_ref.path,
+                plan_digest=root.plan_digest,
+                case_execution_plan_ref=profile.case_execution_plan_ref.path,
+                case_execution_plan_digest=profile.case_execution_plan_ref.digest,
+                spec_digest=plan.spec_digest,
+                mapping_digest=mapping_digest(closed),
+                sut_digest=plan.sut_digest,
+                technical_config_digest=plan.technical_config_digest,
+                validation_profile=profile.validation_profile,
+                sut_base_url=profile.sut_base_url,
+                sut_instance_id=profile.sut_instance_id,
+                sut_sqlite_path=managed_path,
+                sqlite_path=observer_path,
+                username=inputs.username,
+                email=inputs.email,
+                evidence_root=f"qa/changes/{root.change_id}/execution",
+            )
+            manifest_bytes = (
+                json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+            ).encode()
+            manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+            try:
+                os.write(descriptor, manifest_bytes)
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError) as error:
+            raise InputError(f"could not freeze verified execution manifest: {error}") from error
+    return manifest, EvidenceArtifactRefV1(path=manifest_ref_path, digest=manifest_digest)
+
+
+def _manifest_matches_plan(
+    manifest: VerificationManifestV1,
+    plan: CaseExecutionPlanV1,
+    root: ExecutionPrepareInputV1,
+    profile: VerifiedExecutionPrepareV1,
+    request: TaskRequest,
+    closed: ClosedMappingV1,
+) -> bool:
+    return (
+        manifest.change_id == root.change_id
+        and manifest.case_id == plan.case_id
+        and manifest.task_id == request.task_id
+        and manifest.graph_instance_id == request.graph_instance_id
+        and manifest.business_activation == profile.business_activation
+        and manifest.coverage_epoch == root.coverage_epoch
+        and manifest.repair_round == root.repair_round
+        and manifest.plan_ref == root.plan_ref.path
+        and manifest.plan_digest == root.plan_digest
+        and manifest.case_execution_plan_ref == profile.case_execution_plan_ref.path
+        and manifest.case_execution_plan_digest == profile.case_execution_plan_ref.digest
+        and manifest.spec_digest == plan.spec_digest
+        and manifest.mapping_digest == mapping_digest(closed)
+        and manifest.sut_digest == plan.sut_digest
+        and manifest.technical_config_digest == plan.technical_config_digest
+        and manifest.validation_profile == profile.validation_profile
+        and manifest.sut.instance_id == profile.sut_instance_id
+        and manifest.sut.base_url == profile.sut_base_url
     )
 
 
@@ -559,7 +771,7 @@ def _discard_execution_view(
     project_root: Path,
     write_root: Path,
 ) -> None:
-    relative = execution_view_relative(payload.change_id, payload.batch_id)
+    relative = execution_view_relative(payload.change_id, payload.batch_id, payload.execution_id)
     expected = write_root.joinpath(*PurePosixPath(relative).parts)
     try:
         project_relative = expected.resolve().relative_to(project_root.resolve()).as_posix()
@@ -572,6 +784,8 @@ def _discard_execution_view(
         root=relative,
         selected_targets=payload.mapping.selected,
         digest=payload.execution_view_digest,
+        mode="verified" if payload.execution_id is not None else "legacy",
+        execution_id=payload.execution_id,
     )
     try:
         discard_authenticated_execution_view(write_root, view)
@@ -590,7 +804,9 @@ def _commit_execution_evidence(
     output = resolve_canonical_evidence(write_root, evidence.change_id, filename)
     expected = json.dumps(evidence.model_dump(mode="json"), indent=2).encode("utf-8") + b"\n"
     view = write_root.joinpath(
-        *PurePosixPath(execution_view_relative(payload.change_id, payload.batch_id)).parts
+        *PurePosixPath(
+            execution_view_relative(payload.change_id, payload.batch_id, payload.execution_id)
+        ).parts
     )
     if output.exists():
         if (
@@ -703,6 +919,8 @@ class ExecutePrepareHandler:
                 workspace=context.project_root,
                 write_root=context.write_root,
                 model=ExecuteInputV1,
+                request=request,
+                context=context,
             )
             return prepare_outcome(
                 skill_path=EXECUTE_SKILL,
@@ -725,6 +943,8 @@ class RunPrepareHandler:
                 workspace=context.project_root,
                 write_root=context.write_root,
                 model=RunSkillInputV1,
+                request=request,
+                context=context,
             )
             return prepare_outcome(
                 skill_path=RUN_SKILL,

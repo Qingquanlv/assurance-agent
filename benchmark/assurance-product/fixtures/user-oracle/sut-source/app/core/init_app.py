@@ -5,6 +5,7 @@ from aerich import Command
 from fastapi import FastAPI
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
+from tortoise import Tortoise
 from tortoise.expressions import Q
 
 from app.api import api_router
@@ -184,6 +185,9 @@ async def init_apis():
 
 
 async def init_db():
+    if os.environ.get("AA_SUT_PREPARED_DB") == "1":
+        await Tortoise.init(config=settings.TORTOISE_ORM)
+        return
     command = Command(tortoise_config=settings.TORTOISE_ORM)
     try:
         await command.init_db(safe=True)
@@ -194,7 +198,9 @@ async def init_db():
     try:
         await command.migrate()
     except AttributeError:
-        logger.warning("unable to retrieve model history from database, model history will be created from scratch")
+        logger.warning(
+            "unable to retrieve model history from database, model history will be created from scratch"
+        )
         shutil.rmtree("migrations")
         await command.init_db(safe=True)
 

@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from assurance_execution.contracts.verification import SqliteFileIdentityV1
+
 
 _USER_QUERY = """\
 SELECT username, email, is_active, is_superuser, dept_id
@@ -22,10 +24,13 @@ def observe_user(
     username: str,
     email: str,
     timeout_s: float = 2.0,
+    *,
+    expected_identity: SqliteFileIdentityV1 | None = None,
 ) -> dict[str, Any]:
     """Read committed User rows through a new read-only SQLite connection."""
-    if timeout_s <= 0:
-        return _failed("timeout", "oracle_budget_exhausted")
+    deadline = time.monotonic() + timeout_s
+    if isinstance(timeout_s, bool) or not 0 < timeout_s <= 10:
+        raise ValueError("oracle timeout must be greater than zero and at most 10 seconds")
     supplied = Path(db_file)
     if supplied.is_symlink():
         return _failed("error", "database_path_is_symlink")
@@ -38,11 +43,31 @@ def observe_user(
         return _failed("error", "database_unreadable")
     if not stat.S_ISREG(before.st_mode):
         return _failed("error", "database_not_regular")
-    deadline = time.monotonic() + timeout_s
+    before_identity = _identity(path, before)
+    if expected_identity is not None and before_identity != expected_identity.model_dump(mode="json"):
+        return _failed("error", "database_identity_mismatch")
+    remaining = _remaining(deadline)
+    if remaining is None:
+        return _failed("timeout", "oracle_budget_exhausted")
     uri = f"{path.as_uri()}?mode=ro"
     try:
-        with sqlite3.connect(uri, uri=True, timeout=timeout_s) as connection:
+        with sqlite3.connect(uri, uri=True, timeout=remaining) as connection:
+            remaining = _remaining(deadline)
+            if remaining is None:
+                return _failed("timeout", "oracle_budget_exhausted")
+            try:
+                opened = path.stat()
+            except OSError:
+                return _failed("error", "database_file_changed")
+            if _remaining(deadline) is None:
+                return _failed("timeout", "oracle_budget_exhausted")
+            opened_identity = _identity(path, opened)
+            if opened_identity != before_identity:
+                return _failed("error", "database_file_changed")
+            if expected_identity is not None and opened_identity != expected_identity.model_dump(mode="json"):
+                return _failed("error", "database_identity_mismatch")
             connection.execute("PRAGMA query_only = ON")
+            connection.execute(f"PRAGMA busy_timeout = {max(1, int(remaining * 1000))}")
             connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 100)
             rows = connection.execute(_USER_QUERY, (username, email)).fetchall()
     except sqlite3.OperationalError as error:
@@ -52,12 +77,19 @@ def observe_user(
         return _failed("error", "database_query_failed")
     except sqlite3.DatabaseError:
         return _failed("error", "database_query_failed")
+    if _remaining(deadline) is None:
+        return _failed("timeout", "oracle_budget_exhausted")
     try:
         after = path.stat()
     except OSError:
         return _failed("error", "database_file_changed")
-    if _identity(before) != _identity(after):
+    after_identity = _identity(path, after)
+    if before_identity != after_identity:
         return _failed("error", "database_file_changed")
+    if expected_identity is not None and after_identity != expected_identity.model_dump(mode="json"):
+        return _failed("error", "database_identity_mismatch")
+    if _remaining(deadline) is None:
+        return _failed("timeout", "oracle_budget_exhausted")
     normalized: list[dict[str, Any]] = []
     for row in rows:
         active = _strict_bool(row[2], "is_active")
@@ -79,7 +111,8 @@ def observe_user(
         "state": "observed",
         "rows": normalized,
         "reason": None,
-        "database_identity": _identity(after),
+        "database_identity": after_identity,
+        "database_metadata": _metadata(after),
     }
 
 
@@ -89,17 +122,34 @@ def _strict_bool(value: object, field: str) -> bool | str:
     return f"invalid_boolean:{field}"
 
 
-def _identity(details: Any) -> dict[str, int]:
+def _identity(path: Path, details: Any) -> dict[str, str | int]:
     return {
+        "path": str(path),
         "device": int(details.st_dev),
         "inode": int(details.st_ino),
+    }
+
+
+def _metadata(details: Any) -> dict[str, int]:
+    return {
         "size": int(details.st_size),
         "mtime_ns": int(details.st_mtime_ns),
     }
 
 
+def _remaining(deadline: float) -> float | None:
+    remaining = deadline - time.monotonic()
+    return remaining if remaining > 0 else None
+
+
 def _failed(state: str, reason: str) -> dict[str, Any]:
-    return {"state": state, "rows": [], "reason": reason, "database_identity": None}
+    return {
+        "state": state,
+        "rows": [],
+        "reason": reason,
+        "database_identity": None,
+        "database_metadata": None,
+    }
 
 
 __all__ = ["observe_user"]

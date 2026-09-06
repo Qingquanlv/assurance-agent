@@ -49,6 +49,7 @@ line-length = 110
 target-version = "py311"
 extend-exclude = [
     "benchmark/vue-fastapi-admin",
+    "benchmark/assurance-product/fixtures/user-oracle/sut-source",
     "benchmark/**/results",
     "tmp",
     ".worktrees",

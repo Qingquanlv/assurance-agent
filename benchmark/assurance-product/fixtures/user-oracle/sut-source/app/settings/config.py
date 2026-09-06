@@ -1,5 +1,6 @@
 import os
 import typing
+from pathlib import Path
 
 from pydantic_settings import BaseSettings
 
@@ -15,12 +16,13 @@ class Settings(BaseSettings):
     CORS_ALLOW_METHODS: typing.List = ["*"]
     CORS_ALLOW_HEADERS: typing.List = ["*"]
 
-    DEBUG: bool = True
+    DEBUG: bool = False
 
     PROJECT_ROOT: str = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
     BASE_DIR: str = os.path.abspath(os.path.join(PROJECT_ROOT, os.pardir))
     LOGS_ROOT: str = os.path.join(BASE_DIR, "app/logs")
     SECRET_KEY: str = os.environ["AA_SUT_SECRET_KEY"]
+    SQLITE_PATH: str = str(Path(os.environ["AA_SUT_SQLITE_PATH"]).resolve(strict=False))
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 day
     TORTOISE_ORM: dict = {
@@ -28,7 +30,7 @@ class Settings(BaseSettings):
             # SQLite configuration
             "sqlite": {
                 "engine": "tortoise.backends.sqlite",
-                "credentials": {"file_path": f"{BASE_DIR}/db.sqlite3"},  # Path to SQLite database file
+                "credentials": {"file_path": SQLITE_PATH},
             },
             # MySQL/MariaDB configuration
             # Install with: tortoise-orm[asyncmy]

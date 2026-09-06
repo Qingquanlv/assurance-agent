@@ -20,6 +20,7 @@ from assurance_execution.contracts.verification import (
     ManagedSutV1,
     ObservationV1,
     SqliteFileIdentityV1,
+    SqliteObservationMetadataV1,
     VerificationEvidenceV1,
     VerificationManifestV1,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "ManagedSutV1",
     "ObservationV1",
     "SqliteFileIdentityV1",
+    "SqliteObservationMetadataV1",
     "VerificationEvidenceV1",
     "VerificationManifestV1",
     "attempt_contract_refs",
