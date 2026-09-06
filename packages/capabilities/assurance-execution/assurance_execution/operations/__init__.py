@@ -21,6 +21,7 @@ from assurance_execution.operations.sqlite_oracle import observe_user
 from assurance_execution.operations.verification_manifest import (
     allocate_user_inputs,
     authenticate_verification_manifest,
+    build_managed_sut_authority,
     build_verification_manifest,
     sqlite_file_identity,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "SelectHandler",
     "allocate_user_inputs",
     "authenticate_verification_manifest",
+    "build_managed_sut_authority",
     "build_verification_manifest",
     "execution_handlers",
     "observe_user",

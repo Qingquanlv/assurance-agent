@@ -40,6 +40,7 @@ from assurance_execution.contracts import ExecutionAgentResultV1
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_execution.operations import agent_skills
+from assurance_execution.operations import build_managed_sut_authority
 from assurance_execution.operations.agent_skills import (
     ExecuteFinalizeHandler,
     ExecutePrepareHandler,
@@ -273,6 +274,18 @@ def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
     start_document = _seal_test_receipt(start_unsigned, ownership_token)
     start_bytes = (json.dumps(start_document, indent=2, sort_keys=True) + "\n").encode()
     start_receipt.write_bytes(start_bytes)
+    token_stat = token_path.stat()
+    authority = build_managed_sut_authority(
+        run_root=run_root.resolve(),
+        ownership_token_path=token_path.resolve(),
+        ownership_token_device=token_stat.st_dev,
+        ownership_token_inode=token_stat.st_ino,
+        ownership_token_digest="sha256:" + hashlib.sha256(ownership_token).hexdigest(),
+        prepare_receipt_digest=hashlib.sha256(prepare_bytes).hexdigest(),
+        start_receipt_digest=hashlib.sha256(start_bytes).hexdigest(),
+        authorization_scope_digest="0" * 64,
+        activity_receipt_digest="0" * 64,
+    )
     payload["verification"] = {
         "validation_profile": "api_db.v1",
         "case_execution_plan_ref": {
@@ -294,6 +307,7 @@ def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
             "path": start_receipt.relative_to(project).as_posix(),
             "digest": hashlib.sha256(start_bytes).hexdigest(),
         },
+        "managed_sut_authority": authority.model_dump(mode="json"),
     }
     return payload
 
@@ -301,6 +315,33 @@ def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
 class _ActivityPort:
     def __init__(self, snapshot: TaskActivitySnapshot) -> None:
         self.snapshot = snapshot
+
+
+def _bind_test_managed_sut_authority(
+    payload: dict[str, Any],
+    *,
+    attempt_key: str,
+    invocation_id: str,
+    task_id: str,
+    graph_instance_id: str,
+    node_id: str,
+    workspace_identity_digest: str,
+) -> None:
+    profile = cast(dict[str, Any], payload["verification"])
+    if "managed_sut_authority" not in profile:
+        return
+    authority = cast(dict[str, Any], profile["managed_sut_authority"])
+    authority["authorization_scope_digest"] = workspace_identity_digest
+    authority["activity_receipt_digest"] = agent_skills.canonical_digest(
+        {
+            "attempt_key": attempt_key,
+            "invocation_id": invocation_id,
+            "task_id": task_id,
+            "graph_instance_id": graph_instance_id,
+            "node_id": node_id,
+            "workspace_identity_digest": workspace_identity_digest,
+        }
+    )
 
 
 async def _execute_verified(
@@ -331,6 +372,15 @@ async def _execute_verified(
         lock_digest="a" * 64,
         composition_digest="b" * 64,
         entrypoint="full",
+    )
+    _bind_test_managed_sut_authority(
+        payload,
+        attempt_key=attempt_key,
+        invocation_id=invocation.invocation_id,
+        task_id="verified-task",
+        graph_instance_id="verified-graph",
+        node_id="execution.execute",
+        workspace_identity_digest=identity.identity_digest,
     )
     request = TaskRequest(
         invocation_id=invocation.invocation_id,
@@ -376,15 +426,16 @@ class _ExecutorVerifiedPrepare:
             composition_digest=digest,
             entrypoint=scope.execution.public_entrypoint,
         )
+        task_id = agent_skills.canonical_digest(
+            {
+                "attempt_key": scope.execution.attempt_key.digest,
+                "handler_id": "assurance.execution.execute.prepare",
+                "phase": "prepare",
+            }
+        )
         request = TaskRequest(
             invocation_id=scope.execution.invocation_id,
-            task_id=agent_skills.canonical_digest(
-                {
-                    "attempt_key": scope.execution.attempt_key.digest,
-                    "handler_id": "assurance.execution.execute.prepare",
-                    "phase": "prepare",
-                }
-            ),
+            task_id=task_id,
             graph_instance_id=scope.execution.invocation_id,
             node_id=scope.execution.semantic_node_id,
             capability_id="assurance.execution.execute.prepare",
@@ -471,6 +522,22 @@ def _verified_executor_scope(
             fencing_token=1,
         ),
         workspace=binding,
+    )
+    prepare_task_id = agent_skills.canonical_digest(
+        {
+            "attempt_key": attempt_key.digest,
+            "handler_id": "assurance.execution.execute.prepare",
+            "phase": "prepare",
+        }
+    )
+    _bind_test_managed_sut_authority(
+        payload,
+        attempt_key=attempt_key.digest,
+        invocation_id=scope.execution.invocation_id,
+        task_id=prepare_task_id,
+        graph_instance_id=scope.execution.invocation_id,
+        node_id=scope.execution.semantic_node_id,
+        workspace_identity_digest=binding.identity.identity_digest,
     )
     return store, provider, scope
 
@@ -662,6 +729,24 @@ async def test_verified_prepare_freezes_manifest_and_uses_execution_scoped_view(
 
 
 @pytest.mark.asyncio
+async def test_verified_prepare_rejects_fabricated_self_consistent_sut_bundle(
+    tmp_path: Path,
+) -> None:
+    trusted = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    trusted_profile = cast(dict[str, Any], trusted["verification"])
+    trusted_authority = json.loads(json.dumps(trusted_profile["managed_sut_authority"]))
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".fabricated/sut/db.sqlite3")
+    fabricated_profile = cast(dict[str, Any], payload["verification"])
+    fabricated_profile["managed_sut_authority"] = trusted_authority
+
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="d" * 64)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "independent managed SUT authority" in outcome.failure.message
+
+
+@pytest.mark.asyncio
 async def test_verified_prepare_passes_raw_executor_claim_validation_and_promotion(
     tmp_path: Path,
 ) -> None:
@@ -778,7 +863,7 @@ async def test_verified_prepare_rejects_tampered_receipt_with_recomputed_referen
 
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "managed SUT receipt seal changed" in outcome.failure.message
+    assert "independent managed SUT authority" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -823,6 +908,9 @@ async def test_verified_prepare_rejects_authenticated_non_sqlite_sut_config(tmp_
     start_bytes = (json.dumps(started, indent=2, sort_keys=True) + "\n").encode()
     start_path.write_bytes(start_bytes)
     start_ref["digest"] = hashlib.sha256(start_bytes).hexdigest()
+    authority = cast(dict[str, Any], profile["managed_sut_authority"])
+    authority["prepare_receipt_digest"] = prepare_ref["digest"]
+    authority["start_receipt_digest"] = start_ref["digest"]
 
     outcome = await _execute_verified(tmp_path, payload, attempt_key="a" * 64)
 

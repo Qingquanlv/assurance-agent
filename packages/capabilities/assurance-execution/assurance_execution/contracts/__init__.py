@@ -17,6 +17,8 @@ from assurance_execution.contracts.workflow import ExecutionCycleInputV1, Execut
 from assurance_execution.contracts.verification import (
     EvidenceCompletionV1,
     FrozenUserInputsV1,
+    ManagedSutAuthorityV1,
+    ManagedSutOwnershipTokenV1,
     ManagedSutV1,
     ObservationV1,
     SqliteFileIdentityV1,
@@ -40,6 +42,8 @@ __all__ = [
     "SelectedTargets",
     "EvidenceCompletionV1",
     "FrozenUserInputsV1",
+    "ManagedSutAuthorityV1",
+    "ManagedSutOwnershipTokenV1",
     "ManagedSutV1",
     "ObservationV1",
     "SqliteFileIdentityV1",

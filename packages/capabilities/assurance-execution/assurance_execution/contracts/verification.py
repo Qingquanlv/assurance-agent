@@ -14,6 +14,7 @@ from assurance_generation.contracts.execution_plan import ValidationProfile
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 _SHA256 = r"^[0-9a-f]{64}$"
+_TAGGED_SHA256 = r"^sha256:[0-9a-f]{64}$"
 _EXECUTION_ID = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 
 
@@ -53,6 +54,53 @@ class SqliteFileIdentityV1(FrozenModel):
 class SqliteObservationMetadataV1(FrozenModel):
     size: int = Field(ge=0)
     mtime_ns: int = Field(ge=0)
+
+
+class ManagedSutOwnershipTokenV1(FrozenModel):
+    path: str = Field(min_length=1)
+    device: int = Field(ge=0)
+    inode: int = Field(ge=0)
+    digest: str = Field(pattern=_TAGGED_SHA256)
+
+    @field_validator("path")
+    @classmethod
+    def _canonical_path(cls, value: str) -> str:
+        from pathlib import Path
+
+        path = Path(value)
+        if not path.is_absolute() or str(path.resolve(strict=False)) != value:
+            raise ValueError("managed SUT ownership token path must be canonical and absolute")
+        return value
+
+
+class ManagedSutAuthorityV1(FrozenModel):
+    """Host-retained trust anchor independent of the managed SUT receipt bundle."""
+
+    schema_version: Literal["1"] = "1"
+    run_root: str = Field(min_length=1)
+    ownership_token: ManagedSutOwnershipTokenV1
+    prepare_receipt_digest: str = Field(pattern=_SHA256)
+    start_receipt_digest: str = Field(pattern=_SHA256)
+    authorization_scope_digest: str = Field(pattern=_SHA256)
+    activity_receipt_digest: str = Field(pattern=_SHA256)
+
+    @field_validator("run_root")
+    @classmethod
+    def _canonical_run_root(cls, value: str) -> str:
+        from pathlib import Path
+
+        path = Path(value)
+        if not path.is_absolute() or str(path.resolve(strict=False)) != value:
+            raise ValueError("managed SUT authority run root must be canonical and absolute")
+        return value
+
+    @model_validator(mode="after")
+    def _fixed_token_path(self) -> Self:
+        from pathlib import Path
+
+        if Path(self.ownership_token.path) != Path(self.run_root) / ".ownership-token":
+            raise ValueError("managed SUT authority token path does not match its run root")
+        return self
 
 
 class ManagedSutV1(FrozenModel):
@@ -196,6 +244,8 @@ class VerificationEvidenceV1(FrozenModel):
 __all__ = [
     "EvidenceCompletionV1",
     "FrozenUserInputsV1",
+    "ManagedSutAuthorityV1",
+    "ManagedSutOwnershipTokenV1",
     "ManagedSutV1",
     "ObservationState",
     "ObservationV1",

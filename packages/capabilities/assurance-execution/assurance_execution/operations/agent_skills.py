@@ -33,7 +33,11 @@ from assurance_execution.contracts.agent import (
 )
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
-from assurance_execution.contracts.verification import SqliteFileIdentityV1, VerificationManifestV1
+from assurance_execution.contracts.verification import (
+    ManagedSutAuthorityV1,
+    SqliteFileIdentityV1,
+    VerificationManifestV1,
+)
 from assurance_execution.execution_view import (
     ExecutionView,
     build_or_authenticate_execution_view,
@@ -626,7 +630,6 @@ def _prepare_verified_execution(
         or plan.validation_profile != profile.validation_profile
     ):
         raise InputError("verified execution profile does not match the frozen machine plan")
-    managed_path, observer_path, database_identity = _authenticate_managed_sut_receipts(workspace, profile)
     authorization_digest = context.workspace_identity.identity_digest
     activity_digest = canonical_digest(
         {
@@ -637,6 +640,12 @@ def _prepare_verified_execution(
             "node_id": request.node_id,
             "workspace_identity_digest": context.workspace_identity.identity_digest,
         }
+    )
+    managed_path, observer_path, database_identity = _authenticate_managed_sut_receipts(
+        workspace,
+        profile,
+        authorization_scope_digest=authorization_digest,
+        activity_receipt_digest=activity_digest,
     )
     execution_id = _execution_id(attempt_key, profile.nodeid)
     _safe_staging_component(root.change_id, "change_id")
@@ -695,6 +704,7 @@ def _prepare_verified_execution(
         "inputs": profile.user_inputs.model_dump(mode="json"),
         "managed_sut_prepare_receipt_ref": profile.managed_sut_prepare_receipt_ref.model_dump(mode="json"),
         "managed_sut_start_receipt_ref": profile.managed_sut_start_receipt_ref.model_dump(mode="json"),
+        "managed_sut_authority": profile.managed_sut_authority.model_dump(mode="json"),
     }
     receipt_bytes = (json.dumps(receipt_document, indent=2, sort_keys=True) + "\n").encode()
     if manifest_path.exists():
@@ -796,15 +806,23 @@ def _runtime_qualification_digest(value: Mapping[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _managed_sut_ownership_token(run_root: Path) -> bytes:
-    path = run_root / ".ownership-token"
+def _managed_sut_ownership_token(run_root: Path, authority: ManagedSutAuthorityV1) -> bytes:
+    path = Path(authority.ownership_token.path)
+    if path != run_root / ".ownership-token":
+        raise InputError("independent managed SUT authority token path does not match")
     if path.is_symlink() or not path.is_file():
         raise InputError("managed SUT ownership token is missing")
     details = path.stat()
-    if details.st_nlink != 1 or details.st_uid != os.getuid() or details.st_mode & 0o077:
+    if (
+        details.st_nlink != 1
+        or details.st_uid != os.getuid()
+        or details.st_mode & 0o077
+        or details.st_dev != authority.ownership_token.device
+        or details.st_ino != authority.ownership_token.inode
+    ):
         raise InputError("managed SUT ownership token permissions do not match")
     token = path.read_bytes()
-    if len(token) != 32:
+    if len(token) != 32 or f"sha256:{hashlib.sha256(token).hexdigest()}" != authority.ownership_token.digest:
         raise InputError("managed SUT ownership token is invalid")
     return token
 
@@ -826,10 +844,34 @@ def _authenticate_managed_sut_seal(
 def _authenticate_managed_sut_receipts(
     workspace: Path,
     profile: VerifiedExecutionPrepareV1,
+    *,
+    authorization_scope_digest: str,
+    activity_receipt_digest: str,
 ) -> tuple[Path, Path, SqliteFileIdentityV1]:
+    authority = profile.managed_sut_authority
+    if (
+        authority.authorization_scope_digest != authorization_scope_digest
+        or authority.activity_receipt_digest != activity_receipt_digest
+        or authority.prepare_receipt_digest != profile.managed_sut_prepare_receipt_ref.digest
+        or authority.start_receipt_digest != profile.managed_sut_start_receipt_ref.digest
+    ):
+        raise InputError("independent managed SUT authority does not match authenticated prepare")
+    try:
+        workspace_root = workspace.resolve(strict=True)
+        run_root = Path(authority.run_root).resolve(strict=True)
+        run_root.relative_to(workspace_root)
+        prepare_relative = (run_root / "harness-prepare.json").relative_to(workspace_root).as_posix()
+        start_relative = (run_root / "owned-process.json").relative_to(workspace_root).as_posix()
+    except (OSError, ValueError) as error:
+        raise InputError("independent managed SUT authority run root is invalid") from error
+    if (
+        profile.managed_sut_prepare_receipt_ref.path != prepare_relative
+        or profile.managed_sut_start_receipt_ref.path != start_relative
+    ):
+        raise InputError("independent managed SUT authority receipt paths do not match")
+    ownership_token = _managed_sut_ownership_token(run_root, authority)
     prepare_path, prepared = _receipt_document(workspace, profile.managed_sut_prepare_receipt_ref, "prepare")
     start_path, started = _receipt_document(workspace, profile.managed_sut_start_receipt_ref, "start")
-    run_root = start_path.parent.resolve(strict=True)
     sut_dir = run_root / "sut"
     sqlite_path = sut_dir / "db.sqlite3"
     if prepare_path != run_root / "harness-prepare.json" or start_path != run_root / "owned-process.json":
@@ -854,7 +896,6 @@ def _authenticate_managed_sut_receipts(
         or prepared.get("runtime_digest") != started.get("runtime_digest")
     ):
         raise InputError("managed SUT receipt identity does not match")
-    ownership_token = _managed_sut_ownership_token(run_root)
     _authenticate_managed_sut_seal(prepared, label="prepare", ownership_token=ownership_token)
     _authenticate_managed_sut_seal(started, label="start", ownership_token=ownership_token)
     qualification = prepared.get("runtime_qualification")

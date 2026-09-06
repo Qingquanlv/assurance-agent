@@ -13,7 +13,7 @@ from graph_engine.attempts import BusinessActivation
 
 from assurance_execution.contracts.execution import ExecutionReceiptV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
-from assurance_execution.contracts.verification import FrozenUserInputsV1
+from assurance_execution.contracts.verification import FrozenUserInputsV1, ManagedSutAuthorityV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_generation.contracts.execution_plan import ValidationProfile
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, require_same_plan
@@ -64,6 +64,7 @@ class VerifiedExecutionPrepareV1(FrozenModel):
     user_inputs: FrozenUserInputsV1
     managed_sut_prepare_receipt_ref: EvidenceArtifactRefV1
     managed_sut_start_receipt_ref: EvidenceArtifactRefV1
+    managed_sut_authority: ManagedSutAuthorityV1
 
     @field_validator("nodeid")
     @classmethod

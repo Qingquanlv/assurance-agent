@@ -276,7 +276,7 @@ def _file_identity(path: Path) -> dict[str, str | int]:
     }
 
 
-def _provision_runtime(run_root: Path, requirements_lock: Path) -> Path:
+def _provision_runtime(run_root: Path, requirements_lock: Path, *, offline: bool) -> Path:
     runtime = Path(run_root) / "runtime"
     uv = shutil.which("uv")
     if uv is None:
@@ -290,8 +290,20 @@ def _provision_runtime(run_root: Path, requirements_lock: Path) -> Path:
         "TZ": "UTC",
         "UV_CACHE_DIR": cache,
         "UV_NO_CONFIG": "1",
-        "UV_OFFLINE": "1",
     }
+    install_command = [
+        uv,
+        "--no-config",
+        "pip",
+        "install",
+        "--python",
+        str(runtime / "bin" / "python"),
+        "--require-hashes",
+        "-r",
+        str(requirements_lock),
+    ]
+    if offline:
+        install_command.insert(2, "--offline")
     try:
         subprocess.run(  # noqa: S603
             [sys.executable, "-I", "-m", "venv", "--without-pip", str(runtime)],
@@ -301,20 +313,8 @@ def _provision_runtime(run_root: Path, requirements_lock: Path) -> Path:
             stderr=subprocess.PIPE,
             env=environment,
         )
-        python = runtime / "bin" / "python"
         subprocess.run(  # noqa: S603
-            [
-                uv,
-                "--no-config",
-                "pip",
-                "install",
-                "--offline",
-                "--python",
-                str(python),
-                "--require-hashes",
-                "-r",
-                str(requirements_lock),
-            ],
+            install_command,
             check=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -323,7 +323,7 @@ def _provision_runtime(run_root: Path, requirements_lock: Path) -> Path:
         )
     except subprocess.CalledProcessError as error:
         raise ValueError("NOT_READY: harness-owned Python runtime provisioning failed") from error
-    return python
+    return runtime / "bin" / "python"
 
 
 def _directory_identity(path: Path) -> dict[str, str | int]:
@@ -395,6 +395,7 @@ def prepare(
     workspace_root: Path,
     project_dir: Path,
     run_root: Path,
+    offline: bool = False,
 ) -> dict[str, Any]:
     """Materialize one project and one exclusive managed-SUT runtime from the snapshot."""
     locked = verify_runtime_lock(FIXTURE_ROOT)
@@ -417,7 +418,7 @@ def prepare(
         db_file,
         sut / "migrations" / "models" / "0_20260721171822_init.py",
     )
-    python = _provision_runtime(run, sut / "requirements.lock")
+    python = _provision_runtime(run, sut / "requirements.lock", offline=offline)
     qualification = _qualify_runtime(python, sut, db_file, run)
     ownership_token = _create_ownership_token(run)
     receipt = _seal(
@@ -433,6 +434,7 @@ def prepare(
             "sqlite_identity": _sqlite_identity(db_file),
             "source_digest": locked["source_digest"],
             "runtime_digest": locked["runtime_digest"],
+            "runtime_provision_mode": "offline" if offline else "locked-network",
             "runtime_qualification": qualification,
             "runtime_qualification_digest": _json_digest(qualification),
             "ownership_token_digest": f"sha256:{hashlib.sha256(ownership_token).hexdigest()}",
@@ -751,6 +753,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--workspace-root", type=Path, required=True)
     prepare_parser.add_argument("--project-dir", type=Path, required=True)
     prepare_parser.add_argument("--run-root", type=Path, required=True)
+    prepare_parser.add_argument("--offline", action="store_true")
     start_parser = commands.add_parser("start")
     start_parser.add_argument("--workspace-root", type=Path, required=True)
     start_parser.add_argument("--prepare-receipt", type=Path, required=True)
@@ -768,6 +771,7 @@ def main(argv: list[str] | None = None) -> int:
             workspace_root=arguments.workspace_root,
             project_dir=arguments.project_dir,
             run_root=arguments.run_root,
+            offline=arguments.offline,
         )
     elif arguments.command == "start":
         output = start(

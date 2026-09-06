@@ -82,6 +82,7 @@ def test_prepare_qualifies_actual_snapshot_and_confines_outputs(tmp_path: Path) 
     workspace, receipt = _prepare(harness, tmp_path)
 
     assert receipt["state"] == "prepared"
+    assert receipt["runtime_provision_mode"] == "locked-network"
     assert Path(receipt["project_dir"]) == (workspace / "project").resolve()
     assert Path(receipt["sqlite_path"]) == (workspace / "runs/attempt-1/sut/db.sqlite3").resolve()
     assert receipt["runtime_qualification"]["python_version"].startswith("3.11.")
@@ -93,6 +94,25 @@ def test_prepare_qualifies_actual_snapshot_and_confines_outputs(tmp_path: Path) 
     )
     assert not list((workspace / "project").rglob("node_modules"))
     assert not list((workspace / "project").rglob("*.sqlite3"))
+
+
+def test_offline_prepare_with_empty_cache_is_not_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _load_harness()
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+    empty_cache = tmp_path / "empty-uv-cache"
+    empty_cache.mkdir()
+    monkeypatch.setenv("UV_CACHE_DIR", str(empty_cache))
+
+    with pytest.raises(ValueError, match="NOT_READY: harness-owned Python runtime provisioning failed"):
+        harness.prepare(
+            workspace_root=workspace,
+            project_dir=workspace / "project",
+            run_root=workspace / "runs/attempt-1",
+            offline=True,
+        )
 
 
 def test_runtime_qualification_rejects_perfect_json_shell(tmp_path: Path) -> None:
