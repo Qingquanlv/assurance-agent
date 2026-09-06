@@ -8,7 +8,8 @@ from types import FunctionType
 import pytest
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
+from graph_engine.composition.sources import WheelPluginDeclaration
+from graph_engine.plugin_api import PluginDependency, ProviderSource
 
 from assurance_quality.operations import quality_handlers
 from assurance_quality.plugin import QUALITY_SOURCE, QualityPlugin
@@ -45,8 +46,9 @@ def test_static_declaration_equals_live_descriptor() -> None:
     static = json.loads(
         files("assurance_quality").joinpath("plugin-declaration.json").read_text(encoding="utf-8")
     )
-    payload = static["descriptor"] if isinstance(static, dict) and "descriptor" in static else static
-    assert PluginDescriptor.model_validate(payload) == QualityPlugin.descriptor()
+    declaration = WheelPluginDeclaration.model_validate(static)
+    assert declaration.descriptor == QualityPlugin.descriptor()
+    assert declaration.source == QUALITY_SOURCE
 
 
 def test_quality_source_identity() -> None:
