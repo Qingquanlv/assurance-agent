@@ -56,11 +56,11 @@ _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.generation.workflow.generate.input.v1": (
         "1",
-        "b82538a6f82fbc2d2facc46982b9bf6890839875ed584042600f44979c602632",
+        "940e0fc7647aa3fe68bccecaec4af951903fababeac56e1ab6314954167e556d",
     ),
     "assurance.generation.workflow.generate.output.v1": (
         "1",
-        "720afbd9e6cc36a4281851bd21eff27778919855b5fec0d98302d87b52599d78",
+        "ed44f659a1f3ec7d9cd80b3c0bd2a4461f26a13eb27d09e8703193d8366a455d",
     ),
 }
 

@@ -98,7 +98,7 @@ def build_thin_entrypoint_graphs(
     bundles = coerce_feature_bundles(features)
     entrypoints = {
         "intake": build_intake_root(context, bundles.intake.prepare, bundles.intake.case),
-        "case": build_case_root(context, bundles.intake.case),
+        "case": build_case_root(context, bundles.intake.load_plan, bundles.intake.case),
         "archive": build_archive_root(context, bundles.improvement.archive),
         "retro": build_retro_root(context, bundles.improvement.retro),
         "issue-review": build_issue_review_root(context, bundles.quality.issue_review),
@@ -155,7 +155,7 @@ def build_product_graphs(
     stale_tail_nodes = _FORBIDDEN_PRODUCT_TAIL_NODES.intersection(execute_tail.nodes)
     if stale_tail_nodes:
         raise ValueError(f"obsolete Product coverage nodes are reachable: {sorted(stale_tail_nodes)}")
-    execute = build_execute_root(context, bundles, execute_tail)
+    execute = build_execute_root(context, bundles, bundles.intake.load_plan, execute_tail)
     full = build_full_root(context, bundles, execute_tail)
     entrypoints = {
         **dict(thin.entrypoints),

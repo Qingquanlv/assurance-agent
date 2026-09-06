@@ -108,6 +108,17 @@ def test_capability_catalog_is_derived_from_exact_typed_knowledge_leafs():
     )
 
 
+def test_journey_keys_are_a_separate_closed_knowledge_projection():
+    from assurance_product.configuration import journey_keys_from_knowledge
+
+    assert journey_keys_from_knowledge({"journeys": ["checkout", "refund"]}) == (
+        "checkout",
+        "refund",
+    )
+    with pytest.raises(ValueError, match="journeys"):
+        journey_keys_from_knowledge({"journeys": ["refund", "checkout"]})
+
+
 def test_parse_project_config_rejects_unknown_fields(config_document):
     from assurance_product.configuration import ProjectConfigurationError, parse_project_config
 

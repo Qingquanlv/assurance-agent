@@ -75,8 +75,14 @@ def _coverage_brief(*, change_id: str = "CH-COV-002") -> dict[str, object]:
 
 def failure_graph_input(**overrides: object) -> dict[str, object]:
     source = "qa/changes/CH-FIX-001/generated/api/files/tests/api/test_items.py"
+    plan_ref = {
+        "path": f"qa/changes/CH-FIX-001/plan/{_SHA}/resolved-assurance-plan.json",
+        "digest": _SHA,
+    }
     payload: dict[str, object] = {
         "change_id": "CH-FIX-001",
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
         "capability_leafs": ["entities.item.create"],
         "allowed_artifact_paths": ["qa/changes"],
         "classification": "test",
@@ -98,7 +104,12 @@ def failure_graph_input(**overrides: object) -> dict[str, object]:
         "reviewed_case": {
             "change_id": "CH-FIX-001",
             "coverage_epoch": 0,
-            "preparation_refs": [{"path": "qa/changes/CH-FIX-001/intake/prepare.json", "digest": _SHA}],
+            "plan_digest": _SHA,
+            "plan_ref": plan_ref,
+            "preparation_refs": [
+                {"path": "qa/changes/CH-FIX-001/intake/prepare.json", "digest": _SHA},
+                plan_ref,
+            ],
             "case_refs": [{"path": "qa/changes/CH-FIX-001/cases/api/case.yaml", "digest": _SHA}],
             "review_ref": {
                 "path": "qa/changes/CH-FIX-001/review/case-review.json",
@@ -175,6 +186,11 @@ def test_proposal_publisher_exposes_the_committed_proposal_reference() -> None:
 def application_output() -> dict[str, object]:
     return {
         "change_id": "CH-FIX-001",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-FIX-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "coverage_epoch": 0,
         "repair_round": 1,
         "changed_test_refs": [

@@ -108,12 +108,10 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
     executed = await execute_task(
         review_finalize_handler(family),
         {
-            "validated_input": {
-                **plan_input(family),
-                "coverage_epoch": 2,
-                "local_round": 1,
-            },
-            "agent_result": envelope["agent_result"],
+            **envelope,
+            "change_id": "CH-DEMO-001",
+            "coverage_epoch": 2,
+            "local_round": 1,
         },
         tmp_path,
         write_root=stage,

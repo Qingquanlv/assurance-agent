@@ -134,6 +134,8 @@ def route_families(state: Mapping[str, object]) -> list[Send]:
                 family,
                 {
                     "change_id": state.get("change_id"),
+                    "plan_digest": state.get("plan_digest"),
+                    "plan_ref": state.get("plan_ref"),
                     "coverage_epoch": state.get("coverage_epoch", 0),
                     "reviewed_case": state.get("reviewed_case"),
                     "selected_test_families": list(selected),

@@ -19,6 +19,7 @@ from tests.phase4.six_wheel_harness import (
     _start_until_blocked,
     resolve_fixture,
 )
+from tests.acg_plan_fixture import install_plan
 
 from assurance_execution.operations.agent_skills import ExecuteFinalizeHandler
 from assurance_generation.operations.planning import PlanFinalizeHandler
@@ -44,6 +45,10 @@ WHEEL_FINALIZERS = {
 }
 
 _HEX = "a" * 64
+_PLAN_REF = {
+    "path": f"qa/changes/CH-DEMO-001/plan/{_HEX}/resolved-assurance-plan.json",
+    "digest": _HEX,
+}
 
 
 @dataclass
@@ -85,6 +90,8 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
     base: dict[str, Any] = {
         "capability_leafs": ["auth.session.create", "entities.item.create"],
         "artifact_paths": [],
+        "plan_digest": _HEX,
+        "plan_ref": _PLAN_REF,
     }
     if wheel == "generation":
         base["allowed_paths"] = []
@@ -118,6 +125,8 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
     if wheel == "healing":
         prepare = {
             "change_id": "CH-DEMO-001",
+            "plan_digest": _HEX,
+            "plan_ref": _PLAN_REF,
             "owner_id": "assurance.healing",
             "capability_leafs": list(base["capability_leafs"]),
             "allowed_paths": ["tests/api/test_users.py"],
@@ -141,6 +150,8 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                     "change_id": "CH-DEMO-001",
                     "coverage_epoch": 0,
                     "batch_id": "batch-1",
+                    "plan_digest": _HEX,
+                    "plan_ref": _PLAN_REF,
                     "scope": {
                         "change_id": "CH-DEMO-001",
                         "coverage_epoch": 0,
@@ -185,8 +196,11 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                 "reviewed_case": {
                     "change_id": "CH-DEMO-001",
                     "coverage_epoch": 0,
+                    "plan_digest": _HEX,
+                    "plan_ref": _PLAN_REF,
                     "preparation_refs": [
-                        {"path": "qa/changes/CH-DEMO-001/intake/prepare.json", "digest": _HEX}
+                        {"path": "qa/changes/CH-DEMO-001/intake/prepare.json", "digest": _HEX},
+                        _PLAN_REF,
                     ],
                     "case_refs": [{"path": "qa/changes/CH-DEMO-001/cases/api/case.yaml", "digest": _HEX}],
                     "review_ref": {
@@ -206,6 +220,8 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
         )
     if wheel == "improvement":
         base.pop("capability_leafs", None)
+        base.pop("plan_digest", None)
+        base.pop("plan_ref", None)
         base.update(
             {
                 "change_id": "CH-DEMO-001",
@@ -259,7 +275,18 @@ async def run_finalize_cut(wheel: str, cut: str) -> IndeterminateObservation:
     with TemporaryDirectory(prefix="phase4-indeterminate-") as temporary:
         workspace = Path(temporary)
         marker = workspace / "outside-must-not-appear.txt"
-        executed = await execute_task(cast(Any, handler), _cut_payload(wheel, cut), workspace)
+        payload = _cut_payload(wheel, cut)
+        if wheel == "intake":
+            plan, plan_ref = install_plan(
+                workspace,
+                "CH-DEMO-001",
+                capability_leafs=("auth.session.create", "entities.item.create"),
+            )
+            payload = cast(
+                JSONValue,
+                {**cast(dict[str, Any], payload), "plan_digest": plan.plan_digest, "plan_ref": plan_ref},
+            )
+        executed = await execute_task(cast(Any, handler), payload, workspace)
         return _from_executed(executed, workspace, marker.exists())
 
 

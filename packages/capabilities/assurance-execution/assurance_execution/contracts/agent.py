@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, Field, field_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
@@ -13,6 +13,7 @@ from graph_engine.plugin_api import FrozenModel
 from assurance_execution.contracts.execution import ExecutionReceiptV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, require_same_plan
 
 _SHA256 = r"^[0-9a-f]{64}$"
 
@@ -83,6 +84,8 @@ class ExecutionPrepareInputV1(FrozenModel):
     """Root data from which prepare locks the executable test selection."""
 
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
     capability_leafs: tuple[str, ...]
     coverage_epoch: int = Field(default=0, ge=0)
@@ -105,9 +108,22 @@ class ExecutionPrepareInputV1(FrozenModel):
     def _prepare_capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _sorted_unique(value, label="capability leaf")
 
+    @model_validator(mode="after")
+    def _plan_matches_generation(self) -> ExecutionPrepareInputV1:
+        if self.generation_result is not None:
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.generation_result.plan_digest,
+                self.generation_result.plan_ref,
+            )
+        return self
+
 
 class RunTestsInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     batch_id: str = Field(min_length=1)
     selected_targets: SelectedTargets
     mapping: ClosedMappingV1
@@ -129,6 +145,8 @@ class RunTestsInputV1(FrozenModel):
 
 class NormalizeInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     batch_id: str = Field(min_length=1)
     selected_targets: SelectedTargets
     mapping: ClosedMappingV1
@@ -161,6 +179,8 @@ class NormalizeInputV1(FrozenModel):
 
 class SkillInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     batch_id: str = Field(min_length=1)
     capability_leafs: tuple[str, ...]
     case_ids: tuple[str, ...]

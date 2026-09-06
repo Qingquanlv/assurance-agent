@@ -17,6 +17,7 @@ from assurance_improvement.contracts.retro import (
 )
 from assurance_improvement.operations.retro_slices import RetroBuildSlicesExecutor
 from assurance_intake.contracts import EvidenceArtifactRefV1, build_loop_round_history
+from tests.acg_plan_fixture import install_plan
 
 _SHA = "a" * 64
 _CHANGE = "CH-RETRO-001"
@@ -139,3 +140,97 @@ async def test_missing_loop_history_is_an_integrity_gap_not_a_reconstructed_roun
     assert result.output.workflow_slice.entries == ()
     assert result.output.workflow_slice.integrity.status == "incomplete"
     assert result.output.workflow_slice.integrity.reasons == ("loop_history_missing",)
+    source = result.output.eval_slice.sources[0]
+    assert source.plan_digest is None
+    assert source.plan_ref is None
+
+
+@pytest.mark.asyncio
+async def test_each_plan_bound_source_retains_its_own_authenticated_plan(tmp_path: Path) -> None:
+    second_change = "CH-RETRO-002"
+    first_plan, first_ref_value = install_plan(tmp_path, _CHANGE)
+    second_plan, second_ref_value = install_plan(
+        tmp_path,
+        second_change,
+        candidates=("api", "fuzz"),
+        proposed=("fuzz",),
+    )
+    first_plan_ref = EvidenceArtifactRefV1.model_validate(first_ref_value)
+    second_plan_ref = EvidenceArtifactRefV1.model_validate(second_ref_value)
+    report_refs = (
+        _write(
+            tmp_path,
+            f"qa/changes/{_CHANGE}/report/report-outcome.json",
+            _json_bytes(
+                {
+                    "change_id": _CHANGE,
+                    "plan_digest": first_plan.plan_digest,
+                    "plan_ref": first_ref_value,
+                }
+            ),
+        ),
+        _write(
+            tmp_path,
+            f"qa/changes/{second_change}/report/report-outcome.json",
+            _json_bytes(
+                {
+                    "change_id": second_change,
+                    "plan_digest": second_plan.plan_digest,
+                    "plan_ref": second_ref_value,
+                }
+            ),
+        ),
+    )
+    window = RetroWindow.model_validate(
+        {
+            "selection": {
+                "mode": "change_ids",
+                "requested_change_ids": [_CHANGE, second_change],
+            },
+            "change_ids": [_CHANGE, second_change],
+        }
+    )
+    request = RetroBuildSlicesInputV1(
+        retro_id="retro-multiple-plans",
+        window=window,
+        source_refs=tuple(
+            sorted(
+                (*report_refs, first_plan_ref, second_plan_ref),
+                key=lambda item: item.path,
+            )
+        ),
+    )
+
+    result = await RetroBuildSlicesExecutor().execute(request, _scope(tmp_path))
+
+    bindings = {
+        source.change_id: (source.plan_digest, source.plan_ref) for source in result.output.eval_slice.sources
+    }
+    assert bindings == {
+        _CHANGE: (first_plan.plan_digest, first_plan_ref),
+        second_change: (second_plan.plan_digest, second_plan_ref),
+    }
+
+
+@pytest.mark.asyncio
+async def test_plan_bound_source_requires_the_exact_plan_ref_in_source_refs(tmp_path: Path) -> None:
+    plan, ref_value = install_plan(tmp_path, _CHANGE)
+    report_ref = _write(
+        tmp_path,
+        f"qa/changes/{_CHANGE}/report/report-outcome.json",
+        _json_bytes(
+            {
+                "change_id": _CHANGE,
+                "plan_digest": plan.plan_digest,
+                "plan_ref": ref_value,
+            }
+        ),
+    )
+    request = RetroBuildSlicesInputV1(
+        retro_id="retro-missing-plan-source",
+        window=_WINDOW,
+        source_refs=(report_ref,),
+    )
+
+    with pytest.raises(ValueError, match="exact plan source"):
+        await RetroBuildSlicesExecutor().execute(request, _scope(tmp_path))

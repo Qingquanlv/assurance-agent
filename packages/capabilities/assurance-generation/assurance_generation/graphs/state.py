@@ -189,6 +189,8 @@ class GenerationState(CheckpointBridgeState, total=False):
     reviewed_case: dict[str, object]
     source_artifacts: list[dict[str, str]]
     change_id: str
+    plan_digest: str
+    plan_ref: dict[str, str]
     selected_test_families: list[str]
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]

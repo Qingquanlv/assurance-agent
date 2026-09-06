@@ -30,7 +30,11 @@ from assurance_intake.contracts.agent import (
     FinalizedArtifactsV1,
     IntakeInputV1,
 )
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
+from assurance_intake.contracts.attempts import (
+    AGENT_JOB_CONTRACTS,
+    TASK_ATTEMPT_CONTRACTS,
+    attempt_contract_refs,
+)
 from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceInput,
     ReviewRoundAdvanceOutput,
@@ -229,8 +233,23 @@ def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:
     assert refs == contribution.attempt_contracts == descriptor.attempt_contracts
     assert all(isinstance(item, AttemptContractRef) for item in refs)
     assert tuple(item.contract_id for item in refs) == tuple(
-        sorted(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values())
+        sorted(
+            contract.contract_id
+            for contract in (*AGENT_JOB_CONTRACTS.values(), *TASK_ATTEMPT_CONTRACTS.values())
+        )
     )
+
+
+def test_intake_owns_resolve_and_read_only_load_plan_tasks() -> None:
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-plan", "load-plan")
+    resolve = TASK_ATTEMPT_CONTRACTS["resolve-plan"]
+    load = TASK_ATTEMPT_CONTRACTS["load-plan"]
+    assert resolve.contract_id == "assurance.intake.task.resolve-plan"
+    assert resolve.handler_id == "assurance.intake.resolve-plan"
+    assert resolve.resources.writes == ("qa/changes/{change_id}/plan",)
+    assert load.contract_id == "assurance.intake.task.load-plan"
+    assert load.handler_id == "assurance.intake.load-plan"
+    assert load.resources.writes == ()
 
 
 def test_review_round_advance_is_not_a_task_contract() -> None:

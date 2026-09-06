@@ -28,6 +28,7 @@ from assurance_improvement.contracts.retro import (
 )
 from assurance_improvement.operations.retro import RetroCollectInput
 from assurance_intake.contracts import EvidenceArtifactRefV1, LoopRoundHistoryV1
+from assurance_intake.contracts.plan import decode_plan
 from assurance_quality.contracts.agent import InspectionResultV1
 from assurance_quality.contracts.issues import ChangeIssueSnapshot
 
@@ -71,6 +72,7 @@ def _descriptor(
     ref: EvidenceArtifactRefV1,
     change_id: str | None,
     evidence_ids: Iterable[str] = (),
+    plan_binding: tuple[str, EvidenceArtifactRefV1] | None = None,
 ) -> RetroSourceDescriptor:
     return RetroSourceDescriptor.model_validate(
         {
@@ -78,8 +80,37 @@ def _descriptor(
             "change_id": change_id,
             "sha256": ref.digest,
             "evidence_ids": sorted(set(evidence_ids)),
+            "plan_digest": plan_binding[0] if plan_binding is not None else None,
+            "plan_ref": plan_binding[1] if plan_binding is not None else None,
         }
     )
+
+
+def _source_plan_binding(
+    document: object,
+    *,
+    source_refs: dict[str, EvidenceArtifactRefV1],
+    project_root: Path,
+) -> tuple[str, EvidenceArtifactRefV1] | None:
+    if not isinstance(document, dict):
+        return None
+    raw_digest = document.get("plan_digest")
+    raw_ref = document.get("plan_ref")
+    if raw_digest is None and raw_ref is None:
+        return None
+    if raw_digest is None or raw_ref is None:
+        raise RetroSlicesInputError("plan-bound Retro source has an incomplete plan binding")
+    try:
+        ref = EvidenceArtifactRefV1.model_validate(raw_ref)
+    except ValidationError as error:
+        raise RetroSlicesInputError("plan-bound Retro source has an invalid plan_ref") from error
+    supplied = source_refs.get(ref.path)
+    if supplied != ref:
+        raise RetroSlicesInputError("plan-bound Retro source did not include its exact plan source")
+    plan = decode_plan(_read_ref(project_root, ref), ref)
+    if raw_digest != plan.plan_digest:
+        raise RetroSlicesInputError("plan-bound Retro source plan_digest does not match its plan")
+    return plan.plan_digest, ref
 
 
 def _history_entry(history: LoopRoundHistoryV1) -> LoopRoundEvidenceEntry:
@@ -139,6 +170,7 @@ def build_retro_slices(
 ) -> RetroCollectInput:
     selected_changes = frozenset(request.window.change_ids)
     refs = tuple(ref for ref in request.source_refs if _selected(ref, selected_changes))
+    refs_by_path = {ref.path: ref for ref in refs}
     issue_sources: list[RetroSourceDescriptor] = []
     issue_entries: list[IssueEvidenceEntry] = []
     workflow_sources: list[RetroSourceDescriptor] = []
@@ -178,8 +210,9 @@ def build_retro_slices(
             )
             continue
         if ref.path.endswith("/inspect/inspection.json"):
+            payload = _json(data, ref.path)
             try:
-                inspection = InspectionResultV1.model_validate(_json(data, ref.path))
+                inspection = InspectionResultV1.model_validate(payload)
             except (ValidationError, RetroSlicesInputError):
                 eval_reasons.append("inspection_evidence_corrupt")
                 continue
@@ -194,6 +227,11 @@ def build_retro_slices(
                     ref=ref,
                     change_id=inspection.change_id,
                     evidence_ids=(entry.run_id,),
+                    plan_binding=_source_plan_binding(
+                        payload,
+                        source_refs=refs_by_path,
+                        project_root=project_root,
+                    ),
                 )
             )
             continue
@@ -218,10 +256,34 @@ def build_retro_slices(
             )
             continue
         if "/report/" in ref.path:
-            eval_sources.append(_descriptor(kind="report_outcome", ref=ref, change_id=change_id))
+            payload = _json(data, ref.path) if ref.path.endswith(".json") else None
+            eval_sources.append(
+                _descriptor(
+                    kind="report_outcome",
+                    ref=ref,
+                    change_id=change_id,
+                    plan_binding=_source_plan_binding(
+                        payload,
+                        source_refs=refs_by_path,
+                        project_root=project_root,
+                    ),
+                )
+            )
             continue
         if "/inspect/" in ref.path:
-            eval_sources.append(_descriptor(kind="inspection_outcome", ref=ref, change_id=change_id))
+            payload = _json(data, ref.path) if ref.path.endswith(".json") else None
+            eval_sources.append(
+                _descriptor(
+                    kind="inspection_outcome",
+                    ref=ref,
+                    change_id=change_id,
+                    plan_binding=_source_plan_binding(
+                        payload,
+                        source_refs=refs_by_path,
+                        project_root=project_root,
+                    ),
+                )
+            )
 
     if not history_seen:
         workflow_reasons.append("loop_history_missing")

@@ -1,5 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "AdapterEvidenceRefV1": {
       "additionalProperties": false,
@@ -40,6 +39,11 @@
     "ApplyProjectionV1": {
       "additionalProperties": false,
       "properties": {
+        "file_count": {
+          "minimum": 0,
+          "title": "File Count",
+          "type": "integer"
+        },
         "manifest_digest": {
           "anyOf": [
             {
@@ -50,11 +54,6 @@
             }
           ],
           "title": "Manifest Digest"
-        },
-        "file_count": {
-          "minimum": 0,
-          "title": "File Count",
-          "type": "integer"
         }
       },
       "required": [
@@ -94,9 +93,9 @@
     "CoverageProgressV1": {
       "additionalProperties": false,
       "properties": {
-        "round": {
-          "title": "Round",
-          "type": "integer"
+        "decision": {
+          "title": "Decision",
+          "type": "string"
         },
         "maximum_rounds": {
           "title": "Maximum Rounds",
@@ -105,9 +104,9 @@
         "measured": {
           "title": "Measured"
         },
-        "decision": {
-          "title": "Decision",
-          "type": "string"
+        "round": {
+          "title": "Round",
+          "type": "integer"
         }
       },
       "required": [
@@ -130,10 +129,6 @@
           "title": "Kind",
           "type": "string"
         },
-        "state": {
-          "title": "State",
-          "type": "string"
-        },
         "receipt_digest": {
           "anyOf": [
             {
@@ -144,6 +139,10 @@
             }
           ],
           "title": "Receipt Digest"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
         }
       },
       "required": [
@@ -158,14 +157,14 @@
     "EvidenceArtifactRefV1": {
       "additionalProperties": false,
       "properties": {
-        "path": {
-          "minLength": 1,
-          "title": "Path",
-          "type": "string"
-        },
         "digest": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Digest",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
           "type": "string"
         }
       },
@@ -179,14 +178,6 @@
     "ExecutionGateRefV1": {
       "additionalProperties": false,
       "properties": {
-        "semantic_node_id": {
-          "enum": [
-            "execution.execute",
-            "execution.run"
-          ],
-          "title": "Semantic Node Id",
-          "type": "string"
-        },
         "batch_id": {
           "minLength": 1,
           "title": "Batch Id",
@@ -195,6 +186,14 @@
         "execution_digest": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Execution Digest",
+          "type": "string"
+        },
+        "semantic_node_id": {
+          "enum": [
+            "execution.execute",
+            "execution.run"
+          ],
+          "title": "Semantic Node Id",
           "type": "string"
         }
       },
@@ -209,12 +208,12 @@
     "GraphStatusV1": {
       "additionalProperties": false,
       "properties": {
-        "graph_instance_id": {
-          "title": "Graph Instance Id",
-          "type": "string"
-        },
         "graph_id": {
           "title": "Graph Id",
+          "type": "string"
+        },
+        "graph_instance_id": {
+          "title": "Graph Instance Id",
           "type": "string"
         },
         "parent_graph_instance_id": {
@@ -253,6 +252,19 @@
     "InspectionOutcomeV1": {
       "additionalProperties": false,
       "properties": {
+        "assessment_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Assessment Refs",
+          "type": "array"
+        },
+        "batch_id": {
+          "minLength": 1,
+          "title": "Batch Id",
+          "type": "string"
+        },
         "change_id": {
           "minLength": 1,
           "title": "Change Id",
@@ -262,46 +274,6 @@
           "minimum": 0,
           "title": "Coverage Epoch",
           "type": "integer"
-        },
-        "batch_id": {
-          "minLength": 1,
-          "title": "Batch Id",
-          "type": "string"
-        },
-        "disposition": {
-          "enum": [
-            "satisfied",
-            "coverage_insufficient",
-            "repairable_execution_failure",
-            "needs_human",
-            "blocked"
-          ],
-          "title": "Disposition",
-          "type": "string"
-        },
-        "inspection_receipt": {
-          "$ref": "#/$defs/ReceiptRef"
-        },
-        "reviewed_case": {
-          "$ref": "#/$defs/ReviewedCaseV1"
-        },
-        "mapping_ref": {
-          "$ref": "#/$defs/EvidenceArtifactRefV1"
-        },
-        "assessment_refs": {
-          "items": {
-            "$ref": "#/$defs/EvidenceArtifactRefV1"
-          },
-          "minItems": 1,
-          "title": "Assessment Refs",
-          "type": "array"
-        },
-        "reason_codes": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Reason Codes",
-          "type": "array"
         },
         "coverage_state": {
           "anyOf": [
@@ -321,12 +293,49 @@
           ],
           "default": null,
           "title": "Coverage State"
+        },
+        "disposition": {
+          "enum": [
+            "satisfied",
+            "coverage_insufficient",
+            "repairable_execution_failure",
+            "needs_human",
+            "blocked"
+          ],
+          "title": "Disposition",
+          "type": "string"
+        },
+        "inspection_receipt": {
+          "$ref": "#/$defs/ReceiptRef"
+        },
+        "mapping_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
+          "type": "string"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "reviewed_case": {
+          "$ref": "#/$defs/ReviewedCaseV1"
         }
       },
       "required": [
         "change_id",
         "coverage_epoch",
         "batch_id",
+        "plan_digest",
+        "plan_ref",
         "disposition",
         "inspection_receipt",
         "reviewed_case",
@@ -340,9 +349,53 @@
     "NodeStatusV1": {
       "additionalProperties": false,
       "properties": {
+        "activity_reference_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Activity Reference Digest"
+        },
+        "attempt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Attempt"
+        },
+        "failure_category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Failure Category"
+        },
         "graph_instance_id": {
           "title": "Graph Instance Id",
           "type": "string"
+        },
+        "lease_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lease State"
         },
         "node_id": {
           "title": "Node Id",
@@ -362,50 +415,6 @@
           ],
           "title": "State",
           "type": "string"
-        },
-        "attempt": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Attempt"
-        },
-        "lease_state": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Lease State"
-        },
-        "failure_category": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Failure Category"
-        },
-        "activity_reference_digest": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Activity Reference Digest"
         }
       },
       "required": [
@@ -423,16 +432,16 @@
     "PendingInterruptStatusV1": {
       "additionalProperties": false,
       "properties": {
-        "node_id": {
-          "title": "Node Id",
-          "type": "string"
-        },
         "actions": {
           "items": {
             "type": "string"
           },
           "title": "Actions",
           "type": "array"
+        },
+        "node_id": {
+          "title": "Node Id",
+          "type": "string"
         },
         "reason_category": {
           "title": "Reason Category",
@@ -487,14 +496,14 @@
     "ReceiptRef": {
       "additionalProperties": false,
       "properties": {
-        "receipt_id": {
-          "minLength": 1,
-          "title": "Receipt Id",
-          "type": "string"
-        },
         "receipt_digest": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Receipt Digest",
+          "type": "string"
+        },
+        "receipt_id": {
+          "minLength": 1,
+          "title": "Receipt Id",
           "type": "string"
         }
       },
@@ -508,6 +517,11 @@
     "ReportOutcomeV1": {
       "additionalProperties": false,
       "properties": {
+        "batch_id": {
+          "minLength": 1,
+          "title": "Batch Id",
+          "type": "string"
+        },
         "change_id": {
           "minLength": 1,
           "title": "Change Id",
@@ -518,12 +532,18 @@
           "title": "Coverage Epoch",
           "type": "integer"
         },
-        "batch_id": {
-          "minLength": 1,
-          "title": "Batch Id",
+        "inspection_receipt": {
+          "$ref": "#/$defs/ReceiptRef"
+        },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
           "type": "string"
         },
-        "inspection_receipt": {
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "report_receipt": {
           "$ref": "#/$defs/ReceiptRef"
         },
         "report_refs": {
@@ -533,9 +553,6 @@
           "minItems": 1,
           "title": "Report Refs",
           "type": "array"
-        },
-        "report_receipt": {
-          "$ref": "#/$defs/ReceiptRef"
         }
       },
       "required": [
@@ -543,6 +560,8 @@
         "coverage_epoch",
         "batch_id",
         "inspection_receipt",
+        "plan_digest",
+        "plan_ref",
         "report_refs",
         "report_receipt"
       ],
@@ -552,6 +571,14 @@
     "ReviewedCaseV1": {
       "additionalProperties": false,
       "properties": {
+        "case_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceArtifactRefV1"
+          },
+          "minItems": 1,
+          "title": "Case Refs",
+          "type": "array"
+        },
         "change_id": {
           "minLength": 1,
           "title": "Change Id",
@@ -562,20 +589,20 @@
           "title": "Coverage Epoch",
           "type": "integer"
         },
+        "plan_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Plan Digest",
+          "type": "string"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
         "preparation_refs": {
           "items": {
             "$ref": "#/$defs/EvidenceArtifactRefV1"
           },
           "minItems": 1,
           "title": "Preparation Refs",
-          "type": "array"
-        },
-        "case_refs": {
-          "items": {
-            "$ref": "#/$defs/EvidenceArtifactRefV1"
-          },
-          "minItems": 1,
-          "title": "Case Refs",
           "type": "array"
         },
         "review_ref": {
@@ -585,6 +612,8 @@
       "required": [
         "change_id",
         "coverage_epoch",
+        "plan_digest",
+        "plan_ref",
         "preparation_refs",
         "case_refs",
         "review_ref"
@@ -595,59 +624,18 @@
   },
   "additionalProperties": false,
   "properties": {
-    "schema_version": {
-      "const": "1",
-      "title": "Schema Version",
-      "type": "string"
-    },
-    "invocation_id": {
-      "title": "Invocation Id",
-      "type": "string"
-    },
-    "lock_digest": {
-      "title": "Lock Digest",
-      "type": "string"
-    },
-    "root_input_digest": {
-      "title": "Root Input Digest",
-      "type": "string"
-    },
-    "status": {
-      "enum": [
-        "running",
-        "blocked",
-        "interrupted",
-        "stopped",
-        "failed",
-        "completed"
-      ],
-      "title": "Status",
-      "type": "string"
-    },
-    "entrypoint": {
-      "title": "Entrypoint",
-      "type": "string"
-    },
-    "graph_hierarchy": {
+    "adapter_evidence": {
       "items": {
-        "$ref": "#/$defs/GraphStatusV1"
+        "$ref": "#/$defs/AdapterEvidenceRefV1"
       },
-      "title": "Graph Hierarchy",
+      "title": "Adapter Evidence",
       "type": "array"
     },
-    "node_states": {
-      "items": {
-        "$ref": "#/$defs/NodeStatusV1"
-      },
-      "title": "Node States",
-      "type": "array"
+    "apply": {
+      "$ref": "#/$defs/ApplyProjectionV1"
     },
-    "selected_test_families": {
-      "items": {
-        "type": "string"
-      },
-      "title": "Selected Test Families",
-      "type": "array"
+    "change": {
+      "$ref": "#/$defs/ChangeProjectionV1"
     },
     "coverage_progress": {
       "anyOf": [
@@ -666,12 +654,9 @@
       "title": "Durable Effects",
       "type": "array"
     },
-    "adapter_evidence": {
-      "items": {
-        "$ref": "#/$defs/AdapterEvidenceRefV1"
-      },
-      "title": "Adapter Evidence",
-      "type": "array"
+    "entrypoint": {
+      "title": "Entrypoint",
+      "type": "string"
     },
     "execution_gate": {
       "anyOf": [
@@ -683,15 +668,27 @@
         }
       ]
     },
-    "quality_gate": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/QualityGateRefV1"
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "graph_hierarchy": {
+      "items": {
+        "$ref": "#/$defs/GraphStatusV1"
+      },
+      "title": "Graph Hierarchy",
+      "type": "array"
+    },
+    "invocation_id": {
+      "title": "Invocation Id",
+      "type": "string"
+    },
+    "lock_digest": {
+      "title": "Lock Digest",
+      "type": "string"
+    },
+    "node_states": {
+      "items": {
+        "$ref": "#/$defs/NodeStatusV1"
+      },
+      "title": "Node States",
+      "type": "array"
     },
     "pending_interrupt": {
       "anyOf": [
@@ -703,6 +700,47 @@
         }
       ]
     },
+    "publication": {
+      "$ref": "#/$defs/PublicationProjectionV1"
+    },
+    "quality_gate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QualityGateRefV1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "root_input_digest": {
+      "title": "Root Input Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selected_test_families": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Selected Test Families",
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "running",
+        "blocked",
+        "interrupted",
+        "stopped",
+        "failed",
+        "completed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
     "terminal_reason": {
       "anyOf": [
         {
@@ -713,15 +751,6 @@
         }
       ],
       "title": "Terminal Reason"
-    },
-    "change": {
-      "$ref": "#/$defs/ChangeProjectionV1"
-    },
-    "apply": {
-      "$ref": "#/$defs/ApplyProjectionV1"
-    },
-    "publication": {
-      "$ref": "#/$defs/PublicationProjectionV1"
     }
   },
   "required": [

@@ -31,6 +31,7 @@ from assurance_execution.operations.common import (
     validate_input,
 )
 from assurance_execution.operations.pytest_parser import parse_pytest_report, receipt_counts
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 
 def _summary_count(summary: Mapping[str, Any], name: str, fallback: int) -> int:
@@ -43,6 +44,8 @@ def _summary_count(summary: Mapping[str, Any], name: str, fallback: int) -> int:
 def normalize_evidence(
     *,
     change_id: str,
+    plan_digest: str,
+    plan_ref: EvidenceArtifactRefV1,
     batch_id: str,
     selected_targets: object,
     mapping: ClosedMappingV1,
@@ -104,6 +107,8 @@ def normalize_evidence(
         return ExecutionEvidenceV1.model_validate(
             {
                 "change_id": change_id,
+                "plan_digest": plan_digest,
+                "plan_ref": plan_ref,
                 "batch_id": batch_id,
                 "status": "failed"
                 if built.exit_code != 0 or any(item.status == "failed" for item in results)
@@ -143,6 +148,8 @@ class NormalizeHandler:
                 raise InputError(str(error)) from error
             evidence = normalize_evidence(
                 change_id=payload.change_id,
+                plan_digest=payload.plan_digest,
+                plan_ref=payload.plan_ref,
                 batch_id=payload.batch_id,
                 selected_targets=payload.selected_targets,
                 mapping=mapping,

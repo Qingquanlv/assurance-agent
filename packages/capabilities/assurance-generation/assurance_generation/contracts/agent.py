@@ -11,7 +11,8 @@ from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.plans import canonical_relative_path
-from assurance_intake.contracts import ReviewedCaseV1, RiskTier
+from assurance_intake.contracts import EvidenceArtifactRefV1, ReviewedCaseV1, RiskTier
+from assurance_intake.contracts.workflow import require_same_plan
 
 _SHA256 = r"^[0-9a-f]{64}$"
 
@@ -79,6 +80,8 @@ class FamilyConstraintsV1(FrozenModel):
 
 class PlanInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
     reviewed_cases: dict[str, Any] | None = None
@@ -104,9 +107,22 @@ class PlanInputV1(FrozenModel):
             raise ValueError("reviewed_cases must be a mapping")
         return value
 
+    @model_validator(mode="after")
+    def _reviewed_case_uses_plan(self) -> PlanInputV1:
+        if self.reviewed_case is not None:
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.reviewed_case.plan_digest,
+                self.reviewed_case.plan_ref,
+            )
+        return self
+
 
 class AgentFinalizeInputV1(FrozenModel):
     agent_result: AgentRunResult
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     change_id: str | None = Field(default=None, min_length=1)
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
@@ -131,9 +147,22 @@ class AgentFinalizeInputV1(FrozenModel):
     def _allowed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_relative_paths(value)
 
+    @model_validator(mode="after")
+    def _reviewed_case_uses_plan(self) -> AgentFinalizeInputV1:
+        if self.reviewed_case is not None:
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.reviewed_case.plan_digest,
+                self.reviewed_case.plan_ref,
+            )
+        return self
+
 
 class CodegenInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...] = ()
     reviewed_plan: dict[str, Any] | None = None
@@ -167,6 +196,17 @@ class CodegenInputV1(FrozenModel):
         if value is not None and not value:
             raise ValueError("reviewed_cases must be a mapping")
         return value
+
+    @model_validator(mode="after")
+    def _reviewed_case_uses_plan(self) -> CodegenInputV1:
+        if self.reviewed_case is not None:
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.reviewed_case.plan_digest,
+                self.reviewed_case.plan_ref,
+            )
+        return self
 
 
 class CodegenFixInputV1(CodegenInputV1):

@@ -10,6 +10,8 @@ from assurance_execution.contracts import ClosedMappingV1
 from assurance_execution.operations.normalize import NormalizeHandler, normalize_evidence
 from assurance_execution.operations.runner import classify_exit
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
+    PLAN_DIGEST,
+    PLAN_REF,
     as_object,
     closed_mapping,
     execute_task,
@@ -24,6 +26,8 @@ def _normalize_input(
 ) -> dict[str, Any]:
     return {
         "change_id": "CH-DEMO-001",
+        "plan_digest": PLAN_DIGEST,
+        "plan_ref": PLAN_REF,
         "batch_id": "20260822T000000Z",
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
         "mapping": closed_mapping(selected),
@@ -162,6 +166,8 @@ def test_normalize_accepts_the_public_mapping_form_of_selected_targets() -> None
 
     evidence = normalize_evidence(
         change_id="CH-DEMO-001",
+        plan_digest=PLAN_DIGEST,
+        plan_ref=PLAN_REF,
         batch_id="20260822T000000Z",
         selected_targets={"api": True, "e2e": False, "fuzz": False, "performance": False},
         mapping=mapping,

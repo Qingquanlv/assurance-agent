@@ -35,6 +35,7 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     run_request,
     reviewed_cases,
 )
+from tests.acg_plan_fixture import install_plan
 
 _RESOURCES = Path(__file__).resolve().parent.parent / "assurance_execution" / "resources"
 _FORBIDDEN = (
@@ -100,8 +101,15 @@ def _prepare_input(project: Path) -> dict[str, Any]:
     cases = project / "qa" / "changes" / change_id / "cases" / "items" / "case.yaml"
     cases.parent.mkdir(parents=True, exist_ok=True)
     cases.write_text(yaml.safe_dump(reviewed_cases(), sort_keys=False), encoding="utf-8")
+    plan, plan_ref = install_plan(
+        project,
+        change_id,
+        capability_leafs=tuple(sorted(VALID_LEAFS)),
+    )
     return {
         "change_id": change_id,
+        "plan_digest": plan.plan_digest,
+        "plan_ref": plan_ref,
         "selected_test_families": ["api"],
         "capability_leafs": list(VALID_LEAFS),
     }

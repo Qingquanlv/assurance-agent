@@ -16,6 +16,8 @@ from assurance_generation.resource_loader import resource_text
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     FAMILIES,
+    PLAN_DIGEST,
+    PLAN_REF,
     VALID_LEAFS,
     family_plan_files,
     fake_agent_result,
@@ -141,6 +143,8 @@ async def test_plan_prepare_hydrates_family_input_from_reviewed_workspace_cases(
         planning_handler(family, "prepare"),
         {
             "change_id": "CH-DEMO-001",
+            "plan_digest": PLAN_DIGEST,
+            "plan_ref": PLAN_REF,
             "capability_leafs": list(VALID_LEAFS),
             "artifact_paths": ["qa/changes"],
         },

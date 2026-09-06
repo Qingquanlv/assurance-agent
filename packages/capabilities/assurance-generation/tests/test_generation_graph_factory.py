@@ -39,10 +39,19 @@ _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_generation" / "g
 
 
 def _reviewed_case() -> dict[str, object]:
+    plan_ref = {
+        "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+        "digest": _SHA,
+    }
     return {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 0,
-        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
+        "preparation_refs": [
+            plan_ref,
+            {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
+        ],
         "case_refs": [
             {
                 "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
@@ -69,6 +78,11 @@ def generation_graph_input(
 ) -> dict[str, object]:
     return {
         "change_id": "CH-DEMO-001",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "selected_test_families": list(selected),
         "capability_leafs": ["entities.item.create"],
         "allowed_artifact_paths": ["qa/changes"],
@@ -278,6 +292,11 @@ def test_select_codegen_fix_fails_closed_without_published_fields() -> None:
         select_codegen_fix(
             {
                 "change_id": "CH-DEMO-001",
+                "plan_digest": _SHA,
+                "plan_ref": {
+                    "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                    "digest": _SHA,
+                },
                 "capability_leafs": ["entities.item.create"],
                 "allowed_artifact_paths": ["qa/changes"],
                 "family": "api",
@@ -289,6 +308,11 @@ def test_select_codegen_fix_reads_only_graph_published_state() -> None:
     selected = select_codegen_fix(
         {
             "change_id": "CH-DEMO-001",
+            "plan_digest": _SHA,
+            "plan_ref": {
+                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                "digest": _SHA,
+            },
             "capability_leafs": ["entities.item.create"],
             "allowed_artifact_paths": ["qa/changes"],
             "reviewed_plan": {"status": "reviewed", "source": "graph"},
@@ -459,9 +483,17 @@ async def test_root_done_does_not_overwrite_skipped_api_result(tmp_path: Path) -
             receipt,
         )
     ]
+    graph_input = generation_graph_input(selected=("e2e",))
+    graph_input.update(
+        {
+            "plan_digest": payload.plan_digest,
+            "plan_ref": payload.plan_ref.model_dump(mode="json"),
+            "reviewed_case": payload.reviewed_case.model_dump(mode="json"),
+        }
+    )
     result = await harness.run(
         bundle.generation,
-        input=generation_graph_input(selected=("e2e",)),
+        input=graph_input,
         script=script,
     )
     terminal = result.terminal

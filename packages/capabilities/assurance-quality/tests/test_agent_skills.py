@@ -68,6 +68,10 @@ BINDING: dict[str, JSONValue] = {
     "request_policy_digest": _SHA,
     "request_config_digest": _SHA,
 }
+PLAN_REF: JSONValue = {
+    "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_B}/resolved-assurance-plan.json",
+    "digest": HEX_B,
+}
 
 
 def issue_candidate(*, evidence_ids: list[str], possible_problem_ids: list[str] | None = None) -> JSONValue:
@@ -124,6 +128,7 @@ def fake_agent_result(structured_result: JSONValue, **locks: JSONValue) -> JSONV
         "metrics_digest": HEX_A,
         "case_digest": HEX_A,
         "plan_digest": HEX_B,
+        "plan_ref": PLAN_REF,
         "mapping_digest": HEX_A,
         "issue_digest": HEX_B,
     }
@@ -146,6 +151,7 @@ def skill_input() -> JSONValue:
         "metrics_digest": HEX_A,
         "case_digest": HEX_A,
         "plan_digest": HEX_B,
+        "plan_ref": PLAN_REF,
         "mapping_digest": HEX_A,
         "issue_digest": HEX_B,
     }

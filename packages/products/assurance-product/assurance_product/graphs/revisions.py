@@ -11,7 +11,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from assurance_product.graphs.state import ProductState
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, ProductPublicOutput
 
-STATE_SCHEMA_VERSION = "1"
+STATE_SCHEMA_VERSION = "2"
 ENTRYPOINT_RECURSION_LIMITS: MappingProxyType[str, int] = MappingProxyType(
     {
         "intake": 2048,

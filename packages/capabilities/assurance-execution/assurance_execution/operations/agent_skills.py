@@ -51,6 +51,7 @@ from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
 from assurance_generation.contracts import CodegenAuthoringV1
 from assurance_intake.contracts import CaseYamlAuthoring
+from assurance_intake.contracts.plan import decode_plan
 from assurance_execution.resource_loader import resource_bytes, resource_text
 
 EXECUTE_SKILL = "skills/aa-execute/SKILL.md"
@@ -255,6 +256,8 @@ def _authenticate_generation_sources(root: ExecutionPrepareInputV1, workspace: P
         return
     if generation.change_id != root.change_id or generation.coverage_epoch != root.coverage_epoch:
         raise InputError("generation result identity does not match execution input")
+    if generation.plan_digest != root.plan_digest or generation.plan_ref != root.plan_ref:
+        raise InputError("generation plan binding does not match execution input")
     for ref in (generation.mapping_ref, *generation.source_refs):
         path = _regular_input_file(workspace, ref.path)
         if hashlib.sha256(path.read_bytes()).hexdigest() != ref.digest:
@@ -441,6 +444,17 @@ def assemble_execution_input(
     model: type[ExecuteInputV1] | type[RunSkillInputV1],
 ) -> ExecuteInputV1 | RunSkillInputV1:
     root = validate_input(ExecutionPrepareInputV1, data)
+    try:
+        plan = decode_plan(
+            _regular_input_file(workspace, root.plan_ref.path).read_bytes(),
+            root.plan_ref,
+        )
+    except ValueError as error:
+        raise InputError(f"invalid frozen assurance plan: {error}") from error
+    if plan.plan_digest != root.plan_digest:
+        raise InputError("execution plan digest does not match frozen plan")
+    if plan.selected_test_families != root.selected_test_families:
+        raise InputError("execution families differ from frozen plan")
     _authenticate_generation_sources(root, workspace)
     selected = SelectedTargets(
         **{family: family in root.selected_test_families for family in ("api", "e2e", "fuzz", "performance")}
@@ -514,6 +528,8 @@ def assemble_execution_input(
         raise InputError(str(error)) from error
     return model(
         change_id=root.change_id,
+        plan_digest=root.plan_digest,
+        plan_ref=root.plan_ref,
         batch_id=batch_id,
         capability_leafs=root.capability_leafs,
         case_ids=case_ids,
@@ -667,6 +683,8 @@ def _finalize_evidence(payload: AgentFinalizeInputV1, workspace: Path) -> Execut
     return ExecutionEvidenceV1.model_validate(
         {
             **agent_result.model_dump(mode="json"),
+            "plan_digest": payload.plan_digest,
+            "plan_ref": payload.plan_ref.model_dump(mode="json"),
             "executed_at": payload.executed_at,
             "status": status,
             "mapping_digest": mapping_digest(locked),

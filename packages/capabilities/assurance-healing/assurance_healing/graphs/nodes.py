@@ -108,6 +108,8 @@ def select_failure(state: Mapping[str, object]) -> FixProposalInputV1:
     return FixProposalInputV1.model_validate(
         {
             "change_id": state["change_id"],
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "owner_id": state["owner_id"],
             "capability_leafs": state["capability_leafs"],
             "allowed_paths": state["allowed_paths"],
@@ -137,6 +139,8 @@ def select_application(state: Mapping[str, object]) -> ApplyTestRepairInputV1:
     return ApplyTestRepairInputV1.model_validate(
         {
             "change_id": state["change_id"],
+            "plan_digest": state["plan_digest"],
+            "plan_ref": state["plan_ref"],
             "coverage_epoch": state["coverage_epoch"],
             "repair_round": repair_round,
             "reviewed_case": state["reviewed_case"],
@@ -210,6 +214,8 @@ def publish_applied_repair(state: Mapping[str, object], output: object, receipt:
     verified = VerifiedTestRepairV1.model_validate(_output_payload(output))
     applied = AppliedTestRepairV1(
         change_id=verified.change_id,
+        plan_digest=verified.plan_digest,
+        plan_ref=verified.plan_ref,
         coverage_epoch=verified.coverage_epoch,
         repair_round=verified.repair_round,
         status="applied",

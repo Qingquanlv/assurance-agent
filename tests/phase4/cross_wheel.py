@@ -53,6 +53,10 @@ _CHANGE_ID = "CH-DEMO-001"
 _BATCH_ID = "20260822T000000Z"
 _CASE_ID = "TC_MENU_001"
 _HEX = "a" * 64
+_PLAN_REF = {
+    "path": f"qa/changes/{_CHANGE_ID}/plan/{_HEX}/resolved-assurance-plan.json",
+    "digest": _HEX,
+}
 _PROPOSAL_BINDING = cast(
     JSONValue,
     {
@@ -619,6 +623,8 @@ def _planning_input(leaf: str, catalog: frozenset[str]) -> dict[str, object]:
 def _planning_input_from_cases(cases: Mapping[str, object], catalog: frozenset[str]) -> dict[str, object]:
     return {
         "change_id": _CHANGE_ID,
+        "plan_digest": _HEX,
+        "plan_ref": _PLAN_REF,
         "capability_leafs": tuple(sorted(catalog)),
         "artifact_paths": ["qa/changes/CH-DEMO-001/plans/api-plan.md"],
         "reviewed_cases": dict(cases),
@@ -650,6 +656,8 @@ def _evidence_payload(leaf: str) -> dict[str, object]:
     return {
         "schema_version": "1",
         "change_id": _CHANGE_ID,
+        "plan_digest": _HEX,
+        "plan_ref": _PLAN_REF,
         "batch_id": _BATCH_ID,
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
         "mapping": _closed_mapping_payload(leaf),
@@ -735,6 +743,7 @@ def _quality_report_payload() -> dict[str, object]:
         "schema_version": "1.1",
         "change_id": _CHANGE_ID,
         "batch_id": _BATCH_ID,
+        "plan": {"plan_digest": _HEX, "plan_ref": _PLAN_REF},
         "final_status": "PASS",
         "quality_score": 1.0,
         "score_breakdown": {"functional": 1.0, "coverage": 1.0, "fuzz": "N/A", "performance": "N/A"},
@@ -774,6 +783,8 @@ def _quality_report_payload() -> dict[str, object]:
 def _fix_proposal_input(leafs: frozenset[str], evidence_digest: str) -> dict[str, Any]:
     return {
         "change_id": _CHANGE_ID,
+        "plan_digest": _HEX,
+        "plan_ref": _PLAN_REF,
         "owner_id": "assurance.healing",
         "capability_leafs": list(sorted(leafs)),
         "allowed_paths": ["tests/api/test_users.py"],

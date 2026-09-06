@@ -12,6 +12,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_quality.contracts.baseline import _reject_endpoint_inventories
 from assurance_quality.contracts.issues import IssueCandidate, IssueTriageAdvice
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _DIGEST_REF = r"^(?:sha256:)?[0-9a-f]{64}$"
@@ -60,6 +61,7 @@ class QualitySkillInputV1(FrozenModel):
     metrics_digest: str = Field(pattern=_SHA256)
     case_digest: str = Field(pattern=_SHA256)
     plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     mapping_digest: str = Field(pattern=_SHA256)
     issue_digest: str | None = Field(default=None, pattern=_SHA256)
 

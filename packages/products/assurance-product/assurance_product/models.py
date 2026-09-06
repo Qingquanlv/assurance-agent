@@ -15,6 +15,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_improvement.contracts.retro import RetroWindow
 from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
+from assurance_intake.contracts.workflow import require_same_plan
 
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
@@ -322,11 +323,11 @@ TEST_FAMILY_ORDER: tuple[Literal["api", "e2e", "fuzz", "performance"], ...] = (
     "fuzz",
     "performance",
 )
-FAMILY_NONEMPTY_ENTRYPOINTS = frozenset({"full", "execute"})
+FAMILY_NONEMPTY_ENTRYPOINTS = frozenset({"full", "intake"})
 FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     {
-        "intake",
         "case",
+        "execute",
         "archive",
         "retro",
         "issue-review",
@@ -340,7 +341,7 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     }
 )
 PRODUCT_ENTRYPOINTS = FAMILY_NONEMPTY_ENTRYPOINTS | FAMILY_EMPTY_ENTRYPOINTS
-THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - FAMILY_NONEMPTY_ENTRYPOINTS
+THIN_ENTRYPOINTS = PRODUCT_ENTRYPOINTS - {"full", "execute"}
 
 
 def _canonical_token(value: str, label: str) -> str:
@@ -429,7 +430,8 @@ class ProductInputV1(FrozenModel):
     change_id: str
     requirement: str
     run_mode: Literal["case", "implement", "verify"]
-    selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
+    candidate_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...] = ()
+    resolved_plan_ref: ArtifactRefV1 | None = None
     case_delta_paths: tuple[str, ...] = ()
     capability_leafs: tuple[str, ...]
     capability_catalog: ResourceRefV1
@@ -451,16 +453,16 @@ class ProductInputV1(FrozenModel):
     def _requirement(cls, value: str) -> str:
         return _canonical_text(value, "requirement")
 
-    @field_validator("selected_test_families")
+    @field_validator("candidate_test_families")
     @classmethod
-    def _selected_test_families(
+    def _candidate_test_families(
         cls, value: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
     ) -> tuple[Literal["api", "e2e", "fuzz", "performance"], ...]:
         if len(set(value)) != len(value):
-            raise ValueError("selected_test_families must be unique")
+            raise ValueError("candidate_test_families must be unique")
         order = {name: index for index, name in enumerate(TEST_FAMILY_ORDER)}
         if tuple(sorted(value, key=order.__getitem__)) != value:
-            raise ValueError("selected_test_families must be in canonical family order")
+            raise ValueError("candidate_test_families must be in canonical family order")
         return value
 
     @field_validator("allowed_artifact_paths")
@@ -494,7 +496,15 @@ class ProductInputV1(FrozenModel):
         return value
 
     def validate_for_entrypoint(self, entrypoint: str) -> ProductInputV1:
-        validate_entrypoint_families(entrypoint, self.selected_test_families)
+        validate_entrypoint_families(entrypoint, self.candidate_test_families)
+        creator = entrypoint in {"full", "intake"}
+        consumer = entrypoint in {"case", "execute"}
+        if creator and self.resolved_plan_ref is not None:
+            raise ValueError(f"{entrypoint} creates a plan and cannot accept resolved_plan_ref")
+        if consumer and self.resolved_plan_ref is None:
+            raise ValueError(f"{entrypoint} requires resolved_plan_ref")
+        if not creator and not consumer and self.resolved_plan_ref is not None:
+            raise ValueError(f"{entrypoint} does not consume resolved_plan_ref")
         requires_case_delta = entrypoint in {"full", "intake", "case"}
         if requires_case_delta and not self.case_delta_paths:
             raise ValueError(f"{entrypoint} requires non-empty exact case_delta_paths")
@@ -516,9 +526,9 @@ def validate_entrypoint_families(
     if entrypoint not in PRODUCT_ENTRYPOINTS:
         raise ValueError(f"unknown product entrypoint: {entrypoint}")
     if entrypoint in FAMILY_NONEMPTY_ENTRYPOINTS and not families:
-        raise ValueError(f"{entrypoint} requires a non-empty selected_test_families tuple")
+        raise ValueError(f"{entrypoint} requires a non-empty candidate_test_families tuple")
     if entrypoint in FAMILY_EMPTY_ENTRYPOINTS and families:
-        raise ValueError(f"{entrypoint} requires an empty selected_test_families tuple")
+        raise ValueError(f"{entrypoint} requires an empty candidate_test_families tuple")
 
 
 def authenticate_product_input_resources(value: ProductInputV1, composition: object) -> None:
@@ -649,6 +659,12 @@ class QualityGateRefV1(FrozenModel):
             self.report.inspection_receipt,
         ):
             raise ValueError("report must bind the current inspection")
+        require_same_plan(
+            self.inspection.plan_digest,
+            self.inspection.plan_ref,
+            self.report.plan_digest,
+            self.report.plan_ref,
+        )
         return self
 
 

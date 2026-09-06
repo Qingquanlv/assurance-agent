@@ -220,6 +220,8 @@ def _verify_application(
         changed.append(EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(after).hexdigest()))
     return VerifiedTestRepairV1(
         change_id=business.change_id,
+        plan_digest=business.plan_digest,
+        plan_ref=business.plan_ref,
         coverage_epoch=business.coverage_epoch,
         repair_round=business.repair_round,
         changed_test_refs=tuple(sorted(changed, key=lambda item: (item.path, item.digest))),

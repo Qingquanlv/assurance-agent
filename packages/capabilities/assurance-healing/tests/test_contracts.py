@@ -78,11 +78,11 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.healing.workflow.repair-failure.input.v1": (
         "1",
-        "0ae06c1eb1e5fd7a6da1709cad051dc7c20c0a51af4ee6a9befde553f973f810",
+        "b2600357ef9c414b01d6d4661bbf76d6e1994e98422f8085d97e383da51cda5b",
     ),
     "assurance.healing.workflow.repair-failure.output.v1": (
         "1",
-        "bcaef7eae9ed8711e3df5044e1f7608e24a42668cd7e0bb71805123b11cc47e0",
+        "5ebdd6bb4ce22232a23c7a9a0fbe85eea971c2dd092393c331ddcb17af808079",
     ),
 }
 

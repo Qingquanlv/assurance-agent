@@ -23,7 +23,7 @@ from assurance_intake.contracts.agent import (
     CaseDesignInputV1,
     CaseDesignOutputV1,
 )
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult, TaskAttemptContract
@@ -36,6 +36,7 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
 )
 from graph_engine.testing import GraphHarness, committed
+from tests.acg_plan_fixture import install_plan
 
 _SHA = "a" * 64
 _RECEIPT_ID = "receipt-1"
@@ -43,7 +44,16 @@ _INTAKE_ID = "assurance.intake.agent.intake.v1"
 _EXPLORE_ID = "assurance.intake.agent.explore.v1"
 _CASE_DESIGN_ID = "assurance.intake.agent.case-design.v1"
 _CASE_REVIEW_ID = "assurance.intake.agent.case-review.v1"
-_GRAPH_CONTRACT_IDS = (_INTAKE_ID, _EXPLORE_ID, _CASE_DESIGN_ID, _CASE_REVIEW_ID)
+_RESOLVE_PLAN_ID = "assurance.intake.task.resolve-plan"
+_LOAD_PLAN_ID = "assurance.intake.task.load-plan"
+_GRAPH_CONTRACT_IDS = (
+    _INTAKE_ID,
+    _EXPLORE_ID,
+    _RESOLVE_PLAN_ID,
+    _LOAD_PLAN_ID,
+    _CASE_DESIGN_ID,
+    _CASE_REVIEW_ID,
+)
 _PHASE_NODES = frozenset(
     {
         "prepare",
@@ -60,21 +70,58 @@ _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_intake" / "graph
 
 
 def intake_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    contracts = {
+        contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
+    }
+    contracts.update({contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()})
+    return contracts
 
 
 def intake_graph_input() -> dict[str, object]:
+    plan_ref = {
+        "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+        "digest": _SHA,
+    }
     return {
         "change_id": "CH-DEMO-001",
         "requirement": "Cover department CRUD.",
+        "candidate_test_families": ["api"],
         "selected_test_families": ["api"],
+        "plan_digest": _SHA,
+        "plan_ref": plan_ref,
         "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
         "capability_leafs": ["entities.item.create"],
         "allowed_artifact_paths": ["qa/changes"],
+        "budgets": {
+            "review_rounds": 2,
+            "coverage_rounds": 2,
+            "healing_rounds": 1,
+            "execution_retries": 1,
+        },
+        "family_policy": {"required": [], "allowed": ["api"]},
+        "product_policy": {
+            "resource_id": "assurance.product.configuration.product-policy",
+            "sha256": _SHA,
+        },
+        "capability_catalog": {
+            "resource_id": "assurance.product.configuration.capability-catalog",
+            "sha256": _SHA,
+        },
+        "data_knowledge": {
+            "resource_id": "assurance.product.configuration.data-knowledge",
+            "sha256": _SHA,
+        },
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,
-        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+        "preparation_refs": [
+            plan_ref,
+            {
+                "path": "qa/changes/CH-DEMO-001/explore/exploration.json",
+                "digest": _SHA,
+            },
+            {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
+        ],
     }
 
 
@@ -159,11 +206,13 @@ def recording_context():
 
 def test_intake_factory_exports_prepare_and_case(recording_context) -> None:
     bundle = build_intake_graphs(recording_context)
-    assert tuple(item.name for item in fields(bundle)) == ("prepare", "case")
+    assert tuple(item.name for item in fields(bundle)) == ("prepare", "load_plan", "case")
     assert isinstance(bundle, IntakeGraphs)
     assert recording_context.bound_contract_ids == (
         _INTAKE_ID,
         _EXPLORE_ID,
+        _RESOLVE_PLAN_ID,
+        _LOAD_PLAN_ID,
         _CASE_DESIGN_ID,
         _CASE_DESIGN_ID,
         _CASE_REVIEW_ID,
@@ -176,7 +225,7 @@ def test_intake_factory_exports_prepare_and_case(recording_context) -> None:
 def test_prepare_contains_only_preparation_nodes(recording_context) -> None:
     bundle = build_intake_graphs(recording_context)
     names = _node_names(bundle.prepare)
-    assert {"intake", "explore", "prepared"} <= names
+    assert {"intake", "explore", "resolve-plan", "prepared"} <= names
     assert not {"case-design", "case-review", "human-review"} & names
 
 
@@ -430,6 +479,11 @@ def _attempt_scope(semantic_node_id: str, tmp_path: Path) -> AuthorizedAttemptSc
 def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
     payload: dict[str, object] = {
         "change_id": "CH-DEMO-001",
+        "plan_digest": _SHA,
+        "plan_ref": {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        },
         "capability_leafs": ["entities.item.create"],
         "artifact_paths": ["qa/changes"],
         "selected_test_families": ["api"],
@@ -489,26 +543,43 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     assert isinstance(output.output, BaseModel)
 
 
-async def test_prepare_graph_runs_only_intake_and_explore() -> None:
+async def test_prepare_graph_runs_intake_explore_and_plan_resolution(tmp_path: Path) -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())
     bundle = build_intake_graphs(context)
     receipt = _receipt()
+    plan, plan_ref = install_plan(
+        tmp_path,
+        "CH-DEMO-001",
+        capability_leafs=("entities.item.create",),
+    )
+    prepare_input = intake_graph_input()
+    prepare_input.pop("plan_digest")
+    prepare_input.pop("plan_ref")
+    prepare_input.pop("selected_test_families")
     result = await harness.run(
         bundle.prepare,
-        input=intake_graph_input(),
+        input=prepare_input,
         script={
             "intake.intake": [committed(_artifact_output(), receipt)],
             "intake.explore": [committed(_artifact_output(), receipt)],
+            "intake.resolve-plan": [
+                committed(
+                    {"plan": plan.model_dump(mode="json"), "plan_ref": plan_ref},
+                    receipt,
+                )
+            ],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "intake.intake",
         "intake.explore",
+        "intake.resolve-plan",
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
         _INTAKE_ID,
         _EXPLORE_ID,
+        _RESOLVE_PLAN_ID,
     ]
     assert result.promotion_decision == "committed"
     terminal = result.terminal

@@ -26,6 +26,7 @@ from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS as I
 from assurance_improvement.graphs.factory import ImprovementGraphs, build_improvement_graphs
 from assurance_improvement.graphs.state import ImprovementState
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_JOBS
+from assurance_intake.contracts.attempts import TASK_ATTEMPT_CONTRACTS as INTAKE_TASKS
 from assurance_intake.graphs.factory import IntakeGraphs, build_intake_graphs
 from assurance_intake.graphs.state import IntakeState
 from assurance_product.graphs.entrypoints import publish_public_output
@@ -86,7 +87,10 @@ def _job_contracts(jobs: Mapping[str, Any]) -> dict[str, TaskAttemptContract[Any
 
 def _contracts_for(owner_id: str) -> dict[str, TaskAttemptContract[Any, Any]]:
     if owner_id == "assurance.intake":
-        return _job_contracts(INTAKE_JOBS)
+        return {
+            **_job_contracts(INTAKE_JOBS),
+            **{task.contract_id: task for task in INTAKE_TASKS.values()},
+        }
     if owner_id == "assurance.generation":
         return {
             **_job_contracts(GENERATION_JOBS),
@@ -161,6 +165,7 @@ def _stub_features() -> dict[str, object]:
     return {
         "assurance.intake": IntakeGraphs(
             prepare=_stub_export(IntakeState, "intake.prepare"),
+            load_plan=_stub_export(IntakeState, "intake.load-plan"),
             case=_stub_export(IntakeState, "intake.case"),
         ),
         "assurance.generation": GenerationGraphs(
@@ -207,9 +212,22 @@ def _build_context(checkpointer: Checkpointer = None) -> EngineGraphBuildContext
 
 def _public_input(entrypoint: str) -> dict[str, object]:
     case_delta = (_CASE_DELTA,) if entrypoint in {"intake", "case"} else ()
-    return ProductInputV1.model_validate(valid_product_input(case_delta_paths=case_delta)).model_dump(
-        mode="json"
+    candidate = ("api",) if entrypoint == "intake" else ()
+    resolved_plan_ref = (
+        {
+            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "digest": _SHA,
+        }
+        if entrypoint == "case"
+        else None
     )
+    return ProductInputV1.model_validate(
+        valid_product_input(
+            case_delta_paths=case_delta,
+            candidate_test_families=candidate,
+            resolved_plan_ref=resolved_plan_ref,
+        )
+    ).model_dump(mode="json")
 
 
 class _DuplicateOwnerMapping(Mapping[str, object]):
@@ -419,7 +437,7 @@ def test_thin_root_publishes_real_feature_terminals(
     marker = f"{owner_id.split('.')[-1]}.{export}"
     child = _stub_export(state_schema, marker, status=feature_status)
     if owner_id == "assurance.intake":
-        features[owner_id] = IntakeGraphs(prepare=child, case=child)
+        features[owner_id] = IntakeGraphs(prepare=child, load_plan=child, case=child)
     else:
         features[owner_id] = ImprovementGraphs(
             archive=child,

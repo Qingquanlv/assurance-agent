@@ -57,6 +57,14 @@ _PHASE_NODES = frozenset(
 _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_quality" / "graphs"
 
 
+def _plan_ref() -> dict[str, str]:
+    digest = "2" * 64
+    return {
+        "path": f"qa/changes/CH-DEMO-001/plan/{digest}/resolved-assurance-plan.json",
+        "digest": _SHA,
+    }
+
+
 def quality_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
     contracts = {
         contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
@@ -96,6 +104,7 @@ def quality_graph_input(
         "budgets": {"coverage_rounds": 2, "failure_rounds": 1},
         "rounds_budget": 2,
         "rounds_used": 0,
+        "plan_ref": _plan_ref(),
         **_skill_digests(),
     }
     if activation is not None:
@@ -115,13 +124,20 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
     reviewed = {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 2,
-        "preparation_refs": [ref("qa/changes/CH-DEMO-001/requirement.md")],
+        "plan_digest": "2" * 64,
+        "plan_ref": _plan_ref(),
+        "preparation_refs": [
+            _plan_ref(),
+            ref("qa/changes/CH-DEMO-001/requirement.md"),
+        ],
         "case_refs": [ref("qa/changes/CH-DEMO-001/cases/items/case.yaml")],
         "review_ref": ref("qa/changes/CH-DEMO-001/review/case-review.json"),
     }
     generation = {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 2,
+        "plan_digest": "2" * 64,
+        "plan_ref": _plan_ref(),
         "reviewed_case": reviewed,
         "mapping_ref": ref("qa/changes/CH-DEMO-001/codegen/closed-mapping.json"),
         "source_refs": [ref("qa/changes/CH-DEMO-001/generated/api/files/tests/a.py")],
@@ -135,6 +151,8 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
             "execution_result": {
                 "change_id": "CH-DEMO-001",
                 "coverage_epoch": 2,
+                "plan_digest": "2" * 64,
+                "plan_ref": _plan_ref(),
                 "repair_round": 0,
                 "batch_id": "20260822T000000Z",
                 "executed_at": "2026-08-22T00:00:00Z",
@@ -173,6 +191,8 @@ def _assessment_output() -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 2,
         "batch_id": "20260822T000000Z",
+        "plan_digest": "2" * 64,
+        "plan_ref": _plan_ref(),
         "scope": {
             "change_id": "CH-DEMO-001",
             "coverage_epoch": 2,

@@ -172,6 +172,8 @@ def _prepare_lock_fields(payload: FixProposalFinalizeInputV1 | FixProposalInputV
         "baseline_digest": payload.baseline_digest,
         "candidate_digest": payload.candidate_digest,
         "change_id": payload.change_id,
+        "plan_digest": payload.plan_digest,
+        "plan_ref": payload.plan_ref.model_dump(mode="json"),
         "execution_evidence_digest": payload.execution_evidence_digest,
         "policy_digest": payload.policy_digest,
         "require_approval": payload.require_approval,

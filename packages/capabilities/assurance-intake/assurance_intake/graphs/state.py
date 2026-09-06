@@ -131,7 +131,16 @@ def consume_case_review_trigger(inbox: object) -> CaseReviewInbox:
 class IntakeState(CheckpointBridgeState, total=False):
     change_id: str
     requirement: str
+    candidate_test_families: list[str]
+    resolved_plan_ref: dict[str, str]
+    capability_catalog: dict[str, str]
+    product_policy: dict[str, str]
+    data_knowledge: dict[str, str]
+    budgets: dict[str, int]
+    family_policy: dict[str, object]
     selected_test_families: list[str]
+    plan_digest: str
+    plan_ref: dict[str, str]
     case_delta_paths: list[str]
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]

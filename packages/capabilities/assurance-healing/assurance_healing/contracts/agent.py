@@ -17,7 +17,7 @@ from assurance_healing.contracts.coverage_repair import (
 )
 from assurance_healing.contracts.proposal import FixProposalSummary
 from assurance_healing.contracts.wire import FrozenContract, HexDigest, validate_repo_path
-from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr
 
 _SHA256 = r"^[0-9a-f]{64}$"
 
@@ -66,6 +66,8 @@ class FixProposalResultV1(FrozenContract):
 
 class FixProposalInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: HexDigest
+    plan_ref: EvidenceArtifactRefV1
     owner_id: str = Field(min_length=1)
     capability_leafs: tuple[str, ...]
     allowed_paths: tuple[str, ...]
@@ -139,6 +141,8 @@ class CoverageRepairFinalizeInputV1(FrozenModel):
 
 class AllocateHealingInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    plan_digest: HexDigest
+    plan_ref: EvidenceArtifactRefV1
     owner_id: str = Field(min_length=1)
     attempt_number: int = Field(ge=1)
     source_batch_id: str = Field(min_length=1)
@@ -153,6 +157,8 @@ class AllocateHealingInputV1(FrozenModel):
 class RecordApprovalInputV1(FrozenModel):
     approval_id: str | None = None
     change_id: str = Field(min_length=1)
+    plan_digest: HexDigest
+    plan_ref: EvidenceArtifactRefV1
     owner_id: str = Field(min_length=1)
     root_invocation_id: str = Field(min_length=1)
     interrupt_task_id: str = Field(min_length=1)
@@ -177,6 +183,8 @@ class RecordApprovalInputV1(FrozenModel):
 class RecordApplyInputV1(FrozenModel):
     record_key: str | None = None
     change_id: str = Field(min_length=1)
+    plan_digest: HexDigest
+    plan_ref: EvidenceArtifactRefV1
     owner_id: str = Field(min_length=1)
     target: Literal["api", "e2e"]
     entry_batch_id: str = Field(min_length=1)

@@ -37,6 +37,7 @@ from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     staged_generated_file,
 )
 from planning_fixtures import BINDING as PLAN_BINDING  # pyright: ignore[reportMissingImports]
+from planning_fixtures import PLAN_DIGEST, PLAN_REF  # pyright: ignore[reportMissingImports]
 from planning_fixtures import VALID_LEAFS, reviewed_cases  # pyright: ignore[reportMissingImports]
 
 CHANGE_ID = "CH-DEMO-001"
@@ -241,6 +242,8 @@ async def test_codegen_prepare_hydrates_missing_business_input_from_workspace(
         codegen_prepare_handler(family),
         {
             "change_id": "CH-DEMO-001",
+            "plan_digest": PLAN_DIGEST,
+            "plan_ref": PLAN_REF,
             "capability_leafs": list(VALID_LEAFS),
         },
         tmp_path,

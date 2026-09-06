@@ -34,7 +34,8 @@ _INPUT_KEYS = (
     "change_id",
     "requirement",
     "run_mode",
-    "selected_test_families",
+    "candidate_test_families",
+    "resolved_plan_ref",
     "case_delta_paths",
     "capability_leafs",
     "capability_catalog",
@@ -71,29 +72,18 @@ def validate_public_input(entrypoint: str):
     return node
 
 
-def adapt_intake(state: ProductState) -> dict[str, object]:
+def adapt_prepare(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
     artifact_refs = [item.model_dump(mode="json") for item in payload.artifacts]
-    rework_context = state.get("case_rework_context")
-    coverage_epoch = int(state.get("coverage_epoch", 0)) if rework_context is not None else 0
-    current_preparation = state.get("preparation_refs")
-    if isinstance(current_preparation, list) and current_preparation:
-        preparation_refs = [dict(item) for item in current_preparation if isinstance(item, Mapping)]
-    elif rework_context is None:
-        preparation_refs = [
-            item
-            for item in artifact_refs
-            if "/cases/" not in str(item["path"]) and "/review/" not in str(item["path"])
-        ]
-    else:
-        typed_rework = CaseReworkContextV1.model_validate(rework_context)
-        preparation_refs = [
-            item.model_dump(mode="json") for item in typed_rework.previous_case.preparation_refs
-        ]
+    preparation_refs = [
+        item
+        for item in artifact_refs
+        if "/cases/" not in str(item["path"]) and "/review/" not in str(item["path"])
+    ]
     feature_input = {
         "change_id": payload.change_id,
         "requirement": payload.requirement,
-        "selected_test_families": list(payload.selected_test_families),
+        "candidate_test_families": list(payload.candidate_test_families),
         "case_delta_paths": list(payload.case_delta_paths),
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
@@ -101,10 +91,65 @@ def adapt_intake(state: ProductState) -> dict[str, object]:
         "rounds_used": 0,
         "decision": payload.decision,
         "artifacts": artifact_refs,
-        "coverage_epoch": coverage_epoch,
+        "coverage_epoch": 0,
         "healing_rounds_used": 0,
         "preparation_refs": preparation_refs,
         "source_artifacts": artifact_refs,
+        "capability_catalog": payload.capability_catalog.model_dump(mode="json"),
+        "product_policy": payload.product_policy.model_dump(mode="json"),
+        "data_knowledge": payload.data_knowledge.model_dump(mode="json"),
+        "budgets": payload.budgets.model_dump(mode="json"),
+        "family_policy": state.get("family_policy"),
+    }
+    return {**feature_input, "feature_input": feature_input}
+
+
+def adapt_load_plan(state: ProductState) -> dict[str, object]:
+    payload = _input_from_state(state)
+    feature_input = {
+        "change_id": payload.change_id,
+        "requirement": payload.requirement,
+        "resolved_plan_ref": payload.resolved_plan_ref.model_dump(mode="json")
+        if payload.resolved_plan_ref is not None
+        else None,
+        "capability_leafs": list(payload.capability_leafs),
+        "capability_catalog": payload.capability_catalog.model_dump(mode="json"),
+        "product_policy": payload.product_policy.model_dump(mode="json"),
+        "data_knowledge": payload.data_knowledge.model_dump(mode="json"),
+        "budgets": payload.budgets.model_dump(mode="json"),
+        "preparation_refs": [item.model_dump(mode="json") for item in payload.artifacts],
+    }
+    return {**feature_input, "feature_input": feature_input}
+
+
+def adapt_case(state: ProductState) -> dict[str, object]:
+    payload = _input_from_state(state)
+    rework_context = state.get("case_rework_context")
+    current_preparation = state.get("preparation_refs")
+    if isinstance(current_preparation, list) and current_preparation:
+        preparation_refs = [dict(item) for item in current_preparation if isinstance(item, Mapping)]
+    elif rework_context is not None:
+        typed_rework = CaseReworkContextV1.model_validate(rework_context)
+        preparation_refs = [
+            item.model_dump(mode="json") for item in typed_rework.previous_case.preparation_refs
+        ]
+    else:
+        preparation_refs = [item.model_dump(mode="json") for item in payload.artifacts]
+    feature_input = {
+        "change_id": payload.change_id,
+        "requirement": payload.requirement,
+        "plan_digest": state.get("plan_digest"),
+        "plan_ref": state.get("plan_ref"),
+        "selected_test_families": state.get("selected_test_families"),
+        "case_delta_paths": list(payload.case_delta_paths),
+        "capability_leafs": list(payload.capability_leafs),
+        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
+        "rounds_budget": payload.budgets.review_rounds,
+        "rounds_used": 0,
+        "decision": payload.decision,
+        "coverage_epoch": int(state.get("coverage_epoch", 0)),
+        "preparation_refs": preparation_refs,
+        "source_artifacts": [item.model_dump(mode="json") for item in payload.artifacts],
     }
     if rework_context is not None:
         feature_input["case_rework_context"] = rework_context
@@ -291,8 +336,9 @@ def build_intake_root(
 ) -> CompiledStateGraph:
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     builder.add_node("validate", validate_public_input("intake"))
-    builder.add_node("adapt", cast(Any, adapt_intake))
+    builder.add_node("adapt", cast(Any, adapt_prepare))
     builder.add_node("prepare", prepare)
+    builder.add_node("adapt-case", cast(Any, adapt_case))
     builder.add_node("case", case)
     builder.add_node("publish", publish_public_output)
     builder.add_edge(START, "validate")
@@ -301,15 +347,38 @@ def build_intake_root(
     builder.add_conditional_edges(
         "prepare",
         cast(Any, route_prepare),
-        {"prepared": "case", "failed": "publish"},
+        {"prepared": "adapt-case", "failed": "publish"},
     )
+    builder.add_edge("adapt-case", "case")
     builder.add_edge("case", "publish")
     builder.add_edge("publish", END)
     return context.compile_root(builder)
 
 
-def build_case_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
-    return compile_thin_root(context, child, entrypoint="case", adapt=adapt_intake)
+def build_case_root(
+    context: GraphBuildContext,
+    load_plan: CompiledStateGraph,
+    child: CompiledStateGraph,
+) -> CompiledStateGraph:
+    builder: StateGraph[ProductState] = StateGraph(ProductState)
+    builder.add_node("validate", validate_public_input("case"))
+    builder.add_node("adapt-load-plan", cast(Any, adapt_load_plan))
+    builder.add_node("load-plan", load_plan)
+    builder.add_node("adapt-case", cast(Any, adapt_case))
+    builder.add_node("case", child)
+    builder.add_node("publish", publish_public_output)
+    builder.add_edge(START, "validate")
+    builder.add_edge("validate", "adapt-load-plan")
+    builder.add_edge("adapt-load-plan", "load-plan")
+    builder.add_conditional_edges(
+        "load-plan",
+        cast(Any, route_prepare),
+        {"prepared": "adapt-case", "failed": "publish"},
+    )
+    builder.add_edge("adapt-case", "case")
+    builder.add_edge("case", "publish")
+    builder.add_edge("publish", END)
+    return context.compile_root(builder)
 
 
 def build_archive_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
@@ -364,7 +433,9 @@ __all__ = [
     "adapt_feature_status",
     "adapt_improvement",
     "adapt_retro",
-    "adapt_intake",
+    "adapt_case",
+    "adapt_load_plan",
+    "adapt_prepare",
     "adapt_quality",
     "build_archive_root",
     "build_case_root",

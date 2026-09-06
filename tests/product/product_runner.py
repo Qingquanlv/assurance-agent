@@ -546,7 +546,7 @@ def _product_input(
         "change_id": "CH-DEMO-001",
         "requirement": "Add login",
         "run_mode": "implement",
-        "selected_test_families": selected_test_families,
+        "candidate_test_families": selected_test_families,
         "case_delta_paths": ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
         "capability_leafs": (),
         "capability_catalog": {

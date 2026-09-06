@@ -76,6 +76,8 @@ def _assessment_business(root: Path) -> AssessmentSkillInputV1:
         change_id=MATERIALIZED_CHANGE_ID,
         coverage_epoch=request.reviewed_case.coverage_epoch,
         batch_id=MATERIALIZED_BATCH_ID,
+        plan_digest=request.plan_digest,
+        plan_ref=request.plan_ref,
         capability_leafs=("entities.item.constraints.description", "entities.item.constraints.name"),
         artifact_paths=(),
         assessment=assessment,

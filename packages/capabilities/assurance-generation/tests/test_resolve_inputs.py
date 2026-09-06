@@ -8,6 +8,7 @@ import pytest
 
 from assurance_generation.operations.resolve_inputs import InputError, resolve_generation_input
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from tests.acg_plan_fixture import install_plan
 
 
 def _write(root: Path, relative: str, data: bytes) -> EvidenceArtifactRefV1:
@@ -49,13 +50,17 @@ def _review(decision: str = "pass") -> bytes:
 def _fixture(
     root: Path, *, decision: str = "pass", coverage_epoch: int = 0
 ) -> tuple[ReviewedCaseV1, EvidenceArtifactRefV1]:
+    plan, plan_ref_payload = install_plan(root, "CH-DEMO-001")
+    plan_ref = EvidenceArtifactRefV1.model_validate(plan_ref_payload)
     preparation = _write(root, "qa/changes/CH-DEMO-001/requirement.md", b"requirement")
     case = _write(root, "qa/changes/CH-DEMO-001/cases/menus/case.yaml", b"case")
     review = _write(root, "qa/changes/CH-DEMO-001/review/case-review.json", _review(decision))
     reviewed = ReviewedCaseV1(
         change_id="CH-DEMO-001",
         coverage_epoch=coverage_epoch,
-        preparation_refs=(preparation,),
+        plan_digest=plan.plan_digest,
+        plan_ref=plan_ref,
+        preparation_refs=tuple(sorted((plan_ref, preparation), key=lambda item: item.path)),
         case_refs=(case,),
         review_ref=review,
     )
@@ -68,20 +73,29 @@ def _fixture(
 
 
 def test_standalone_generation_requires_reviewed_case_manifest(tmp_path: Path) -> None:
+    plan, plan_ref = install_plan(tmp_path, "CH-DEMO-001")
     with pytest.raises(InputError, match="exactly one"):
         resolve_generation_input(
-            {"change_id": "CH-DEMO-001", "coverage_epoch": 0, "source_artifacts": []},
+            {
+                "change_id": "CH-DEMO-001",
+                "coverage_epoch": 0,
+                "plan_digest": plan.plan_digest,
+                "plan_ref": plan_ref,
+                "source_artifacts": [],
+            },
             tmp_path,
         )
 
 
 def test_generation_rejects_a_nonpassing_review(tmp_path: Path) -> None:
-    _reviewed, manifest = _fixture(tmp_path, decision="reject")
+    reviewed, manifest = _fixture(tmp_path, decision="reject")
     with pytest.raises(InputError, match="passing"):
         resolve_generation_input(
             {
                 "change_id": "CH-DEMO-001",
                 "coverage_epoch": 0,
+                "plan_digest": reviewed.plan_digest,
+                "plan_ref": reviewed.plan_ref.model_dump(mode="json"),
                 "source_artifacts": [manifest.model_dump(mode="json")],
             },
             tmp_path,
@@ -89,13 +103,15 @@ def test_generation_rejects_a_nonpassing_review(tmp_path: Path) -> None:
 
 
 def test_generation_rejects_case_bytes_changed_after_review(tmp_path: Path) -> None:
-    _reviewed, manifest = _fixture(tmp_path)
+    reviewed, manifest = _fixture(tmp_path)
     (tmp_path / "qa/changes/CH-DEMO-001/cases/menus/case.yaml").write_bytes(b"changed")
     with pytest.raises(InputError, match="digest changed"):
         resolve_generation_input(
             {
                 "change_id": "CH-DEMO-001",
                 "coverage_epoch": 0,
+                "plan_digest": reviewed.plan_digest,
+                "plan_ref": reviewed.plan_ref.model_dump(mode="json"),
                 "source_artifacts": [manifest.model_dump(mode="json")],
             },
             tmp_path,
@@ -110,6 +126,8 @@ def test_standalone_generation_rebinds_verified_historical_review_to_epoch_zero(
         {
             "change_id": "CH-DEMO-001",
             "coverage_epoch": 0,
+            "plan_digest": reviewed.plan_digest,
+            "plan_ref": reviewed.plan_ref.model_dump(mode="json"),
             "source_artifacts": [manifest.model_dump(mode="json")],
         },
         tmp_path,

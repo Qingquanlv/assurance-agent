@@ -16,6 +16,8 @@ from assurance_intake.operations import (
     ExplorePrepareHandler,
     IntakeFinalizeHandler,
     IntakePrepareHandler,
+    LoadPlanHandler,
+    ResolvePlanHandler,
     ReviewRoundAdvanceHandler,
 )
 from assurance_intake.resource_loader import resource_bytes
@@ -58,6 +60,7 @@ INTAKE_RESOURCE_FILES: dict[str, str] = {
 }
 
 _SCHEMA_FILES: dict[str, str] = {
+    "assurance.intake.schema.resolved-assurance-plan.v1": ("schemas/resolved-assurance-plan.v1.schema.json"),
     "assurance.intake.schema.case-authoring.v1": "schemas/case-authoring.v1.schema.json",
     "assurance.intake.schema.case-review.v1": "schemas/case-review.v1.schema.json",
     "assurance.intake.schema.case.v1": "schemas/case.v1.schema.json",
@@ -78,6 +81,8 @@ _HANDLERS = {
     "assurance.intake.intake.finalize": IntakeFinalizeHandler(),
     "assurance.intake.intake.prepare": IntakePrepareHandler(),
     "assurance.intake.review-round.advance": ReviewRoundAdvanceHandler(),
+    "assurance.intake.load-plan": LoadPlanHandler(),
+    "assurance.intake.resolve-plan": ResolvePlanHandler(),
 }
 
 _VALIDATORS = {

@@ -54,10 +54,16 @@ def _receipt(name: str) -> ReceiptRef:
 def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
     base = f"qa/changes/{_CHANGE}"
     assessment_base = f"{base}/inspect/epochs/0/batches/{batch_id}"
+    plan_ref = _ref(f"{base}/plan/{_DIGEST}/resolved-assurance-plan.json")
     reviewed = {
         "change_id": _CHANGE,
         "coverage_epoch": 0,
-        "preparation_refs": [_ref(f"{base}/preparation/context.json")],
+        "plan_digest": _DIGEST,
+        "plan_ref": plan_ref,
+        "preparation_refs": sorted(
+            [plan_ref, _ref(f"{base}/preparation/context.json")],
+            key=lambda item: (item["path"], item["digest"]),
+        ),
         "case_refs": [_ref(f"{base}/cases/system/case.yaml")],
         "review_ref": _ref(f"{base}/review/case-review.json"),
     }
@@ -67,6 +73,8 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "change_id": _CHANGE,
         "coverage_epoch": 0,
         "batch_id": batch_id,
+        "plan_digest": _DIGEST,
+        "plan_ref": plan_ref,
         "scope": {
             "change_id": _CHANGE,
             "coverage_epoch": 0,
@@ -109,6 +117,8 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "change_id": _CHANGE,
         "coverage_epoch": 0,
         "batch_id": batch_id,
+        "plan_digest": _DIGEST,
+        "plan_ref": plan_ref,
         "disposition": "satisfied",
         "inspection_receipt": _receipt(f"inspect-{batch_id}").model_dump(mode="json"),
         "reviewed_case": reviewed,
@@ -129,6 +139,8 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "generation_result": {
             "change_id": _CHANGE,
             "coverage_epoch": 0,
+            "plan_digest": _DIGEST,
+            "plan_ref": plan_ref,
             "reviewed_case": reviewed,
             "mapping_ref": mapping_ref,
             "source_refs": [_ref(f"{base}/generated/api/files/tests/test_orders.py")],
@@ -145,6 +157,7 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "metrics_digest": _DIGEST,
         "case_digest": _DIGEST,
         "plan_digest": _DIGEST,
+        "plan_ref": plan_ref,
         "mapping_digest": _DIGEST,
         "issue_digest": None,
     }
@@ -332,6 +345,8 @@ def test_reported_tail_rejects_previous_batch_or_inspection_receipt() -> None:
     report = ReportOutcomeV1(
         change_id=_CHANGE,
         coverage_epoch=0,
+        plan_digest=_DIGEST,
+        plan_ref=inspection.plan_ref,
         batch_id="previous-batch",
         inspection_receipt=_receipt("inspect-previous"),
         report_refs=(EvidenceArtifactRefV1.model_validate(_ref(f"qa/changes/{_CHANGE}/report/report.md")),),
@@ -348,6 +363,8 @@ def test_reported_tail_requires_a_satisfied_inspection() -> None:
     matching = ReportOutcomeV1(
         change_id=_CHANGE,
         coverage_epoch=0,
+        plan_digest=_DIGEST,
+        plan_ref=inspection.plan_ref,
         batch_id=_BATCH,
         inspection_receipt=inspection.inspection_receipt,
         report_refs=(EvidenceArtifactRefV1.model_validate(_ref(f"qa/changes/{_CHANGE}/report/report.md")),),
@@ -380,6 +397,8 @@ async def test_failed_report_attempt_clears_stale_report_state() -> None:
         ExecuteTailResultV1(
             status="reported",
             inspection=InspectionOutcomeV1.model_validate(_state()["inspection_outcome"]),
+            plan_digest="d" * 64,
+            plan_ref=EvidenceArtifactRefV1(path="qa/changes/CH-1/plan.json", digest="e" * 64),
             report_refs=(),
             report_receipt=None,
         )
@@ -401,6 +420,8 @@ async def test_report_graph_publishes_only_the_current_committed_outcome() -> No
     finalized = FinalizedReportV1(
         change_id=_CHANGE,
         coverage_epoch=0,
+        plan_digest=_DIGEST,
+        plan_ref=inspection.plan_ref,
         batch_id=_BATCH,
         purpose="normal",
         inspection_receipt=inspection.inspection_receipt,
@@ -432,6 +453,8 @@ def test_diagnostic_report_cannot_publish_a_normal_success_outcome() -> None:
     finalized = FinalizedReportV1(
         change_id=_CHANGE,
         coverage_epoch=0,
+        plan_digest=_DIGEST,
+        plan_ref=inspection.plan_ref,
         batch_id=_BATCH,
         purpose="diagnostic",
         inspection_receipt=inspection.inspection_receipt,

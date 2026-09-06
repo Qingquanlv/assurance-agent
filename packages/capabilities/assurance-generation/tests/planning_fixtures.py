@@ -10,6 +10,11 @@ from tests.phase4.agent_harness import FakeAgentAdapter
 FAMILIES = ("api", "e2e", "fuzz", "performance")
 VALID_LEAFS = ("auth.session.create", "entities.item.create")
 _SHA = "a" * 64
+PLAN_DIGEST = _SHA
+PLAN_REF: dict[str, JSONValue] = {
+    "path": f"qa/changes/CH-DEMO-001/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
+    "digest": _SHA,
+}
 BINDING: dict[str, JSONValue] = {
     "agent_profile": "aa-doc-author",
     "execution": {
@@ -156,6 +161,8 @@ def family_constraints(family: str) -> dict[str, Any]:
 def plan_input(family: str) -> dict[str, JSONValue]:
     return {
         "change_id": "CH-DEMO-001",
+        "plan_digest": PLAN_DIGEST,
+        "plan_ref": PLAN_REF,
         "capability_leafs": list(VALID_LEAFS),
         "artifact_paths": list(family_plan_files(family)),
         "reviewed_cases": reviewed_cases(family),
@@ -234,6 +241,8 @@ def fake_agent_result(
     )
     document: dict[str, JSONValue] = {
         "agent_result": result.model_dump(mode="json"),
+        "plan_digest": PLAN_DIGEST,
+        "plan_ref": PLAN_REF,
         "capability_leafs": list(capability_leafs),
         "artifact_paths": list(artifact_paths or []),
         "allowed_paths": list(allowed_paths or []),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -41,7 +42,9 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_com
 def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) -> None:
     from assurance_product.agent_contracts import is_agent_contract
 
-    assert len(runtime_registry) == 46
+    # The two Intake plan Tasks enter the live registry when Task 11 wires their
+    # semantic nodes into the public graphs.
+    assert len(runtime_registry) == 48
     assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 34
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
@@ -69,7 +72,7 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 46
+    assert len(composition.semantic_attempt_contracts) == 48
     assert len(AGENT_EXECUTION_CONTRACTS) == 34
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
@@ -123,7 +126,7 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 46
+    assert len(resolved) == 48
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
@@ -170,7 +173,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
     assert len(agents) == 34
-    assert len(tasks) == 12
+    assert len(tasks) == 14
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
     for contract_id in agents:
@@ -593,6 +596,14 @@ def test_installed_proposal_finalize_uses_current_input_without_approval_envelop
 
     business = FixProposalInputV1(
         change_id="CH-1",
+        plan_digest="e" * 64,
+        plan_ref=cast(
+            Any,
+            {
+                "path": f"qa/changes/CH-1/plan/{'e' * 64}/resolved-assurance-plan.json",
+                "digest": "f" * 64,
+            },
+        ),
         owner_id="assurance.healing",
         capability_leafs=("api.users",),
         allowed_paths=("tests/api/test_users.py",),

@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1, require_same_plan
 from assurance_product.models import BusinessBudgetsV1, ResourceRefV1
 from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
 
@@ -19,6 +19,8 @@ class ExecuteTailInputV1(FrozenModel):
     requirement: str = Field(min_length=1)
     run_mode: Literal["case", "implement", "verify"]
     coverage_epoch: int = Field(ge=0)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     reviewed_case: ReviewedCaseV1 | None = None
     source_artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
     selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
@@ -48,6 +50,8 @@ class ExecuteTailResultV1(FrozenModel):
         "needs_human",
         "blocked",
     ]
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
     inspection: InspectionOutcomeV1 | None = None
     report: ReportOutcomeV1 | None = None
     report_refs: tuple[EvidenceArtifactRefV1, ...] = ()
@@ -56,6 +60,13 @@ class ExecuteTailResultV1(FrozenModel):
 
     @model_validator(mode="after")
     def _terminal_evidence_matches_status(self) -> Self:
+        if self.inspection is not None:
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.inspection.plan_digest,
+                self.inspection.plan_ref,
+            )
         if self.status == "reported":
             if (
                 self.inspection is None
@@ -82,6 +93,12 @@ class ExecuteTailResultV1(FrozenModel):
                 or self.report.report_receipt != self.report_receipt
             ):
                 raise ValueError("reported tail evidence does not match the Report outcome")
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.report.plan_digest,
+                self.report.plan_ref,
+            )
         elif self.status == "coverage_insufficient":
             if self.inspection is None or self.inspection.disposition != "coverage_insufficient":
                 raise ValueError("coverage_insufficient tail requires matching Inspect evidence")
@@ -116,6 +133,8 @@ def reported_tail_result(
         raise ValueError("normal report requires satisfied inspection")
     return ExecuteTailResultV1(
         status="reported",
+        plan_digest=report.plan_digest,
+        plan_ref=report.plan_ref,
         inspection=inspection,
         report=report,
         report_refs=report.report_refs,

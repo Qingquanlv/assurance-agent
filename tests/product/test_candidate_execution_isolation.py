@@ -20,6 +20,7 @@ from assurance_execution.operations.runner import (
     runner_environment,
     write_canonical_evidence,
 )
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_product.execution_view import build_execution_view, discard_execution_view
 from assurance_product.generated_merge import (
     GeneratedFileV2,
@@ -92,6 +93,11 @@ def _run_payload(selected: list[str]) -> dict[str, object]:
     return {
         "change_id": CHANGE_ID,
         "batch_id": BATCH_ID,
+        "plan_digest": "d" * 64,
+        "plan_ref": {
+            "path": f"qa/changes/{CHANGE_ID}/plan/{'d' * 64}/resolved-assurance-plan.json",
+            "digest": "e" * 64,
+        },
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
         "mapping": {
             "selected": selected,
@@ -421,6 +427,11 @@ def _closed_evidence(change_id: str) -> ExecutionEvidenceV1:
     return normalize_evidence(
         change_id=change_id,
         batch_id=BATCH_ID,
+        plan_digest="d" * 64,
+        plan_ref=EvidenceArtifactRefV1(
+            path=f"qa/changes/{change_id}/plan/{'d' * 64}/resolved-assurance-plan.json",
+            digest="e" * 64,
+        ),
         selected_targets={"api": True, "e2e": False, "fuzz": False, "performance": False},
         mapping=mapping,
         capability_leafs=leafs,

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from pydantic import BaseModel
 
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.canonical import canonical_digest
 
 from assurance_quality.contracts.agent import QualitySkillInputV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
@@ -45,6 +44,7 @@ _SKILL_DIGESTS = (
     "metrics_digest",
     "case_digest",
     "plan_digest",
+    "plan_ref",
     "mapping_digest",
     "issue_digest",
 )
@@ -109,6 +109,8 @@ def _assessment_skill_input(
     return AssessmentSkillInputV1.model_validate(
         {
             "change_id": state.get("change_id"),
+            "plan_digest": state.get("plan_digest"),
+            "plan_ref": state.get("plan_ref"),
             "coverage_epoch": state.get("coverage_epoch"),
             "batch_id": state.get("batch_id"),
             "capability_leafs": state.get("capability_leafs", ()),
@@ -132,6 +134,8 @@ def select_inspect(state: Mapping[str, object]) -> AssessmentSkillInputV1:
 def select_materialize_assessment(state: Mapping[str, object]) -> MaterializeAssessmentInputV1:
     return MaterializeAssessmentInputV1.model_validate(
         {
+            "plan_digest": state.get("plan_digest"),
+            "plan_ref": state.get("plan_ref"),
             "reviewed_case": state.get("reviewed_case"),
             "generation": state.get("generation_result"),
             "execution": state.get("execution_result"),
@@ -156,9 +160,8 @@ def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
         "coverage_digest": assessment.gaps_ref.digest,
         "metrics_digest": assessment.metrics_ref.digest,
         "case_digest": inspection.reviewed_case.review_ref.digest,
-        "plan_digest": canonical_digest(
-            cast(JSONValue, [ref.model_dump(mode="json") for ref in generation.plan_refs])
-        ),
+        "plan_digest": generation.plan_digest,
+        "plan_ref": generation.plan_ref.model_dump(mode="json"),
         "mapping_digest": inspection.mapping_ref.digest,
         "issue_digest": assessment.issue_ref.digest if assessment.issue_ref is not None else None,
     }
@@ -309,6 +312,8 @@ def publish_inspect(
         change_id=assessment.change_id,
         coverage_epoch=assessment.coverage_epoch,
         batch_id=assessment.batch_id,
+        plan_digest=assessment.plan_digest,
+        plan_ref=assessment.plan_ref,
         disposition=disposition,
         inspection_receipt=ReceiptRef.model_validate(receipt),
         reviewed_case=finalized.reviewed_case,
@@ -378,6 +383,8 @@ def publish_report(
             coverage_epoch=finalized.coverage_epoch,
             batch_id=finalized.batch_id,
             inspection_receipt=finalized.inspection_receipt,
+            plan_digest=finalized.plan_digest,
+            plan_ref=finalized.plan_ref,
             report_refs=finalized.report_refs,
             report_receipt=committed,
         )

@@ -24,10 +24,12 @@ from assurance_quality.contracts.report import (
     QualityScoreBreakdown,
     ReportDefect,
     ReportDefects,
+    ReportPlan,
     ReportScope,
 )
 from assurance_quality.operations.common import InputError, failed_input, validate_input
 from assurance_quality.operations.inspect import worst_status
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 _SHA256 = r"^[0-9a-f]{64}$"
 _PRODUCT = {
@@ -51,6 +53,8 @@ class ScoreDimension(FrozenModel):
 class GenerateReportInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     batch_id: str = Field(min_length=1)
+    plan_digest: str = Field(pattern=_SHA256)
+    plan_ref: EvidenceArtifactRefV1
     quality_gate: dict[str, Any]
     analysis: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
@@ -338,6 +342,7 @@ def build_quality_report(payload: GenerateReportInputV1) -> QualityReport:
         schema_version="1.1",
         change_id=payload.change_id,
         batch_id=gate.batch_id or payload.batch_id,
+        plan=ReportPlan(plan_digest=payload.plan_digest, plan_ref=payload.plan_ref),
         final_status=report_final,  # type: ignore[arg-type]
         quality_score=score,
         score_breakdown=breakdown,
@@ -379,6 +384,8 @@ def render_quality_report_markdown(raw: Mapping[str, object]) -> bytes:
         "",
         f"- Change: {_one_line(report.change_id)}",
         f"- Batch: {_one_line(report.batch_id)}",
+        f"- Plan: {report.plan.plan_digest}",
+        f"- Plan artifact: {_one_line(report.plan.plan_ref.path)}",
         f"- Final status: {report.final_status}",
         f"- Quality score: {report.quality_score:g}",
         "",
