@@ -27,6 +27,7 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     family_plan_files,
     valid_plan_result,
 )
+from tests.verification_support import read_fixture
 
 _SHA = "a" * 64
 
@@ -214,3 +215,38 @@ def test_plugin_contributed_plan_validators_allowlist_registered_paths() -> None
     rejected = validator.validate(candidate_with("src/app.py"), context)
     assert rejected.accepted is False
     assert mechanical.validate(candidate_with("../secret.md"), context).accepted is False
+
+
+def test_api_validator_dispatches_execution_bindings_by_exact_file_name() -> None:
+    fixture = read_fixture("user-plan.json")
+    path = "qa/changes/CH-USER-001/plans/api-execution-bindings.json"
+    document: dict[str, Any] = {
+        "schema_version": fixture["schema_version"],
+        "case_id": fixture["case_id"],
+        "bindings": fixture["bindings"],
+    }
+    file_bytes = {path: json.dumps(document).encode("utf-8")}
+    validator = family_validator(
+        "api",
+        capability_leafs=frozenset(VALID_LEAFS),
+        case_ids=frozenset({"TC_USER_CREATE_001"}),
+        file_bytes=file_bytes,
+        write_roots=("qa/changes/CH-USER-001/plans/",),
+    )
+
+    assert validator.validate(candidate_with(path), validation_context()).accepted is True
+
+    binding = document["bindings"]["user.row_count"]
+    assert isinstance(binding, dict)
+    binding["expected"] = 1
+    validator = family_validator(
+        "api",
+        capability_leafs=frozenset(VALID_LEAFS),
+        case_ids=frozenset({"TC_USER_CREATE_001"}),
+        file_bytes={path: json.dumps(document).encode("utf-8")},
+        write_roots=("qa/changes/CH-USER-001/plans/",),
+    )
+    rejected = validator.validate(candidate_with(path), validation_context())
+    assert rejected.accepted is False
+    assert rejected.reason is not None
+    assert "extra_forbidden" in rejected.reason

@@ -38,6 +38,8 @@ _PLAN_FILES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "plans/api-test-data-plan.md",
             "plans/api-codegen-plan.md",
             "plans/api-codegen-mapping.json",
+            "plans/api-execution-bindings.json",
+            "plans/api-case-execution-plan.json",
             "plans/m3-review-summary.md",
         ),
         "e2e": (
@@ -90,9 +92,12 @@ def _job(
 ) -> AgentExecutionContract[Any, Any, Any]:
     family, _, stage = base.partition(".")
     claim_outputs = outputs
+    finalize_suffixes: tuple[str, ...] = ()
+    if base == "api.plan":
+        claim_outputs = tuple(output for output in outputs if output != "plans/api-case-execution-plan.json")
+        finalize_suffixes = ("plans/api-case-execution-plan.json",)
     if stage in {"codegen", "codegen-fix"}:
         claim_outputs = (*outputs, f"generated/{family}/files")
-    finalize_suffixes: tuple[str, ...] = ()
     if stage == "plan-review":
         finalize_suffixes = (f"plan/{family}/reviews",)
     elif stage == "codegen-fix":

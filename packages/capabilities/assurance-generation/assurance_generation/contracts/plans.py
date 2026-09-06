@@ -7,10 +7,10 @@ from typing import Literal
 
 from pathlib import PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from assurance_generation.contracts.families import KNOWN_PLAN_CHECK_IDS, PLAN_CHECK_IDS, LayerName
-from assurance_intake.contracts import NonEmptyStr, RiskTier
+from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr, RiskTier
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -186,6 +186,8 @@ class PlanResultV1(BaseModel):
     required_capabilities: tuple[NonEmptyStr, ...]
     coverage: tuple[PlanCoverageRow, ...]
     output_files: tuple[NonEmptyStr, ...]
+    case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
+    case_execution_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     fuzz_strategy: FuzzStrategyV1 | None = None
     performance_scenarios: tuple[PerformanceScenarioV1, ...] = ()
 
@@ -228,4 +230,14 @@ class PlanResultV1(BaseModel):
                     raise ValueError(f"unknown capability leaf: {scenario.capability}")
         elif self.performance_scenarios:
             raise ValueError("performance_scenarios is only valid for performance plans")
+        has_machine_ref = self.case_execution_plan_ref is not None
+        has_machine_digest = self.case_execution_plan_digest is not None
+        if has_machine_ref != has_machine_digest:
+            raise ValueError("case execution plan ref and digest must be supplied together")
+        if self.case_execution_plan_ref is not None:
+            expected_path = f"qa/changes/{self.change_id}/plans/{self.family}-case-execution-plan.json"
+            if self.case_execution_plan_ref.path != expected_path:
+                raise ValueError("case execution plan ref must bind the current family plan artifact")
+            if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+                raise ValueError("case execution plan ref and digest do not match")
         return self

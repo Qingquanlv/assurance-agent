@@ -27,6 +27,15 @@ from assurance_generation.contracts.generated_files import (
     GeneratedFilesV1,
     PerformanceGeneratedFilesV1,
 )
+from assurance_generation.contracts.execution_plan import (
+    BASE_RUNTIME_OBLIGATIONS,
+    TRACE_OBLIGATIONS,
+    CaseExecutionPlanSetV1,
+    CaseExecutionPlanV1,
+    CasePlanContextV1,
+    required_obligations,
+    validate_case_plan_sources,
+)
 from assurance_generation.contracts.plans import (
     CheckEvidence,
     Finding,
@@ -53,6 +62,9 @@ __all__ = [
     "ApiGeneratedFilesV1",
     "CampaignResult",
     "CampaignSpec",
+    "CaseExecutionPlanSetV1",
+    "CaseExecutionPlanV1",
+    "CasePlanContextV1",
     "CaseType",
     "CheckEvidence",
     "CodegenAuthoringV1",
@@ -71,6 +83,7 @@ __all__ = [
     "GeneratedFileEntryV1",
     "GeneratedFilesV1",
     "GenerationCycleResultV1",
+    "BASE_RUNTIME_OBLIGATIONS",
     "KNOWN_PLAN_CHECK_IDS",
     "LayerApplicability",
     "LayerName",
@@ -83,9 +96,12 @@ __all__ = [
     "ReviewDecision",
     "ReviewFinding",
     "ResolveGenerationInputV1",
+    "TRACE_OBLIGATIONS",
     "advance_review_round",
     "attempt_contract_refs",
     "complete_generation",
+    "required_obligations",
+    "validate_case_plan_sources",
     "GenerationCompletionOutput",
     "GenerationReviewRoundAdvanceOutput",
 ]

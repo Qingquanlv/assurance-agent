@@ -59,6 +59,7 @@ GENERATION_RESOURCE_FILES: dict[str, str] = {
 }
 
 _SCHEMA_FILES: dict[str, str] = {
+    "assurance.generation.schema.case-execution-plan.v1": "schemas/case-execution-plan.v1.schema.json",
     "assurance.generation.schema.codegen-mapping.v1": "schemas/codegen-mapping.v1.schema.json",
     "assurance.generation.schema.discovery-campaign.v1": "schemas/discovery-campaign.v1.schema.json",
     "assurance.generation.schema.generated-files.v1": "schemas/generated-files.v1.schema.json",

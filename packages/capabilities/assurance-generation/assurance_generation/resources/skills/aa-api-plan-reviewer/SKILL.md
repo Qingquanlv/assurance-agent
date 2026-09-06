@@ -49,6 +49,8 @@ has already verified these exact paths as regular files.
 - `qa/changes/<change-id>/plans/api-test-data-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-mapping.json`
+- `qa/changes/<change-id>/plans/api-execution-bindings.json`
+- `qa/changes/<change-id>/plans/api-case-execution-plan.json` (when the frozen profile is present)
 - `qa/changes/<change-id>/plans/m3-review-summary.md`
 - `qa/changes/<change-id>/cases/**/case.yaml`
 
@@ -116,6 +118,17 @@ Required capability closure:
   list, get, update, or delete endpoints.
 
 Runtime contract closure:
+
+- Treat the formal case execution plan as derived evidence. Verify that every
+  business assertion and every profile-required runtime obligation appears
+  exactly once, every expected reference resolves to the frozen assertion,
+  source/specification digests match, and Trace requirements match the frozen
+  profile. An agent-authored passing decision, readiness field, or obligation
+  count never closes a missing or invalid binding; the host repeats this check
+  deterministically before accepting the review.
+- Candidate bindings may locate actual values only. Reject candidate expected,
+  comparator, required, readiness, completion, or pass/fail overrides, and
+  reject arbitrary SQL in place of the installed fixed SQLite User binding.
 
 - Independently compare every method/path named by the API plan and codegen
   plan with the live OpenAPI document when available, otherwise with the actual

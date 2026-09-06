@@ -27,6 +27,7 @@ from assurance_generation.contracts.agent import (
 from assurance_generation.contracts.codegen import CodegenMapping, family_allows_target
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
+from assurance_generation.operations.execution_plan import PlanNotReady, compile_case_plan_artifact
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import (
     CaseYamlAuthoring,
@@ -68,6 +69,7 @@ _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
         "api-test-data-plan.md",
         "api-codegen-plan.md",
         "api-codegen-mapping.json",
+        "api-execution-bindings.json",
         "m3-review-summary.md",
     ),
     "e2e": (
@@ -238,6 +240,9 @@ def split_finalize_input(raw: object) -> tuple[dict[str, object], int | None, in
             "coverage_epoch",
             "local_round",
             "reviewed_case",
+            "case_plan_context",
+            "assertion_sources",
+            "validation_profile",
         }
         payload = {
             **{key: value for key, value in validated.items() if key in finalize_fields},
@@ -414,8 +419,11 @@ def plan_review_input_paths(
     if not case_files:
         raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
 
+    formal = f"qa/changes/{change_id}/plans/{family}-case-execution-plan.json"
+    formal_paths = (formal,) if (workspace / formal).is_file() else ()
     relative_paths = (
         *plan_outputs(change_id, family),
+        *formal_paths,
         f"qa/changes/{change_id}/proposal.md",
         *(path.relative_to(workspace).as_posix() for path in case_files),
     )
@@ -654,9 +662,48 @@ class PlanFinalizeHandler:
                 raise OutputError(str(error)) from error
             if document.family != family:
                 raise OutputError(f"plan family {document.family!r} does not match {family}")
+            if (
+                document.case_execution_plan_ref is not None
+                or document.case_execution_plan_digest is not None
+            ):
+                raise OutputError("the planner cannot author formal case execution plan identity")
             if payload.artifact_paths:
                 _authenticate_files(context.write_root, document.output_files, payload.artifact_paths)
             _authenticate_codegen_mapping(context.write_root, document=document, family=family)
+            if payload.case_plan_context is not None:
+                if family != "api":
+                    raise OutputError("machine case execution plans are supported only for api plans")
+                assert payload.assertion_sources is not None
+                assert payload.validation_profile is not None
+                candidate_relative = (
+                    f"qa/changes/{payload.case_plan_context.change_id}/plans/api-execution-bindings.json"
+                )
+                formal_relative = (
+                    f"qa/changes/{payload.case_plan_context.change_id}/plans/api-case-execution-plan.json"
+                )
+                if candidate_relative not in document.output_files:
+                    raise OutputError("api plan must declare api-execution-bindings.json")
+                try:
+                    _plan_set, machine_ref = compile_case_plan_artifact(
+                        project_root=context.project_root,
+                        write_root=context.write_root,
+                        bindings_path=candidate_relative,
+                        output_path=formal_relative,
+                        sources=payload.assertion_sources,
+                        validation_profile=payload.validation_profile,
+                        context=payload.case_plan_context,
+                    )
+                except PlanNotReady as error:
+                    raise OutputError(str(error)) from error
+                document = PlanResultV1.model_validate(
+                    {
+                        **document.model_dump(mode="json"),
+                        "output_files": sorted((*document.output_files, formal_relative)),
+                        "case_execution_plan_ref": machine_ref.model_dump(mode="json"),
+                        "case_execution_plan_digest": machine_ref.digest,
+                    },
+                    context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                )
             dumped = document.model_dump(mode="json")
             used, budget = round_counters(request.input)
             if used is not None:

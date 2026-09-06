@@ -59,7 +59,25 @@ those exact reads and a path-scoped grep both fail.
 - `qa/changes/<change-id>/plans/api-test-data-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-mapping.json`
+- `qa/changes/<change-id>/plans/api-execution-bindings.json`
 - `qa/changes/<change-id>/plans/m3-review-summary.md`
+
+`api-execution-bindings.json` is a candidate locator document with exactly
+`schema_version: "1"`, one reviewed `case_id`, and a `bindings` object keyed by
+obligation ID. Each value describes only where the runtime obtains an actual
+value. Use the installed HTTP User-create and SQLite User binding IDs and
+versions supplied by the task inputs. Never emit SQL, expected values,
+comparators, `required`, counts, readiness, pass/fail, or completion claims in
+this file. Map every reviewed assertion ID plus `initial.user_absent`,
+`action.finished`, and `oracle.executed`; when the frozen profile requires
+Trace, also map `trace.http`, `trace.user_write`, `trace.user_completed`, and
+`trace.drained`.
+
+The host finalizer exclusively writes
+`qa/changes/<change-id>/plans/api-case-execution-plan.json`. Do not write or
+list a digest for that formal artifact in the structured result. The host
+derives its expected references, comparators, required set, completion rules,
+readiness, canonical bytes, and digest from authenticated inputs.
 
 ## Closed Codegen Mapping Contract
 

@@ -24,6 +24,21 @@ class GeneratedFamilyV1(FrozenModel):
     files: tuple[GeneratedFileEntryV1, ...] = Field(min_length=1)
     mapping: CodegenMapping
     receipt: ReceiptRef
+    case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
+    case_execution_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _machine_plan_identity(self) -> Self:
+        has_ref = self.case_execution_plan_ref is not None
+        has_digest = self.case_execution_plan_digest is not None
+        if has_ref != has_digest:
+            raise ValueError("case execution plan ref and digest must be supplied together")
+        if self.case_execution_plan_ref is not None:
+            if self.family != "api":
+                raise ValueError("case execution plans belong to the api family")
+            if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+                raise ValueError("case execution plan ref and digest do not match")
+        return self
 
 
 class CompleteGenerationInputV1(FrozenModel):
@@ -81,6 +96,8 @@ class GenerationCycleResultV1(FrozenModel):
     mapping_ref: EvidenceArtifactRefV1
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     plan_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
+    case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
+    case_execution_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def _identity_matches(self) -> Self:
@@ -94,6 +111,15 @@ class GenerationCycleResultV1(FrozenModel):
             self.reviewed_case.plan_digest,
             self.reviewed_case.plan_ref,
         )
+        has_ref = self.case_execution_plan_ref is not None
+        has_digest = self.case_execution_plan_digest is not None
+        if has_ref != has_digest:
+            raise ValueError("case execution plan ref and digest must be supplied together")
+        if self.case_execution_plan_ref is not None:
+            if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+                raise ValueError("case execution plan ref and digest do not match")
+            if self.case_execution_plan_ref not in self.plan_refs:
+                raise ValueError("case execution plan ref must be one of the committed plan refs")
         return self
 
 

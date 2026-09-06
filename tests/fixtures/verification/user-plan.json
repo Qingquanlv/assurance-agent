@@ -1,0 +1,128 @@
+{
+  "schema_version": "1",
+  "case_id": "TC_USER_CREATE_001",
+  "context": {
+    "change_id": "CH-USER-001",
+    "coverage_epoch": 2,
+    "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "plan_ref": {
+      "path": "qa/changes/CH-USER-001/plan/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/resolved-assurance-plan.json",
+      "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "reviewed_case": {
+      "change_id": "CH-USER-001",
+      "coverage_epoch": 2,
+      "plan_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "plan_ref": {
+        "path": "qa/changes/CH-USER-001/plan/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/resolved-assurance-plan.json",
+        "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "preparation_refs": [
+        {
+          "path": "qa/changes/CH-USER-001/plan/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/resolved-assurance-plan.json",
+          "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ],
+      "case_refs": [
+        {
+          "path": "qa/changes/CH-USER-001/cases/system/user/case.yaml",
+          "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        }
+      ],
+      "review_ref": {
+        "path": "qa/changes/CH-USER-001/review/case-review.json",
+        "digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    "verification_policy_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "technical_config_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "sut_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "bindings": {
+    "action.finished": {
+      "kind": "http_action",
+      "binding_id": "assurance.execution.http.user-create.v1",
+      "binding_version": "1",
+      "action_key": "create_user",
+      "method": "POST",
+      "path": "/api/v1/user/create",
+      "request_fields": {
+        "username": "username",
+        "email": "email",
+        "is_active": "is_active",
+        "is_superuser": "is_superuser",
+        "dept_id": "dept_id"
+      },
+      "credential_ref": "credentials.user_create_password"
+    },
+    "api.http_status": {
+      "kind": "http_status",
+      "action_key": "create_user"
+    },
+    "api.code": {
+      "kind": "http_json_field",
+      "action_key": "create_user",
+      "field": "code"
+    },
+    "initial.user_absent": {
+      "kind": "sqlite_user_absence",
+      "oracle_key": "created_user",
+      "binding_id": "assurance.execution.sqlite.user.v1",
+      "binding_version": "1"
+    },
+    "oracle.executed": {
+      "kind": "sqlite_user_observation",
+      "oracle_key": "created_user",
+      "binding_id": "assurance.execution.sqlite.user.v1",
+      "binding_version": "1"
+    },
+    "user.row_count": {
+      "kind": "sqlite_user_row_count",
+      "oracle_key": "created_user"
+    },
+    "user.username": {
+      "kind": "sqlite_user_field",
+      "oracle_key": "created_user",
+      "field": "username"
+    },
+    "user.email": {
+      "kind": "sqlite_user_field",
+      "oracle_key": "created_user",
+      "field": "email"
+    },
+    "user.is_active": {
+      "kind": "sqlite_user_field",
+      "oracle_key": "created_user",
+      "field": "is_active"
+    },
+    "user.is_superuser": {
+      "kind": "sqlite_user_field",
+      "oracle_key": "created_user",
+      "field": "is_superuser"
+    },
+    "user.dept_id": {
+      "kind": "sqlite_user_field",
+      "oracle_key": "created_user",
+      "field": "dept_id"
+    },
+    "trace.http": {
+      "kind": "trace_http",
+      "action_key": "create_user"
+    },
+    "trace.user_write": {
+      "kind": "trace_user_write",
+      "binding_id": "assurance.execution.trace.sqlite-user-write.v1",
+      "binding_version": "1"
+    },
+    "trace.user_completed": {
+      "kind": "trace_checkpoint",
+      "checkpoint_id": "user.create.completed",
+      "checkpoint_version": "1"
+    },
+    "trace.drained": {
+      "kind": "trace_drain",
+      "binding_id": "assurance.execution.trace.drain.v1",
+      "binding_version": "1"
+    }
+  }
+}

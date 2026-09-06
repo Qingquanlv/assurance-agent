@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationResult
 
 from assurance_generation.contracts.agent import under_write_root
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1, ExecutionBindingsV1
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
 
@@ -76,23 +77,50 @@ class FamilyPlanValidator:
         return self._validate_documents()
 
     def _validate_documents(self) -> ValidationResult:
-        documents = [
-            (path, payload)
-            for path, payload in self._file_bytes.items()
-            if PurePosixPath(path).name.endswith("-plan.json")
-        ]
+        documents = list(self._file_bytes.items())
         if not documents:
             return ValidationResult(accepted=True)
         leafs = self._capability_leafs
         assert leafs is not None
         for path, payload in documents:
             name = PurePosixPath(path).name
+            if name not in {
+                _plan_document_name(self._family),
+                "api-execution-bindings.json",
+                "api-case-execution-plan.json",
+            }:
+                continue
             try:
                 raw = json.loads(payload.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 return ValidationResult(accepted=False, reason=str(error))
+            if name == "api-execution-bindings.json":
+                if self._family != "api":
+                    return ValidationResult(accepted=False, reason="execution bindings belong to api")
+                try:
+                    bindings = ExecutionBindingsV1.model_validate(raw)
+                except ValidationError as error:
+                    return ValidationResult(accepted=False, reason=str(error))
+                if self._case_ids is not None and bindings.case_id not in self._case_ids:
+                    return ValidationResult(
+                        accepted=False,
+                        reason=f"unresolved case IDs: {[bindings.case_id]}",
+                    )
+                continue
+            if name == "api-case-execution-plan.json":
+                if self._family != "api":
+                    return ValidationResult(accepted=False, reason="case execution plan belongs to api")
+                try:
+                    plan_set = CaseExecutionPlanSetV1.model_validate(raw)
+                except ValidationError as error:
+                    return ValidationResult(accepted=False, reason=str(error))
+                if self._case_ids is not None:
+                    unknown = [case.case_id for case in plan_set.cases if case.case_id not in self._case_ids]
+                    if unknown:
+                        return ValidationResult(accepted=False, reason=f"unresolved case IDs: {unknown}")
+                continue
             family = raw.get("family") if isinstance(raw, dict) else None
-            if family != self._family or name != _plan_document_name(self._family):
+            if family != self._family:
                 return ValidationResult(
                     accepted=False,
                     reason=f"plan family {family!r} does not match validator family {self._family!r}",
@@ -165,6 +193,9 @@ class PlanMechanicalValidator:
         discovered: list[tuple[Family, str]] = []
         for path, payload in self._file_bytes.items():
             name = PurePosixPath(path).name
+            if name in {"api-execution-bindings.json", "api-case-execution-plan.json"}:
+                discovered.append(("api", path))
+                continue
             if not name.endswith("-plan.json"):
                 continue
             stem = name.removesuffix("-plan.json")

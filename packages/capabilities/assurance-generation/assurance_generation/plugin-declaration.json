@@ -15,7 +15,7 @@
       },
       {
         "contract_id": "assurance.generation.agent.api.plan.v1",
-        "digest": "55f34d93dcee8ce7610477e3987477207bd68037c95ab39e5fcf2336a8ca03e2"
+        "digest": "fd760dc54e94bd956850e8505c58bcf9d1d27ac7366563bf0bbdc93b1446dea3"
       },
       {
         "contract_id": "assurance.generation.agent.e2e.codegen-fix.v1",
@@ -31,7 +31,7 @@
       },
       {
         "contract_id": "assurance.generation.agent.e2e.plan.v1",
-        "digest": "415a45c39cf4ac16a3379625c0a419b960898a89c4ee6806ec41e7f99fbf1f65"
+        "digest": "e07a50139e62887f8130bff3e85c2d247d975f5e8d6e82c688f6ca6079a7dd61"
       },
       {
         "contract_id": "assurance.generation.agent.fuzz.codegen.v1",
@@ -43,7 +43,7 @@
       },
       {
         "contract_id": "assurance.generation.agent.fuzz.plan.v1",
-        "digest": "de153a68dbc35cd0971ee246c7c98c5585516803975bef00c7e0fd07cc3889af"
+        "digest": "5ff86c759571293c2e5e0fc4ad95b444edd2cc1bbf92cf2237a724bf6b8f9f23"
       },
       {
         "contract_id": "assurance.generation.agent.performance.codegen.v1",
@@ -55,11 +55,11 @@
       },
       {
         "contract_id": "assurance.generation.agent.performance.plan.v1",
-        "digest": "e77d54d496770ffbe612d88cf3c810808f9e13cbd2c6e5316df6efadf1156160"
+        "digest": "737f195b1765f8a1693932bd56dd99bce9f1a947a894c47cb2ff1b83ce5eae84"
       },
       {
         "contract_id": "assurance.generation.publish-cycle",
-        "digest": "95aaf57bc9098f24fe0b9b0dbffc124987873bdf6e80dbab5350070c4e6af19e"
+        "digest": "c98ad7cbc2617a9fd64b04c3d9770c33ce3885a6b38dd788b79e91e5a2bb037d"
       },
       {
         "contract_id": "assurance.generation.resolve-inputs",
@@ -111,6 +111,7 @@
     ],
     "schema_version": "1",
     "schemas": [
+      "assurance.generation.schema.case-execution-plan.v1",
       "assurance.generation.schema.codegen-mapping.v1",
       "assurance.generation.schema.discovery-campaign.v1",
       "assurance.generation.schema.generated-files.v1",
@@ -164,18 +165,5 @@
       "assurance.generation.resolve-inputs.execute",
       "assurance.generation.review-round.advance"
     ]
-  },
-  "kind": "plugin",
-  "schema_version": "1",
-  "source": {
-    "declaration_path": "assurance_generation/plugin-declaration.json",
-    "distribution": "assurance-generation",
-    "entrypoint_group": "graph_engine.plugins",
-    "entrypoint_name": "generation",
-    "entrypoint_value": "assurance_generation.plugin:GenerationPlugin",
-    "import_roots": [
-      ""
-    ],
-    "version": "0.2.0"
   }
 }

@@ -11,7 +11,9 @@ from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.plans import canonical_relative_path
+from assurance_generation.contracts.execution_plan import CasePlanContextV1, ValidationProfile
 from assurance_intake.contracts import EvidenceArtifactRefV1, ReviewedCaseV1, RiskTier
+from assurance_intake.contracts.verification import AssertionSourcesV1
 from assurance_intake.contracts.workflow import require_same_plan
 
 _SHA256 = r"^[0-9a-f]{64}$"
@@ -89,6 +91,9 @@ class PlanInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
+    case_plan_context: CasePlanContextV1 | None = None
+    assertion_sources: AssertionSourcesV1 | None = None
+    validation_profile: ValidationProfile | None = None
 
     @field_validator("capability_leafs")
     @classmethod
@@ -116,6 +121,25 @@ class PlanInputV1(FrozenModel):
                 self.reviewed_case.plan_digest,
                 self.reviewed_case.plan_ref,
             )
+        machine_inputs = (
+            self.case_plan_context,
+            self.assertion_sources,
+            self.validation_profile,
+        )
+        if any(value is not None for value in machine_inputs):
+            if any(value is None for value in machine_inputs):
+                raise ValueError("machine plan inputs must be supplied together")
+            assert self.case_plan_context is not None
+            if self.case_plan_context.change_id != self.change_id:
+                raise ValueError("machine plan context change_id does not match plan input")
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.case_plan_context.plan_digest,
+                self.case_plan_context.plan_ref,
+            )
+            if self.reviewed_case is not None and self.reviewed_case != self.case_plan_context.reviewed_case:
+                raise ValueError("machine plan context does not match reviewed_case")
         return self
 
 
@@ -131,6 +155,9 @@ class AgentFinalizeInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
+    case_plan_context: CasePlanContextV1 | None = None
+    assertion_sources: AssertionSourcesV1 | None = None
+    validation_profile: ValidationProfile | None = None
 
     @field_validator("capability_leafs")
     @classmethod
@@ -156,6 +183,25 @@ class AgentFinalizeInputV1(FrozenModel):
                 self.reviewed_case.plan_digest,
                 self.reviewed_case.plan_ref,
             )
+        machine_inputs = (
+            self.case_plan_context,
+            self.assertion_sources,
+            self.validation_profile,
+        )
+        if any(value is not None for value in machine_inputs):
+            if any(value is None for value in machine_inputs):
+                raise ValueError("machine plan inputs must be supplied together")
+            assert self.case_plan_context is not None
+            if self.change_id is not None and self.case_plan_context.change_id != self.change_id:
+                raise ValueError("machine plan context change_id does not match finalize input")
+            require_same_plan(
+                self.plan_digest,
+                self.plan_ref,
+                self.case_plan_context.plan_digest,
+                self.case_plan_context.plan_ref,
+            )
+            if self.reviewed_case is not None and self.reviewed_case != self.case_plan_context.reviewed_case:
+                raise ValueError("machine plan context does not match reviewed_case")
         return self
 
 
@@ -172,6 +218,8 @@ class CodegenInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
+    case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
+    case_execution_plan_digest: str | None = Field(default=None, pattern=_SHA256)
 
     @field_validator("capability_leafs")
     @classmethod
@@ -206,6 +254,16 @@ class CodegenInputV1(FrozenModel):
                 self.reviewed_case.plan_digest,
                 self.reviewed_case.plan_ref,
             )
+        has_ref = self.case_execution_plan_ref is not None
+        has_digest = self.case_execution_plan_digest is not None
+        if has_ref != has_digest:
+            raise ValueError("case execution plan ref and digest must be supplied together")
+        if self.case_execution_plan_ref is not None:
+            expected = f"qa/changes/{self.change_id}/plans/api-case-execution-plan.json"
+            if self.case_execution_plan_ref.path != expected:
+                raise ValueError("case execution plan ref does not match current change")
+            if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+                raise ValueError("case execution plan ref and digest do not match")
         return self
 
 

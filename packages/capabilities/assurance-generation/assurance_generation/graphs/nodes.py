@@ -77,6 +77,9 @@ def select_plan(state: Mapping[str, object]) -> PlanInputV1:
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": state.get("rounds_used", 0),
             "reviewed_case": state.get("reviewed_case"),
+            "case_plan_context": state.get("case_plan_context"),
+            "assertion_sources": state.get("assertion_sources"),
+            "validation_profile": state.get("validation_profile"),
         }
     )
 
@@ -162,6 +165,8 @@ def select_codegen(state: Mapping[str, object]) -> CodegenInputV1:
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": state.get("rounds_used", 0),
             "reviewed_case": state.get("reviewed_case"),
+            "case_execution_plan_ref": state.get("case_execution_plan_ref"),
+            "case_execution_plan_digest": state.get("case_execution_plan_digest"),
         }
     )
 
@@ -183,6 +188,8 @@ def select_codegen_fix(state: Mapping[str, object]) -> CodegenFixInputV1:
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": state.get("rounds_used", 0),
             "reviewed_case": state.get("reviewed_case"),
+            "case_execution_plan_ref": state.get("case_execution_plan_ref"),
+            "case_execution_plan_digest": state.get("case_execution_plan_digest"),
         }
     )
 
@@ -223,6 +230,8 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     payload = _output_payload(output)
     return {
         "plan_files": payload.get("output_files", []),
+        "case_execution_plan_ref": payload.get("case_execution_plan_ref"),
+        "case_execution_plan_digest": payload.get("case_execution_plan_digest"),
         "artifacts": payload.get("artifacts") or [],
         "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
         "rounds_budget": _published_int(payload, "rounds_budget", state.get("rounds_budget", 2)),
@@ -406,6 +415,8 @@ def _family_result(state: Mapping[str, object], *, status: str, selected: bool) 
                 "files": codegen.get("files", []),
                 "mapping": codegen.get("mapping"),
                 "receipt": dict(receipt),
+                "case_execution_plan_ref": state.get("case_execution_plan_ref"),
+                "case_execution_plan_digest": state.get("case_execution_plan_digest"),
             }
     return {"family_results": result["family_results"]}
 

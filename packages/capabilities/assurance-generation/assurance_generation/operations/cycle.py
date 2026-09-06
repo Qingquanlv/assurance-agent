@@ -44,6 +44,7 @@ def complete_generation_cycle(
             cases[case.case_id] = case
     sources: dict[str, EvidenceArtifactRefV1] = {}
     plans: dict[str, EvidenceArtifactRefV1] = {}
+    machine_plan_ref: EvidenceArtifactRefV1 | None = None
     entries: list[ClosedMappingEntryV1] = []
     for family in request.families:
         if family.coverage_epoch != request.coverage_epoch or family.mapping.layer != family.family:
@@ -62,6 +63,13 @@ def complete_generation_cycle(
             if not path.startswith(f"qa/changes/{request.change_id}/plans/"):
                 raise ValueError("plan artifacts must belong to the current change")
             plans[path] = evidence_ref(project_root, path)
+        if family.case_execution_plan_ref is not None:
+            committed_ref = evidence_ref(project_root, family.case_execution_plan_ref.path)
+            if committed_ref != family.case_execution_plan_ref:
+                raise ValueError("committed case execution plan changed")
+            if machine_plan_ref is not None and machine_plan_ref != committed_ref:
+                raise ValueError("generation cycle has conflicting case execution plans")
+            machine_plan_ref = committed_ref
         for item in family.mapping.entries:
             case = cases.get(item.case_id)
             if case is None or case.type.lower() != family.family:
@@ -93,6 +101,8 @@ def complete_generation_cycle(
         mapping_ref=EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest()),
         source_refs=tuple(sources[key] for key in sorted(sources)),
         plan_refs=tuple(plans[key] for key in sorted(plans)),
+        case_execution_plan_ref=machine_plan_ref,
+        case_execution_plan_digest=(machine_plan_ref.digest if machine_plan_ref is not None else None),
     )
 
 

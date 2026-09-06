@@ -12,6 +12,7 @@ from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskR
 
 from assurance_generation.contracts.agent import AgentBindingDataV1, AgentFinalizeInputV1
 from assurance_generation.contracts.reviews import PlanReviewAuthoring, normalize_public_review_outcome
+from assurance_generation.operations.execution_plan import PlanNotReady, validate_case_plan_artifact
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_REVIEW_RESULT_ID,
@@ -97,6 +98,25 @@ class PlanReviewFinalizeHandler:
             expected = f"{family}-plan"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
+            if payload.case_plan_context is not None:
+                if family != "api":
+                    raise OutputError("machine case execution plans are supported only for api plans")
+                assert payload.assertion_sources is not None
+                assert payload.validation_profile is not None
+                formal_relative = (
+                    f"qa/changes/{payload.case_plan_context.change_id}/plans/api-case-execution-plan.json"
+                )
+                machine_ref = evidence_ref(context.project_root, formal_relative)
+                try:
+                    validate_case_plan_artifact(
+                        project_root=context.project_root,
+                        artifact_ref=machine_ref,
+                        sources=payload.assertion_sources,
+                        validation_profile=payload.validation_profile,
+                        context=payload.case_plan_context,
+                    )
+                except PlanNotReady as error:
+                    raise OutputError(str(error)) from error
             extra: dict[str, object] = {
                 "public_outcome": normalize_public_review_outcome(
                     document.decision,

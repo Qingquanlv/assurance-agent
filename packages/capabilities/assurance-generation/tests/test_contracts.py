@@ -34,6 +34,10 @@ _NON_CONTRACT_INTAKE = (
     "assurance_intake.resource_loader",
 )
 _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
+    "assurance.generation.schema.case-execution-plan.v1": (
+        "1",
+        "31344835fec47248299d2c98f08abe3f5da33c6d7468a04af1b0c9450122618f",
+    ),
     "assurance.generation.schema.codegen-mapping.v1": (
         "1",
         "9d623c3f691070097c9d3f120877db09596ef1dbdd060814e82d16e9876a44d1",
@@ -290,8 +294,10 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-api-plan",
             "assurance-v1-doc-author",
             (
+                "qa/changes/{change_id}/plans/api-case-execution-plan.json",
                 "qa/changes/{change_id}/plans/api-codegen-mapping.json",
                 "qa/changes/{change_id}/plans/api-codegen-plan.md",
+                "qa/changes/{change_id}/plans/api-execution-bindings.json",
                 "qa/changes/{change_id}/plans/api-plan.md",
                 "qa/changes/{change_id}/plans/api-test-data-plan.md",
                 "qa/changes/{change_id}/plans/m3-review-summary.md",

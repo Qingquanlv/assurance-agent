@@ -8,6 +8,7 @@ from typing import cast
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 
 from assurance_generation.contracts import CodegenAuthoringV1, PlanReviewAuthoring
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.resource_loader import resource_bytes, resource_text
 
@@ -69,6 +70,9 @@ def test_generation_resources_forbid_legacy_and_provider_names() -> None:
 
 
 def test_result_contracts_match_capability_schemas() -> None:
+    assert resource_bytes("schemas/case-execution-plan.v1.schema.json") == canonical_json_bytes(
+        cast(JSONValue, CaseExecutionPlanSetV1.model_json_schema())
+    )
     assert resource_bytes("result-contracts/plan.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, PlanResultV1.model_json_schema())
     )

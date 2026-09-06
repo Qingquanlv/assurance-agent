@@ -78,6 +78,17 @@ def test_generation_owns_fourteen_agent_contracts_and_two_tasks() -> None:
         )
 
 
+def test_api_machine_plan_candidate_and_formal_artifact_have_separate_phase_claims() -> None:
+    claims = AGENT_JOB_CONTRACTS["api.plan"].phase_write_claims
+    candidate = "qa/changes/{change_id}/plans/api-execution-bindings.json"
+    formal = "qa/changes/{change_id}/plans/api-case-execution-plan.json"
+
+    assert candidate in claims.runtime
+    assert candidate not in claims.finalize
+    assert formal in claims.finalize
+    assert formal not in claims.runtime
+
+
 def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:
     expected_bases = (
         "api.codegen-fix",
