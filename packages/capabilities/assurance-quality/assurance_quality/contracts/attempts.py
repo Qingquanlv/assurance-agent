@@ -147,7 +147,13 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
             "change_id": "/reviewed_case/change_id",
             "coverage_epoch": "/coverage_epoch_token",
         },
-        reads=(".aa/policy.yaml", "issues", "qa/changes/{change_id}"),
+        reads=(
+            ".aa/capability-catalog.json",
+            ".aa/data-knowledge.yaml",
+            ".aa/policy.yaml",
+            "issues",
+            "qa/changes/{change_id}",
+        ),
         writes=(
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",

@@ -15,7 +15,9 @@ def _row(pair_id: str, arm: str, **updates: object) -> dict[str, object]:
     row: dict[str, object] = {
         "pair_id": pair_id,
         "arm": arm,
-        **dict.fromkeys(PAIR_KEYS, "same"),
+        **dict.fromkeys(PAIR_KEYS, "a" * 64),
+        "model_id": "test-model",
+        "tool_versions": {"aa": "1.0", "python": "3.11.13"},
         "plan": {"selected_test_families": ["api"]},
         "plan_ref": {"path": "plan.json", "digest": "a" * 64},
         "terminal_outcome": "achieved",
@@ -44,6 +46,25 @@ def test_comparison_rejects_a_missing_condition(key: str) -> None:
     del right[key]
 
     with pytest.raises(ValueError, match=key):
+        require_comparable(left, right)
+
+
+@pytest.mark.parametrize("key", PAIR_KEYS)
+@pytest.mark.parametrize("unknown", (None, "", " ", False, 1))
+def test_comparison_rejects_matching_unknown_conditions(key: str, unknown: object) -> None:
+    left = _row("pair-1", "select", **{key: unknown})
+    right = _row("pair-1", "all_admissible", **{key: unknown})
+
+    with pytest.raises(ValueError, match=key):
+        compare_pairs([left, right])
+
+
+@pytest.mark.parametrize("versions", ({}, [], "1.0", {"aa": None}, {"aa": ""}, {"": "1.0"}))
+def test_comparison_requires_known_named_tool_versions(versions: object) -> None:
+    left = _row("pair-1", "select", tool_versions=versions)
+    right = _row("pair-1", "all_admissible", tool_versions=versions)
+
+    with pytest.raises(ValueError, match="tool_versions"):
         require_comparable(left, right)
 
 

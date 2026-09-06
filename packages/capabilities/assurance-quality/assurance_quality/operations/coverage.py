@@ -60,6 +60,7 @@ from assurance_quality.operations.common import (
     validate_input,
 )
 from assurance_quality.operations.trace import TraceOperationInput, project_trace
+from assurance_quality.operations.goal_scope import has_layer_evidence
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 _STALE_REASON_CODES = frozenset({"execution_stale", "pass_stale"})
@@ -91,6 +92,9 @@ class MinimumCoverageInput(BaseModel):
     executed_case_ids: tuple[str, ...] = ()
     failed_case_ids: tuple[str, ...] = ()
     open_issue_case_ids: tuple[str, ...] = ()
+    # Plan-bound assessments provide authenticated layers; historical callers
+    # without layer metadata retain their original join interpretation.
+    case_layers: dict[str, LayerName] | None = None
 
 
 class DiffCoverageInput(BaseModel):
@@ -305,11 +309,18 @@ def join_minimum_coverage(payload: MinimumCoverageInput) -> MinimumCoverageResul
     items: list[MinimumCoverageItem] = []
     for row in payload.items:
         status: MrcItemStatus
+        mapped = set(row.covered_by_cases)
+
+        def covers_layer(case_ids: set[str]) -> bool:
+            if payload.case_layers is None:
+                return bool(case_ids)
+            return has_layer_evidence(row.layer, case_ids, payload.case_layers)
+
         if row.status == "skipped_by_scope" or not row.required:
             status = "skipped_by_scope"
-        elif not row.covered_by_cases:
+        elif not covers_layer(mapped):
             status = "missing"
-        elif not set(row.covered_by_cases) & executed:
+        elif not covers_layer(mapped & executed):
             status = "not_executed"
         elif set(row.covered_by_cases) & failed and set(row.covered_by_cases) & known:
             status = "covered_known_issue"

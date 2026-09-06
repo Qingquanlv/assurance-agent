@@ -202,10 +202,10 @@ def normalize_goal_obligations(
         if category_name not in _MRC_CATEGORIES:
             raise ValueError(f"unknown MRC category: {category_name}")
         category: MrcCategory = category_name
-        if category == "e2e_if_enabled":
-            raise ValueError("e2e_if_enabled applicability is unresolved")
         if not isinstance(entries, list):
             raise ValueError(f"MRC category {category} must contain a list")
+        if category == "e2e_if_enabled" and entries:
+            raise ValueError("e2e_if_enabled applicability is unresolved; resolve obligations under e2e")
         for sequence, entry in enumerate(entries, start=1):
             row = _obligation(category=category, entry=entry, sequence=sequence)
             if category in {"negative", "data_integrity"} and row.key not in capability_leafs:

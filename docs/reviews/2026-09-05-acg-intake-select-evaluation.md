@@ -25,3 +25,9 @@ behavior or a claimed result.
 Use `acg_comparison.py` on the collected JSON rows. The current implementation
 and deterministic tests establish comparability checks and reporting only;
 they do not provide evidence that initial selection reduces real provider cost.
+
+Comparison identities must be known before a pair can be compared: digests and
+`model_id` are non-empty strings, and `tool_versions` is a non-empty object
+mapping tool names to non-empty version strings. Missing, null, blank, or
+incorrectly typed conditions reject the pair even when both arms match.
+Unknown cost measurements remain null and do not reject otherwise comparable pairs.

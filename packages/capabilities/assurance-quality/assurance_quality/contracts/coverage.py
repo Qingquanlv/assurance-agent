@@ -144,6 +144,13 @@ class CoverageGapsDocument(BaseModel):
     projection_digest: NonEmptyStr
     gaps: tuple[CoverageGap, ...] = ()
     computed_at: datetime | None = None
+    minimum_coverage: MinimumCoverageResult | None = None
+
+    @model_validator(mode="after")
+    def _minimum_coverage_matches_change(self) -> Self:
+        if self.minimum_coverage is not None and self.minimum_coverage.change_id != self.change_id:
+            raise ValueError("minimum coverage result must belong to the coverage gap change")
+        return self
 
     @field_validator("gaps", mode="after")
     @classmethod
@@ -467,6 +474,9 @@ def mrc_closed_key_findings(
         elif category in _JOURNEY_CATEGORIES and key not in journey_keys:
             bad.add(key)
     return tuple(MrcFinding(code="unknown_closed_key", key=key) for key in sorted(bad))
+
+
+CoverageGapsDocument.model_rebuild()
 
 
 __all__ = [

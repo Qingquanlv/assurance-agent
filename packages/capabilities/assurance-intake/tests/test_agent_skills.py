@@ -749,8 +749,9 @@ async def test_case_review_finalize_accepts_mrc_key_that_is_not_a_capability_lea
     tmp_path: Path,
 ) -> None:
     _write_review_matrix(tmp_path, missing=["entities.fake"])
-    result = fake_agent_result(_case_review_document(missing=["entities.fake"]))
-    outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
+    outcome = await _finalize_review_with_written_cases(
+        tmp_path, _case_review_document(missing=["entities.fake"])
+    )
     assert outcome.status == "succeeded"
 
 
@@ -933,6 +934,44 @@ def _write_case_delta(workspace: Path, document: object) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
     return relative
+
+
+async def _finalize_review_with_written_cases(
+    workspace: Path,
+    document: JSONValue,
+) -> TaskOutcome:
+    _, write_root = dual_roots(workspace)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    case_relative = _write_case_delta(workspace, authored)
+    matrix_relative = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    review_relative = "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = write_root / review_relative
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(document), encoding="utf-8")
+    summary_relative = "qa/changes/CH-DEMO-001/review/case-review-summary.md"
+    (write_root / summary_relative).write_text("# Case review\n", encoding="utf-8")
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        document,
+        workspace,
+        [review_relative, summary_relative],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+        case_delta_paths=[case_relative],
+        case_refs=[
+            {
+                "path": case_relative,
+                "digest": hashlib.sha256((workspace / case_relative).read_bytes()).hexdigest(),
+            }
+        ],
+        preparation_refs=[
+            {
+                "path": matrix_relative,
+                "digest": hashlib.sha256((workspace / matrix_relative).read_bytes()).hexdigest(),
+            }
+        ],
+    )
+    return executed.outcome
 
 
 def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
@@ -1960,12 +1999,7 @@ async def test_case_design_finalize_rejects_invalid_written_case_yaml(tmp_path: 
 @pytest.mark.asyncio
 async def test_case_review_finalize_accepts_typed_review(tmp_path: Path) -> None:
     _write_review_matrix(tmp_path, missing=[])
-    executed = await _finalize_files(
-        CaseReviewFinalizeHandler(),
-        _case_review_document(missing=[]),
-        tmp_path,
-        [],
-    )
+    executed = await _finalize_review_with_written_cases(tmp_path, _case_review_document(missing=[]))
     assert executed.status == "succeeded"
     output = executed.output
     assert isinstance(output, dict)
@@ -1984,7 +2018,7 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
-    case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
+    case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
     review_document = _case_review_document(missing=[])
     review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1994,7 +2028,13 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
         {
             "path": requirement.relative_to(project).as_posix(),
             "digest": hashlib.sha256(requirement.read_bytes()).hexdigest(),
-        }
+        },
+        {
+            "path": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+            "digest": hashlib.sha256(
+                (change_root / "trace/minimum-coverage-matrix.json").read_bytes()
+            ).hexdigest(),
+        },
     ]
     case_refs = [
         {
@@ -2009,6 +2049,7 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
         project,
         ["qa/changes"],
         change_id="CH-DEMO-001",
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -2033,10 +2074,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
-    case_path.write_text(
-        "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n",
-        encoding="utf-8",
-    )
+    case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
     review_document = _case_review_document(missing=[])
     review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2046,7 +2084,13 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         {
             "path": requirement.relative_to(project).as_posix(),
             "digest": hashlib.sha256(requirement.read_bytes()).hexdigest(),
-        }
+        },
+        {
+            "path": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+            "digest": hashlib.sha256(
+                (change_root / "trace/minimum-coverage-matrix.json").read_bytes()
+            ).hexdigest(),
+        },
     ]
     case_refs = [
         {
@@ -2063,6 +2107,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -2078,6 +2123,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -2090,6 +2136,7 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         change_id="CH-DEMO-001",
         coverage_epoch=1,
         review_round=0,
+        case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
         case_refs=case_refs,
         write_root=write_root,
@@ -2190,8 +2237,9 @@ async def test_case_review_finalize_replaces_projection_drift_from_authenticated
     tmp_path: Path,
 ) -> None:
     _write_review_matrix(tmp_path, missing=["skipped_item"])
-    result = fake_agent_result(_case_review_document(missing=["entities.item"]))
-    outcome = await run_finalize(CaseReviewFinalizeHandler(), result, tmp_path)
+    outcome = await _finalize_review_with_written_cases(
+        tmp_path, _case_review_document(missing=["entities.item"])
+    )
     assert outcome.status == "succeeded"
     output = outcome.output
     assert isinstance(output, dict)

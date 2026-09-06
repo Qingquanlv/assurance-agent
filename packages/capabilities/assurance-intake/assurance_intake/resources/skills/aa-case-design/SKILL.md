@@ -22,6 +22,9 @@ Do not rely on prior conversation context.
    without advisory.
 3. Read **Required** inputs:
    - user requirement text
+   - the frozen plan at graph-authenticated `plan_ref`, matching `plan_digest`, and
+     its `quality_goal.obligations_ref` (`/minimum_required_coverage`), even when
+     the typed `exploration` input is null
    - relevant backend and/or frontend product source files under the project source root
    The case designer MUST read those files directly before choosing cases and assertions.
    Explore source evidence is not a substitute for this direct read. If the relevant
@@ -70,6 +73,11 @@ Do not rely on prior conversation context.
    fields not named by the error. Re-read every output and run the complete self-review
    before returning the locked receipt. Do not reinterpret the error as permission to
    widen scope, derive a new capability key, or change a valid trace entry.
+9. **Coverage rework:** When `case_rework_context` is provided, read its authenticated
+   `gaps_ref` and the report's `minimum_coverage` gaps under the same frozen
+   `plan_digest` / `plan_ref`. Add or modify cases and their matrix mappings to supply
+   the missing evidence within the frozen family set. Preserve the required baseline;
+   a new obligation needing an unselected family is a `family scope conflict`.
 
 **After completing work:**
 
@@ -90,11 +98,18 @@ the next file. Never issue parallel `write`, `edit`, `artifact_write`, or
 `apply_patch` calls. When using `apply_patch`, create or update only one output file
 per call; do not batch the four case-design outputs into one patch.
 
-When `selected_test_families` is non-empty, it is the graph-authoritative automation
-scope. For every selected family (`api`, `e2e`, `fuzz`, `performance`), author at
-least one `added` or `modified` case with the matching `type` and
-`automation.required: true`. Explore recommendations may shape depth, but may not
-remove a graph-selected family.
+`selected_test_families` is the automation scope frozen in the plan. For every
+selected family (`api`, `e2e`, `fuzz`, `performance`), author at least one active
+`added` or `modified` case with the matching `type` and `automation.required: true`.
+Every active required case must also have `type.lower()` in that frozen set.
+Report a `family scope conflict` if a required case or obligation needs an unselected
+family; do not reselect families, mutate the plan, or weaken its obligation or oracle.
+Explore recommendations and `.qa.yaml` approval text cannot change the frozen scope.
+
+Keep every required baseline obligation and its matrix row. `skipped_by_scope`
+records an unresolved gap; it does not satisfy or waive a frozen obligation. Never
+delete the row, set `required: false`, or declare it inapplicable to hide the gap.
+These rules also govern coverage rework and the missing-key guidance below.
 
 Every authored case must set `trace` to a non-empty mapping whose keys are copied
 exactly from graph-provided `capability_leafs`. Never invent a capability key and

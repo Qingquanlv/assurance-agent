@@ -33,10 +33,28 @@ COST_KEYS = (
 ARMS = frozenset({"select", "all_admissible"})
 
 
+def _known_condition(key: str, value: object) -> bool:
+    if key == "tool_versions":
+        return (
+            isinstance(value, Mapping)
+            and bool(value)
+            and all(
+                isinstance(name, str)
+                and bool(name.strip())
+                and isinstance(version, str)
+                and bool(version.strip())
+                for name, version in value.items()
+            )
+        )
+    return isinstance(value, str) and bool(value.strip())
+
+
 def require_comparable(left: Mapping[str, object], right: Mapping[str, object]) -> None:
     """Reject a pair whose conditions or arms do not describe one experiment."""
     for key in PAIR_KEYS:
-        if key not in left or key not in right or left[key] != right[key]:
+        if not all(_known_condition(key, row.get(key)) for row in (left, right)):
+            raise ValueError(f"comparison condition is missing or invalid: {key}")
+        if left[key] != right[key]:
             raise ValueError(f"comparison conditions differ: {key}")
     if {left.get("arm"), right.get("arm")} != ARMS:
         raise ValueError("comparison requires both arms")

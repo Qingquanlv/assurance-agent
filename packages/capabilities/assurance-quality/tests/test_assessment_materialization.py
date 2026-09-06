@@ -2,20 +2,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.plugin_api import ResourceClaimTemplate
 
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_intake.contracts.common import TestFamily
 from assurance_quality.contracts.assessment import AssessmentInputsV1
-from assurance_quality.contracts.metrics import MetricsDocument
+from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
+from assurance_quality.contracts.coverage import CoverageGapsDocument, classify_coverage_state
+from assurance_quality.contracts.decisions import classify_inspection_disposition
+from assurance_quality.contracts.metrics import MetricKey, MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
+from assurance_quality.operations.inspect import build_failure_classification_facts
 from tests.acg_plan_fixture import install_plan
 from tests.phase4.conformance import execute_task
 
@@ -88,15 +97,40 @@ def _write_json(root: Path, relative: str, value: object) -> dict[str, str]:
     return _write_bytes(root, relative, canonical_json_bytes(cast(JSONValue, value)))
 
 
-def _workspace_input(root: Path) -> dict[str, Any]:
+def _workspace_input(
+    root: Path,
+    *,
+    capability_leafs: tuple[str, ...] = (CAPABILITY, "entities.item.constraints.description"),
+    journeys: tuple[str, ...] = (),
+    minimum_required_coverage: Mapping[str, object] | None = None,
+    case_entries: list[dict[str, object]] | None = None,
+    matrix_rows: list[dict[str, object]] | None = None,
+    family: Literal["api", "e2e"] = "api",
+    candidates: tuple[TestFamily, ...] | None = None,
+) -> dict[str, Any]:
     plan_document, plan_ref = install_plan(
         root,
         CHANGE_ID,
-        capability_leafs=(CAPABILITY, "entities.item.constraints.description"),
-        minimum_required_coverage={
-            "api": [CAPABILITY, "entities.item.constraints.description"],
-        },
+        capability_leafs=capability_leafs,
+        journeys=journeys,
+        minimum_required_coverage=(
+            minimum_required_coverage
+            if minimum_required_coverage is not None
+            else {"api": [CAPABILITY, "entities.item.constraints.description"]}
+        ),
+        candidates=candidates or (family,),
+        proposed=candidates or (family,),
     )
+    selected_cases = (
+        case_entries
+        if case_entries is not None
+        else [
+            _case("TC_ITEM_001", CAPABILITY),
+            _case("TC_ITEM_002", "entities.item.constraints.description"),
+        ]
+    )
+    selector = TEST_SELECTOR.replace("/api/", f"/{family}/")
+    mapped_capability = next(iter(cast(dict[str, object], selected_cases[0]["trace"])))
     preparation = _write_text(root, f"qa/changes/{CHANGE_ID}/requirement.md", "# Requirement\n")
     review = _write_json(
         root,
@@ -109,10 +143,7 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         yaml.safe_dump(
             {
                 "schema_version": "1.0",
-                "added": [
-                    _case("TC_ITEM_001", CAPABILITY),
-                    _case("TC_ITEM_002", "entities.item.constraints.description"),
-                ],
+                "added": selected_cases,
                 "modified": [],
                 "removed": [],
             },
@@ -122,7 +153,9 @@ def _workspace_input(root: Path) -> dict[str, Any]:
     matrix_ref = _write_json(
         root,
         f"qa/changes/{CHANGE_ID}/trace/minimum-coverage-matrix.json",
-        [
+        matrix_rows
+        if matrix_rows is not None
+        else [
             {
                 "mrc_id": "MRC-API-001",
                 "key": CAPABILITY,
@@ -145,19 +178,19 @@ def _workspace_input(root: Path) -> dict[str, Any]:
     )
     source = _write_text(
         root,
-        f"qa/changes/{CHANGE_ID}/generated/api/files/tests/api/test_items.py",
+        f"qa/changes/{CHANGE_ID}/generated/{family}/files/tests/{family}/test_items.py",
         "def test_create_item():\n    assert True\n",
     )
-    plan = _write_text(root, f"qa/changes/{CHANGE_ID}/plans/api-plan.md", "# Plan\n")
+    plan = _write_text(root, f"qa/changes/{CHANGE_ID}/plans/{family}-plan.md", "# Plan\n")
     mapping = {
         "schema_version": "1",
-        "selected": [TEST_SELECTOR],
+        "selected": [selector],
         "mappings": [
             {
-                "test": TEST_SELECTOR,
+                "test": selector,
                 "case_id": "TC_ITEM_001",
-                "capability": CAPABILITY,
-                "layer": "api",
+                "capability": mapped_capability,
+                "layer": family,
             }
         ],
     }
@@ -171,8 +204,8 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         "plan_digest": plan_document.plan_digest,
         "plan_ref": plan_ref,
         "selected_targets": {
-            "api": True,
-            "e2e": False,
+            "api": family == "api",
+            "e2e": family == "e2e",
             "fuzz": False,
             "performance": False,
         },
@@ -184,9 +217,9 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         "receipt": {
             "commands": [
                 {
-                    "family": "api",
+                    "family": family,
                     **{
-                        "command": ["pytest", TEST_SELECTOR],
+                        "command": ["pytest", selector],
                         "exit_code": 0,
                         "collected": 1,
                         "passed": 1,
@@ -198,7 +231,7 @@ def _workspace_input(root: Path) -> dict[str, Any]:
         },
         "results": [
             {
-                "test": TEST_SELECTOR,
+                "test": selector,
                 "status": "passed",
                 "duration_ms": 5,
                 "case_id": "TC_ITEM_001",
@@ -301,6 +334,545 @@ async def test_materializes_authenticated_case_mapping_execution_and_policy(tmp_
     metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
     assert metrics.metrics["constraint_coverage"].value == 0.5
     assert metrics.computed_at == EXECUTED_AT
+
+
+def _matrix_row(
+    key: str,
+    sequence: int,
+    *,
+    category: str = "api",
+    case_ids: tuple[str, ...] = ("TC_ITEM_001",),
+) -> dict[str, object]:
+    return {
+        "mrc_id": f"MRC-{category.upper()}-{sequence:03d}",
+        "key": key,
+        "category": category,
+        "required": True,
+        "layer": "e2e" if category == "e2e" else "api",
+        "covered_by_cases": list(case_ids),
+        "status": "covered",
+    }
+
+
+@pytest.mark.asyncio
+async def test_unmapped_required_api_operation_remains_a_repairable_evidence_gap(tmp_path: Path) -> None:
+    capability = "operations.create_item"
+    request = _workspace_input(
+        tmp_path,
+        capability_leafs=(capability,),
+        minimum_required_coverage={"api": ["create_item", "delete_item"]},
+        case_entries=[_case("TC_ITEM_001", capability)],
+        matrix_rows=[_matrix_row("create_item", 1)],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert sufficiency.sufficient is False
+    assert sufficiency.insufficient_cases == ()
+    assert output.scope.applicable_goals == ()
+    assert (
+        classify_coverage_state(
+            metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
+        )
+        == "repair_required"
+    )
+    execution = ExecutionEvidenceV1.model_validate(
+        json.loads((tmp_path / EVIDENCE_PATH).read_bytes()),
+        context={"case_ids": frozenset({"TC_ITEM_001"}), "capability_leafs": frozenset({capability})},
+    )
+    failure_facts, _ = build_failure_classification_facts(execution, metrics, adversarial_required=False)
+    assert (
+        classify_inspection_disposition(facts=failure_facts, coverage_state="repair_required")
+        == "coverage_insufficient"
+    )
+    gaps = json.loads(result.workspace_bytes[output.gaps_ref.path])
+    assert gaps["minimum_coverage"]["summary"]["total_required"] == 2
+    assert [(item["key"], item["status"]) for item in gaps["minimum_coverage"]["items"]] == [
+        ("create_item", "covered"),
+        ("delete_item", "missing"),
+    ]
+    CoverageGapsDocument.model_validate(gaps)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_key", "second_key", "goal"),
+    [
+        (CAPABILITY, "entities.item.constraints.description", "constraint_coverage"),
+        ("auth_matrix.owner_read", "auth_matrix.visitor_read", "auth_matrix_coverage"),
+    ],
+)
+async def test_unrelated_passing_case_cannot_cover_a_second_closed_obligation(
+    tmp_path: Path, first_key: str, second_key: str, goal: MetricKey
+) -> None:
+    request = _workspace_input(
+        tmp_path,
+        capability_leafs=(first_key, second_key),
+        minimum_required_coverage={"api": [first_key, second_key]},
+        case_entries=[_case("TC_ITEM_001", first_key)],
+        matrix_rows=[_matrix_row(first_key, 1), _matrix_row(second_key, 2)],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    metric = metrics.metrics[goal]
+    assert metric.value == 0.5
+    assert metric.declared is not None
+    assert metric.declared.total == 2
+    assert metric.declared.uncovered == (second_key,)
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert (
+        classify_coverage_state(
+            metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
+        )
+        == "repair_required"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reviewed_required_operation_addition_retains_its_execution_gap(tmp_path: Path) -> None:
+    optional = _case("TC_ITEM_002", CAPABILITY)
+    optional["risk"] = {"level": "low", "likelihood": 1, "impact": 1, "rationale": "small impact"}
+    cast(dict[str, object], optional["automation"])["required"] = False
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage={"api": ["create_item"]},
+        case_entries=[_case("TC_ITEM_001", CAPABILITY), optional],
+        matrix_rows=[
+            _matrix_row("create_item", 1),
+            _matrix_row("delete_item", 2, case_ids=("TC_ITEM_002",)),
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert sufficiency.sufficient is False
+    assert sufficiency.insufficient_cases == ()
+    gaps = json.loads(result.workspace_bytes[output.gaps_ref.path])
+    assert [(item["key"], item["status"]) for item in gaps["minimum_coverage"]["items"]] == [
+        ("create_item", "covered"),
+        ("delete_item", "not_executed"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["entities.item.constraints.description", "auth.owner_read"])
+async def test_reviewed_case_trace_additions_cannot_disappear_without_matrix_rows(
+    tmp_path: Path, key: str
+) -> None:
+    request = _workspace_input(
+        tmp_path,
+        capability_leafs=(CAPABILITY, key),
+        minimum_required_coverage={"api": ["create_item"]},
+        case_entries=[_case("TC_ITEM_001", CAPABILITY), _case("TC_ITEM_002", key)],
+        matrix_rows=[_matrix_row("create_item", 1)],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    goal: MetricKey = "auth_matrix_coverage" if key.startswith("auth.") else "constraint_coverage"
+    metric = metrics.metrics[goal]
+    assert metric.status == "evaluated"
+    assert metric.declared is not None
+    assert metric.declared.uncovered == (key,)
+    assert metric.value == (0.0 if goal == "auth_matrix_coverage" else 0.5)
+
+
+@pytest.mark.asyncio
+async def test_reviewed_trace_cannot_introduce_an_unknown_closed_key(tmp_path: Path) -> None:
+    case = _case("TC_ITEM_001", CAPABILITY)
+    cast(dict[str, object], case["trace"])["auth.unknown"] = {"covered": True}
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage={"api": [CAPABILITY]},
+        case_entries=[case],
+        matrix_rows=[_matrix_row(CAPABILITY, 1)],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "failed"
+    assert result.failure is not None
+    assert "auth.unknown" in result.failure.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("category", ["negative", "data_integrity"])
+async def test_reviewed_closed_category_cannot_introduce_a_free_form_operation(
+    tmp_path: Path, category: str
+) -> None:
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage={"api": ["create_item"]},
+        case_entries=[_case("TC_ITEM_001", CAPABILITY)],
+        matrix_rows=[
+            _matrix_row("create_item", 1),
+            _matrix_row("unknown_operation", 1, category=category),
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "failed"
+    assert result.failure is not None
+    assert "unknown_operation" in result.failure.message
+
+
+@pytest.mark.asyncio
+async def test_coverage_gap_mrc_diagnostics_must_belong_to_the_same_change(tmp_path: Path) -> None:
+    result = await execute_task(MaterializeAssessmentHandler(), _workspace_input(tmp_path), tmp_path)
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    gaps = json.loads(result.workspace_bytes[output.gaps_ref.path])
+    gaps["minimum_coverage"]["change_id"] = "ANOTHER-CHANGE"
+
+    with pytest.raises(ValidationError, match="minimum coverage.*change"):
+        CoverageGapsDocument.model_validate(gaps)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mapping", ["unknown_journey", "unmapped_case"])
+async def test_reviewed_e2e_case_requires_a_known_journey_mapping(tmp_path: Path, mapping: str) -> None:
+    case = _case("TC_ITEM_001", CAPABILITY)
+    case["type"] = "E2E"
+    cast(dict[str, object], case["automation"])["framework"] = "pytest-playwright"
+    matrix = _matrix_row("unknown" if mapping == "unknown_journey" else "checkout", 1, category="e2e")
+    if mapping == "unmapped_case":
+        matrix.update(
+            {"covered_by_cases": [], "status": "skipped_by_scope", "required": False, "skip_reason": "none"}
+        )
+    request = _workspace_input(
+        tmp_path,
+        family="e2e",
+        journeys=("checkout",),
+        minimum_required_coverage={"e2e": ["checkout"]},
+        case_entries=[case],
+        matrix_rows=[matrix],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "failed"
+    assert result.failure is not None
+    assert "journey" in result.failure.message.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case_count", [1, 2])
+async def test_known_journey_is_one_obligation_but_each_required_e2e_case_needs_evidence(
+    tmp_path: Path, case_count: int
+) -> None:
+    cases = [_case(f"TC_ITEM_00{index}", CAPABILITY) for index in range(1, case_count + 1)]
+    for case in cases:
+        case["type"] = "E2E"
+        cast(dict[str, object], case["automation"])["framework"] = "pytest-playwright"
+    request = _workspace_input(
+        tmp_path,
+        family="e2e",
+        journeys=("checkout",),
+        minimum_required_coverage={"e2e": ["checkout"]},
+        case_entries=cases,
+        matrix_rows=[
+            _matrix_row(
+                "checkout", 1, category="e2e", case_ids=tuple(cast(str, case["case_id"]) for case in cases)
+            )
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    journey = metrics.metrics["journey_coverage"]
+    assert journey.declared is not None
+    assert journey.declared.total == 1
+    assert journey.value == 1.0
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert sufficiency.sufficient is (case_count == 1)
+    assert tuple(item.case_id for item in sufficiency.insufficient_cases) == (
+        () if case_count == 1 else ("TC_ITEM_002",)
+    )
+    assert classify_coverage_state(
+        metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
+    ) == ("satisfied" if case_count == 1 else "repair_required")
+
+
+@pytest.mark.asyncio
+async def test_passing_e2e_trace_cannot_override_reviewed_api_obligation_layer(tmp_path: Path) -> None:
+    e2e_case = _case("TC_ITEM_001", CAPABILITY)
+    e2e_case["type"] = "E2E"
+    cast(dict[str, object], e2e_case["automation"])["framework"] = "pytest-playwright"
+    api_case = _case("TC_ITEM_002", CAPABILITY)
+    api_case["risk"] = {"level": "low", "likelihood": 1, "impact": 1, "rationale": "small impact"}
+    cast(dict[str, object], api_case["automation"])["required"] = False
+    api_row = _matrix_row(CAPABILITY, 1, case_ids=("TC_ITEM_002",))
+    api_row["required"] = False
+    request = _workspace_input(
+        tmp_path,
+        family="e2e",
+        journeys=("checkout",),
+        minimum_required_coverage={"e2e": ["checkout"]},
+        case_entries=[e2e_case, api_case],
+        matrix_rows=[_matrix_row("checkout", 1, category="e2e"), api_row],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    assert metrics.metrics["constraint_coverage"].value == 0.0
+    gaps = json.loads(result.workspace_bytes[output.gaps_ref.path])
+    api_item = next(item for item in gaps["minimum_coverage"]["items"] if item["key"] == CAPABILITY)
+    assert api_item["case_ids"] == ["TC_ITEM_002"]
+
+
+@pytest.mark.asyncio
+async def test_optional_empty_matrix_row_cannot_hide_reviewed_trace_obligation(tmp_path: Path) -> None:
+    description = "entities.item.constraints.description"
+    optional_case = _case("TC_ITEM_002", description)
+    optional_case["risk"] = {"level": "low", "likelihood": 1, "impact": 1, "rationale": "small impact"}
+    cast(dict[str, object], optional_case["automation"])["required"] = False
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage={"api": ["create_item"]},
+        case_entries=[_case("TC_ITEM_001", CAPABILITY), optional_case],
+        matrix_rows=[
+            _matrix_row("create_item", 1),
+            {
+                "mrc_id": "MRC-OPTIONAL-001",
+                "key": description,
+                "category": "api",
+                "layer": "e2e",
+                "required": False,
+                "covered_by_cases": [],
+                "status": "skipped_by_scope",
+                "skip_reason": "optional browser check",
+            },
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    assert metrics.metrics["constraint_coverage"].value == 0.5
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert (
+        classify_coverage_state(
+            metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
+        )
+        == "repair_required"
+    )
+
+
+def _both_layer_input(root: Path, key: str, e2e_evidence: str) -> dict[str, Any]:
+    e2e_trace = CAPABILITY if e2e_evidence != "unmapped" else "operations.checkout"
+    e2e_case = _case("TC_ITEM_002", e2e_trace)
+    e2e_case["type"] = "E2E"
+    cast(dict[str, object], e2e_case["automation"])["framework"] = "pytest-playwright"
+    both_row = _matrix_row(
+        key, 1, case_ids=("TC_ITEM_001", "TC_ITEM_002") if e2e_evidence != "unmapped" else ("TC_ITEM_001",)
+    )
+    both_row["layer"] = "both"
+    request = _workspace_input(
+        root,
+        candidates=("api", "e2e"),
+        capability_leafs=(CAPABILITY, "operations.checkout"),
+        journeys=("checkout",),
+        minimum_required_coverage={"api": [{"key": key, "layer": "both"}], "e2e": ["checkout"]},
+        case_entries=[_case("TC_ITEM_001", CAPABILITY), e2e_case],
+        matrix_rows=[both_row, _matrix_row("checkout", 1, category="e2e", case_ids=("TC_ITEM_002",))],
+    )
+    selector = TEST_SELECTOR.replace("/api/", "/e2e/")
+    mapping = json.loads((root / MAPPING_PATH).read_bytes())
+    mapping["selected"].append(selector)
+    mapping["mappings"].append(
+        {"test": selector, "case_id": "TC_ITEM_002", "capability": e2e_trace, "layer": "e2e"}
+    )
+    mapping_ref = _write_json(root, MAPPING_PATH, mapping)
+    source_ref = _write_text(
+        root,
+        f"qa/changes/{CHANGE_ID}/generated/e2e/files/tests/e2e/test_items.py",
+        "def test_create_item():\n    assert True\n",
+    )
+    evidence = json.loads((root / EVIDENCE_PATH).read_bytes())
+    evidence["mapping"] = mapping
+    evidence["mapping_digest"] = mapping_ref["digest"]
+    evidence["selected_targets"]["e2e"] = True
+    skipped = e2e_evidence == "skipped"
+    evidence["results"].append(
+        {
+            "test": selector,
+            "case_id": "TC_ITEM_002",
+            "status": "skipped" if skipped else "passed",
+            "duration_ms": 5,
+        }
+    )
+    evidence["receipt"]["commands"].append(
+        {
+            "family": "e2e",
+            "command": ["pytest", selector],
+            "exit_code": 0,
+            "collected": 1,
+            "passed": 0 if skipped else 1,
+            "failed": 0,
+            "skipped": 1 if skipped else 0,
+        }
+    )
+    request["execution"]["evidence_ref"] = _write_json(root, EVIDENCE_PATH, evidence)
+    for name in ("generation", "execution"):
+        request[name]["mapping_ref"] = mapping_ref
+        request[name]["source_refs"].append(source_ref)
+    return request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", (CAPABILITY, "create_item"))
+@pytest.mark.parametrize(
+    "e2e_evidence, expected_status",
+    (("unmapped", "missing"), ("skipped", "not_executed"), ("passed", "covered")),
+)
+async def test_both_layer_obligation_needs_evidence_from_each_layer(
+    tmp_path: Path, key: str, e2e_evidence: str, expected_status: str
+) -> None:
+    request = _both_layer_input(tmp_path, key, e2e_evidence)
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    gaps = CoverageGapsDocument.model_validate(json.loads(result.workspace_bytes[output.gaps_ref.path]))
+    assert gaps.minimum_coverage is not None
+    obligation = next(item for item in gaps.minimum_coverage.items if item.key == key)
+    assert obligation.status == expected_status
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    if key == CAPABILITY:
+        assert metrics.metrics["constraint_coverage"].value == (1.0 if e2e_evidence == "passed" else 0.0)
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert classify_coverage_state(
+        metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
+    ) == ("satisfied" if e2e_evidence == "passed" else "repair_required")
+
+
+@pytest.mark.asyncio
+async def test_numeric_mrc_obligations_retain_the_authenticated_risk_floor(tmp_path: Path) -> None:
+    keys = tuple(f"entities.item.constraints.field_{index:02d}" for index in range(10))
+    case = _case("TC_ITEM_001", keys[0])
+    case["trace"] = {key: {"covered": True} for key in keys[:9]}
+    request = _workspace_input(
+        tmp_path,
+        capability_leafs=keys,
+        minimum_required_coverage={"api": list(keys)},
+        case_entries=[case],
+        matrix_rows=[_matrix_row(key, index) for index, key in enumerate(keys, start=1)],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    assert metrics.metrics["constraint_coverage"].value == 0.9
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert sufficiency.sufficient is True
+    assert (
+        classify_coverage_state(
+            metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
+        )
+        == "satisfied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_covered_free_form_api_obligation_can_satisfy_without_numeric_goals(tmp_path: Path) -> None:
+    capability = "operations.create_item"
+    request = _workspace_input(
+        tmp_path,
+        capability_leafs=(capability,),
+        minimum_required_coverage={"api": ["create_item"]},
+        case_entries=[_case("TC_ITEM_001", capability)],
+        matrix_rows=[_matrix_row("create_item", 1)],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    assert output.scope.applicable_goals == ()
+    metrics = MetricsDocument.model_validate(json.loads(result.workspace_bytes[output.metrics_ref.path]))
+    sufficiency = TraceSufficiencyFacts.model_validate(
+        json.loads(result.workspace_bytes[output.sufficiency_ref.path])
+    )
+    assert sufficiency.sufficient is True
+    assert (
+        classify_coverage_state(
+            metrics=metrics, sufficiency=sufficiency, scope=output.scope, policy=output.policy
+        )
+        == "satisfied"
+    )
+
+
+@pytest.mark.asyncio
+async def test_applicability_preserves_authenticated_goal_sources(tmp_path: Path) -> None:
+    request = _workspace_input(tmp_path)
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    sources = {
+        f"qa/changes/{CHANGE_ID}/explore/exploration.json",
+        ".aa/capability-catalog.json",
+        ".aa/data-knowledge.yaml",
+    }
+    refs = {ref.path: ref for ref in output.scope.applicability_refs}
+    assert sources <= refs.keys()
+    for source in sources:
+        assert refs[source].digest == hashlib.sha256((tmp_path / source).read_bytes()).hexdigest()
+
+
+def test_materializer_claims_allow_reading_frozen_goal_sources() -> None:
+    contract = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
+    assert isinstance(contract.resources, ResourceClaimTemplate)
+    claims = contract.resources.resolve(
+        {
+            "reviewed_case": {"change_id": CHANGE_ID},
+            "coverage_epoch_token": "3",
+            "execution": {"batch_id": BATCH_ID},
+        }
+    )
+
+    assert {".aa/capability-catalog.json", ".aa/data-knowledge.yaml"} <= set(claims.reads)
 
 
 @pytest.mark.asyncio

@@ -288,9 +288,22 @@ def _require_selected_test_families(
     document: CaseYamlAuthoring,
     selected: tuple[str, ...],
 ) -> None:
-    authored = {
-        entry.type.lower() for entry in (*document.added, *document.modified) if entry.automation.required
-    }
+    required_cases = tuple(
+        entry
+        for entry in (*document.added, *document.modified)
+        if entry.status == "active" and entry.automation.required
+    )
+    conflicts = [
+        f"{entry.case_id} ({entry.type.lower()})"
+        for entry in required_cases
+        if entry.type.lower() not in selected
+    ]
+    if conflicts:
+        raise OutputError(
+            "family scope conflict: required automated cases need unselected test families: "
+            + ", ".join(conflicts)
+        )
+    authored = {entry.type.lower() for entry in required_cases}
     missing = [family for family in selected if family not in authored]
     if missing:
         raise OutputError(
@@ -374,6 +387,7 @@ def _load_minimum_coverage_matrix(
     *,
     relative: str,
     authored: CaseYamlAuthoring,
+    selected: tuple[str, ...],
     images: Mapping[str, bytes] | None = None,
 ) -> MinimumCoverageMatrixAuthoring:
     document = _read_minimum_coverage_matrix(
@@ -392,6 +406,13 @@ def _load_minimum_coverage_matrix(
     }
     for row in document.root:
         expected_layer = row.layer or (category_layer.get(row.category) if row.category else None)
+        required_families = (
+            {"api", "e2e"}
+            if expected_layer == "both"
+            else {expected_layer}
+            if expected_layer is not None
+            else set()
+        )
         for case_id in row.covered_by_cases:
             case = cases.get(case_id)
             if case is None:
@@ -402,6 +423,13 @@ def _load_minimum_coverage_matrix(
                 raise OutputError(
                     f"minimum coverage row {row.mrc_id} requires {expected_layer} case coverage"
                 )
+            required_families.add(case.type.lower())
+        excluded = sorted(required_families.difference(selected))
+        if row.required and excluded:
+            raise OutputError(
+                f"family scope conflict: required minimum coverage row {row.mrc_id} "
+                f"needs unselected test families: {', '.join(excluded)}"
+            )
     return document
 
 
@@ -421,6 +449,27 @@ def _read_minimum_coverage_matrix(
     except (OSError, json.JSONDecodeError, ValidationError, TypeError, ValueError) as error:
         raise OutputError(f"invalid minimum-coverage-matrix.json: {error}") from error
     return document
+
+
+def _read_case_review_inputs(
+    workspace: Path,
+    payload: CaseFinalizeInputV1,
+    matrix_relative: str,
+) -> dict[str, bytes]:
+    if not payload.case_delta_paths:
+        raise InputError("case_delta_paths are required for case-review scope validation")
+    if {ref.path for ref in payload.case_refs} != set(payload.case_delta_paths):
+        raise InputError("case_refs must authenticate every locked case.yaml for case review")
+    matrix_refs = tuple(ref for ref in payload.preparation_refs if ref.path == matrix_relative)
+    if len(matrix_refs) != 1:
+        raise InputError("preparation_refs must authenticate the minimum coverage matrix for case review")
+    images: dict[str, bytes] = {}
+    for ref in (*payload.case_refs, *matrix_refs):
+        data = _read_regular_bytes(workspace, ref.path, kind="case-review input")
+        if _file_digest(data) != ref.digest:
+            raise OutputError(f"case-review input digest mismatch: {ref.path}")
+        images[ref.path] = data
+    return images
 
 
 def _case_entries(document: object, *, artifact: str) -> dict[str, tuple[str, int, Mapping[str, object]]]:
@@ -836,6 +885,7 @@ class CaseDesignFinalizeHandler:
                     context.write_root,
                     relative=matrix_relative,
                     authored=authored,
+                    selected=plan.selected_test_families,
                     images=images,
                 )
             else:
@@ -885,10 +935,26 @@ class CaseReviewFinalizeHandler:
             change_id = _case_change_id(payload.change_id or document.change_id)
             if document.change_id != change_id:
                 raise OutputError("case review change_id does not match locked change_id")
+            if plan.change_id != change_id:
+                raise InputError("frozen assurance plan does not match case review change_id")
             _validate_case_review_repair_scope(document, payload, change_id=change_id)
-            matrix = _read_minimum_coverage_matrix(
+            matrix_relative = f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json"
+            images = _read_case_review_inputs(context.project_root, payload, matrix_relative)
+            authored = _load_authored_case_delta(
                 context.project_root,
-                relative=f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+                change_id=change_id,
+                locked=payload.case_delta_paths,
+                declared=payload.case_delta_paths,
+                capability_leafs=_leafs(payload.capability_leafs),
+                images=images,
+            )
+            _require_selected_test_families(authored, plan.selected_test_families)
+            matrix = _load_minimum_coverage_matrix(
+                context.project_root,
+                relative=matrix_relative,
+                authored=authored,
+                selected=plan.selected_test_families,
+                images=images,
             )
             required = [row for row in matrix.root if row.required]
             expected_projection = {

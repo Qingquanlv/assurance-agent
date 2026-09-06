@@ -70,7 +70,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.coverage-gaps.v1": (
         "1",
-        "51bb0de88c1ed4f411df62fd09d6e16414188e4ef439968930784116d0f258d2",
+        "6562dc9ff64c98c27e720f5b91bfdf225a416d7c555085769b68ea68a3c44f20",
     ),
     "assurance.quality.schema.fact-baseline.v1": (
         "1",
