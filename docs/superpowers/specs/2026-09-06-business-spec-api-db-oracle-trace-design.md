@@ -36,6 +36,8 @@
 
 新模式使用两个显式 profile：`api_db.v1` 与 `api_db_trace.v1`。profile 在计划编译前选择并冻结；执行失败后不得自动从后者降级到前者。
 
+二者由同一个闭集参数 `validation_profile` 选择，来自项目部署配置/显式 benchmark 项，不是两个独立开关。选择依据是已认可的验收要求；能力预检只决定能否执行，不自动降低要求。选定 Trace 模式但未配置接入能力时为 NOT_READY；执行中缺少必需遥测为 INCOMPLETE。两种模式复用既有 full 节点，新增的是节点内部的确定性处理，不新增 Agent 或顶层节点。
+
 这里的 full workflow 指所选 User API 用例经过完整产品生命周期，不表示本次同时实现所有测试类型，或强制走完所有条件分支。验收项选择 `system/user`、`selected_test_families=[api]`，将首个交付目标明确限定为创建用户并正确持久化。现有 User 需求中的更新、删除、密码重置、权限及角色关联等其余场景保留为后续范围，不能宣称已验证整个 User 模块。
 
 第一版不实现 UI 驱动接入、Redis、Kafka、Fuzz、Performance、跨服务消息拓扑、通用 SQL DSL、APM 管理界面或自动业务规则推断。现有其他测试能力继续工作，但不能被标记为已获得新验证保证。
@@ -95,7 +97,7 @@ DB 的预期是明确的业务字段及存在性，不包括固定主键值、�
 | Obligation | 必须被验证的一项义务；有稳定 ID，可对应动作、状态断言或检查点 |
 | Case Execution Plan | 对业务规格的派生执行绑定；不是现有 Agent runtime execution-contracts 配置 |
 | Oracle | 已安装的观察/比较能力；实际值来自观察，预期引用冻结业务规格 |
-| Run / Case Instance / Test Attempt / Action | 一次实际运行、具体参数组合、真实测试尝试、单个动作；与引擎 task attempt 建立关联但不混用 |
+| Execution ID | 一次具体参数化用例的真实执行身份；关联既有 invocation/task/attempt/nodeid，不新建平行的四层 ID 体系 |
 | Evidence | 执行模块采集并保存的 receipt、观察值及原始材料，不等同于测试或 SUT 自报成功 |
 | Verdict | 质量模块依据冻结契约与证据计算的结果；Agent 叙述不覆盖它 |
 
@@ -120,7 +122,7 @@ DB 的预期是明确的业务字段及存在性，不包括固定主键值、�
 | 规格绑定 | case ID、规格引用/摘要、预期来源摘要、选定 profile、义务目录摘要 |
 | 实现绑定 | SUT 版本、支持的动作/observer/checkpoint ID 与版本、配置摘要 |
 | 实例输入 | 参数声明和来源、运行期允许绑定的 username/email 与受控凭据引用；禁止绑定时改写业务预期 |
-| 动作 | action ID、已安装的 HTTP driver、method/path、请求参数、响应预期 ID |
+| 动作 | 计划内静态 action key、已安装的 HTTP driver、method/path、请求参数、响应预期 ID；不额外生成运行期 action ID |
 | DB oracle | oracle ID、初态检查、已安装 SQLite observer、参数化只读查询绑定、结果比较和预期 ID |
 | Trace | 阶段二的业务检查点 ID/版本、SQLite 持久化调用义务、插桩绑定及关联约束；阶段一明确 not_required |
 | 完成 | 同步动作语义、各等待上限、证据完成要求、缺失处理 |
@@ -146,11 +148,13 @@ pytest 原始报告先作为子进程输出接纳，只证明测试收集与 run
 
 ### 7.2 身份
 
-每次真实运行生成新的 run ID；保留具体参数化 nodeid，不只聚合到函数。身份链为 run → case instance → test attempt → action，并记录引擎 invocation/task/attempt。
+每次具体参数化用例实际执行，仅新增一个 `execution_id`；执行器内部记录它对应的既有 invocation/task/attempt 和完整 pytest nodeid。初版一条创建动作直接沿用该 execution_id。计划内的 case/assertion/action/checkpoint key 是静态引用，不再为各层生成独立运行期 ID。
 
-当前 batch ID 是输入内容摘要，继续用于内容身份；不得充当唯一运行 ID。每条动作、DB 观察、Trace 关联都绑定本次实例、尝试和唯一用户业务键，旧尝试证据不能补齐新尝试。
+当前 batch ID 是输入内容摘要，继续用于内容身份；不得充当唯一 execution_id。动作、DB 观察、Trace 关联均绑定本次 execution_id 与唯一用户业务键；OTel 自身的 trace/span ID 正常保留。请求无需再逐层透传 run/case/attempt/action 四套标签，旧执行证据不能补齐新执行。
 
-第一版不自动重试业务 POST。动作已开始但终态 receipt 丢失时，不根据缺失结果直接重新发送请求；先记录不完整。用户或调度策略发起的新尝试必须使用新的身份、username/email 和受控环境。恢复仅可复用同一身份下已落盘且匹配摘要的证据。
+第一版不自动重试业务 POST。动作已开始但终态 receipt 丢失时，不根据缺失结果直接重新发送请求；先记录不完整。用户或调度策略发起的真实新尝试必须使用新的 execution_id、username/email 和受控环境。恢复仅可复用同一 execution_id 下已落盘且匹配摘要的证据。
+
+固定环境策略放在项目 `.aa/` 声明式配置；执行器准备环境后自动生成本次运行清单，包含 execution_id、case/plan 引用与摘要、既有 workflow 身份、实际 SUT 地址/实例、SQLite 绝对路径、冻结输入和证据位置。该清单按正式运行产物保存并在动作前冻结，不是人工填写的 config，也不为每个节点另建一份配置；实际执行证据另行记录并关联该清单。
 
 ### 7.3 SUT 与 SQLite 隔离
 
@@ -321,7 +325,7 @@ aa compile → aa start --entrypoint full → aa run / aa status
 | A13 | 在实际回滚前错误发出 completed 检查点 | 即使业务检查点和成功写入调用 span 均存在，DB oracle 仍使正向创建 FAILED |
 | A14 | 改函数名、提取 helper、改变等价 ORM 写法、增加辅助 spans | 保持业务规格摘要与检查点语义不变，针对新 SUT 制品重新校验绑定并编译新计划后仍 PASSED；旧制品摘要绑定不得直接复用 |
 | A15 | 删除 oracle、required 改 optional、放宽预期/等待条件 | 修复提交或重用计划被拒绝，不能以此获得通过 |
-| A16 | 同版本再次执行 | 新 run/attempt/username/email；旧证据不可补齐新尝试 |
+| A16 | 同版本再次执行 | 新 execution_id/username/email，关联既有 workflow 身份；旧证据不可补齐新尝试 |
 | A17 | HTTP 终态未知或执行中断 | INCOMPLETE；恢复不得隐式重复 POST |
 | A18 | Agent 手写全通过结果、测试写入伪造证据、权威材料缺失/被更改 | 验证 IPC/写集隔离与父级接纳路径，不接受自报结果；不能仅凭可同时改写的文件及摘要通过 |
 | A19 | 薄 pytest 入口没有显式 assert，但权威执行完成全部义务 | 合法 PASSED；证明不以 assert 语法计数代替有效性 |
