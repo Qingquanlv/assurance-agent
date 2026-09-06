@@ -13,6 +13,7 @@ from graph_engine.attempts import BusinessActivation
 
 from assurance_execution.contracts.execution import ExecutionReceiptV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
+from assurance_execution.contracts.verification import FrozenUserInputsV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_generation.contracts.execution_plan import ValidationProfile
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, require_same_plan
@@ -60,6 +61,9 @@ class VerifiedExecutionPrepareV1(FrozenModel):
     sut_base_url: str = Field(pattern=r"^http://127\.0\.0\.1:[1-9][0-9]{0,4}$")
     managed_sqlite_path: str = Field(min_length=1)
     observer_sqlite_path: str = Field(min_length=1)
+    user_inputs: FrozenUserInputsV1
+    managed_sut_prepare_receipt_ref: EvidenceArtifactRefV1
+    managed_sut_start_receipt_ref: EvidenceArtifactRefV1
 
     @field_validator("nodeid")
     @classmethod

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -15,12 +16,20 @@ from typing import Any, cast
 import pytest
 import yaml
 
-from agent_runtime_contracts import AgentRunRequest
+from agent_runtime_contracts import AgentRunRequest, ResolvedRawAgentExecutor
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from graph_engine.attempts import BusinessActivation
+from graph_engine.attempts import (
+    AttemptExecutionContext,
+    AttemptKey,
+    AuthorizedAttemptScope,
+    BusinessActivation,
+    PermanentTaskFailure,
+)
+from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import (
     InvocationMetadata,
+    ResourceClaimTemplate,
     TaskActivitySnapshot,
     TaskContext,
     TaskOutcome,
@@ -28,6 +37,8 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
 )
 from assurance_execution.contracts import ExecutionAgentResultV1
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_execution.operations import agent_skills
 from assurance_execution.operations.agent_skills import (
     ExecuteFinalizeHandler,
@@ -138,6 +149,15 @@ def _business_payload(request: AgentRunRequest) -> dict[str, object]:
     return thawed
 
 
+def _seal_test_receipt(document: Mapping[str, Any], ownership_token: bytes) -> dict[str, Any]:
+    unsigned = {key: value for key, value in document.items() if key != "receipt_digest"}
+    encoded = json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    return {
+        **unsigned,
+        "receipt_digest": "hmac-sha256:" + hmac.new(ownership_token, encoded, hashlib.sha256).hexdigest(),
+    }
+
+
 def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
     payload = _prepare_input(project)
     case = read_fixture("user-case.json")
@@ -187,6 +207,72 @@ def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
             'CREATE TABLE "user" (username TEXT, email TEXT, is_active INTEGER, '
             "is_superuser INTEGER, dept_id INTEGER)"
         )
+    run_root = db.parent.parent
+    prepare_receipt = run_root / "harness-prepare.json"
+    start_receipt = run_root / "owned-process.json"
+    ownership_token = b"task-3-managed-sut-owner-token!!"
+    assert len(ownership_token) == 32
+    token_path = run_root / ".ownership-token"
+    token_path.write_bytes(ownership_token)
+    token_path.chmod(0o400)
+    file_stat = db.stat()
+    sqlite_identity = {
+        "path": str(db.resolve()),
+        "device": file_stat.st_dev,
+        "inode": file_stat.st_ino,
+    }
+    qualification = {
+        "schema_version": "1",
+        "python_version": "3.11.14",
+        "python_executable": str(run_root / "runtime/bin/python"),
+        "distributions": {"fastapi": "0.111.0"},
+        "app_module": str(db.parent / "app/__init__.py"),
+        "sqlite_engine": "tortoise.backends.sqlite",
+        "sqlite_path": str(db.resolve()),
+    }
+    qualification_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(qualification, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+    )
+    source_digest = "sha256:" + "d" * 64
+    runtime_digest = "sha256:" + "e" * 64
+    prepare_unsigned = {
+        "schema_version": "1",
+        "state": "prepared",
+        "workspace_root": str(project.resolve()),
+        "run_root": str(run_root.resolve()),
+        "sut_dir": str(db.parent.resolve()),
+        "sqlite_path": str(db.resolve()),
+        "sqlite_identity": sqlite_identity,
+        "runtime_qualification": qualification,
+        "runtime_qualification_digest": qualification_digest,
+        "source_digest": source_digest,
+        "runtime_digest": runtime_digest,
+    }
+    prepare_document = _seal_test_receipt(prepare_unsigned, ownership_token)
+    prepare_bytes = (json.dumps(prepare_document, indent=2, sort_keys=True) + "\n").encode()
+    prepare_receipt.write_bytes(prepare_bytes)
+    start_unsigned = {
+        "schema_version": "1",
+        "state": "started",
+        "workspace_root": str(project.resolve()),
+        "run_root": str(run_root.resolve()),
+        "sut_dir": str(db.parent.resolve()),
+        "sqlite_path": str(db.resolve()),
+        "sqlite_identity": sqlite_identity,
+        "prepare_receipt": str(prepare_receipt.resolve()),
+        "prepare_receipt_digest": prepare_document["receipt_digest"],
+        "prepare_receipt_sha256": hashlib.sha256(prepare_bytes).hexdigest(),
+        "instance_id": "managed-sut-1",
+        "base_url": "http://127.0.0.1:32123",
+        "source_digest": source_digest,
+        "runtime_digest": runtime_digest,
+    }
+    start_document = _seal_test_receipt(start_unsigned, ownership_token)
+    start_bytes = (json.dumps(start_document, indent=2, sort_keys=True) + "\n").encode()
+    start_receipt.write_bytes(start_bytes)
     payload["verification"] = {
         "validation_profile": "api_db.v1",
         "case_execution_plan_ref": {
@@ -199,6 +285,15 @@ def _verified_prepare_input(project: Path, db: Path) -> dict[str, Any]:
         "sut_base_url": "http://127.0.0.1:32123",
         "managed_sqlite_path": str(db.resolve()),
         "observer_sqlite_path": str(db.resolve()),
+        "user_inputs": {"username": "qa_t3", "email": "qa_t3@example.test"},
+        "managed_sut_prepare_receipt_ref": {
+            "path": prepare_receipt.relative_to(project).as_posix(),
+            "digest": hashlib.sha256(prepare_bytes).hexdigest(),
+        },
+        "managed_sut_start_receipt_ref": {
+            "path": start_receipt.relative_to(project).as_posix(),
+            "digest": hashlib.sha256(start_bytes).hexdigest(),
+        },
     }
     return payload
 
@@ -266,6 +361,118 @@ async def _execute_verified(
             activity=cast(Any, _ActivityPort(snapshot)),
         ),
     )
+
+
+class _ExecutorVerifiedPrepare:
+    async def execute(
+        self,
+        validated_input: ExecutionPrepareInputV1,
+        scope: AuthorizedAttemptScope,
+    ) -> AgentRunRequest | PermanentTaskFailure:
+        digest = scope.workspace.identity.identity_digest
+        invocation = InvocationMetadata(
+            invocation_id=scope.execution.invocation_id,
+            lock_digest=digest,
+            composition_digest=digest,
+            entrypoint=scope.execution.public_entrypoint,
+        )
+        request = TaskRequest(
+            invocation_id=scope.execution.invocation_id,
+            task_id=agent_skills.canonical_digest(
+                {
+                    "attempt_key": scope.execution.attempt_key.digest,
+                    "handler_id": "assurance.execution.execute.prepare",
+                    "phase": "prepare",
+                }
+            ),
+            graph_instance_id=scope.execution.invocation_id,
+            node_id=scope.execution.semantic_node_id,
+            capability_id="assurance.execution.execute.prepare",
+            binding_data=BINDING,
+            invocation=invocation,
+            attempt=1,
+            input=cast(JSONValue, validated_input.model_dump(mode="json")),
+        )
+        outcome = await ExecutePrepareHandler().execute(
+            request,
+            TaskContext(
+                project_root=scope.workspace.project_root,
+                write_root=scope.workspace.write_root,
+                workspace_identity=scope.workspace.identity,
+                heartbeat=lambda: None,
+                cancel_requested=lambda: False,
+                invocation=invocation,
+            ),
+        )
+        if outcome.failure is not None:
+            return PermanentTaskFailure(
+                kind=cast(Any, outcome.failure.kind),
+                message=outcome.failure.message,
+            )
+        return AgentRunRequest.model_validate(outcome.output)
+
+
+class _StopAfterPrepare:
+    handler_id = "assurance.execution.test.runtime"
+
+    async def execute(
+        self,
+        prepared: AgentRunRequest,
+        scope: AuthorizedAttemptScope,
+    ) -> PermanentTaskFailure:
+        del prepared, scope
+        return PermanentTaskFailure(kind="internal", message="stop after prepare")
+
+
+class _UnusedFinalize:
+    async def execute(self, bundle: object, scope: AuthorizedAttemptScope) -> None:
+        del bundle, scope
+        raise AssertionError("finalize must not run")
+
+
+class _UndeclaredWritingPrepare(_ExecutorVerifiedPrepare):
+    async def execute(
+        self,
+        validated_input: ExecutionPrepareInputV1,
+        scope: AuthorizedAttemptScope,
+    ) -> AgentRunRequest | PermanentTaskFailure:
+        result = await super().execute(validated_input, scope)
+        (scope.workspace.write_root / "undeclared.txt").write_text("escape\n", encoding="utf-8")
+        return result
+
+
+def _verified_executor_scope(
+    project: Path,
+    payload: dict[str, Any],
+) -> tuple[TaskWorkspaceStore, TaskWorkspaceProvider, AuthorizedAttemptScope]:
+    change_root = project / "qa/changes/CH-DEMO-001"
+    store = TaskWorkspaceStore(
+        project,
+        change_root / ".staging",
+        change_root / ".runtime/receipts",
+    )
+    provider = TaskWorkspaceProvider(store)
+    contract = AGENT_JOB_CONTRACTS["execute"]
+    resources = contract.resources
+    assert isinstance(resources, ResourceClaimTemplate)
+    claims = resources.resolve(cast(JSONValue, payload))
+    attempt_key = AttemptKey(digest="f" * 64)
+    binding = store.begin(
+        task_id=attempt_key.digest,
+        attempt=1,
+        output_paths=claims.writes,
+    )
+    scope = AuthorizedAttemptScope(
+        execution=AttemptExecutionContext(
+            invocation_id="verified-executor-invocation",
+            public_entrypoint="full",
+            semantic_node_id="execution.execute",
+            attempt_key=attempt_key,
+            fencing_token=1,
+        ),
+        workspace=binding,
+    )
+    return store, provider, scope
 
 
 async def _prepared_finalize_payload(project: Path) -> tuple[dict[str, object], dict[str, Any]]:
@@ -440,10 +647,188 @@ async def test_verified_prepare_freezes_manifest_and_uses_execution_scoped_view(
     assert execution_id
     assert execution_id in cast(str, first_business["execution_view_root"])
     manifest_ref = cast(dict[str, str], first_business["verification_manifest_ref"])
+    assert "/.staging/execution/_verification/" in manifest_ref["path"]
     manifest = json.loads((tmp_path / manifest_ref["path"]).read_text())
     assert manifest["execution_id"] == execution_id
     assert manifest["attempt_key"] == {"digest": "1" * 64}
     assert manifest["nodeid"] == "tests/api/test_generated.py::test_tc_a_001__ok"
+    assert manifest["inputs"] == {
+        "dept_id": None,
+        "email": "qa_t3@example.test",
+        "is_active": True,
+        "is_superuser": False,
+        "username": "qa_t3",
+    }
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_passes_raw_executor_claim_validation_and_promotion(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    payload = _verified_prepare_input(project, project / ".managed/sut/db.sqlite3")
+    store, provider, scope = _verified_executor_scope(project, payload)
+    contract = AGENT_JOB_CONTRACTS["execute"]
+    executor = ResolvedRawAgentExecutor(
+        contract,
+        prepare=cast(Any, _ExecutorVerifiedPrepare()),
+        runtime=cast(Any, _StopAfterPrepare()),
+        finalize=cast(Any, _UnusedFinalize()),
+    )
+    try:
+        result = await executor.execute(ExecutionPrepareInputV1.model_validate(payload), scope)
+
+        assert isinstance(result, PermanentTaskFailure)
+        assert result.message == "stop after prepare"
+        assert executor.phase_deltas["prepare"]
+        claim = "qa/changes/CH-DEMO-001/.staging/execution"
+        assert contract.phase_write_claims.prepare == ("qa/changes/{change_id}/.staging/execution",)
+        assert all(path.startswith(f"{claim}/") for path in executor.phase_deltas["prepare"])
+        assert any(path.endswith("/verification-manifest.json") for path in executor.phase_deltas["prepare"])
+        assert any(
+            path.endswith("/verification-prepare-receipt.json") for path in executor.phase_deltas["prepare"]
+        )
+
+        sealed = await provider.seal(scope.workspace)
+        prepared = await provider.prepare(scope.workspace, sealed)
+        await provider.promote(prepared)
+    finally:
+        store.close()
+
+    for relative in executor.phase_deltas["prepare"]:
+        assert (project / relative).is_file()
+
+
+@pytest.mark.asyncio
+async def test_raw_executor_rejects_verified_prepare_undeclared_write(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    payload = _verified_prepare_input(project, project / ".managed/sut/db.sqlite3")
+    store, _, scope = _verified_executor_scope(project, payload)
+    executor = ResolvedRawAgentExecutor(
+        AGENT_JOB_CONTRACTS["execute"],
+        prepare=cast(Any, _UndeclaredWritingPrepare()),
+        runtime=cast(Any, _StopAfterPrepare()),
+        finalize=cast(Any, _UnusedFinalize()),
+    )
+    try:
+        result = await executor.execute(ExecutionPrepareInputV1.model_validate(payload), scope)
+    finally:
+        store.close()
+
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_output"
+    assert "undeclared staging paths: ['undeclared.txt']" in result.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_unrelated_database_even_when_profile_paths_agree(
+    tmp_path: Path,
+) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    unrelated = tmp_path / ".unrelated/db.sqlite3"
+    unrelated.parent.mkdir()
+    with sqlite3.connect(unrelated) as connection:
+        connection.execute(
+            'CREATE TABLE "user" (username TEXT, email TEXT, is_active INTEGER, '
+            "is_superuser INTEGER, dept_id INTEGER)"
+        )
+    profile = cast(dict[str, Any], payload["verification"])
+    profile["managed_sqlite_path"] = str(unrelated.resolve())
+    profile["observer_sqlite_path"] = str(unrelated.resolve())
+
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="7" * 64)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "managed SUT receipt" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_tampered_managed_sut_receipt(tmp_path: Path) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    profile = cast(dict[str, Any], payload["verification"])
+    start_ref = cast(dict[str, str], profile["managed_sut_start_receipt_ref"])
+    (tmp_path / start_ref["path"]).write_text("{}\n", encoding="utf-8")
+
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="8" * 64)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "managed SUT receipt digest changed" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_tampered_receipt_with_recomputed_reference_digest(
+    tmp_path: Path,
+) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    profile = cast(dict[str, Any], payload["verification"])
+    start_ref = cast(dict[str, str], profile["managed_sut_start_receipt_ref"])
+    start_path = tmp_path / start_ref["path"]
+    started = json.loads(start_path.read_text())
+    started["base_url"] = "http://127.0.0.1:32124"
+    start_bytes = (json.dumps(started, indent=2, sort_keys=True) + "\n").encode()
+    start_path.write_bytes(start_bytes)
+    start_ref["digest"] = hashlib.sha256(start_bytes).hexdigest()
+    profile["sut_base_url"] = started["base_url"]
+
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="e" * 64)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "managed SUT receipt seal changed" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["sut_instance_id", "sut_base_url"])
+async def test_verified_prepare_rejects_managed_sut_identity_mismatch(tmp_path: Path, field: str) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    profile = cast(dict[str, Any], payload["verification"])
+    profile[field] = "managed-sut-elsewhere" if field == "sut_instance_id" else "http://127.0.0.1:32124"
+
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="9" * 64)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "managed SUT receipt identity" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_authenticated_non_sqlite_sut_config(tmp_path: Path) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    profile = cast(dict[str, Any], payload["verification"])
+    prepare_ref = cast(dict[str, str], profile["managed_sut_prepare_receipt_ref"])
+    start_ref = cast(dict[str, str], profile["managed_sut_start_receipt_ref"])
+    prepare_path = tmp_path / prepare_ref["path"]
+    start_path = tmp_path / start_ref["path"]
+    prepared = json.loads(prepare_path.read_text())
+    prepared["runtime_qualification"]["sqlite_engine"] = "tortoise.backends.postgres"
+    prepared["runtime_qualification_digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(prepared["runtime_qualification"], separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+    )
+    ownership_token = (tmp_path / ".managed/.ownership-token").read_bytes()
+    prepared = _seal_test_receipt(prepared, ownership_token)
+    prepare_bytes = (json.dumps(prepared, indent=2, sort_keys=True) + "\n").encode()
+    prepare_path.write_bytes(prepare_bytes)
+    prepare_ref["digest"] = hashlib.sha256(prepare_bytes).hexdigest()
+    started = json.loads(start_path.read_text())
+    started["prepare_receipt_sha256"] = prepare_ref["digest"]
+    started["prepare_receipt_digest"] = prepared["receipt_digest"]
+    started = _seal_test_receipt(started, ownership_token)
+    start_bytes = (json.dumps(started, indent=2, sort_keys=True) + "\n").encode()
+    start_path.write_bytes(start_bytes)
+    start_ref["digest"] = hashlib.sha256(start_bytes).hexdigest()
+
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="a" * 64)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "effective SQLite config" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -461,6 +846,50 @@ async def test_verified_prepare_recovery_rejects_unfrozen_manifest(tmp_path: Pat
     assert recovery.status == "failed"
     assert recovery.failure is not None
     assert "not a frozen single-link file" in recovery.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_recovery_rejects_replaced_manifest_inputs(tmp_path: Path) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    first = await _execute_verified(tmp_path, payload, attempt_key="b" * 64)
+    assert first.status == "succeeded"
+    business = _business_payload(AgentRunRequest.model_validate(first.output))
+    manifest_ref = cast(dict[str, str], business["verification_manifest_ref"])
+    manifest_path = tmp_path / manifest_ref["path"]
+    manifest = json.loads(manifest_path.read_text())
+    manifest["inputs"] = {"username": "qa_changed", "email": "changed@example.test"}
+    manifest_path.chmod(0o600)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    manifest_path.chmod(0o400)
+
+    recovery = await _execute_verified(tmp_path, payload, attempt_key="b" * 64)
+
+    assert recovery.status == "failed"
+    assert recovery.failure is not None
+    assert "independent prepare receipt" in recovery.failure.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", [False, True])
+async def test_verified_prepare_recovery_requires_independent_receipt(tmp_path: Path, tamper: bool) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    first = await _execute_verified(tmp_path, payload, attempt_key="c" * 64)
+    assert first.status == "succeeded"
+    business = _business_payload(AgentRunRequest.model_validate(first.output))
+    manifest_ref = cast(dict[str, str], business["verification_manifest_ref"])
+    receipt_path = (tmp_path / manifest_ref["path"]).with_name("verification-prepare-receipt.json")
+    if tamper:
+        receipt_path.chmod(0o600)
+        receipt_path.write_text("{}\n", encoding="utf-8")
+        receipt_path.chmod(0o400)
+    else:
+        receipt_path.unlink()
+
+    recovery = await _execute_verified(tmp_path, payload, attempt_key="c" * 64)
+
+    assert recovery.status == "failed"
+    assert recovery.failure is not None
+    assert "independent prepare receipt" in recovery.failure.message
 
 
 @pytest.mark.asyncio

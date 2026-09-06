@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -30,7 +33,7 @@ from assurance_execution.contracts.agent import (
 )
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
-from assurance_execution.contracts.verification import VerificationManifestV1
+from assurance_execution.contracts.verification import SqliteFileIdentityV1, VerificationManifestV1
 from assurance_execution.execution_view import (
     ExecutionView,
     build_or_authenticate_execution_view,
@@ -54,16 +57,11 @@ from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
 from assurance_execution.operations.sqlite_oracle import observe_user
 from assurance_execution.operations.verification_manifest import (
-    allocate_user_inputs,
     authenticate_verification_manifest,
     build_verification_manifest,
     sqlite_file_identity,
 )
-from assurance_generation.contracts import (
-    CaseExecutionPlanSetV1,
-    CaseExecutionPlanV1,
-    CodegenAuthoringV1,
-)
+from assurance_generation.contracts import CaseExecutionPlanSetV1, CodegenAuthoringV1
 from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.plan import decode_plan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -599,11 +597,8 @@ def _prepare_verified_execution(
     profile = root.verification
     if profile is None:
         return None
-    if request is None or context is None or context.activity is None:
-        raise InputError("verified execution requires authenticated task and activity context")
-    snapshot = context.activity.snapshot
-    if snapshot.workspace_identity != context.workspace_identity:
-        raise InputError("verified execution activity workspace identity does not match")
+    if request is None or context is None:
+        raise InputError("verified execution requires authenticated task context")
     try:
         attempt_key = AttemptKey(digest=context.workspace_identity.task_id)
     except ValidationError as error:
@@ -631,132 +626,266 @@ def _prepare_verified_execution(
         or plan.validation_profile != profile.validation_profile
     ):
         raise InputError("verified execution profile does not match the frozen machine plan")
-    managed_path = Path(profile.managed_sqlite_path).resolve(strict=True)
-    observer_path = Path(profile.observer_sqlite_path).resolve(strict=True)
-    if managed_path != observer_path:
-        raise InputError("managed SUT and observer SQLite paths do not match")
-    database_identity = sqlite_file_identity(observer_path)
+    managed_path, observer_path, database_identity = _authenticate_managed_sut_receipts(workspace, profile)
     authorization_digest = context.workspace_identity.identity_digest
-    activity_digest = canonical_digest(snapshot.model_dump(mode="json"))
-    manifest_path = write_root / "verified-execution" / "verification-manifest.json"
+    activity_digest = canonical_digest(
+        {
+            "attempt_key": attempt_key.digest,
+            "invocation_id": request.invocation_id,
+            "task_id": request.task_id,
+            "graph_instance_id": request.graph_instance_id,
+            "node_id": request.node_id,
+            "workspace_identity_digest": context.workspace_identity.identity_digest,
+        }
+    )
+    execution_id = _execution_id(attempt_key, profile.nodeid)
+    _safe_staging_component(root.change_id, "change_id")
+    manifest = build_verification_manifest(
+        change_id=root.change_id,
+        case_id=plan.case_id,
+        nodeid=profile.nodeid,
+        invocation_id=request.invocation_id,
+        task_id=request.task_id,
+        graph_instance_id=request.graph_instance_id,
+        attempt_key=attempt_key,
+        business_activation=profile.business_activation,
+        coverage_epoch=root.coverage_epoch,
+        repair_round=root.repair_round,
+        authorization_scope_digest=authorization_digest,
+        activity_receipt_digest=activity_digest,
+        plan_ref=root.plan_ref.path,
+        plan_digest=root.plan_digest,
+        case_execution_plan_ref=profile.case_execution_plan_ref.path,
+        case_execution_plan_digest=profile.case_execution_plan_ref.digest,
+        spec_digest=plan.spec_digest,
+        mapping_digest=mapping_digest(closed),
+        sut_digest=plan.sut_digest,
+        technical_config_digest=plan.technical_config_digest,
+        validation_profile=profile.validation_profile,
+        sut_base_url=profile.sut_base_url,
+        sut_instance_id=profile.sut_instance_id,
+        sut_sqlite_path=managed_path,
+        sqlite_path=observer_path,
+        username=profile.user_inputs.username,
+        email=profile.user_inputs.email,
+        evidence_root=f"qa/changes/{root.change_id}/execution",
+        execution_id=execution_id,
+    )
+    manifest_bytes = (json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode()
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    verification_root = (
+        write_root
+        / "qa"
+        / "changes"
+        / root.change_id
+        / ".staging"
+        / "execution"
+        / "_verification"
+        / attempt_key.digest
+    )
+    manifest_path = verification_root / "verification-manifest.json"
+    receipt_path = verification_root / "verification-prepare-receipt.json"
     manifest_ref_path = manifest_path.resolve(strict=False).relative_to(workspace.resolve()).as_posix()
+    receipt_document = {
+        "schema_version": "1",
+        "attempt_key": attempt_key.digest,
+        "activity_receipt_digest": activity_digest,
+        "manifest_path": manifest_ref_path,
+        "manifest_sha256": manifest_digest,
+        "inputs": profile.user_inputs.model_dump(mode="json"),
+        "managed_sut_prepare_receipt_ref": profile.managed_sut_prepare_receipt_ref.model_dump(mode="json"),
+        "managed_sut_start_receipt_ref": profile.managed_sut_start_receipt_ref.model_dump(mode="json"),
+    }
+    receipt_bytes = (json.dumps(receipt_document, indent=2, sort_keys=True) + "\n").encode()
     if manifest_path.exists():
         try:
-            manifest_stat = manifest_path.stat()
-            if (
-                manifest_path.is_symlink()
-                or not manifest_path.is_file()
-                or manifest_stat.st_nlink != 1
-                or manifest_stat.st_mode & 0o777 != 0o400
-            ):
-                raise ValueError("verification manifest is not a frozen single-link file")
-            manifest_bytes = manifest_path.read_bytes()
-            manifest = VerificationManifestV1.model_validate_json(manifest_bytes)
-            manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+            recovered_manifest_bytes = _read_frozen_prepare_file(manifest_path, "verification manifest")
+            recovered_receipt_bytes = _read_frozen_prepare_file(receipt_path, "independent prepare receipt")
+            if recovered_receipt_bytes != receipt_bytes or recovered_manifest_bytes != manifest_bytes:
+                raise ValueError("independent prepare receipt does not authenticate the manifest")
+            recovered_manifest = VerificationManifestV1.model_validate_json(recovered_manifest_bytes)
             authenticate_verification_manifest(
-                manifest,
+                recovered_manifest,
                 manifest_digest=canonical_digest(manifest.model_dump(mode="json")),
                 attempt_key=attempt_key,
                 invocation_id=request.invocation_id,
                 nodeid=profile.nodeid,
                 sqlite_path=observer_path,
-                username=manifest.inputs.username,
-                email=manifest.inputs.email,
+                username=profile.user_inputs.username,
+                email=profile.user_inputs.email,
                 authorization_scope_digest=authorization_digest,
                 activity_receipt_digest=activity_digest,
             )
         except (OSError, ValidationError, ValueError) as error:
             raise InputError(f"verification manifest recovery failed: {error}") from error
-        if not _manifest_matches_plan(manifest, plan, root, profile, request, closed):
-            raise InputError("verification manifest does not match the frozen prepare input")
     else:
-
-        def collides(username: str, email: str) -> bool:
+        try:
             observation = observe_user(
                 observer_path,
-                username,
-                email,
+                profile.user_inputs.username,
+                profile.user_inputs.email,
                 expected_identity=database_identity,
             )
             if observation["state"] != "observed":
-                raise ValueError(f"SQLite allocation observation failed: {observation['reason']}")
-            return bool(observation["rows"])
-
-        try:
-            inputs = allocate_user_inputs(collides)
-            manifest = build_verification_manifest(
-                change_id=root.change_id,
-                case_id=plan.case_id,
-                nodeid=profile.nodeid,
-                invocation_id=request.invocation_id,
-                task_id=request.task_id,
-                graph_instance_id=request.graph_instance_id,
-                attempt_key=attempt_key,
-                business_activation=profile.business_activation,
-                coverage_epoch=root.coverage_epoch,
-                repair_round=root.repair_round,
-                authorization_scope_digest=authorization_digest,
-                activity_receipt_digest=activity_digest,
-                plan_ref=root.plan_ref.path,
-                plan_digest=root.plan_digest,
-                case_execution_plan_ref=profile.case_execution_plan_ref.path,
-                case_execution_plan_digest=profile.case_execution_plan_ref.digest,
-                spec_digest=plan.spec_digest,
-                mapping_digest=mapping_digest(closed),
-                sut_digest=plan.sut_digest,
-                technical_config_digest=plan.technical_config_digest,
-                validation_profile=profile.validation_profile,
-                sut_base_url=profile.sut_base_url,
-                sut_instance_id=profile.sut_instance_id,
-                sut_sqlite_path=managed_path,
-                sqlite_path=observer_path,
-                username=inputs.username,
-                email=inputs.email,
-                evidence_root=f"qa/changes/{root.change_id}/execution",
-            )
-            manifest_bytes = (
-                json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
-            ).encode()
-            manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            descriptor = os.open(manifest_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
-            try:
-                os.write(descriptor, manifest_bytes)
-            finally:
-                os.close(descriptor)
+                raise ValueError(f"SQLite input observation failed: {observation['reason']}")
+            if observation["rows"]:
+                raise ValueError("frozen User inputs already exist in managed SQLite")
+            verification_root.mkdir(parents=True, exist_ok=False)
+            _write_frozen_prepare_file(manifest_path, manifest_bytes)
+            _write_frozen_prepare_file(receipt_path, receipt_bytes)
         except (OSError, ValueError) as error:
             raise InputError(f"could not freeze verified execution manifest: {error}") from error
     return manifest, EvidenceArtifactRefV1(path=manifest_ref_path, digest=manifest_digest)
 
 
-def _manifest_matches_plan(
-    manifest: VerificationManifestV1,
-    plan: CaseExecutionPlanV1,
-    root: ExecutionPrepareInputV1,
+def _safe_staging_component(value: str, label: str) -> None:
+    if value in {"", ".", ".."} or "/" in value or "\\" in value or "\x00" in value:
+        raise InputError(f"verified execution {label} is not a safe path component")
+
+
+def _execution_id(attempt_key: AttemptKey, nodeid: str) -> str:
+    raw = bytearray(hashlib.sha256(f"{attempt_key.digest}\0{nodeid}".encode()).digest()[:16])
+    raw[6] = (raw[6] & 0x0F) | 0x40
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(uuid.UUID(bytes=bytes(raw)))
+
+
+def _write_frozen_prepare_file(path: Path, payload: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o400)
+    try:
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(descriptor, view) :]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _read_frozen_prepare_file(path: Path, label: str) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} is missing")
+    details = path.stat()
+    if details.st_nlink != 1 or details.st_mode & 0o777 != 0o400:
+        raise ValueError(f"{label} is not a frozen single-link file")
+    return path.read_bytes()
+
+
+def _receipt_document(
+    workspace: Path,
+    ref: EvidenceArtifactRefV1,
+    label: str,
+) -> tuple[Path, dict[str, Any]]:
+    path = _regular_input_file(workspace, ref.path)
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != ref.digest:
+        raise InputError(f"managed SUT receipt digest changed: {label}")
+    try:
+        document = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise InputError(f"managed SUT receipt is invalid: {label}") from error
+    if not isinstance(document, dict):
+        raise InputError(f"managed SUT receipt is invalid: {label}")
+    return path.resolve(strict=True), document
+
+
+def _runtime_qualification_digest(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _managed_sut_ownership_token(run_root: Path) -> bytes:
+    path = run_root / ".ownership-token"
+    if path.is_symlink() or not path.is_file():
+        raise InputError("managed SUT ownership token is missing")
+    details = path.stat()
+    if details.st_nlink != 1 or details.st_uid != os.getuid() or details.st_mode & 0o077:
+        raise InputError("managed SUT ownership token permissions do not match")
+    token = path.read_bytes()
+    if len(token) != 32:
+        raise InputError("managed SUT ownership token is invalid")
+    return token
+
+
+def _authenticate_managed_sut_seal(
+    document: Mapping[str, Any],
+    *,
+    label: str,
+    ownership_token: bytes,
+) -> None:
+    supplied = document.get("receipt_digest")
+    unsigned = {key: value for key, value in document.items() if key != "receipt_digest"}
+    encoded = json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    expected = f"hmac-sha256:{hmac.new(ownership_token, encoded, hashlib.sha256).hexdigest()}"
+    if not isinstance(supplied, str) or not hmac.compare_digest(supplied, expected):
+        raise InputError(f"managed SUT receipt seal changed: {label}")
+
+
+def _authenticate_managed_sut_receipts(
+    workspace: Path,
     profile: VerifiedExecutionPrepareV1,
-    request: TaskRequest,
-    closed: ClosedMappingV1,
-) -> bool:
-    return (
-        manifest.change_id == root.change_id
-        and manifest.case_id == plan.case_id
-        and manifest.task_id == request.task_id
-        and manifest.graph_instance_id == request.graph_instance_id
-        and manifest.business_activation == profile.business_activation
-        and manifest.coverage_epoch == root.coverage_epoch
-        and manifest.repair_round == root.repair_round
-        and manifest.plan_ref == root.plan_ref.path
-        and manifest.plan_digest == root.plan_digest
-        and manifest.case_execution_plan_ref == profile.case_execution_plan_ref.path
-        and manifest.case_execution_plan_digest == profile.case_execution_plan_ref.digest
-        and manifest.spec_digest == plan.spec_digest
-        and manifest.mapping_digest == mapping_digest(closed)
-        and manifest.sut_digest == plan.sut_digest
-        and manifest.technical_config_digest == plan.technical_config_digest
-        and manifest.validation_profile == profile.validation_profile
-        and manifest.sut.instance_id == profile.sut_instance_id
-        and manifest.sut.base_url == profile.sut_base_url
-    )
+) -> tuple[Path, Path, SqliteFileIdentityV1]:
+    prepare_path, prepared = _receipt_document(workspace, profile.managed_sut_prepare_receipt_ref, "prepare")
+    start_path, started = _receipt_document(workspace, profile.managed_sut_start_receipt_ref, "start")
+    run_root = start_path.parent.resolve(strict=True)
+    sut_dir = run_root / "sut"
+    sqlite_path = sut_dir / "db.sqlite3"
+    if prepare_path != run_root / "harness-prepare.json" or start_path != run_root / "owned-process.json":
+        raise InputError("managed SUT receipt paths are not fixed to one run root")
+    if (
+        prepared.get("schema_version") != "1"
+        or prepared.get("state") != "prepared"
+        or started.get("schema_version") != "1"
+        or started.get("state") != "started"
+        or prepared.get("workspace_root") != str(workspace.resolve())
+        or started.get("workspace_root") != str(workspace.resolve())
+        or prepared.get("run_root") != str(run_root)
+        or started.get("run_root") != str(run_root)
+        or prepared.get("sut_dir") != str(sut_dir)
+        or started.get("sut_dir") != str(sut_dir)
+        or prepared.get("sqlite_path") != str(sqlite_path)
+        or started.get("sqlite_path") != str(sqlite_path)
+        or started.get("prepare_receipt") != str(prepare_path)
+        or started.get("prepare_receipt_digest") != prepared.get("receipt_digest")
+        or started.get("prepare_receipt_sha256") != profile.managed_sut_prepare_receipt_ref.digest
+        or prepared.get("source_digest") != started.get("source_digest")
+        or prepared.get("runtime_digest") != started.get("runtime_digest")
+    ):
+        raise InputError("managed SUT receipt identity does not match")
+    ownership_token = _managed_sut_ownership_token(run_root)
+    _authenticate_managed_sut_seal(prepared, label="prepare", ownership_token=ownership_token)
+    _authenticate_managed_sut_seal(started, label="start", ownership_token=ownership_token)
+    qualification = prepared.get("runtime_qualification")
+    if not isinstance(qualification, dict):
+        raise InputError("managed SUT receipt runtime qualification is missing")
+    if prepared.get("runtime_qualification_digest") != _runtime_qualification_digest(qualification):
+        raise InputError("managed SUT receipt runtime qualification digest changed")
+    if qualification.get("sqlite_engine") != "tortoise.backends.sqlite" or qualification.get(
+        "sqlite_path"
+    ) != str(sqlite_path):
+        raise InputError("managed SUT effective SQLite config does not match")
+    try:
+        managed_path = Path(profile.managed_sqlite_path).resolve(strict=True)
+        observer_path = Path(profile.observer_sqlite_path).resolve(strict=True)
+    except OSError as error:
+        raise InputError("managed SUT SQLite path is missing") from error
+    if managed_path != sqlite_path or observer_path != sqlite_path:
+        raise InputError("managed SUT receipt SQLite path does not match")
+    identity = sqlite_file_identity(sqlite_path)
+    expected_identity = identity.model_dump(mode="json")
+    if (
+        prepared.get("sqlite_identity") != expected_identity
+        or started.get("sqlite_identity") != expected_identity
+    ):
+        raise InputError("managed SUT receipt SQLite stable identity does not match")
+    if (
+        started.get("instance_id") != profile.sut_instance_id
+        or started.get("base_url") != profile.sut_base_url
+    ):
+        raise InputError("managed SUT receipt identity does not match profile")
+    return managed_path, observer_path, identity
 
 
 def _finalize_payload(

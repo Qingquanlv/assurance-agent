@@ -22,6 +22,21 @@ except ImportError:
     raise SettingNotFound("Can not import settings")
 
 
+def _write_live_marker(path: Path, payload: dict[str, object]) -> None:
+    encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        view = memoryview(encoded)
+        while view:
+            view = view[os.write(descriptor, view) :]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_data()
@@ -33,16 +48,12 @@ async def lifespan(app: FastAPI):
     }
     encoded = json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
     token = bytes.fromhex(os.environ["AA_SUT_OWNERSHIP_TOKEN"])
-    marker.write_text(
-        json.dumps(
-            {
-                **identity,
-                "proof": f"hmac-sha256:{hmac.new(token, encoded, hashlib.sha256).hexdigest()}",
-            },
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    _write_live_marker(
+        marker,
+        {
+            **identity,
+            "proof": f"hmac-sha256:{hmac.new(token, encoded, hashlib.sha256).hexdigest()}",
+        },
     )
     yield
     await Tortoise.close_connections()

@@ -67,13 +67,13 @@ def build_verification_manifest(
     username: str,
     email: str,
     evidence_root: str,
+    execution_id: str | None = None,
 ) -> VerificationManifestV1:
-    execution_id = str(uuid.uuid4())
+    frozen_execution_id = execution_id or str(uuid.uuid4())
     managed_sqlite = Path(sut_sqlite_path).resolve(strict=True)
     sqlite = sqlite_file_identity(sqlite_path)
-    root = f"{evidence_root.rstrip('/')}/{execution_id}"
     return VerificationManifestV1(
-        execution_id=execution_id,
+        execution_id=frozen_execution_id,
         change_id=change_id,
         case_id=case_id,
         nodeid=nodeid,
@@ -102,7 +102,7 @@ def build_verification_manifest(
         ),
         sqlite=sqlite,
         inputs=FrozenUserInputsV1(username=username, email=email),
-        evidence_root=root,
+        evidence_root=f"{evidence_root.rstrip('/')}/{frozen_execution_id}",
     )
 
 

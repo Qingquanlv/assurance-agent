@@ -65,7 +65,7 @@ def _authenticate_seal(payload: dict[str, Any], label: str, key: bytes) -> None:
 def _create_ownership_token(run_root: Path) -> bytes:
     token = secrets.token_bytes(32)
     path = run_root / _OWNERSHIP_TOKEN
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+    descriptor = _open_new_output(run_root, path, mode=0o400)
     try:
         os.write(descriptor, token)
     finally:
@@ -225,10 +225,12 @@ def _controlled_environment(
 
 
 def _qualify_runtime(python: Path, sut_dir: Path, db_file: Path, run_root: Path) -> dict[str, Any]:
-    supplied = Path(python)
-    executable = supplied.parent.resolve(strict=True) / supplied.name
-    if not executable.exists():
-        raise ValueError("NOT_READY: Python runtime executable is missing")
+    executable = Path(python).absolute()
+    expected = Path(run_root).resolve(strict=True) / "runtime" / "bin" / "python"
+    if executable != expected or not executable.exists():
+        raise ValueError("NOT_READY: runtime executable is not harness-provisioned")
+    if executable.resolve(strict=True) != Path(sys.executable).resolve(strict=True):
+        raise ValueError("NOT_READY: harness-provisioned Python base identity drifted")
     environment = _controlled_environment(
         python=executable,
         run_root=run_root,
@@ -257,7 +259,71 @@ def _qualify_runtime(python: Path, sut_dir: Path, db_file: Path, run_root: Path)
         raise ValueError("NOT_READY: Python runtime failed User oracle qualification") from error
     if not isinstance(value, dict) or value.get("python_executable") != str(executable):
         raise ValueError("NOT_READY: Python runtime qualification is invalid")
+    value["base_python_identity"] = _file_identity(Path(sys.executable).resolve(strict=True))
     return value
+
+
+def _file_identity(path: Path) -> dict[str, str | int]:
+    resolved = Path(path).resolve(strict=True)
+    details = resolved.stat()
+    return {
+        "path": str(resolved),
+        "device": details.st_dev,
+        "inode": details.st_ino,
+        "size": details.st_size,
+        "mtime_ns": details.st_mtime_ns,
+        "sha256": _sha256(resolved),
+    }
+
+
+def _provision_runtime(run_root: Path, requirements_lock: Path) -> Path:
+    runtime = Path(run_root) / "runtime"
+    uv = shutil.which("uv")
+    if uv is None:
+        raise ValueError("NOT_READY: trusted uv provisioner is unavailable")
+    cache = os.environ.get("UV_CACHE_DIR", str(Path.home() / ".cache" / "uv"))
+    environment = {
+        "HOME": str(Path(run_root) / "runtime-home"),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": str(Path(uv).parent),
+        "TZ": "UTC",
+        "UV_CACHE_DIR": cache,
+        "UV_NO_CONFIG": "1",
+        "UV_OFFLINE": "1",
+    }
+    try:
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-I", "-m", "venv", "--without-pip", str(runtime)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=environment,
+        )
+        python = runtime / "bin" / "python"
+        subprocess.run(  # noqa: S603
+            [
+                uv,
+                "--no-config",
+                "pip",
+                "install",
+                "--offline",
+                "--python",
+                str(python),
+                "--require-hashes",
+                "-r",
+                str(requirements_lock),
+            ],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=environment,
+        )
+    except subprocess.CalledProcessError as error:
+        raise ValueError("NOT_READY: harness-owned Python runtime provisioning failed") from error
+    return python
 
 
 def _directory_identity(path: Path) -> dict[str, str | int]:
@@ -266,9 +332,62 @@ def _directory_identity(path: Path) -> dict[str, str | int]:
     return {"path": str(resolved), "device": details.st_dev, "inode": details.st_ino}
 
 
-def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def _sqlite_identity(path: Path) -> dict[str, str | int]:
+    return _directory_identity(path)
+
+
+def _output_path(run_root: Path, path: Path) -> Path:
+    root = Path(run_root).resolve(strict=True)
+    supplied = Path(path).absolute()
+    try:
+        supplied.parent.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError) as error:
+        raise ValueError("managed output parent escapes the authenticated run root") from error
+    return supplied
+
+
+def _open_new_output(run_root: Path, path: Path, *, mode: int) -> int:
+    target = _output_path(run_root, path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        return os.open(target, flags, mode)
+    except OSError as error:
+        raise ValueError(f"managed output path is not exclusively creatable: {target.name}") from error
+
+
+def _require_new_output(run_root: Path, path: Path) -> None:
+    target = _output_path(run_root, path)
+    try:
+        target.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise ValueError("managed output path could not be authenticated") from error
+    raise ValueError(f"managed output path already exists: {target.name}")
+
+
+def _write_json(run_root: Path, path: Path, payload: Mapping[str, Any]) -> None:
+    target = _output_path(run_root, path)
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temporary = target.parent / f".{target.name}.{secrets.token_hex(12)}.tmp"
+    descriptor = _open_new_output(run_root, temporary, mode=0o600)
+    try:
+        view = memoryview(encoded)
+        while view:
+            view = view[os.write(descriptor, view) :]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        os.replace(temporary, target)
+    except OSError as error:
+        temporary.unlink(missing_ok=True)
+        raise ValueError(f"managed output could not be replaced safely: {target.name}") from error
+    details = target.stat()
+    if target.is_symlink() or not target.is_file() or details.st_nlink != 1:
+        raise ValueError(f"managed output is not a regular single-link file: {target.name}")
 
 
 def prepare(
@@ -276,7 +395,6 @@ def prepare(
     workspace_root: Path,
     project_dir: Path,
     run_root: Path,
-    python_executable: Path,
 ) -> dict[str, Any]:
     """Materialize one project and one exclusive managed-SUT runtime from the snapshot."""
     locked = verify_runtime_lock(FIXTURE_ROOT)
@@ -299,7 +417,8 @@ def prepare(
         db_file,
         sut / "migrations" / "models" / "0_20260721171822_init.py",
     )
-    qualification = _qualify_runtime(Path(python_executable), sut, db_file, run)
+    python = _provision_runtime(run, sut / "requirements.lock")
+    qualification = _qualify_runtime(python, sut, db_file, run)
     ownership_token = _create_ownership_token(run)
     receipt = _seal(
         {
@@ -311,6 +430,7 @@ def prepare(
             "run_root": str(run),
             "sut_dir": str(sut.resolve()),
             "sqlite_path": str(db_file.resolve()),
+            "sqlite_identity": _sqlite_identity(db_file),
             "source_digest": locked["source_digest"],
             "runtime_digest": locked["runtime_digest"],
             "runtime_qualification": qualification,
@@ -320,7 +440,7 @@ def prepare(
         },
         ownership_token,
     )
-    _write_json(run / _RECEIPT, receipt)
+    _write_json(run, run / _RECEIPT, receipt)
     return receipt
 
 
@@ -382,6 +502,7 @@ def _authenticated_prepare(
         prepared.get("run_root") != str(run_root)
         or prepared.get("sut_dir") != str(sut_dir)
         or prepared.get("sqlite_path") != str(db_file)
+        or prepared.get("sqlite_identity") != _sqlite_identity(db_file)
     ):
         raise ValueError("prepare receipt managed paths do not match")
     project = _confined(workspace, Path(str(prepared.get("project_dir"))), "project_dir")
@@ -419,6 +540,9 @@ def start(
     )
     instance_id = str(uuid.uuid4())
     live_marker = run_root / f"live-{instance_id}.json"
+    process_log = run_root / "managed-sut.log"
+    _require_new_output(run_root, live_marker)
+    _require_new_output(run_root, process_log)
     environment = _controlled_environment(
         python=python,
         run_root=run_root,
@@ -454,8 +578,8 @@ def start(
         str(listener.fileno()),
         "--no-access-log",
     ]
-    process_log = run_root / "managed-sut.log"
-    with process_log.open("ab") as stderr:
+    log_descriptor = _open_new_output(run_root, process_log, mode=0o600)
+    with os.fdopen(log_descriptor, "ab") as stderr:
         process = subprocess.Popen(  # noqa: S603
             command,
             cwd=sut_dir,
@@ -480,52 +604,52 @@ def start(
                 time.sleep(0.05)
         else:
             raise ValueError("managed SUT readiness timed out")
+        marker = _read_json(live_marker)
+        marker_identity = {"instance_id": instance_id, "pid": process.pid, "sqlite_path": str(db_file)}
+        marker_encoded = json.dumps(marker_identity, separators=(",", ":"), sort_keys=True).encode()
+        expected_marker = {
+            **marker_identity,
+            "proof": f"hmac-sha256:{hmac.new(ownership_token, marker_encoded, hashlib.sha256).hexdigest()}",
+        }
+        if marker != expected_marker:
+            raise ValueError("managed SUT live marker identity does not match")
+        birth_identity = _process_birth_identity(process.pid)
+        if birth_identity is None:
+            raise ValueError("managed SUT process birth identity is unavailable")
+        receipt = _seal(
+            {
+                "schema_version": "1",
+                "state": "started",
+                "workspace_root": str(Path(workspace_root).resolve(strict=True)),
+                "run_root": str(run_root),
+                "sut_dir": str(sut_dir),
+                "prepare_receipt": str(Path(prepare_receipt).resolve(strict=True)),
+                "prepare_receipt_digest": prepared["receipt_digest"],
+                "prepare_receipt_sha256": hashlib.sha256(
+                    Path(prepare_receipt).resolve(strict=True).read_bytes()
+                ).hexdigest(),
+                "instance_id": instance_id,
+                "pid": process.pid,
+                "process_command": command,
+                "process_fingerprint": _command_fingerprint(command),
+                "process_birth_identity": birth_identity,
+                "live_marker": str(live_marker),
+                "live_marker_digest": _sha256(live_marker),
+                "base_url": base_url,
+                "sqlite_path": str(db_file),
+                "sqlite_identity": _sqlite_identity(db_file),
+                "stderr_path": str(process_log.resolve()),
+                "source_digest": prepared["source_digest"],
+                "runtime_digest": prepared["runtime_digest"],
+                "reason": "owned_sut_started",
+            },
+            ownership_token,
+        )
+        _write_json(run_root, run_root / _PROCESS_RECEIPT, receipt)
     except BaseException:
         process.terminate()
         process.wait(timeout=5)
         raise
-    marker = _read_json(live_marker)
-    marker_identity = {"instance_id": instance_id, "pid": process.pid, "sqlite_path": str(db_file)}
-    marker_encoded = json.dumps(marker_identity, separators=(",", ":"), sort_keys=True).encode()
-    expected_marker = {
-        **marker_identity,
-        "proof": f"hmac-sha256:{hmac.new(ownership_token, marker_encoded, hashlib.sha256).hexdigest()}",
-    }
-    if marker != expected_marker:
-        process.terminate()
-        process.wait(timeout=5)
-        raise ValueError("managed SUT live marker identity does not match")
-    birth_identity = _process_birth_identity(process.pid)
-    if birth_identity is None:
-        process.terminate()
-        process.wait(timeout=5)
-        raise ValueError("managed SUT process birth identity is unavailable")
-    receipt = _seal(
-        {
-            "schema_version": "1",
-            "state": "started",
-            "workspace_root": str(Path(workspace_root).resolve(strict=True)),
-            "run_root": str(run_root),
-            "sut_dir": str(sut_dir),
-            "prepare_receipt": str(Path(prepare_receipt).resolve(strict=True)),
-            "prepare_receipt_digest": prepared["receipt_digest"],
-            "instance_id": instance_id,
-            "pid": process.pid,
-            "process_command": command,
-            "process_fingerprint": _command_fingerprint(command),
-            "process_birth_identity": birth_identity,
-            "live_marker": str(live_marker),
-            "live_marker_digest": _sha256(live_marker),
-            "base_url": base_url,
-            "sqlite_path": str(db_file),
-            "stderr_path": str(process_log.resolve()),
-            "source_digest": prepared["source_digest"],
-            "runtime_digest": prepared["runtime_digest"],
-            "reason": "owned_sut_started",
-        },
-        ownership_token,
-    )
-    _write_json(run_root / _PROCESS_RECEIPT, receipt)
     return receipt
 
 
@@ -569,6 +693,7 @@ def stop(
         or receipt.get("run_root") != str(run_root)
         or receipt.get("sut_dir") != str(sut_dir)
         or receipt.get("sqlite_path") != str(db_file)
+        or receipt.get("sqlite_identity") != _sqlite_identity(db_file)
         or receipt.get("stderr_path") != str(run_root / "managed-sut.log")
         or receipt.get("prepare_receipt") != str(run_root / _RECEIPT)
         or receipt.get("prepare_receipt_digest") != prepared["receipt_digest"]
@@ -615,7 +740,7 @@ def stop(
         ownership_token,
     )
     marker_path.unlink(missing_ok=True)
-    _write_json(process_receipt_path, stopped)
+    _write_json(run_root, process_receipt_path, stopped)
     return stopped
 
 
@@ -626,7 +751,6 @@ def _parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--workspace-root", type=Path, required=True)
     prepare_parser.add_argument("--project-dir", type=Path, required=True)
     prepare_parser.add_argument("--run-root", type=Path, required=True)
-    prepare_parser.add_argument("--python", type=Path, required=True)
     start_parser = commands.add_parser("start")
     start_parser.add_argument("--workspace-root", type=Path, required=True)
     start_parser.add_argument("--prepare-receipt", type=Path, required=True)
@@ -644,7 +768,6 @@ def main(argv: list[str] | None = None) -> int:
             workspace_root=arguments.workspace_root,
             project_dir=arguments.project_dir,
             run_root=arguments.run_root,
-            python_executable=arguments.python,
         )
     elif arguments.command == "start":
         output = start(

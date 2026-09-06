@@ -3,10 +3,8 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
-import os
 import sqlite3
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -35,45 +33,13 @@ def _load_bootstrap():
     return _load(BOOTSTRAP, "user_oracle_bootstrap")
 
 
-@pytest.fixture(scope="session")
-def qualified_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    supplied = os.environ.get("AA_USER_ORACLE_TEST_PYTHON")
-    if supplied:
-        return Path(supplied)
-    runtime = tmp_path_factory.mktemp("user-oracle-runtime")
-    subprocess.run(
-        ["uv", "venv", str(runtime), "--python", "3.11"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    python = runtime / "bin" / "python"
-    subprocess.run(
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            str(python),
-            "--require-hashes",
-            "-r",
-            str(FIXTURE / "requirements.lock"),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return python
-
-
-def _prepare(harness, tmp_path: Path, qualified_python: Path):
+def _prepare(harness, tmp_path: Path):
     workspace = tmp_path / "worktree"
     workspace.mkdir()
     receipt = harness.prepare(
         workspace_root=workspace,
         project_dir=workspace / "project",
         run_root=workspace / "runs" / "attempt-1",
-        python_executable=qualified_python,
     )
     return workspace, receipt
 
@@ -108,13 +74,12 @@ def test_runtime_lock_authenticates_real_source_and_complete_dependencies() -> N
     assert "setuptools==75.8.0" in requirements
 
 
-def test_prepare_qualifies_actual_snapshot_and_confines_outputs(
-    tmp_path: Path, qualified_python: Path
-) -> None:
+def test_prepare_qualifies_actual_snapshot_and_confines_outputs(tmp_path: Path) -> None:
     harness = _load_harness()
     assert "fixture_root" not in inspect.signature(harness.prepare).parameters
+    assert "python_executable" not in inspect.signature(harness.prepare).parameters
 
-    workspace, receipt = _prepare(harness, tmp_path, qualified_python)
+    workspace, receipt = _prepare(harness, tmp_path)
 
     assert receipt["state"] == "prepared"
     assert Path(receipt["project_dir"]) == (workspace / "project").resolve()
@@ -122,25 +87,39 @@ def test_prepare_qualifies_actual_snapshot_and_confines_outputs(
     assert receipt["runtime_qualification"]["python_version"].startswith("3.11.")
     assert receipt["runtime_qualification"]["distributions"]["loguru"] == "0.7.3"
     assert receipt["runtime_qualification"]["app_module"].startswith(receipt["sut_dir"])
+    assert (
+        Path(receipt["runtime_qualification"]["python_executable"])
+        == Path(receipt["run_root"]) / "runtime/bin/python"
+    )
     assert not list((workspace / "project").rglob("node_modules"))
     assert not list((workspace / "project").rglob("*.sqlite3"))
 
 
-def test_prepare_rejects_arbitrary_fake_python(tmp_path: Path) -> None:
+def test_runtime_qualification_rejects_perfect_json_shell(tmp_path: Path) -> None:
     harness = _load_harness()
     workspace = tmp_path / "worktree"
     workspace.mkdir()
     fake = workspace / "python"
-    fake.write_text('#!/bin/sh\nprintf \'{"python_executable":"fake"}\'\n', encoding="utf-8")
+    fake.write_text(
+        "#!/bin/sh\nprintf '%s' '"
+        + json.dumps(
+            {
+                "schema_version": "1",
+                "python_version": "3.11.14",
+                "python_executable": str(fake),
+                "distributions": {},
+                "app_module": str(workspace / "sut/app/__init__.py"),
+                "sqlite_engine": "tortoise.backends.sqlite",
+                "sqlite_path": str(workspace / "sut/db.sqlite3"),
+            }
+        )
+        + "'\n",
+        encoding="utf-8",
+    )
     fake.chmod(0o755)
 
-    with pytest.raises(ValueError, match="runtime qualification is invalid"):
-        harness.prepare(
-            workspace_root=workspace,
-            project_dir=workspace / "project",
-            run_root=workspace / "runs/attempt-1",
-            python_executable=fake,
-        )
+    with pytest.raises(ValueError, match="harness-provisioned"):
+        harness._qualify_runtime(fake, workspace / "sut", workspace / "sut/db.sqlite3", workspace)
 
 
 def test_prepare_fails_closed_without_parent_fallback(
@@ -156,7 +135,6 @@ def test_prepare_fails_closed_without_parent_fallback(
             workspace_root=workspace,
             project_dir=workspace / "project",
             run_root=workspace / "runs/attempt-1",
-            python_executable=Path(sys.executable),
         )
 
 
@@ -169,7 +147,6 @@ def test_prepare_rejects_paths_outside_the_worktree(tmp_path: Path, field: str) 
         "workspace_root": workspace,
         "project_dir": workspace / "project",
         "run_root": workspace / "runs/attempt-1",
-        "python_executable": Path(sys.executable),
     }
     values[field] = tmp_path / "outside"
 
@@ -187,11 +164,9 @@ def test_reserved_socket_cannot_be_claimed_by_unknown_process() -> None:
         listener.close()
 
 
-def test_start_rejects_drifted_runtime(
-    tmp_path: Path, qualified_python: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_start_rejects_drifted_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _load_harness()
-    workspace, prepared = _prepare(harness, tmp_path, qualified_python)
+    workspace, prepared = _prepare(harness, tmp_path)
     (Path(prepared["sut_dir"]) / "app" / "__init__.py").write_text("DRIFT = True\n")
     for name in ("AA_SUT_ADMIN_PASSWORD", "AA_SUT_RESET_PASSWORD", "AA_SUT_SECRET_KEY"):
         monkeypatch.setenv(name, "runtime-only")
@@ -203,9 +178,9 @@ def test_start_rejects_drifted_runtime(
         )
 
 
-def test_edited_prepare_paths_cannot_redirect_start(tmp_path: Path, qualified_python: Path) -> None:
+def test_edited_prepare_paths_cannot_redirect_start(tmp_path: Path) -> None:
     harness = _load_harness()
-    workspace, prepared = _prepare(harness, tmp_path, qualified_python)
+    workspace, prepared = _prepare(harness, tmp_path)
     receipt_path = Path(prepared["run_root"]) / "harness-prepare.json"
     edited = json.loads(receipt_path.read_text())
     outside = tmp_path / "outside"
@@ -217,13 +192,91 @@ def test_edited_prepare_paths_cannot_redirect_start(tmp_path: Path, qualified_py
     assert not outside.exists()
 
 
-def test_real_bootstrap_start_stop_lifecycle(
-    tmp_path: Path, qualified_python: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    harness = _load_harness()
-    workspace, prepared = _prepare(harness, tmp_path, qualified_python)
+def _set_runtime_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("AA_SUT_ADMIN_PASSWORD", "AA_SUT_RESET_PASSWORD", "AA_SUT_SECRET_KEY"):
         monkeypatch.setenv(name, "runtime-only")
+
+
+def test_start_rejects_symlinked_log_without_touching_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _load_harness()
+    workspace, prepared = _prepare(harness, tmp_path)
+    outside = tmp_path / "outside.log"
+    outside.write_bytes(b"outside-sentinel")
+    run_root = Path(prepared["run_root"])
+    (run_root / "managed-sut.log").symlink_to(outside)
+    _set_runtime_secrets(monkeypatch)
+    started = None
+    try:
+        with pytest.raises(ValueError, match="managed output"):
+            started = harness.start(
+                workspace_root=workspace,
+                prepare_receipt=run_root / "harness-prepare.json",
+            )
+    finally:
+        if started is not None:
+            harness.stop(
+                workspace_root=workspace,
+                receipt_path=run_root / "owned-process.json",
+                instance_id=started["instance_id"],
+            )
+    assert outside.read_bytes() == b"outside-sentinel"
+
+
+def test_process_receipt_replaces_hardlink_without_touching_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _load_harness()
+    workspace, prepared = _prepare(harness, tmp_path)
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"outside-sentinel")
+    run_root = Path(prepared["run_root"])
+    (run_root / "owned-process.json").hardlink_to(outside)
+    _set_runtime_secrets(monkeypatch)
+
+    started = harness.start(
+        workspace_root=workspace,
+        prepare_receipt=run_root / "harness-prepare.json",
+    )
+    try:
+        assert outside.read_bytes() == b"outside-sentinel"
+        assert (run_root / "owned-process.json").stat().st_nlink == 1
+    finally:
+        harness.stop(
+            workspace_root=workspace,
+            receipt_path=run_root / "owned-process.json",
+            instance_id=started["instance_id"],
+        )
+    assert outside.read_bytes() == b"outside-sentinel"
+
+
+def test_start_rejects_hardlinked_live_marker_without_touching_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _load_harness()
+    workspace, prepared = _prepare(harness, tmp_path)
+    outside = tmp_path / "outside-marker.json"
+    outside.write_bytes(b"outside-sentinel")
+    run_root = Path(prepared["run_root"])
+    instance_id = "11111111-1111-4111-8111-111111111111"
+    (run_root / f"live-{instance_id}.json").hardlink_to(outside)
+    monkeypatch.setattr(harness.uuid, "uuid4", lambda: instance_id)
+    _set_runtime_secrets(monkeypatch)
+
+    with pytest.raises(ValueError, match="managed output"):
+        harness.start(
+            workspace_root=workspace,
+            prepare_receipt=run_root / "harness-prepare.json",
+        )
+
+    assert outside.read_bytes() == b"outside-sentinel"
+
+
+def test_real_bootstrap_start_stop_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _load_harness()
+    workspace, prepared = _prepare(harness, tmp_path)
+    _set_runtime_secrets(monkeypatch)
 
     started = harness.start(
         workspace_root=workspace,
@@ -239,7 +292,7 @@ def test_real_bootstrap_start_stop_lifecycle(
         assert rows[0][:2] == ("admin", "admin@benchmark.invalid")
         assert rows[0][2].startswith("$argon2")
         assert started["process_command"][:5] == [
-            str(qualified_python),
+            str(Path(prepared["run_root"]) / "runtime/bin/python"),
             "-B",
             "-m",
             "uvicorn",
@@ -255,9 +308,10 @@ def test_real_bootstrap_start_stop_lifecycle(
     assert stopped["state"] == "stopped"
 
 
-def test_stop_refuses_another_valid_uvicorn_process(tmp_path: Path, qualified_python: Path) -> None:
+def test_stop_refuses_another_valid_uvicorn_process(tmp_path: Path) -> None:
     harness = _load_harness()
-    workspace, prepared = _prepare(harness, tmp_path, qualified_python)
+    workspace, prepared = _prepare(harness, tmp_path)
+    qualified_python = Path(prepared["runtime_qualification"]["python_executable"])
     foreign = tmp_path / "foreign"
     foreign.mkdir()
     (foreign / "app.py").write_text("async def app(scope, receive, send):\n    pass\n", encoding="utf-8")
@@ -312,7 +366,7 @@ def test_stop_refuses_another_valid_uvicorn_process(tmp_path: Path, qualified_py
             },
             token,
         )
-        harness._write_json(run_root / "owned-process.json", forged)
+        harness._write_json(run_root, run_root / "owned-process.json", forged)
 
         with pytest.raises(ValueError, match="live marker"):
             harness.stop(
