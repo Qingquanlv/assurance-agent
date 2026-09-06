@@ -208,7 +208,7 @@ class ResolvedAssurancePlanV1(_ResolvedAssurancePlanVersion):
 
 
 class ResolvedAssurancePlanV2(_ResolvedAssurancePlanVersion):
-    schema_version: Literal["2"] = "2"
+    schema_version: Literal["2"]
     verification_policy: BusinessVerificationPolicyV1
 
 

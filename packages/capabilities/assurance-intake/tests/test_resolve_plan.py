@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
+
+from agent_runtime_contracts import validate_structured_result
+from graph_engine.canonical import canonical_digest
 
 from assurance_intake.contracts.explore import TestStrategyV1 as Strategy
 from assurance_intake.contracts.common import TestFamily
@@ -11,6 +15,7 @@ from assurance_intake.contracts.plan import (
     PlanBudgetsV1,
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
+    ResolvedAssurancePlan,
     ResolvedAssurancePlanV1,
     ResolvedAssurancePlanV2,
     TestFamilyPolicyV1 as FamilyPolicy,
@@ -267,3 +272,36 @@ def test_published_plan_schemas_match_each_version_and_validate_both_profiles() 
     )
     assert ResolvedAssurancePlanV1.model_validate_json(plan_bytes(legacy)).schema_version == "1"
     assert ResolvedAssurancePlanV2.model_validate_json(plan_bytes(verified)).schema_version == "2"
+
+
+def test_v2_plan_schema_and_models_reject_an_implicit_schema_version() -> None:
+    policy = BusinessVerificationPolicyV1(
+        validation_profile="api_db.v1",
+        resource_id="assurance.product.configuration.verification-policy",
+        digest="c" * 64,
+    )
+    verified = resolve_plan(
+        request=_request(verification_policy=policy),
+        proposed=("api",),
+        quality_goal=_goal(),
+    )
+    payload = verified.model_dump(mode="json")
+    payload.pop("schema_version")
+    schema = json.loads(resource_bytes("schemas/resolved-assurance-plan.v2.schema.json"))
+    required = schema["required"]
+
+    assert "schema_version" in required
+    top_level_version_schema = {
+        "type": "object",
+        "required": ["schema_version"],
+    }
+    with pytest.raises(ValueError, match="schema_version|required"):
+        validate_structured_result(
+            payload,
+            schema=top_level_version_schema,
+            schema_digest=canonical_digest(top_level_version_schema),
+        )
+    with pytest.raises(ValidationError, match="schema_version"):
+        ResolvedAssurancePlanV2.model_validate(payload)
+    with pytest.raises(ValidationError, match="schema version 2"):
+        ResolvedAssurancePlan.model_validate(payload)

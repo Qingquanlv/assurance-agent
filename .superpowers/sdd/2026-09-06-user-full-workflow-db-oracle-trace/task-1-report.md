@@ -389,3 +389,75 @@ $ uv run pytest tests/product/test_acg_plan_loading.py tests/product/test_acg_pl
 ### Fix-round Concerns
 
 None.
+
+---
+
+## Review Fix Round 2
+
+### Implementation
+
+- Made schema_version a required field on the published
+  ResolvedAssurancePlanV2 projection instead of defaulting it to version 2.
+- Regenerated only resolved-assurance-plan.v2.schema.json and updated its
+  canonical schema lock digest.
+- Preserved the runtime ResolvedAssurancePlan legacy default of version 1 and
+  left resolved-assurance-plan.v1.schema.json unchanged.
+- Added a regression that removes schema_version from a valid v2 plan and
+  proves rejection at the published-schema requirement, v2 projection model,
+  and runtime model/admission boundaries.
+
+### TDD RED Evidence
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_resolve_plan.py::test_v2_plan_schema_and_models_reject_an_implicit_schema_version -q
+F                                                                        [100%]
+E       AssertionError: assert 'schema_version' in ['change_id', 'requirement_digest', 'candidate_test_families', 'proposed_test_families', 'selected_test_families', 'quality_goal', ...]
+1 failed in 0.42s
+~~~
+
+### TDD GREEN Evidence
+
+~~~text
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_resolve_plan.py::test_v2_plan_schema_and_models_reject_an_implicit_schema_version packages/capabilities/assurance-intake/tests/test_resolve_plan.py::test_published_plan_schemas_match_each_version_and_validate_both_profiles packages/capabilities/assurance-intake/tests/test_contracts.py::test_intake_product_lock_schema_mapping_is_current_only -q
+...                                                                      [100%]
+3 passed in 0.40s
+~~~
+
+### Final Verification
+
+~~~text
+$ uv run ruff format --check packages/capabilities/assurance-intake/assurance_intake/contracts/plan.py packages/capabilities/assurance-intake/tests/test_resolve_plan.py packages/capabilities/assurance-intake/tests/test_contracts.py
+3 files already formatted
+
+$ uv run ruff check packages/capabilities/assurance-intake/assurance_intake/contracts/plan.py packages/capabilities/assurance-intake/tests/test_resolve_plan.py packages/capabilities/assurance-intake/tests/test_contracts.py
+All checks passed!
+
+$ uv run pyright packages/capabilities/assurance-intake/assurance_intake/contracts/plan.py packages/capabilities/assurance-intake/tests/test_resolve_plan.py packages/capabilities/assurance-intake/tests/test_contracts.py
+0 errors, 0 warnings, 0 informations
+
+$ uv run pytest packages/capabilities/assurance-intake/tests/test_resolve_plan.py packages/capabilities/assurance-intake/tests/test_contracts.py packages/capabilities/assurance-intake/tests/test_resources.py -q
+....................................................                     [100%]
+52 passed in 0.55s
+
+$ uv run pytest packages/capabilities/assurance-intake/tests -q
+........................................................................ [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 77%]
+................................................................         [100%]
+280 passed in 2.57s
+~~~
+
+### Files Changed in Review Fix Round 2
+
+- assurance_intake/contracts/plan.py
+- assurance_intake/resources/schemas/resolved-assurance-plan.v2.schema.json
+- assurance_intake/tests/test_resolve_plan.py
+- assurance_intake/tests/test_contracts.py
+- this report
+
+### Self-review and Concerns
+
+The v2 schema and both model boundaries now require explicit version identity.
+The v1 model, schema resource, and legacy runtime default are unchanged.
+
+Concerns: None.
