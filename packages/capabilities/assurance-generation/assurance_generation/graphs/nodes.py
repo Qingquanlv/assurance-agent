@@ -67,6 +67,7 @@ def _trigger(state: Mapping[str, object]) -> Mapping[str, object] | None:
 
 
 def select_plan(state: Mapping[str, object]) -> PlanInputV1:
+    api_machine_plan = state.get("family") == "api"
     return PlanInputV1.model_validate(
         {
             "change_id": state["change_id"],
@@ -77,9 +78,13 @@ def select_plan(state: Mapping[str, object]) -> PlanInputV1:
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": state.get("rounds_used", 0),
             "reviewed_case": state.get("reviewed_case"),
-            "case_plan_context": state.get("case_plan_context"),
-            "assertion_sources": state.get("assertion_sources"),
-            "validation_profile": state.get("validation_profile"),
+            "case_plan_context": state.get("case_plan_context") if api_machine_plan else None,
+            "assertion_sources": state.get("assertion_sources") if api_machine_plan else None,
+            "validation_profile": state.get("validation_profile") if api_machine_plan else None,
+            "case_execution_plan_ref": (state.get("case_execution_plan_ref") if api_machine_plan else None),
+            "case_execution_plan_digest": (
+                state.get("case_execution_plan_digest") if api_machine_plan else None
+            ),
         }
     )
 
@@ -93,6 +98,9 @@ def select_generation_inputs(state: Mapping[str, object]) -> ResolveGenerationIn
             "coverage_epoch": state.get("coverage_epoch", 0),
             "reviewed_case": state.get("reviewed_case"),
             "source_artifacts": state.get("source_artifacts") or state.get("artifacts") or (),
+            "case_plan_context": state.get("case_plan_context"),
+            "assertion_sources": state.get("assertion_sources"),
+            "validation_profile": state.get("validation_profile"),
         }
     )
 

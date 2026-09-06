@@ -94,6 +94,8 @@ class PlanInputV1(FrozenModel):
     case_plan_context: CasePlanContextV1 | None = None
     assertion_sources: AssertionSourcesV1 | None = None
     validation_profile: ValidationProfile | None = None
+    case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
+    case_execution_plan_digest: str | None = Field(default=None, pattern=_SHA256)
 
     @field_validator("capability_leafs")
     @classmethod
@@ -140,6 +142,16 @@ class PlanInputV1(FrozenModel):
             )
             if self.reviewed_case is not None and self.reviewed_case != self.case_plan_context.reviewed_case:
                 raise ValueError("machine plan context does not match reviewed_case")
+        has_machine_ref = self.case_execution_plan_ref is not None
+        has_machine_digest = self.case_execution_plan_digest is not None
+        if has_machine_ref != has_machine_digest:
+            raise ValueError("case execution plan ref and digest must be supplied together")
+        if self.case_execution_plan_ref is not None:
+            expected = f"qa/changes/{self.change_id}/plans/api-case-execution-plan.json"
+            if self.case_execution_plan_ref.path != expected:
+                raise ValueError("case execution plan ref does not match current change")
+            if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+                raise ValueError("case execution plan ref and digest do not match")
         return self
 
 
@@ -158,6 +170,8 @@ class AgentFinalizeInputV1(FrozenModel):
     case_plan_context: CasePlanContextV1 | None = None
     assertion_sources: AssertionSourcesV1 | None = None
     validation_profile: ValidationProfile | None = None
+    case_execution_plan_ref: EvidenceArtifactRefV1 | None = None
+    case_execution_plan_digest: str | None = Field(default=None, pattern=_SHA256)
 
     @field_validator("capability_leafs")
     @classmethod
@@ -202,6 +216,17 @@ class AgentFinalizeInputV1(FrozenModel):
             )
             if self.reviewed_case is not None and self.reviewed_case != self.case_plan_context.reviewed_case:
                 raise ValueError("machine plan context does not match reviewed_case")
+        has_machine_ref = self.case_execution_plan_ref is not None
+        has_machine_digest = self.case_execution_plan_digest is not None
+        if has_machine_ref != has_machine_digest:
+            raise ValueError("case execution plan ref and digest must be supplied together")
+        if self.case_execution_plan_ref is not None:
+            if self.change_id is not None:
+                expected = f"qa/changes/{self.change_id}/plans/api-case-execution-plan.json"
+                if self.case_execution_plan_ref.path != expected:
+                    raise ValueError("case execution plan ref does not match current change")
+            if self.case_execution_plan_ref.digest != self.case_execution_plan_digest:
+                raise ValueError("case execution plan ref and digest do not match")
         return self
 
 

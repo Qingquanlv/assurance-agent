@@ -31,6 +31,26 @@ def _within_spent_budget(state: Mapping[str, object]) -> bool:
     return isinstance(used, int) and isinstance(budget, int) and used <= budget
 
 
+def _verified_plan_inputs(state: Mapping[str, object]) -> dict[str, object | None]:
+    profile = state.get("validation_profile")
+    context = state.get("case_plan_context")
+    sources = state.get("assertion_sources")
+    values = (context, sources, profile)
+    if all(value is None for value in values):
+        return {
+            "case_plan_context": None,
+            "assertion_sources": None,
+            "validation_profile": None,
+        }
+    if profile not in {"api_db.v1", "api_db_trace.v1"} or context is None or sources is None:
+        raise InsufficientRouteMatches("verified plan inputs must be supplied together")
+    return {
+        "case_plan_context": context,
+        "assertion_sources": sources,
+        "validation_profile": profile,
+    }
+
+
 def _is_pass(state: Mapping[str, object]) -> bool:
     return (
         state.get("decision") == "pass"
@@ -127,6 +147,7 @@ def route_families(state: Mapping[str, object]) -> list[Send]:
     destinations = GENERATION_FAMILIES
     if len(destinations) != 4:
         raise InsufficientRouteMatches("generation fanout requires four family destinations")
+    verified_inputs = _verified_plan_inputs(state)
     sends: list[Send] = []
     for family in destinations:
         sends.append(
@@ -138,6 +159,7 @@ def route_families(state: Mapping[str, object]) -> list[Send]:
                     "plan_ref": state.get("plan_ref"),
                     "coverage_epoch": state.get("coverage_epoch", 0),
                     "reviewed_case": state.get("reviewed_case"),
+                    **verified_inputs,
                     "selected_test_families": list(selected),
                     "capability_leafs": state.get("capability_leafs"),
                     "allowed_artifact_paths": state.get("allowed_artifact_paths"),

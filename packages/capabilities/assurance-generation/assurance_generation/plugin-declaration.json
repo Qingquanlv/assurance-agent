@@ -63,7 +63,7 @@
       },
       {
         "contract_id": "assurance.generation.resolve-inputs",
-        "digest": "76c9f626100ac331ca2cb708b17fa41b70fa991cf8ee641f16d9b3cd465e7c49"
+        "digest": "4da5c5c788481163b59896ad2f6833cf8ac0874ffea5ca54530ce877d2f1c38c"
       }
     ],
     "bindings": [],
@@ -165,5 +165,18 @@
       "assurance.generation.resolve-inputs.execute",
       "assurance.generation.review-round.advance"
     ]
+  },
+  "kind": "plugin",
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "assurance_generation/plugin-declaration.json",
+    "distribution": "assurance-generation",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "generation",
+    "entrypoint_value": "assurance_generation.plugin:GenerationPlugin",
+    "import_roots": [
+      ""
+    ],
+    "version": "0.2.0"
   }
 }

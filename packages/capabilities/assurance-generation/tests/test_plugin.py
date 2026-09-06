@@ -6,7 +6,8 @@ from importlib.resources import files
 import pytest
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.plugin_api import PluginDependency, PluginDescriptor, ProviderSource
+from graph_engine.composition.sources import WheelPluginDeclaration
+from graph_engine.plugin_api import PluginDependency, ProviderSource
 
 from assurance_generation.plugin import GENERATION_SOURCE, GenerationPlugin
 from assurance_generation.operations import generation_handlers
@@ -34,8 +35,9 @@ def test_static_declaration_equals_live_descriptor() -> None:
     static = json.loads(
         files("assurance_generation").joinpath("plugin-declaration.json").read_text(encoding="utf-8")
     )
-    payload = static["descriptor"] if isinstance(static, dict) and "descriptor" in static else static
-    assert PluginDescriptor.model_validate(payload) == GenerationPlugin.descriptor()
+    declaration = WheelPluginDeclaration.model_validate(static)
+    assert declaration.descriptor == GenerationPlugin.descriptor()
+    assert declaration.source == GENERATION_SOURCE
 
 
 def test_generation_source_identity() -> None:

@@ -103,14 +103,12 @@ class PlanReviewFinalizeHandler:
                     raise OutputError("machine case execution plans are supported only for api plans")
                 assert payload.assertion_sources is not None
                 assert payload.validation_profile is not None
-                formal_relative = (
-                    f"qa/changes/{payload.case_plan_context.change_id}/plans/api-case-execution-plan.json"
-                )
-                machine_ref = evidence_ref(context.project_root, formal_relative)
+                if payload.case_execution_plan_ref is None:
+                    raise OutputError("verified plan review requires the published case execution plan ref")
                 try:
                     validate_case_plan_artifact(
                         project_root=context.project_root,
-                        artifact_ref=machine_ref,
+                        artifact_ref=payload.case_execution_plan_ref,
                         sources=payload.assertion_sources,
                         validation_profile=payload.validation_profile,
                         context=payload.case_plan_context,

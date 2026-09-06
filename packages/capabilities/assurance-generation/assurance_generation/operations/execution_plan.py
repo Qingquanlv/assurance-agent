@@ -92,6 +92,15 @@ def _read_case(path: Path, *, case_id: str, expected_digest: str) -> dict[str, o
     return _case_payload(document, case_id)
 
 
+def _read_bindings(root: Path, relative: str) -> ExecutionBindingsV1:
+    path = root.joinpath(*relative.split("/"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return ExecutionBindingsV1.model_validate(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
+        raise PlanNotReady(f"execution bindings are invalid: {error}") from error
+
+
 def _assert_context(plan: CaseExecutionPlanV1, context: CasePlanContextV1) -> None:
     if (
         plan.change_id != context.change_id
@@ -289,12 +298,7 @@ def compile_case_plan_artifact(
     context: CasePlanContextV1,
 ) -> tuple[CaseExecutionPlanSetV1, EvidenceArtifactRefV1]:
     """Compile one candidate locator document and write the formal canonical plan set."""
-    candidate = write_root.joinpath(*bindings_path.split("/"))
-    try:
-        raw = json.loads(candidate.read_text(encoding="utf-8"))
-        bindings = ExecutionBindingsV1.model_validate(raw)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
-        raise PlanNotReady(f"execution bindings are invalid: {error}") from error
+    bindings = _read_bindings(write_root, bindings_path)
     if bindings.case_id != sources.case_id:
         raise PlanNotReady("execution bindings case_id does not match assertion sources")
     case_ref = context.reviewed_case.case_refs[0]
@@ -328,6 +332,9 @@ def validate_case_plan_artifact(
     context: CasePlanContextV1,
 ) -> CaseExecutionPlanSetV1:
     """Recheck formal bytes and their complete external specification binding."""
+    expected_path = f"qa/changes/{context.change_id}/plans/api-case-execution-plan.json"
+    if artifact_ref.path != expected_path:
+        raise PlanNotReady("case execution plan ref does not match authenticated context")
     path = project_root.joinpath(*artifact_ref.path.split("/"))
     try:
         data = path.read_bytes()
@@ -341,27 +348,35 @@ def validate_case_plan_artifact(
         raise PlanNotReady(f"case execution plan closure is invalid: {error}") from error
     if plan_set.change_id != context.change_id:
         raise PlanNotReady("case execution plan change_id does not match authenticated context")
-    for plan in plan_set.cases:
-        _assert_context(plan, context)
-        if plan.validation_profile != validation_profile:
-            raise PlanNotReady("case execution plan validation profile does not match")
-        case = _read_case(
-            project_root.joinpath(*plan.case_ref.path.split("/")),
-            case_id=plan.case_id,
-            expected_digest=plan.case_ref.digest,
-        )
-        try:
-            parsed = _CaseV1.model_validate(case)
-            validate_case_plan_sources(
-                plan,
-                case_id=parsed.case_id,
-                revision=parsed.revision,
-                spec_digest=parsed.spec_digest,
-                assertions=tuple(sorted(parsed.assertions, key=lambda item: item.assertion_id)),
-                sources=sources,
-            )
-        except (ValidationError, ValueError) as error:
-            raise PlanNotReady(str(error)) from error
+    if len(plan_set.cases) != 1:
+        raise PlanNotReady("single-case execution plans require exactly one formal case")
+    plan = plan_set.cases[0]
+    _assert_context(plan, context)
+    if plan.validation_profile != validation_profile:
+        raise PlanNotReady("case execution plan validation profile does not match")
+    candidate_path = f"qa/changes/{context.change_id}/plans/api-execution-bindings.json"
+    bindings = _read_bindings(project_root, candidate_path)
+    if bindings.case_id != sources.case_id:
+        raise PlanNotReady("execution bindings case_id does not match assertion sources")
+    if len(context.reviewed_case.case_refs) != 1:
+        raise PlanNotReady("single-case execution plans require exactly one authenticated case_ref")
+    case_ref = context.reviewed_case.case_refs[0]
+    case = _read_case(
+        project_root.joinpath(*case_ref.path.split("/")),
+        case_id=bindings.case_id,
+        expected_digest=case_ref.digest,
+    )
+    expected_plan = compile_case_plan(
+        case,
+        sources,
+        cast(dict[str, object], bindings.model_dump(mode="python")["bindings"]),
+        validation_profile,
+        context=context,
+    )
+    expected_set = CaseExecutionPlanSetV1(change_id=context.change_id, cases=(expected_plan,))
+    expected_data = canonical_json_bytes(cast(JSONValue, expected_set.model_dump(mode="json"))) + b"\n"
+    if data != expected_data:
+        raise PlanNotReady("case execution plan does not match deterministic compiler output")
     return plan_set
 
 

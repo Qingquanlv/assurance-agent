@@ -243,6 +243,8 @@ def split_finalize_input(raw: object) -> tuple[dict[str, object], int | None, in
             "case_plan_context",
             "assertion_sources",
             "validation_profile",
+            "case_execution_plan_ref",
+            "case_execution_plan_digest",
         }
         payload = {
             **{key: value for key, value in validated.items() if key in finalize_fields},

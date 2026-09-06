@@ -20,10 +20,13 @@ from assurance_generation.contracts.execution_plan import (
     validate_case_plan_sources,
 )
 from assurance_generation.contracts.plans import PlanResultV1
+from assurance_generation.graphs.nodes import select_plan
+from assurance_generation.graphs.routes import route_families
 from assurance_generation.operations.execution_plan import PlanNotReady, compile_case_plan
 from assurance_generation.operations.planning import PlanFinalizeHandler
 from assurance_generation.operations.review import PlanReviewFinalizeHandler
 from assurance_intake.contracts.verification import AssertionSourcesV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     VALID_LEAFS,
     fake_agent_result,
@@ -121,6 +124,7 @@ def _finalize_input(
     *,
     context: CasePlanContextV1,
     artifact_paths: tuple[str, ...] = (),
+    machine_ref: EvidenceArtifactRefV1 | None = None,
 ) -> dict[str, JSONValue]:
     payload = fake_agent_result(
         result,
@@ -137,7 +141,33 @@ def _finalize_input(
             "validation_profile": "api_db.v1",
         }
     )
+    if machine_ref is not None:
+        payload["case_execution_plan_ref"] = machine_ref.model_dump(mode="json")
+        payload["case_execution_plan_digest"] = machine_ref.digest
     return payload
+
+
+def _machine_ref(output: object) -> EvidenceArtifactRefV1:
+    assert isinstance(output, dict)
+    return EvidenceArtifactRefV1.model_validate(output["case_execution_plan_ref"])
+
+
+def _rewrite_formal(project: Path, mutation: str) -> EvidenceArtifactRefV1:
+    relative = "qa/changes/CH-USER-001/plans/api-case-execution-plan.json"
+    formal = project / relative
+    document = json.loads(formal.read_text(encoding="utf-8"))
+    if mutation == "input":
+        document["cases"][0]["inputs"]["username"] = "drifted_user"
+    elif mutation == "locator":
+        binding = next(
+            item for item in document["cases"][0]["bindings"] if item["obligation_id"] == "action.finished"
+        )
+        binding["actual"]["credential_ref"] = "secret://drifted"
+    else:  # pragma: no cover - test helper is closed over its parametrization
+        raise AssertionError(mutation)
+    data = canonical_json_bytes(cast(JSONValue, document)) + b"\n"
+    formal.write_bytes(data)
+    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
 
 
 def test_missing_oracle_is_not_ready() -> None:
@@ -352,10 +382,33 @@ async def test_plan_finalizer_alone_writes_the_formal_machine_plan(tmp_path: Pat
     project, write_root = dual_roots(tmp_path)
     context = _materialize_context(project)
     paths, result = _write_api_candidate(write_root)
+    sends = route_families(
+        {
+            "change_id": context.change_id,
+            "selected_test_families": ["api"],
+            "plan_digest": context.plan_digest,
+            "plan_ref": context.plan_ref.model_dump(mode="json"),
+            "coverage_epoch": context.coverage_epoch,
+            "reviewed_case": context.reviewed_case.model_dump(mode="json"),
+            "capability_leafs": list(VALID_LEAFS),
+            "allowed_artifact_paths": list(paths),
+            "case_plan_context": context.model_dump(mode="json"),
+            "assertion_sources": read_fixture("user-sources.json"),
+            "validation_profile": "api_db.v1",
+        }
+    )
+    api_send = next(send for send in sends if send.node == "api")
+    selected = select_plan(api_send.arg)
+    finalize_input = fake_agent_result(
+        result,
+        artifact_paths=list(paths),
+        capability_leafs=VALID_LEAFS,
+    )
+    finalize_input.update(selected.model_dump(mode="json", exclude_computed_fields=True, exclude_none=True))
 
     outcome = await execute_task(
         PlanFinalizeHandler("api"),
-        _finalize_input(result, context=context, artifact_paths=paths),
+        finalize_input,
         project,
         write_root=write_root,
     )
@@ -366,6 +419,7 @@ async def test_plan_finalizer_alone_writes_the_formal_machine_plan(tmp_path: Pat
     assert machine_ref["path"] == "qa/changes/CH-USER-001/plans/api-case-execution-plan.json"
     assert output["case_execution_plan_digest"] == machine_ref["digest"]
     assert output["case_execution_plan_digest"] != context.plan_digest
+    assert (write_root / "qa/changes/CH-USER-001/plans/api-execution-bindings.json").is_file()
     assert (write_root / machine_ref["path"]).is_file()
 
 
@@ -383,6 +437,7 @@ async def test_plan_review_finalizer_rejects_invalid_closure_even_when_agent_pas
         write_root=project,
     )
     assert finalized.status == "succeeded", finalized.failure
+    machine_ref = _machine_ref(finalized.output)
     formal = project / "qa/changes/CH-USER-001/plans/api-case-execution-plan.json"
     document = json.loads(formal.read_text(encoding="utf-8"))
     document["cases"][0]["assertion_sources_digest"] = "9" * 64
@@ -390,7 +445,7 @@ async def test_plan_review_finalizer_rejects_invalid_closure_even_when_agent_pas
 
     reviewed = await execute_task(
         PlanReviewFinalizeHandler("api"),
-        _finalize_input(review_result("api"), context=context),
+        _finalize_input(review_result("api"), context=context, machine_ref=machine_ref),
         project,
         write_root=project,
     )
@@ -398,4 +453,59 @@ async def test_plan_review_finalizer_rejects_invalid_closure_even_when_agent_pas
     assert reviewed.status == "failed"
     assert reviewed.failure is not None
     assert reviewed.failure.kind == "invalid_output"
-    assert "source digest" in reviewed.failure.message
+    assert "artifact digest" in reviewed.failure.message
+
+
+@pytest.mark.parametrize("mutation", ("input", "locator"))
+@pytest.mark.asyncio
+async def test_plan_review_recompiles_and_rejects_valid_shaped_plan_drift(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    project = tmp_path
+    context = _materialize_context(project)
+    paths, result = _write_api_candidate(project)
+    finalized = await execute_task(
+        PlanFinalizeHandler("api"),
+        _finalize_input(result, context=context, artifact_paths=paths),
+        project,
+        write_root=project,
+    )
+    assert finalized.status == "succeeded", finalized.failure
+    drifted_ref = _rewrite_formal(project, mutation)
+
+    reviewed = await execute_task(
+        PlanReviewFinalizeHandler("api"),
+        _finalize_input(review_result("api"), context=context, machine_ref=drifted_ref),
+        project,
+        write_root=project,
+    )
+
+    assert reviewed.status == "failed"
+    assert reviewed.failure is not None
+    assert reviewed.failure.kind == "invalid_output"
+    assert "deterministic compiler output" in reviewed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_plan_review_rejects_machine_plan_ref_digest_mismatch(tmp_path: Path) -> None:
+    project = tmp_path
+    context = _materialize_context(project)
+    payload = _finalize_input(review_result("api"), context=context)
+    payload["case_execution_plan_ref"] = {
+        "path": "qa/changes/CH-USER-001/plans/api-case-execution-plan.json",
+        "digest": "1" * 64,
+    }
+    payload["case_execution_plan_digest"] = "2" * 64
+
+    reviewed = await execute_task(
+        PlanReviewFinalizeHandler("api"),
+        payload,
+        project,
+        write_root=project,
+    )
+
+    assert reviewed.status == "failed"
+    assert reviewed.failure is not None
+    assert reviewed.failure.kind == "invalid_input"
+    assert "ref and digest do not match" in reviewed.failure.message
