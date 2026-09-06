@@ -7,6 +7,10 @@ import hashlib
 import hmac
 import json
 import os
+import ctypes
+import sys
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +27,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from graph_engine.attempts.activity import TaskActivityIndeterminate
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import (
     FrozenModel,
@@ -47,6 +52,7 @@ from assurance_execution.operations.managed_sut import (
     managed_sut_ownership_token,
 )
 from assurance_execution.operations.verified_process import (
+    ActionControl,
     DockerVerificationHost,
     ProcessLimits,
     VerifiedProcessReceiptV1,
@@ -59,10 +65,30 @@ def _bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+def _publish_exclusive(source: Path, destination: Path) -> None:
+    """Atomic no-replace rename; final records never have a partial or two-link state."""
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        rename = library.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        result = rename(os.fsencode(source), os.fsencode(destination), 4)  # RENAME_EXCL
+    elif sys.platform == "linux":
+        rename = library.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        result = rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1)  # RENAME_NOREPLACE
+    else:
+        raise OSError("atomic exclusive journal publication requires Linux or macOS")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(destination))
+
+
 class ActionJournal:
     """Exclusive, fsynced host records, authenticated by the retained SUT authority."""
 
-    _NAMES = frozenset({"action_started", "action_terminal", "process_terminal", "outcome"})
+    _NAMES = frozenset(
+        {"action_started", "action_terminal", "process_terminal", "cleanup_terminal", "outcome"}
+    )
 
     def __init__(self, root: Path, manifest: VerificationManifestV1, key: bytes) -> None:
         self.root = root
@@ -81,19 +107,35 @@ class ActionJournal:
     def write(self, name: str, payload: dict[str, Any]) -> None:
         document = {"manifest_digest": self._binding, "record": name, "payload": payload}
         document["seal"] = hmac.new(self._key, _bytes(document), hashlib.sha256).hexdigest()
-        fd = os.open(self._path(name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        data = _bytes(document)
+        destination = self._path(name)
+        if destination.exists() or destination.is_symlink():
+            if name != "action_started" and self.read(name) == payload and destination.read_bytes() == data:
+                return
+            raise FileExistsError("journal claim already exists")
+        fd, temporary = tempfile.mkstemp(prefix=f".{name}-", suffix=".tmp", dir=self.root)
         try:
-            remaining = memoryview(_bytes(document))
+            os.fchmod(fd, 0o400)
+            remaining = memoryview(data)
             while remaining:
-                remaining = remaining[os.write(fd, remaining) :]
+                written = os.write(fd, remaining)
+                if written <= 0:
+                    raise OSError("journal write made no progress")
+                remaining = remaining[written:]
             os.fsync(fd)
+            try:
+                _publish_exclusive(Path(temporary), destination)
+            except FileExistsError:
+                if name == "action_started" or self.read(name) != payload or destination.read_bytes() != data:
+                    raise
+            directory = os.open(self.root, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         finally:
             os.close(fd)
-        directory = os.open(self.root, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            Path(temporary).unlink(missing_ok=True)
 
     def read(self, name: str) -> dict[str, Any] | None:
         path = self._path(name)
@@ -152,16 +194,44 @@ async def _post(
                 }
 
 
+async def _supervised_post(
+    plan: CaseExecutionPlanV1, manifest: VerificationManifestV1, credential: bytes, control: ActionControl
+) -> dict[str, Any]:
+    async def watch() -> None:
+        while not control.stopped:
+            await asyncio.sleep(0.01)
+        raise TimeoutError("action_cancelled_or_expired")
+
+    request = asyncio.create_task(_post(plan, manifest, credential))
+    cancellation = asyncio.create_task(watch())
+    try:
+        async with asyncio.timeout(min(10.0, control.remaining)):
+            done, _ = await asyncio.wait({request, cancellation}, return_when=asyncio.FIRST_COMPLETED)
+            if cancellation in done:
+                await cancellation
+            return await request
+    finally:
+        request.cancel()
+        cancellation.cancel()
+        await asyncio.gather(request, cancellation, return_exceptions=True)
+
+
 def execute_frozen_action(
-    plan: CaseExecutionPlanV1, manifest: VerificationManifestV1, journal: ActionJournal, credential: bytes
+    plan: CaseExecutionPlanV1,
+    manifest: VerificationManifestV1,
+    journal: ActionJournal,
+    credential: bytes,
+    control: ActionControl | None = None,
 ) -> None:
     """Execute once; no terminal record after a crash ever authorizes another POST."""
     _credentials(credential)
     if journal.read("action_started") is not None:
         raise ValueError("action already started; recovery must not resend POST")
+    control = control or ActionControl(time.monotonic() + 60)
+    control.require(14)  # Initial observer + frozen HTTP bound + post-action observer.
     journal.write("action_started", {"execution_id": manifest.execution_id, "state": "started"})
     args = (Path(manifest.sqlite.path), manifest.inputs.username, manifest.inputs.email)
-    initial = observe_user(*args, expected_identity=manifest.sqlite)
+    initial = observe_user(*args, timeout_s=min(2.0, control.remaining), expected_identity=manifest.sqlite)
     if initial["state"] != "observed" or initial["rows"]:
         journal.write(
             "action_terminal",
@@ -173,11 +243,16 @@ def execute_frozen_action(
         )
         return
     try:
-        http = asyncio.run(_post(plan, manifest, credential))
+        control.require(12)  # Do not dispatch if HTTP and observer bounds cannot fit.
+        http = asyncio.run(_supervised_post(plan, manifest, credential, control))
     except (httpx.HTTPError, TimeoutError):
         http = {"state": "timeout", "reason": "http_terminal_unknown"}
     # A fresh independent read-only connection observes committed post-action state.
-    oracle = observe_user(*args, expected_identity=manifest.sqlite)
+    oracle = (
+        {"state": "skipped", "reason": "action_budget_cancelled_or_expired", "rows": []}
+        if control.stopped
+        else observe_user(*args, timeout_s=min(2.0, control.remaining), expected_identity=manifest.sqlite)
+    )
     journal.write("action_terminal", {"initial": initial, "http": http, "oracle": oracle})
 
 
@@ -196,7 +271,7 @@ class VerifiedProcessHost(Protocol):
         nodeid: str,
         case_id: str,
         container_name: str,
-        execute: Callable[[str], None],
+        execute: Callable[[str, ActionControl], None],
         cancel_requested: Callable[[], bool],
     ) -> VerifiedProcessReceiptV1: ...
     def stop(self, container_name: str) -> bool: ...
@@ -345,12 +420,17 @@ def collect_facts(journal: ActionJournal, plan: CaseExecutionPlanV1) -> list[Obs
 
 
 def _outcome(journal: ActionJournal, plan: CaseExecutionPlanV1, reason: str | None = None) -> TaskOutcome:
+    process = journal.read("process_terminal")
+    if process and not process["cleanup_confirmed"] and journal.read("cleanup_terminal") is None:
+        raise TaskActivityIndeterminate("container_cleanup_unconfirmed")
     existing = journal.read("outcome")
     if existing is not None:
         return TaskOutcome.model_validate(existing)
     process = journal.read("process_terminal")
     observations = collect_facts(journal, plan)
     host_reason = reason or (process.get("reason") if process else "runner_terminal_unknown")
+    if host_reason == "container_cleanup_unconfirmed" and journal.read("cleanup_terminal") is not None:
+        host_reason = None
     if process and process.get("exit_code") != 0:
         host_reason = host_reason or "runner_exit_nonzero"
     if any(item.state != "observed" for item in observations):
@@ -449,7 +529,7 @@ class VerifiedExecutionHandler:
             nodeid=manifest.nodeid,
             case_id=manifest.case_id,
             container_name=name,
-            execute=lambda _: execute_frozen_action(plan, manifest, journal, credential),
+            execute=lambda _, control: execute_frozen_action(plan, manifest, journal, credential, control),
             cancel_requested=context.cancel_requested,
         )
         journal.write("process_terminal", receipt.model_dump(mode="json"))
@@ -481,13 +561,18 @@ class VerifiedExecutionHandler:
                 raise ValueError("activity reference differs from authenticated execution")
             if activity.reference is None:
                 context.activity.bind(reference)
-            if journal.read("outcome") is None and journal.read("process_terminal") is None:
-                if not await asyncio.to_thread(
-                    self._process_host(request).stop, "aa-verify-" + manifest.execution_id
-                ):
-                    return TaskActivityReconcileResult(
-                        status="indeterminate", reason="container_cleanup_unconfirmed"
-                    )
+            if not await asyncio.to_thread(
+                self._process_host(request).stop, "aa-verify-" + manifest.execution_id
+            ):
+                return TaskActivityReconcileResult(
+                    status="indeterminate", reason="container_cleanup_unconfirmed"
+                )
+            process = journal.read("process_terminal")
+            if process is not None and not process["cleanup_confirmed"]:
+                journal.write(
+                    "cleanup_terminal",
+                    {"container_name": "aa-verify-" + manifest.execution_id, "confirmed": True},
+                )
             return TaskActivityReconcileResult(
                 status="terminal", reference=reference, outcome=_outcome(journal, plan)
             )

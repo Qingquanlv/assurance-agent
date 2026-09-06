@@ -7,6 +7,8 @@ import os
 import selectors
 import subprocess
 import time
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -60,23 +62,88 @@ def stop_container(name: str) -> bool:
         return False
 
 
+class ActionControl:
+    """One process deadline and cooperative stop signal for the installed host action."""
+
+    def __init__(self, deadline: float) -> None:
+        self.deadline = deadline
+        self._stop = threading.Event()
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self.deadline - time.monotonic())
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set() or self.remaining <= 0
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def require(self, seconds: float) -> None:
+        if self.stopped or self.remaining < seconds:
+            raise TimeoutError("insufficient_action_budget")
+
+
+def _valid_report(raw: Any, nodeid: str, exit_code: int | None = None) -> bool:
+    if not isinstance(raw, dict) or set(raw) != {"exitcode", "summary", "tests"}:
+        return False
+    code, summary, tests = raw["exitcode"], raw["summary"], raw["tests"]
+    if type(code) is not int or code not in range(6) or (exit_code is not None and code != exit_code):
+        return False
+    if not isinstance(summary, dict) or set(summary) != {"collected", "passed", "failed", "skipped"}:
+        return False
+    if any(type(value) is not int or value < 0 for value in summary.values()):
+        return False
+    if not isinstance(tests, list):
+        return False
+    if summary["collected"] == 0:
+        return tests == [] and sum(summary.values()) == 0 and code in {2, 4, 5}
+    if summary["collected"] != 1 or not tests:
+        return False
+    for test in tests:
+        if (
+            not isinstance(test, dict)
+            or set(test) != {"nodeid", "when", "outcome"}
+            or test["nodeid"] != nodeid
+            or not isinstance(test["outcome"], str)
+            or test["outcome"] not in {"passed", "failed", "skipped"}
+        ):
+            return False
+    stages = [test["when"] for test in tests]
+    expected_stages = (
+        ["setup", "call", "teardown"] if tests[0]["outcome"] == "passed" else ["setup", "teardown"]
+    )
+    if stages != expected_stages:
+        return False
+    outcomes = [test["outcome"] for test in tests]
+    outcome = "failed" if "failed" in outcomes else "skipped" if "skipped" in outcomes else "passed"
+    return all(
+        summary[key] == int(key == outcome) for key in ("passed", "failed", "skipped")
+    ) and code == int(outcome == "failed")
+
+
 def run_bridge_process(
     argv: list[str],
     *,
     cwd: Path,
     nodeid: str,
     case_id: str,
-    execute: Callable[[str], None],
+    execute: Callable[[str, ActionControl], None],
     limits: ProcessLimits = ProcessLimits(),
     cancel_requested: Callable[[], bool] = lambda: False,
     cleanup: Callable[[], bool] | None = None,
 ) -> VerifiedProcessReceiptV1:
-    """Transport primitive; production callers supply only container_argv."""
+    """Supervise pipes and the installed, bounded host action under one deadline."""
     reason: str | None = None
     report: dict[str, Any] | None = None
     request_count = 0
     pending = bytearray()
     stderr = bytearray()
+    control = ActionControl(time.monotonic() + limits.timeout_seconds)
+    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="verified-action")
+    action: Future[None] | None = None
+    fatal: BaseException | None = None
     process = subprocess.Popen(
         argv,
         cwd=cwd,
@@ -87,7 +154,6 @@ def run_bridge_process(
         start_new_session=True,
     )
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-    deadline = time.monotonic() + limits.timeout_seconds
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
@@ -95,14 +161,26 @@ def run_bridge_process(
     try:
         process.stdin.write(json.dumps({"type": "start", "nodeid": nodeid}).encode() + b"\n")
         process.stdin.flush()
-        while selector.get_map() and reason is None:
+        while (selector.get_map() or action is not None or process.poll() is None) and reason is None:
             if cancel_requested():
                 reason = "cancelled"
                 break
-            if time.monotonic() >= deadline:
+            if control.remaining <= 0:
                 reason = "timeout"
                 break
-            for key, _ in selector.select(min(0.05, max(0, deadline - time.monotonic()))):
+            if action is not None and action.done():
+                try:
+                    action.result()
+                except BaseException as error:
+                    reason = "parent_execution_error"
+                    if not isinstance(error, Exception):
+                        fatal = error
+                action = None
+                process.stdin.write(
+                    json.dumps({"type": "ack" if reason is None else "error"}).encode() + b"\n"
+                )
+                process.stdin.flush()
+            for key, _ in selector.select(min(0.02, control.remaining)):
                 chunk = os.read(key.fd, 65536)
                 if not chunk:
                     selector.unregister(key.fileobj)
@@ -125,7 +203,9 @@ def run_bridge_process(
                     except (UnicodeError, ValueError):
                         reason = "invalid_json"
                         break
-                    if not isinstance(frame, dict):
+                    if report is not None:
+                        reason = "invalid_runner_report"
+                    elif not isinstance(frame, dict):
                         reason = "unknown_frame"
                     elif frame.get("type") == "execute":
                         request_count += 1
@@ -133,24 +213,15 @@ def run_bridge_process(
                             reason = "invalid_execute_frame"
                         elif frame["case_id"] != case_id:
                             reason = "unknown_case"
-                        elif request_count != 1 or report is not None:
+                        elif request_count != 1:
                             reason = "duplicate_execute_request"
                         else:
-                            try:
-                                execute(case_id)
-                            except Exception:
-                                reason = "parent_execution_error"
-                        process.stdin.write(
-                            json.dumps({"type": "ack" if reason is None else "error"}).encode() + b"\n"
-                        )
-                        process.stdin.flush()
+                            action = worker.submit(execute, case_id, control)
                     elif frame.get("type") == "runner_report":
                         if (
                             set(frame) != {"type", "raw"}
-                            or not isinstance(frame["raw"], dict)
-                            or not isinstance(frame["raw"].get("summary"), dict)
-                            or type(frame["raw"].get("summary", {}).get("collected")) is not int
-                            or report is not None
+                            or action is not None
+                            or not _valid_report(frame["raw"], nodeid)
                         ):
                             reason = "invalid_runner_report"
                         else:
@@ -160,17 +231,23 @@ def run_bridge_process(
                 if len(pending) > limits.max_frame_bytes:
                     reason = "frame_too_large"
         if reason is None and pending:
-            reason = "truncated_frame"
+            reason = "invalid_runner_report" if report is not None else "truncated_frame"
         if reason is None:
             try:
-                process.wait(timeout=max(0.01, deadline - time.monotonic()))
+                process.wait(timeout=max(0.001, control.remaining))
             except subprocess.TimeoutExpired:
                 reason = "timeout"
     except (BrokenPipeError, OSError):
         reason = reason or "pipe_closed"
     finally:
+        control.stop()
+        # The installed action cancels HTTP and bounds SQLite reads. Join before any terminal return.
+        worker.shutdown(wait=True, cancel_futures=True)
+        if action is not None and action.done() and not action.cancelled():
+            error = action.exception()
+            if error is not None and not isinstance(error, Exception):
+                fatal = error
         selector.close()
-        # Reap the CLI first so it cannot issue another create while cleanup runs.
         if process.poll() is None:
             process.kill()
         process.wait(timeout=10)
@@ -179,13 +256,17 @@ def run_bridge_process(
         process.stdin.close()
         process.stdout.close()
         process.stderr.close()
+    if fatal is not None:
+        raise fatal
     if not cleanup_confirmed:
-        reason = "container_cleanup_unconfirmed"
+        reason = reason or "container_cleanup_unconfirmed"
+    if reason is None and report is not None and not _valid_report(report, nodeid, process.returncode):
+        reason = "invalid_runner_report"
     if reason is None and request_count == 0:
         reason = "missing_execute_request"
     if reason is None and report is None:
         reason = "missing_runner_report"
-    if reason is None and report is not None and report.get("summary", {}).get("collected", 0) == 0:
+    if reason is None and report is not None and report["summary"]["collected"] == 0:
         reason = "zero_collection"
     return VerifiedProcessReceiptV1(
         command=tuple(argv),
@@ -314,7 +395,7 @@ class DockerVerificationHost:
         nodeid: str,
         case_id: str,
         container_name: str,
-        execute: Callable[[str], None],
+        execute: Callable[[str, ActionControl], None],
         cancel_requested: Callable[[], bool],
     ) -> VerifiedProcessReceiptV1:
         self.preflight()

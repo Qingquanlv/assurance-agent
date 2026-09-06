@@ -23,6 +23,210 @@ REPO = Path(__file__).resolve().parents[4]
 _ACTIVITY_OWNERS: list[Any] = []
 
 
+@pytest.mark.parametrize("record", ["action_terminal", "process_terminal", "outcome"])
+def test_journal_partial_write_never_publishes_terminal(tmp_path, managed_sut, monkeypatch, record):
+    import os
+
+    _, _, journal, _ = setup_action(tmp_path, managed_sut, "atomic-" + record)
+    journal.write("action_started", {"state": "started"})
+    write = os.write
+    calls = 0
+
+    def partial(fd, value):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise KeyboardInterrupt("power cut")
+        return write(fd, value[:7])
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "write", partial)
+        with pytest.raises(KeyboardInterrupt):
+            journal.write(record, {"state": "complete"})
+    assert not (journal.root / (record + ".json")).exists()
+    assert journal.read("action_started") == {"state": "started"}
+    journal.write(record, {"state": "complete"})
+    journal.write(record, {"state": "complete"})
+    assert journal.read(record) == {"state": "complete"}
+    with pytest.raises((ValueError, FileExistsError)):
+        journal.write(record, {"state": "different"})
+
+
+def test_unconfirmed_cleanup_retains_nonterminal_and_retries(managed_sut):
+    from graph_engine.attempts.activity import TaskActivityIndeterminate
+    from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
+
+    class CleanupHost(RealPipeHost):
+        confirmed = False
+        stops = 0
+
+        def run(self, **kwargs):
+            return super().run(**kwargs).model_copy(update={"cleanup_confirmed": False})
+
+        def stop(self, container_name) -> bool:
+            self.stops += 1
+            return self.confirmed
+
+    request, context, manifest, _ = handler_case(managed_sut, "cleanup-recovery")
+    host = CleanupHost()
+    handler = VerifiedExecutionHandler(process_host=host)
+    with pytest.raises(TaskActivityIndeterminate, match="cleanup"):
+        asyncio.run(handler.execute(request, context))
+    root = context.write_root / manifest.evidence_root
+    assert (root / "action_terminal.json").is_file()
+    assert (root / "process_terminal.json").is_file()
+    assert not (root / "outcome.json").exists()
+    assert context.activity is not None
+    for _ in range(2):
+        result = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
+        assert result.status == "indeterminate"
+        assert not (root / "outcome.json").exists()
+    host.confirmed = True
+    result = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
+    assert result.status == "terminal"
+    assert host.stops == 3
+    host.confirmed = False
+    assert (
+        asyncio.run(handler.reconcile(request, context, context.activity.snapshot)).status == "indeterminate"
+    )
+
+
+@pytest.mark.parametrize("record", ["action_terminal", "process_terminal", "outcome"])
+def test_journal_crash_after_publish_leaves_complete_authenticated_record(
+    tmp_path, managed_sut, monkeypatch, record
+):
+    from assurance_execution.operations import verified_execution
+
+    _, _, journal, _ = setup_action(tmp_path, managed_sut, "published-" + record)
+    publish = verified_execution._publish_exclusive
+
+    def crash(source, destination):
+        publish(source, destination)
+        raise KeyboardInterrupt("after atomic publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(verified_execution, "_publish_exclusive", crash)
+        with pytest.raises(KeyboardInterrupt):
+            journal.write(record, {"complete": True})
+    assert journal.read(record) == {"complete": True}
+    assert (journal.root / (record + ".json")).stat().st_nlink == 1
+
+
+@pytest.mark.parametrize("attack", ["symlink", "hardlink"])
+def test_journal_rejects_link_attacks_and_exclusive_action_replay(tmp_path, managed_sut, attack):
+    import os
+
+    _, _, journal, _ = setup_action(tmp_path, managed_sut, "links-" + attack)
+    journal.write("action_started", {"started": True})
+    with pytest.raises(FileExistsError):
+        journal.write("action_started", {"started": True})
+    source = journal.root / "action_started.json"
+    if attack == "symlink":
+        source.rename(tmp_path / "target")
+        source.symlink_to(tmp_path / "target")
+    else:
+        os.link(source, tmp_path / "target")
+    with pytest.raises(ValueError, match="nonregular"):
+        journal.read("action_started")
+
+
+def test_execute_near_process_deadline_never_posts(tmp_path, managed_sut):
+    import sys
+    from assurance_execution.operations.verified_process import run_bridge_process, ProcessLimits
+    from assurance_execution.operations.sqlite_oracle import observe_user
+
+    plan, manifest, journal, token = setup_action(tmp_path, managed_sut, "near-deadline")
+    code = 'import sys,time;sys.stdin.readline();time.sleep(.2);print(\'{"type":"execute","case_id":"case"}\',flush=True);sys.stdin.readline()'
+    receipt = run_bridge_process(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        nodeid=manifest.nodeid,
+        case_id="case",
+        limits=ProcessLimits(timeout_seconds=1),
+        execute=lambda _, control: execute_frozen_action(
+            plan,
+            manifest,
+            journal,
+            json.dumps({"token": token, "user_password": "parent-password"}).encode(),
+            control,
+        ),
+    )
+    assert receipt.reason == "parent_execution_error"
+    assert receipt.cleanup_confirmed
+    assert journal.read("action_started") is None
+    assert (
+        observe_user(Path(manifest.sqlite.path), manifest.inputs.username, manifest.inputs.email)["rows"]
+        == []
+    )
+
+
+def test_cancellation_during_real_http_stops_worker_and_never_replays(tmp_path, managed_sut):
+    import sys
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from assurance_execution.contracts.verification import ManagedSutV1
+    from assurance_execution.operations.verified_process import run_bridge_process
+
+    plan, manifest, _, token = setup_action(tmp_path, managed_sut, "cancel-http")
+    requested = threading.Event()
+    release = threading.Event()
+    posts = []
+
+    class SlowPeer(BaseHTTPRequestHandler):
+        def do_POST(self):
+            posts.append(self.path)
+            self.rfile.read(int(self.headers["Content-Length"]))
+            requested.set()
+            release.wait(3)
+
+        def log_message(self, format: str, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    manifest = manifest.model_copy(
+        update={
+            "sut": ManagedSutV1(
+                instance_id=manifest.sut.instance_id,
+                base_url=f"http://127.0.0.1:{server.server_port}",
+                sqlite_path=manifest.sqlite.path,
+            )
+        }
+    )
+    journal = ActionJournal(tmp_path / "cancel-evidence", manifest, b"host-key" * 4)
+    credential = json.dumps({"token": token, "user_password": "parent-password"}).encode()
+    code = 'import sys;sys.stdin.readline();print(\'{"type":"execute","case_id":"case"}\',flush=True);sys.stdin.readline()'
+    before = time.monotonic()
+    cleanup = []
+    try:
+        receipt = run_bridge_process(
+            [sys.executable, "-c", code],
+            cwd=tmp_path,
+            nodeid=manifest.nodeid,
+            case_id="case",
+            execute=lambda _, control: execute_frozen_action(plan, manifest, journal, credential, control),
+            cancel_requested=requested.is_set,
+            cleanup=lambda: cleanup.append(True) or True,
+        )
+    finally:
+        release.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    assert time.monotonic() - before < 2
+    assert receipt.reason == "cancelled"
+    assert receipt.cleanup_confirmed and cleanup == [True]
+    terminal = journal.read("action_terminal")
+    assert terminal is not None and terminal["http"]["state"] == "timeout"
+    assert terminal["oracle"]["state"] == "skipped"
+    with pytest.raises(ValueError, match="already started"):
+        execute_frozen_action(plan, manifest, journal, credential)
+    assert posts == ["/api/v1/user/create"]
+    assert not any(item.name.startswith("verified-action") for item in threading.enumerate())
+
+
 def formal_plan():
     raw = read_fixture("user-plan.json")
     return compile_case_plan(
@@ -302,7 +506,7 @@ class RealPipeHost:
             cancel_requested=cancel_requested,
         )
 
-    def stop(self, container_name):
+    def stop(self, container_name) -> bool:
         return True
 
 
@@ -493,7 +697,16 @@ def test_full_parent_handler_real_pipe_http_sqlite_and_recovery(managed_sut):
 
 @pytest.mark.parametrize(
     "cut",
-    ["before_dispatch", "dispatch_before_action", "http_before_terminal", "before_seal", "after_promotion"],
+    [
+        "before_dispatch",
+        "dispatch_before_action",
+        "http_before_terminal",
+        "before_seal",
+        "after_promotion",
+        "partial_action_terminal",
+        "partial_process_terminal",
+        "partial_outcome",
+    ],
 )
 def test_production_handler_recovery_cuts_never_repeat_post(managed_sut, monkeypatch, cut):
     from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
@@ -504,7 +717,7 @@ def test_production_handler_recovery_cuts_never_repeat_post(managed_sut, monkeyp
 
         root = managed_sut[0]
         store = TaskWorkspaceStore(root, root / "promotion-attempts", root / "promotion-receipts")
-    request, context, manifest, _ = handler_case(managed_sut, "cut_" + cut[:8], store=store)
+    request, context, manifest, _ = handler_case(managed_sut, "cut_" + cut, store=store)
     assert context.activity is not None
     handler = VerifiedExecutionHandler(process_host=RealPipeHost())
     original = ActionJournal.write
@@ -536,10 +749,29 @@ def test_production_handler_recovery_cuts_never_repeat_post(managed_sut, monkeyp
             "http_before_terminal": "action_terminal",
             "before_seal": "outcome",
             "after_promotion": "never",
+            "partial_action_terminal": "action_terminal",
+            "partial_process_terminal": "process_terminal",
+            "partial_outcome": "outcome",
         }[cut]
 
         def crash_write(self, name, payload):
             if name == record:
+                if cut.startswith("partial_"):
+                    import os
+
+                    write = os.write
+                    calls = 0
+
+                    def partial(fd, value):
+                        nonlocal calls
+                        calls += 1
+                        if calls == 2:
+                            raise KeyboardInterrupt("cut after partial temporary write")
+                        return write(fd, value[:7])
+
+                    with monkeypatch.context() as patch:
+                        patch.setattr(os, "write", partial)
+                        return original(self, name, payload)
                 raise KeyboardInterrupt("cut")
             return original(self, name, payload)
 
@@ -557,16 +789,30 @@ def test_production_handler_recovery_cuts_never_repeat_post(managed_sut, monkeyp
         promoted = store.promote(context.workspace_identity, staged)
         assert (context.project_root / manifest.evidence_root / "outcome.json").is_file()
         assert store.promote(context.workspace_identity, staged) == promoted
+    promoted_files = (
+        {
+            str(path): path.read_bytes()
+            for path in (context.project_root / manifest.evidence_root).rglob("*")
+            if path.is_file()
+        }
+        if store is not None
+        else None
+    )
     recovered = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
     assert recovered.status == "terminal"
     assert recovered.outcome is not None
     assert VerificationEvidenceV1.model_validate(recovered.outcome.output).state == (
-        "collected" if cut in {"before_seal", "after_promotion"} else "incomplete"
+        "collected" if cut in {"before_seal", "after_promotion", "partial_outcome"} else "incomplete"
     )
     again = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
     assert again.outcome == recovered.outcome
     assert len(posts) == (0 if cut == "dispatch_before_action" else 1)
     if store is not None:
+        assert {
+            str(path): path.read_bytes()
+            for path in (context.project_root / manifest.evidence_root).rglob("*")
+            if path.is_file()
+        } == promoted_files
         store.close()
 
 

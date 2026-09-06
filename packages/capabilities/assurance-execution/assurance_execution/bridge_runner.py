@@ -28,7 +28,20 @@ def main() -> int:
     writer = os.fdopen(os.dup(1), "wb", buffering=0)
     os.dup2(2, 1)
     sys.stdout = sys.stderr
-    bridge._configure(reader, writer)
+
+    def request(case_id: str) -> None:
+        payload = json.dumps({"type": "execute", "case_id": case_id}, separators=(",", ":")).encode() + b"\n"
+        if len(payload) > bridge._MAX_FRAME:
+            raise RuntimeError("bridge frame exceeds limit")
+        writer.write(payload)
+        writer.flush()
+        response = reader.readline(bridge._MAX_FRAME + 1)
+        if len(response) > bridge._MAX_FRAME or not response.endswith(b"\n"):
+            raise RuntimeError("parent bridge closed without acknowledgement")
+        if json.loads(response) != {"type": "ack"}:
+            raise RuntimeError("parent bridge rejected execution request")
+
+    bridge._configure(request)
     raw = reader.readline(bridge._MAX_FRAME + 1)
     if len(raw) > bridge._MAX_FRAME or not raw.endswith(b"\n"):
         return 2
@@ -57,16 +70,30 @@ def main() -> int:
         ],
         plugins=[report],
     )
-    bridge._send(
-        {
-            "type": "runner_report",
-            "raw": {
-                "exitcode": int(code),
-                "summary": {"collected": report.collected},
-                "tests": report.tests,
-            },
-        }
+    summary = {"collected": report.collected, "passed": 0, "failed": 0, "skipped": 0}
+    if report.tests:
+        outcomes = [item["outcome"] for item in report.tests]
+        outcome = "failed" if "failed" in outcomes else "skipped" if "skipped" in outcomes else "passed"
+        summary[outcome] = 1
+    payload = (
+        json.dumps(
+            {
+                "type": "runner_report",
+                "raw": {
+                    "exitcode": int(code),
+                    "summary": summary,
+                    "tests": report.tests,
+                },
+            }
+        ).encode()
+        + b"\n"
     )
+    if len(payload) > bridge._MAX_FRAME:
+        return 2
+    writer.write(payload)
+    writer.flush()
+    writer.close()
+    reader.close()
     return int(code)
 
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,108 @@ from assurance_execution.operations.verified_process import (
     container_argv,
     run_bridge_process,
 )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "negative",
+        "missing",
+        "wrong_node",
+        "wrong_exit",
+        "inconsistent",
+        "trailing",
+        "real_exit",
+        "duplicate",
+        "missing_stage",
+        "bad_outcome",
+    ],
+)
+def test_runner_terminal_requires_consistent_selected_pytest_records(tmp_path, mutation):
+    node = "tests/t.py::test"
+    raw = {
+        "exitcode": 0,
+        "summary": {"collected": 1, "passed": 1, "failed": 0, "skipped": 0},
+        "tests": [
+            {"nodeid": node, "when": stage, "outcome": "passed"} for stage in ("setup", "call", "teardown")
+        ],
+    }
+    if mutation == "negative":
+        raw["summary"]["collected"] = -1
+    elif mutation == "missing":
+        raw["tests"] = []
+    elif mutation == "wrong_node":
+        raw["tests"][1]["nodeid"] = "tests/other.py::test"
+    elif mutation == "wrong_exit":
+        raw["exitcode"] = 1
+    elif mutation == "inconsistent":
+        raw["summary"]["failed"] = 1
+    elif mutation == "missing_stage":
+        raw["tests"].pop()
+    elif mutation == "bad_outcome":
+        raw["tests"][0]["outcome"] = []
+    frames = json.dumps({"type": "runner_report", "raw": raw}) + "\n"
+    if mutation == "duplicate":
+        frames += frames
+    if mutation == "trailing":
+        frames += json.dumps({"type": "execute", "case_id": "case"}) + "\n"
+    code = (
+        'import sys;sys.stdin.readline();print(\'{"type":"execute","case_id":"case"}\',flush=True);sys.stdin.readline();sys.stdout.write('
+        + repr(frames)
+        + ");sys.stdout.flush()"
+    )
+    if mutation == "real_exit":
+        code += ";sys.exit(1)"
+    receipt = run_bridge_process(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        nodeid=node,
+        case_id="case",
+        execute=lambda _, control: None,
+    )
+    assert receipt.reason == "invalid_runner_report"
+
+
+def test_generated_code_cannot_use_bridge_to_emit_forged_terminal(tmp_path):
+    receipt, _ = child(
+        tmp_path,
+        'from assurance_execution import bridge\nimport os\ndef test_case():\n    bridge.execute_case("TC_USER_CREATE_001")\n    bridge._send({"type":"runner_report","raw":{"exitcode":0,"summary":{"collected":1},"tests":[]}})\n    os._exit(0)\n',
+    )
+    assert receipt.exit_code != 0
+    assert receipt.report is not None
+    assert receipt.report["summary"]["failed"] == 1
+
+
+@pytest.mark.parametrize("trigger", ["cancelled", "stderr_limit", "timeout"])
+def test_parent_action_stays_supervised_and_joined(tmp_path, trigger):
+    started = threading.Event()
+    finished = threading.Event()
+    cleanup_calls = []
+
+    def execute(_, control):
+        started.set()
+        while not control.stopped:
+            time.sleep(0.005)
+        finished.set()
+
+    code = 'import sys,time;sys.stdin.readline();print(\'{"type":"execute","case_id":"case"}\',flush=True);time.sleep(.1);'
+    code += 'sys.stderr.write("x"*2048);sys.stderr.flush();' if trigger == "stderr_limit" else ""
+    code += "sys.stdin.readline()"
+    before = time.monotonic()
+    receipt = run_bridge_process(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        nodeid="tests/t.py::test",
+        case_id="case",
+        execute=execute,
+        limits=ProcessLimits(timeout_seconds=0.5, max_stderr_bytes=1024),
+        cancel_requested=lambda: trigger == "cancelled" and started.is_set(),
+        cleanup=lambda: cleanup_calls.append(True) or True,
+    )
+    assert receipt.reason == trigger
+    assert finished.is_set()
+    assert time.monotonic() - before < 2
+    assert cleanup_calls == [True]
 
 
 def child(tmp_path: Path, source: str, *, timeout: float = 10, cancel=lambda: False):
@@ -23,7 +127,7 @@ def child(tmp_path: Path, source: str, *, timeout: float = 10, cancel=lambda: Fa
         cwd=tmp_path,
         nodeid="tests/test_case.py::test_case",
         case_id="TC_USER_CREATE_001",
-        execute=calls.append,
+        execute=lambda case, _: calls.append(case),
         limits=ProcessLimits(timeout_seconds=timeout),
         cancel_requested=cancel,
     )
@@ -91,7 +195,7 @@ def test_raw_subprocess_frames_fail_closed(tmp_path, frame, reason):
         cwd=tmp_path,
         nodeid="tests/t.py::test",
         case_id="case",
-        execute=lambda _: pytest.fail("must not execute"),
+        execute=lambda _, control: pytest.fail("must not execute"),
     )
     assert receipt.reason == reason
 
@@ -104,7 +208,7 @@ def test_fragmented_jsonl_is_reassembled_within_limit(tmp_path):
         cwd=tmp_path,
         nodeid="tests/t.py::test",
         case_id="case",
-        execute=calls.append,
+        execute=lambda case, _: calls.append(case),
     )
     assert calls == ["case"]
     assert receipt.reason == "missing_runner_report"
@@ -178,7 +282,7 @@ def test_invalid_report_shape_is_protocol_error(tmp_path, raw):
         cwd=tmp_path,
         nodeid="tests/a.py::test",
         case_id="case",
-        execute=lambda _: None,
+        execute=lambda _, control: None,
     )
     assert receipt.reason == "invalid_runner_report"
 
@@ -193,7 +297,7 @@ def test_bounded_stderr_terminates_flooding_child(tmp_path):
         cwd=tmp_path,
         nodeid="tests/a.py::test",
         case_id="case",
-        execute=lambda _: None,
+        execute=lambda _, control: None,
         limits=ProcessLimits(max_stderr_bytes=1024),
     )
     assert receipt.reason == "stderr_limit"
@@ -201,14 +305,14 @@ def test_bounded_stderr_terminates_flooding_child(tmp_path):
 
 
 def test_zero_collection_report_cannot_complete_even_after_action(tmp_path):
-    code = 'import sys,json;sys.stdin.readline();print(json.dumps({"type":"execute","case_id":"case"}),flush=True);sys.stdin.readline();print(json.dumps({"type":"runner_report","raw":{"summary":{"collected":0}}}),flush=True)'
+    code = 'import sys,json;sys.stdin.readline();print(json.dumps({"type":"execute","case_id":"case"}),flush=True);sys.stdin.readline();print(json.dumps({"type":"runner_report","raw":{"exitcode":5,"summary":{"collected":0,"passed":0,"failed":0,"skipped":0},"tests":[]}}),flush=True);sys.exit(5)'
     calls = []
     receipt = run_bridge_process(
         [sys.executable, "-c", code],
         cwd=tmp_path,
         nodeid="tests/a.py::test",
         case_id="case",
-        execute=calls.append,
+        execute=lambda case, _: calls.append(case),
     )
     assert calls == ["case"]
     assert receipt.reason == "zero_collection"
