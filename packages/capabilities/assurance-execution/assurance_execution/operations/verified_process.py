@@ -249,7 +249,12 @@ def run_bridge_process(
                 fatal = error
         selector.close()
         if process.poll() is None:
-            process.kill()
+            # Give the installed supervisor time to terminate and reap pytest.
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, 9)
         process.wait(timeout=10)
         if cleanup is not None:
             cleanup_confirmed = cleanup()

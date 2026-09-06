@@ -85,6 +85,93 @@ def test_generated_code_cannot_use_bridge_to_emit_forged_terminal(tmp_path):
     assert receipt.report["summary"]["failed"] == 1
 
 
+@pytest.mark.parametrize("attack", ["closure_report", "crash", "signal", "close_ipc"])
+def test_pytest_child_cannot_emit_host_terminal_or_exit_without_installed_result(tmp_path, attack):
+    source = """from assurance_execution import bridge
+import json, os, signal
+def test_case():
+    bridge.execute_case("TC_USER_CREATE_001")
+    cells = [cell.cell_contents for cell in bridge._request.__closure__ or ()]
+    writers = [value for value in cells if hasattr(value, "write") and value.writable()]
+"""
+    if attack == "closure_report":
+        source += """    raw = {"exitcode": 0, "summary": {"collected": 1, "passed": 1, "failed": 0, "skipped": 0}, "tests": [{"nodeid": "tests/test_case.py::test_case", "when": stage, "outcome": "passed"} for stage in ("setup", "call", "teardown")]}
+    for writer in writers:
+        writer.write(json.dumps({"type": "runner_report", "raw": raw}).encode() + b"\\n")
+        writer.flush()
+    os._exit(0)
+"""
+    elif attack == "signal":
+        source += "    os.kill(os.getpid(), signal.SIGKILL)\n"
+    elif attack == "close_ipc":
+        source += "    for writer in writers:\n        writer.close()\n    os._exit(0)\n"
+    else:
+        source += "    os._exit(0)\n"
+    receipt, calls = child(tmp_path, source)
+    assert calls == ["TC_USER_CREATE_001"]
+    assert receipt.report is None
+    assert receipt.reason is not None
+
+
+@pytest.mark.parametrize("trigger", ["timeout", "cancelled"])
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_timeout_and_cancel_reap_pytest_child(tmp_path, trigger, ignore_term):
+    import os
+
+    pid_path = tmp_path / "pytest-child.pid"
+    source = "import os,time,signal\ndef test_case():\n"
+    if ignore_term:
+        source += "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    source += f'    open({str(pid_path)!r}, "w").write(str(os.getpid()))\n    time.sleep(60)\n'
+    receipt, _ = child(
+        tmp_path, source, timeout=2, cancel=lambda: trigger == "cancelled" and pid_path.exists()
+    )
+    assert receipt.reason == trigger
+    assert pid_path.is_file()
+    pid = int(pid_path.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+@pytest.mark.parametrize("attack", ["report_then_return", "oversize", "shutdown_then_return"])
+def test_execute_only_child_ipc_cannot_publish_completion(tmp_path, attack):
+    source = """from assurance_execution import bridge
+import json, socket
+def test_case():
+    bridge.execute_case("TC_USER_CREATE_001")
+    writer = next(cell.cell_contents for cell in bridge._request.__closure__ if hasattr(cell.cell_contents, "write") and cell.cell_contents.writable())
+"""
+    if attack == "shutdown_then_return":
+        source += "    writer._sock.shutdown(socket.SHUT_RDWR)\n"
+    elif attack == "oversize":
+        source += '    writer.write(b"x" * (256 * 1024 + 1)); writer.flush()\n'
+    else:
+        source += '    writer.write(b\'{"type":"runner_report","raw":{}}\\n\'); writer.flush()\n'
+    receipt, calls = child(tmp_path, source)
+    assert calls == ["TC_USER_CREATE_001"]
+    assert receipt.report is None
+    assert receipt.reason is not None
+
+
+def test_pytest_worker_has_no_host_protocol_stdio(tmp_path):
+    receipt, calls = child(
+        tmp_path,
+        """from assurance_execution import bridge
+import os, stat
+def test_case(capfd):
+    with capfd.disabled():
+        assert os.read(0, 1) == b""
+        assert os.fstat(1).st_ino == os.fstat(2).st_ino
+        writer = next(cell.cell_contents for cell in bridge._request.__closure__ if hasattr(cell.cell_contents, "write") and cell.cell_contents.writable())
+        assert stat.S_ISSOCK(os.fstat(writer.fileno()).st_mode)
+        bridge.execute_case("TC_USER_CREATE_001")
+""",
+    )
+    assert calls == ["TC_USER_CREATE_001"]
+    assert receipt.reason is None
+    assert receipt.exit_code == 0
+
+
 @pytest.mark.parametrize("trigger", ["cancelled", "stderr_limit", "timeout"])
 def test_parent_action_stays_supervised_and_joined(tmp_path, trigger):
     started = threading.Event()
