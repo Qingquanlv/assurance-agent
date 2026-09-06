@@ -8,12 +8,12 @@ import os
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
-from pydantic import ValidationError
-from graph_engine.plugin_api import SecretPort, SecretHandleUnauthorized
+from graph_engine.plugin_api import SecretPort
 from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
 from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
 from assurance_execution.contracts.verification import ManagedSutAuthorityV1, SqliteFileIdentityV1
 from assurance_execution.operations.common import InputError
+from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_execution.operations.verification_manifest import sqlite_file_identity
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
@@ -95,17 +95,12 @@ def authenticate_managed_sut_receipts(
     authorization_scope_digest: str,
     activity_receipt_digest: str,
 ) -> tuple[Path, Path, SqliteFileIdentityV1, str]:
-    if secret_port is None:
-        raise InputError("independent managed SUT authority secret port is unavailable")
-    try:
-        authority_bytes = secret_port.resolve(profile.managed_sut_authority_handle)
-    except (SecretHandleUnauthorized, KeyError, ValueError) as error:
-        raise InputError("independent managed SUT authority handle is unavailable") from error
-    try:
-        authority = ManagedSutAuthorityV1.model_validate_json(authority_bytes)
-    except ValidationError as error:
-        raise InputError("independent managed SUT authority is invalid") from error
-    authority_digest = hashlib.sha256(authority_bytes).hexdigest()
+    authority, authority_digest = read_host_secret_model(
+        secret_port,
+        profile.managed_sut_authority_handle,
+        ManagedSutAuthorityV1,
+        category="independent managed SUT authority",
+    )
     if (
         authority.authorization_scope_digest != authorization_scope_digest
         or authority.activity_receipt_digest != activity_receipt_digest

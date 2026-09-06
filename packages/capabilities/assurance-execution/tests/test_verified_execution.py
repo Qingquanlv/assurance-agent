@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_execution.contracts.verification import VerificationEvidenceV1
 
@@ -227,13 +227,13 @@ def test_cancellation_during_real_http_stops_worker_and_never_replays(tmp_path, 
     assert not any(item.name.startswith("verified-action") for item in threading.enumerate())
 
 
-def formal_plan():
+def formal_plan(profile: Literal["api_db.v1", "api_db_trace.v1"] = "api_db.v1"):
     raw = read_fixture("user-plan.json")
     return compile_case_plan(
         read_fixture("user-case.json"),
         AssertionSourcesV1.model_validate(read_fixture("user-sources.json")),
         cast(dict[str, object], raw["bindings"]),
-        "api_db.v1",
+        profile,
         context=CasePlanContextV1.model_validate(raw["context"]),
     )
 
@@ -969,3 +969,204 @@ def test_production_handler_without_qualified_runner_is_not_ready(managed_sut):
     assert outcome.failure.retryable is False
     assert "NOT_READY" in outcome.failure.message
     assert not (context.write_root / manifest.evidence_root / "action_started.json").exists()
+
+
+@pytest.mark.parametrize("degradation", ["expired", "stopped"])
+@pytest.mark.parametrize("method", ["reconcile", "cancel"])
+def test_actual_semantic_handler_recovers_without_live_collector(
+    managed_sut, tmp_path, monkeypatch, degradation, method
+):
+    from types import SimpleNamespace
+    from datetime import datetime, timedelta, timezone
+    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+    from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
+    from assurance_execution.operations.verified_attempt import VerifiedAttemptHandler
+    from assurance_execution.operations.verified_execution import (
+        VerifiedExecutionHandler,
+        VerifiedExecutionInputV1,
+    )
+    from assurance_execution.operations import verified_attempt, verified_execution
+    from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
+    from tests.product.test_verified_readiness import collector_listener
+
+    # Use the actual test listener fixture generator with this test's retained identity.
+    listener = collector_listener(tmp_path)
+    collector, process = next(listener)
+    try:
+        base, context, manifest, plan = handler_case(managed_sut, "semantic_" + degradation + method)
+        assert isinstance(context.secrets, Secrets)
+        secrets = context.secrets
+        payload = VerifiedExecutionInputV1.model_validate(base.input)
+        plan = formal_plan("api_db_trace.v1")
+        plan_bytes = (
+            CaseExecutionPlanSetV1(change_id=plan.change_id, cases=(plan,)).model_dump_json().encode()
+        )
+        (context.project_root / payload.verification.case_execution_plan_ref.path).write_bytes(plan_bytes)
+        plan_ref = payload.verification.case_execution_plan_ref.model_copy(
+            update={"digest": hashlib.sha256(plan_bytes).hexdigest()}
+        )
+        profile = payload.verification.model_copy(
+            update={"validation_profile": "api_db_trace.v1", "case_execution_plan_ref": plan_ref}
+        )
+        manifest = manifest.model_copy(
+            update={"validation_profile": "api_db_trace.v1", "case_execution_plan_digest": plan_ref.digest}
+        )
+        manifest_bytes = manifest.model_dump_json().encode()
+        (context.project_root / payload.manifest_ref.path).write_bytes(manifest_bytes)
+        payload = payload.model_copy(
+            update={
+                "verification": profile,
+                "manifest_ref": payload.manifest_ref.model_copy(
+                    update={"digest": hashlib.sha256(manifest_bytes).hexdigest()}
+                ),
+            }
+        )
+        selected = ManagedSutReadinessSelectionV1(
+            workspace_root=str(context.project_root),
+            verification=profile,
+            configuration_digest="c" * 64,
+            execution_id=manifest.execution_id,
+            authorization_scope_digest=manifest.authorization_scope_digest,
+            activity_receipt_digest=manifest.activity_receipt_digest,
+        )
+        collector.update(
+            {
+                "sut_instance_id": manifest.sut.instance_id,
+                "execution_id": manifest.execution_id,
+                "authorization_scope_digest": manifest.authorization_scope_digest,
+                "activity_receipt_digest": manifest.activity_receipt_digest,
+            }
+        )
+        response = json.dumps(
+            {"probe_nonce": collector["probe_nonce"], "execution_id": manifest.execution_id}
+        ).encode()
+        (tmp_path / "response.json").write_bytes(response)
+        collector["endpoint_response_digest"] = hashlib.sha256(response).hexdigest()
+        secrets.values.update(
+            {
+                "sut.selection": selected.model_dump_json().encode(),
+                "sut.collector": json.dumps(collector).encode(),
+            }
+        )
+        root = ExecutionPrepareInputV1(
+            change_id=plan.change_id,
+            plan_ref=plan.plan_ref,
+            plan_digest=plan.plan_digest,
+            selected_test_families=("api",),
+            capability_leafs=(),
+            validation_profile="api_db_trace.v1",
+            verification_config_digest="c" * 64,
+            verification=profile,
+        )
+        qualification = tmp_path / "qualification.json"
+        qualification.write_text("test-only real pipe qualification")
+        request = base.model_copy(
+            update={
+                "input": root.model_dump(mode="json"),
+                "binding_data": {
+                    "verification_runner": {
+                        "source_root": str(REPO),
+                        "qualification_path": str(qualification),
+                        "qualification_digest": hashlib.sha256(qualification.read_bytes()).hexdigest(),
+                    },
+                    "readiness": {
+                        "selection_handle": "sut.selection",
+                        "authority_handle": "sut-authority",
+                        "collector_handle": "sut.collector",
+                        "configuration_digest": "c" * 64,
+                        "validation_profile": "api_db_trace.v1",
+                    },
+                },
+            }
+        )
+        # T3 prepare contracts are covered independently; this seam supplies its already authenticated output.
+        prepared = SimpleNamespace(
+            change_id=plan.change_id,
+            batch_id=payload.view.batch_id,
+            execution_id=manifest.execution_id,
+            verification_manifest_ref=payload.manifest_ref,
+            mapping=SimpleNamespace(selected=(manifest.nodeid,)),
+            execution_view_digest=payload.view.digest,
+            executed_at=payload.view.executed_at,
+        )
+        monkeypatch.setattr(verified_attempt, "assemble_execution_input", lambda *args, **kwargs: prepared)
+        posts, cleanups = [], []
+        original_post = verified_execution._post
+
+        async def count_post(*args):
+            posts.append(1)
+            return await original_post(*args)
+
+        monkeypatch.setattr(verified_execution, "_post", count_post)
+
+        class Host(RealPipeHost):
+            def run(self, **kwargs):
+                return (
+                    super()
+                    .run(**kwargs)
+                    .model_copy(
+                        update={"cleanup_confirmed": False, "reason": "container_cleanup_unconfirmed"}
+                    )
+                )
+
+            def stop(self, container_name):
+                cleanups.append(container_name)
+                return True
+
+        handler = VerifiedAttemptHandler()
+        handler._delegate = VerifiedExecutionHandler(process_host=Host())
+        original_context = context
+        # Make the receipt invalid before a fresh dispatch: it must never start.
+        stale = {
+            **collector,
+            "issued_at": (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat(),
+            "checked_at": (datetime.now(timezone.utc) - timedelta(seconds=40)).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+        }
+        secrets.values["sut.collector"] = json.dumps(stale).encode()
+        with pytest.raises(ValueError):
+            asyncio.run(handler.execute(request, context))
+        assert posts == []
+        secrets.values["sut.collector"] = json.dumps(collector).encode()
+        from graph_engine.attempts.activity import TaskActivityIndeterminate
+
+        with pytest.raises(TaskActivityIndeterminate):
+            asyncio.run(handler.execute(request, context))
+        assert len(posts) == 1
+        if degradation == "expired":
+            secrets.values["sut.collector"] = json.dumps(stale).encode()
+        else:
+            process.terminate()
+            process.wait(timeout=5)
+        qualification.unlink()
+        assert context.activity is not None
+        forged = context.activity.snapshot.model_copy(update={"state": "prepared"})
+        rejected = asyncio.run(getattr(handler, method)(request, context, forged))
+        assert rejected.status == "indeterminate"
+        recovered = asyncio.run(getattr(handler, method)(request, context, context.activity.snapshot))
+        assert recovered.status == "terminal"
+        assert recovered.outcome is not None
+        assert (context.write_root / manifest.evidence_root / "cleanup_terminal.json").is_file()
+        assert cleanups and len(posts) == 1
+        bindings = cast(dict[str, Any], request.binding_data)
+        altered = request.model_copy(
+            update={
+                "binding_data": {
+                    **bindings,
+                    "readiness": {
+                        **dict(bindings["readiness"]),
+                        "configuration_digest": "f" * 64,
+                    },
+                }
+            }
+        )
+        try:
+            result = asyncio.run(
+                getattr(handler, method)(altered, original_context, context.activity.snapshot)
+            )
+            assert result.status == "indeterminate"
+        except ValueError:
+            pass
+        assert len(posts) == 1
+    finally:
+        listener.close()

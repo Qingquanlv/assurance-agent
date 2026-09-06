@@ -30,7 +30,8 @@ from graph_engine.attempts.secret_sources import (
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.verification import ExecutionTaskOutputV1
 from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
-from assurance_execution.operations.readiness import authenticate_host_readiness
+from assurance_execution.operations.readiness import authenticate_host_readiness, HostReadinessError
+from assurance_execution.operations.host_secrets import HostSecretDocumentError
 from assurance_execution.operations.verified_process import DockerVerificationHost
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_product.models import VerificationHostConfigV1
@@ -310,7 +311,12 @@ def preflight_verification(
 ) -> None:
     from graph_engine.errors import GraphEngineError
 
+    reason = None
     try:
         _preflight_verification(config, authorization, config_digest)
-    except (ValueError, OSError, GraphEngineError) as error:
-        raise ValueError(f"NOT_READY: {error}") from error
+    except (HostSecretDocumentError, HostReadinessError) as error:
+        reason = str(error)
+    except (ValueError, OSError, GraphEngineError):
+        reason = "verification prerequisites are unavailable"
+    if reason is not None:
+        raise ValueError(f"NOT_READY: {reason}")

@@ -160,8 +160,7 @@ def test_trace_boolean_is_not_a_readiness_receipt():
         CollectorReadinessReceiptV1.model_validate({"collector_ready": True, "otel_ready": True})
 
 
-@pytest.fixture
-def collector_receipt(tmp_path):
+def collector_listener(tmp_path):
     import subprocess
     import sys
     import time
@@ -171,10 +170,14 @@ def collector_receipt(tmp_path):
     body = json.dumps(
         {"probe_nonce": "7" * 64, "execution_id": "00000000-0000-4000-8000-000000000001"}
     ).encode()
+    response_file = tmp_path / "response.json"
+    response_file.write_bytes(body)
     script = tmp_path / "listener.py"
     script.write_text(
         "from http.server import HTTPServer, BaseHTTPRequestHandler\nfrom pathlib import Path\nclass Handler(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write("
-        + repr(body)
+        + "Path("
+        + repr(str(response_file))
+        + ").read_bytes()"
         + ")\n def log_message(self, *args): pass\ns = HTTPServer(('127.0.0.1', 0), Handler)\nPath("
         + repr(str(tmp_path / "port"))
         + ").write_text(str(s.server_port))\ns.serve_forever()\n"
@@ -219,6 +222,11 @@ def collector_receipt(tmp_path):
         if process.poll() is None:
             process.terminate()
         process.wait(timeout=5)
+
+
+@pytest.fixture
+def collector_receipt(tmp_path):
+    yield from collector_listener(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -363,6 +371,71 @@ def test_managed_sut_with_missing_live_marker_is_not_ready(live_sut):
             )
     finally:
         marker.write_bytes(raw)
+
+
+@pytest.mark.parametrize("boundary", ["selection", "authority", "collector"])
+def test_public_readiness_errors_never_disclose_secret_documents(live_sut, monkeypatch, caplog, boundary):
+    import logging
+    import traceback
+    from assurance_product.verification_execution import VerificationConfiguration, preflight_verification
+    from graph_engine.attempts.secret_sources import (
+        InvocationRuntimeAuthorization,
+        SecretSourceBinding,
+        runtime_authorization_digest,
+    )
+
+    host, secrets, original, _ = live_sut
+    selection = {
+        **original,
+        "verification": {**original["verification"], "validation_profile": "api_db_trace.v1"},
+    }
+    canary = "PRIVATE_RECEIPT_CANARY_" + boundary + "_fa912dc0"
+    malformed = json.dumps({"unexpected": canary})
+    documents = {
+        "selection": json.dumps(selection),
+        "authority": secrets.values["sut.authority"].decode(),
+        "collector": malformed,
+        "credential": "test-only",
+    }
+    documents[boundary] = malformed
+    for key, value in documents.items():
+        monkeypatch.setenv("AA_PRIVATE_" + key.upper(), value)
+    sources = tuple(
+        SecretSourceBinding("sut." + key, "environment", "AA_PRIVATE_" + key.upper()) for key in documents
+    )
+    auth = InvocationRuntimeAuthorization(
+        schema_version="1", secret_sources=sources, digest=runtime_authorization_digest(sources)
+    )
+    config = VerificationConfiguration.model_validate(
+        {
+            "validation_profile": "api_db_trace.v1",
+            "host": {
+                "runner": {
+                    "source_root": str(host.source_root),
+                    "qualification_path": "/missing",
+                    "qualification_digest": "c" * 64,
+                },
+                "managed_sut_readiness_handle": "sut.selection",
+                "managed_sut_authority_handle": "sut.authority",
+                "collector_readiness_handle": "sut.collector",
+                "credential_handle": "sut.credential",
+            },
+        }
+    )
+    with pytest.raises(ValueError) as caught:
+        preflight_verification(config, auth, "c" * 64)
+    logging.getLogger(__name__).error(
+        "preflight failed", exc_info=(type(caught.value), caught.value, caught.value.__traceback__)
+    )
+    rendered = caplog.text + "".join(traceback.format_exception(caught.value))
+    error = caught.value
+    while error is not None:
+        rendered += str(error)
+        error = error.__cause__ or error.__context__
+    assert "NOT_READY" in rendered
+    assert canary not in rendered
+    assert malformed not in rendered
+    assert "input_value" not in rendered
 
 
 def test_stopped_managed_sut_is_not_ready(live_sut):

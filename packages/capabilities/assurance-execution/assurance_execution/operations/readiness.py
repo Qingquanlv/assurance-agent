@@ -19,6 +19,11 @@ from assurance_execution.contracts.readiness import (
     VerificationReadinessBindingV1,
 )
 from graph_engine.plugin_api import SecretPort
+from assurance_execution.operations.host_secrets import read_host_secret_model, HostSecretDocumentError
+
+
+class HostReadinessError(ValueError):
+    """Fixed, public-safe readiness failure category."""
 
 
 def process_birth_identity(pid: int) -> str:
@@ -125,6 +130,27 @@ def authenticate_collector_readiness(
         raise ValueError("Collector readiness expired during the check")
 
 
+def authenticate_host_selection(
+    binding: VerificationReadinessBindingV1,
+    *,
+    secret_port: SecretPort,
+) -> ManagedSutReadinessSelectionV1:
+    """Authenticate frozen selection without requiring a still-live dependency."""
+    selection, _ = read_host_secret_model(
+        secret_port,
+        binding.selection_handle,
+        ManagedSutReadinessSelectionV1,
+        category="managed SUT readiness selection",
+    )
+    if (
+        selection.configuration_digest != binding.configuration_digest
+        or selection.verification.validation_profile != binding.validation_profile
+        or selection.verification.managed_sut_authority_handle != binding.authority_handle
+    ):
+        raise HostReadinessError("managed SUT readiness selection disagrees with frozen configuration")
+    return selection
+
+
 def authenticate_host_readiness(
     binding: VerificationReadinessBindingV1,
     *,
@@ -133,28 +159,37 @@ def authenticate_host_readiness(
 ) -> ManagedSutReadinessSelectionV1:
     from assurance_execution.operations.managed_sut import authenticate_managed_sut_readiness
 
-    selection = ManagedSutReadinessSelectionV1.model_validate_json(
-        secret_port.resolve(binding.selection_handle)
-    )
-    if (
-        selection.configuration_digest != binding.configuration_digest
-        or selection.verification.validation_profile != binding.validation_profile
-        or selection.verification.managed_sut_authority_handle != binding.authority_handle
-    ):
-        raise ValueError("managed SUT readiness selection disagrees with frozen configuration")
-    authenticate_managed_sut_readiness(selection, source_root=source_root, secret_port=secret_port)
+    selection = authenticate_host_selection(binding, secret_port=secret_port)
+    sut_failed = False
+    try:
+        authenticate_managed_sut_readiness(selection, source_root=source_root, secret_port=secret_port)
+    except HostSecretDocumentError:
+        raise
+    except (ValueError, OSError):
+        sut_failed = True
+    if sut_failed:
+        raise HostReadinessError("managed SUT readiness authentication failed")
     if binding.validation_profile == "api_db_trace.v1":
         if binding.collector_handle is None:
-            raise ValueError("Collector/OTel readiness receipt is required")
-        receipt = CollectorReadinessReceiptV1.model_validate_json(
-            secret_port.resolve(binding.collector_handle)
+            raise HostReadinessError("Collector/OTel readiness receipt is required")
+        receipt, _ = read_host_secret_model(
+            secret_port,
+            binding.collector_handle,
+            CollectorReadinessReceiptV1,
+            category="Collector/OTel readiness receipt",
         )
-        authenticate_collector_readiness(
-            receipt,
-            sut_instance_id=selection.verification.sut_instance_id,
-            execution_id=selection.execution_id,
-            configuration_digest=binding.configuration_digest,
-            authorization_scope_digest=selection.authorization_scope_digest,
-            activity_receipt_digest=selection.activity_receipt_digest,
-        )
+        collector_failed = False
+        try:
+            authenticate_collector_readiness(
+                receipt,
+                sut_instance_id=selection.verification.sut_instance_id,
+                execution_id=selection.execution_id,
+                configuration_digest=binding.configuration_digest,
+                authorization_scope_digest=selection.authorization_scope_digest,
+                activity_receipt_digest=selection.activity_receipt_digest,
+            )
+        except (ValueError, OSError):
+            collector_failed = True
+        if collector_failed:
+            raise HostReadinessError("Collector/OTel readiness authentication failed")
     return selection

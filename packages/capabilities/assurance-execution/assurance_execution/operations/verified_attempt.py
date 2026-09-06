@@ -16,7 +16,7 @@ from graph_engine.plugin_api import (
 )
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1, ExecuteInputV1
 from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
-from assurance_execution.operations.readiness import authenticate_host_readiness
+from assurance_execution.operations.readiness import authenticate_host_readiness, authenticate_host_selection
 from assurance_execution.execution_view import ExecutionView, execution_view_relative
 from assurance_execution.operations.agent_skills import assemble_execution_input
 from assurance_execution.operations.verified_execution import (
@@ -29,7 +29,9 @@ class VerifiedAttemptHandler:
     def __init__(self) -> None:
         self._delegate = VerifiedExecutionHandler()
 
-    def _request(self, request: TaskRequest, context: TaskContext) -> TaskRequest:
+    def _request(
+        self, request: TaskRequest, context: TaskContext, *, recovering: bool = False
+    ) -> TaskRequest:
         binding = request.binding_data
         runner = binding.get("verification_runner") if isinstance(binding, Mapping) else None
         if not isinstance(runner, Mapping) or set(runner) != {
@@ -38,7 +40,7 @@ class VerifiedAttemptHandler:
             "qualification_digest",
         }:
             raise ValueError("NOT_READY: frozen runner qualification is required")
-        if (
+        if not recovering and (
             hashlib.sha256(Path(str(runner["qualification_path"])).read_bytes()).hexdigest()
             != runner["qualification_digest"]
         ):
@@ -49,8 +51,12 @@ class VerifiedAttemptHandler:
         if context.secrets is None or not isinstance(binding, Mapping):
             raise ValueError("NOT_READY: host readiness secret port is required")
         readiness = VerificationReadinessBindingV1.model_validate(binding.get("readiness"))
-        selected = authenticate_host_readiness(
-            readiness, source_root=Path(str(runner["source_root"])), secret_port=context.secrets
+        selected = (
+            authenticate_host_selection(readiness, secret_port=context.secrets)
+            if recovering
+            else authenticate_host_readiness(
+                readiness, source_root=Path(str(runner["source_root"])), secret_port=context.secrets
+            )
         )
         if (
             selected.workspace_root != str(context.project_root.resolve())
@@ -97,9 +103,29 @@ class VerifiedAttemptHandler:
     async def reconcile(
         self, request: TaskRequest, context: TaskContext, activity: TaskActivitySnapshot
     ) -> TaskActivityReconcileResult:
-        return await self._delegate.reconcile(self._request(request, context), context, activity)
+        if context.activity is None or activity != context.activity.snapshot:
+            return TaskActivityReconcileResult(
+                status="indeterminate", reason="unauthenticated activity snapshot"
+            )
+        try:
+            prepared = self._request(request, context, recovering=activity.state != "prepared")
+        except (ValueError, OSError):
+            return TaskActivityReconcileResult(
+                status="indeterminate", reason="frozen execution identity unavailable"
+            )
+        return await self._delegate.reconcile(prepared, context, activity)
 
     async def cancel(
         self, request: TaskRequest, context: TaskContext, activity: TaskActivitySnapshot
     ) -> TaskActivityCancelResult:
-        return await self._delegate.cancel(self._request(request, context), context, activity)
+        if context.activity is None or activity != context.activity.snapshot:
+            return TaskActivityCancelResult(
+                status="indeterminate", reason="unauthenticated activity snapshot"
+            )
+        try:
+            prepared = self._request(request, context, recovering=activity.state != "prepared")
+        except (ValueError, OSError):
+            return TaskActivityCancelResult(
+                status="indeterminate", reason="frozen execution identity unavailable"
+            )
+        return await self._delegate.cancel(prepared, context, activity)

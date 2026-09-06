@@ -18,6 +18,7 @@ import httpx
 
 from assurance_execution.contracts.verification import VerificationManifestV1
 from assurance_execution.operations.sqlite_oracle import observe_user
+from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1
 
 
@@ -358,8 +359,11 @@ def _authenticate(
         raise ValueError("execution view does not match manifest")
     # Recovery after promotion may have consumed the disposable view; execution rechecks it before dispatch.
     assert context.secrets is not None
-    authority = ManagedSutAuthorityV1.model_validate_json(
-        context.secrets.resolve(profile.managed_sut_authority_handle)
+    authority, _ = read_host_secret_model(
+        context.secrets,
+        profile.managed_sut_authority_handle,
+        ManagedSutAuthorityV1,
+        category="independent managed SUT authority",
     )
     key = managed_sut_ownership_token(Path(authority.run_root), authority)
     journal = ActionJournal(context.write_root / manifest.evidence_root, manifest, key)
@@ -593,7 +597,11 @@ class VerifiedExecutionHandler:
 
 
 def _credentials(value: bytes) -> dict[str, str]:
-    document = json.loads(value)
+    document = None
+    try:
+        document = json.loads(value)
+    except (ValueError, UnicodeError):
+        pass
     if (
         not isinstance(document, dict)
         or set(document) != {"token", "user_password"}
