@@ -219,12 +219,14 @@ def test_authenticated_host_prerequisites_are_profile_specific(tmp_path, monkeyp
     # Unit fixture supplies the independently authenticated runner capability, never an image ID.
     monkeypatch.setattr(DockerVerificationHost, "preflight", lambda self: {"test_qualified_host": True})
     if profile == "api_db_trace.v1":
-        with pytest.raises(ValueError, match="Collector/OTel"):
+        with pytest.raises(ValueError, match="NOT_READY"):
             preflight_verification(config, authorization)
         config = config.model_copy(
             update={"host": config.host.model_copy(update={"collector_readiness_handle": "sut.collector"})}
         )
-    preflight_verification(config, authorization)
+    # An authority token in an empty run directory cannot establish readiness.
+    with pytest.raises(ValueError, match="NOT_READY"):
+        preflight_verification(config, authorization)
 
 
 def test_legacy_facade_calls_existing_raw_executor(opencode_composition, monkeypatch, tmp_path):

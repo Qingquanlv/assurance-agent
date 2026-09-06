@@ -668,9 +668,9 @@ def _process_birth_identity(pid: int) -> str | None:
     return f"sha256:{hashlib.sha256(observed.encode()).hexdigest()}"
 
 
-def stop(
-    *, workspace_root: Path, receipt_path: Path, instance_id: str, timeout_s: float = 5.0
-) -> dict[str, Any]:
+def _authenticated_process(
+    *, workspace_root: Path, receipt_path: Path, instance_id: str
+) -> tuple[dict[str, Any], Path, Path, Path, int, bytes]:
     workspace = Path(workspace_root).resolve(strict=True)
     process_receipt_path = Path(receipt_path).resolve(strict=True)
     run_root = _confined(workspace, process_receipt_path.parent, "run_root")
@@ -717,6 +717,58 @@ def stop(
         raise ValueError("receipt does not identify an owned process")
     if receipt.get("process_birth_identity") != _process_birth_identity(pid):
         raise ValueError("running PID is not the owned process")
+    marker_identity = {"instance_id": instance_id, "pid": pid, "sqlite_path": str(db_file)}
+    encoded = json.dumps(marker_identity, separators=(",", ":"), sort_keys=True).encode()
+    if _read_json(marker_path) != {
+        **marker_identity,
+        "proof": "hmac-sha256:" + hmac.new(ownership_token, encoded, hashlib.sha256).hexdigest(),
+    }:
+        raise ValueError("managed SUT live marker proof does not match")
+    return receipt, run_root, process_receipt_path, marker_path, pid, ownership_token
+
+
+def preflight(*, workspace_root: Path, receipt_path: Path, instance_id: str) -> dict[str, Any]:
+    """Authenticate the currently owned SUT without writing or stopping anything."""
+    from http.client import HTTPConnection
+    from urllib.parse import urlsplit
+
+    receipt, _, _, _, pid, _ = _authenticated_process(
+        workspace_root=workspace_root, receipt_path=receipt_path, instance_id=instance_id
+    )
+    url = urlsplit(str(receipt.get("base_url")))
+    if (
+        url.scheme != "http"
+        or url.hostname != "127.0.0.1"
+        or url.port is None
+        or url.path
+        or url.query
+        or url.fragment
+        or url.username is not None
+    ):
+        raise ValueError("managed SUT readiness URL is invalid")
+    connection = HTTPConnection("127.0.0.1", url.port, timeout=2)
+    try:
+        connection.request("GET", "/openapi.json")
+        if connection.getresponse().status != 200:
+            raise ValueError("managed SUT is not ready")
+    finally:
+        connection.close()
+    if receipt["process_birth_identity"] != _process_birth_identity(pid):
+        raise ValueError("managed SUT process changed during readiness")
+    return {
+        "schema_version": "1",
+        "state": "ready",
+        "instance_id": instance_id,
+        "start_receipt_sha256": _sha256(receipt_path),
+    }
+
+
+def stop(
+    *, workspace_root: Path, receipt_path: Path, instance_id: str, timeout_s: float = 5.0
+) -> dict[str, Any]:
+    receipt, run_root, process_receipt_path, marker_path, pid, ownership_token = _authenticated_process(
+        workspace_root=workspace_root, receipt_path=receipt_path, instance_id=instance_id
+    )
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -757,10 +809,11 @@ def _parser() -> argparse.ArgumentParser:
     start_parser = commands.add_parser("start")
     start_parser.add_argument("--workspace-root", type=Path, required=True)
     start_parser.add_argument("--prepare-receipt", type=Path, required=True)
-    stop_parser = commands.add_parser("stop")
-    stop_parser.add_argument("--workspace-root", type=Path, required=True)
-    stop_parser.add_argument("--receipt", type=Path, required=True)
-    stop_parser.add_argument("--instance-id", required=True)
+    for name in ("stop", "preflight"):
+        process_parser = commands.add_parser(name)
+        process_parser.add_argument("--workspace-root", type=Path, required=True)
+        process_parser.add_argument("--receipt", type=Path, required=True)
+        process_parser.add_argument("--instance-id", required=True)
     return parser
 
 
@@ -779,7 +832,8 @@ def main(argv: list[str] | None = None) -> int:
             prepare_receipt=arguments.prepare_receipt,
         )
     else:
-        output = stop(
+        operation = preflight if arguments.command == "preflight" else stop
+        output = operation(
             workspace_root=arguments.workspace_root,
             receipt_path=arguments.receipt,
             instance_id=arguments.instance_id,

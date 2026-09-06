@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from copy import copy
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -27,10 +26,11 @@ from graph_engine.plugin_api import FrozenModel, TaskActivitySnapshot, TaskOutco
 from graph_engine.attempts.secret_sources import (
     InvocationRuntimeAuthorization,
     authorize_binding_secret_handles,
-    resolve_secret_source,
 )
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
-from assurance_execution.contracts.verification import ExecutionTaskOutputV1, ManagedSutAuthorityV1
+from assurance_execution.contracts.verification import ExecutionTaskOutputV1
+from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
+from assurance_execution.operations.readiness import authenticate_host_readiness
 from assurance_execution.operations.verified_process import DockerVerificationHost
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_product.models import VerificationHostConfigV1
@@ -66,21 +66,48 @@ def verification_configuration(composition: object) -> tuple[VerificationConfigu
     return VerificationConfiguration.model_validate_json(entry.content), entry.sha256
 
 
+def _readiness_binding(
+    config: VerificationConfiguration, config_digest: str | None
+) -> VerificationReadinessBindingV1:
+    host = config.host
+    if (
+        config_digest is None
+        or config.validation_profile is None
+        or host.managed_sut_readiness_handle is None
+        or host.managed_sut_authority_handle is None
+    ):
+        raise ValueError("NOT_READY: authenticated managed SUT readiness selection is required")
+    return VerificationReadinessBindingV1(
+        selection_handle=host.managed_sut_readiness_handle,
+        authority_handle=host.managed_sut_authority_handle,
+        collector_handle=host.collector_readiness_handle,
+        configuration_digest=config_digest,
+        validation_profile=config.validation_profile,
+    )
+
+
 def _preflight_verification(
-    config: VerificationConfiguration, authorization: InvocationRuntimeAuthorization
+    config: VerificationConfiguration,
+    authorization: InvocationRuntimeAuthorization,
+    config_digest: str | None,
 ) -> None:
     if config.validation_profile is None:
         return
+    from assurance_product.runtime_ports import AuthorizedSecretResolver
+
     host = config.host
     if host.runner is None or host.managed_sut_authority_handle is None or host.credential_handle is None:
         raise ValueError("NOT_READY: managed SUT and qualified verification runner are required")
-    handles = (host.managed_sut_authority_handle, host.credential_handle)
+    binding = _readiness_binding(config, config_digest)
+    handles = (binding.selection_handle, binding.authority_handle, host.credential_handle)
+    if config.validation_profile == "api_db_trace.v1" and binding.collector_handle is not None:
+        handles += (binding.collector_handle,)
     authorize_binding_secret_handles(handles, authorization)
-    sources = {item.handle: item for item in authorization.secret_sources}
-    authority = ManagedSutAuthorityV1.model_validate_json(resolve_secret_source(sources[handles[0]]))
-    from assurance_execution.operations.managed_sut import managed_sut_ownership_token
-
-    managed_sut_ownership_token(Path(authority.run_root), authority)
+    authenticate_host_readiness(
+        binding,
+        source_root=Path(host.runner.source_root),
+        secret_port=AuthorizedSecretResolver(authorization),
+    )
     if (
         hashlib.sha256(Path(host.runner.qualification_path).read_bytes()).hexdigest()
         != host.runner.qualification_digest
@@ -89,13 +116,6 @@ def _preflight_verification(
     DockerVerificationHost(
         source_root=Path(host.runner.source_root), qualification_path=Path(host.runner.qualification_path)
     ).preflight()
-    if config.validation_profile == "api_db_trace.v1":
-        if host.collector_readiness_handle is None:
-            raise ValueError("NOT_READY: Collector/OTel readiness is required")
-        authorize_binding_secret_handles((host.collector_readiness_handle,), authorization)
-        document = json.loads(resolve_secret_source(sources[host.collector_readiness_handle]))
-        if document != {"collector_ready": True, "otel_ready": True}:
-            raise ValueError("NOT_READY: Collector/OTel readiness is required")
 
 
 class ProfiledExecutionExecutor:
@@ -164,7 +184,12 @@ class ProfiledExecutionExecutor:
             scope=scope,
             task_id=scope.execution.attempt_key.digest,
             lock_digest=self._lock_digest,
-            binding_data={"verification_runner": None if runner is None else runner.model_dump(mode="json")},
+            binding_data={
+                "verification_runner": None if runner is None else runner.model_dump(mode="json"),
+                "readiness": None
+                if self.config.host.managed_sut_readiness_handle is None
+                else _readiness_binding(self.config, self.config_digest).model_dump(mode="json"),
+            },
         )
         fields = current_bound_identity(
             attempt_key_digest=scope.execution.attempt_key.digest,
@@ -199,6 +224,7 @@ class ProfiledExecutionExecutor:
                     handle
                     for handle in (
                         self.config.host.managed_sut_authority_handle,
+                        self.config.host.managed_sut_readiness_handle,
                         self.config.host.credential_handle,
                         self.config.host.collector_readiness_handle
                         if self.config.validation_profile == "api_db_trace.v1"
@@ -278,11 +304,13 @@ class ProfiledExecutionExecutor:
 
 
 def preflight_verification(
-    config: VerificationConfiguration, authorization: InvocationRuntimeAuthorization
+    config: VerificationConfiguration,
+    authorization: InvocationRuntimeAuthorization,
+    config_digest: str | None = None,
 ) -> None:
     from graph_engine.errors import GraphEngineError
 
     try:
-        _preflight_verification(config, authorization)
+        _preflight_verification(config, authorization, config_digest)
     except (ValueError, OSError, GraphEngineError) as error:
         raise ValueError(f"NOT_READY: {error}") from error

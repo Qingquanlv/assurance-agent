@@ -40,6 +40,8 @@ EXECUTION_RESOURCE_FILES: dict[str, str] = {
 }
 
 _SCHEMA_FILES: dict[str, str] = {
+    "assurance.execution.schema.managed-sut-readiness.v1": "schemas/managed-sut-readiness.v1.schema.json",
+    "assurance.execution.schema.collector-readiness.v1": "schemas/collector-readiness.v1.schema.json",
     "assurance.execution.schema.task-input.v1": "schemas/task-input.v1.schema.json",
     "assurance.execution.schema.task-output.v1": "schemas/task-output.v1.schema.json",
     "assurance.execution.schema.closed-mapping.v1": "schemas/closed-mapping.v1.schema.json",

@@ -1,0 +1,212 @@
+{
+  "$defs": {
+    "BusinessActivation": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "root",
+            "round",
+            "trigger"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "BusinessActivation",
+      "type": "object"
+    },
+    "EvidenceArtifactRefV1": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "digest"
+      ],
+      "title": "EvidenceArtifactRefV1",
+      "type": "object"
+    },
+    "FrozenUserInputsV1": {
+      "additionalProperties": false,
+      "properties": {
+        "dept_id": {
+          "default": null,
+          "title": "Dept Id",
+          "type": "null"
+        },
+        "email": {
+          "maxLength": 255,
+          "minLength": 3,
+          "title": "Email",
+          "type": "string"
+        },
+        "is_active": {
+          "const": true,
+          "default": true,
+          "title": "Is Active",
+          "type": "boolean"
+        },
+        "is_superuser": {
+          "const": false,
+          "default": false,
+          "title": "Is Superuser",
+          "type": "boolean"
+        },
+        "username": {
+          "maxLength": 20,
+          "minLength": 1,
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "username",
+        "email"
+      ],
+      "title": "FrozenUserInputsV1",
+      "type": "object"
+    },
+    "VerifiedExecutionPrepareV1": {
+      "additionalProperties": false,
+      "description": "Host-owned runtime inputs that opt one prepare into verified mode.",
+      "properties": {
+        "business_activation": {
+          "$ref": "#/$defs/BusinessActivation"
+        },
+        "case_execution_plan_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "managed_sqlite_path": {
+          "minLength": 1,
+          "title": "Managed Sqlite Path",
+          "type": "string"
+        },
+        "managed_sut_authority_handle": {
+          "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$",
+          "title": "Managed Sut Authority Handle",
+          "type": "string"
+        },
+        "managed_sut_prepare_receipt_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "managed_sut_start_receipt_ref": {
+          "$ref": "#/$defs/EvidenceArtifactRefV1"
+        },
+        "nodeid": {
+          "minLength": 1,
+          "title": "Nodeid",
+          "type": "string"
+        },
+        "observer_sqlite_path": {
+          "minLength": 1,
+          "title": "Observer Sqlite Path",
+          "type": "string"
+        },
+        "sut_base_url": {
+          "pattern": "^http://127\\.0\\.0\\.1:[1-9][0-9]{0,4}$",
+          "title": "Sut Base Url",
+          "type": "string"
+        },
+        "sut_instance_id": {
+          "minLength": 1,
+          "title": "Sut Instance Id",
+          "type": "string"
+        },
+        "user_inputs": {
+          "$ref": "#/$defs/FrozenUserInputsV1"
+        },
+        "validation_profile": {
+          "enum": [
+            "api_db.v1",
+            "api_db_trace.v1"
+          ],
+          "title": "Validation Profile",
+          "type": "string"
+        }
+      },
+      "required": [
+        "validation_profile",
+        "case_execution_plan_ref",
+        "nodeid",
+        "business_activation",
+        "sut_instance_id",
+        "sut_base_url",
+        "managed_sqlite_path",
+        "observer_sqlite_path",
+        "user_inputs",
+        "managed_sut_prepare_receipt_ref",
+        "managed_sut_start_receipt_ref",
+        "managed_sut_authority_handle"
+      ],
+      "title": "VerifiedExecutionPrepareV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "activity_receipt_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Activity Receipt Digest",
+      "type": "string"
+    },
+    "authorization_scope_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Authorization Scope Digest",
+      "type": "string"
+    },
+    "configuration_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Configuration Digest",
+      "type": "string"
+    },
+    "execution_id": {
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "verification": {
+      "$ref": "#/$defs/VerifiedExecutionPrepareV1"
+    },
+    "workspace_root": {
+      "title": "Workspace Root",
+      "type": "string"
+    }
+  },
+  "required": [
+    "workspace_root",
+    "verification",
+    "configuration_digest",
+    "execution_id",
+    "authorization_scope_digest",
+    "activity_receipt_digest"
+  ],
+  "title": "ManagedSutReadinessSelectionV1",
+  "type": "object"
+}

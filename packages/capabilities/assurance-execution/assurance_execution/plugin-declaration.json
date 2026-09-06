@@ -46,8 +46,10 @@
     "schema_version": "1",
     "schemas": [
       "assurance.execution.schema.closed-mapping.v1",
+      "assurance.execution.schema.collector-readiness.v1",
       "assurance.execution.schema.execution-evidence.v1",
       "assurance.execution.schema.execution-manifest.v1",
+      "assurance.execution.schema.managed-sut-readiness.v1",
       "assurance.execution.schema.selected-targets.v1",
       "assurance.execution.schema.task-input.v1",
       "assurance.execution.schema.task-output.v1",

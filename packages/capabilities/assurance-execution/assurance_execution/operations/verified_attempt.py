@@ -15,6 +15,8 @@ from graph_engine.plugin_api import (
     TaskActivityCancelResult,
 )
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1, ExecuteInputV1
+from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
+from assurance_execution.operations.readiness import authenticate_host_readiness
 from assurance_execution.execution_view import ExecutionView, execution_view_relative
 from assurance_execution.operations.agent_skills import assemble_execution_input
 from assurance_execution.operations.verified_execution import (
@@ -44,6 +46,17 @@ class VerifiedAttemptHandler:
         root = ExecutionPrepareInputV1.model_validate(request.input)
         if root.verification is None or root.validation_profile != root.verification.validation_profile:
             raise ValueError("NOT_READY: verified attempt requires the frozen verification profile")
+        if context.secrets is None or not isinstance(binding, Mapping):
+            raise ValueError("NOT_READY: host readiness secret port is required")
+        readiness = VerificationReadinessBindingV1.model_validate(binding.get("readiness"))
+        selected = authenticate_host_readiness(
+            readiness, source_root=Path(str(runner["source_root"])), secret_port=context.secrets
+        )
+        if (
+            selected.workspace_root != str(context.project_root.resolve())
+            or selected.verification != root.verification
+        ):
+            raise ValueError("NOT_READY: host readiness selection disagrees with this attempt")
         prepared = assemble_execution_input(
             request.input,
             workspace=context.project_root,
@@ -54,6 +67,8 @@ class VerifiedAttemptHandler:
         )
         if prepared.verification_manifest_ref is None or prepared.execution_id is None:
             raise ValueError("verified prepare did not freeze a manifest")
+        if selected.execution_id != prepared.execution_id:
+            raise ValueError("NOT_READY: host readiness execution identity drifted")
         payload = VerifiedExecutionInputV1(
             manifest_ref=prepared.verification_manifest_ref,
             verification=root.verification,

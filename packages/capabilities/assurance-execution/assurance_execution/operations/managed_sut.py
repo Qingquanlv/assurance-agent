@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import ValidationError
 from graph_engine.plugin_api import SecretPort, SecretHandleUnauthorized
 from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
+from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
 from assurance_execution.contracts.verification import ManagedSutAuthorityV1, SqliteFileIdentityV1
 from assurance_execution.operations.common import InputError
 from assurance_execution.operations.verification_manifest import sqlite_file_identity
@@ -185,7 +186,7 @@ def authenticate_managed_sut_receipts(
     return managed_path, observer_path, identity, authority_digest
 
 
-_MANAGED_HARNESS_SHA256 = "886da30b9bc3c368e82e66ed3beb29df223424381b3618b0b5010ba6eeafd349"
+_MANAGED_HARNESS_SHA256 = "2920cb2fe03b78be9240edc4e0a014a984849e30dd6c50da8c6756bbb0b8dee8"
 
 
 class ManagedUserSutHost:
@@ -256,6 +257,19 @@ class ManagedUserSutHost:
             "start", ["--workspace-root", str(workspace_root), "--prepare-receipt", str(prepare_receipt)]
         )
 
+    def preflight(self, *, workspace_root: Path, receipt_path: Path, instance_id: str) -> dict[str, Any]:
+        return self._call(
+            "preflight",
+            [
+                "--workspace-root",
+                str(workspace_root),
+                "--receipt",
+                str(receipt_path),
+                "--instance-id",
+                instance_id,
+            ],
+        )
+
     def stop(self, *, workspace_root: Path, receipt_path: Path, instance_id: str) -> dict[str, Any]:
         return self._call(
             "stop",
@@ -268,3 +282,28 @@ class ManagedUserSutHost:
                 instance_id,
             ],
         )
+
+
+def authenticate_managed_sut_readiness(
+    selection: "ManagedSutReadinessSelectionV1", *, source_root: Path, secret_port: SecretPort
+) -> None:
+    """Verify independent authority and T3 receipts, then probe that owned process."""
+    workspace = Path(selection.workspace_root)
+    authenticate_managed_sut_receipts(
+        workspace,
+        selection.verification,
+        secret_port=secret_port,
+        authorization_scope_digest=selection.authorization_scope_digest,
+        activity_receipt_digest=selection.activity_receipt_digest,
+    )
+    receipt = ManagedUserSutHost(source_root=source_root, secret_port=secret_port).preflight(
+        workspace_root=workspace,
+        receipt_path=workspace / selection.verification.managed_sut_start_receipt_ref.path,
+        instance_id=selection.verification.sut_instance_id,
+    )
+    if (
+        receipt.get("state") != "ready"
+        or receipt.get("start_receipt_sha256")
+        != "sha256:" + selection.verification.managed_sut_start_receipt_ref.digest
+    ):
+        raise InputError("managed SUT readiness receipt identity drifted")

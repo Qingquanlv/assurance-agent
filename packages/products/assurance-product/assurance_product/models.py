@@ -199,6 +199,7 @@ class VerificationRunnerConfigV1(FrozenModel):
 
 class VerificationHostConfigV1(FrozenModel):
     runner: VerificationRunnerConfigV1 | None = None
+    managed_sut_readiness_handle: str | None = None
     managed_sut_authority_handle: str | None = None
     credential_handle: str | None = None
     collector_readiness_handle: str | None = None

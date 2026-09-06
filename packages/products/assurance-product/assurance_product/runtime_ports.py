@@ -586,14 +586,14 @@ def _preflight_selected_root(
     missing_reachable = tuple(contract_id for contract_id in reachable if contract_id not in semantic)
     if missing_reachable:
         raise ValueError(f"missing required port for contract {missing_reachable[0]}")
-    config, _ = verification_configuration(composition)
+    config, config_digest = verification_configuration(composition)
     expanded = set(reachable)
     selected_facades = expanded & set(FACADE_DELEGATES)
     if selected_facades:
         if config.validation_profile is None:
             expanded.update(FACADE_DELEGATES[item] for item in selected_facades)
         else:
-            preflight_verification(config, authorization)
+            preflight_verification(config, authorization, config_digest)
     agents = tuple(sorted(expanded & set(all_feature_agent_contracts())))
     policy = NetworkPolicy(allow_opencode=bool(agents))
     if not agents:

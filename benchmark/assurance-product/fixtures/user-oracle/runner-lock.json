@@ -4,7 +4,7 @@
     "pytest": "9.1.1",
     "pytest-json-report": "1.5.0"
   },
-  "harness_sha256": "886da30b9bc3c368e82e66ed3beb29df223424381b3618b0b5010ba6eeafd349",
+  "harness_sha256": "2920cb2fe03b78be9240edc4e0a014a984849e30dd6c50da8c6756bbb0b8dee8",
   "platform": "linux/amd64",
   "python_version": "3.11.14",
   "qualification_path": "dist/verification-runner/qualification.json",
