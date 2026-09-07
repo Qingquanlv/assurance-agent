@@ -15,6 +15,8 @@ from assurance_intake.contracts.workflow import (
     ReviewedCaseV1,
     require_same_plan,
 )
+from assurance_generation.contracts.execution_plan import ValidationProfile
+from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 
 AppliedTestRepairStatus = Literal["applied", "needs_review", "not_eligible", "exhausted", "failed"]
 
@@ -56,10 +58,14 @@ class ApplyTestRepairInputV1(FrozenModel):
     reviewed_case: ReviewedCaseV1
     proposal_ref: EvidenceArtifactRefV1
     approval_ref: EvidenceArtifactRefV1 | None
-    execution_ref: EvidenceArtifactRefV1
+    execution_ref: EvidenceArtifactRefV1 | None = None
     mapping_ref: EvidenceArtifactRefV1
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     allowed_test_paths: tuple[str, ...] = Field(min_length=1)
+    validation_profile: ValidationProfile | None = None
+    selected_test_families: tuple[str, ...] = ()
+    capability_leafs: tuple[str, ...] = ()
+    generation_defect: VerifiedGenerationDefectV1 | None = None
 
     @field_validator("source_refs")
     @classmethod
@@ -86,9 +92,9 @@ class ApplyTestRepairInputV1(FrozenModel):
         prefix = f"qa/changes/{self.change_id}/"
         refs = (
             self.proposal_ref,
-            self.execution_ref,
             self.mapping_ref,
             *self.source_refs,
+            *(() if self.execution_ref is None else (self.execution_ref,)),
             *(() if self.approval_ref is None else (self.approval_ref,)),
         )
         if any(not ref.path.startswith(prefix) for ref in refs):
@@ -96,6 +102,30 @@ class ApplyTestRepairInputV1(FrozenModel):
         source_paths = {ref.path for ref in self.source_refs}
         if any(path not in source_paths for path in self.allowed_test_paths):
             raise ValueError("allowed test paths must be current generation source refs")
+        if self.generation_defect is None:
+            if self.execution_ref is None:
+                raise ValueError("legacy repair requires failed execution evidence")
+            if self.validation_profile is not None or self.selected_test_families:
+                raise ValueError("legacy repair cannot carry verified generation defect inputs")
+        else:
+            defect = self.generation_defect
+            generation = defect.generation
+            if self.execution_ref is not None:
+                raise ValueError("pre-dispatch generation defect cannot carry execution evidence")
+            if (
+                self.validation_profile != defect.validation_profile
+                or not self.selected_test_families
+                or not self.capability_leafs
+                or generation.change_id != self.change_id
+                or generation.coverage_epoch != self.coverage_epoch
+                or generation.reviewed_case != self.reviewed_case
+                or generation.plan_digest != self.plan_digest
+                or generation.plan_ref != self.plan_ref
+                or generation.mapping_ref != self.mapping_ref
+                or generation.source_refs != self.source_refs
+                or self.allowed_test_paths != (defect.bridge_ref.path,)
+            ):
+                raise ValueError("verified generation defect inputs do not match repair closure")
         return self
 
 

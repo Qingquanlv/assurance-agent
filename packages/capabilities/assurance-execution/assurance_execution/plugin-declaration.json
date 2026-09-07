@@ -73,11 +73,11 @@
       },
       {
         "contract_id": "assurance.execution.task.execute.v1",
-        "digest": "8f9a59649a48a348de624f09af598b6ef23547627b29f8899991ef9c4b409b06"
+        "digest": "cece75312c00f3adb345d777b2a3722644c81ee78befda3557ca725e353dbab7"
       },
       {
         "contract_id": "assurance.execution.task.run.v1",
-        "digest": "4f7719d17b00ce2daf2e3bce527a21d19fe582c4f2dc9bdab8156203df39b786"
+        "digest": "72d7cdf3681fd47fca5925c7f4453ec2d119da51b719ef6f3a83544f46f7014c"
       }
     ]
   },

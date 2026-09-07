@@ -146,10 +146,14 @@ def select_application(state: Mapping[str, object]) -> ApplyTestRepairInputV1:
             "reviewed_case": state["reviewed_case"],
             "proposal_ref": state["proposal_ref"],
             "approval_ref": state.get("approval_ref"),
-            "execution_ref": state["execution_ref"],
+            "execution_ref": state.get("execution_ref"),
             "mapping_ref": state["mapping_ref"],
             "source_refs": state["source_refs"],
             "allowed_test_paths": state["allowed_test_paths"],
+            "validation_profile": state.get("validation_profile"),
+            "selected_test_families": state.get("selected_test_families", []),
+            "capability_leafs": state.get("capability_leafs", []),
+            "generation_defect": state.get("generation_defect"),
         }
     )
 

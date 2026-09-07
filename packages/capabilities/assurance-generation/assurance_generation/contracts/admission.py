@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -26,6 +29,8 @@ from assurance_generation.contracts.execution_plan import (
     ValidationProfile,
 )
 from assurance_generation.contracts.mapping import ClosedMappingEntryV1, ClosedMappingV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1, VerifiedGenerationDefectV1
+from graph_engine.attempts import AttemptKey
 from assurance_intake.contracts.cases import CaseYamlAuthoring, MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.contracts.review import CaseReviewResultV1
@@ -298,6 +303,131 @@ def validate_verified_bridge_sources(
                 )
 
 
+def _expected_bridge_bytes(mapping: CodegenMapping, target: str) -> bytes:
+    entries = sorted(
+        (item for item in mapping.entries if item.target_file == target),
+        key=lambda item: item.symbol,
+    )
+    functions = "\n\n".join(
+        f"def {item.symbol}():\n    execute_case({json.dumps(item.case_id, ensure_ascii=False)})"
+        for item in entries
+    )
+    return ("from assurance_execution.bridge import execute_case\n\n" + functions + "\n").encode()
+
+
+def diagnose_verified_bridge_defect(
+    project_root: Path,
+    *,
+    generation: GenerationCycleResultV1,
+    validation_profile: ValidationProfile,
+    selected_test_families: tuple[str, ...],
+    capability_leafs: tuple[str, ...],
+    attempt_key: AttemptKey,
+) -> VerifiedGenerationDefectV1:
+    """Prove that replacing exactly one bridge restores full generation admission."""
+
+    mapping_path = _regular_file(project_root, generation.mapping_ref.path)
+    if hashlib.sha256(mapping_path.read_bytes()).hexdigest() != generation.mapping_ref.digest:
+        raise GenerationAdmissionError("generation mapping digest changed")
+    try:
+        closed_mapping = ClosedMappingV1.model_validate_json(mapping_path.read_bytes())
+    except ValidationError as error:
+        raise GenerationAdmissionError(f"generation mapping is invalid: {error}") from error
+    manifest_relative = f"qa/changes/{generation.change_id}/codegen/api-generated-files.json"
+    manifest_refs = [ref for ref in generation.source_refs if ref.path == manifest_relative]
+    if len(manifest_refs) != 1 or _evidence_ref(project_root, manifest_relative) != manifest_refs[0]:
+        raise GenerationAdmissionError("verified API manifest is not authenticated")
+    try:
+        manifest = CodegenAuthoringV1.model_validate_json(
+            _regular_file(project_root, manifest_relative).read_bytes(),
+            context={"capability_leafs": frozenset(capability_leafs)},
+        )
+    except ValidationError as error:
+        raise GenerationAdmissionError(f"verified API manifest is invalid: {error}") from error
+    if not manifest.mapping.is_verified or manifest.mapping.validation_profile != validation_profile:
+        raise GenerationAdmissionError("verified API manifest identity changed")
+    source_by_path = {ref.path: ref for ref in generation.source_refs}
+    defects: list[tuple[object, EvidenceArtifactRefV1, bytes, str | None]] = []
+    entries_by_target: dict[str, list[object]] = {}
+    for entry in manifest.mapping.entries:
+        entries_by_target.setdefault(entry.target_file, []).append(entry)
+    for target, entries in entries_by_target.items():
+        relative = staged_generated_path(generation.change_id, "api", target)
+        ref = source_by_path.get(relative)
+        if ref is None:
+            raise GenerationAdmissionError("generation source closure omits a mapped API bridge")
+        path = project_root.joinpath(*PurePosixPath(relative).parts)
+        expected = _expected_bridge_bytes(manifest.mapping, target)
+        observed: str | None = None
+        valid = False
+        if path.is_file() and not path.is_symlink() and path.stat().st_nlink == 1:
+            data = path.read_bytes()
+            observed = hashlib.sha256(data).hexdigest()
+            if observed == ref.digest:
+                try:
+                    validate_verified_bridge_sources(
+                        project_root,
+                        change_id=generation.change_id,
+                        mapping=manifest.mapping.model_copy(update={"entries": tuple(entries)}),
+                    )
+                    valid = True
+                except GenerationAdmissionError:
+                    pass
+        if not valid:
+            defects.append((entries[0], ref, expected, observed))
+    by_path = {item[1].path: item for item in defects}
+    if len(by_path) != 1:
+        raise GenerationAdmissionError("verified generation does not have exactly one bridge defect")
+    entry, bridge_ref, expected_bytes, observed_digest = next(iter(by_path.values()))
+    with tempfile.TemporaryDirectory(prefix=".assurance-generation-repair-", dir=project_root) as temporary:
+        source_root = Path(temporary)
+        for ref in generation.source_refs:
+            destination = source_root.joinpath(*PurePosixPath(ref.path).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if ref == bridge_ref:
+                destination.write_bytes(expected_bytes)
+                continue
+            source = _regular_file(project_root, ref.path)
+            if hashlib.sha256(source.read_bytes()).hexdigest() != ref.digest:
+                raise GenerationAdmissionError(f"non-bridge generation source digest changed: {ref.path}")
+            shutil.copyfile(source, destination)
+        admission = admit_verified_generation(
+            project_root,
+            source_root,
+            change_id=generation.change_id,
+            coverage_epoch=generation.coverage_epoch,
+            plan_digest=generation.plan_digest,
+            plan_ref=generation.plan_ref,
+            reviewed_case=generation.reviewed_case,
+            validation_profile=validation_profile,
+            selected_test_families=selected_test_families,
+            capability_leafs=capability_leafs,
+            case_execution_plan_ref=cast(EvidenceArtifactRefV1, generation.case_execution_plan_ref),
+        )
+    admitted_by_path = {ref.path: ref for ref in admission.source_refs}
+    if (
+        admission.closed_mapping != closed_mapping
+        or admission.reviewed_case != generation.reviewed_case
+        or admission.plan_refs != generation.plan_refs
+        or set(admitted_by_path) != set(source_by_path)
+        or any(
+            admitted_by_path[path] != ref for path, ref in source_by_path.items() if path != bridge_ref.path
+        )
+    ):
+        raise GenerationAdmissionError("repaired bridge does not restore the accepted generation closure")
+    return VerifiedGenerationDefectV1(
+        defect_kind="missing_bridge" if observed_digest is None else "invalid_bridge",
+        generation=generation,
+        validation_profile=validation_profile,
+        attempt_key=attempt_key,
+        case_id=cast(Any, entry).case_id,
+        bridge_symbol=cast(Any, entry).symbol,
+        bridge_ref=bridge_ref,
+        observed_digest=observed_digest,
+        expected_digest=hashlib.sha256(expected_bytes).hexdigest(),
+    )
+
+
 def admit_verified_generation(
     project_root: Path,
     source_root: Path,
@@ -478,5 +608,6 @@ __all__ = [
     "GenerationAdmissionError",
     "VerifiedGenerationAdmission",
     "admit_verified_generation",
+    "diagnose_verified_bridge_defect",
     "validate_verified_bridge_sources",
 ]

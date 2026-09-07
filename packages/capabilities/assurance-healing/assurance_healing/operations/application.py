@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import shutil
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -14,7 +16,13 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from pydantic import ValidationError
 
 from assurance_execution.contracts import ExecutionEvidenceV1
+from assurance_generation.contracts.admission import (
+    GenerationAdmissionError,
+    admit_verified_generation,
+    diagnose_verified_bridge_defect,
+)
 from assurance_generation.contracts.codegen import staged_generated_path
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from assurance_generation.contracts.mapping import ClosedMappingV1, selected_test_file
 from assurance_healing.contracts.agent import AgentBindingDataV1
 from assurance_healing.contracts.application import (
@@ -33,6 +41,7 @@ from assurance_healing.operations.common import (
     validate_input,
 )
 from assurance_healing.operations.keys import derive_approval_id
+from assurance_healing.operations.verification_guard import assert_same_obligations
 from assurance_healing.resource_loader import resource_text
 from assurance_intake.contracts import build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -134,22 +143,24 @@ def _prove_implementation_only(before: bytes, after: bytes, symbols: set[str], p
 
 
 def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
+    defect = business.generation_defect
     for ref in (
         *business.reviewed_case.preparation_refs,
         *business.reviewed_case.case_refs,
         business.reviewed_case.review_ref,
         business.proposal_ref,
-        business.execution_ref,
+        *(() if business.execution_ref is None else (business.execution_ref,)),
         business.mapping_ref,
         *business.source_refs,
     ):
+        if defect is not None and ref == defect.bridge_ref:
+            continue
         _authenticate_ref(root, ref)
     if business.approval_ref is None:
         raise OutputError("repair application requires an authenticated approval")
 
     proposal = _load_ref(root, business.proposal_ref, FixProposalResultV1)
     approval = _load_ref(root, business.approval_ref, ProposalApprovedIntentV1)
-    execution = _load_ref(root, business.execution_ref, ExecutionEvidenceV1)
     mapping = _load_ref(root, business.mapping_ref, ClosedMappingV1)
     if proposal.change_id != business.change_id or approval.change_id != business.change_id:
         raise OutputError("proposal or approval belongs to another change")
@@ -179,15 +190,108 @@ def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str,
     mapped_sources = _mapped_sources(business.change_id, mapping)
     if not proposed_sources <= set(mapped_sources):
         raise OutputError("proposal changes a file outside the reviewed mapping")
-    if mapping != execution.mapping:
-        raise OutputError("mapping membership or test identity changed")
-    if execution.status != "failed" or not any(item.status == "failed" for item in execution.results):
-        raise OutputError("repair application requires failed existing-test evidence")
+    if defect is None:
+        assert business.execution_ref is not None
+        execution = _load_ref(root, business.execution_ref, ExecutionEvidenceV1)
+        if mapping != execution.mapping:
+            raise OutputError("mapping membership or test identity changed")
+        if execution.status != "failed" or not any(item.status == "failed" for item in execution.results):
+            raise OutputError("repair application requires failed existing-test evidence")
+    else:
+        if (
+            approval.baseline_digest != defect.bridge_ref.digest
+            or approval.candidate_digest != defect.expected_digest
+        ):
+            raise OutputError("approval does not bind the authenticated bridge replacement")
+        try:
+            authenticated = diagnose_verified_bridge_defect(
+                root,
+                generation=defect.generation,
+                validation_profile=defect.validation_profile,
+                selected_test_families=business.selected_test_families,
+                capability_leafs=business.capability_leafs,
+                attempt_key=defect.attempt_key,
+            )
+        except GenerationAdmissionError as error:
+            raise OutputError(f"verified generation defect is not authenticated: {error}") from error
+        if authenticated != defect:
+            raise OutputError("verified generation defect differs from deterministic admission")
+        if proposed_sources != {defect.bridge_ref.path}:
+            raise OutputError("verified repair may replace only the authenticated bridge defect")
     if not proposed_sources <= set(business.allowed_test_paths) or not proposed_sources <= {
         ref.path for ref in business.source_refs
     }:
         raise OutputError("proposal paths must be current generated test sources")
     return {path: mapped_sources[path] for path in sorted(proposed_sources)}
+
+
+def _verify_generation_bridge(
+    business: ApplyTestRepairInputV1,
+    context: TaskContext,
+    candidate: bytes,
+) -> None:
+    defect = business.generation_defect
+    assert defect is not None
+    if hashlib.sha256(candidate).hexdigest() != defect.expected_digest:
+        raise OutputError("repaired bridge bytes differ from deterministic generation")
+    generation = defect.generation
+    machine_ref = generation.case_execution_plan_ref
+    if machine_ref is None:
+        raise OutputError("verified generation is missing its machine plan")
+    baseline = _load_ref(context.project_root, machine_ref, CaseExecutionPlanSetV1)
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix=".assurance-healing-verify-", dir=context.project_root
+        ) as temporary:
+            source_root = Path(temporary)
+            for ref in generation.source_refs:
+                destination = source_root.joinpath(*PurePosixPath(ref.path).parts)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if ref == defect.bridge_ref:
+                    destination.write_bytes(candidate)
+                    continue
+                source = _canonical_file(context.project_root, ref.path)
+                if hashlib.sha256(source.read_bytes()).hexdigest() != ref.digest:
+                    raise OutputError(f"evidence digest changed: {ref.path}")
+                shutil.copyfile(source, destination)
+            admission = admit_verified_generation(
+                context.project_root,
+                source_root,
+                change_id=generation.change_id,
+                coverage_epoch=generation.coverage_epoch,
+                plan_digest=generation.plan_digest,
+                plan_ref=generation.plan_ref,
+                reviewed_case=generation.reviewed_case,
+                validation_profile=defect.validation_profile,
+                selected_test_families=business.selected_test_families,
+                capability_leafs=business.capability_leafs,
+                case_execution_plan_ref=machine_ref,
+            )
+    except GenerationAdmissionError as error:
+        raise OutputError(f"repaired bridge fails verified generation admission: {error}") from error
+    if admission.closed_mapping != _load_ref(context.project_root, generation.mapping_ref, ClosedMappingV1):
+        raise OutputError("repaired bridge changes the accepted mapping")
+    original_by_path = {ref.path: ref for ref in generation.source_refs}
+    admitted_by_path = {ref.path: ref for ref in admission.source_refs}
+    if (
+        admission.plan_refs != generation.plan_refs
+        or admission.reviewed_case != generation.reviewed_case
+        or set(admitted_by_path) != set(original_by_path)
+        or admitted_by_path[defect.bridge_ref.path].digest != defect.expected_digest
+        or any(
+            admitted_by_path[path] != ref
+            for path, ref in original_by_path.items()
+            if path != defect.bridge_ref.path
+        )
+    ):
+        raise OutputError("repaired bridge changes the accepted generation closure")
+    if len(baseline.cases) != len(admission.machine_plans.cases):
+        raise OutputError("verification obligations changed")
+    for before, after in zip(baseline.cases, admission.machine_plans.cases, strict=True):
+        try:
+            assert_same_obligations(before, after)
+        except ValueError as error:
+            raise OutputError(str(error)) from error
 
 
 def _verify_application(
@@ -213,10 +317,13 @@ def _verify_application(
     source_by_path = {ref.path: ref for ref in business.source_refs}
     changed: list[EvidenceArtifactRefV1] = []
     for path in result.output_files:
-        before = _authenticate_ref(context.project_root, source_by_path[path])
         after = _canonical_file(context.write_root, path).read_bytes()
-        symbols = approved_sources[path]
-        _prove_implementation_only(before, after, symbols, path)
+        if business.generation_defect is None:
+            before = _authenticate_ref(context.project_root, source_by_path[path])
+            symbols = approved_sources[path]
+            _prove_implementation_only(before, after, symbols, path)
+        else:
+            _verify_generation_bridge(business, context, after)
         changed.append(EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(after).hexdigest()))
     return VerifiedTestRepairV1(
         change_id=business.change_id,
@@ -281,7 +388,7 @@ class ApplyTestRepairFinalizeHandler:
                         *business.reviewed_case.case_refs,
                         business.reviewed_case.review_ref,
                         business.proposal_ref,
-                        business.execution_ref,
+                        *(() if business.execution_ref is None else (business.execution_ref,)),
                         business.mapping_ref,
                     ),
                     key=lambda item: item.path,

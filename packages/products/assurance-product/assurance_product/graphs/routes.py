@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
+from assurance_generation.contracts.workflow import (
+    GenerationCycleResultV1,
+    VerifiedGenerationDefectV1,
+)
 from assurance_healing.contracts.application import AppliedTestRepairV1
 from assurance_quality.contracts.assessment import InspectionOutcomeV1
 from graph_engine.stategraph.routing import select_exclusive_route
@@ -16,15 +20,28 @@ def prepare_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
 
 def execute_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     if state.get("attempt_failure"):
-        return {"quality": None}
+        return {"quality": None, "repair": None}
     try:
         raw = state.get("execution_result")
         if state.get("validation_profile") in {"api_db.v1", "api_db_trace.v1"}:
+            try:
+                defect = VerifiedGenerationDefectV1.model_validate(raw)
+            except (TypeError, ValueError):
+                defect = None
+            if defect is not None:
+                generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+                eligible = (
+                    defect.generation == generation
+                    and defect.validation_profile == state.get("validation_profile")
+                    and defect.generation.change_id == state.get("change_id")
+                    and defect.generation.coverage_epoch == state.get("coverage_epoch", 0)
+                )
+                return {"quality": None, "repair": "repair" if eligible else None}
             result = VerifiedExecutionCycleResultV1.model_validate(raw)
         else:
             result = ExecutionCycleResultV1.model_validate(raw)
     except (TypeError, ValueError):
-        return {"quality": None}
+        return {"quality": None, "repair": None}
     epoch = state.get("coverage_epoch", 0)
     return {
         "quality": "quality"
@@ -35,12 +52,13 @@ def execute_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
                 isinstance(result, VerifiedExecutionCycleResultV1) or result.final_status in {"PASS", "FAIL"}
             )
         )
-        else None
+        else None,
+        "repair": None,
     }
 
 
 def run_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    return execute_named_matches(state)
+    return {"quality": execute_named_matches(state)["quality"]}
 
 
 def quality_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:

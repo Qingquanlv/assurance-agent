@@ -14,7 +14,7 @@ from assurance_execution.contracts.workflow import (
     ExecutionCycleResultV1,
     VerifiedExecutionCycleResultV1,
 )
-from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1, VerifiedGenerationDefectV1
 from assurance_execution.graphs.state import ExecutionPublicOutput, ExecutionState
 from graph_engine.attempts.resolutions import ReceiptRef
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -85,6 +85,28 @@ def publish_execution(
         raise TypeError("execution output must be a mapping")
     branch = execution_result_branch(state.get("validation_profile"))
     if branch == "verified_host":
+        try:
+            defect = VerifiedGenerationDefectV1.model_validate(payload)
+        except ValidationError:
+            defect = None
+        if defect is not None:
+            generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+            if defect.generation != generation or defect.validation_profile != state.get(
+                "validation_profile"
+            ):
+                raise ValueError("verified generation defect differs from execution input")
+            document = defect.model_dump(mode="json")
+            published = ExecutionPublicOutput(
+                batch_id=defect.attempt_key.digest,
+                execution_evidence=document,
+                execution_digest=canonical_digest(cast(JSONValue, document)),
+                execution_semantic_node_id=semantic_node_id,
+                rounds_budget=_int(state, "rounds_budget"),
+                rounds_used=_int(state, "rounds_used"),
+                status="generation_defect",
+            ).model_dump(mode="json")
+            published["execution_result"] = document
+            return published
         try:
             verified = VerifiedExecutionResultV1.model_validate(payload)
         except ValidationError as error:

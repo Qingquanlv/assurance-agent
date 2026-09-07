@@ -148,6 +148,41 @@ def test_verified_publish_rejects_agent_all_pass_without_host_evidence() -> None
         )
 
 
+def test_verified_publish_preserves_typed_pre_dispatch_generation_defect(tmp_path: Path) -> None:
+    from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
+    from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
+    from tests.verified_generation_fixture import accepted_verified_execution_input
+
+    prepared = accepted_verified_execution_input(tmp_path)
+    generation = prepared.generation_result
+    assert generation is not None
+    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    (tmp_path / bridge.path).unlink()
+    defect = diagnose_verified_bridge_defect(
+        tmp_path,
+        generation=generation,
+        validation_profile="api_db.v1",
+        selected_test_families=("api",),
+        capability_leafs=("entities.item.create",),
+        attempt_key=AttemptKey(digest="4" * 64),
+    )
+
+    published = publish_execution(
+        {
+            "validation_profile": "api_db.v1",
+            "generation_result": generation.model_dump(mode="json"),
+            "coverage_epoch": generation.coverage_epoch,
+            "rounds_budget": 1,
+            "rounds_used": 0,
+        },
+        defect,
+        {"receipt_id": "kernel-receipt", "receipt_digest": "9" * 64},
+    )
+
+    assert published["status"] == "generation_defect"
+    assert VerifiedGenerationDefectV1.model_validate(published["execution_result"]) == defect
+
+
 @pytest.mark.parametrize("record", ["action_terminal", "process_terminal", "outcome"])
 def test_journal_partial_write_never_publishes_terminal(tmp_path, managed_sut, monkeypatch, record):
     import os
@@ -537,6 +572,68 @@ def test_legacy_execution_accepts_generation_with_matching_identity(tmp_path: Pa
     legacy = ExecutionPrepareInputV1.model_validate(raw)
 
     authenticate_generation_result(legacy, tmp_path)
+
+
+@pytest.mark.parametrize("fault", ["deleted_bridge", "forged_bridge"])
+def test_verified_facade_publishes_authenticated_bridge_defect_without_dispatch(
+    tmp_path: Path, fault: str
+) -> None:
+    from types import SimpleNamespace
+
+    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+    from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
+    from assurance_product.models import VerificationHostConfigV1
+    from assurance_product.verification_execution import (
+        ProfiledExecutionExecutor,
+        VerificationConfiguration,
+    )
+
+    root = _accepted_verified_root(tmp_path)
+    if fault == "deleted_bridge":
+        generation = root.generation_result
+        assert generation is not None
+        bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+        (tmp_path / bridge.path).unlink()
+        damaged = root
+    else:
+        damaged = ExecutionPrepareInputV1.model_validate(_damage_generation(tmp_path, root, fault))
+    calls: list[str] = []
+    facade = ProfiledExecutionExecutor(
+        config=VerificationConfiguration(
+            validation_profile="api_db.v1",
+            host=VerificationHostConfigV1(
+                managed_sut_authority_handle="sut.authority",
+                credential_handle="sut.credential",
+            ),
+        ),
+        config_digest="c" * 64,
+        legacy=None,
+        callable_path="assurance_execution.operations.verified_attempt:VerifiedAttemptHandler.execute",
+    )
+
+    class Host:
+        async def execute(self, call):
+            calls.append("host")
+            return SimpleNamespace(outcome=None)
+
+    facade._host = Host()
+    result = asyncio.run(
+        facade.execute(
+            damaged,
+            cast(
+                Any,
+                SimpleNamespace(
+                    workspace=SimpleNamespace(project_root=tmp_path),
+                    execution=SimpleNamespace(attempt_key=AttemptKey(digest="4" * 64)),
+                ),
+            ),
+        )
+    )
+
+    defect = VerifiedGenerationDefectV1.model_validate(result.output.root)
+    assert defect.defect_kind == ("missing_bridge" if fault == "deleted_bridge" else "invalid_bridge")
+    assert defect.attempt_key.digest == "4" * 64
+    assert calls == []
 
 
 @pytest.mark.parametrize(

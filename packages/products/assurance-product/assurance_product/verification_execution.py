@@ -33,7 +33,10 @@ from assurance_execution.contracts.readiness import VerificationReadinessBinding
 from assurance_execution.operations.readiness import authenticate_host_readiness, HostReadinessError
 from assurance_execution.operations.host_secrets import HostSecretDocumentError
 from assurance_execution.operations.agent_skills import authenticate_generation_result
+from assurance_execution.operations.common import InputError
 from assurance_execution.operations.verified_process import DockerVerificationHost
+from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
+from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_product.models import VerificationHostConfigV1
 
@@ -144,7 +147,9 @@ class ProfiledExecutionExecutor:
             )
         return bound
 
-    def _validate(self, value: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope) -> None:
+    def _validate(
+        self, value: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope
+    ) -> VerifiedGenerationDefectV1 | None:
         if value.validation_profile != self.config.validation_profile:
             raise ValueError("validation profile disagrees with frozen delegate")
         if value.validation_profile is None:
@@ -173,7 +178,27 @@ class ProfiledExecutionExecutor:
             != value.validation_profile
         ):
             raise ValueError("root plan validation profile disagrees with frozen delegate")
-        authenticate_generation_result(value, scope.workspace.project_root)
+        try:
+            authenticate_generation_result(value, scope.workspace.project_root)
+        except InputError as original:
+            if value.validation_profile is None or value.generation_result is None:
+                raise
+            execution = getattr(scope, "execution", None)
+            attempt_key = getattr(execution, "attempt_key", None)
+            if attempt_key is None:
+                raise original
+            try:
+                return diagnose_verified_bridge_defect(
+                    scope.workspace.project_root,
+                    generation=value.generation_result,
+                    validation_profile=value.validation_profile,
+                    selected_test_families=value.selected_test_families,
+                    capability_leafs=value.capability_leafs,
+                    attempt_key=attempt_key,
+                )
+            except ValueError:
+                raise original from None
+        return None
 
     def _call(self, value: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope) -> TaskHostExecuteCall:
         from assurance_product.runtime_bindings import _attempt_root, _task_request
@@ -248,7 +273,9 @@ class ProfiledExecutionExecutor:
         )
 
     async def execute(self, validated_input: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope) -> Any:
-        self._validate(validated_input, scope)
+        defect = self._validate(validated_input, scope)
+        if defect is not None:
+            return ExecutedAttemptResult(output=ExecutionDispatchResultV1(defect), effects=())
         if self._legacy is not None:
             result = await self._legacy.execute(validated_input, scope)
             if isinstance(result, ExecutedAttemptResult):
@@ -266,7 +293,9 @@ class ProfiledExecutionExecutor:
     async def reconcile(
         self, validated_input: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope, snapshot: object
     ) -> Any:
-        self._validate(validated_input, scope)
+        defect = self._validate(validated_input, scope)
+        if defect is not None:
+            return ExecutedAttemptResult(output=ExecutionDispatchResultV1(defect), effects=())
         if self._legacy is not None:
             result = await self._legacy.reconcile(validated_input, scope, snapshot)
             if isinstance(result, ExecutedAttemptResult):

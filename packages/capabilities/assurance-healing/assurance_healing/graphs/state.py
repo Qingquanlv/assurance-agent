@@ -45,7 +45,10 @@ class HealingState(CheckpointBridgeState, total=False):
     reviewed_case: dict[str, object]
     proposal_ref: dict[str, str]
     approval_ref: dict[str, str] | None
-    execution_ref: dict[str, str]
+    execution_ref: dict[str, str] | None
+    validation_profile: str
+    selected_test_families: list[str]
+    generation_defect: dict[str, object]
     mapping_ref: dict[str, str]
     source_refs: list[dict[str, str]]
     allowed_test_paths: list[str]

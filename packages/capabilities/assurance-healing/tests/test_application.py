@@ -9,6 +9,7 @@ import pytest
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts import AttemptKey
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from pydantic import ValidationError
 
@@ -28,6 +29,7 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import BINDING, execute_task
 from tests.acg_plan_fixture import install_plan
+from tests.verified_generation_fixture import accepted_verified_execution_input
 
 CHANGE = "CH-REPAIR-1"
 SOURCE = f"qa/changes/{CHANGE}/generated/api/files/tests/api/test_users.py"
@@ -214,9 +216,9 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
     return payload, before
 
 
-def _agent_result(output_files: list[str]) -> dict[str, object]:
+def _agent_result(output_files: list[str], *, change_id: str = CHANGE) -> dict[str, object]:
     result = RepairAgentResultV1(
-        schema_version="1", change_id=CHANGE, output_files=tuple(output_files), summary="repair fixture"
+        schema_version="1", change_id=change_id, output_files=tuple(output_files), summary="repair fixture"
     )
     raw = cast(JSONValue, result.model_dump(mode="json"))
     envelope = AgentRunResult(
@@ -232,11 +234,152 @@ def _agent_result(output_files: list[str]) -> dict[str, object]:
 async def _finalize(project: Path, stage: Path, payload: dict[str, object], outputs: list[str]):
     return await execute_task(
         ApplyTestRepairFinalizeHandler(),
-        cast(JSONValue, {**payload, "agent_result": _agent_result(outputs)}),
+        cast(
+            JSONValue,
+            {
+                **payload,
+                "agent_result": _agent_result(outputs, change_id=str(payload["change_id"])),
+            },
+        ),
         project,
         write_root=stage,
         capability_id="assurance.healing.apply-test-repair.finalize",
     )
+
+
+def _verified_repair_fixture(project: Path) -> tuple[dict[str, object], str, bytes]:
+    from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
+
+    prepared = accepted_verified_execution_input(project)
+    generation = prepared.generation_result
+    assert generation is not None
+    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    original = (
+        b"from assurance_execution.bridge import execute_case\n\n"
+        b"def test_tc_user_create_001__create():\n"
+        b'    execute_case("TC_USER_CREATE_001")\n'
+    )
+    (project / bridge.path).write_text("def forged():\n    return True\n", encoding="utf-8")
+    defect = diagnose_verified_bridge_defect(
+        project,
+        generation=generation,
+        validation_profile="api_db.v1",
+        selected_test_families=("api",),
+        capability_leafs=("entities.item.create",),
+        attempt_key=AttemptKey(digest="4" * 64),
+    )
+    assert hashlib.sha256(original).hexdigest() == defect.expected_digest
+    proposal_path = f"qa/changes/{generation.change_id}/healing/fix-proposal.json"
+    approval_path = f"qa/changes/{generation.change_id}/healing/approval.json"
+    proposal = {
+        "schema_version": "1",
+        "change_id": generation.change_id,
+        "summary": {"eligible_count": 1},
+        "proposals": [
+            {
+                "proposal_id": "FIX-BRIDGE-1",
+                "target": "api",
+                "eligible": True,
+                "risk_level": "low",
+                "needs_review": False,
+                "files_to_modify": [bridge.path],
+            }
+        ],
+    }
+    proposal_digest = canonical_digest(cast(JSONValue, proposal))
+    approval = {
+        "schema_version": "1",
+        "approval_id": derive_approval_id(
+            owner_id="assurance.healing",
+            candidate_digest=defect.expected_digest,
+            baseline_digest=bridge.digest,
+            policy_digest="d" * 64,
+            proposal_digest=proposal_digest,
+        ),
+        "change_id": generation.change_id,
+        "owner_id": "assurance.healing",
+        "root_invocation_id": "inv-verified",
+        "interrupt_task_id": "approval-verified",
+        "source_gate_attempt_id": "inspect-verified",
+        "source_tree_id": "tree-before",
+        "target_tree_id": "tree-after",
+        "proposal_digest": proposal_digest,
+        "fixer_authority_digest": SHA,
+        "candidate_digest": defect.expected_digest,
+        "baseline_digest": bridge.digest,
+        "policy_digest": "d" * 64,
+        "targets": ["api"],
+        "paths": [bridge.path],
+        "action": "approve_and_apply",
+    }
+    payload = {
+        "change_id": generation.change_id,
+        "plan_digest": generation.plan_digest,
+        "plan_ref": generation.plan_ref.model_dump(mode="json"),
+        "coverage_epoch": generation.coverage_epoch,
+        "repair_round": 1,
+        "reviewed_case": generation.reviewed_case.model_dump(mode="json"),
+        "proposal_ref": _write(project, proposal_path, _json_bytes(proposal)),
+        "approval_ref": _write(project, approval_path, _json_bytes(approval)),
+        "execution_ref": None,
+        "mapping_ref": generation.mapping_ref.model_dump(mode="json"),
+        "source_refs": [ref.model_dump(mode="json") for ref in generation.source_refs],
+        "allowed_test_paths": [bridge.path],
+        "validation_profile": "api_db.v1",
+        "selected_test_families": ["api"],
+        "capability_leafs": ["entities.item.create"],
+        "generation_defect": defect.model_dump(mode="json"),
+    }
+    return payload, bridge.path, original
+
+
+@pytest.mark.asyncio
+async def test_verified_bridge_repair_reauthenticates_defect_and_preserves_machine_plan(
+    tmp_path: Path,
+) -> None:
+    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
+    stage = tmp_path / ".stage"
+    _write(stage, bridge_path, expected)
+
+    result = await _finalize(tmp_path, stage, payload, [bridge_path])
+
+    assert result.outcome.status == "succeeded", result.outcome.failure
+    output = cast(dict[str, Any], result.outcome.output)
+    assert output["changed_test_refs"] == [
+        {"path": bridge_path, "digest": hashlib.sha256(expected).hexdigest()}
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attack", ["forged_proof", "wrong_bridge"])
+async def test_verified_bridge_repair_rejects_untrusted_or_noncanonical_candidate(
+    tmp_path: Path, attack: str
+) -> None:
+    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
+    stage = tmp_path / ".stage"
+    if attack == "forged_proof":
+        defect = cast(dict[str, object], payload["generation_defect"])
+        defect["expected_digest"] = "9" * 64
+        candidate = expected
+    else:
+        candidate = b"from assurance_execution.bridge import execute_case\n\ndef test_forged():\n    execute_case('forged')\n"
+    _write(stage, bridge_path, candidate)
+
+    result = await _finalize(tmp_path, stage, payload, [bridge_path])
+
+    assert result.outcome.status == "failed"
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind in {"invalid_input", "invalid_output"}
+
+
+def test_verified_generation_defect_rejects_substituted_old_execution_evidence(tmp_path: Path) -> None:
+    payload, _bridge_path, _expected = _verified_repair_fixture(tmp_path)
+    generation = cast(dict[str, object], payload["generation_defect"])["generation"]
+    old_ref = cast(dict[str, object], generation)["mapping_ref"]
+    payload["execution_ref"] = old_ref
+
+    with pytest.raises(ValidationError, match="pre-dispatch generation defect"):
+        ApplyTestRepairInputV1.model_validate(payload)
 
 
 def test_applied_requires_committed_changed_tests() -> None:

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import Field, computed_field, model_validator
 
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts import AttemptKey
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.codegen import CodegenMapping
@@ -141,9 +142,40 @@ class GenerationCycleResultV1(FrozenModel):
         return self
 
 
+class VerifiedGenerationDefectV1(FrozenModel):
+    """A deterministic pre-dispatch defect in one accepted generated bridge."""
+
+    schema_version: Literal["1"] = "1"
+    defect_kind: Literal["missing_bridge", "invalid_bridge"]
+    generation: GenerationCycleResultV1
+    validation_profile: ValidationProfile
+    attempt_key: AttemptKey
+    repair_round: Literal[0] = 0
+    case_id: str = Field(min_length=1)
+    bridge_symbol: str = Field(min_length=1)
+    bridge_ref: EvidenceArtifactRefV1
+    observed_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _closed_bridge_defect(self) -> Self:
+        if self.generation.case_execution_plan_ref is None:
+            raise ValueError("verified generation defect requires a machine plan")
+        if self.bridge_ref not in self.generation.source_refs:
+            raise ValueError("verified generation defect bridge is outside source closure")
+        if "/generated/api/files/" not in self.bridge_ref.path:
+            raise ValueError("verified generation defect must identify an API bridge")
+        if self.defect_kind == "missing_bridge" and self.observed_digest is not None:
+            raise ValueError("missing bridge cannot carry an observed digest")
+        if self.defect_kind == "invalid_bridge" and self.observed_digest is None:
+            raise ValueError("invalid bridge requires its observed digest")
+        return self
+
+
 __all__ = [
     "CompleteGenerationInputV1",
     "GeneratedFamilyV1",
     "GenerationCycleResultV1",
     "ResolveGenerationInputV1",
+    "VerifiedGenerationDefectV1",
 ]

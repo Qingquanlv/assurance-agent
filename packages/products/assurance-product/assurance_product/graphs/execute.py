@@ -9,7 +9,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
-from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1, VerifiedGenerationDefectV1
 from assurance_healing.contracts.application import AppliedTestRepairV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_product.graphs.entrypoints import (
@@ -33,6 +33,7 @@ from assurance_product.graphs.tail_contracts import (
 )
 from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
 from graph_engine.boot.boot import GraphBuildContext
+from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 
 
 def adapt_execute_tail_input(
@@ -214,11 +215,29 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
 
 def adapt_repair_failure(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
-    execution = ExecutionCycleResultV1.model_validate(state.get("execution_result"))
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
     reviewed = generation.reviewed_case
     next_round = int(state.get("healing_rounds_used", 0)) + 1
-    allowed_paths = tuple(sorted(ref.path for ref in generation.source_refs))
+    raw_execution = state.get("execution_result")
+    if payload.validation_profile is None:
+        execution = ExecutionCycleResultV1.model_validate(raw_execution)
+        defect = None
+        allowed_paths = tuple(sorted(ref.path for ref in generation.source_refs))
+        baseline_digest = execution.evidence_ref.digest
+        candidate_digest = execution.receipt.receipt_digest
+        evidence_digest = execution.evidence_ref.digest
+        coverage_epoch = execution.coverage_epoch
+        execution_ref: dict[str, str] | None = execution.evidence_ref.model_dump(mode="json")
+    else:
+        defect = VerifiedGenerationDefectV1.model_validate(raw_execution)
+        if defect.generation != generation or defect.validation_profile != payload.validation_profile:
+            raise ValueError("verified generation defect differs from the current generation")
+        allowed_paths = (defect.bridge_ref.path,)
+        baseline_digest = defect.bridge_ref.digest
+        candidate_digest = defect.expected_digest
+        evidence_digest = engine_digest(cast(JSONValue, defect.model_dump(mode="json")))
+        coverage_epoch = generation.coverage_epoch
+        execution_ref = None
     allowed_roots = tuple(sorted({path.split("/", 1)[0] for path in allowed_paths}))
     feature_input = {
         "change_id": payload.change_id,
@@ -238,17 +257,20 @@ def adapt_repair_failure(state: ProductState) -> dict[str, object]:
         "owner_id": "assurance.healing",
         "allowed_paths": list(allowed_paths),
         "allowed_roots": list(allowed_roots),
-        "baseline_digest": execution.evidence_ref.digest,
-        "candidate_digest": execution.receipt.receipt_digest,
+        "baseline_digest": baseline_digest,
+        "candidate_digest": candidate_digest,
         "policy_digest": payload.product_policy.sha256,
         "mapping_paths": [generation.mapping_ref.path],
-        "execution_evidence_digest": execution.evidence_ref.digest,
-        "coverage_epoch": execution.coverage_epoch,
+        "execution_evidence_digest": evidence_digest,
+        "coverage_epoch": coverage_epoch,
         "reviewed_case": reviewed.model_dump(mode="json"),
-        "execution_ref": execution.evidence_ref.model_dump(mode="json"),
+        "execution_ref": execution_ref,
         "mapping_ref": generation.mapping_ref.model_dump(mode="json"),
         "source_refs": [ref.model_dump(mode="json") for ref in generation.source_refs],
         "allowed_test_paths": list(allowed_paths),
+        "validation_profile": payload.validation_profile,
+        "selected_test_families": list(state.get("selected_test_families") or []),
+        "generation_defect": None if defect is None else defect.model_dump(mode="json"),
     }
     return {**feature_input, "feature_input": feature_input}
 
@@ -433,7 +455,7 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_conditional_edges(
         "execute",
         cast(Callable[..., Any], route_execute),
-        {"quality": "adapt-quality", "blocked": "blocked"},
+        {"quality": "adapt-quality", "repair": "adapt-repair-failure", "blocked": "blocked"},
     )
     builder.add_edge("adapt-quality", "quality")
     builder.add_conditional_edges(
