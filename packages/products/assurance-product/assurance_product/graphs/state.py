@@ -3,7 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, TypedDict
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
+from assurance_execution.contracts.workflow import (
+    ExecutionCycleResultV1,
+    VerifiedExecutionCycleResultV1,
+    VerifiedGenerationDefectCycleV1,
+)
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_improvement.contracts.retro import RetroWindow
 from assurance_intake.contracts.workflow import (
@@ -19,6 +23,7 @@ from assurance_quality.contracts.assessment import (
     ReportPurpose,
 )
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.contracts import TerminalReceiptRef
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
@@ -186,7 +191,11 @@ class ProductStateDocument(FrozenModel):
     source_artifacts: list[dict[str, str]]
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
-    execution_result: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1
+    execution_result: (
+        ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 | VerifiedGenerationDefectCycleV1
+    )
+    generation_defect: VerifiedGenerationDefectCycleV1 | None = None
+    generation_defect_authority_ref: TerminalReceiptRef | None = None
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
@@ -215,7 +224,7 @@ class ProductStateDocument(FrozenModel):
     execution_evidence_digest: str
     proposal_ref: EvidenceArtifactRefV1
     approval_ref: EvidenceArtifactRefV1 | None
-    execution_ref: EvidenceArtifactRefV1
+    execution_ref: EvidenceArtifactRefV1 | None = None
     mapping_ref: EvidenceArtifactRefV1
     source_refs: list[dict[str, str]]
     allowed_test_paths: list[str]
@@ -293,7 +302,11 @@ class ProductState(CheckpointBridgeState, total=False):
     source_artifacts: list[dict[str, str]]
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
-    execution_result: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1
+    execution_result: (
+        ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 | VerifiedGenerationDefectCycleV1
+    )
+    generation_defect: VerifiedGenerationDefectCycleV1 | None
+    generation_defect_authority_ref: TerminalReceiptRef | None
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
@@ -322,7 +335,7 @@ class ProductState(CheckpointBridgeState, total=False):
     execution_evidence_digest: str
     proposal_ref: EvidenceArtifactRefV1
     approval_ref: EvidenceArtifactRefV1 | None
-    execution_ref: EvidenceArtifactRefV1
+    execution_ref: EvidenceArtifactRefV1 | None
     mapping_ref: EvidenceArtifactRefV1
     source_refs: list[dict[str, str]]
     allowed_test_paths: list[str]

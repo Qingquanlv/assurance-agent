@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
-from assurance_generation.contracts.workflow import (
-    GenerationCycleResultV1,
-    VerifiedGenerationDefectV1,
+from assurance_execution.contracts.workflow import (
+    ExecutionCycleResultV1,
+    VerifiedExecutionCycleResultV1,
+    VerifiedGenerationDefectCycleV1,
 )
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_healing.contracts.application import AppliedTestRepairV1
 from assurance_quality.contracts.assessment import InspectionOutcomeV1
 from graph_engine.stategraph.routing import select_exclusive_route
@@ -25,16 +26,28 @@ def execute_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
         raw = state.get("execution_result")
         if state.get("validation_profile") in {"api_db.v1", "api_db_trace.v1"}:
             try:
-                defect = VerifiedGenerationDefectV1.model_validate(raw)
+                defect_cycle = VerifiedGenerationDefectCycleV1.model_validate(raw)
             except (TypeError, ValueError):
-                defect = None
-            if defect is not None:
+                defect_cycle = None
+            if defect_cycle is not None:
+                defect = defect_cycle.attempt.defect
                 generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+                declared_defect = state.get("generation_defect")
+                declared_authority = state.get("generation_defect_authority_ref")
                 eligible = (
                     defect.generation == generation
                     and defect.validation_profile == state.get("validation_profile")
                     and defect.generation.change_id == state.get("change_id")
                     and defect.generation.coverage_epoch == state.get("coverage_epoch", 0)
+                    and (
+                        declared_defect is None
+                        or VerifiedGenerationDefectCycleV1.model_validate(declared_defect) == defect_cycle
+                    )
+                    and (
+                        declared_authority is None
+                        or declared_authority
+                        == defect_cycle.attempt.authority_receipt.model_dump(mode="json")
+                    )
                 )
                 return {"quality": None, "repair": "repair" if eligible else None}
             result = VerifiedExecutionCycleResultV1.model_validate(raw)

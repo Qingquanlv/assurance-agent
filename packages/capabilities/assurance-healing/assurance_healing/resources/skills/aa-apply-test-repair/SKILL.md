@@ -18,7 +18,8 @@ mapping.
 - Return `TestRepairResultV1` with the exact sorted `output_files` write set and a
   concise summary.
 
-The runtime finalizer independently authenticates the defect, recompiles the machine
-plan from the frozen ReviewedCase and assertion sources, and rejects any changed
-verification obligation. A proposal or summary alone never counts as an applied
-repair.
+The runtime finalizer independently authenticates the defect's exact host terminal
+receipt and kernel promotion receipt, recompiles the machine plan from the frozen
+ReviewedCase and assertion sources, and rejects replay from another execution attempt
+or any changed verification obligation. A proposal or summary alone never counts as
+an applied repair.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
+from assurance_execution.contracts.authority import authenticate_generation_defect_cycle
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.execution import (
     ExecutionCommandReceiptV1,
@@ -66,4 +67,5 @@ __all__ = [
     "VerifiedProcessLimitsV1",
     "VerifiedProcessReceiptV1",
     "attempt_contract_refs",
+    "authenticate_generation_defect_cycle",
 ]

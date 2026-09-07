@@ -29,7 +29,10 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import BINDING, execute_task
 from tests.acg_plan_fixture import install_plan
-from tests.verified_generation_fixture import accepted_verified_execution_input
+from tests.verified_generation_fixture import (
+    accepted_verified_execution_input,
+    install_verified_generation_defect_cycle,
+)
 
 CHANGE = "CH-REPAIR-1"
 SOURCE = f"qa/changes/{CHANGE}/generated/api/files/tests/api/test_users.py"
@@ -328,7 +331,9 @@ def _verified_repair_fixture(project: Path) -> tuple[dict[str, object], str, byt
         "validation_profile": "api_db.v1",
         "selected_test_families": ["api"],
         "capability_leafs": ["entities.item.create"],
-        "generation_defect": defect.model_dump(mode="json"),
+        "generation_defect": install_verified_generation_defect_cycle(project, defect).model_dump(
+            mode="json"
+        ),
     }
     return payload, bridge.path, original
 
@@ -358,7 +363,11 @@ async def test_verified_bridge_repair_rejects_untrusted_or_noncanonical_candidat
     payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
     stage = tmp_path / ".stage"
     if attack == "forged_proof":
-        defect = cast(dict[str, object], payload["generation_defect"])
+        defect = cast(
+            dict[str, object],
+            cast(dict[str, object], payload["generation_defect"])["attempt"],
+        )["defect"]
+        defect = cast(dict[str, object], defect)
         defect["expected_digest"] = "9" * 64
         candidate = expected
     else:
@@ -372,9 +381,65 @@ async def test_verified_bridge_repair_rejects_untrusted_or_noncanonical_candidat
     assert result.outcome.failure.kind in {"invalid_input", "invalid_output"}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attack", ["attempt_replay", "receipt_substitution"])
+async def test_verified_bridge_repair_rejects_cross_attempt_or_receipt_substitution(
+    tmp_path: Path, attack: str
+) -> None:
+    from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
+    from graph_engine.canonical import canonical_digest
+
+    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
+    cycle = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
+    if attack == "attempt_replay":
+        identity = cycle.attempt.authority_identity.model_copy(
+            update={"invocation_id": "inv-replayed-by-caller"}
+        )
+        authority_ref = cycle.attempt.authority_receipt.model_copy(
+            update={"identity_digest": canonical_digest(identity.model_dump(mode="json"))}
+        )
+        attempt = cycle.attempt.model_copy(
+            update={"authority_identity": identity, "authority_receipt": authority_ref}
+        )
+        provenance = cycle.execution_provenance.model_copy(
+            update={
+                "invocation_id": identity.invocation_id,
+                "source_terminal_receipt": authority_ref,
+                "output_digest": canonical_digest(attempt.model_dump(mode="json")),
+            }
+        )
+        forged = VerifiedGenerationDefectCycleV1(
+            attempt=attempt,
+            execution_provenance=provenance,
+        )
+    else:
+        provenance = cycle.execution_provenance.model_copy(
+            update={
+                "promotion_receipt": cycle.execution_provenance.promotion_receipt.model_copy(
+                    update={"receipt_digest": "f" * 64}
+                )
+            }
+        )
+        forged = VerifiedGenerationDefectCycleV1(
+            attempt=cycle.attempt,
+            execution_provenance=provenance,
+        )
+    payload["generation_defect"] = forged.model_dump(mode="json")
+    stage = tmp_path / ".stage"
+    _write(stage, bridge_path, expected)
+
+    result = await _finalize(tmp_path, stage, payload, [bridge_path])
+
+    assert result.outcome.status == "failed"
+    assert result.outcome.failure is not None
+    assert "authority" in result.outcome.failure.message or "promotion" in result.outcome.failure.message
+
+
 def test_verified_generation_defect_rejects_substituted_old_execution_evidence(tmp_path: Path) -> None:
     payload, _bridge_path, _expected = _verified_repair_fixture(tmp_path)
-    generation = cast(dict[str, object], payload["generation_defect"])["generation"]
+    attempt = cast(dict[str, object], payload["generation_defect"])["attempt"]
+    defect = cast(dict[str, object], cast(dict[str, object], attempt)["defect"])
+    generation = defect["generation"]
     old_ref = cast(dict[str, object], generation)["mapping_ref"]
     payload["execution_ref"] = old_ref
 

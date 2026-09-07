@@ -8,6 +8,8 @@ from typing import Generic, Protocol, TypeAlias, TypeVar
 from pydantic import BaseModel, Field
 
 from graph_engine.attempts.context import AuthorizedAttemptScope
+from graph_engine.attempts.keys import AttemptKey
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.attempts.resolutions import (
     IndeterminateTaskResult,
     PendingTaskResult,
@@ -35,6 +37,23 @@ class AttemptTimeoutPolicy(FrozenModel):
 class TerminalReceiptRef(FrozenModel):
     identity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AttemptResultProvenanceV1(FrozenModel):
+    """Serializable coordinates of a result authenticated by the Attempt journal."""
+
+    attempt_key: AttemptKey
+    invocation_id: str = Field(min_length=1)
+    public_entrypoint: str = Field(min_length=1)
+    semantic_node_id: str = Field(min_length=1)
+    graph_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    input_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authorization_id: str = Field(min_length=1)
+    activity_id: str = Field(min_length=1)
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_terminal_receipt: TerminalReceiptRef | None = None
+    promotion_receipt: ReceiptRef
 
 
 class ExecutedAttemptResult(FrozenModel, Generic[OutputT]):
@@ -136,6 +155,7 @@ def resolve_contract(
 
 
 __all__ = [
+    "AttemptResultProvenanceV1",
     "AttemptExecutor",
     "AttemptRetryPolicy",
     "AttemptTimeoutPolicy",

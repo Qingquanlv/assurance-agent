@@ -8,8 +8,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
-from assurance_generation.contracts.workflow import GenerationCycleResultV1, VerifiedGenerationDefectV1
+from assurance_execution.contracts.workflow import (
+    ExecutionCycleResultV1,
+    VerifiedExecutionCycleResultV1,
+    VerifiedGenerationDefectCycleV1,
+)
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_healing.contracts.application import AppliedTestRepairV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_product.graphs.entrypoints import (
@@ -219,6 +223,7 @@ def adapt_repair_failure(state: ProductState) -> dict[str, object]:
     reviewed = generation.reviewed_case
     next_round = int(state.get("healing_rounds_used", 0)) + 1
     raw_execution = state.get("execution_result")
+    defect_cycle: VerifiedGenerationDefectCycleV1 | None = None
     if payload.validation_profile is None:
         execution = ExecutionCycleResultV1.model_validate(raw_execution)
         defect = None
@@ -229,7 +234,18 @@ def adapt_repair_failure(state: ProductState) -> dict[str, object]:
         coverage_epoch = execution.coverage_epoch
         execution_ref: dict[str, str] | None = execution.evidence_ref.model_dump(mode="json")
     else:
-        defect = VerifiedGenerationDefectV1.model_validate(raw_execution)
+        defect_cycle = VerifiedGenerationDefectCycleV1.model_validate(raw_execution)
+        defect = defect_cycle.attempt.defect
+        declared_defect = state.get("generation_defect")
+        declared_authority = state.get("generation_defect_authority_ref")
+        if (
+            declared_defect is not None
+            and VerifiedGenerationDefectCycleV1.model_validate(declared_defect) != defect_cycle
+        ) or (
+            declared_authority is not None
+            and declared_authority != defect_cycle.attempt.authority_receipt.model_dump(mode="json")
+        ):
+            raise ValueError("verified generation defect provenance differs from execution state")
         if defect.generation != generation or defect.validation_profile != payload.validation_profile:
             raise ValueError("verified generation defect differs from the current generation")
         allowed_paths = (defect.bridge_ref.path,)
@@ -270,7 +286,10 @@ def adapt_repair_failure(state: ProductState) -> dict[str, object]:
         "allowed_test_paths": list(allowed_paths),
         "validation_profile": payload.validation_profile,
         "selected_test_families": list(state.get("selected_test_families") or []),
-        "generation_defect": None if defect is None else defect.model_dump(mode="json"),
+        "generation_defect": (None if defect_cycle is None else defect_cycle.model_dump(mode="json")),
+        "generation_defect_authority_ref": (
+            None if defect_cycle is None else defect_cycle.attempt.authority_receipt.model_dump(mode="json")
+        ),
     }
     return {**feature_input, "feature_input": feature_input}
 

@@ -73,25 +73,25 @@
       },
       {
         "contract_id": "assurance.execution.task.execute.v1",
-        "digest": "cece75312c00f3adb345d777b2a3722644c81ee78befda3557ca725e353dbab7"
+        "digest": "79186d368bad1d0d912fceb18051f26cb03b97d49406306dd21cb6b1f7831a75"
       },
       {
         "contract_id": "assurance.execution.task.run.v1",
-        "digest": "72d7cdf3681fd47fca5925c7f4453ec2d119da51b719ef6f3a83544f46f7014c"
+        "digest": "40df39f998f441991d211fa75a8805abc137770e50d14cd1690829af18b0942b"
       }
     ]
   },
   "kind": "plugin",
   "schema_version": "1",
   "source": {
-    "declaration_path": "assurance_execution/plugin-declaration.json",
     "distribution": "assurance-execution",
+    "version": "0.2.0",
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "execution",
     "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
+    "declaration_path": "assurance_execution/plugin-declaration.json",
     "import_roots": [
       ""
-    ],
-    "version": "0.2.0"
+    ]
   }
 }

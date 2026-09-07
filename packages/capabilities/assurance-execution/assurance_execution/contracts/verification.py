@@ -11,8 +11,8 @@ from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.execution_plan import ValidationProfile
-from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.workflow import VerifiedGenerationDefectAttemptV1
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
@@ -353,7 +353,7 @@ __all__ = [
 
 
 class ExecutionDispatchResultV1(
-    RootModel[ExecutionEvidenceV1 | VerifiedExecutionResultV1 | VerifiedGenerationDefectV1]
+    RootModel[ExecutionEvidenceV1 | VerifiedExecutionResultV1 | VerifiedGenerationDefectAttemptV1]
 ):
     """Fixed facade output: legacy evidence or a host-authenticated verified result."""
 

@@ -16,7 +16,7 @@ from assurance_intake.contracts.workflow import (
     require_same_plan,
 )
 from assurance_generation.contracts.execution_plan import ValidationProfile
-from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
+from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
 
 AppliedTestRepairStatus = Literal["applied", "needs_review", "not_eligible", "exhausted", "failed"]
 
@@ -65,7 +65,7 @@ class ApplyTestRepairInputV1(FrozenModel):
     validation_profile: ValidationProfile | None = None
     selected_test_families: tuple[str, ...] = ()
     capability_leafs: tuple[str, ...] = ()
-    generation_defect: VerifiedGenerationDefectV1 | None = None
+    generation_defect: VerifiedGenerationDefectCycleV1 | None = None
 
     @field_validator("source_refs")
     @classmethod
@@ -108,7 +108,7 @@ class ApplyTestRepairInputV1(FrozenModel):
             if self.validation_profile is not None or self.selected_test_families:
                 raise ValueError("legacy repair cannot carry verified generation defect inputs")
         else:
-            defect = self.generation_defect
+            defect = self.generation_defect.attempt.defect
             generation = defect.generation
             if self.execution_ref is not None:
                 raise ValueError("pre-dispatch generation defect cannot carry execution evidence")

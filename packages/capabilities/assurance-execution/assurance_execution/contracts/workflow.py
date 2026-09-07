@@ -7,10 +7,14 @@ from typing import Literal, Self
 from pydantic import Field, model_validator
 from pydantic.types import AwareDatetime
 
+from graph_engine.attempts.contracts import AttemptResultProvenanceV1, TerminalReceiptRef
+from graph_engine.attempts.host_protocol import TaskHostCallIdentity
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1, require_same_plan
 from assurance_generation.contracts.execution_plan import ValidationProfile
 from graph_engine.attempts import AttemptKey
@@ -112,8 +116,62 @@ class VerifiedExecutionCycleResultV1(FrozenModel):
         return self
 
 
+class VerifiedGenerationDefectAttemptV1(FrozenModel):
+    """Generation defect sealed by the production host for one execution attempt."""
+
+    defect: VerifiedGenerationDefectV1
+    authority_identity: TaskHostCallIdentity
+    authority_receipt: TerminalReceiptRef
+
+    @model_validator(mode="after")
+    def _bind_host_authority(self) -> Self:
+        identity = self.authority_identity
+        if (
+            identity.attempt_key_digest != self.defect.attempt_key.digest
+            or identity.task_id != self.defect.attempt_key.digest
+            or identity.activity_id != self.defect.attempt_key.digest
+            or identity.activation_id not in {"execution.execute", "execution.run"}
+            or identity.operation != "execute"
+            or identity.phase != "runtime"
+            or identity.handler_id != "assurance.execution.generation-defect"
+        ):
+            raise ValueError("generation defect host authority identity does not match")
+        identity_payload: JSONValue = identity.model_dump(mode="json")
+        if self.authority_receipt.identity_digest != canonical_digest(identity_payload):
+            raise ValueError("generation defect authority ref does not identify its host call")
+        return self
+
+
+class VerifiedGenerationDefectCycleV1(FrozenModel):
+    """Published repairable defect plus its independently authenticated execution provenance."""
+
+    attempt: VerifiedGenerationDefectAttemptV1
+    execution_provenance: AttemptResultProvenanceV1
+
+    @model_validator(mode="after")
+    def _bind_attempt_provenance(self) -> Self:
+        provenance = self.execution_provenance
+        attempt_payload: JSONValue = self.attempt.model_dump(mode="json")
+        if (
+            provenance.attempt_key != self.attempt.defect.attempt_key
+            or provenance.semantic_node_id != self.attempt.authority_identity.activation_id
+            or provenance.invocation_id != self.attempt.authority_identity.invocation_id
+            or provenance.graph_revision != self.attempt.authority_identity.graph_revision
+            or provenance.authorization_id != self.attempt.authority_identity.authorization_id
+            or provenance.activity_id != self.attempt.authority_identity.activity_id
+            or provenance.output_digest != canonical_digest(attempt_payload)
+            or provenance.source_terminal_receipt != self.attempt.authority_receipt
+            or provenance.promotion_receipt.receipt_id
+            != self.attempt.authority_identity.workspace_identity_digest
+        ):
+            raise ValueError("generation defect differs from authenticated execution provenance")
+        return self
+
+
 __all__ = [
     "ExecutionCycleInputV1",
     "ExecutionCycleResultV1",
     "VerifiedExecutionCycleResultV1",
+    "VerifiedGenerationDefectAttemptV1",
+    "VerifiedGenerationDefectCycleV1",
 ]

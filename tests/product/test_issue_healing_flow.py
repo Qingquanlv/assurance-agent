@@ -9,7 +9,7 @@ from assurance_healing.contracts.application import AppliedTestRepairV1
 from graph_engine.attempts import AttemptKey
 from graph_engine.attempts.resolutions import ReceiptRef
 from assurance_product.graphs.factory import invoke_product_root
-from assurance_product.graphs.routes import route_applied_repair
+from assurance_product.graphs.routes import execute_named_matches, route_applied_repair
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 
 from tests.product.test_product_stategraph_flow import (
@@ -21,6 +21,7 @@ from tests.product.test_product_stategraph_flow import (
     _public_input,
 )
 from tests.product.test_execution_quality_flow import _verified_state
+from tests.verified_generation_fixture import install_verified_generation_defect_cycle
 
 
 def test_applied_test_repair_is_the_only_path_to_rerun() -> None:
@@ -87,6 +88,7 @@ def test_full_verified_pre_dispatch_defect_runs_apply_repair_then_fresh_executio
         observed_digest="8" * 64,
         expected_digest="9" * 64,
     )
+    defect_cycle = install_verified_generation_defect_cycle(tmp_path, defect)
     repair = AppliedTestRepairV1(
         change_id=generation.change_id,
         plan_digest=generation.plan_digest,
@@ -132,7 +134,7 @@ def test_full_verified_pre_dispatch_defect_runs_apply_repair_then_fresh_executio
             "status": "passed",
         },
         execute={
-            "execution_result": defect.model_dump(mode="json"),
+            "execution_result": defect_cycle.model_dump(mode="json"),
             "status": "generation_defect",
         },
         repair_failure={
@@ -163,3 +165,37 @@ def test_full_verified_pre_dispatch_defect_runs_apply_repair_then_fresh_executio
     assert final.repair_round == 1
     assert ExecuteTailResultV1.model_validate(result["tail_result"]).status == "reported"
     assert result["terminal"] == {"status": "completed", "reason": "achieved"}
+
+
+def test_verified_generation_defect_checkpoint_round_trip_keeps_exclusive_repair_route(
+    tmp_path,
+) -> None:
+    from graph_engine.persistence.journal import strict_checkpoint_serializer
+
+    verified = _verified_state(tmp_path)
+    generation = GenerationCycleResultV1.model_validate(verified["generation_result"])
+    initial = VerifiedExecutionCycleResultV1.model_validate(verified["execution_result"])
+    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    defect = VerifiedGenerationDefectV1(
+        defect_kind="invalid_bridge",
+        generation=generation,
+        validation_profile="api_db.v1",
+        attempt_key=AttemptKey(digest="4" * 64),
+        case_id=initial.case_id,
+        bridge_symbol="test_tc_user_create_001__create",
+        bridge_ref=bridge,
+        observed_digest="8" * 64,
+        expected_digest="9" * 64,
+    )
+    cycle = install_verified_generation_defect_cycle(tmp_path, defect)
+    state = {
+        **verified,
+        "execution_result": cycle.model_dump(mode="json"),
+        "status": "generation_defect",
+    }
+    serializer = strict_checkpoint_serializer()
+    encoded = serializer.dumps_typed(state)
+    recovered = serializer.loads_typed(encoded)
+
+    assert recovered == state
+    assert execute_named_matches(recovered) == {"quality": None, "repair": "repair"}

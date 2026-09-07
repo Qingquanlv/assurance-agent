@@ -16,6 +16,7 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from pydantic import ValidationError
 
 from assurance_execution.contracts import ExecutionEvidenceV1
+from assurance_execution.contracts.authority import authenticate_generation_defect_cycle
 from assurance_generation.contracts.admission import (
     GenerationAdmissionError,
     admit_verified_generation,
@@ -143,7 +144,14 @@ def _prove_implementation_only(before: bytes, after: bytes, symbols: set[str], p
 
 
 def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
-    defect = business.generation_defect
+    try:
+        defect = (
+            None
+            if business.generation_defect is None
+            else authenticate_generation_defect_cycle(root, business.generation_defect)
+        )
+    except ValueError as error:
+        raise OutputError(f"verified generation defect authority is not authentic: {error}") from error
     for ref in (
         *business.reviewed_case.preparation_refs,
         *business.reviewed_case.case_refs,
@@ -230,8 +238,12 @@ def _verify_generation_bridge(
     context: TaskContext,
     candidate: bytes,
 ) -> None:
-    defect = business.generation_defect
-    assert defect is not None
+    cycle = business.generation_defect
+    assert cycle is not None
+    try:
+        defect = authenticate_generation_defect_cycle(context.project_root, cycle)
+    except ValueError as error:
+        raise OutputError(f"verified generation defect authority is not authentic: {error}") from error
     if hashlib.sha256(candidate).hexdigest() != defect.expected_digest:
         raise OutputError("repaired bridge bytes differ from deterministic generation")
     generation = defect.generation

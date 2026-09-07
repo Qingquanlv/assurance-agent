@@ -349,4 +349,137 @@ def accepted_verified_execution_input(project: Path, *, change_id: str = "CH-USE
     )
 
 
-__all__ = ["accepted_verified_execution_input"]
+def install_verified_generation_defect_cycle(
+    project: Path,
+    defect,
+    *,
+    invocation_id: str = "inv-generation-defect",
+    authorization_id: str = "2" * 64,
+    graph_revision: str = "3" * 64,
+):
+    """Install real host/promotion authority records for a generation-defect test fixture."""
+
+    from assurance_execution.contracts.workflow import (
+        VerifiedGenerationDefectAttemptV1,
+        VerifiedGenerationDefectCycleV1,
+    )
+    from graph_engine.attempts import AttemptResultProvenanceV1, ReceiptRef, TerminalReceiptRef
+    from graph_engine.attempts.host_protocol import (
+        TaskHostCallIdentity,
+        TaskHostTerminalReceipt,
+        current_bound_identity,
+    )
+    from graph_engine.attempts.host_receipts import TerminalReceiptStore, prove_call_quiescent
+    from graph_engine.attempts.production_host import invocation_activity_receipts_root
+    from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+    from graph_engine.plugin_api import PromotionReceipt, TaskOutcome
+
+    attempt_key = defect.attempt_key.digest
+    workspace_digest = "1" * 64
+    request_digest = canonical_digest({"phase": "runtime", "task_id": attempt_key, "staged_paths": []})
+    bound = current_bound_identity(
+        attempt_key_digest=attempt_key,
+        authorization_id=authorization_id,
+        workspace_identity_digest=workspace_digest,
+        request_digest=request_digest,
+        graph_revision=graph_revision,
+        product_lock_digest="4" * 64,
+        handler_id="assurance.execution.generation-defect",
+        fencing_token=1,
+        phase="runtime",
+    )
+    identity = TaskHostCallIdentity.model_validate(
+        {
+            "invocation_id": invocation_id,
+            "task_id": attempt_key,
+            "activation_id": "execution.execute",
+            "attempt": 1,
+            "activity_id": attempt_key,
+            "operation": "execute",
+            **bound,
+        }
+    )
+    receipt_root = invocation_activity_receipts_root(
+        project / "qa" / "changes" / defect.generation.change_id,
+        invocation_id,
+    )
+    receipt_root.parent.mkdir(parents=True, exist_ok=True)
+    receipt_store = TerminalReceiptStore.open_or_create(receipt_root)
+    sink = receipt_store.sink_for(identity)
+    outcome = TaskOutcome.succeeded(defect.model_dump(mode="json"))
+    terminal = TaskHostTerminalReceipt(
+        host_implementation_digest=identity.host_implementation_digest,
+        invocation_id=identity.invocation_id,
+        task_id=identity.task_id,
+        activation_id=identity.activation_id,
+        attempt=identity.attempt,
+        activity_id=attempt_key,
+        operation="execute",
+        attempt_key_digest=attempt_key,
+        authorization_id=identity.authorization_id,
+        fencing_token=1,
+        phase="runtime",
+        graph_revision=identity.graph_revision,
+        product_lock_digest=identity.product_lock_digest,
+        handler_id=identity.handler_id,
+        request_digest=request_digest,
+        workspace_identity_digest=workspace_digest,
+        project_root_digest="5" * 64,
+        write_root_digest="6" * 64,
+        baseline_digest="7" * 64,
+        staged_write_set_digest=canonical_digest({"paths": []}),
+        outcome=outcome,
+        outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
+        quiescence_proof_digest=prove_call_quiescent(),
+        host_call_id=sink.host_call_id,
+    )
+    sink.install(terminal)
+    terminal_ref = TerminalReceiptRef(
+        identity_digest=canonical_digest(identity.model_dump(mode="json")),
+        receipt_digest=canonical_digest(terminal.model_dump(mode="json")),
+    )
+    attempt = VerifiedGenerationDefectAttemptV1(
+        defect=defect,
+        authority_identity=identity,
+        authority_receipt=terminal_ref,
+    )
+    promotion = PromotionReceipt(
+        identity_digest=workspace_digest,
+        staged_digest=canonical_digest({"paths": []}),
+        receipt_digest=canonical_digest(
+            {
+                "identity_digest": workspace_digest,
+                "staged_digest": canonical_digest({"paths": []}),
+                "layout_schema_version": "1",
+            }
+        ),
+    )
+    promotion_root = project / "qa" / "changes" / defect.generation.change_id / ".runtime" / "receipts"
+    promotion_root.mkdir(parents=True, exist_ok=True)
+    (promotion_root / f"{workspace_digest}.json").write_bytes(
+        canonical_json_bytes(promotion.model_dump(mode="json"))
+    )
+    provenance = AttemptResultProvenanceV1(
+        attempt_key=defect.attempt_key,
+        invocation_id=invocation_id,
+        public_entrypoint="full",
+        semantic_node_id="execution.execute",
+        graph_revision=identity.graph_revision,
+        contract_digest="8" * 64,
+        input_digest="9" * 64,
+        authorization_id=identity.authorization_id,
+        activity_id=attempt_key,
+        output_digest=canonical_digest(cast(JSONValue, attempt.model_dump(mode="json"))),
+        source_terminal_receipt=terminal_ref,
+        promotion_receipt=ReceiptRef(
+            receipt_id=workspace_digest,
+            receipt_digest=promotion.receipt_digest,
+        ),
+    )
+    return VerifiedGenerationDefectCycleV1(
+        attempt=attempt,
+        execution_provenance=provenance,
+    )
+
+
+__all__ = ["accepted_verified_execution_input", "install_verified_generation_defect_cycle"]

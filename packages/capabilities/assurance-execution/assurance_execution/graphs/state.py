@@ -24,6 +24,8 @@ class ExecutionState(CheckpointBridgeState, total=False):
     verification_config_digest: str | None
     verification: dict[str, object]
     execution_result: dict[str, object]
+    generation_defect: dict[str, object]
+    generation_defect_authority_ref: dict[str, str]
     change_id: str
     plan_digest: str
     plan_ref: dict[str, str]
