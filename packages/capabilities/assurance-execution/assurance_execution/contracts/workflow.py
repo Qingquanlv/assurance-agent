@@ -161,10 +161,6 @@ class VerifiedIncompleteExecutionV1(VerifiedBridgeDefectResultV1):
     def mapping_ref(self) -> EvidenceArtifactRefV1:
         return self.defect.generation.mapping_ref
 
-    @property
-    def evidence_ref(self) -> EvidenceArtifactRefV1:
-        return self.defect.generation.mapping_ref
-
 
 __all__ = [
     "ExecutionCycleInputV1",

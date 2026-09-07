@@ -281,6 +281,7 @@ async def test_report_carries_each_verified_obligation_and_separate_statuses() -
             }
         ],
         "reason_codes": ["verification.business_violation"],
+        "repairable_bridge_defect": False,
     }
     outcome = await execute_task(GenerateReportHandler(), report_input(verification=verification))
     assert outcome.status == "succeeded"

@@ -223,18 +223,10 @@ def _authenticate_assessment_input(business: AssessmentSkillInputV1, root: Path)
         *business.reviewed_case.case_refs,
         business.reviewed_case.review_ref,
         business.mapping_ref,
-        business.assessment.trace_ref,
-        business.assessment.gaps_ref,
-        business.assessment.metrics_ref,
-        business.assessment.sufficiency_ref,
-        business.assessment.execution_ref,
-        *(() if business.assessment.verification_ref is None else (business.assessment.verification_ref,)),
+        *business.assessment.artifact_refs(),
     )
     for ref in refs:
         _authenticate_ref(root, ref)
-    for optional in (business.assessment.healing_ref, business.assessment.issue_ref):
-        if optional is not None:
-            _authenticate_ref(root, optional)
     if business.fact_baseline_ref is not None:
         _authenticate_ref(root, business.fact_baseline_ref)
     policy = _canonical_file(root, ".aa/policy.yaml").read_bytes()
@@ -459,7 +451,7 @@ class InspectFinalizeHandler:
                 model=InspectionResultV1,
             )
             expected = {
-                "execution_digest": business.assessment.execution_ref.digest,
+                "execution_digest": business.assessment.execution_digest,
                 "healing_digest": (
                     business.assessment.healing_ref.digest
                     if business.assessment.healing_ref is not None
@@ -498,6 +490,8 @@ class InspectFinalizeHandler:
                 failure_facts = verification_failure_facts(verification)
                 reason_codes = verification.reason_codes
             else:
+                if business.assessment.execution_ref is None:
+                    raise OutputError("legacy inspection requires execution evidence")
                 execution = _load_json_ref(
                     context.project_root,
                     business.assessment.execution_ref,

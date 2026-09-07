@@ -114,7 +114,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.report.v1": (
         "1",
-        "86c919bc9b344f36e2fcaa7138cd1f32dfdf0649f6bd536bdd6968c1b892a9a6",
+        "60e635d6c31737d4ceab6bf9a179a9d247bc3f21af842e3d86314267d27e2d7c",
     ),
     "assurance.quality.schema.sufficiency.v2": (
         "1",
@@ -130,15 +130,15 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.verification.v1": (
         "1",
-        "1d415bc14d81485fce6ac776d9eb03e594d3f577717268e0b050e8dde35d2623",
+        "907464f629666b39f1e526a58805df4d91522d9027397d7deb646c2166dc0e56",
     ),
     "assurance.quality.workflow.assess.input.v1": (
         "1",
-        "856c1380f6fec5d8a6af7c9888db84ec306a877b7782a101194a28ce258d0447",
+        "71d61494a5dc467a91a8dd32d45b1a339d79c82a140e54e51443f41d8e4598d5",
     ),
     "assurance.quality.workflow.assess.output.v1": (
         "1",
-        "b454175dbb5cd1f283affabfd4f238692cf3c98d76af8cc856ee4cecd3edbfa3",
+        "a1aea10520d347b534db54671809d79d4b0953c0afabaa836a3510f7a93a4c68",
     ),
     "assurance.quality.workflow.issue-analyze.input.v1": (
         "1",
@@ -166,11 +166,11 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.workflow.report.input.v1": (
         "1",
-        "7d0088873d1a5935243f3cfb071a58b9df8bb868927f3fd4027e3678cb46df95",
+        "1f25aa49b2344f970b5cfe84a62ca25966bceb1bf44377feb3e33487845bf689",
     ),
     "assurance.quality.workflow.report.output.v1": (
         "1",
-        "878092885436e105a48e0478983f4d6799a350e29a8b1452aea1fa72acca2706",
+        "798eacdb02f500b70857c8de7cc7f45e559904fdfbc2da40c643f383d221c200",
     ),
 }
 

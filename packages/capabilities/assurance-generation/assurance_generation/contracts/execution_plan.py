@@ -348,6 +348,7 @@ class CaseExecutionPlanV1(FrozenModel):
                 exclude={
                     "technical_config_digest",
                     "sut_digest",
+                    "reviewed_case",
                     "action",
                     "oracle",
                     "bindings",

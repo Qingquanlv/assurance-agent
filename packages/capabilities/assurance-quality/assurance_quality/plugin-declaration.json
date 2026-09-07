@@ -163,21 +163,21 @@
       },
       {
         "contract_id": "assurance.quality.materialize-assessment-inputs",
-        "digest": "e2ddd33fd178b6791846e349077ab8b8027fdebf01dbf55a302b6534abbc46cf"
+        "digest": "5a1a5c3912002b7f95446b986e73199bcb05a2380cf5892a9179ef6e086e263c"
       }
     ]
   },
   "kind": "plugin",
   "schema_version": "1",
   "source": {
-    "declaration_path": "assurance_quality/plugin-declaration.json",
     "distribution": "assurance-quality",
+    "version": "0.2.0",
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "quality",
     "entrypoint_value": "assurance_quality.plugin:QualityPlugin",
+    "declaration_path": "assurance_quality/plugin-declaration.json",
     "import_roots": [
       ""
-    ],
-    "version": "0.2.0"
+    ]
   }
 }

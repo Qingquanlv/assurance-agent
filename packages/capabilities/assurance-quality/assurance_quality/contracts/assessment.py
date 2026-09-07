@@ -9,6 +9,7 @@ from pydantic.types import AwareDatetime
 from agent_runtime_contracts import AgentRunResult
 
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_execution.contracts.workflow import (
@@ -93,7 +94,8 @@ class AssessmentInputsV1(FrozenModel):
     gaps_ref: EvidenceArtifactRefV1
     metrics_ref: EvidenceArtifactRefV1
     sufficiency_ref: EvidenceArtifactRefV1
-    execution_ref: EvidenceArtifactRefV1
+    execution_ref: EvidenceArtifactRefV1 | None = None
+    incomplete_execution: VerifiedIncompleteExecutionV1 | None = None
     verification_ref: EvidenceArtifactRefV1 | None = None
     healing_ref: EvidenceArtifactRefV1 | None = None
     issue_ref: EvidenceArtifactRefV1 | None = None
@@ -104,7 +106,36 @@ class AssessmentInputsV1(FrozenModel):
             raise ValueError("assessment scope change_id must match")
         if self.scope.coverage_epoch != self.coverage_epoch:
             raise ValueError("assessment scope epoch must match")
+        if (self.execution_ref is None) == (self.incomplete_execution is None):
+            raise ValueError("assessment requires exactly one execution fact")
+        if self.incomplete_execution is not None and (
+            self.incomplete_execution.change_id != self.change_id
+            or self.incomplete_execution.coverage_epoch != self.coverage_epoch
+            or self.incomplete_execution.batch_id != self.batch_id
+            or self.verification_ref is None
+        ):
+            raise ValueError("incomplete execution fact does not match assessment")
         return self
+
+    @property
+    def execution_digest(self) -> str:
+        if self.execution_ref is not None:
+            return self.execution_ref.digest
+        assert self.incomplete_execution is not None
+        payload: JSONValue = self.incomplete_execution.model_dump(mode="json")
+        return canonical_digest(payload)
+
+    def artifact_refs(self) -> tuple[EvidenceArtifactRefV1, ...]:
+        return (
+            self.trace_ref,
+            self.gaps_ref,
+            self.metrics_ref,
+            self.sufficiency_ref,
+            *(() if self.execution_ref is None else (self.execution_ref,)),
+            *(() if self.verification_ref is None else (self.verification_ref,)),
+            *(() if self.healing_ref is None else (self.healing_ref,)),
+            *(() if self.issue_ref is None else (self.issue_ref,)),
+        )
 
 
 class AssessmentSkillInputV1(FrozenModel):
@@ -208,7 +239,7 @@ class FinalizedInspectionV1(FrozenModel):
         if self.sufficiency.authoritative_batch_id != self.assessment.batch_id:
             raise ValueError("inspection sufficiency batch must match assessment")
         digest_pairs = {
-            "execution": (self.agent_result.execution_digest, self.assessment.execution_ref.digest),
+            "execution": (self.agent_result.execution_digest, self.assessment.execution_digest),
             "healing": (
                 self.agent_result.healing_digest,
                 self.assessment.healing_ref.digest if self.assessment.healing_ref is not None else None,
@@ -349,18 +380,7 @@ class ReportSkillInputV1(QualitySkillInputV1):
         expected_refs = tuple(
             sorted(
                 (
-                    self.assessment.trace_ref,
-                    self.assessment.gaps_ref,
-                    self.assessment.metrics_ref,
-                    self.assessment.sufficiency_ref,
-                    self.assessment.execution_ref,
-                    *(
-                        ()
-                        if self.assessment.verification_ref is None
-                        else (self.assessment.verification_ref,)
-                    ),
-                    *(() if self.assessment.healing_ref is None else (self.assessment.healing_ref,)),
-                    *(() if self.assessment.issue_ref is None else (self.assessment.issue_ref,)),
+                    *self.assessment.artifact_refs(),
                     self.fact_baseline_ref,
                 ),
                 key=lambda item: (item.path, item.digest),
@@ -368,7 +388,7 @@ class ReportSkillInputV1(QualitySkillInputV1):
         )
         if self.inspection.assessment_refs != expected_refs:
             raise ValueError("report input does not carry the inspected assessment evidence chain")
-        if self.execution_digest != self.assessment.execution_ref.digest:
+        if self.execution_digest != self.assessment.execution_digest:
             raise ValueError("report execution digest does not match the current assessment")
         if self.trace_digest != self.assessment.trace_ref.digest:
             raise ValueError("report trace digest does not match the current assessment")

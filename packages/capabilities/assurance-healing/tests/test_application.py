@@ -269,13 +269,7 @@ def _verified_fixture(project: Path) -> tuple[dict[str, object], bytes, str]:
         attempt_key=attempt_key,
         invocation_id="invocation",
         semantic_node_id="execution.execute",
-        coverage_epoch=generation.coverage_epoch,
-        generation_digest=canonical_digest(cast(JSONValue, generation.model_dump(mode="json"))),
-        case_id=defect.case_id,
-        bridge_symbol=defect.bridge_symbol,
-        bridge_ref=defect.bridge_ref,
-        observed_digest=defect.observed_digest,
-        expected_digest=defect.expected_digest,
+        defect=defect,
         receipt=ReceiptRef(receipt_id="kernel", receipt_digest="9" * 64),
     )
     proposal = {
@@ -439,7 +433,8 @@ async def test_verified_bridge_repair_rejects_stale_authorization_before_history
 ) -> None:
     payload, expected, bridge_path = _verified_fixture(tmp_path)
     authorization = cast(dict[str, object], payload["repair_authorization"])
-    authorization["observed_digest"] = "0" * 64
+    defect = cast(dict[str, object], authorization["defect"])
+    defect["observed_digest"] = "0" * 64
     stage = tmp_path / ".stage"
     _write(stage, bridge_path, expected)
 

@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import cast
-from uuid import UUID
 
 import yaml
 from pydantic import BaseModel, ValidationError
@@ -1007,18 +1006,11 @@ def _verified_materials(
     return admission.closed_mapping, projected, verdict
 
 
-def _defect_execution_id(attempt_digest: str) -> str:
-    raw = bytearray.fromhex(attempt_digest[:32])
-    raw[6] = (raw[6] & 0x0F) | 0x40
-    raw[8] = (raw[8] & 0x3F) | 0x80
-    return str(UUID(bytes=bytes(raw)))
-
-
 def _generation_defect_materials(
     root: Path,
     request: MaterializeAssessmentInputV1,
     cycle: VerifiedIncompleteExecutionV1,
-) -> tuple[ClosedMappingV1, ExecutionEvidenceV1, VerificationVerdictV1]:
+) -> tuple[ClosedMappingV1, VerificationVerdictV1]:
     """Re-diagnose the exact generation-owned defect before quality classifies it."""
 
     defect = cycle.defect
@@ -1043,7 +1035,6 @@ def _generation_defect_materials(
         plan = next(item for item in plans.cases if item.case_id == defect.case_id)
     except StopIteration:
         raise AssessmentInputError("bridge defect case is absent from the machine plan") from None
-    execution_id = _defect_execution_id(defect.attempt_key.digest)
     obligations = tuple(
         VerificationObligationV1(
             obligation_id=obligation_id,
@@ -1058,7 +1049,7 @@ def _generation_defect_materials(
     )
     verdict = VerificationVerdictV1(
         validation_profile=defect.validation_profile,
-        execution_id=execution_id,
+        execution_id=None,
         case_id=defect.case_id,
         verdict="INCOMPLETE",
         required=len(obligations),
@@ -1069,51 +1060,7 @@ def _generation_defect_materials(
         reason_codes=("verification.required_evidence_missing",),
         repairable_bridge_defect=True,
     )
-    selected = SelectedTargets(
-        api=any(item.layer == "api" for item in mapping.mappings),
-        e2e=any(item.layer == "e2e" for item in mapping.mappings),
-        fuzz=any(item.layer == "fuzz" for item in mapping.mappings),
-        performance=any(item.layer == "performance" for item in mapping.mappings),
-    )
-    commands = tuple(
-        ExecutionCommandReceiptV1(
-            family=family,
-            command=("pytest",) if family != "performance" else ("locust",),
-            exit_code=1,
-            collected=sum(item.layer == family for item in mapping.mappings),
-            passed=0,
-            failed=sum(item.layer == family for item in mapping.mappings),
-            skipped=0,
-        )
-        for family in _FAMILY_ORDER
-        if getattr(selected, family)
-    )
-    evidence = ExecutionEvidenceV1(
-        status="failed",
-        change_id=cycle.change_id,
-        batch_id=cycle.batch_id,
-        selected_targets=selected,
-        mapping=mapping,
-        baseline_tree_id=defect.generation.mapping_ref.digest,
-        runner_profile_digest=defect.attempt_key.digest,
-        receipt=ExecutionReceiptV1(commands=commands),
-        results=tuple(
-            RawTestResultV1(
-                test=item.test,
-                case_id=item.case_id,
-                status="failed",
-                duration_ms=0,
-                message="deterministic generated bridge admission defect",
-            )
-            for item in mapping.mappings
-        ),
-        plan_digest=cycle.plan_digest,
-        plan_ref=cycle.plan_ref,
-        executed_at=cycle.executed_at,
-        mapping_digest=defect.generation.mapping_ref.digest,
-        receipt_digest=cycle.receipt.receipt_digest,
-    )
-    return mapping, evidence, verdict
+    return mapping, verdict
 
 
 def materialize_assessment_inputs(
@@ -1156,12 +1103,15 @@ def materialize_assessment_inputs(
     case_ids = frozenset(case.case_id for case in cases)
     capability_leafs = frozenset(key for case in cases for key in case.trace)
     verification: VerificationVerdictV1 | None = None
+    incomplete_execution: VerifiedIncompleteExecutionV1 | None = None
     if isinstance(request.execution, VerifiedIncompleteExecutionV1):
-        mapping, evidence, verification = _generation_defect_materials(
+        mapping, verification = _generation_defect_materials(
             project_root,
             request,
             request.execution,
         )
+        evidence = None
+        incomplete_execution = request.execution
     elif isinstance(request.execution, VerifiedExecutionCycleResultV1):
         mapping, evidence, verification = _verified_materials(
             project_root,
@@ -1250,6 +1200,10 @@ def materialize_assessment_inputs(
             change_id=request.reviewed_case.change_id,
             batch_id=request.execution.batch_id,
             closed_mapping=mapping.selected,
+            case_covering={
+                case_id: tuple(item.test for item in mapping.mappings if item.case_id == case_id)
+                for case_id in case_ids
+            },
             cases=trace_cases,
             capability_leafs=tuple(sorted(capability_leafs)),
             case_ids=tuple(sorted(case_ids)),
@@ -1307,7 +1261,11 @@ def materialize_assessment_inputs(
         required_layers={obligation.key: obligation.layer for obligation in obligations},
     )
     goals = tuple(goal for goal in _GOAL_ORDER if reviewed_goal_maps[cast(CoverageGoal, goal)])
-    selected = {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
+    selected = (
+        {item.layer for item in mapping.mappings}
+        if evidence is None
+        else {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
+    )
     applicability_refs = (
         *request.reviewed_case.preparation_refs,
         plan.quality_goal.obligations_ref,
@@ -1362,8 +1320,13 @@ def materialize_assessment_inputs(
         execution_ref=(
             request.execution.execution_index_ref
             if isinstance(request.execution, VerifiedExecutionCycleResultV1)
-            else request.execution.evidence_ref
+            else (
+                None
+                if isinstance(request.execution, VerifiedIncompleteExecutionV1)
+                else request.execution.evidence_ref
+            )
         ),
+        incomplete_execution=incomplete_execution,
         verification_ref=verification_ref,
         healing_ref=request.healing_ref,
         issue_ref=request.issue_ref,

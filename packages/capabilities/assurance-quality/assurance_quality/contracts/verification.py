@@ -29,8 +29,8 @@ class VerificationObligationV1(FrozenModel):
 class VerificationVerdictV1(FrozenModel):
     schema_version: Literal["1"] = "1"
     validation_profile: ValidationProfile
-    execution_id: str = Field(
-        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    execution_id: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     )
     case_id: str = Field(min_length=1)
     verdict: VerificationStatus
@@ -81,6 +81,8 @@ class VerificationVerdictV1(FrozenModel):
             raise ValueError("verification verdict contradicts obligation and completion facts")
         if self.repairable_bridge_defect and self.verdict != "INCOMPLETE":
             raise ValueError("repairable bridge defect must be incomplete")
+        if (self.execution_id is None) != self.repairable_bridge_defect:
+            raise ValueError("only a pre-dispatch bridge defect can omit execution_id")
         reason_facts = {
             "verification.business_violation": business_violated,
             "verification.required_evidence_missing": unavailable,

@@ -14,7 +14,7 @@ from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.execution_plan import ValidationProfile
 from assurance_generation.contracts.families import LayerName
-from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1, VerifiedGenerationDefectV1
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
@@ -31,15 +31,47 @@ class RepairAuthorizationV1(FrozenModel):
     attempt_key: AttemptKey
     invocation_id: str = Field(min_length=1)
     semantic_node_id: Literal["execution.execute"]
-    coverage_epoch: int = Field(ge=0)
-    repair_round: Literal[0] = 0
-    generation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    case_id: str = Field(min_length=1)
-    bridge_symbol: str = Field(min_length=1)
-    bridge_ref: EvidenceArtifactRefV1
-    observed_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    defect: VerifiedGenerationDefectV1
     receipt: ReceiptRef
+
+    @model_validator(mode="after")
+    def _bind_attempt(self) -> Self:
+        if self.attempt_key != self.defect.attempt_key:
+            raise ValueError("repair authorization defect uses another Attempt")
+        return self
+
+    @property
+    def coverage_epoch(self) -> int:
+        return self.defect.generation.coverage_epoch
+
+    @property
+    def repair_round(self) -> int:
+        return self.defect.repair_round
+
+    @property
+    def generation_digest(self) -> str:
+        payload: JSONValue = self.defect.generation.model_dump(mode="json")
+        return canonical_digest(payload)
+
+    @property
+    def case_id(self) -> str:
+        return self.defect.case_id
+
+    @property
+    def bridge_symbol(self) -> str:
+        return self.defect.bridge_symbol
+
+    @property
+    def bridge_ref(self) -> EvidenceArtifactRefV1:
+        return self.defect.bridge_ref
+
+    @property
+    def observed_digest(self) -> str | None:
+        return self.defect.observed_digest
+
+    @property
+    def expected_digest(self) -> str:
+        return self.defect.expected_digest
 
 
 def _canonical_paths(values: tuple[str, ...], *, required: bool) -> tuple[str, ...]:

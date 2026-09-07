@@ -13,7 +13,6 @@ from assurance_execution.graphs.nodes import activation_execute, select_execute
 from assurance_healing.contracts.application import RepairAuthorizationV1
 from assurance_quality.contracts.assessment import InspectionOutcomeV1
 from graph_engine.attempts import derive_attempt_key
-from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 
@@ -92,21 +91,12 @@ class RepairAuthorizationIssuer:
         ):
             raise ValueError("bridge repair does not match the committed execution Attempt")
 
-        defect = execution.defect
-        generation_payload: JSONValue = defect.generation.model_dump(mode="json")
         return RepairAuthorizationV1(
             attempt_key=attempt_key,
             invocation_id=self.invocation_id,
             semantic_node_id=_SEMANTIC_NODE_ID,
-            coverage_epoch=defect.generation.coverage_epoch,
-            repair_round=defect.repair_round,
-            generation_digest=canonical_digest(generation_payload),
-            case_id=defect.case_id,
-            bridge_symbol=defect.bridge_symbol,
-            bridge_ref=defect.bridge_ref,
-            observed_digest=defect.observed_digest,
-            expected_digest=defect.expected_digest,
-            receipt=ReceiptRef.model_validate(receipt),
+            defect=execution.defect,
+            receipt=receipt,
         )
 
 

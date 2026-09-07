@@ -467,12 +467,31 @@ def test_authenticated_generated_bridge_defect_is_the_only_repairable_incomplete
         write_root=tmp_path,
     )
 
+    assert assessment.execution_ref is None
+    assert assessment.incomplete_execution == cycle
     assert assessment.verification_ref is not None
     verdict = VerificationVerdictV1.model_validate_json(
         (tmp_path / assessment.verification_ref.path).read_bytes()
     )
     assert verdict.verdict == "INCOMPLETE"
+    assert (verdict.required, verdict.executed, verdict.evaluated, verdict.satisfied) == (
+        len(verdict.obligations),
+        0,
+        0,
+        0,
+    )
+    assert all(
+        obligation.evidence_status == "missing" and obligation.business_status == "not_evaluated"
+        for obligation in verdict.obligations
+    )
     assert verdict.repairable_bridge_defect
+    trace = json.loads((tmp_path / assessment.trace_ref.path).read_bytes())
+    assert all(
+        not row["covering_tests"]
+        and row["latest_execution"] is None
+        and row["presence_in_current_batch"] == "not_in_current_batch"
+        for row in trace["rows"]
+    )
     facts = verification_failure_facts(verdict)
     assert facts.repairable_failure and not facts.blocking_failure
     assert classify_inspection_disposition(facts=facts, coverage_state=None) == (

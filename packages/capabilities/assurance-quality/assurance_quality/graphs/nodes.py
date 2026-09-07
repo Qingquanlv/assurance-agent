@@ -154,7 +154,7 @@ def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
     assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
     digests = {
-        "execution_digest": assessment.execution_ref.digest,
+        "execution_digest": assessment.execution_digest,
         "healing_digest": assessment.healing_ref.digest if assessment.healing_ref is not None else None,
         "trace_digest": assessment.trace_ref.digest,
         "coverage_digest": assessment.gaps_ref.digest,
@@ -219,17 +219,7 @@ def publish_materialize_assessment(
     assessment = AssessmentInputsV1.model_validate(output)
     return {
         "assessment_inputs": assessment.model_dump(mode="json"),
-        "evidence_refs": [
-            ref.model_dump(mode="json")
-            for ref in (
-                assessment.trace_ref,
-                assessment.gaps_ref,
-                assessment.metrics_ref,
-                assessment.sufficiency_ref,
-                assessment.execution_ref,
-                *(() if assessment.verification_ref is None else (assessment.verification_ref,)),
-            )
-        ],
+        "evidence_refs": [ref.model_dump(mode="json") for ref in assessment.artifact_refs()],
     }
 
 
@@ -297,14 +287,7 @@ def publish_inspect(
     assessment_refs = tuple(
         sorted(
             (
-                assessment.trace_ref,
-                assessment.gaps_ref,
-                assessment.metrics_ref,
-                assessment.sufficiency_ref,
-                assessment.execution_ref,
-                *(() if assessment.verification_ref is None else (assessment.verification_ref,)),
-                *(() if assessment.healing_ref is None else (assessment.healing_ref,)),
-                *(() if assessment.issue_ref is None else (assessment.issue_ref,)),
+                *assessment.artifact_refs(),
                 finalized.fact_baseline_ref,
             ),
             key=lambda item: (item.path, item.digest),

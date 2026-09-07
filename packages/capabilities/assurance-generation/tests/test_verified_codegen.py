@@ -11,7 +11,7 @@ from tests.product.test_change_local_output_routing import dual_roots, execute_t
 from tests.verified_generation_fixture import accepted_verified_execution_input
 
 from assurance_generation.contracts.execution_plan import CasePlanContextV1, CaseExecutionPlanSetV1
-from assurance_generation.operations.codegen import CodegenFinalizeHandler
+from assurance_generation.operations.codegen import CodegenFinalizeHandler, CodegenFixFinalizeHandler
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from codegen_fixtures import fake_agent_result  # pyright: ignore[reportMissingImports]
 from planning_fixtures import VALID_LEAFS  # pyright: ignore[reportMissingImports]
@@ -71,6 +71,7 @@ async def _finalize(
     *,
     mutate_mapping: Callable[[dict[str, Any]], None] | None = None,
     source: str | None = None,
+    fix: bool = False,
 ):
     project, write_root = dual_roots(tmp_path, "CH-USER-001")
     context, machine_ref, spec_digest = _verified_inputs(project, write_root)
@@ -111,8 +112,10 @@ async def _finalize(
             "case_execution_plan_digest": machine_ref.digest,
         }
     )
+    if fix:
+        finalize.update(allowed_paths=[target], baseline_tree_id="0" * 64)
     return await execute_task(
-        CodegenFinalizeHandler("api"),
+        CodegenFixFinalizeHandler("api") if fix else CodegenFinalizeHandler("api"),
         finalize,
         project,
         write_root=write_root,
@@ -127,6 +130,16 @@ async def test_verified_codegen_accepts_only_the_frozen_bridge_entry(tmp_path: P
     output = cast(dict[str, Any], outcome.output)
     assert output["mapping"]["validation_profile"] == "api_db.v1"
     assert output["mapping"]["case_execution_plan_digest"] != output["mapping"]["plan_digest"]
+
+
+@pytest.mark.asyncio
+async def test_verified_codegen_fix_reuses_deterministic_admission(tmp_path: Path) -> None:
+    outcome = await _finalize(tmp_path, fix=True)
+
+    assert outcome.status == "succeeded", outcome.failure
+    output = cast(dict[str, Any], outcome.output)
+    assert output["family"] == "api"
+    assert output["mapping"]["validation_profile"] == "api_db.v1"
 
 
 @pytest.mark.asyncio

@@ -318,6 +318,7 @@ def test_blocking_failure_precedes_repairable_failure() -> None:
 
 def test_adversarial_counterexample_is_a_blocking_failure(tmp_path: Path) -> None:
     business = _assessment_business(tmp_path)
+    assert business.assessment.execution_ref is not None
     execution = ExecutionEvidenceV1.model_validate_json(
         (tmp_path / business.assessment.execution_ref.path).read_bytes()
     )
@@ -344,6 +345,7 @@ def test_required_missing_adversarial_evidence_makes_assessment_incomplete(
     tmp_path: Path,
 ) -> None:
     business = _assessment_business(tmp_path)
+    assert business.assessment.execution_ref is not None
     execution = ExecutionEvidenceV1.model_validate_json(
         (tmp_path / business.assessment.execution_ref.path).read_bytes()
     )
@@ -442,7 +444,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
         "inspect_mode": "primary",
         "classification_performed": True,
         "status": "no_failures",
-        "execution_digest": assessment.execution_ref.digest,
+        "execution_digest": assessment.execution_digest,
         "healing_digest": None,
         "trace_digest": assessment.trace_ref.digest,
         "coverage_digest": assessment.gaps_ref.digest,

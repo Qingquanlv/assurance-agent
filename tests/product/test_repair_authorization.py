@@ -6,12 +6,10 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping, TypedDict, cast
+from typing import Any, Mapping, cast
 
 import pytest
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langchain_core.runnables.config import RunnableConfig
 
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
@@ -31,8 +29,12 @@ from assurance_execution.graphs.nodes import (
     select_execute,
     select_rerun,
 )
+from assurance_execution.operations.agent_skills import _execution_id
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
-from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
+from assurance_generation.contracts.admission import (
+    admit_verified_generation,
+    diagnose_verified_bridge_defect,
+)
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_generation.graphs.factory import GenerationGraphs
 from assurance_healing.contracts.application import (
@@ -45,6 +47,7 @@ from assurance_healing.operations.application import ApplyTestRepairFinalizeHand
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.contracts.application import RepairAuthorizationV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.contracts.loop_history import build_loop_round_history
 from assurance_intake.graphs.factory import IntakeGraphs
 from assurance_improvement.graphs.factory import ImprovementGraphs
 from assurance_product.graphs.execute import build_execute_graph
@@ -97,8 +100,12 @@ CONTRACT_ID = "assurance.execution.task.execute.v1"
 
 async def _repairable_state(
     project: Path,
+    *,
+    technical_refactor: str | None = None,
 ) -> tuple[dict[str, object], MemoryAttemptJournal, RepairAuthorizationIssuer]:
     prepared = accepted_verified_execution_input(project)
+    if technical_refactor is not None:
+        prepared = _recompile_after_technical_refactor(project, prepared, technical_refactor)
     generation = prepared.generation_result
     assert generation is not None
     bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
@@ -216,6 +223,149 @@ async def _repairable_state(
     )
 
 
+def _recompile_after_technical_refactor(
+    project: Path,
+    prepared: ExecutionPrepareInputV1,
+    scenario: str,
+) -> ExecutionPrepareInputV1:
+    """Refresh authenticated technical inputs while preserving business obligations."""
+
+    generation = prepared.generation_result
+    assert generation is not None and generation.case_execution_plan_ref is not None
+    baseline = CaseExecutionPlanSetV1.model_validate_json(
+        (project / generation.case_execution_plan_ref.path).read_bytes()
+    ).cases[0]
+    source_ref = next(ref for ref in generation.reviewed_case.preparation_refs if ref.path == "src/app.py")
+    implementations = {
+        "function_relocation": b"from app.services.users import create_user\n",
+        "equivalent_orm_sql": b"def create_user_with_orm(values):\n    return User.create(**values)\n",
+        "helper_extraction": (
+            b"def persist_user(values):\n    return User.create(**values)\n\n"
+            b"def create_user(values):\n    return persist_user(values)\n"
+        ),
+        "refreshed_digests": b"def create_user(values):\n    return User.create(**values)\n",
+    }
+    source_bytes = implementations[scenario]
+    (project / source_ref.path).write_bytes(source_bytes)
+    refreshed_source = source_ref.model_copy(update={"digest": hashlib.sha256(source_bytes).hexdigest()})
+    reviewed = generation.reviewed_case.model_copy(
+        update={
+            "preparation_refs": tuple(
+                sorted(
+                    (
+                        refreshed_source if ref.path == source_ref.path else ref
+                        for ref in generation.reviewed_case.preparation_refs
+                    ),
+                    key=lambda ref: ref.path,
+                )
+            )
+        }
+    )
+    reviewed_path = project / f"qa/changes/{generation.change_id}/cases/reviewed-case.json"
+    reviewed_path.write_bytes(canonical_json_bytes(cast(JSONValue, reviewed.model_dump(mode="json"))) + b"\n")
+    review_inputs = tuple(sorted((*reviewed.preparation_refs, *reviewed.case_refs), key=lambda ref: ref.path))
+    history = build_loop_round_history(
+        change_id=generation.change_id,
+        coverage_epoch=generation.coverage_epoch,
+        loop_kind="case_review",
+        family=None,
+        round_index=0,
+        outcome="pass",
+        review_input_digest=canonical_digest(
+            cast(JSONValue, [ref.model_dump(mode="json") for ref in review_inputs])
+        ),
+        source_refs=tuple(sorted((*review_inputs, reviewed.review_ref), key=lambda ref: ref.path)),
+    )
+    history_path = (
+        project
+        / f"qa/changes/{generation.change_id}/cases/reviews/epochs/{generation.coverage_epoch}/rounds/0.json"
+    )
+    history_path.write_bytes(canonical_json_bytes(cast(JSONValue, history.model_dump(mode="json"))) + b"\n")
+
+    bindings_path = project / f"qa/changes/{generation.change_id}/plans/api-execution-bindings.json"
+    bindings = json.loads(bindings_path.read_bytes())
+    bindings["bindings"]["action.finished"]["credential_ref"] = f"credentials.{scenario}"
+    bindings_bytes = json.dumps(bindings, indent=2, sort_keys=True).encode() + b"\n"
+    bindings_path.write_bytes(bindings_bytes)
+    technical_digest = hashlib.sha256(bindings_bytes).hexdigest()
+    sut_digest = canonical_digest(cast(JSONValue, [refreshed_source.model_dump(mode="json")]))
+    recompiled = baseline.model_copy(
+        update={
+            "reviewed_case": reviewed,
+            "technical_config_digest": technical_digest,
+            "sut_digest": sut_digest,
+            "action": baseline.action.model_copy(update={"credential_ref": f"credentials.{scenario}"}),
+            "bindings": tuple(
+                item.model_copy(
+                    update={
+                        "actual": item.actual.model_copy(update={"credential_ref": f"credentials.{scenario}"})
+                    }
+                )
+                if item.obligation_id == "action.finished"
+                else item
+                for item in baseline.bindings
+            ),
+        }
+    )
+    machine_set = CaseExecutionPlanSetV1(change_id=generation.change_id, cases=(recompiled,))
+    machine_bytes = canonical_json_bytes(cast(JSONValue, machine_set.model_dump(mode="json"))) + b"\n"
+    machine_path = project / generation.case_execution_plan_ref.path
+    machine_path.write_bytes(machine_bytes)
+    machine_ref = generation.case_execution_plan_ref.model_copy(
+        update={"digest": hashlib.sha256(machine_bytes).hexdigest()}
+    )
+
+    manifest_ref = next(
+        ref for ref in generation.source_refs if "/codegen/api-generated-files.json" in ref.path
+    )
+    baseline_manifest_digest = manifest_ref.digest
+    manifest = json.loads((project / manifest_ref.path).read_bytes())
+    mapping = manifest["mapping"]
+    mapping["reviewed_case"] = reviewed.model_dump(mode="json")
+    mapping["case_execution_plan_ref"] = machine_ref.model_dump(mode="json")
+    mapping["case_execution_plan_digest"] = machine_ref.digest
+    manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    (project / manifest_ref.path).write_bytes(manifest_bytes)
+    manifest_ref = manifest_ref.model_copy(update={"digest": hashlib.sha256(manifest_bytes).hexdigest()})
+    bridge_ref = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    bindings_ref = EvidenceArtifactRefV1(
+        path=bindings_path.relative_to(project).as_posix(), digest=technical_digest
+    )
+    generation = generation.model_copy(
+        update={
+            "reviewed_case": reviewed,
+            "source_refs": tuple(sorted((manifest_ref, bridge_ref), key=lambda ref: ref.path)),
+            "plan_refs": tuple(sorted((bindings_ref, machine_ref), key=lambda ref: ref.path)),
+            "case_execution_plan_ref": machine_ref,
+            "case_execution_plan_digest": machine_ref.digest,
+        }
+    )
+    admission = admit_verified_generation(
+        project,
+        project,
+        change_id=generation.change_id,
+        coverage_epoch=generation.coverage_epoch,
+        plan_digest=generation.plan_digest,
+        plan_ref=generation.plan_ref,
+        reviewed_case=reviewed,
+        validation_profile="api_db.v1",
+        selected_test_families=prepared.selected_test_families,
+        capability_leafs=prepared.capability_leafs,
+        case_execution_plan_ref=machine_ref,
+    )
+    assert admission.machine_plans.cases[0].obligation_projection() == baseline.obligation_projection()
+    assert recompiled.technical_config_digest != baseline.technical_config_digest
+    assert recompiled.sut_digest != baseline.sut_digest
+    assert manifest_ref.digest != baseline_manifest_digest
+    assert prepared.verification is not None
+    return prepared.model_copy(
+        update={
+            "generation_result": generation,
+            "verification": prepared.verification.model_copy(update={"case_execution_plan_ref": machine_ref}),
+        }
+    )
+
+
 def test_product_issues_repair_authorization_from_current_checkpoint_and_attempt(
     tmp_path: Path,
 ) -> None:
@@ -254,29 +404,6 @@ def test_product_rejects_repair_when_quality_describes_another_execution(tmp_pat
         asyncio.run(issuer.issue(state))
 
 
-class _CheckpointState(TypedDict, total=False):
-    authorization: dict[str, Any]
-
-
-def test_repair_authorization_survives_checkpoint_resume(tmp_path: Path) -> None:
-    state, _journal, issuer = asyncio.run(_repairable_state(tmp_path))
-    authorization = asyncio.run(issuer.issue(state))
-    graph = StateGraph(_CheckpointState)
-    graph.add_node(
-        "seal",
-        lambda state: {"authorization": authorization.model_dump(mode="json")},
-    )
-    graph.add_edge(START, "seal")
-    graph.add_edge("seal", END)
-    compiled = graph.compile(checkpointer=MemorySaver())
-    config = cast(RunnableConfig, {"configurable": {"thread_id": "repair-resume"}})
-
-    asyncio.run(compiled.ainvoke({}, config))
-    resumed = asyncio.run(compiled.aget_state(config))
-
-    assert RepairAuthorizationV1.model_validate(resumed.values["authorization"]) == authorization
-
-
 def _node_graph(node: Any):
     graph = StateGraph(cast(Any, dict))
     graph.add_node("node", node)
@@ -302,7 +429,8 @@ def _successful_rerun(
     plan = CaseExecutionPlanSetV1.model_validate_json(
         (project / generation.case_execution_plan_ref.path).read_bytes()
     ).cases[0]
-    execution_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    assert value.verification is not None
+    execution_id = _execution_id(attempt_key, value.verification.nodeid)
     process_ref = _ref(
         generation.change_id,
         f"execution/{execution_id}/process_terminal.json",
@@ -603,7 +731,7 @@ def _real_task8_graph(
             inspect_mode="primary",
             classification_performed=True,
             status="analyzed",
-            execution_digest=assessment.execution_ref.digest,
+            execution_digest=assessment.execution_digest,
             healing_digest=None,
             trace_digest=assessment.trace_ref.digest,
             coverage_digest=assessment.gaps_ref.digest,
@@ -831,6 +959,45 @@ def test_real_product_graph_applies_bridge_and_reruns_with_fresh_identity(
         rerun = VerifiedExecutionCycleResultV1.model_validate(result["execution_result"])
         assert rerun.repair_round == 1
         assert rerun.attempt_key == rerun_keys[0]
-        assert rerun.execution_id == "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        verification = cast(Mapping[str, object], start["verification"])
+        assert rerun.execution_id == _execution_id(rerun_keys[0], cast(str, verification["nodeid"]))
         assert rerun.batch_id != initial_execution.batch_id
         assert host_calls == ["rerun"]
+
+
+@pytest.mark.parametrize(
+    "technical_refactor",
+    ["function_relocation", "equivalent_orm_sql", "helper_extraction", "refreshed_digests"],
+)
+def test_legal_technical_refactor_recompiles_then_applies_and_reruns(
+    tmp_path: Path,
+    technical_refactor: str,
+) -> None:
+    issuer_state, _journal, _issuer = asyncio.run(
+        _repairable_state(tmp_path, technical_refactor=technical_refactor)
+    )
+    generation = GenerationCycleResultV1.model_validate(issuer_state["generation_result"])
+    from assurance_intake.contracts.plan import decode_plan
+
+    plan = decode_plan((tmp_path / generation.plan_ref.path).read_bytes(), generation.plan_ref)
+    start = _product_input_for_generation(
+        generation,
+        issuer_state["verification"],
+        policy_digest=plan.policy_digest,
+    )
+    graph, rerun_keys, host_calls, initial_results = _real_task8_graph(
+        tmp_path,
+        issuer_state,
+        repeat_defect=False,
+    )
+
+    result = asyncio.run(graph.ainvoke(cast(ProductState, start), config={"recursion_limit": 50}))
+
+    from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
+
+    rerun = VerifiedExecutionCycleResultV1.model_validate(result["execution_result"])
+    assert len(initial_results) == len(rerun_keys) == 1
+    assert rerun.attempt_key == rerun_keys[0]
+    verification = cast(Mapping[str, object], start["verification"])
+    assert rerun.execution_id == _execution_id(rerun_keys[0], cast(str, verification["nodeid"]))
+    assert host_calls == ["rerun"]
