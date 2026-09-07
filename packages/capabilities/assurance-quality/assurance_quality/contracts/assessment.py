@@ -221,15 +221,11 @@ class FinalizedInspectionV1(FrozenModel):
         if (self.assessment.verification_ref is None) != (self.verification is None):
             raise ValueError("inspection verification must match assessment mode")
         if self.verification is not None:
-            repairable_bridge = (
-                self.verification.verdict == "INCOMPLETE"
-                and "verification.generated_bridge_missing" in self.verification.reason_codes
-            )
             expected_facts = FailureClassificationFactsV1(
                 identity_valid=True,
-                blocking_failure=self.verification.verdict == "INCOMPLETE" and not repairable_bridge,
+                blocking_failure=self.verification.verdict == "INCOMPLETE",
                 needs_human=self.verification.verdict == "FAILED",
-                repairable_failure=repairable_bridge,
+                repairable_failure=False,
             )
             if self.failure_facts != expected_facts:
                 raise ValueError("inspection failure facts contradict verification")
@@ -290,19 +286,13 @@ class InspectionOutcomeV1(FrozenModel):
         expected_dispositions = {
             "PASSED": {"satisfied", "coverage_insufficient", "blocked"},
             "FAILED": {"needs_human"},
-            "INCOMPLETE": {"blocked", "repairable_execution_failure"},
+            "INCOMPLETE": {"blocked"},
         }
         if (
             self.verification_status is not None
             and self.disposition not in expected_dispositions[self.verification_status]
         ):
             raise ValueError("inspection disposition contradicts verification status")
-        if (
-            self.verification_status is not None
-            and self.disposition == "repairable_execution_failure"
-            and "verification.generated_bridge_missing" not in self.reason_codes
-        ):
-            raise ValueError("repairable verification requires a proven generated bridge defect")
         return self
 
 

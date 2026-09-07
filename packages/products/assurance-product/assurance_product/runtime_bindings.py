@@ -751,6 +751,24 @@ def _resolve_task_contract(
             ),
             validation_context=validation_context,
         )
+    from assurance_product.verification_quality import CONTRACT_ID, ProfiledAssessmentExecutor
+
+    if contract.contract_id == CONTRACT_ID:
+        config, digest = verification_configuration(composition)
+        if config.validation_profile is not None:
+            handler, callable_path = _installed_handler(composition, contract.handler_id)
+            return resolve_contract(
+                contract,
+                executor=ProfiledAssessmentExecutor(
+                    config=config,
+                    config_digest=digest,
+                    legacy=None,
+                    handler_id=contract.handler_id,
+                    handler=handler,
+                    callable_path=callable_path,
+                ),
+                validation_context=validation_context,
+            )
     handler = composition.registries.capabilities.task_handlers[contract.handler_id]
     return resolve_contract(
         contract,

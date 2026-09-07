@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from assurance_execution.contracts.verification import VerificationEvidenceV1
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1
 from assurance_intake.contracts.verification import InputExpectedV1, LiteralExpectedV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.verification import (
     VerificationObligationV1,
     VerificationVerdictV1,
     VerificationStatus,
 )
+from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.frozen_json import thaw_json
 
 
 def _expected(plan: CaseExecutionPlanV1, obligation_id: str) -> tuple[Literal["business", "completion"], Any]:
@@ -97,7 +100,9 @@ def evaluate_verification(
             complete = False
             unavailable = True
             continue
-        holds = observation.actual == expected
+        holds = canonical_json_bytes(cast(JSONValue, thaw_json(observation.actual))) == canonical_json_bytes(
+            cast(JSONValue, thaw_json(expected))
+        )
         if not holds:
             if kind == "business":
                 business_violated = True
@@ -168,15 +173,65 @@ def verification_failure_facts(verdict: VerificationVerdictV1):
 
     from assurance_quality.contracts.assessment import FailureClassificationFactsV1
 
-    repairable_bridge = (
-        verdict.verdict == "INCOMPLETE" and "verification.generated_bridge_missing" in verdict.reason_codes
-    )
     return FailureClassificationFactsV1(
         identity_valid=True,
-        blocking_failure=verdict.verdict == "INCOMPLETE" and not repairable_bridge,
+        blocking_failure=verdict.verdict == "INCOMPLETE",
         needs_human=verdict.verdict == "FAILED",
-        repairable_failure=repairable_bridge,
+        repairable_failure=False,
     )
 
 
-__all__ = ["evaluate_verification", "reduce_verdict", "verification_failure_facts"]
+def _markdown_cell(value: object) -> str:
+    encoded = canonical_json_bytes(cast(JSONValue, thaw_json(value))).decode("utf-8")
+    return encoded.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "\\n")
+
+
+def render_verification_report_section(
+    verdict: VerificationVerdictV1,
+    verification_ref: EvidenceArtifactRefV1,
+) -> str:
+    """Render the reserved report section from one authenticated verdict artifact."""
+
+    lines = [
+        "## Deterministic business verification",
+        "",
+        f"- Artifact: `{verification_ref.path}`",
+        f"- Digest: `{verification_ref.digest}`",
+        f"- Profile: `{verdict.validation_profile}`",
+        f"- Execution: `{verdict.execution_id}`",
+        f"- Case: `{verdict.case_id}`",
+        f"- Verdict: **{verdict.verdict}**",
+        (
+            "- Counts: "
+            f"required={verdict.required}, executed={verdict.executed}, "
+            f"evaluated={verdict.evaluated}, satisfied={verdict.satisfied}"
+        ),
+        "",
+        "| Obligation | Kind | Evidence | Business | Expected | Actual | Reason |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for item in verdict.obligations:
+        lines.append(
+            "| "
+            + " | ".join(
+                (
+                    _markdown_cell(item.obligation_id),
+                    item.kind,
+                    item.evidence_status,
+                    item.business_status,
+                    _markdown_cell(item.expected),
+                    _markdown_cell(item.actual),
+                    _markdown_cell(item.reason),
+                )
+            )
+            + " |"
+        )
+    return "\n".join(lines) + "\n"
+
+
+__all__ = [
+    "evaluate_verification",
+    "reduce_verdict",
+    "render_verification_report_section",
+    "verification_failure_facts",
+]

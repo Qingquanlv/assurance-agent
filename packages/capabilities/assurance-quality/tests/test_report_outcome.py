@@ -8,7 +8,7 @@ import pytest
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.testing import GraphHarness, committed
 from pydantic import ValidationError
 
@@ -24,12 +24,37 @@ from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEM
 from assurance_quality.graphs.factory import build_quality_graphs
 from assurance_quality.graphs.nodes import publish_report, select_report
 from assurance_quality.operations.agent_skills import ReportFinalizeHandler, ReportPrepareHandler
+from assurance_quality.contracts.verification import VerificationObligationV1, VerificationVerdictV1
+from assurance_quality.operations.verification import render_verification_report_section
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 _CHANGE = "CH-REPORT-1"
 _BATCH = "batch-1"
 _BYTES = b"authenticated evidence\n"
 _DIGEST = hashlib.sha256(_BYTES).hexdigest()
+_VERDICT = VerificationVerdictV1(
+    validation_profile="api_db.v1",
+    execution_id="12345678-1234-4123-8123-123456789abc",
+    case_id="CASE-1",
+    verdict="PASSED",
+    required=1,
+    executed=1,
+    evaluated=1,
+    satisfied=1,
+    obligations=(
+        VerificationObligationV1(
+            obligation_id="user.row_count",
+            kind="business",
+            evidence_status="observed",
+            business_status="satisfied",
+            expected=1,
+            actual=1,
+        ),
+    ),
+    reason_codes=(),
+)
+_VERDICT_BYTES = canonical_json_bytes(cast(JSONValue, _VERDICT.model_dump(mode="json")))
+_VERDICT_DIGEST = hashlib.sha256(_VERDICT_BYTES).hexdigest()
 _BINDING: JSONValue = {
     "agent_profile": "aa-reporter",
     "execution": {
@@ -51,7 +76,7 @@ def _receipt(name: str) -> ReceiptRef:
     return ReceiptRef(receipt_id=name, receipt_digest=_DIGEST)
 
 
-def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
+def _state(*, batch_id: str = _BATCH, verified: bool = False) -> dict[str, object]:
     base = f"qa/changes/{_CHANGE}"
     assessment_base = f"{base}/inspect/epochs/0/batches/{batch_id}"
     plan_ref = _ref(f"{base}/plan/{_DIGEST}/resolved-assurance-plan.json")
@@ -98,6 +123,9 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "metrics_ref": _ref(f"{assessment_base}/metrics.json"),
         "sufficiency_ref": _ref(f"{assessment_base}/trace-sufficiency.json"),
         "execution_ref": execution_ref,
+        "verification_ref": (
+            _ref(f"{assessment_base}/verification.json", _VERDICT_DIGEST) if verified else None
+        ),
         "healing_ref": None,
         "issue_ref": None,
     }
@@ -110,8 +138,12 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
             assessment["sufficiency_ref"],
             execution_ref,
             fact_ref,
+            *([] if assessment["verification_ref"] is None else [assessment["verification_ref"]]),
         ],
-        key=lambda item: (item["path"], item["digest"]),
+        key=lambda item: (
+            cast(dict[str, str], item)["path"],
+            cast(dict[str, str], item)["digest"],
+        ),
     )
     inspection = {
         "change_id": _CHANGE,
@@ -124,8 +156,10 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "reviewed_case": reviewed,
         "mapping_ref": mapping_ref,
         "assessment_refs": assessment_refs,
-        "reason_codes": ["coverage.satisfied"],
+        "reason_codes": ([] if verified else ["coverage.satisfied"]),
         "coverage_state": "satisfied",
+        "verification_ref": assessment["verification_ref"],
+        "verification_status": ("PASSED" if verified else None),
     }
     return {
         "change_id": _CHANGE,
@@ -208,7 +242,12 @@ def _write_authenticated_inputs(project: Path, selected: ReportSkillInputV1) -> 
     for ref in refs:
         path = project / ref.path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(_BYTES)
+        path.write_bytes(
+            _VERDICT_BYTES
+            if selected.assessment.verification_ref is not None
+            and ref == selected.assessment.verification_ref
+            else _BYTES
+        )
     policy = project / ".aa/policy.yaml"
     policy.parent.mkdir(parents=True, exist_ok=True)
     policy.write_bytes(_BYTES)
@@ -249,6 +288,31 @@ async def test_report_prepare_authenticates_the_current_inspection_chain(tmp_pat
         binding_data=_BINDING,
     )
     assert prepared.outcome.status == "succeeded", prepared.outcome.failure
+
+
+@pytest.mark.asyncio
+async def test_verified_report_prepare_carries_exact_deterministic_section(tmp_path: Path) -> None:
+    from agent_runtime_contracts import AgentRunRequest
+
+    project, write_root = dual_roots(tmp_path, _CHANGE)
+    selected = cast(ReportSkillInputV1, select_report(_state(verified=True)))
+    _write_authenticated_inputs(project, selected)
+
+    prepared = await execute_task(
+        ReportPrepareHandler(),
+        cast(JSONValue, selected.model_dump(mode="json")),
+        project,
+        write_root=write_root,
+        binding_data=_BINDING,
+    )
+
+    assert prepared.outcome.status == "succeeded", prepared.outcome.failure
+    request = AgentRunRequest.model_validate(prepared.outcome.output)
+    expected = render_verification_report_section(
+        _VERDICT, cast(EvidenceArtifactRefV1, selected.assessment.verification_ref)
+    )
+    assert request.instructions[-1].text_content is not None
+    assert request.instructions[-1].text_content.endswith(expected)
 
 
 @pytest.mark.asyncio
@@ -338,6 +402,38 @@ async def test_report_bytes_are_finalized_then_bound_to_commit_receipt(tmp_path:
     assert outcome.report_receipt == receipt
     assert published["report_refs"] == [ref.model_dump(mode="json") for ref in outcome.report_refs]
     assert published["report_receipt"] == receipt.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_verified_report_finalizer_commits_exact_verdict_section(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path, _CHANGE)
+    selected = cast(ReportSkillInputV1, select_report(_state(verified=True)))
+    _write_authenticated_inputs(project, selected)
+    report_path = f"qa/changes/{_CHANGE}/report/report.md"
+    staged = write_root / report_path
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text("# Agent commentary\n", encoding="utf-8")
+
+    run = await execute_task(
+        ReportFinalizeHandler(),
+        cast(
+            JSONValue,
+            {
+                **selected.model_dump(mode="json"),
+                "agent_result": _agent_result(_raw_report(selected)),
+            },
+        ),
+        project,
+        write_root=write_root,
+    )
+
+    assert run.outcome.status == "succeeded", run.outcome.failure
+    section = render_verification_report_section(
+        _VERDICT, cast(EvidenceArtifactRefV1, selected.assessment.verification_ref)
+    )
+    assert staged.read_text(encoding="utf-8") == "# Agent commentary\n\n" + section
+    finalized = FinalizedReportV1.model_validate(run.outcome.output)
+    assert finalized.report_refs[0].digest == hashlib.sha256(staged.read_bytes()).hexdigest()
 
 
 def test_reported_tail_rejects_previous_batch_or_inspection_receipt() -> None:

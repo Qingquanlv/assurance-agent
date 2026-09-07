@@ -113,6 +113,24 @@ def test_profiles_boot_same_facade_schema_and_change_lock_revision(
             selected.canonical_projection()
             == opencode_composition.semantic_attempt_contracts[name].canonical_projection()
         )
+    quality = profiled_composition.semantic_attempt_contracts[
+        "assurance.quality.materialize-assessment-inputs"
+    ]
+    assert type(quality.executor).__name__ == "ProfiledAssessmentExecutor"
+    assert quality.executor.backend == "verified_host"
+    assert quality.executor._legacy is None
+    expected_handles = (
+        ()
+        if config.host.managed_sut_authority_handle is None
+        else (config.host.managed_sut_authority_handle,)
+    )
+    assert quality.executor._phase._secret_handles == expected_handles
+    assert (
+        quality.canonical_projection()
+        == opencode_composition.semantic_attempt_contracts[
+            "assurance.quality.materialize-assessment-inputs"
+        ].canonical_projection()
+    )
 
 
 def test_profiles_without_prerequisites_are_not_ready(profiled_composition):

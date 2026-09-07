@@ -10,14 +10,17 @@ import pytest
 from assurance_execution.contracts.verification import (
     ObservationV1,
     VerificationEvidenceV1,
+    VerifiedProcessLimitsV1,
 )
+from assurance_execution.operations.verified_execution import ActionJournal
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1, CaseExecutionPlanV1
 from assurance_quality.contracts.verification import VerificationVerdictV1
 from assurance_quality.operations.verification import evaluate_verification
 from assurance_quality.operations.verification import verification_failure_facts
 from assurance_quality.contracts.decisions import classify_inspection_disposition
 from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
-from assurance_quality.operations.assessment import materialize_assessment_inputs
+from assurance_quality.operations.assessment import AssessmentInputError, materialize_assessment_inputs
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.verified_generation_fixture import accepted_verified_execution_input
 from graph_engine.attempts import AttemptKey, BusinessActivation
 from graph_engine.plugin_api import TaskOutcome
@@ -183,6 +186,29 @@ def test_wrong_business_value_fails_even_with_complete_evidence(tmp_path: Path) 
 
     assert verdict.verdict == "FAILED"
     assert verdict.by_id("user.email").business_status == "violated"
+
+
+@pytest.mark.parametrize(
+    ("obligation_id", "confused_value"),
+    (("user.row_count", True), ("api.code", 200.0)),
+)
+def test_json_type_confusion_is_a_business_failure(
+    tmp_path: Path,
+    obligation_id: str,
+    confused_value: object,
+) -> None:
+    plan = _plan(tmp_path)
+    actuals = _actuals(plan)
+    actuals[obligation_id] = confused_value
+
+    verdict = evaluate_verification(
+        plan,
+        _evidence(plan, actuals=actuals),
+        completion_status="collected",
+    )
+
+    assert verdict.verdict == "FAILED"
+    assert verdict.by_id(obligation_id).business_status == "violated"
 
 
 def test_observed_incomplete_action_is_incomplete_not_a_business_failure(tmp_path: Path) -> None:
@@ -351,22 +377,23 @@ def test_only_verification_verdict_controls_failure_disposition(tmp_path: Path) 
     assert not verification_failure_facts(incomplete).repairable_failure
 
 
-def test_only_a_deterministic_generated_bridge_defect_is_repairable(tmp_path: Path) -> None:
+def test_untyped_bridge_reason_cannot_make_verified_incomplete_repairable(tmp_path: Path) -> None:
     plan = _plan(tmp_path)
     incomplete = evaluate_verification(
         plan,
         _evidence(plan, states={"action.finished": "missing"}),
         completion_status="incomplete",
     )
-    bridge = incomplete.model_copy(
-        update={
-            "reason_codes": tuple(sorted({*incomplete.reason_codes, "verification.generated_bridge_missing"}))
+    bridge = VerificationVerdictV1.model_validate(
+        {
+            **incomplete.model_dump(mode="json"),
+            "reason_codes": sorted({*incomplete.reason_codes, "verification.generated_bridge_missing"}),
         }
     )
 
     assert (
         classify_inspection_disposition(facts=verification_failure_facts(bridge), coverage_state=None)
-        == "repairable_execution_failure"
+        == "blocked"
     )
     for reason in (
         "verification.runner_incomplete",
@@ -388,7 +415,9 @@ def _write(root: Path, relative: str, payload: bytes):
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(payload).hexdigest())
 
 
-def test_verified_materialization_authenticates_and_persists_one_verdict(tmp_path: Path) -> None:
+def _materialization_request(
+    tmp_path: Path, *, authenticated: bool
+) -> tuple[MaterializeAssessmentInputV1, object | None, str | None]:
     prepared = accepted_verified_execution_input(tmp_path)
     generation = prepared.generation_result
     assert generation is not None and generation.case_execution_plan_ref is not None
@@ -439,26 +468,146 @@ def test_verified_materialization_authenticates_and_persists_one_verdict(tmp_pat
         f"qa/changes/{plan.change_id}/execution/{execution_id}/manifest.json",
         canonical_json_bytes(cast(JSONValue, manifest.model_dump(mode="json"))),
     )
-    process_ref = _write(
-        tmp_path,
-        f"qa/changes/{plan.change_id}/execution/{execution_id}/process_terminal.json",
-        b"process\n",
-    )
+    authority = None
+    authority_handle = None
+    journal: ActionJournal | None = None
+    if authenticated:
+        from assurance_execution.contracts.verification import (
+            ManagedSutAuthorityV1,
+            VerifiedProcessReceiptV1,
+        )
+
+        token = bytes(range(32))
+        token_path = run_root / ".ownership-token"
+        token_path.write_bytes(token)
+        token_path.chmod(0o600)
+        token_stat = token_path.stat()
+        authority_document = ManagedSutAuthorityV1.model_validate(
+            {
+                "run_root": str(run_root),
+                "ownership_token": {
+                    "path": str(token_path),
+                    "device": token_stat.st_dev,
+                    "inode": token_stat.st_ino,
+                    "digest": f"sha256:{hashlib.sha256(token).hexdigest()}",
+                },
+                "prepare_receipt_digest": "7" * 64,
+                "start_receipt_digest": "8" * 64,
+                "authorization_scope_digest": manifest.authorization_scope_digest,
+                "activity_receipt_digest": manifest.activity_receipt_digest,
+            }
+        )
+
+        class _Secrets:
+            def resolve(self, handle: str) -> bytes:
+                assert handle == "sut.authority"
+                return canonical_json_bytes(cast(JSONValue, authority_document.model_dump(mode="json")))
+
+        authority = _Secrets()
+        authority_handle = "sut.authority"
+        journal = ActionJournal(tmp_path / manifest.evidence_root, manifest, token)
+        journal.write("action_started", {"execution_id": execution_id, "state": "started"})
+        database_identity = {
+            "path": str(sqlite),
+            "device": identity.st_dev,
+            "inode": identity.st_ino,
+        }
+        database_metadata = {"size": identity.st_size, "mtime_ns": identity.st_mtime_ns}
+        journal.write(
+            "action_terminal",
+            {
+                "initial": {
+                    "state": "observed",
+                    "rows": [],
+                    "reason": None,
+                    "database_identity": database_identity,
+                    "database_metadata": database_metadata,
+                },
+                "http": {"state": "observed", "status": 200, "code": 200},
+                "oracle": {
+                    "state": "observed",
+                    "rows": [
+                        {
+                            "username": plan.inputs["username"],
+                            "email": plan.inputs["email"],
+                            "is_active": plan.inputs["is_active"],
+                            "is_superuser": plan.inputs["is_superuser"],
+                            "dept_id": plan.inputs["dept_id"],
+                        }
+                    ],
+                    "reason": None,
+                    "database_identity": database_identity,
+                    "database_metadata": database_metadata,
+                },
+            },
+        )
+        journal.write(
+            "process_terminal",
+            VerifiedProcessReceiptV1(
+                command=("pytest",),
+                limits=VerifiedProcessLimitsV1(),
+                exit_code=0,
+                report={},
+                reason=None,
+                request_count=1,
+                stderr="",
+                cleanup_confirmed=True,
+            ).model_dump(mode="json"),
+        )
+        action_ref = next(
+            EvidenceArtifactRefV1(
+                path=f"{manifest.evidence_root}/{name}.json",
+                digest=hashlib.sha256((journal.root / f"{name}.json").read_bytes()).hexdigest(),
+            )
+            for name in ("action_terminal",)
+        )
+        process_ref = EvidenceArtifactRefV1(
+            path=f"{manifest.evidence_root}/process_terminal.json",
+            digest=hashlib.sha256((journal.root / "process_terminal.json").read_bytes()).hexdigest(),
+        )
+        raw_refs = tuple(
+            sorted(
+                (
+                    EvidenceArtifactRefV1(
+                        path=f"{manifest.evidence_root}/{name}.json",
+                        digest=hashlib.sha256((journal.root / f"{name}.json").read_bytes()).hexdigest(),
+                    )
+                    for name in ("action_started", "action_terminal", "process_terminal")
+                ),
+                key=lambda item: (item.path, item.digest),
+            )
+        )
+    else:
+        process_ref = _write(
+            tmp_path,
+            f"qa/changes/{plan.change_id}/execution/{execution_id}/process_terminal.json",
+            b"process\n",
+        )
+        action_ref = process_ref
+        raw_refs = (process_ref,)
     evidence = _evidence(plan).model_copy(
         update={
             "manifest_digest": manifest_ref.digest,
             "receipt_ref": process_ref,
             "observations": tuple(
-                item.model_copy(update={"evidence_ref": process_ref}) for item in _evidence(plan).observations
+                item.model_copy(update={"evidence_ref": action_ref}) for item in _evidence(plan).observations
             ),
         }
     )
     outcome = TaskOutcome.succeeded(evidence.model_dump(mode="json"))
-    outcome_ref = _write(
-        tmp_path,
-        f"qa/changes/{plan.change_id}/execution/{execution_id}/outcome.json",
-        canonical_json_bytes(cast(JSONValue, outcome.model_dump(mode="json"))),
-    )
+    if authenticated:
+        assert journal is not None
+        journal.write("outcome", outcome.model_dump(mode="json"))
+        outcome_ref = EvidenceArtifactRefV1(
+            path=f"{manifest.evidence_root}/outcome.json",
+            digest=hashlib.sha256((journal.root / "outcome.json").read_bytes()).hexdigest(),
+        )
+    else:
+        outcome_ref = _write(
+            tmp_path,
+            f"qa/changes/{plan.change_id}/execution/{execution_id}/outcome.json",
+            canonical_json_bytes(cast(JSONValue, outcome.model_dump(mode="json"))),
+        )
     verified = VerifiedExecutionResultV1(
         validation_profile=plan.validation_profile,
         change_id=plan.change_id,
@@ -477,7 +626,7 @@ def test_verified_materialization_authenticates_and_persists_one_verdict(tmp_pat
         mapping_digest=generation.mapping_ref.digest,
         manifest_ref=manifest_ref,
         evidence_ref=outcome_ref,
-        raw_evidence_refs=(process_ref,),
+        raw_evidence_refs=raw_refs,
         executed_at=datetime(2026, 9, 6, tzinfo=UTC),
         completion_status="collected",
         evidence=evidence,
@@ -508,11 +657,29 @@ def test_verified_materialization_authenticates_and_persists_one_verdict(tmp_pat
     root_plan = decode_plan((tmp_path / prepared.plan_ref.path).read_bytes(), prepared.plan_ref)
     request = request.model_copy(update={"policy_sha256": root_plan.policy_digest})
 
-    assessment = materialize_assessment_inputs(request, project_root=tmp_path, write_root=tmp_path)
+    return request, authority, authority_handle
+
+
+def test_self_consistent_public_execution_without_host_journal_cannot_pass(tmp_path: Path) -> None:
+    request, _, _ = _materialization_request(tmp_path, authenticated=False)
+
+    with pytest.raises(AssessmentInputError, match="host authority"):
+        materialize_assessment_inputs(request, project_root=tmp_path, write_root=tmp_path)
+
+
+def test_authenticated_host_journal_is_replayed_before_business_pass(tmp_path: Path) -> None:
+    request, authority, authority_handle = _materialization_request(tmp_path, authenticated=True)
+
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=authority_handle,
+    )
 
     assert assessment.verification_ref is not None
     verdict = VerificationVerdictV1.model_validate_json(
         (tmp_path / assessment.verification_ref.path).read_bytes()
     )
     assert verdict.verdict == "PASSED"
-    assert assessment.execution_ref == index_ref

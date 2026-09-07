@@ -154,11 +154,11 @@ def test_publish_inspect_derives_satisfied_without_an_agent_coverage_state() -> 
             ],
             {
                 "identity_valid": True,
-                "blocking_failure": False,
+                "blocking_failure": True,
                 "needs_human": False,
-                "repairable_failure": True,
+                "repairable_failure": False,
             },
-            "repairable_execution_failure",
+            "blocked",
         ),
     ),
 )

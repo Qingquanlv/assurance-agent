@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import re
 from collections.abc import Mapping
 from datetime import datetime
@@ -16,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import SecretPort, TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.execution import (
@@ -27,8 +29,12 @@ from assurance_execution.contracts.execution import (
 from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_execution.contracts.selection import SelectedTargets
 from assurance_execution.contracts.verification import (
+    EvidenceCompletionV1,
+    ManagedSutAuthorityV1,
+    ObservationV1,
     VerificationEvidenceV1,
     VerificationManifestV1,
+    VerifiedProcessReceiptV1,
     VerifiedExecutionResultV1,
 )
 from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
@@ -443,10 +449,254 @@ def _write_document(write_root: Path, path: str, value: BaseModel | JSONValue) -
     return EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(data).hexdigest())
 
 
+_JOURNAL_NAMES = ("action_started", "action_terminal", "process_terminal", "cleanup_terminal")
+
+
+def _host_authority(
+    *, secret_port: SecretPort | None, authority_handle: str | None
+) -> tuple[ManagedSutAuthorityV1, bytes]:
+    if secret_port is None or authority_handle is None:
+        raise AssessmentInputError("verified assessment requires independent host authority")
+    try:
+        authority = ManagedSutAuthorityV1.model_validate_json(secret_port.resolve(authority_handle))
+    except (KeyError, OSError, ValidationError, ValueError, TypeError):
+        raise AssessmentInputError("independent host authority is unavailable or invalid") from None
+    token_path = Path(authority.ownership_token.path)
+    if token_path != Path(authority.run_root) / ".ownership-token":
+        raise AssessmentInputError("independent host authority token path differs from its run root")
+    try:
+        details = token_path.stat()
+        token = token_path.read_bytes()
+    except OSError:
+        raise AssessmentInputError("independent host authority ownership token is unavailable") from None
+    if (
+        token_path.is_symlink()
+        or not token_path.is_file()
+        or details.st_nlink != 1
+        or details.st_uid != os.getuid()
+        or details.st_mode & 0o077
+        or details.st_dev != authority.ownership_token.device
+        or details.st_ino != authority.ownership_token.inode
+        or len(token) != 32
+        or f"sha256:{hashlib.sha256(token).hexdigest()}" != authority.ownership_token.digest
+    ):
+        raise AssessmentInputError("independent host authority ownership token is invalid")
+    return authority, token
+
+
+def _journal_payload(
+    root: Path,
+    ref: EvidenceArtifactRefV1,
+    *,
+    record: str,
+    manifest_digest: str,
+    ownership_token: bytes,
+) -> object:
+    try:
+        document = json.loads(_read_ref(root, ref))
+    except json.JSONDecodeError:
+        raise AssessmentInputError(f"authenticated journal record is not JSON: {record}") from None
+    if not isinstance(document, dict) or set(document) != {
+        "manifest_digest",
+        "record",
+        "payload",
+        "seal",
+    }:
+        raise AssessmentInputError(f"authenticated journal record has an invalid envelope: {record}")
+    seal = document.pop("seal")
+    expected = hmac.new(
+        ownership_token,
+        json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    if (
+        type(seal) is not str
+        or not hmac.compare_digest(seal, expected)
+        or document["manifest_digest"] != manifest_digest
+        or document["record"] != record
+    ):
+        raise AssessmentInputError(f"authenticated journal seal does not match: {record}")
+    return document["payload"]
+
+
+def _exact_keys(value: object, keys: set[str], *, label: str) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise AssessmentInputError(f"authenticated journal payload has an invalid shape: {label}")
+    return value
+
+
+def _sqlite_observation(value: object, *, label: str, allow_skipped: bool) -> dict[str, object]:
+    if not isinstance(value, dict) or type(value.get("state")) is not str:
+        raise AssessmentInputError(f"authenticated journal payload has an invalid shape: {label}")
+    state = value["state"]
+    if state == "skipped" and allow_skipped:
+        row = _exact_keys(value, {"state", "reason", "rows"}, label=label)
+        if type(row["reason"]) is not str or row["rows"] != []:
+            raise AssessmentInputError(f"authenticated journal payload has invalid values: {label}")
+        return row
+    row = _exact_keys(
+        value,
+        {"state", "rows", "reason", "database_identity", "database_metadata"},
+        label=label,
+    )
+    if state in {"error", "timeout"}:
+        if (
+            type(row["reason"]) is not str
+            or row["rows"] != []
+            or row["database_identity"] is not None
+            or row["database_metadata"] is not None
+        ):
+            raise AssessmentInputError(f"authenticated journal payload has invalid values: {label}")
+        return row
+    if state != "observed" or row["reason"] is not None or not isinstance(row["rows"], list):
+        raise AssessmentInputError(f"authenticated journal payload has invalid values: {label}")
+    identity = _exact_keys(
+        row["database_identity"], {"path", "device", "inode"}, label=f"{label}.database_identity"
+    )
+    metadata = _exact_keys(row["database_metadata"], {"size", "mtime_ns"}, label=f"{label}.database_metadata")
+    if (
+        type(identity["path"]) is not str
+        or type(identity["device"]) is not int
+        or type(identity["inode"]) is not int
+        or type(metadata["size"]) is not int
+        or type(metadata["mtime_ns"]) is not int
+        or min(identity["device"], identity["inode"], metadata["size"], metadata["mtime_ns"]) < 0  # type: ignore[type-var]
+    ):
+        raise AssessmentInputError(f"authenticated journal payload has invalid values: {label}")
+    for index, item in enumerate(row["rows"]):  # type: ignore[union-attr]
+        user = _exact_keys(
+            item,
+            {"username", "email", "is_active", "is_superuser", "dept_id"},
+            label=f"{label}.rows[{index}]",
+        )
+        if (
+            type(user["username"]) is not str
+            or type(user["email"]) is not str
+            or type(user["is_active"]) is not bool
+            or type(user["is_superuser"]) is not bool
+            or user["dept_id"] is not None
+        ):
+            raise AssessmentInputError(f"authenticated journal payload has invalid values: {label}")
+    return row
+
+
+def _http_observation(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or type(value.get("state")) is not str:
+        raise AssessmentInputError("authenticated journal payload has an invalid shape: action.http")
+    state = value["state"]
+    if state == "observed":
+        row = _exact_keys(value, {"state", "status", "code"}, label="action.http")
+        if type(row["status"]) is not int:
+            raise AssessmentInputError("authenticated journal payload has invalid values: action.http")
+        canonical_json_bytes(cast(JSONValue, row["code"]))
+        return row
+    keys = {"state", "status", "reason"} if state == "error" else {"state", "reason"}
+    row = _exact_keys(value, keys, label="action.http")
+    if state not in {"error", "timeout", "skipped"} or type(row["reason"]) is not str:
+        raise AssessmentInputError("authenticated journal payload has invalid values: action.http")
+    if state == "error" and type(row["status"]) is not int:
+        raise AssessmentInputError("authenticated journal payload has invalid values: action.http")
+    return row
+
+
+def _action_terminal(value: object) -> dict[str, dict[str, object]]:
+    payload = _exact_keys(value, {"initial", "http", "oracle"}, label="action_terminal")
+    return {
+        "initial": _sqlite_observation(payload["initial"], label="action.initial", allow_skipped=False),
+        "http": _http_observation(payload["http"]),
+        "oracle": _sqlite_observation(payload["oracle"], label="action.oracle", allow_skipped=True),
+    }
+
+
+def _process_terminal(value: object) -> VerifiedProcessReceiptV1:
+    row = _exact_keys(
+        value,
+        {
+            "schema_version",
+            "command",
+            "limits",
+            "exit_code",
+            "report",
+            "reason",
+            "request_count",
+            "stderr",
+            "cleanup_confirmed",
+        },
+        label="process_terminal",
+    )
+    limits = _exact_keys(
+        row["limits"], {"timeout_seconds", "max_frame_bytes", "max_stderr_bytes"}, label="process.limits"
+    )
+    if (
+        row["schema_version"] != "1"
+        or not isinstance(row["command"], list)
+        or any(type(item) is not str for item in row["command"])
+        or (row["exit_code"] is not None and type(row["exit_code"]) is not int)
+        or (row["report"] is not None and not isinstance(row["report"], dict))
+        or (row["reason"] is not None and type(row["reason"]) is not str)
+        or type(row["request_count"]) is not int
+        or type(row["stderr"]) is not str
+        or type(row["cleanup_confirmed"]) is not bool
+        or type(limits["timeout_seconds"]) not in {int, float}
+        or type(limits["max_frame_bytes"]) is not int
+        or type(limits["max_stderr_bytes"]) is not int
+    ):
+        raise AssessmentInputError("authenticated journal payload has invalid values: process_terminal")
+    try:
+        return VerifiedProcessReceiptV1.model_validate(row)
+    except ValidationError:
+        raise AssessmentInputError(
+            "authenticated journal payload has invalid values: process_terminal"
+        ) from None
+
+
+def _journal_observations(
+    *,
+    plan: CaseExecutionPlanV1,
+    execution_id: str,
+    action: dict[str, dict[str, object]] | None,
+    action_ref: EvidenceArtifactRefV1 | None,
+) -> tuple[ObservationV1, ...]:
+    values: dict[str, object] = {}
+    if action is not None:
+        initial, http, oracle = action["initial"], action["http"], action["oracle"]
+        if initial["state"] == "observed":
+            values["initial.user_absent"] = len(cast(list[object], initial["rows"]))
+        if http["state"] == "observed":
+            values.update({"action.finished": True, "api.http_status": http["status"]})
+            if http["code"] is not None:
+                values["api.code"] = http["code"]
+        if oracle["state"] == "observed":
+            rows = cast(list[dict[str, object]], oracle["rows"])
+            values.update({"oracle.executed": True, "user.row_count": len(rows)})
+            if len(rows) == 1:
+                values.update({f"user.{key}": value for key, value in rows[0].items()})
+    return tuple(
+        ObservationV1(
+            execution_id=execution_id,
+            obligation_id=obligation,
+            state="observed" if obligation in values else "missing",
+            actual=values.get(obligation),
+            evidence_ref=action_ref if obligation in values else None,
+            reason=(
+                None
+                if obligation in values
+                else "action_terminal_unknown"
+                if action is None
+                else "runtime_fact_unavailable"
+            ),
+        )
+        for obligation in plan.required
+    )
+
+
 def _verified_materials(
     root: Path,
     request: MaterializeAssessmentInputV1,
     cycle: VerifiedExecutionCycleResultV1,
+    *,
+    secret_port: SecretPort | None,
+    authority_handle: str | None,
 ) -> tuple[ClosedMappingV1, ExecutionEvidenceV1, VerificationVerdictV1]:
     """Authenticate the complete verified closure before deriving assessment facts."""
 
@@ -477,12 +727,136 @@ def _verified_materials(
             or cycle.source_refs != request.generation.source_refs
         ):
             raise AssessmentInputError("verified generation closure differs from the committed cycle")
+        authority, ownership_token = _host_authority(
+            secret_port=secret_port, authority_handle=authority_handle
+        )
         verified = VerifiedExecutionResultV1.model_validate_json(_read_ref(root, cycle.execution_index_ref))
         manifest = VerificationManifestV1.model_validate_json(_read_ref(root, cycle.manifest_ref))
-        outcome = TaskOutcome.model_validate_json(_read_ref(root, cycle.evidence_ref))
+        manifest_digest = hashlib.sha256(
+            canonical_json_bytes(cast(JSONValue, manifest.model_dump(mode="json")))
+        ).hexdigest()
+        if (
+            authority.authorization_scope_digest != manifest.authorization_scope_digest
+            or authority.activity_receipt_digest != manifest.activity_receipt_digest
+        ):
+            raise AssessmentInputError("independent host authority does not match execution manifest")
+        expected_manifest_path = f"{manifest.evidence_root}/manifest.json"
+        if cycle.manifest_ref.path != expected_manifest_path:
+            raise AssessmentInputError("verified manifest path differs from its evidence root")
+        journal_root = root.joinpath(*PurePosixPath(manifest.evidence_root).parts)
+        try:
+            journal_root.resolve(strict=True).relative_to(root.resolve())
+        except (OSError, ValueError):
+            raise AssessmentInputError("verified journal root is unavailable") from None
+        actual_refs: list[EvidenceArtifactRefV1] = []
+        payloads: dict[str, object] = {}
+        for name in _JOURNAL_NAMES:
+            path = journal_root / f"{name}.json"
+            if not path.exists() and not path.is_symlink():
+                continue
+            relative = f"{manifest.evidence_root}/{name}.json"
+            data = path.read_bytes()
+            ref = EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
+            actual_refs.append(ref)
+            payloads[name] = _journal_payload(
+                root,
+                ref,
+                record=name,
+                manifest_digest=manifest_digest,
+                ownership_token=ownership_token,
+            )
+        actual_raw_refs = tuple(sorted(actual_refs, key=lambda item: (item.path, item.digest)))
+        if actual_raw_refs != cycle.raw_evidence_refs:
+            raise AssessmentInputError("verified journal raw closure differs from the committed cycle")
+        allowed_json = {
+            "manifest.json",
+            "outcome.json",
+            *(f"{name}.json" for name in _JOURNAL_NAMES),
+        }
+        if any(path.name not in allowed_json for path in journal_root.glob("*.json")):
+            raise AssessmentInputError("verified journal contains an uncommitted JSON record")
+        outcome = TaskOutcome.model_validate(
+            _journal_payload(
+                root,
+                cycle.evidence_ref,
+                record="outcome",
+                manifest_digest=manifest_digest,
+                ownership_token=ownership_token,
+            )
+        )
         evidence = VerificationEvidenceV1.model_validate(outcome.output)
-        for ref in cycle.raw_evidence_refs:
-            _read_ref(root, ref)
+        try:
+            machine_plan: CaseExecutionPlanV1 = next(
+                item for item in admission.machine_plans.cases if item.case_id == cycle.case_id
+            )
+        except StopIteration:
+            raise AssessmentInputError(
+                "verified execution case is absent from the authenticated machine plans"
+            ) from None
+        process = _process_terminal(payloads.get("process_terminal"))
+        action_started = payloads.get("action_started")
+        if action_started is not None:
+            started = _exact_keys(action_started, {"execution_id", "state"}, label="action_started")
+            if started != {"execution_id": cycle.execution_id, "state": "started"}:
+                raise AssessmentInputError("authenticated action start identity differs")
+        if process.request_count != int(action_started is not None):
+            raise AssessmentInputError("authenticated process request count differs from action history")
+        cleanup = payloads.get("cleanup_terminal")
+        if cleanup is not None:
+            expected_cleanup = {
+                "container_name": f"aa-verify-{cycle.execution_id}",
+                "confirmed": True,
+            }
+            if (
+                _exact_keys(cleanup, {"container_name", "confirmed"}, label="cleanup_terminal")
+                != expected_cleanup
+            ):
+                raise AssessmentInputError("authenticated cleanup identity differs")
+        action_payload = payloads.get("action_terminal")
+        action = _action_terminal(action_payload) if action_payload is not None else None
+        if action is not None:
+            expected_sqlite_identity = manifest.sqlite.model_dump(mode="json")
+            for name in ("initial", "oracle"):
+                observation = action[name]
+                if (
+                    observation["state"] == "observed"
+                    and observation["database_identity"] != expected_sqlite_identity
+                ):
+                    raise AssessmentInputError(
+                        "authenticated database observation differs from the execution manifest"
+                    )
+        action_ref = next(
+            (ref for ref in actual_raw_refs if ref.path.endswith("/action_terminal.json")), None
+        )
+        replayed = _journal_observations(
+            plan=machine_plan,
+            execution_id=cycle.execution_id,
+            action=action,
+            action_ref=action_ref,
+        )
+        if evidence.observations != replayed:
+            raise AssessmentInputError("verified observations differ from authenticated action history")
+        process_ref = next(
+            (ref for ref in actual_raw_refs if ref.path.endswith("/process_terminal.json")), None
+        )
+        if process_ref is None or evidence.receipt_ref != process_ref:
+            raise AssessmentInputError("verified receipt differs from authenticated process history")
+        host_reason = process.reason
+        if host_reason == "container_cleanup_unconfirmed" and cleanup is not None:
+            host_reason = None
+        if process.exit_code != 0:
+            host_reason = host_reason or "runner_exit_nonzero"
+        if any(item.state != "observed" for item in replayed):
+            host_reason = host_reason or "required_facts_missing"
+        expected_host = (
+            EvidenceCompletionV1(state="error", reason=host_reason)
+            if host_reason
+            else EvidenceCompletionV1(state="complete")
+        )
+        if evidence.host_completion != expected_host or evidence.state != (
+            "incomplete" if host_reason else "collected"
+        ):
+            raise AssessmentInputError("verified host completion differs from authenticated history")
         expected_cycle = {
             "validation_profile": verified.validation_profile,
             "change_id": verified.change_id,
@@ -513,19 +887,11 @@ def _verified_materials(
         if (
             outcome.status != "succeeded"
             or verified.evidence != evidence
-            or evidence.manifest_digest != cycle.manifest_ref.digest
+            or evidence.manifest_digest != manifest_digest
             or evidence.receipt_ref not in cycle.raw_evidence_refs
             or any(ref not in cycle.raw_evidence_refs for ref in observation_refs)
         ):
             raise AssessmentInputError("verified outcome differs from its authenticated evidence")
-        try:
-            machine_plan: CaseExecutionPlanV1 = next(
-                item for item in admission.machine_plans.cases if item.case_id == cycle.case_id
-            )
-        except StopIteration as error:
-            raise AssessmentInputError(
-                "verified execution case is absent from the authenticated machine plans"
-            ) from error
         if (
             manifest.execution_id != cycle.execution_id
             or manifest.change_id != cycle.change_id
@@ -540,7 +906,8 @@ def _verified_materials(
             or manifest.spec_digest != cycle.spec_digest
             or manifest.mapping_digest != cycle.mapping_digest
             or manifest.validation_profile != cycle.validation_profile
-            or manifest.inputs.model_dump(mode="python") != machine_plan.inputs
+            or canonical_json_bytes(cast(JSONValue, manifest.inputs.model_dump(mode="json")))
+            != canonical_json_bytes(cast(JSONValue, machine_plan.inputs))
         ):
             raise AssessmentInputError("verified manifest identity differs from the committed cycle")
         evidence_prefix = f"{manifest.evidence_root}/"
@@ -618,6 +985,8 @@ def materialize_assessment_inputs(
     *,
     project_root: Path,
     write_root: Path,
+    secret_port: SecretPort | None = None,
+    authority_handle: str | None = None,
 ) -> AssessmentInputsV1:
     if _BATCH_TOKEN.fullmatch(request.execution.batch_id) is None:
         raise AssessmentInputError("execution batch_id must be a canonical path token")
@@ -652,7 +1021,13 @@ def materialize_assessment_inputs(
     capability_leafs = frozenset(key for case in cases for key in case.trace)
     verification: VerificationVerdictV1 | None = None
     if isinstance(request.execution, VerifiedExecutionCycleResultV1):
-        mapping, evidence, verification = _verified_materials(project_root, request, request.execution)
+        mapping, evidence, verification = _verified_materials(
+            project_root,
+            request,
+            request.execution,
+            secret_port=secret_port,
+            authority_handle=authority_handle,
+        )
     else:
         try:
             mapping = ClosedMappingV1.model_validate(
@@ -871,10 +1246,30 @@ class MaterializeAssessmentHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             validated = MaterializeAssessmentInputV1.model_validate(request.input)
+            authority_handle = None
+            if isinstance(validated.execution, VerifiedExecutionCycleResultV1):
+                binding = _exact_keys(
+                    request.binding_data,
+                    {
+                        "managed_sut_authority_handle",
+                        "verification_config_digest",
+                        "validation_profile",
+                    },
+                    label="verified assessment binding",
+                )
+                if (
+                    type(binding["managed_sut_authority_handle"]) is not str
+                    or type(binding["verification_config_digest"]) is not str
+                    or binding["validation_profile"] != validated.execution.validation_profile
+                ):
+                    raise AssessmentInputError("verified assessment binding does not match execution")
+                authority_handle = cast(str, binding["managed_sut_authority_handle"])
             output = materialize_assessment_inputs(
                 validated,
                 project_root=context.project_root,
                 write_root=context.write_root,
+                secret_port=context.secrets,
+                authority_handle=authority_handle,
             )
         except (AssessmentInputError, ValidationError, OSError) as error:
             return TaskOutcome.failed("invalid_input", str(error), retryable=False)

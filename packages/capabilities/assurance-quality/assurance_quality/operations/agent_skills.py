@@ -58,7 +58,10 @@ from assurance_quality.operations.identity import (
 )
 from assurance_quality.operations.inspect import build_failure_classification_facts
 from assurance_quality.contracts.verification import VerificationVerdictV1
-from assurance_quality.operations.verification import verification_failure_facts
+from assurance_quality.operations.verification import (
+    render_verification_report_section,
+    verification_failure_facts,
+)
 from assurance_quality.resource_loader import resource_bytes, resource_text
 
 FACT_BASELINE_SKILL = "skills/aa-fact-baseline/SKILL.md"
@@ -164,12 +167,14 @@ def prepare_outcome(
     binding: AgentBindingDataV1,
     result_schema_id: str,
     context: TaskContext,
+    deterministic_instructions: tuple[InstructionPart, ...] = (),
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
         instructions=(
             InstructionPart.text("text/plain", resource_text(skill_path)),
             InstructionPart.text("text/plain", resource_text(persona_path)),
             InstructionPart.from_json(business.model_dump(mode="json")),
+            *deterministic_instructions,
         ),
         result_contract=result_contract(result_schema_id),
         execution=binding.execution,
@@ -252,6 +257,23 @@ def _authenticate_report_input(business: ReportSkillInputV1, root: Path) -> None
     policy = _canonical_file(root, ".aa/policy.yaml").read_bytes()
     if hashlib.sha256(policy).hexdigest() != business.assessment.scope.policy_digest:
         raise OutputError("product policy digest changed after inspection")
+
+
+def _verification_report_section(business: ReportSkillInputV1, root: Path) -> str | None:
+    ref = business.assessment.verification_ref
+    if ref is None:
+        if business.inspection.verification_ref is not None:
+            raise OutputError("report inspection carries unexpected verification identity")
+        return None
+    if business.inspection.verification_ref != ref:
+        raise OutputError("report verification ref differs from the inspected artifact")
+    verdict = _load_json_ref(root, ref, VerificationVerdictV1)
+    if (
+        business.inspection.verification_status != verdict.verdict
+        or business.inspection.reason_codes != verdict.reason_codes
+    ):
+        raise OutputError("report verification identity differs from the inspected verdict")
+    return render_verification_report_section(verdict, ref)
 
 
 def _load_json_ref(root: Path, ref: object, model: type[Any]) -> Any:
@@ -355,6 +377,7 @@ class ReportPrepareHandler:
         try:
             business = validate_input(ReportSkillInputV1, request.input)
             _authenticate_report_input(business, context.project_root)
+            section = _verification_report_section(business, context.project_root)
             binding = validate_binding(request.binding_data)
             return prepare_outcome(
                 skill_path=REPORT_SKILL,
@@ -363,6 +386,17 @@ class ReportPrepareHandler:
                 binding=binding,
                 result_schema_id=REPORT_RESULT_ID,
                 context=context,
+                deterministic_instructions=(
+                    ()
+                    if section is None
+                    else (
+                        InstructionPart.text(
+                            "text/plain",
+                            "The finalizer owns this exact reserved report section. "
+                            "Do not write this heading yourself.\n\n" + section,
+                        ),
+                    )
+                ),
             )
         except (InputError, OutputError) as error:
             return failed_input(error)
@@ -627,6 +661,19 @@ class ReportFinalizeHandler:
             }
             if staged != set(document.report_files):
                 raise OutputError("report result does not match the actual candidate write set")
+            section = _verification_report_section(business, context.project_root)
+            if section is not None:
+                report_path = _canonical_file(context.write_root, document.report_files[0])
+                try:
+                    report_text = report_path.read_text(encoding="utf-8")
+                except UnicodeError:
+                    raise OutputError("report Markdown must be UTF-8") from None
+                if "## Deterministic business verification" in report_text:
+                    raise OutputError("agent report must not author the reserved verification section")
+                report_path.write_text(
+                    report_text.rstrip("\n") + "\n\n" + section,
+                    encoding="utf-8",
+                )
             refs = tuple(
                 EvidenceArtifactRefV1(
                     path=relative,
