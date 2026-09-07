@@ -275,6 +275,10 @@ def authenticate_generation_result(root: ExecutionPrepareInputV1, workspace: Pat
         if root.validation_profile is not None:
             raise InputError("verified execution requires the accepted generation result")
         return
+    if generation.change_id != root.change_id or generation.coverage_epoch != root.coverage_epoch:
+        raise InputError("generation result identity does not match execution input")
+    if generation.plan_digest != root.plan_digest or generation.plan_ref != root.plan_ref:
+        raise InputError("generation plan binding does not match execution input")
     if root.validation_profile is None:
         for ref in (*generation.source_refs, generation.mapping_ref):
             path = _regular_input_file(workspace, ref.path)
@@ -309,11 +313,7 @@ def authenticate_generation_result(root: ExecutionPrepareInputV1, workspace: Pat
     )
     mapping_path = _regular_input_file(workspace, generation.mapping_ref.path)
     if (
-        generation.change_id != root.change_id
-        or generation.coverage_epoch != root.coverage_epoch
-        or generation.reviewed_case != admission.reviewed_case
-        or generation.plan_digest != root.plan_digest
-        or generation.plan_ref != root.plan_ref
+        generation.reviewed_case != admission.reviewed_case
         or generation.case_execution_plan_ref != profile.case_execution_plan_ref
         or generation.case_execution_plan_digest != machine_ref.digest
         or generation.source_refs != admission.source_refs

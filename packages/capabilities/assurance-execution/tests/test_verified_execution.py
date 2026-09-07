@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Literal, cast
+
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_execution.contracts.verification import (
     VerificationEvidenceV1,
@@ -503,6 +504,35 @@ def test_accepted_generation_closure_authenticates_before_verified_dispatch(tmp_
     root = _accepted_verified_root(tmp_path)
 
     authenticate_generation_result(root, tmp_path)
+
+
+def test_legacy_execution_rejects_generation_from_a_stale_coverage_epoch(tmp_path: Path) -> None:
+    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+    from assurance_execution.operations.agent_skills import authenticate_generation_result
+    from assurance_execution.operations.common import InputError
+
+    root = _accepted_verified_root(tmp_path)
+    raw = _damage_generation(tmp_path, root, "epoch")
+    raw["validation_profile"] = None
+    raw["verification_config_digest"] = None
+    raw["verification"] = None
+    legacy = ExecutionPrepareInputV1.model_validate(raw)
+
+    with pytest.raises(InputError, match="generation result identity"):
+        authenticate_generation_result(legacy, tmp_path)
+
+
+def test_legacy_execution_accepts_generation_with_matching_identity(tmp_path: Path) -> None:
+    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+    from assurance_execution.operations.agent_skills import authenticate_generation_result
+
+    raw = _accepted_verified_root(tmp_path).model_dump(mode="json")
+    raw["validation_profile"] = None
+    raw["verification_config_digest"] = None
+    raw["verification"] = None
+    legacy = ExecutionPrepareInputV1.model_validate(raw)
+
+    authenticate_generation_result(legacy, tmp_path)
 
 
 @pytest.mark.parametrize(
