@@ -22,13 +22,15 @@ Before repair routing, the product authenticates the exact host terminal receipt
 kernel promotion receipt against an AttemptKey rederived from the current invocation,
 entrypoint, graph revision, execution input, contract, and activation. The runtime
 prepare and finalizer repeat durable receipt authentication and bind the checkpointed
-execution identity to their current invocation. The finalizer independently loads the
-unique product-recorded current upstream execution and rejects missing or ambiguous
-records before it accepts the caller-carried defect. The record is installed only
-after host terminal and kernel promotion authentication, and both receipts are
-authenticated again at the mutation boundary. The finalizer requires the requested
-repair round to be exactly the verified upstream round plus one. It recompiles the
-machine plan from the frozen ReviewedCase and assertion sources, and rejects replay
-from another invocation, execution attempt, or repair round, plus any changed
-verification obligation. A proposal or summary alone never counts as an applied
-repair.
+execution identity to their current invocation. After route verification, the product
+publishes one create-once selection in the host-owned receipt store. This selection
+binds the scope, AttemptKey, complete execution binding and cycle digests, terminal
+receipt, and promotion receipt. The finalizer authenticates the unique host selection
+before consulting the project index and rejects missing, changed, conflicting, or
+ambiguous records before it accepts the caller-carried defect. Both underlying
+receipts are authenticated again at the mutation boundary. The finalizer requires the
+requested repair round to be exactly the verified upstream round plus one. It
+recompiles the machine plan from the frozen ReviewedCase and assertion sources, and
+rejects replay from another invocation, execution attempt, or repair round, plus any
+changed verification obligation. A proposal or summary alone never counts as an
+applied repair.

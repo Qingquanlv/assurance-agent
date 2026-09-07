@@ -157,6 +157,47 @@ def test_terminal_receipt_sink_is_host_call_scoped(tmp_path: Path) -> None:
     assert sink.host_call_id == 1
 
 
+def test_host_selection_receipt_is_create_once_and_exact_replay_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    store = TerminalReceiptStore.create(tmp_path / "receipts")
+    scope = {"invocation_id": "inv-1", "repair_round": 0}
+    selected = {"attempt_key": "a" * 64}
+
+    first = store.publish_selection(namespace="test.current.v1", scope=scope, selection=selected)
+    replayed = store.publish_selection(namespace="test.current.v1", scope=scope, selection=selected)
+
+    assert replayed == first
+    assert store.authenticate_selection(namespace="test.current.v1", scope=scope) == first
+    assert store.authenticate_selections(namespace="test.current.v1") == (first,)
+    with pytest.raises(TerminalReceiptError, match="compare-and-swap"):
+        store.publish_selection(
+            namespace="test.current.v1",
+            scope=scope,
+            selection={"attempt_key": "b" * 64},
+        )
+
+
+def test_host_selection_receipt_rejects_missing_or_changed_payload(tmp_path: Path) -> None:
+    store = TerminalReceiptStore.create(tmp_path / "receipts")
+    scope = {"invocation_id": "inv-1", "repair_round": 0}
+    store.publish_selection(
+        namespace="test.current.v1",
+        scope=scope,
+        selection={"attempt_key": "a" * 64},
+    )
+    receipt_path = next((store.root / ".selections").glob("*/*.json"))
+    receipt_path.chmod(0o600)
+    receipt_path.write_bytes(b'{"changed":true}')
+    receipt_path.chmod(0o400)
+
+    with pytest.raises(TerminalReceiptError, match="invalid|changed"):
+        store.authenticate_selection(namespace="test.current.v1", scope=scope)
+
+    receipt_path.unlink()
+    assert store.authenticate_selection(namespace="test.current.v1", scope=scope) is None
+
+
 def test_receipt_store_rejects_partial_symlink_linked_changed_multiple_foreign_and_nonmonotonic(
     tmp_path: Path,
 ) -> None:
