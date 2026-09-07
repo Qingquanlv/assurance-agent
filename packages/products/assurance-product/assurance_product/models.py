@@ -680,6 +680,20 @@ class ExecutionGateRefV1(FrozenModel):
     semantic_node_id: Literal["execution.execute", "execution.run"]
     batch_id: str = Field(min_length=1)
     execution_digest: str = Field(pattern=_SHA256)
+    validation_profile: Literal["api_db.v1", "api_db_trace.v1"] | None = None
+    execution_receipt_id: str | None = Field(default=None, min_length=1)
+    execution_receipt_digest: str | None = Field(default=None, pattern=_SHA256)
+
+    @model_validator(mode="after")
+    def _verified_identity_is_complete(self) -> ExecutionGateRefV1:
+        verified = (
+            self.validation_profile,
+            self.execution_receipt_id,
+            self.execution_receipt_digest,
+        )
+        if any(item is not None for item in verified) and any(item is None for item in verified):
+            raise ValueError("verified execution gate identity is incomplete")
+        return self
 
 
 class QualityGateRefV1(FrozenModel):

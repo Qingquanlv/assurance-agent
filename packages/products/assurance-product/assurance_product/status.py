@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Literal, cast
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.verification import VerifiedExecutionResultV1
+from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.errors import GraphEngineError
 
@@ -28,6 +30,7 @@ from assurance_product.models import (
     QualityGateRefV1,
     StatusV1,
 )
+from assurance_product.verification import authenticate_verified_delivery
 
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _FILE_WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
@@ -335,7 +338,19 @@ def finalize_achieved(
     _require_terminal_full_success(invocation)
     merged = merge_generated(project, change_id, families)
     execution_gate = _require_execution_gate(project, change_id, invocation)
-    _require_quality_gate(project, change_id, invocation, execution_gate)
+    quality_gate = _require_quality_gate(project, change_id, invocation, execution_gate)
+    invocation_id = (
+        invocation.invocation_id if isinstance(invocation, StatusV1) else invocation.get("invocation_id")
+    )
+    if not isinstance(invocation_id, str):
+        raise ValueError("terminal invocation identity is missing")
+    authenticate_verified_delivery(
+        project,
+        change_id,
+        invocation_id,
+        execution_gate=execution_gate,
+        quality_gate=quality_gate,
+    )
     manifest = _apply_manifest(project, change_id, merged)
     status = _achieved_status(invocation, change_id, manifest)
     change_root = project / "qa" / "changes" / change_id
@@ -605,6 +620,34 @@ def _execution_gate_from_snapshot(snapshot: object | None) -> ExecutionGateRefV1
         return None
     if len(present) != len(names):
         raise ValueError("terminal execution checkpoint identity is incomplete")
+    if values.get("validation_profile") in {"api_db.v1", "api_db_trace.v1"}:
+        try:
+            evidence = VerifiedExecutionResultV1.model_validate(values["execution_evidence"])
+            cycle = VerifiedExecutionCycleResultV1.model_validate(values.get("execution_result"))
+        except ValueError as error:
+            raise ValueError("terminal verified execution checkpoint is invalid") from error
+        document = evidence.model_dump(mode="json")
+        digest = canonical_digest(cast(JSONValue, document))
+        if (
+            values["batch_id"] != evidence.batch_id
+            or values["execution_digest"] != digest
+            or cycle.batch_id != evidence.batch_id
+            or cycle.validation_profile != evidence.validation_profile
+            or cycle.execution_id != evidence.execution_id
+            or cycle.coverage_epoch != evidence.coverage_epoch
+            or cycle.repair_round != evidence.repair_round
+            or cycle.attempt_key != evidence.attempt_key
+            or cycle.receipt.receipt_digest is None
+        ):
+            raise ValueError("terminal verified execution checkpoint identity drifted")
+        return ExecutionGateRefV1(
+            semantic_node_id=values["execution_semantic_node_id"],
+            batch_id=evidence.batch_id,
+            execution_digest=digest,
+            validation_profile=evidence.validation_profile,
+            execution_receipt_id=cycle.receipt.receipt_id,
+            execution_receipt_digest=cycle.receipt.receipt_digest,
+        )
     evidence, document = _validated_execution_evidence(
         values["execution_evidence"],
         label="terminal execution checkpoint evidence",
@@ -710,6 +753,23 @@ def _require_execution_gate(
     }[gate.semantic_node_id]
     execution_root = project / "qa" / "changes" / change_id / "execution"
     payload = _read_json_object(execution_root / filename, "execution evidence")
+    if gate.validation_profile is not None:
+        try:
+            verified = VerifiedExecutionResultV1.model_validate(payload)
+        except ValueError as error:
+            raise ValueError("verified execution evidence is invalid") from error
+        document = verified.model_dump(mode="json")
+        if (
+            verified.change_id != change_id
+            or verified.batch_id != gate.batch_id
+            or verified.validation_profile != gate.validation_profile
+        ):
+            raise ValueError("verified execution evidence identity drifted")
+        if canonical_digest(cast(JSONValue, document)) != gate.execution_digest:
+            raise ValueError("verified execution evidence digest drifted")
+        if verified.completion_status != "collected":
+            raise ValueError("verified execution gate is incomplete")
+        return gate
     evidence, document = _validated_execution_evidence(payload, label="execution evidence")
     if evidence.change_id != change_id or evidence.batch_id != gate.batch_id:
         raise ValueError("execution evidence identity drifted")
@@ -754,7 +814,7 @@ def _require_quality_gate(
     change_id: str,
     invocation: Mapping[str, object] | StatusV1,
     execution_gate: ExecutionGateRefV1,
-) -> None:
+) -> QualityGateRefV1:
     reference = _quality_gate_from_invocation(invocation)
     inspection = reference.inspection
     if inspection.change_id != change_id or inspection.batch_id != execution_gate.batch_id:
@@ -784,6 +844,7 @@ def _require_quality_gate(
             raise ValueError(f"quality evidence is missing: {ref.path}") from error
         if hashlib.sha256(content).hexdigest() != ref.digest:
             raise ValueError(f"quality evidence digest drifted: {ref.path}")
+    return reference
 
 
 def _reject_symlink_components(root: Path, target: Path) -> None:

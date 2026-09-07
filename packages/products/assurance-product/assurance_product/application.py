@@ -49,6 +49,7 @@ from assurance_product.status import (
     load_persisted_status,
     render_status_from_langgraph,
 )
+from assurance_product.verification import authenticate_verified_delivery
 from assurance_intake.contracts.plan import TestFamilyPolicyV1
 
 _TEST_CRASH_AT: str | None = None
@@ -923,6 +924,23 @@ def _persisted_achieved_full_status(
         or persisted.selected_test_families != families
     ):
         raise RuntimeSelectionError("persisted terminal status is not an achieved full result")
+    if persisted.execution_gate is not None:
+        if persisted.quality_gate is None:
+            if persisted.execution_gate.validation_profile is not None:
+                raise RuntimeSelectionError("persisted verified delivery quality gate is missing")
+        else:
+            try:
+                authenticate_verified_delivery(
+                    workspace.paths.project_root,
+                    change_id,
+                    invocation_id,
+                    execution_gate=persisted.execution_gate,
+                    quality_gate=persisted.quality_gate,
+                )
+            except ValueError as error:
+                raise RuntimeSelectionError(
+                    f"persisted verified delivery authentication failed: {error}"
+                ) from error
     return persisted
 
 

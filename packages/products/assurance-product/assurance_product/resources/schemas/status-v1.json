@@ -195,6 +195,48 @@
           ],
           "title": "Semantic Node Id",
           "type": "string"
+        },
+        "validation_profile": {
+          "anyOf": [
+            {
+              "enum": [
+                "api_db.v1",
+                "api_db_trace.v1"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Validation Profile"
+        },
+        "execution_receipt_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Receipt Id"
+        },
+        "execution_receipt_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Receipt Digest"
         }
       },
       "required": [
@@ -328,6 +370,39 @@
         },
         "reviewed_case": {
           "$ref": "#/$defs/ReviewedCaseV1"
+        },
+        "verification_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EvidenceArtifactRefV1"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "verification_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "PASSED",
+                "FAILED",
+                "INCOMPLETE"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Verification Status"
+        },
+        "verification_repairable_bridge": {
+          "default": false,
+          "title": "Verification Repairable Bridge",
+          "type": "boolean"
         }
       },
       "required": [

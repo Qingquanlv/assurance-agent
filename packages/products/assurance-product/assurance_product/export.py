@@ -25,6 +25,7 @@ from assurance_product.models import (
     PublishReceiptV1,
     StatusV1,
 )
+from assurance_product.verification import authenticate_verified_delivery
 
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _FILE_READ_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
@@ -269,6 +270,21 @@ def _publish_achieved_locked(
     manifest = _read_manifest(workspace)
     if manifest.change_id != workspace.paths.change_root.name:
         raise PublishError("apply manifest change_id does not match the change")
+    if status.execution_gate is not None:
+        if status.quality_gate is None:
+            if status.execution_gate.validation_profile is not None:
+                raise PublishError("verified delivery quality gate is missing")
+        else:
+            try:
+                authenticate_verified_delivery(
+                    workspace.paths.project_root,
+                    workspace.paths.change_root.name,
+                    status.invocation_id,
+                    execution_gate=status.execution_gate,
+                    quality_gate=status.quality_gate,
+                )
+            except ValueError as error:
+                raise PublishError(f"verified delivery authentication failed: {error}") from error
     planned = _plan_files(workspace, manifest)
     files = tuple(_publish_file(item) for item in planned)
     bindings = _bindings(manifest, files)
