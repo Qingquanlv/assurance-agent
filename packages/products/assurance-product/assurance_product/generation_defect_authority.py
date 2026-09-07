@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import cast
 
 from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-from assurance_execution.contracts.authority import authenticate_generation_defect_cycle
+from assurance_execution.contracts.authority import (
+    authenticate_generation_defect_cycle,
+    record_current_generation_defect,
+)
 from assurance_execution.contracts.workflow import (
     ExecutionAttemptBindingV1,
     VerifiedGenerationDefectCycleV1,
@@ -86,6 +89,7 @@ class GenerationDefectRouteAuthenticator:
         if declared != expected:
             raise ValueError("generation defect execution binding is not current")
         authenticate_generation_defect_cycle(self.project_root, cycle, expected)
+        record_current_generation_defect(self.project_root, cycle, expected)
 
 
 __all__ = ["GenerationDefectRouteAuthenticator"]

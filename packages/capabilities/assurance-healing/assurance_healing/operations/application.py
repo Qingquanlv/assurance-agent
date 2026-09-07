@@ -16,7 +16,10 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from pydantic import ValidationError
 
 from assurance_execution.contracts import ExecutionEvidenceV1
-from assurance_execution.contracts.authority import authenticate_generation_defect_cycle
+from assurance_execution.contracts.authority import (
+    authenticate_generation_defect_cycle,
+    load_current_generation_defect,
+)
 from assurance_generation.contracts.admission import (
     GenerationAdmissionError,
     admit_verified_generation,
@@ -159,9 +162,25 @@ def _authenticate_generation_defect(
     ):
         raise OutputError("verified generation defect does not belong to the current invocation")
     try:
-        return authenticate_generation_defect_cycle(context.project_root, cycle, binding)
+        current = load_current_generation_defect(
+            context.project_root,
+            change_id=business.change_id,
+            invocation_id=context.invocation.invocation_id,
+            public_entrypoint=context.invocation.entrypoint,
+        )
     except ValueError as error:
-        raise OutputError(f"verified generation defect authority is not authentic: {error}") from error
+        raise OutputError(
+            f"verified generation defect current execution is not authentic: {error}"
+        ) from error
+    if current.binding != binding or business.repair_round != current.binding.repair_round + 1:
+        raise OutputError("verified generation defect does not match the current execution")
+    if current.cycle != cycle:
+        try:
+            authenticate_generation_defect_cycle(context.project_root, cycle, current.binding)
+        except ValueError as error:
+            raise OutputError(f"verified generation defect authority is not authentic: {error}") from error
+        raise OutputError("verified generation defect does not match the current execution")
+    return current.cycle.attempt.defect
 
 
 def _approved_sources(

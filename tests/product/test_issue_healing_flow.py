@@ -5,6 +5,7 @@ from typing import cast, Any
 from langgraph.graph import END, START, StateGraph
 import pytest
 
+from assurance_execution.contracts.authority import load_current_generation_defect
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
 from assurance_generation.contracts.workflow import (
     GenerationCycleResultV1,
@@ -331,6 +332,18 @@ def test_verified_generation_defect_checkpoint_round_trip_keeps_exclusive_repair
         recovered,
         authenticate_generation_defect=authenticator,
     ) == {"quality": None, "repair": "repair"}
+    assert execute_named_matches(
+        recovered,
+        authenticate_generation_defect=authenticator,
+    ) == {"quality": None, "repair": "repair"}
+    current = load_current_generation_defect(
+        tmp_path,
+        change_id=generation.change_id,
+        invocation_id="inv-checkpoint",
+        public_entrypoint="full",
+    )
+    assert current.binding == binding
+    assert current.cycle == cycle
 
 
 def test_self_consistent_generation_defect_without_route_authority_never_reaches_repair(
