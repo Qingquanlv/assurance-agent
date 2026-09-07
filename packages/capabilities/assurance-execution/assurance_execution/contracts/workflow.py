@@ -74,6 +74,7 @@ class VerifiedExecutionCycleResultV1(FrozenModel):
     manifest_ref: EvidenceArtifactRefV1
     evidence_ref: EvidenceArtifactRefV1
     execution_index_ref: EvidenceArtifactRefV1
+    execution_authority_ref: EvidenceArtifactRefV1
     raw_evidence_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     receipt: ReceiptRef
@@ -102,6 +103,7 @@ class VerifiedExecutionCycleResultV1(FrozenModel):
             self.manifest_ref,
             self.evidence_ref,
             self.execution_index_ref,
+            self.execution_authority_ref,
             *self.raw_evidence_refs,
             *self.source_refs,
         )

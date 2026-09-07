@@ -79,6 +79,10 @@ def _verified_dispatch_result(
         mapping_digest="3" * 64,
         manifest_ref=manifest_ref,
         evidence_ref=evidence_ref,
+        execution_authority_ref=EvidenceArtifactRefV1(
+            path=f"qa/changes/{plan.change_id}/execution/{execution_id}/execution_terminal.json",
+            digest="9" * 64,
+        ),
         raw_evidence_refs=(process_ref,),
         executed_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
         completion_status=completion_status,
@@ -1265,8 +1269,15 @@ def test_unbridged_pytest_pass_is_incomplete_and_secrets_never_leak(managed_sut)
         managed_sut, "no_bridge", "def test_case():\n    assert True\n"
     )
     outcome = asyncio.run(VerifiedExecutionHandler(process_host=RealPipeHost()).execute(request, context))
-    assert VerifiedExecutionResultV1.model_validate(outcome.output).completion_status == "incomplete"
+    verified = VerifiedExecutionResultV1.model_validate(outcome.output)
+    assert verified.completion_status == "incomplete"
     root = context.write_root / manifest.evidence_root
+    terminal_path = root / "execution_terminal.json"
+    assert verified.execution_authority_ref.digest == hashlib.sha256(terminal_path.read_bytes()).hexdigest()
+    terminal = json.loads(terminal_path.read_bytes())
+    assert terminal["record"] == "execution_terminal"
+    assert terminal["payload"] == verified.model_dump(mode="json", exclude={"execution_authority_ref"})
+    assert len(terminal["seal"]) == 64
     assert not (root / "action_started.json").exists()
     for path in root.rglob("*.json"):
         contents = path.read_text()

@@ -149,6 +149,7 @@ def publish_execution(
             manifest_ref=verified.manifest_ref,
             evidence_ref=verified.evidence_ref,
             execution_index_ref=index_ref,
+            execution_authority_ref=verified.execution_authority_ref,
             raw_evidence_refs=verified.raw_evidence_refs,
             source_refs=generation.source_refs,
             receipt=ReceiptRef.model_validate(receipt),

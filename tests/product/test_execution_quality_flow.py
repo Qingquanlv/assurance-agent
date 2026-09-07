@@ -104,6 +104,11 @@ def _verified_state(root: Path, completion: str = "collected") -> dict[str, Any]
         execution_index_ref=generation_model.mapping_ref.model_copy(
             update={"path": f"qa/changes/{prepared.change_id}/execution/execute-result.json"}
         ),
+        execution_authority_ref=generation_model.mapping_ref.model_copy(
+            update={
+                "path": (f"qa/changes/{prepared.change_id}/execution/{execution_id}/execution_terminal.json")
+            }
+        ),
         raw_evidence_refs=(process_ref,),
         source_refs=generation_model.source_refs,
         receipt=ReceiptRef(receipt_id="verified-execution", receipt_digest="f" * 64),

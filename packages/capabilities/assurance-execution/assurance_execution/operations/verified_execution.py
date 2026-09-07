@@ -46,6 +46,7 @@ from assurance_execution.contracts.verification import (
     ObservationV1,
     VerificationEvidenceV1,
     EvidenceCompletionV1,
+    VerifiedExecutionAuthorityV1,
     VerifiedExecutionResultV1,
 )
 from assurance_execution.execution_view import ExecutionView, authenticate_execution_view
@@ -89,7 +90,14 @@ class ActionJournal:
     """Exclusive, fsynced host records, authenticated by the retained SUT authority."""
 
     _NAMES = frozenset(
-        {"action_started", "action_terminal", "process_terminal", "cleanup_terminal", "outcome"}
+        {
+            "action_started",
+            "action_terminal",
+            "process_terminal",
+            "cleanup_terminal",
+            "outcome",
+            "execution_terminal",
+        }
     )
 
     def __init__(self, root: Path, manifest: VerificationManifestV1, key: bytes) -> None:
@@ -505,7 +513,7 @@ def _verified_outcome(
     outcome_path = journal.root / "outcome.json"
     if not outcome_path.is_file() or outcome_path.is_symlink() or outcome_path.stat().st_nlink != 1:
         raise ValueError("verified immutable outcome is unavailable")
-    verified = VerifiedExecutionResultV1(
+    authority = VerifiedExecutionAuthorityV1(
         validation_profile=manifest.validation_profile,
         change_id=manifest.change_id,
         case_id=manifest.case_id,
@@ -530,6 +538,16 @@ def _verified_outcome(
         executed_at=payload.view.executed_at,
         completion_status=evidence.state,
         evidence=evidence,
+    )
+    journal.write("execution_terminal", authority.model_dump(mode="json"))
+    authority_path = journal.root / "execution_terminal.json"
+    authority_ref = EvidenceArtifactRefV1(
+        path=f"{manifest.evidence_root}/execution_terminal.json",
+        digest=hashlib.sha256(authority_path.read_bytes()).hexdigest(),
+    )
+    verified = VerifiedExecutionResultV1(
+        **authority.model_dump(mode="python"),
+        execution_authority_ref=authority_ref,
     )
     filename = "run-result.json" if request.node_id == "execution.run" else "execute-result.json"
     current = context.write_root / f"qa/changes/{manifest.change_id}/execution/{filename}"

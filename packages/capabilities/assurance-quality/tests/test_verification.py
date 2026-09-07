@@ -25,7 +25,11 @@ from tests.verified_generation_fixture import accepted_verified_execution_input
 from graph_engine.attempts import AttemptKey, BusinessActivation
 from graph_engine.plugin_api import TaskOutcome
 from graph_engine.canonical import JSONValue, canonical_json_bytes
-from assurance_execution.contracts.verification import VerificationManifestV1, VerifiedExecutionResultV1
+from assurance_execution.contracts.verification import (
+    VerificationManifestV1,
+    VerifiedExecutionAuthorityV1,
+    VerifiedExecutionResultV1,
+)
 from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
 from typing import cast
 
@@ -608,7 +612,7 @@ def _materialization_request(
             f"qa/changes/{plan.change_id}/execution/{execution_id}/outcome.json",
             canonical_json_bytes(cast(JSONValue, outcome.model_dump(mode="json"))),
         )
-    verified = VerifiedExecutionResultV1(
+    authority_result = VerifiedExecutionAuthorityV1(
         validation_profile=plan.validation_profile,
         change_id=plan.change_id,
         case_id=plan.case_id,
@@ -630,6 +634,23 @@ def _materialization_request(
         executed_at=datetime(2026, 9, 6, tzinfo=UTC),
         completion_status="collected",
         evidence=evidence,
+    )
+    if authenticated:
+        assert journal is not None
+        journal.write("execution_terminal", authority_result.model_dump(mode="json"))
+        execution_authority_ref = EvidenceArtifactRefV1(
+            path=f"{manifest.evidence_root}/execution_terminal.json",
+            digest=hashlib.sha256((journal.root / "execution_terminal.json").read_bytes()).hexdigest(),
+        )
+    else:
+        execution_authority_ref = _write(
+            tmp_path,
+            f"{manifest.evidence_root}/execution_terminal.json",
+            b"authority\n",
+        )
+    verified = VerifiedExecutionResultV1(
+        **authority_result.model_dump(mode="python"),
+        execution_authority_ref=execution_authority_ref,
     )
     encoded = (json.dumps(verified.model_dump(mode="json"), indent=2) + "\n").encode()
     index_ref = _write(tmp_path, f"qa/changes/{plan.change_id}/execution/execute-result.json", encoded)
@@ -683,3 +704,118 @@ def test_authenticated_host_journal_is_replayed_before_business_pass(tmp_path: P
         (tmp_path / assessment.verification_ref.path).read_bytes()
     )
     assert verdict.verdict == "PASSED"
+
+
+def test_authenticated_journal_rejects_forged_index_batch_and_arbitrary_receipt(
+    tmp_path: Path,
+) -> None:
+    from graph_engine.attempts.resolutions import ReceiptRef
+
+    request, authority, authority_handle = _materialization_request(tmp_path, authenticated=True)
+    cycle = cast(VerifiedExecutionCycleResultV1, request.execution)
+    forged = VerifiedExecutionResultV1.model_validate_json(
+        (tmp_path / cycle.execution_index_ref.path).read_bytes()
+    ).model_copy(update={"batch_id": "forged-batch"})
+    encoded = (json.dumps(forged.model_dump(mode="json"), indent=2) + "\n").encode()
+    (tmp_path / cycle.execution_index_ref.path).write_bytes(encoded)
+    forged_cycle = cycle.model_copy(
+        update={
+            "batch_id": "forged-batch",
+            "execution_index_ref": cycle.execution_index_ref.model_copy(
+                update={"digest": hashlib.sha256(encoded).hexdigest()}
+            ),
+            "receipt": ReceiptRef(receipt_id="forged", receipt_digest="f" * 64),
+        }
+    )
+
+    with pytest.raises(AssessmentInputError, match="authenticated host execution result"):
+        materialize_assessment_inputs(
+            request.model_copy(update={"execution": forged_cycle}),
+            project_root=tmp_path,
+            write_root=tmp_path,
+            secret_port=authority,  # type: ignore[arg-type]
+            authority_handle=authority_handle,
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("execution_id", "attempt_key", "executed_at", "completion_status", "manifest_ref", "evidence_ref"),
+)
+def test_authenticated_journal_rejects_other_forged_execution_identity_fields(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    from datetime import timedelta
+
+    request, authority, authority_handle = _materialization_request(tmp_path, authenticated=True)
+    cycle = cast(VerifiedExecutionCycleResultV1, request.execution)
+    indexed = VerifiedExecutionResultV1.model_validate_json(
+        (tmp_path / cycle.execution_index_ref.path).read_bytes()
+    )
+    if field == "execution_id":
+        execution_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        authority_ref = indexed.execution_authority_ref.model_copy(
+            update={
+                "path": (f"qa/changes/{indexed.change_id}/execution/{execution_id}/execution_terminal.json")
+            }
+        )
+        forged_authority_path = tmp_path / authority_ref.path
+        forged_authority_path.parent.mkdir(parents=True, exist_ok=True)
+        forged_authority_path.write_bytes((tmp_path / indexed.execution_authority_ref.path).read_bytes())
+        evidence = indexed.evidence.model_copy(
+            update={
+                "execution_id": execution_id,
+                "observations": tuple(
+                    item.model_copy(update={"execution_id": execution_id})
+                    for item in indexed.evidence.observations
+                ),
+            }
+        )
+        update = {
+            field: execution_id,
+            "evidence": evidence,
+            "execution_authority_ref": authority_ref,
+        }
+    elif field == "attempt_key":
+        update = {field: AttemptKey(digest="e" * 64)}
+    elif field == "executed_at":
+        update = {field: indexed.executed_at + timedelta(seconds=1)}
+    elif field == "completion_status":
+        update = {
+            field: "incomplete",
+            "evidence": indexed.evidence.model_copy(update={"state": "incomplete"}),
+        }
+    else:
+        original = cast(EvidenceArtifactRefV1, getattr(indexed, field))
+        copied = original.model_copy(update={"path": f"qa/changes/{indexed.change_id}/{field}.json"})
+        copied_path = tmp_path / copied.path
+        copied_path.parent.mkdir(parents=True, exist_ok=True)
+        copied_path.write_bytes((tmp_path / original.path).read_bytes())
+        update = {field: copied}
+    forged = VerifiedExecutionResultV1.model_validate({**indexed.model_dump(mode="python"), **update})
+    encoded = (json.dumps(forged.model_dump(mode="json"), indent=2) + "\n").encode()
+    (tmp_path / cycle.execution_index_ref.path).write_bytes(encoded)
+    cycle_update = {
+        field: getattr(forged, field),
+        "execution_index_ref": cycle.execution_index_ref.model_copy(
+            update={"digest": hashlib.sha256(encoded).hexdigest()}
+        ),
+    }
+    if field == "execution_id":
+        cycle_update["execution_authority_ref"] = forged.execution_authority_ref
+    forged_cycle = cycle.model_copy(update=cycle_update)
+
+    with pytest.raises(AssessmentInputError):
+        materialize_assessment_inputs(
+            request.model_copy(
+                update={
+                    "execution": forged_cycle,
+                    "execution_at": forged.executed_at,
+                }
+            ),
+            project_root=tmp_path,
+            write_root=tmp_path,
+            secret_port=authority,  # type: ignore[arg-type]
+            authority_handle=authority_handle,
+        )

@@ -34,8 +34,9 @@ from assurance_execution.contracts.verification import (
     ObservationV1,
     VerificationEvidenceV1,
     VerificationManifestV1,
-    VerifiedProcessReceiptV1,
+    VerifiedExecutionAuthorityV1,
     VerifiedExecutionResultV1,
+    VerifiedProcessReceiptV1,
 )
 from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
 from assurance_generation.contracts.admission import GenerationAdmissionError, admit_verified_generation
@@ -769,6 +770,7 @@ def _verified_materials(
         if actual_raw_refs != cycle.raw_evidence_refs:
             raise AssessmentInputError("verified journal raw closure differs from the committed cycle")
         allowed_json = {
+            "execution_terminal.json",
             "manifest.json",
             "outcome.json",
             *(f"{name}.json" for name in _JOURNAL_NAMES),
@@ -785,6 +787,22 @@ def _verified_materials(
             )
         )
         evidence = VerificationEvidenceV1.model_validate(outcome.output)
+        if cycle.execution_authority_ref.path != f"{manifest.evidence_root}/execution_terminal.json":
+            raise AssessmentInputError("authenticated host execution result path differs")
+        terminal = VerifiedExecutionAuthorityV1.model_validate(
+            _journal_payload(
+                root,
+                cycle.execution_authority_ref,
+                record="execution_terminal",
+                manifest_digest=manifest_digest,
+                ownership_token=ownership_token,
+            )
+        )
+        indexed_projection = VerifiedExecutionAuthorityV1.model_validate(
+            verified.model_dump(mode="json", exclude={"execution_authority_ref"})
+        )
+        if terminal != indexed_projection:
+            raise AssessmentInputError("execution index differs from authenticated host execution result")
         try:
             machine_plan: CaseExecutionPlanV1 = next(
                 item for item in admission.machine_plans.cases if item.case_id == cycle.case_id
@@ -877,6 +895,7 @@ def _verified_materials(
             "mapping_digest": verified.mapping_digest,
             "manifest_ref": verified.manifest_ref,
             "evidence_ref": verified.evidence_ref,
+            "execution_authority_ref": verified.execution_authority_ref,
             "raw_evidence_refs": verified.raw_evidence_refs,
         }
         if any(getattr(cycle, key) != value for key, value in expected_cycle.items()):
@@ -968,14 +987,14 @@ def _verified_materials(
         selected_targets=selected,
         mapping=admission.closed_mapping,
         baseline_tree_id=cycle.manifest_ref.digest,
-        runner_profile_digest=cycle.receipt.receipt_digest,
+        runner_profile_digest=cycle.execution_authority_ref.digest,
         receipt=ExecutionReceiptV1(commands=commands),
         results=results,
         plan_digest=cycle.plan_digest,
         plan_ref=cycle.plan_ref,
         executed_at=cycle.executed_at,
         mapping_digest=cycle.mapping_digest,
-        receipt_digest=cycle.receipt.receipt_digest,
+        receipt_digest=cycle.execution_authority_ref.digest,
     )
     return admission.closed_mapping, projected, verdict
 

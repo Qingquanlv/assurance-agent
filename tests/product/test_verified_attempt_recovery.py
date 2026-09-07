@@ -83,6 +83,10 @@ class VerifiedHostProbe:
                 evidence_ref=EvidenceArtifactRefV1(
                     path="qa/changes/c/execution/outcome.json", digest="5" * 64
                 ),
+                execution_authority_ref=EvidenceArtifactRefV1(
+                    path=(f"qa/changes/c/execution/{execution_id}/execution_terminal.json"),
+                    digest="6" * 64,
+                ),
                 raw_evidence_refs=(receipt_ref,),
                 executed_at=datetime(2026, 9, 6, tzinfo=timezone.utc),
                 completion_status="incomplete",

@@ -264,8 +264,8 @@ class VerifiedProcessReceiptV1(FrozenModel):
     cleanup_confirmed: bool
 
 
-class VerifiedExecutionResultV1(FrozenModel):
-    """Authenticated host dispatch result; it carries completion, never a business verdict."""
+class VerifiedExecutionAuthorityV1(FrozenModel):
+    """Exact execution result projection sealed by the independent host journal."""
 
     schema_version: Literal["1"] = "1"
     validation_profile: ValidationProfile
@@ -319,6 +319,19 @@ class VerifiedExecutionResultV1(FrozenModel):
         return self
 
 
+class VerifiedExecutionResultV1(VerifiedExecutionAuthorityV1):
+    """Host dispatch result with the ref to its independently sealed authority record."""
+
+    execution_authority_ref: EvidenceArtifactRefV1
+
+    @model_validator(mode="after")
+    def _authority_ref_is_fixed(self) -> Self:
+        expected = f"qa/changes/{self.change_id}/execution/{self.execution_id}/execution_terminal.json"
+        if self.execution_authority_ref.path != expected:
+            raise ValueError("verified result authority ref must use its fixed execution path")
+        return self
+
+
 __all__ = [
     "EvidenceCompletionV1",
     "FrozenUserInputsV1",
@@ -331,6 +344,7 @@ __all__ = [
     "SqliteObservationMetadataV1",
     "VerificationEvidenceV1",
     "VerificationManifestV1",
+    "VerifiedExecutionAuthorityV1",
     "VerifiedProcessLimitsV1",
     "VerifiedProcessReceiptV1",
     "VerifiedExecutionResultV1",
