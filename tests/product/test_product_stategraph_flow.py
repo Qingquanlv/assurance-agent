@@ -362,8 +362,16 @@ def _flow_features(
     return features
 
 
-def _product_graphs(features: Mapping[str, object] | None = None) -> ProductGraphs:
-    return build_product_graphs(context=_build_context(), features=features or _flow_features())
+def _product_graphs(
+    features: Mapping[str, object] | None = None,
+    *,
+    authenticate_generation_defect: Any = None,
+) -> ProductGraphs:
+    return build_product_graphs(
+        context=_build_context(),
+        features=features or _flow_features(),
+        authenticate_generation_defect=authenticate_generation_defect,
+    )
 
 
 def test_build_product_graphs_merges_twelve_thin_roots_plus_execute_and_full() -> None:

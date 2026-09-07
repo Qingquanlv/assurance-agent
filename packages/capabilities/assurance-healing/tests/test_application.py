@@ -18,6 +18,7 @@ from assurance_healing.contracts.application import (
     ApplyTestRepairInputV1,
     TestRepairResultV1 as RepairAgentResultV1,
 )
+from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
 from assurance_healing.operations.application import (
@@ -31,6 +32,7 @@ from tests.product.test_change_local_output_routing import BINDING, execute_task
 from tests.acg_plan_fixture import install_plan
 from tests.verified_generation_fixture import (
     accepted_verified_execution_input,
+    generation_defect_execution_binding,
     install_verified_generation_defect_cycle,
 )
 
@@ -315,6 +317,12 @@ def _verified_repair_fixture(project: Path) -> tuple[dict[str, object], str, byt
         "paths": [bridge.path],
         "action": "approve_and_apply",
     }
+    cycle = install_verified_generation_defect_cycle(
+        project,
+        defect,
+        invocation_id="inv-1",
+        public_entrypoint="phase5",
+    )
     payload = {
         "change_id": generation.change_id,
         "plan_digest": generation.plan_digest,
@@ -331,7 +339,8 @@ def _verified_repair_fixture(project: Path) -> tuple[dict[str, object], str, byt
         "validation_profile": "api_db.v1",
         "selected_test_families": ["api"],
         "capability_leafs": ["entities.item.create"],
-        "generation_defect": install_verified_generation_defect_cycle(project, defect).model_dump(
+        "generation_defect": cycle.model_dump(mode="json"),
+        "generation_defect_execution_binding": generation_defect_execution_binding(cycle).model_dump(
             mode="json"
         ),
     }
@@ -433,6 +442,32 @@ async def test_verified_bridge_repair_rejects_cross_attempt_or_receipt_substitut
     assert result.outcome.status == "failed"
     assert result.outcome.failure is not None
     assert "authority" in result.outcome.failure.message or "promotion" in result.outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_bridge_repair_rejects_complete_old_invocation_authority_tuple(
+    tmp_path: Path,
+) -> None:
+    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
+    current = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
+    old_cycle = install_verified_generation_defect_cycle(
+        tmp_path,
+        current.attempt.defect,
+        invocation_id="inv-old-complete-tuple",
+        public_entrypoint="phase5",
+    )
+    payload["generation_defect"] = old_cycle.model_dump(mode="json")
+    payload["generation_defect_execution_binding"] = generation_defect_execution_binding(
+        old_cycle
+    ).model_dump(mode="json")
+    stage = tmp_path / ".stage"
+    _write(stage, bridge_path, expected)
+
+    result = await _finalize(tmp_path, stage, payload, [bridge_path])
+
+    assert result.outcome.status == "failed"
+    assert result.outcome.failure is not None
+    assert "current invocation" in result.outcome.failure.message
 
 
 def test_verified_generation_defect_rejects_substituted_old_execution_evidence(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from functools import partial
 from typing import Any, Literal, cast
 
 from langchain_core.runnables.config import RunnableConfig
@@ -23,6 +24,7 @@ from assurance_product.graphs.entrypoints import (
     validate_public_input,
 )
 from assurance_product.graphs.routes import (
+    GenerationDefectAuthenticator,
     route_applied_repair,
     route_execute,
     route_quality,
@@ -217,7 +219,11 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
     return {**public, **feature_input, "feature_input": feature_input}
 
 
-def adapt_repair_failure(state: ProductState) -> dict[str, object]:
+def adapt_repair_failure(
+    state: ProductState,
+    *,
+    authenticate_generation_defect: GenerationDefectAuthenticator | None = None,
+) -> dict[str, object]:
     payload = _input_from_state(state)
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
     reviewed = generation.reviewed_case
@@ -238,14 +244,18 @@ def adapt_repair_failure(state: ProductState) -> dict[str, object]:
         defect = defect_cycle.attempt.defect
         declared_defect = state.get("generation_defect")
         declared_authority = state.get("generation_defect_authority_ref")
+        declared_binding = state.get("generation_defect_execution_binding")
         if (
-            declared_defect is not None
-            and VerifiedGenerationDefectCycleV1.model_validate(declared_defect) != defect_cycle
+            authenticate_generation_defect is None
+            or declared_defect is None
+            or declared_binding is None
+            or VerifiedGenerationDefectCycleV1.model_validate(declared_defect) != defect_cycle
         ) or (
-            declared_authority is not None
-            and declared_authority != defect_cycle.attempt.authority_receipt.model_dump(mode="json")
+            declared_authority is None
+            or declared_authority != defect_cycle.attempt.authority_receipt.model_dump(mode="json")
         ):
             raise ValueError("verified generation defect provenance differs from execution state")
+        authenticate_generation_defect(state, defect_cycle)
         if defect.generation != generation or defect.validation_profile != payload.validation_profile:
             raise ValueError("verified generation defect differs from the current generation")
         allowed_paths = (defect.bridge_ref.path,)
@@ -289,6 +299,9 @@ def adapt_repair_failure(state: ProductState) -> dict[str, object]:
         "generation_defect": (None if defect_cycle is None else defect_cycle.model_dump(mode="json")),
         "generation_defect_authority_ref": (
             None if defect_cycle is None else defect_cycle.attempt.authority_receipt.model_dump(mode="json")
+        ),
+        "generation_defect_execution_binding": (
+            None if defect_cycle is None else state.get("generation_defect_execution_binding")
         ),
     }
     return {**feature_input, "feature_input": feature_input}
@@ -438,7 +451,12 @@ def resume_product_interrupts(
     return result
 
 
-def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph[ProductState]:
+def build_execute_graph(
+    bundles: object,
+    *,
+    validate: bool = True,
+    authenticate_generation_defect: GenerationDefectAuthenticator | None = None,
+) -> StateGraph[ProductState]:
     typed = cast(Any, bundles)
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     if validate:
@@ -449,7 +467,16 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_node("execute", typed.execution.execute)
     builder.add_node("adapt-quality", cast(Any, adapt_quality_assess))
     builder.add_node("quality", typed.quality.assess)
-    builder.add_node("adapt-repair-failure", cast(Any, adapt_repair_failure))
+    builder.add_node(
+        "adapt-repair-failure",
+        cast(
+            Any,
+            partial(
+                adapt_repair_failure,
+                authenticate_generation_defect=authenticate_generation_defect,
+            ),
+        ),
+    )
     builder.add_node("fix-proposal", typed.healing.repair_failure)
     builder.add_node("adapt-rerun", cast(Any, adapt_rerun))
     builder.add_node("run", typed.execution.rerun)
@@ -473,7 +500,13 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_edge("adapt-execution", "execute")
     builder.add_conditional_edges(
         "execute",
-        cast(Callable[..., Any], route_execute),
+        cast(
+            Callable[..., Any],
+            partial(
+                route_execute,
+                authenticate_generation_defect=authenticate_generation_defect,
+            ),
+        ),
         {"quality": "adapt-quality", "repair": "adapt-repair-failure", "blocked": "blocked"},
     )
     builder.add_edge("adapt-quality", "quality")
@@ -516,8 +549,16 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     return builder
 
 
-def build_execute_tail(bundles: object) -> CompiledStateGraph:
-    return build_execute_graph(bundles, validate=False).compile(checkpointer=None)
+def build_execute_tail(
+    bundles: object,
+    *,
+    authenticate_generation_defect: GenerationDefectAuthenticator | None = None,
+) -> CompiledStateGraph:
+    return build_execute_graph(
+        bundles,
+        validate=False,
+        authenticate_generation_defect=authenticate_generation_defect,
+    ).compile(checkpointer=None)
 
 
 def build_execute_root(

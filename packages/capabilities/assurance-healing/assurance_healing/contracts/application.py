@@ -8,6 +8,7 @@ from typing import Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_intake.contracts.workflow import (
@@ -16,7 +17,10 @@ from assurance_intake.contracts.workflow import (
     require_same_plan,
 )
 from assurance_generation.contracts.execution_plan import ValidationProfile
-from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
+from assurance_execution.contracts.workflow import (
+    ExecutionAttemptBindingV1,
+    VerifiedGenerationDefectCycleV1,
+)
 
 AppliedTestRepairStatus = Literal["applied", "needs_review", "not_eligible", "exhausted", "failed"]
 
@@ -66,6 +70,7 @@ class ApplyTestRepairInputV1(FrozenModel):
     selected_test_families: tuple[str, ...] = ()
     capability_leafs: tuple[str, ...] = ()
     generation_defect: VerifiedGenerationDefectCycleV1 | None = None
+    generation_defect_execution_binding: ExecutionAttemptBindingV1 | None = None
 
     @field_validator("source_refs")
     @classmethod
@@ -105,15 +110,27 @@ class ApplyTestRepairInputV1(FrozenModel):
         if self.generation_defect is None:
             if self.execution_ref is None:
                 raise ValueError("legacy repair requires failed execution evidence")
-            if self.validation_profile is not None or self.selected_test_families:
+            if (
+                self.validation_profile is not None
+                or self.selected_test_families
+                or self.generation_defect_execution_binding is not None
+            ):
                 raise ValueError("legacy repair cannot carry verified generation defect inputs")
         else:
             defect = self.generation_defect.attempt.defect
             generation = defect.generation
+            binding = self.generation_defect_execution_binding
             if self.execution_ref is not None:
                 raise ValueError("pre-dispatch generation defect cannot carry execution evidence")
             if (
-                self.validation_profile != defect.validation_profile
+                binding is None
+                or binding.repair_round != self.repair_round - 1
+                or binding.attempt_key != defect.attempt_key
+                or binding.change_id != self.change_id
+                or binding.coverage_epoch != self.coverage_epoch
+                or binding.validation_profile != defect.validation_profile
+                or binding.generation_digest != canonical_digest(generation.model_dump(mode="json"))
+                or self.validation_profile != defect.validation_profile
                 or not self.selected_test_families
                 or not self.capability_leafs
                 or generation.change_id != self.change_id

@@ -11,6 +11,7 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.verification import VerifiedExecutionResultV1
 from assurance_execution.contracts.workflow import (
+    ExecutionAttemptBindingV1,
     ExecutionCycleResultV1,
     VerifiedExecutionCycleResultV1,
     VerifiedGenerationDefectAttemptV1,
@@ -132,6 +133,32 @@ def publish_execution(
             published["generation_defect_authority_ref"] = defect_attempt.authority_receipt.model_dump(
                 mode="json"
             )
+            activation = (
+                activation_execute(state)
+                if semantic_node_id == "execution.execute"
+                else activation_rerun(state)
+            )
+            binding = ExecutionAttemptBindingV1(
+                invocation_id=provenance.invocation_id,
+                public_entrypoint=provenance.public_entrypoint,
+                semantic_node_id=semantic_node_id,
+                attempt_key=provenance.attempt_key,
+                business_activation=activation,
+                graph_revision=provenance.graph_revision,
+                contract_id=(
+                    "assurance.execution.task.execute.v1"
+                    if semantic_node_id == "execution.execute"
+                    else "assurance.execution.task.run.v1"
+                ),
+                contract_digest=provenance.contract_digest,
+                input_digest=provenance.input_digest,
+                change_id=generation.change_id,
+                coverage_epoch=generation.coverage_epoch,
+                repair_round=_int(state, "repair_round"),
+                validation_profile=defect.validation_profile,
+                generation_digest=canonical_digest(cast(JSONValue, generation.model_dump(mode="json"))),
+            )
+            published["generation_defect_execution_binding"] = binding.model_dump(mode="json")
             return published
         try:
             VerifiedGenerationDefectV1.model_validate(payload)

@@ -17,7 +17,7 @@ from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1, require_same_plan
 from assurance_generation.contracts.execution_plan import ValidationProfile
-from graph_engine.attempts import AttemptKey
+from graph_engine.attempts import AttemptKey, BusinessActivation
 
 
 class ExecutionCycleResultV1(FrozenModel):
@@ -168,7 +168,42 @@ class VerifiedGenerationDefectCycleV1(FrozenModel):
         return self
 
 
+class ExecutionAttemptBindingV1(FrozenModel):
+    """Checkpointed identity of the execution attempt selected by the current run."""
+
+    schema_version: Literal["1"] = "1"
+    invocation_id: str = Field(min_length=1)
+    public_entrypoint: str = Field(min_length=1)
+    semantic_node_id: Literal["execution.execute", "execution.run"]
+    attempt_key: AttemptKey
+    business_activation: BusinessActivation
+    graph_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_id: Literal[
+        "assurance.execution.task.execute.v1",
+        "assurance.execution.task.run.v1",
+    ]
+    contract_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    input_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    repair_round: int = Field(ge=0)
+    validation_profile: ValidationProfile
+    generation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def _bind_semantic_contract(self) -> Self:
+        expected_contract = (
+            "assurance.execution.task.execute.v1"
+            if self.semantic_node_id == "execution.execute"
+            else "assurance.execution.task.run.v1"
+        )
+        if self.contract_id != expected_contract:
+            raise ValueError("execution attempt binding uses the wrong contract")
+        return self
+
+
 __all__ = [
+    "ExecutionAttemptBindingV1",
     "ExecutionCycleInputV1",
     "ExecutionCycleResultV1",
     "VerifiedExecutionCycleResultV1",

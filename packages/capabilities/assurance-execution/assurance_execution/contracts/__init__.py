@@ -15,6 +15,7 @@ from assurance_execution.contracts.selection import (
     SelectedTargets,
 )
 from assurance_execution.contracts.workflow import (
+    ExecutionAttemptBindingV1,
     ExecutionCycleInputV1,
     ExecutionCycleResultV1,
     VerifiedExecutionCycleResultV1,
@@ -42,6 +43,7 @@ __all__ = [
     "ClosedMappingEntryV1",
     "ClosedMappingV1",
     "ExecutionAgentResultV1",
+    "ExecutionAttemptBindingV1",
     "ExecutionCommandReceiptV1",
     "ExecutionEvidenceV1",
     "ExecutionDispatchResultV1",

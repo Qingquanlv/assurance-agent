@@ -354,8 +354,10 @@ def install_verified_generation_defect_cycle(
     defect,
     *,
     invocation_id: str = "inv-generation-defect",
+    public_entrypoint: str = "full",
     authorization_id: str = "2" * 64,
     graph_revision: str = "3" * 64,
+    execution_binding=None,
 ):
     """Install real host/promotion authority records for a generation-defect test fixture."""
 
@@ -374,6 +376,12 @@ def install_verified_generation_defect_cycle(
     from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
     from graph_engine.plugin_api import PromotionReceipt, TaskOutcome
 
+    if execution_binding is not None:
+        if execution_binding.attempt_key != defect.attempt_key:
+            raise ValueError("fixture execution binding must identify the defect attempt")
+        invocation_id = execution_binding.invocation_id
+        graph_revision = execution_binding.graph_revision
+        public_entrypoint = execution_binding.public_entrypoint
     attempt_key = defect.attempt_key.digest
     workspace_digest = "1" * 64
     request_digest = canonical_digest({"phase": "runtime", "task_id": attempt_key, "staged_paths": []})
@@ -462,11 +470,11 @@ def install_verified_generation_defect_cycle(
     provenance = AttemptResultProvenanceV1(
         attempt_key=defect.attempt_key,
         invocation_id=invocation_id,
-        public_entrypoint="full",
+        public_entrypoint=public_entrypoint,
         semantic_node_id="execution.execute",
         graph_revision=identity.graph_revision,
-        contract_digest="8" * 64,
-        input_digest="9" * 64,
+        contract_digest=("8" * 64 if execution_binding is None else execution_binding.contract_digest),
+        input_digest="9" * 64 if execution_binding is None else execution_binding.input_digest,
         authorization_id=identity.authorization_id,
         activity_id=attempt_key,
         output_digest=canonical_digest(cast(JSONValue, attempt.model_dump(mode="json"))),
@@ -482,4 +490,37 @@ def install_verified_generation_defect_cycle(
     )
 
 
-__all__ = ["accepted_verified_execution_input", "install_verified_generation_defect_cycle"]
+def generation_defect_execution_binding(cycle, *, repair_round: int = 0):
+    """Build the checkpoint mirror used by focused healing fixtures."""
+
+    from assurance_execution.contracts.workflow import ExecutionAttemptBindingV1
+    from graph_engine.attempts import BusinessActivation
+    from graph_engine.canonical import JSONValue, canonical_digest
+
+    defect = cycle.attempt.defect
+    generation_payload: JSONValue = defect.generation.model_dump(mode="json")
+    return ExecutionAttemptBindingV1(
+        invocation_id=cycle.execution_provenance.invocation_id,
+        public_entrypoint=cycle.execution_provenance.public_entrypoint,
+        semantic_node_id="execution.execute",
+        attempt_key=defect.attempt_key,
+        business_activation=BusinessActivation.for_trigger(
+            f"coverage.{defect.generation.coverage_epoch}.execute"
+        ),
+        graph_revision=cycle.execution_provenance.graph_revision,
+        contract_id="assurance.execution.task.execute.v1",
+        contract_digest=cycle.execution_provenance.contract_digest,
+        input_digest=cycle.execution_provenance.input_digest,
+        change_id=defect.generation.change_id,
+        coverage_epoch=defect.generation.coverage_epoch,
+        repair_round=repair_round,
+        validation_profile=defect.validation_profile,
+        generation_digest=canonical_digest(generation_payload),
+    )
+
+
+__all__ = [
+    "accepted_verified_execution_input",
+    "generation_defect_execution_binding",
+    "install_verified_generation_defect_cycle",
+]

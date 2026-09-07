@@ -191,7 +191,10 @@ async def test_durable_attempt_journal_authority_publishes_real_generation_defec
     from assurance_execution.contracts.agent import ExecutionPrepareInputV1
     from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
     from assurance_execution.contracts.verification import ExecutionDispatchResultV1
-    from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
+    from assurance_execution.contracts.workflow import (
+        ExecutionAttemptBindingV1,
+        VerifiedGenerationDefectCycleV1,
+    )
     from assurance_execution.graphs.nodes import activation_execute, select_execute
     from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
     from graph_engine.attempts import AttemptExecutionContext, CommittedTaskResult, derive_attempt_key
@@ -330,6 +333,12 @@ async def test_durable_attempt_journal_authority_publishes_real_generation_defec
     assert published["generation_defect_authority_ref"] == (
         expected.attempt.authority_receipt.model_dump(mode="json")
     )
+    binding = ExecutionAttemptBindingV1.model_validate(published["generation_defect_execution_binding"])
+    assert binding.attempt_key == key
+    assert binding.invocation_id == "inv-real-defect"
+    assert binding.public_entrypoint == "full"
+    assert binding.semantic_node_id == "execution.execute"
+    assert binding.repair_round == 0
 
 
 @pytest.mark.parametrize("record", ["action_terminal", "process_terminal", "outcome"])

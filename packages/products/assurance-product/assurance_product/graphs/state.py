@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Self, TypedDict
+
+from pydantic import model_validator
 
 from assurance_execution.contracts.workflow import (
+    ExecutionAttemptBindingV1,
     ExecutionCycleResultV1,
     VerifiedExecutionCycleResultV1,
     VerifiedGenerationDefectCycleV1,
@@ -196,6 +199,7 @@ class ProductStateDocument(FrozenModel):
     )
     generation_defect: VerifiedGenerationDefectCycleV1 | None = None
     generation_defect_authority_ref: TerminalReceiptRef | None = None
+    generation_defect_execution_binding: ExecutionAttemptBindingV1 | None = None
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
@@ -225,6 +229,7 @@ class ProductStateDocument(FrozenModel):
     proposal_ref: EvidenceArtifactRefV1
     approval_ref: EvidenceArtifactRefV1 | None
     execution_ref: EvidenceArtifactRefV1 | None = None
+
     mapping_ref: EvidenceArtifactRefV1
     source_refs: list[dict[str, str]]
     allowed_test_paths: list[str]
@@ -233,6 +238,26 @@ class ProductStateDocument(FrozenModel):
     proposal_receipt: dict[str, str]
     repair_result: dict[str, Any]
     effect_refs: list[dict[str, str]]
+
+    @model_validator(mode="after")
+    def _defect_branch_has_complete_authority(self) -> Self:
+        if isinstance(self.execution_result, VerifiedGenerationDefectCycleV1):
+            cycle = self.execution_result
+            binding = self.generation_defect_execution_binding
+            if (
+                self.generation_defect != cycle
+                or self.generation_defect_authority_ref != cycle.attempt.authority_receipt
+                or binding is None
+                or binding.attempt_key != cycle.execution_provenance.attempt_key
+                or binding.invocation_id != cycle.execution_provenance.invocation_id
+                or binding.public_entrypoint != cycle.execution_provenance.public_entrypoint
+                or binding.semantic_node_id != cycle.execution_provenance.semantic_node_id
+                or binding.graph_revision != cycle.execution_provenance.graph_revision
+                or binding.contract_digest != cycle.execution_provenance.contract_digest
+                or binding.input_digest != cycle.execution_provenance.input_digest
+            ):
+                raise ValueError("generation defect state is missing its current execution authority")
+        return self
 
 
 class ProductState(CheckpointBridgeState, total=False):
@@ -307,6 +332,7 @@ class ProductState(CheckpointBridgeState, total=False):
     )
     generation_defect: VerifiedGenerationDefectCycleV1 | None
     generation_defect_authority_ref: TerminalReceiptRef | None
+    generation_defect_execution_binding: ExecutionAttemptBindingV1 | None
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1

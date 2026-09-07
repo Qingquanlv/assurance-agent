@@ -18,8 +18,11 @@ mapping.
 - Return `TestRepairResultV1` with the exact sorted `output_files` write set and a
   concise summary.
 
-The runtime finalizer independently authenticates the defect's exact host terminal
-receipt and kernel promotion receipt, recompiles the machine plan from the frozen
-ReviewedCase and assertion sources, and rejects replay from another execution attempt
-or any changed verification obligation. A proposal or summary alone never counts as
-an applied repair.
+Before repair routing, the product authenticates the exact host terminal receipt and
+kernel promotion receipt against an AttemptKey rederived from the current invocation,
+entrypoint, graph revision, execution input, contract, and activation. The runtime
+prepare and finalizer repeat durable receipt authentication and bind the checkpointed
+execution identity to their current invocation. They recompile the machine plan from
+the frozen ReviewedCase and assertion sources, and reject replay from another
+invocation, execution attempt, or repair round, plus any changed verification
+obligation. A proposal or summary alone never counts as an applied repair.

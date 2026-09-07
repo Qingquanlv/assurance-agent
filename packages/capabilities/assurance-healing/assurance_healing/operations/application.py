@@ -25,6 +25,7 @@ from assurance_generation.contracts.admission import (
 from assurance_generation.contracts.codegen import staged_generated_path
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from assurance_generation.contracts.mapping import ClosedMappingV1, selected_test_file
+from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 from assurance_healing.contracts.agent import AgentBindingDataV1
 from assurance_healing.contracts.application import (
     ApplyTestRepairInputV1,
@@ -143,15 +144,32 @@ def _prove_implementation_only(before: bytes, after: bytes, symbols: set[str], p
         raise OutputError(f"repair removes or renames a mapped test identity: {path}")
 
 
-def _approved_sources(business: ApplyTestRepairInputV1, root: Path) -> dict[str, set[str]]:
+def _authenticate_generation_defect(
+    business: ApplyTestRepairInputV1,
+    context: TaskContext,
+) -> VerifiedGenerationDefectV1 | None:
+    cycle = business.generation_defect
+    binding = business.generation_defect_execution_binding
+    if cycle is None:
+        return None
+    if (
+        binding is None
+        or binding.invocation_id != context.invocation.invocation_id
+        or binding.public_entrypoint != context.invocation.entrypoint
+    ):
+        raise OutputError("verified generation defect does not belong to the current invocation")
     try:
-        defect = (
-            None
-            if business.generation_defect is None
-            else authenticate_generation_defect_cycle(root, business.generation_defect)
-        )
+        return authenticate_generation_defect_cycle(context.project_root, cycle, binding)
     except ValueError as error:
         raise OutputError(f"verified generation defect authority is not authentic: {error}") from error
+
+
+def _approved_sources(
+    business: ApplyTestRepairInputV1,
+    context: TaskContext,
+) -> dict[str, set[str]]:
+    root = context.project_root
+    defect = _authenticate_generation_defect(business, context)
     for ref in (
         *business.reviewed_case.preparation_refs,
         *business.reviewed_case.case_refs,
@@ -240,10 +258,8 @@ def _verify_generation_bridge(
 ) -> None:
     cycle = business.generation_defect
     assert cycle is not None
-    try:
-        defect = authenticate_generation_defect_cycle(context.project_root, cycle)
-    except ValueError as error:
-        raise OutputError(f"verified generation defect authority is not authentic: {error}") from error
+    defect = _authenticate_generation_defect(business, context)
+    assert defect is not None
     if hashlib.sha256(candidate).hexdigest() != defect.expected_digest:
         raise OutputError("repaired bridge bytes differ from deterministic generation")
     generation = defect.generation
@@ -313,7 +329,7 @@ def _verify_application(
 ) -> VerifiedTestRepairV1:
     if result.change_id != business.change_id:
         raise OutputError("repair result change_id does not match the locked change")
-    approved_sources = _approved_sources(business, context.project_root)
+    approved_sources = _approved_sources(business, context)
     outputs = set(result.output_files)
     if outputs != set(approved_sources):
         raise OutputError("repair output set must exactly equal the approved candidate write set")
@@ -353,7 +369,7 @@ class ApplyTestRepairPrepareHandler:
         try:
             business = ApplyTestRepairInputV1.model_validate(request.input)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
-            approved_paths = tuple(_approved_sources(business, context.project_root))
+            approved_paths = tuple(_approved_sources(business, context))
             request_payload = AgentRunRequest(
                 instructions=(
                     InstructionPart.text("text/plain", resource_text(APPLICATION_SKILL)),

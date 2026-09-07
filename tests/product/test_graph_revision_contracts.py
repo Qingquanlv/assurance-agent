@@ -15,7 +15,10 @@ from assurance_product.graphs.revisions import (
 )
 from assurance_product.graphs.state import ProductState, ProductStateDocument
 from assurance_product.models import PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
-from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
+from assurance_execution.contracts.workflow import (
+    ExecutionAttemptBindingV1,
+    VerifiedGenerationDefectCycleV1,
+)
 from graph_engine.attempts.contracts import TerminalReceiptRef
 from assurance_quality.contracts.agent import InspectionResultV1
 from graph_engine.boot.graph_revision import EntrypointGraphContract
@@ -165,8 +168,15 @@ def test_product_state_declares_generation_defect_result_and_nullable_execution_
     assert document["generation_defect"] == VerifiedGenerationDefectCycleV1 | None
     assert runtime["generation_defect_authority_ref"] == TerminalReceiptRef | None
     assert document["generation_defect_authority_ref"] == TerminalReceiptRef | None
+    assert runtime["generation_defect_execution_binding"] == ExecutionAttemptBindingV1 | None
+    assert document["generation_defect_execution_binding"] == ExecutionAttemptBindingV1 | None
     required = set(ProductStateDocument.model_json_schema().get("required", ()))
-    assert {"generation_defect", "generation_defect_authority_ref", "execution_ref"}.isdisjoint(required)
+    assert {
+        "generation_defect",
+        "generation_defect_authority_ref",
+        "generation_defect_execution_binding",
+        "execution_ref",
+    }.isdisjoint(required)
 
 
 def test_state_schema_digest_excludes_function_addresses() -> None:

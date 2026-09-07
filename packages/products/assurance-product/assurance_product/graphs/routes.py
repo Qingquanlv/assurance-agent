@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from assurance_execution.contracts.workflow import (
     ExecutionCycleResultV1,
@@ -13,13 +13,18 @@ from assurance_quality.contracts.assessment import InspectionOutcomeV1
 from graph_engine.stategraph.routing import select_exclusive_route
 
 _BLOCKED = "blocked"
+GenerationDefectAuthenticator = Callable[[Mapping[str, object], VerifiedGenerationDefectCycleV1], None]
 
 
 def prepare_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     return {"prepared": "prepared" if state.get("status") == "prepared" else None}
 
 
-def execute_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
+def execute_named_matches(
+    state: Mapping[str, object],
+    *,
+    authenticate_generation_defect: GenerationDefectAuthenticator | None = None,
+) -> dict[str, str | None]:
     if state.get("attempt_failure"):
         return {"quality": None, "repair": None}
     try:
@@ -34,18 +39,21 @@ def execute_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
                 generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
                 declared_defect = state.get("generation_defect")
                 declared_authority = state.get("generation_defect_authority_ref")
+                if authenticate_generation_defect is None:
+                    return {"quality": None, "repair": None}
+                authenticate_generation_defect(state, defect_cycle)
                 eligible = (
                     defect.generation == generation
                     and defect.validation_profile == state.get("validation_profile")
                     and defect.generation.change_id == state.get("change_id")
                     and defect.generation.coverage_epoch == state.get("coverage_epoch", 0)
                     and (
-                        declared_defect is None
-                        or VerifiedGenerationDefectCycleV1.model_validate(declared_defect) == defect_cycle
+                        declared_defect is not None
+                        and VerifiedGenerationDefectCycleV1.model_validate(declared_defect) == defect_cycle
                     )
                     and (
-                        declared_authority is None
-                        or declared_authority
+                        declared_authority is not None
+                        and declared_authority
                         == defect_cycle.attempt.authority_receipt.model_dump(mode="json")
                     )
                 )
@@ -115,8 +123,18 @@ def route_prepare(state: Mapping[str, object]) -> str:
     return select_exclusive_route(prepare_named_matches(state), otherwise="failed")
 
 
-def route_execute(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(execute_named_matches(state), otherwise=_BLOCKED)
+def route_execute(
+    state: Mapping[str, object],
+    *,
+    authenticate_generation_defect: GenerationDefectAuthenticator | None = None,
+) -> str:
+    return select_exclusive_route(
+        execute_named_matches(
+            state,
+            authenticate_generation_defect=authenticate_generation_defect,
+        ),
+        otherwise=_BLOCKED,
+    )
 
 
 def route_run(state: Mapping[str, object]) -> str:
@@ -141,6 +159,7 @@ PRODUCT_EXCLUSIVE_ROUTES = {
 
 
 __all__ = [
+    "GenerationDefectAuthenticator",
     "PRODUCT_EXCLUSIVE_ROUTES",
     "applied_repair_named_matches",
     "execute_named_matches",

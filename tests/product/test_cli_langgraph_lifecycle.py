@@ -252,6 +252,7 @@ def _durable_chain(
             assert started.fencing_token >= 1
             artifact = ports._compile_bound(
                 invocation_id=invocation_id,
+                entrypoint=identity.entrypoint,
                 root_input_digest=identity.root_input_digest,
                 fencing_token=started.fencing_token,
             )
@@ -480,6 +481,7 @@ def _inject_evaluate_payload(
             assert started.fencing_token >= 1
             artifact = ports._compile_bound(
                 invocation_id=invocation_id,
+                entrypoint=identity.entrypoint,
                 root_input_digest=identity.root_input_digest,
                 fencing_token=started.fencing_token,
             )

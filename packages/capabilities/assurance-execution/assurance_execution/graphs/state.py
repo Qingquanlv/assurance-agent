@@ -26,6 +26,7 @@ class ExecutionState(CheckpointBridgeState, total=False):
     execution_result: dict[str, object]
     generation_defect: dict[str, object]
     generation_defect_authority_ref: dict[str, str]
+    generation_defect_execution_binding: dict[str, object]
     change_id: str
     plan_digest: str
     plan_ref: dict[str, str]
