@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -18,6 +18,7 @@ from assurance_execution.contracts.workflow import (
 )
 from assurance_execution.graphs.nodes import activation_execute, select_execute
 from graph_engine.attempts import derive_attempt_key
+from graph_engine.attempts.host_authority import HostSealingAuthority
 from graph_engine.canonical import JSONValue, canonical_digest
 
 _CONTRACT_ID = "assurance.execution.task.execute.v1"
@@ -32,6 +33,7 @@ class GenerationDefectRouteAuthenticator:
     invocation_id: str
     public_entrypoint: str
     graph_revision: str
+    selection_authority: HostSealingAuthority | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         project = Path(self.project_root).resolve(strict=True)
@@ -43,6 +45,12 @@ class GenerationDefectRouteAuthenticator:
             character not in "0123456789abcdef" for character in self.graph_revision
         ):
             raise ValueError("generation defect authority requires a canonical graph revision")
+        if self.selection_authority is None:
+            object.__setattr__(
+                self,
+                "selection_authority",
+                HostSealingAuthority.open_for_project(project),
+            )
 
     def expected_binding(self, state: Mapping[str, object]) -> ExecutionAttemptBindingV1:
         selected = select_execute(state)
@@ -89,7 +97,15 @@ class GenerationDefectRouteAuthenticator:
         if declared != expected:
             raise ValueError("generation defect execution binding is not current")
         authenticate_generation_defect_cycle(self.project_root, cycle, expected)
-        record_current_generation_defect(self.project_root, cycle, expected)
+        authority = self.selection_authority
+        if authority is None:  # pragma: no cover - established in __post_init__
+            raise ValueError("generation defect host authority is unavailable")
+        record_current_generation_defect(
+            self.project_root,
+            cycle,
+            expected,
+            selection_authority=authority,
+        )
 
 
 __all__ = ["GenerationDefectRouteAuthenticator"]

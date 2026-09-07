@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 from pathlib import Path
 
 import pytest
 
+import graph_engine.attempts.host_receipts as host_receipts
+from graph_engine.attempts.host_authority import HostAuthorityError, HostSealingAuthority
 from graph_engine.attempts.host_protocol import (
     TaskHostCallIdentity,
     TaskHostTerminalReceipt,
@@ -87,6 +91,37 @@ def _staged(identity: TaskWorkspaceIdentity) -> StagedWriteSet:
     )
 
 
+def _selection_store(tmp_path: Path, *, authority_name: str = "host-authority") -> TerminalReceiptStore:
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+    authority = HostSealingAuthority.open_for_project(
+        project,
+        authority_root=tmp_path / authority_name,
+    )
+    return TerminalReceiptStore.open_or_create(
+        project / "receipts",
+        selection_authority=authority,
+    )
+
+
+def test_host_sealing_authority_is_external_private_and_persistent(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    authority_root = tmp_path / "host-authority"
+
+    first = HostSealingAuthority.open_for_project(project, authority_root=authority_root)
+    reopened = HostSealingAuthority.open_for_project(project, authority_root=authority_root)
+
+    assert reopened.authority_id == first.authority_id
+    assert "_key" not in repr(first)
+    assert stat.S_IMODE((authority_root / "selection-authority-v1.key").stat().st_mode) == 0o600
+    with pytest.raises(HostAuthorityError, match="outside"):
+        HostSealingAuthority.open_for_project(
+            project,
+            authority_root=project / ".host-authority",
+        )
+
+
 def _receipt(
     identity: TaskHostCallIdentity,
     activity: TaskActivitySnapshot,
@@ -160,7 +195,7 @@ def test_terminal_receipt_sink_is_host_call_scoped(tmp_path: Path) -> None:
 def test_host_selection_receipt_is_create_once_and_exact_replay_is_idempotent(
     tmp_path: Path,
 ) -> None:
-    store = TerminalReceiptStore.create(tmp_path / "receipts")
+    store = _selection_store(tmp_path)
     scope = {"invocation_id": "inv-1", "repair_round": 0}
     selected = {"attempt_key": "a" * 64}
 
@@ -179,7 +214,7 @@ def test_host_selection_receipt_is_create_once_and_exact_replay_is_idempotent(
 
 
 def test_host_selection_receipt_rejects_missing_or_changed_payload(tmp_path: Path) -> None:
-    store = TerminalReceiptStore.create(tmp_path / "receipts")
+    store = _selection_store(tmp_path)
     scope = {"invocation_id": "inv-1", "repair_round": 0}
     store.publish_selection(
         namespace="test.current.v1",
@@ -196,6 +231,97 @@ def test_host_selection_receipt_rejects_missing_or_changed_payload(tmp_path: Pat
 
     receipt_path.unlink()
     assert store.authenticate_selection(namespace="test.current.v1", scope=scope) is None
+
+
+@pytest.mark.parametrize(
+    "cut",
+    [
+        "before-selection-file-fsync",
+        "after-selection-file-fsync",
+        "before-selection-install",
+        "after-selection-install",
+        "before-selection-directory-fsync",
+        "after-selection-directory-fsync",
+    ],
+)
+def test_host_selection_publication_recovers_at_every_durable_cut(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cut: str,
+) -> None:
+    store = _selection_store(tmp_path)
+    scope = {"invocation_id": "inv-1", "repair_round": 0}
+    selected = {"attempt_key": "a" * 64}
+
+    def crash_at(selected_cut: str) -> None:
+        if selected_cut == cut:
+            raise RuntimeError(cut)
+
+    monkeypatch.setattr(host_receipts, "_selection_publication_cut", crash_at)
+    with pytest.raises(RuntimeError, match=cut):
+        store.publish_selection(namespace="test.current.v1", scope=scope, selection=selected)
+    monkeypatch.setattr(host_receipts, "_selection_publication_cut", lambda _cut: None)
+
+    authenticated = store.authenticate_selections(namespace="test.current.v1")
+    assert len(authenticated) == 1
+    with pytest.raises(TerminalReceiptError, match="compare-and-swap"):
+        store.publish_selection(
+            namespace="test.current.v1",
+            scope=scope,
+            selection={"attempt_key": "b" * 64},
+        )
+    assert (
+        store.publish_selection(
+            namespace="test.current.v1",
+            scope=scope,
+            selection=selected,
+        )
+        == authenticated[0]
+    )
+    namespace_root = next((store.root / ".selections").iterdir())
+    assert not list(namespace_root.glob("*.pending"))
+
+
+def test_host_selection_rejects_wrong_authority_cross_scope_copy_and_unsigned_publish(
+    tmp_path: Path,
+) -> None:
+    store = _selection_store(tmp_path)
+    scope = {"invocation_id": "inv-1", "repair_round": 0}
+    store.publish_selection(
+        namespace="test.current.v1",
+        scope=scope,
+        selection={"attempt_key": "a" * 64},
+    )
+
+    wrong_authority = HostSealingAuthority.open_for_project(
+        tmp_path / "project",
+        authority_root=tmp_path / "other-host-authority",
+    )
+    wrong_store = TerminalReceiptStore(
+        store.root,
+        selection_authority=wrong_authority,
+    )
+    with pytest.raises(TerminalReceiptError, match="signature"):
+        wrong_store.authenticate_selections(namespace="test.current.v1")
+
+    namespace_root = next((store.root / ".selections").iterdir())
+    signed = next(namespace_root.glob("*.json"))
+    foreign_scope = {"invocation_id": "inv-1", "repair_round": 1}
+    foreign_name = f"{_digest(foreign_scope)}.json"
+    shutil.copyfile(signed, namespace_root / foreign_name)
+    with pytest.raises(TerminalReceiptError, match="foreign"):
+        store.authenticate_selection(
+            namespace="test.current.v1",
+            scope=foreign_scope,
+        )
+
+    unsigned_store = TerminalReceiptStore(store.root)
+    with pytest.raises(TerminalReceiptError, match="authority"):
+        unsigned_store.publish_selection(
+            namespace="test.current.v1",
+            scope=scope,
+            selection={"attempt_key": "b" * 64},
+        )
 
 
 def test_receipt_store_rejects_partial_symlink_linked_changed_multiple_foreign_and_nonmonotonic(

@@ -16,6 +16,7 @@ from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 from graph_engine.attempts import AttemptKey
 from graph_engine.attempts.contracts import TerminalReceiptRef
+from graph_engine.attempts.host_authority import HostAuthorityError, HostSealingAuthority
 from graph_engine.attempts.host_receipts import TerminalReceiptError, TerminalReceiptStore
 from graph_engine.attempts.production_host import invocation_activity_receipts_root
 from graph_engine.attempts.resolutions import ReceiptRef
@@ -32,6 +33,7 @@ class GenerationDefectSelectionScopeV1(FrozenModel):
     """Trusted route scope for one repairable pre-dispatch execution attempt."""
 
     schema_version: Literal["1"] = "1"
+    project_root_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     change_id: str = Field(min_length=1)
     invocation_id: str = Field(min_length=1)
     public_entrypoint: str = Field(min_length=1)
@@ -108,8 +110,16 @@ def _authority_root(project_root: Path, change_id: str, invocation_id: str) -> P
     return project / "qa" / "changes" / change_id / ".runtime" / "current-generation-defects" / invocation_key
 
 
-def _selection_scope(binding: ExecutionAttemptBindingV1) -> GenerationDefectSelectionScopeV1:
+def _project_root_digest(project_root: Path) -> str:
+    return canonical_digest(str(Path(project_root).resolve(strict=True)))
+
+
+def _selection_scope(
+    project_root: Path,
+    binding: ExecutionAttemptBindingV1,
+) -> GenerationDefectSelectionScopeV1:
     return GenerationDefectSelectionScopeV1(
+        project_root_digest=_project_root_digest(project_root),
         change_id=binding.change_id,
         invocation_id=binding.invocation_id,
         public_entrypoint=binding.public_entrypoint,
@@ -202,6 +212,8 @@ def record_current_generation_defect(
     project_root: Path,
     cycle: VerifiedGenerationDefectCycleV1,
     binding: ExecutionAttemptBindingV1,
+    *,
+    selection_authority: HostSealingAuthority,
 ) -> CurrentGenerationDefectAuthorityV1:
     """Install one immutable current-execution index after journal authentication."""
 
@@ -213,8 +225,11 @@ def record_current_generation_defect(
         promotion_receipt=cycle.execution_provenance.promotion_receipt,
     )
     change_root = Path(project_root) / "qa" / "changes" / binding.change_id
-    store = TerminalReceiptStore(invocation_activity_receipts_root(change_root, binding.invocation_id))
-    scope = _selection_scope(binding)
+    store = TerminalReceiptStore(
+        invocation_activity_receipts_root(change_root, binding.invocation_id),
+        selection_authority=selection_authority,
+    )
+    scope = _selection_scope(project_root, binding)
     selection = _selection_payload(cycle, binding)
     try:
         store.publish_selection(
@@ -265,7 +280,14 @@ def load_current_generation_defect(
     """Load the unique current execution selected independently of repair input."""
 
     change_root = Path(project_root) / "qa" / "changes" / change_id
-    store = TerminalReceiptStore(invocation_activity_receipts_root(change_root, invocation_id))
+    try:
+        authority = HostSealingAuthority.open_for_project(Path(project_root))
+    except (OSError, HostAuthorityError) as error:
+        raise ValueError("current generation defect host authority is unavailable") from error
+    store = TerminalReceiptStore(
+        invocation_activity_receipts_root(change_root, invocation_id),
+        selection_authority=authority,
+    )
     try:
         selection_receipts = store.authenticate_selections(namespace=_CURRENT_SELECTION_NAMESPACE)
     except (FileNotFoundError, OSError, TerminalReceiptError) as error:
@@ -279,7 +301,8 @@ def load_current_generation_defect(
     except ValueError as error:
         raise ValueError("current generation defect selection is invalid") from error
     if (
-        scope.change_id != change_id
+        scope.project_root_digest != _project_root_digest(project_root)
+        or scope.change_id != change_id
         or scope.invocation_id != invocation_id
         or scope.public_entrypoint != public_entrypoint
     ):
@@ -317,7 +340,7 @@ def load_current_generation_defect(
         raise ValueError("current generation defect execution is missing or ambiguous")
     current = records[0]
     if (
-        _selection_scope(current.binding) != scope
+        _selection_scope(project_root, current.binding) != scope
         or _selection_payload(current.cycle, current.binding) != selection
     ):
         raise ValueError("current generation defect index differs from its authenticated selection")

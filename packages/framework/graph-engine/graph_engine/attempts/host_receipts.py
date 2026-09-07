@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import fcntl
 import json
 import os
 import stat
@@ -18,6 +19,7 @@ from graph_engine.errors import GraphEngineError
 from graph_engine.evidence.events import TaskActivityTerminalObserved
 from graph_engine.frozen_json import FrozenJSONValue, thaw_json
 from graph_engine.plugin_api import FrozenModel
+from graph_engine.attempts.host_authority import HostAuthorityError, HostSealingAuthority
 from graph_engine.attempts.host_protocol import (
     TASK_HOST_WIRE_SCHEMA_VERSION,
     TaskHostCallIdentity,
@@ -38,11 +40,14 @@ class HostSelectionReceipt(FrozenModel):
     """Immutable host-owned selection for one canonical scope."""
 
     schema_version: Literal["1"] = "1"
+    authority_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    authority_version: Literal["1"] = "1"
     namespace: str = Field(pattern=r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
     scope: FrozenJSONValue
     scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     selection: FrozenJSONValue
     selection_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    signature: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def _digests_match(self) -> Self:
@@ -59,6 +64,15 @@ class HostSelectionReceipt(FrozenModel):
 
 def _receipt_cut(name: str) -> None:
     del name
+
+
+def _selection_publication_cut(name: str) -> None:
+    del name
+
+
+def _selection_signature_payload(receipt: HostSelectionReceipt) -> bytes:
+    payload = receipt.model_dump(mode="json", exclude={"signature"})
+    return canonical_json_bytes(cast(JSONValue, payload))
 
 
 def _quiescence_cut(name: str) -> None:
@@ -181,13 +195,25 @@ class TerminalReceiptSink:
 class TerminalReceiptStore:
     """Engine-owned immutable store for host-call terminal receipts."""
 
-    def __init__(self, root: Path, *, _parent_fd: int | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        selection_authority: HostSealingAuthority | None = None,
+        _parent_fd: int | None = None,
+    ) -> None:
         self.root = Path(root).absolute()
+        self._selection_authority = selection_authority
         self._parent_fd = _parent_fd
 
     @classmethod
-    def create(cls, root: Path) -> TerminalReceiptStore:
-        store = cls(root)
+    def create(
+        cls,
+        root: Path,
+        *,
+        selection_authority: HostSealingAuthority | None = None,
+    ) -> TerminalReceiptStore:
+        store = cls(root, selection_authority=selection_authority)
         parent_fd = _open_absolute_directory(store.root.parent)
         try:
             return store._create_at(parent_fd, store.root.name)
@@ -201,23 +227,41 @@ class TerminalReceiptStore:
         name: str,
         *,
         display_root: Path,
+        selection_authority: HostSealingAuthority | None = None,
     ) -> TerminalReceiptStore:
-        store = cls.at(parent_fd, name, display_root=display_root)
+        store = cls.at(
+            parent_fd,
+            name,
+            display_root=display_root,
+            selection_authority=selection_authority,
+        )
         store._create_at(parent_fd, name)
         return store
 
     @classmethod
-    def at(cls, parent_fd: int, name: str, *, display_root: Path) -> TerminalReceiptStore:
+    def at(
+        cls,
+        parent_fd: int,
+        name: str,
+        *,
+        display_root: Path,
+        selection_authority: HostSealingAuthority | None = None,
+    ) -> TerminalReceiptStore:
         if not name or "/" in name or name in {".", ".."}:
             raise ValueError("receipt store name must be one path component")
         root = Path(display_root)
         if root.name != name:
             raise ValueError("display root must end with the receipt store name")
-        return cls(root, _parent_fd=parent_fd)
+        return cls(root, selection_authority=selection_authority, _parent_fd=parent_fd)
 
     @classmethod
-    def open_or_create(cls, root: Path) -> TerminalReceiptStore:
-        store = cls(root)
+    def open_or_create(
+        cls,
+        root: Path,
+        *,
+        selection_authority: HostSealingAuthority | None = None,
+    ) -> TerminalReceiptStore:
+        store = cls(root, selection_authority=selection_authority)
         parent_fd = _open_absolute_directory(store.root.parent)
         try:
             try:
@@ -236,13 +280,19 @@ class TerminalReceiptStore:
         name: str,
         *,
         display_root: Path,
+        selection_authority: HostSealingAuthority | None = None,
     ) -> TerminalReceiptStore:
         try:
             os.mkdir(name, mode=0o700, dir_fd=parent_fd)
             os.fsync(parent_fd)
         except FileExistsError:
             pass
-        return cls.at(parent_fd, name, display_root=display_root)
+        return cls.at(
+            parent_fd,
+            name,
+            display_root=display_root,
+            selection_authority=selection_authority,
+        )
 
     def _create_at(self, parent_fd: int, name: str) -> TerminalReceiptStore:
         try:
@@ -296,55 +346,75 @@ class TerminalReceiptStore:
         scope: dict[str, JSONValue],
         selection: dict[str, JSONValue],
     ) -> HostSelectionReceipt:
-        """Create one immutable selection per namespace and scope, or replay it exactly."""
+        """Create one immutable sealed selection, or replay it exactly."""
 
+        authority = self._require_selection_authority()
+        unsigned: dict[str, JSONValue] = {
+            "schema_version": "1",
+            "authority_id": authority.authority_id,
+            "authority_version": authority.authority_version,
+            "namespace": namespace,
+            "scope": scope,
+            "scope_digest": canonical_digest(scope),
+            "selection": selection,
+            "selection_digest": canonical_digest(selection),
+        }
         receipt = HostSelectionReceipt(
+            schema_version="1",
+            authority_id=authority.authority_id,
+            authority_version="1",
             namespace=namespace,
             scope=scope,
             scope_digest=canonical_digest(scope),
             selection=selection,
             selection_digest=canonical_digest(selection),
+            signature=authority.sign(canonical_json_bytes(unsigned)),
         )
         root_fd = self._open_root()
         selections_fd: int | None = None
         namespace_fd: int | None = None
+        lock_fd: int | None = None
         try:
             selections_fd = _open_or_create_directory_at(root_fd, ".selections", "selection store")
-            namespace_name = canonical_digest(namespace)
             namespace_fd = _open_or_create_directory_at(
                 selections_fd,
-                namespace_name,
+                canonical_digest(namespace),
                 "selection namespace",
             )
+            lock_fd = _lock_selection_namespace(namespace_fd)
             filename = f"{receipt.scope_digest}.json"
+            pending = f".{receipt.scope_digest}.pending"
+            self._recover_selection_pending(namespace_fd, pending, filename)
+            try:
+                existing = self._read_selection(namespace_fd, filename)
+            except FileNotFoundError:
+                pass
+            else:
+                if existing != receipt:
+                    raise TerminalReceiptError("host selection compare-and-swap conflict")
+                return existing
+
             content = canonical_json_bytes(receipt.model_dump(mode="json"))
-            temporary = f".tmp-{uuid.uuid4().hex}"
-            descriptor = os.open(temporary, _WRITE_FLAGS, 0o600, dir_fd=namespace_fd)
-            installed = False
+            descriptor = os.open(pending, _WRITE_FLAGS, 0o600, dir_fd=namespace_fd)
             try:
                 _write_all(descriptor, content)
-                os.fsync(descriptor)
                 os.fchmod(descriptor, 0o400)
+                _selection_publication_cut("before-selection-file-fsync")
                 os.fsync(descriptor)
+                _selection_publication_cut("after-selection-file-fsync")
             finally:
                 os.close(descriptor)
-            try:
-                _rename_no_replace_at(namespace_fd, temporary, filename)
-                installed = True
-                os.fsync(namespace_fd)
-            except FileExistsError:
-                existing = self._read_selection(namespace_fd, filename)
-                if existing != receipt:
-                    raise TerminalReceiptError("host selection compare-and-swap conflict") from None
-                return existing
-            finally:
-                if not installed:
-                    try:
-                        os.unlink(temporary, dir_fd=namespace_fd)
-                    except FileNotFoundError:
-                        pass
+            _selection_publication_cut("before-selection-install")
+            _rename_no_replace_at(namespace_fd, pending, filename)
+            _selection_publication_cut("after-selection-install")
+            _selection_publication_cut("before-selection-directory-fsync")
+            os.fsync(namespace_fd)
+            _selection_publication_cut("after-selection-directory-fsync")
             return receipt
         finally:
+            if lock_fd is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
             if namespace_fd is not None:
                 os.close(namespace_fd)
             if selections_fd is not None:
@@ -357,12 +427,13 @@ class TerminalReceiptStore:
         namespace: str,
         scope: dict[str, JSONValue],
     ) -> HostSelectionReceipt | None:
-        """Load the immutable selection for an independently supplied scope."""
+        """Load the sealed selection for an independently supplied scope."""
 
         expected_scope_digest = canonical_digest(scope)
         root_fd = self._open_root()
         selections_fd: int | None = None
         namespace_fd: int | None = None
+        lock_fd: int | None = None
         try:
             try:
                 selections_fd = _open_directory_at(root_fd, ".selections", "selection store")
@@ -371,13 +442,26 @@ class TerminalReceiptStore:
                     canonical_digest(namespace),
                     "selection namespace",
                 )
-                receipt = self._read_selection(namespace_fd, f"{expected_scope_digest}.json")
+            except FileNotFoundError:
+                return None
+            lock_fd = _lock_selection_namespace(namespace_fd)
+            filename = f"{expected_scope_digest}.json"
+            self._recover_selection_pending(
+                namespace_fd,
+                f".{expected_scope_digest}.pending",
+                filename,
+            )
+            try:
+                receipt = self._read_selection(namespace_fd, filename)
             except FileNotFoundError:
                 return None
             if receipt.namespace != namespace or thaw_json(receipt.scope) != scope:
                 raise TerminalReceiptError("foreign host selection receipt")
             return receipt
         finally:
+            if lock_fd is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
             if namespace_fd is not None:
                 os.close(namespace_fd)
             if selections_fd is not None:
@@ -385,11 +469,12 @@ class TerminalReceiptStore:
             os.close(root_fd)
 
     def authenticate_selections(self, *, namespace: str) -> tuple[HostSelectionReceipt, ...]:
-        """Enumerate authenticated selections in one host-owned namespace."""
+        """Enumerate sealed selections in one host-owned namespace."""
 
         root_fd = self._open_root()
         selections_fd: int | None = None
         namespace_fd: int | None = None
+        lock_fd: int | None = None
         try:
             try:
                 selections_fd = _open_directory_at(root_fd, ".selections", "selection store")
@@ -400,21 +485,64 @@ class TerminalReceiptStore:
                 )
             except FileNotFoundError:
                 return ()
+            lock_fd = _lock_selection_namespace(namespace_fd)
+            for name in _validated_names(namespace_fd):
+                if name == ".publish.lock" or not name.startswith("."):
+                    continue
+                scope_digest = _pending_selection_scope(name)
+                self._recover_selection_pending(
+                    namespace_fd,
+                    name,
+                    f"{scope_digest}.json",
+                )
             receipts: list[HostSelectionReceipt] = []
             for name in _validated_names(namespace_fd):
+                if name == ".publish.lock":
+                    continue
                 if name.startswith("."):
-                    raise TerminalReceiptError("unfinished host selection publication")
+                    raise TerminalReceiptError("unknown host selection transaction marker")
                 receipt = self._read_selection(namespace_fd, name)
                 if receipt.namespace != namespace or name != f"{receipt.scope_digest}.json":
                     raise TerminalReceiptError("foreign host selection receipt")
                 receipts.append(receipt)
             return tuple(receipts)
         finally:
+            if lock_fd is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
             if namespace_fd is not None:
                 os.close(namespace_fd)
             if selections_fd is not None:
                 os.close(selections_fd)
             os.close(root_fd)
+
+    def _recover_selection_pending(
+        self,
+        namespace_fd: int,
+        pending: str,
+        filename: str,
+    ) -> None:
+        try:
+            candidate = self._read_selection(namespace_fd, pending)
+        except FileNotFoundError:
+            return
+        if pending != f".{candidate.scope_digest}.pending" or filename != (f"{candidate.scope_digest}.json"):
+            raise TerminalReceiptError("foreign host selection transaction marker")
+        try:
+            installed = self._read_selection(namespace_fd, filename)
+        except FileNotFoundError:
+            _rename_no_replace_at(namespace_fd, pending, filename)
+            os.fsync(namespace_fd)
+            return
+        if installed != candidate:
+            raise TerminalReceiptError("host selection compare-and-swap conflict")
+        os.unlink(pending, dir_fd=namespace_fd)
+        os.fsync(namespace_fd)
+
+    def _require_selection_authority(self) -> HostSealingAuthority:
+        if self._selection_authority is None:
+            raise TerminalReceiptError("host selection sealing authority is unavailable")
+        return self._selection_authority
 
     def delete_authenticated(
         self,
@@ -473,6 +601,15 @@ class TerminalReceiptStore:
         canonical = canonical_json_bytes(receipt.model_dump(mode="json"))
         if canonical != raw:
             raise TerminalReceiptError("changed host selection receipt")
+        try:
+            self._require_selection_authority().verify(
+                _selection_signature_payload(receipt),
+                authority_id=receipt.authority_id,
+                authority_version=receipt.authority_version,
+                signature=receipt.signature,
+            )
+        except HostAuthorityError as error:
+            raise TerminalReceiptError("host selection signature is not authentic") from error
         return receipt
 
     def _open_root(self) -> int:
@@ -526,6 +663,36 @@ def _open_or_create_directory_at(parent_fd: int, name: str, kind: str) -> int:
     except FileExistsError:
         pass
     return _open_directory_at(parent_fd, name, kind)
+
+
+def _lock_selection_namespace(directory_fd: int) -> int:
+    descriptor = os.open(
+        ".publish.lock",
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+        dir_fd=directory_fd,
+    )
+    metadata = os.fstat(descriptor)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise TerminalReceiptError("host selection publication lock is invalid")
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+    return descriptor
+
+
+def _pending_selection_scope(name: str) -> str:
+    prefix = "."
+    suffix = ".pending"
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        raise TerminalReceiptError("unknown host selection transaction marker")
+    digest = name[len(prefix) : -len(suffix)]
+    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        raise TerminalReceiptError("unknown host selection transaction marker")
+    return digest
 
 
 def _read_stable_file(directory_fd: int, name: str, kind: str) -> bytes:
