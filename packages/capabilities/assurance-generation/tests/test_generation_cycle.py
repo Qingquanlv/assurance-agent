@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -26,6 +27,7 @@ from graph_engine.testing import committed
 from graph_engine.testing.graph_harness import ScriptedAttempt
 from tests.product.test_change_local_output_routing import execute_task
 from tests.product.test_product_input import valid_product_input
+from tests.verified_generation_fixture import accepted_verified_execution_input
 from codegen_fixtures import codegen_result, family_symbol, family_test_file, fake_agent_result  # pyright: ignore[reportMissingImports]
 from planning_fixtures import reviewed_cases  # pyright: ignore[reportMissingImports]
 from test_resolve_inputs import _fixture, _write  # pyright: ignore[reportMissingImports]
@@ -159,6 +161,64 @@ async def run_generation_boundary(root: Path, coverage_epoch: int = 0):
         },
     )
     return state, project, executor
+
+
+def _verified_cycle_payload(root: Path) -> CompleteGenerationInputV1:
+    execution = accepted_verified_execution_input(root)
+    generation = execution.generation_result
+    assert generation is not None and generation.case_execution_plan_ref is not None
+    manifest_path = root / f"qa/changes/{execution.change_id}/codegen/api-generated-files.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    source = root / "qa/changes/CH-USER-001/generated/api/files/tests/api/test_user_create.py"
+    family = {
+        "family": "api",
+        "coverage_epoch": execution.coverage_epoch,
+        "plan_files": [ref.path for ref in generation.plan_refs],
+        "files": [
+            {
+                **manifest["files"][0],
+                "content_sha256": f"sha256:{hashlib.sha256(source.read_bytes()).hexdigest()}",
+            }
+        ],
+        "mapping": manifest["mapping"],
+        "receipt": {"receipt_id": "codegen-api", "receipt_digest": "a" * 64},
+        "case_execution_plan_ref": generation.case_execution_plan_ref.model_dump(mode="json"),
+        "case_execution_plan_digest": generation.case_execution_plan_digest,
+    }
+    return CompleteGenerationInputV1.model_validate(
+        {
+            "change_id": execution.change_id,
+            "coverage_epoch": execution.coverage_epoch,
+            "plan_digest": execution.plan_digest,
+            "plan_ref": execution.plan_ref.model_dump(mode="json"),
+            "reviewed_case": generation.reviewed_case.model_dump(mode="json"),
+            "selected_test_families": execution.selected_test_families,
+            "capability_leafs": execution.capability_leafs,
+            "families": [family],
+        }
+    )
+
+
+def test_verified_generation_cycle_rejects_synchronized_bridge_forgery(tmp_path: Path) -> None:
+    payload = _verified_cycle_payload(tmp_path)
+    source = tmp_path / "qa/changes/CH-USER-001/generated/api/files/tests/api/test_user_create.py"
+    source.write_text(
+        "from assurance_execution.bridge import execute_case\n\n"
+        "def test_tc_user_create_001__create():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    changed_file = (
+        payload.families[0]
+        .files[0]
+        .model_copy(update={"content_sha256": f"sha256:{hashlib.sha256(source.read_bytes()).hexdigest()}"})
+    )
+    payload = payload.model_copy(
+        update={"families": (payload.families[0].model_copy(update={"files": (changed_file,)}),)}
+    )
+
+    with pytest.raises(ValueError, match="bridge"):
+        complete_generation_cycle(payload, tmp_path, tmp_path / ".stage")
 
 
 @pytest.mark.parametrize("coverage_epoch", [0, 1])

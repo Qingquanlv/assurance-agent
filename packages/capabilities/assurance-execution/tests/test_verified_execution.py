@@ -364,6 +364,47 @@ def _accepted_verified_root(project: Path):
     return accepted_verified_execution_input(project)
 
 
+def _canonical_document(path: Path, document: dict[str, Any]) -> str:
+    from graph_engine.canonical import canonical_json_bytes
+
+    encoded = canonical_json_bytes(cast(Any, document)) + b"\n"
+    path.write_bytes(encoded)
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _synchronize_public_generation_refs(
+    project: Path,
+    raw: dict[str, Any],
+    *,
+    machine_document: dict[str, Any] | None = None,
+) -> None:
+    generation = cast(dict[str, Any], raw["generation_result"])
+    reviewed = cast(dict[str, Any], generation["reviewed_case"])
+    machine_ref = cast(dict[str, str], generation["case_execution_plan_ref"])
+    machine_path = project / machine_ref["path"]
+    machine = machine_document or cast(dict[str, Any], json.loads(machine_path.read_bytes()))
+    for case in cast(list[dict[str, Any]], machine["cases"]):
+        case["reviewed_case"] = reviewed
+    machine_ref = {"path": machine_ref["path"], "digest": _canonical_document(machine_path, machine)}
+    generation["case_execution_plan_ref"] = machine_ref
+    generation["case_execution_plan_digest"] = machine_ref["digest"]
+    generation["plan_refs"] = [
+        machine_ref if item["path"] == machine_ref["path"] else item for item in generation["plan_refs"]
+    ]
+    cast(dict[str, Any], raw["verification"])["case_execution_plan_ref"] = machine_ref
+
+    manifest_ref = next(
+        item for item in generation["source_refs"] if item["path"].endswith("-generated-files.json")
+    )
+    manifest_path = project / manifest_ref["path"]
+    manifest = cast(dict[str, Any], json.loads(manifest_path.read_bytes()))
+    mapping = cast(dict[str, Any], manifest["mapping"])
+    mapping["reviewed_case"] = reviewed
+    mapping["case_execution_plan_ref"] = machine_ref
+    mapping["case_execution_plan_digest"] = machine_ref["digest"]
+    manifest_ref["digest"] = _canonical_document(manifest_path, manifest)
+
+
 def _damage_generation(project: Path, root, fault: str):
     raw = root.model_dump(mode="json")
     generation = cast(dict[str, Any], raw["generation_result"])
@@ -386,6 +427,52 @@ def _damage_generation(project: Path, root, fault: str):
     elif fault == "source":
         source = next(item for item in generation["source_refs"] if "/generated/api/files/" in item["path"])
         (project / source["path"]).write_bytes(b"stale generated source\n")
+    elif fault == "forged_bridge":
+        source = next(item for item in generation["source_refs"] if "/generated/api/files/" in item["path"])
+        path = project / source["path"]
+        path.write_bytes(b"def test_tc_user_create_001__create():\n    pass\n")
+        source["digest"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    elif fault == "forged_review":
+        reviewed = cast(dict[str, Any], generation["reviewed_case"])
+        review_ref = cast(dict[str, str], reviewed["review_ref"])
+        review_path = project / review_ref["path"]
+        review = cast(dict[str, Any], json.loads(review_path.read_bytes()))
+        review["decision"] = "reject"
+        review_ref["digest"] = _canonical_document(review_path, review)
+        _synchronize_public_generation_refs(project, raw)
+    elif fault == "forged_pass_review":
+        reviewed = cast(dict[str, Any], generation["reviewed_case"])
+        review_ref = cast(dict[str, str], reviewed["review_ref"])
+        review_path = project / review_ref["path"]
+        review = cast(dict[str, Any], json.loads(review_path.read_bytes()))
+        review["risk_level"] = "critical"
+        review_ref["digest"] = _canonical_document(review_path, review)
+        _synchronize_public_generation_refs(project, raw)
+    elif fault == "forged_provenance":
+        reviewed = cast(dict[str, Any], generation["reviewed_case"])
+        source_ref = next(
+            item for item in reviewed["preparation_refs"] if item["path"].endswith("assertion-sources.json")
+        )
+        source_path = project / source_ref["path"]
+        sources = cast(dict[str, Any], json.loads(source_path.read_bytes()))
+        cast(dict[str, Any], cast(list[Any], sources["sources"])[0])["content_ref"] = {
+            "path": f"qa/changes/{root.change_id}/requirement.md",
+            "digest": "0" * 64,
+        }
+        source_ref["digest"] = _canonical_document(source_path, sources)
+        _synchronize_public_generation_refs(project, raw)
+    elif fault == "machine_semantics":
+        machine_ref = cast(dict[str, str], generation["case_execution_plan_ref"])
+        machine = cast(dict[str, Any], json.loads((project / machine_ref["path"]).read_bytes()))
+        cast(dict[str, Any], cast(list[dict[str, Any]], machine["cases"])[0]["inputs"])["username"] = (
+            "forged_user"
+        )
+        _synchronize_public_generation_refs(project, raw, machine_document=machine)
+    elif fault == "machine_context":
+        machine_ref = cast(dict[str, str], generation["case_execution_plan_ref"])
+        machine = cast(dict[str, Any], json.loads((project / machine_ref["path"]).read_bytes()))
+        cast(list[dict[str, Any]], machine["cases"])[0]["technical_config_digest"] = "0" * 64
+        _synchronize_public_generation_refs(project, raw, machine_document=machine)
     elif fault in {"spec", "profile"}:
         manifest = next(
             item for item in generation["source_refs"] if item["path"].endswith("-generated-files.json")
@@ -428,6 +515,12 @@ def test_accepted_generation_closure_authenticates_before_verified_dispatch(tmp_
         "machine_plan",
         "mapping",
         "source",
+        "forged_bridge",
+        "forged_review",
+        "forged_pass_review",
+        "forged_provenance",
+        "machine_semantics",
+        "machine_context",
         "spec",
         "profile",
         "replay",

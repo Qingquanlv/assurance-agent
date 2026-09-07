@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
 from collections.abc import Mapping
@@ -17,6 +16,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
+from assurance_generation.contracts.admission import admit_verified_generation
 from assurance_generation.contracts.agent import (
     AgentBindingDataV1,
     AgentFinalizeInputV1,
@@ -36,7 +36,6 @@ from assurance_generation.contracts.codegen import (
     staged_generated_path,
 )
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
-from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
 from assurance_generation.operations.planning import (
     FAMILIES,
@@ -496,68 +495,6 @@ def _authenticate_manifest(
         raise OutputError("generated-files manifest does not match the structured codegen result")
 
 
-def _verified_bridge_source(
-    workspace: Path,
-    *,
-    change_id: str,
-    mapping: CodegenMapping,
-) -> None:
-    by_target: dict[str, list[object]] = {}
-    for entry in mapping.entries:
-        by_target.setdefault(entry.target_file, []).append(entry)
-    for target, raw_entries in by_target.items():
-        staged = staged_generated_path(change_id, "api", target)
-        path = _workspace_regular_file(workspace, staged)
-        try:
-            module = ast.parse(path.read_bytes(), filename=target)
-        except (SyntaxError, ValueError) as error:
-            raise OutputError(f"verified API bridge source is invalid: {target}: {error}") from error
-        imports = [node for node in module.body if isinstance(node, ast.ImportFrom)]
-        functions = [node for node in module.body if isinstance(node, ast.FunctionDef)]
-        expected = {getattr(entry, "symbol"): getattr(entry, "case_id") for entry in raw_entries}
-        if (
-            len(imports) != 1
-            or imports[0].module != "assurance_execution.bridge"
-            or imports[0].level != 0
-            or len(imports[0].names) != 1
-            or imports[0].names[0].name != "execute_case"
-            or imports[0].names[0].asname is not None
-            or len(module.body) != 1 + len(functions)
-            or len(functions) != len(expected)
-        ):
-            raise OutputError(
-                f"verified API test must contain only the installed execute_case bridge: {target}"
-            )
-        if set(expected) != {function.name for function in functions}:
-            raise OutputError(f"verified API bridge symbols do not match the frozen mapping: {target}")
-        for function in functions:
-            arguments = function.args
-            if (
-                function.decorator_list
-                or function.returns is not None
-                or function.type_comment is not None
-                or arguments.posonlyargs
-                or arguments.args
-                or arguments.vararg is not None
-                or arguments.kwonlyargs
-                or arguments.kwarg is not None
-                or len(function.body) != 1
-            ):
-                raise OutputError(f"verified API test must be one parameter-free bridge call: {target}")
-            statement = function.body[0]
-            call = statement.value if isinstance(statement, ast.Expr) else None
-            if (
-                not isinstance(call, ast.Call)
-                or not isinstance(call.func, ast.Name)
-                or call.func.id != "execute_case"
-                or call.keywords
-                or len(call.args) != 1
-                or not isinstance(call.args[0], ast.Constant)
-                or call.args[0].value != expected[function.name]
-            ):
-                raise OutputError(f"verified API test must call execute_case for its mapped Case: {target}")
-
-
 def _authenticate_verified_codegen(
     payload: AgentFinalizeInputV1,
     document: CodegenAuthoringV1,
@@ -572,56 +509,26 @@ def _authenticate_verified_codegen(
         return
     if family != "api":
         raise OutputError("verified codegen is supported only for the API family")
-    mapping = document.mapping
-    if not mapping.is_verified:
-        raise OutputError("verified codegen requires a complete frozen mapping identity")
     if payload.reviewed_case is None or payload.case_execution_plan_ref is None:
         raise OutputError("verified codegen inputs are incomplete")
     try:
-        reviewed = authenticate_reviewed_case(
-            payload.reviewed_case,
+        admission = admit_verified_generation(
             project_root,
+            write_root,
             change_id=document.change_id,
             coverage_epoch=payload.coverage_epoch,
+            plan_digest=payload.plan_digest,
+            plan_ref=payload.plan_ref,
+            reviewed_case=payload.reviewed_case,
+            validation_profile=payload.validation_profile,
+            selected_test_families=(family,),
+            capability_leafs=payload.capability_leafs,
+            case_execution_plan_ref=payload.case_execution_plan_ref,
         )
     except ValueError as error:
-        raise OutputError(f"verified mapping ReviewedCase is not authenticated: {error}") from error
-    if mapping.reviewed_case != reviewed or mapping.coverage_epoch != payload.coverage_epoch:
-        raise OutputError("verified mapping ReviewedCase/epoch differs from the frozen input")
-    if mapping.validation_profile != payload.validation_profile:
-        raise OutputError("verified mapping validation profile differs from the frozen input")
-    if mapping.plan_digest != payload.plan_digest or mapping.plan_ref != payload.plan_ref:
-        raise OutputError("verified mapping root plan differs from the frozen input")
-    if (
-        mapping.case_execution_plan_ref != payload.case_execution_plan_ref
-        or mapping.case_execution_plan_digest != payload.case_execution_plan_digest
-    ):
-        raise OutputError("verified mapping machine plan differs from the frozen input")
-    plan_path = _workspace_regular_file(project_root, payload.case_execution_plan_ref.path)
-    plan_bytes = plan_path.read_bytes()
-    if hashlib.sha256(plan_bytes).hexdigest() != payload.case_execution_plan_ref.digest:
-        raise OutputError("verified machine plan digest changed")
-    try:
-        plans = CaseExecutionPlanSetV1.model_validate_json(plan_bytes)
-    except ValidationError as error:
-        raise OutputError(f"verified machine plan is invalid: {error}") from error
-    mapped_ids = {entry.case_id for entry in mapping.entries}
-    planned_ids = {plan.case_id for plan in plans.cases}
-    if mapped_ids != planned_ids:
-        raise OutputError("verified mapping must contain every mapped Case from the machine plan")
-    for plan in plans.cases:
-        if (
-            plan.reviewed_case != reviewed
-            or plan.coverage_epoch != payload.coverage_epoch
-            or plan.plan_digest != payload.plan_digest
-            or plan.plan_ref != payload.plan_ref
-            or plan.validation_profile != payload.validation_profile
-        ):
-            raise OutputError("verified mapping identity differs from the frozen machine plan")
-        assert mapping.case_spec_digests is not None
-        if mapping.case_spec_digests.get(plan.case_id) != plan.spec_digest:
-            raise OutputError(f"verified mapping spec digest differs for {plan.case_id}")
-    _verified_bridge_source(write_root, change_id=document.change_id, mapping=mapping)
+        raise OutputError(f"verified codegen is not semantically admitted: {error}") from error
+    if admission.manifests != (document,):
+        raise OutputError("verified codegen differs from the admitted committed manifest")
 
 
 class CodegenPrepareHandler:

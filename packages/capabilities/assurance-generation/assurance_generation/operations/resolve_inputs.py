@@ -2,75 +2,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from pydantic import ValidationError
 
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_generation.contracts.workflow import ResolveGenerationInputV1
-from assurance_intake.contracts.review import CaseReviewResultV1
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.reviewed_case import (
+    ReviewedCaseAuthenticationError as InputError,
+    authenticate_reviewed_case,
+    authenticated_file as _file,
+)
+from assurance_intake.contracts.workflow import ReviewedCaseV1
 from assurance_intake.contracts.workflow import require_same_plan
-
-
-class InputError(ValueError):
-    """The requested generation source cannot prove an approved Case version."""
-
-
-def _file(root: Path, ref: EvidenceArtifactRefV1) -> Path:
-    path = root
-    for part in PurePosixPath(ref.path).parts:
-        path = path / part
-        if path.is_symlink():
-            raise InputError(f"reviewed case input must not contain a symlink: {ref.path}")
-    try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(root.resolve())
-    except (OSError, ValueError) as error:
-        raise InputError(f"reviewed case input is missing: {ref.path}") from error
-    if resolved != path or not path.is_file() or path.stat().st_nlink != 1:
-        raise InputError(f"reviewed case input must be a regular single-link file: {ref.path}")
-    data = path.read_bytes()
-    if hashlib.sha256(data).hexdigest() != ref.digest:
-        raise InputError(f"reviewed case input digest changed: {ref.path}")
-    return path
-
-
-def authenticate_reviewed_case(
-    reviewed: ReviewedCaseV1,
-    project_root: Path,
-    *,
-    change_id: str,
-    coverage_epoch: int,
-) -> ReviewedCaseV1:
-    """Recheck every version bound by a Reviewed Case in the current workspace."""
-    if reviewed.change_id != change_id:
-        raise InputError("reviewed case change_id does not match generation input")
-    if reviewed.coverage_epoch != coverage_epoch:
-        raise InputError("generation epoch must match the current Reviewed Case")
-    try:
-        plan = decode_plan(_file(project_root, reviewed.plan_ref).read_bytes(), reviewed.plan_ref)
-    except (ValidationError, ValueError) as error:
-        raise InputError(f"invalid frozen assurance plan: {error}") from error
-    require_same_plan(
-        reviewed.plan_digest,
-        reviewed.plan_ref,
-        plan.plan_digest,
-        reviewed.plan_ref,
-    )
-    for ref in (*reviewed.preparation_refs, *reviewed.case_refs, reviewed.review_ref):
-        _file(project_root, ref)
-    try:
-        raw_review = json.loads(_file(project_root, reviewed.review_ref).read_bytes())
-        review = CaseReviewResultV1.model_validate(raw_review)
-    except (json.JSONDecodeError, ValidationError) as error:
-        raise InputError(f"invalid reviewed case approval: {error}") from error
-    if review.change_id != reviewed.change_id or review.public_outcome != "pass":
-        raise InputError("generation requires a passing Case Review")
-    return reviewed
 
 
 def resolve_generation_input(data: object, project_root: Path) -> ReviewedCaseV1:

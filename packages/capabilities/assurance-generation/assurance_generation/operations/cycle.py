@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from assurance_generation.contracts.admission import admit_verified_generation
 from assurance_generation.contracts.codegen import CodegenAuthoringV1, staged_generated_path
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from assurance_generation.contracts.mapping import ClosedMappingEntryV1, ClosedMappingV1
@@ -133,6 +134,29 @@ def complete_generation_cycle(
             )
     entries.sort(key=lambda entry: (entry.layer, entry.test, entry.case_id))
     mapping = ClosedMappingV1(selected=tuple(entry.test for entry in entries), mappings=tuple(entries))
+    if machine_plan_ref is not None:
+        api_families = [item for item in request.families if item.family == "api"]
+        if len(api_families) != 1 or api_families[0].mapping.validation_profile is None:
+            raise ValueError("verified generation requires one profiled API family")
+        admission = admit_verified_generation(
+            project_root,
+            project_root,
+            change_id=request.change_id,
+            coverage_epoch=request.coverage_epoch,
+            plan_digest=request.plan_digest,
+            plan_ref=request.plan_ref,
+            reviewed_case=request.reviewed_case,
+            validation_profile=api_families[0].mapping.validation_profile,
+            selected_test_families=request.selected_test_families,
+            capability_leafs=request.capability_leafs,
+            case_execution_plan_ref=machine_plan_ref,
+        )
+        if (
+            mapping != admission.closed_mapping
+            or tuple(sources[key] for key in sorted(sources)) != admission.source_refs
+            or tuple(plans[key] for key in sorted(plans)) != admission.plan_refs
+        ):
+            raise ValueError("generation family results differ from semantic admission")
     data = canonical_json_bytes(mapping.model_dump(mode="json")) + b"\n"
     relative = f"qa/changes/{request.change_id}/generation/epochs/{request.coverage_epoch}/mapping.json"
     path = write_root / relative

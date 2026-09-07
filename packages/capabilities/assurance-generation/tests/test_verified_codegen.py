@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from collections.abc import Callable
@@ -8,94 +7,38 @@ from typing import Any, cast
 
 import pytest
 
-from graph_engine.canonical import JSONValue, canonical_json_bytes
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
-from tests.verification_support import read_fixture
-from tests.acg_plan_fixture import install_plan
-from test_resolve_inputs import _review  # pyright: ignore[reportMissingImports]
+from tests.verified_generation_fixture import accepted_verified_execution_input
 
 from assurance_generation.contracts.execution_plan import CasePlanContextV1, CaseExecutionPlanSetV1
 from assurance_generation.operations.codegen import CodegenFinalizeHandler
-from assurance_generation.operations.execution_plan import compile_case_plan
-from assurance_intake.contracts.verification import AssertionSourcesV1
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from codegen_fixtures import fake_agent_result  # pyright: ignore[reportMissingImports]
 from planning_fixtures import VALID_LEAFS  # pyright: ignore[reportMissingImports]
 
 
-def _write(root: Path, relative: str, content: bytes) -> EvidenceArtifactRefV1:
-    path = root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(content)
-    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(content).hexdigest())
-
-
 def _verified_inputs(project: Path, write_root: Path) -> tuple[CasePlanContextV1, EvidenceArtifactRefV1, str]:
-    change_id = "CH-USER-001"
-    plan, raw_plan_ref = install_plan(
-        project,
-        change_id,
-        capability_leafs=("entities.item.create",),
+    root = accepted_verified_execution_input(project)
+    generation = root.generation_result
+    assert generation is not None and generation.case_execution_plan_ref is not None
+    machine_ref = generation.case_execution_plan_ref
+    machine = CaseExecutionPlanSetV1.model_validate_json((project / machine_ref.path).read_bytes())
+    formal = machine.cases[0]
+    context = CasePlanContextV1(
+        change_id=formal.change_id,
+        coverage_epoch=formal.coverage_epoch,
+        plan_digest=formal.plan_digest,
+        plan_ref=formal.plan_ref,
+        reviewed_case=formal.reviewed_case,
+        verification_policy_digest=formal.verification_policy_digest,
+        technical_config_digest=formal.technical_config_digest,
+        sut_digest=formal.sut_digest,
     )
-    plan_digest = plan.plan_digest
-    plan_ref = EvidenceArtifactRefV1.model_validate(raw_plan_ref)
-    case = read_fixture("user-case.json")
-    case_ref = _write(
-        project,
-        f"qa/changes/{change_id}/cases/system/user/case.yaml",
-        canonical_json_bytes(cast(JSONValue, case)),
-    )
-    review = json.loads(_review())
-    review["change_id"] = change_id
-    review_ref = _write(
-        project,
-        f"qa/changes/{change_id}/review/case-review.json",
-        canonical_json_bytes(cast(JSONValue, review)),
-    )
-    reviewed = ReviewedCaseV1(
-        change_id=change_id,
-        coverage_epoch=2,
-        plan_digest=plan_digest,
-        plan_ref=plan_ref,
-        preparation_refs=(plan_ref,),
-        case_refs=(case_ref,),
-        review_ref=review_ref,
-    )
-    fixture = cast(dict[str, Any], read_fixture("user-plan.json"))
-    raw_context = cast(dict[str, Any], fixture["context"])
-    context = CasePlanContextV1.model_validate(
-        {
-            **raw_context,
-            "plan_digest": plan_digest,
-            "plan_ref": plan_ref.model_dump(mode="json"),
-            "reviewed_case": reviewed.model_dump(mode="json"),
-        }
-    )
-    formal = compile_case_plan(
-        case,
-        AssertionSourcesV1.model_validate(read_fixture("user-sources.json")),
-        cast(dict[str, object], fixture["bindings"]),
-        "api_db.v1",
-        context=context,
-    )
-    machine = CaseExecutionPlanSetV1(change_id=change_id, cases=(formal,))
-    machine_bytes = canonical_json_bytes(cast(JSONValue, machine.model_dump(mode="json"))) + b"\n"
-    machine_ref = _write(
-        project,
-        f"qa/changes/{change_id}/plans/api-case-execution-plan.json",
-        machine_bytes,
-    )
-    source = (
-        "from assurance_execution.bridge import execute_case\n\n"
-        "def test_tc_user_create_001__create():\n"
-        '    execute_case("TC_USER_CREATE_001")\n'
-    ).encode()
     target = "tests/api/test_user_create.py"
-    _write(
-        write_root,
-        f"qa/changes/{change_id}/generated/api/files/{target}",
-        source,
-    )
+    relative = f"qa/changes/{root.change_id}/generated/api/files/{target}"
+    destination = write_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes((project / relative).read_bytes())
     return context, machine_ref, formal.spec_digest
 
 
@@ -215,6 +158,11 @@ async def test_verified_codegen_rejects_stale_or_incomplete_bindings(
     "source",
     [
         "def test_tc_user_create_001__create():\n    assert True\n",
+        (
+            "from assurance_execution.bridge import execute_case\n\n"
+            "def test_tc_user_create_001__create():\n"
+            "    pass\n"
+        ),
         (
             "import httpx\n"
             "def test_tc_user_create_001__create():\n"
