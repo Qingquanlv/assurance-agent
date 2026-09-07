@@ -23,7 +23,7 @@
       },
       {
         "contract_id": "assurance.quality.materialize-assessment-inputs",
-        "digest": "fbe45da950327f4350c34e84cd5f96236ba7400dfc1507653d38c4e54ec9a2cd"
+        "digest": "f5ebf7765a73fffd54f7aacf31e79154bac399a3eecf9d9050b4d5c0df010e8f"
       }
     ],
     "bindings": [],
@@ -97,6 +97,7 @@
       "assurance.quality.schema.sufficiency.v2",
       "assurance.quality.schema.trace-sufficiency.v1",
       "assurance.quality.schema.trace.v2",
+      "assurance.quality.schema.verification.v1",
       "assurance.quality.workflow.assess.input.v1",
       "assurance.quality.workflow.assess.output.v1",
       "assurance.quality.workflow.issue-analyze.input.v1",

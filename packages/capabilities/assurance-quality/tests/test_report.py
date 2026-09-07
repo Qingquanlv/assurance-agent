@@ -253,3 +253,42 @@ async def test_report_markdown_rejects_a_non_hex_source_digest() -> None:
 
     with pytest.raises(ValueError, match="execution digest"):
         render_quality_report_markdown(payload)
+
+
+@pytest.mark.asyncio
+async def test_report_carries_each_verified_obligation_and_separate_statuses() -> None:
+    from assurance_quality.operations.report import render_quality_report_markdown
+
+    verification: JSONValue = {
+        "schema_version": "1",
+        "validation_profile": "api_db.v1",
+        "execution_id": "12345678-1234-4123-8123-123456789abc",
+        "case_id": "TC_USER_CREATE_001",
+        "verdict": "FAILED",
+        "required": 1,
+        "executed": 1,
+        "evaluated": 1,
+        "satisfied": 0,
+        "obligations": [
+            {
+                "obligation_id": "user.row_count",
+                "kind": "business",
+                "evidence_status": "observed",
+                "business_status": "violated",
+                "expected": 1,
+                "actual": 0,
+                "reason": "actual_differs_from_frozen_expected",
+            }
+        ],
+        "reason_codes": ["verification.business_violation"],
+    }
+    outcome = await execute_task(GenerateReportHandler(), report_input(verification=verification))
+    assert outcome.status == "succeeded"
+    payload = as_object(outcome.output)
+    assert payload["verification"] == verification
+
+    rendered = render_quality_report_markdown(payload)
+    assert b"user.row_count" in rendered
+    assert b"business=violated" in rendered
+    assert b"evidence=observed" in rendered
+    assert b"expected=1 actual=0" in rendered

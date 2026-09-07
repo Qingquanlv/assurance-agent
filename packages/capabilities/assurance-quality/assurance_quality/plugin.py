@@ -77,6 +77,7 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.quality.schema.sufficiency.v2": "schemas/sufficiency.v2.schema.json",
     "assurance.quality.schema.trace-sufficiency.v1": "schemas/trace-sufficiency.v1.schema.json",
     "assurance.quality.schema.trace.v2": "schemas/trace.v2.schema.json",
+    "assurance.quality.schema.verification.v1": "schemas/verification.v1.schema.json",
     "assurance.quality.workflow.assess.input.v1": "schemas/workflow/assess-input.v1.schema.json",
     "assurance.quality.workflow.assess.output.v1": "schemas/workflow/assess-output.v1.schema.json",
     "assurance.quality.workflow.issue-analyze.input.v1": (

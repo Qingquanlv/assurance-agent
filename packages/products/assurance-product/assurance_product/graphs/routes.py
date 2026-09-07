@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
 from assurance_healing.contracts.application import AppliedTestRepairV1
 from assurance_quality.contracts.assessment import InspectionOutcomeV1
 from graph_engine.stategraph.routing import select_exclusive_route
@@ -18,7 +18,11 @@ def execute_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     if state.get("attempt_failure"):
         return {"quality": None}
     try:
-        result = ExecutionCycleResultV1.model_validate(state.get("execution_result"))
+        raw = state.get("execution_result")
+        if state.get("validation_profile") in {"api_db.v1", "api_db_trace.v1"}:
+            result = VerifiedExecutionCycleResultV1.model_validate(raw)
+        else:
+            result = ExecutionCycleResultV1.model_validate(raw)
     except (TypeError, ValueError):
         return {"quality": None}
     epoch = state.get("coverage_epoch", 0)
@@ -27,7 +31,9 @@ def execute_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
         if (
             result.change_id == state.get("change_id")
             and result.coverage_epoch == epoch
-            and result.final_status in {"PASS", "FAIL"}
+            and (
+                isinstance(result, VerifiedExecutionCycleResultV1) or result.final_status in {"PASS", "FAIL"}
+            )
         )
         else None
     }

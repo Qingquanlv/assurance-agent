@@ -115,7 +115,7 @@ def accepted_verified_execution_input(project: Path, *, change_id: str = "CH-USE
                 [
                     {
                         "mrc_id": "MRC-API-001",
-                        "key": "user.create",
+                        "key": "entities.item.create",
                         "required": True,
                         "covered_by_cases": ["TC_USER_CREATE_001"],
                         "status": "covered",

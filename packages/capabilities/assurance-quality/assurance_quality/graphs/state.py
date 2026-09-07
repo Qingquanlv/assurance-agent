@@ -8,7 +8,7 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_quality.contracts.assessment import (
@@ -71,7 +71,7 @@ class QualityState(CheckpointBridgeState, total=False):
     coverage_epoch: int
     reviewed_case: ReviewedCaseV1
     generation_result: GenerationCycleResultV1
-    execution_result: ExecutionCycleResultV1
+    execution_result: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1
     policy_resource_id: str
     policy_sha256: str
     execution_at: str
@@ -83,7 +83,7 @@ class QualityState(CheckpointBridgeState, total=False):
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]
     evidence_refs: list[dict[str, str]]
-    execution_status: Literal["failed", "passed"]
+    execution_status: Literal["failed", "passed", "collected", "incomplete"]
     budgets: dict[str, int]
     rounds_budget: int
     rounds_used: int

@@ -94,6 +94,11 @@ from assurance_quality.contracts.trace import (
     TraceProjectionV2,
     load_trace_projection_document,
 )
+from assurance_quality.contracts.verification import (
+    VerificationObligationV1,
+    VerificationStatus,
+    VerificationVerdictV1,
+)
 
 __all__ = [
     "AGENT_JOB_CONTRACTS",
@@ -166,6 +171,9 @@ __all__ = [
     "TraceProjectionDocument",
     "TraceProjectionV2",
     "TraceSufficiencyFacts",
+    "VerificationObligationV1",
+    "VerificationStatus",
+    "VerificationVerdictV1",
     "attempt_contract_refs",
     "load_quality_gate_result_document",
     "load_trace_projection_document",

@@ -227,6 +227,7 @@ def publish_materialize_assessment(
                 assessment.metrics_ref,
                 assessment.sufficiency_ref,
                 assessment.execution_ref,
+                *(() if assessment.verification_ref is None else (assessment.verification_ref,)),
             )
         ],
     }
@@ -301,6 +302,7 @@ def publish_inspect(
                 assessment.metrics_ref,
                 assessment.sufficiency_ref,
                 assessment.execution_ref,
+                *(() if assessment.verification_ref is None else (assessment.verification_ref,)),
                 *(() if assessment.healing_ref is None else (assessment.healing_ref,)),
                 *(() if assessment.issue_ref is None else (assessment.issue_ref,)),
                 finalized.fact_baseline_ref,
@@ -321,6 +323,8 @@ def publish_inspect(
         assessment_refs=assessment_refs,
         reason_codes=tuple(sorted(reason_codes)),
         coverage_state=coverage_state,
+        verification_ref=assessment.verification_ref,
+        verification_status=(None if finalized.verification is None else finalized.verification.verdict),
     )
     return QualityAssessPublicV1(
         change_id=assessment.change_id,

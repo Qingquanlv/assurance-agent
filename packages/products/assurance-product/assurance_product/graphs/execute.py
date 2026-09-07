@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_healing.contracts.application import AppliedTestRepairV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
@@ -167,7 +167,16 @@ def adapt_rerun(state: ProductState) -> dict[str, object]:
 
 def adapt_quality_assess(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
-    execution = ExecutionCycleResultV1.model_validate(state.get("execution_result"))
+    if payload.validation_profile is None:
+        execution: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 = (
+            ExecutionCycleResultV1.model_validate(state.get("execution_result"))
+        )
+        execution_status = "passed" if execution.final_status == "PASS" else "failed"
+    else:
+        execution = VerifiedExecutionCycleResultV1.model_validate(state.get("execution_result"))
+        if execution.validation_profile != payload.validation_profile:
+            raise ValueError("verified execution profile differs from the product input")
+        execution_status = execution.completion_status
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
     reviewed = generation.reviewed_case
     current_reviewed = state.get("reviewed_case")
@@ -183,7 +192,7 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "rounds_budget": payload.budgets.coverage_rounds,
         "rounds_used": int(state.get("coverage_epoch", 0)),
         "evidence_refs": [],
-        "execution_status": "passed" if execution.final_status == "PASS" else "failed",
+        "execution_status": execution_status,
         "batch_id": execution.batch_id,
         "coverage_epoch": execution.coverage_epoch,
         "reviewed_case": reviewed.model_dump(mode="json"),

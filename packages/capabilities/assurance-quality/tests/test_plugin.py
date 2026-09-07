@@ -67,7 +67,7 @@ def test_quality_source_identity() -> None:
     assert descriptor.engine_api == ENGINE_API_VERSION
     assert ENGINE_API_VERSION == "2.0"
     assert descriptor.schemas == tuple(sorted(descriptor.schemas))
-    assert len(descriptor.schemas) == 32
+    assert len(descriptor.schemas) == 33
     assert descriptor.task_handlers == tuple(sorted(descriptor.task_handlers))
     assert descriptor.commit_validators == tuple(sorted(descriptor.commit_validators))
     assert "assurance.quality.inspect" in descriptor.task_handlers

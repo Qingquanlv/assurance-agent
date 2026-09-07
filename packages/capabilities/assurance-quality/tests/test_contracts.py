@@ -114,7 +114,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.report.v1": (
         "1",
-        "4a93f202bb07571a20cfddc3cc37e498e920cd4494d10a8957c78c839924d37e",
+        "0b33af6afee93d23938e662cbff9332e03b8c3f9e1a1412c268480bc0d08eeca",
     ),
     "assurance.quality.schema.sufficiency.v2": (
         "1",
@@ -127,6 +127,10 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.quality.schema.trace.v2": (
         "1",
         "f1c5b0b1a3fcce64abaade2c2f90acadd03adda6fd7de231639e2d3365590e45",
+    ),
+    "assurance.quality.schema.verification.v1": (
+        "1",
+        "1553f60bbc773693d3b345ae83cfa40afbe825a7ccd13b01b53ba1143df15782",
     ),
     "assurance.quality.workflow.assess.input.v1": (
         "1",

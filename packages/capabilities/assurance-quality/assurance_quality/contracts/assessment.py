@@ -11,7 +11,7 @@ from agent_runtime_contracts import AgentRunResult
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
@@ -27,6 +27,7 @@ from assurance_quality.contracts.coverage import CoverageState
 from assurance_quality.contracts.goal_policy import ActiveCoverageScopeV1, CoverageGoalPolicyV1
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
+from assurance_quality.contracts.verification import VerificationStatus, VerificationVerdictV1
 
 InspectionDisposition = Literal[
     "satisfied",
@@ -43,7 +44,7 @@ class MaterializeAssessmentInputV1(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     reviewed_case: ReviewedCaseV1
     generation: GenerationCycleResultV1
-    execution: ExecutionCycleResultV1
+    execution: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1
     policy_resource_id: str = Field(min_length=1)
     policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_at: AwareDatetime
@@ -89,6 +90,7 @@ class AssessmentInputsV1(FrozenModel):
     metrics_ref: EvidenceArtifactRefV1
     sufficiency_ref: EvidenceArtifactRefV1
     execution_ref: EvidenceArtifactRefV1
+    verification_ref: EvidenceArtifactRefV1 | None = None
     healing_ref: EvidenceArtifactRefV1 | None = None
     issue_ref: EvidenceArtifactRefV1 | None = None
 
@@ -179,6 +181,7 @@ class FinalizedInspectionV1(FrozenModel):
     failure_facts: FailureClassificationFactsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     reason_codes: tuple[str, ...]
+    verification: VerificationVerdictV1 | None = None
 
     @model_validator(mode="after")
     def _closed_identity_and_reasons(self) -> Self:
@@ -215,6 +218,23 @@ class FinalizedInspectionV1(FrozenModel):
                 raise ValueError(f"inspection {name} digest must match assessment")
         if tuple(sorted(set(self.reason_codes))) != self.reason_codes:
             raise ValueError("inspection reason_codes must be sorted and unique")
+        if (self.assessment.verification_ref is None) != (self.verification is None):
+            raise ValueError("inspection verification must match assessment mode")
+        if self.verification is not None:
+            repairable_bridge = (
+                self.verification.verdict == "INCOMPLETE"
+                and "verification.generated_bridge_missing" in self.verification.reason_codes
+            )
+            expected_facts = FailureClassificationFactsV1(
+                identity_valid=True,
+                blocking_failure=self.verification.verdict == "INCOMPLETE" and not repairable_bridge,
+                needs_human=self.verification.verdict == "FAILED",
+                repairable_failure=repairable_bridge,
+            )
+            if self.failure_facts != expected_facts:
+                raise ValueError("inspection failure facts contradict verification")
+            if self.reason_codes != self.verification.reason_codes:
+                raise ValueError("inspection reasons contradict verification")
         return self
 
 
@@ -231,6 +251,8 @@ class InspectionOutcomeV1(FrozenModel):
     assessment_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     reason_codes: tuple[str, ...]
     coverage_state: CoverageState | None = None
+    verification_ref: EvidenceArtifactRefV1 | None = None
+    verification_status: VerificationStatus | None = None
 
     @model_validator(mode="after")
     def _identity_and_disposition_are_closed(self) -> Self:
@@ -263,6 +285,24 @@ class InspectionOutcomeV1(FrozenModel):
             raise ValueError("inspection assessment_refs must be sorted and unique")
         if tuple(sorted(set(self.reason_codes))) != self.reason_codes:
             raise ValueError("inspection reason_codes must be sorted and unique")
+        if (self.verification_ref is None) != (self.verification_status is None):
+            raise ValueError("inspection verification ref and status must be supplied together")
+        expected_dispositions = {
+            "PASSED": {"satisfied", "coverage_insufficient", "blocked"},
+            "FAILED": {"needs_human"},
+            "INCOMPLETE": {"blocked", "repairable_execution_failure"},
+        }
+        if (
+            self.verification_status is not None
+            and self.disposition not in expected_dispositions[self.verification_status]
+        ):
+            raise ValueError("inspection disposition contradicts verification status")
+        if (
+            self.verification_status is not None
+            and self.disposition == "repairable_execution_failure"
+            and "verification.generated_bridge_missing" not in self.reason_codes
+        ):
+            raise ValueError("repairable verification requires a proven generated bridge defect")
         return self
 
 
@@ -312,6 +352,11 @@ class ReportSkillInputV1(QualitySkillInputV1):
                     self.assessment.metrics_ref,
                     self.assessment.sufficiency_ref,
                     self.assessment.execution_ref,
+                    *(
+                        ()
+                        if self.assessment.verification_ref is None
+                        else (self.assessment.verification_ref,)
+                    ),
                     *(() if self.assessment.healing_ref is None else (self.assessment.healing_ref,)),
                     *(() if self.assessment.issue_ref is None else (self.assessment.issue_ref,)),
                     self.fact_baseline_ref,

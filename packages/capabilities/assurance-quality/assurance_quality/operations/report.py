@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
 from typing import Any, Literal, cast
@@ -29,6 +30,7 @@ from assurance_quality.contracts.report import (
 )
 from assurance_quality.operations.common import InputError, failed_input, validate_input
 from assurance_quality.operations.inspect import worst_status
+from assurance_quality.contracts.verification import VerificationVerdictV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 _SHA256 = r"^[0-9a-f]{64}$"
@@ -68,6 +70,7 @@ class GenerateReportInputV1(FrozenModel):
     trace_digest: str = Field(pattern=_SHA256)
     coverage_digest: str = Field(pattern=_SHA256)
     metrics_digest: str = Field(pattern=_SHA256)
+    verification: VerificationVerdictV1 | None = None
 
 
 class DashboardInputV1(FrozenModel):
@@ -358,6 +361,7 @@ def build_quality_report(payload: GenerateReportInputV1) -> QualityReport:
         non_functional=non_functional,
         issues=_issue_report(payload.snapshot, payload.problems),
         metrics=payload.metrics,
+        verification=payload.verification,
     )
 
 
@@ -419,6 +423,30 @@ def render_quality_report_markdown(raw: Mapping[str, object]) -> bytes:
         "metrics": "Metrics",
     }
     lines.extend(f"- {labels[name]}: {source_digests[name]}" for name in expected)
+    if report.verification is not None:
+        lines.extend(
+            [
+                "",
+                "## Business verification",
+                "",
+                f"- Verdict: {report.verification.verdict}",
+                (
+                    "- Counts: "
+                    f"required={report.verification.required} "
+                    f"executed={report.verification.executed} "
+                    f"evaluated={report.verification.evaluated} "
+                    f"satisfied={report.verification.satisfied}"
+                ),
+            ]
+        )
+        for item in report.verification.obligations:
+            expected_value = json.dumps(item.expected, sort_keys=True, separators=(",", ":"))
+            actual_value = json.dumps(item.actual, sort_keys=True, separators=(",", ":"))
+            lines.append(
+                f"- {_one_line(item.obligation_id)}: "
+                f"business={item.business_status} evidence={item.evidence_status} "
+                f"expected={expected_value} actual={actual_value}"
+            )
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 

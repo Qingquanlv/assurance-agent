@@ -121,6 +121,100 @@ def test_publish_inspect_derives_satisfied_without_an_agent_coverage_state() -> 
     assert route_coverage(published) == "satisfied"
 
 
+@pytest.mark.parametrize(
+    ("verdict", "reason_codes", "failure_facts", "expected"),
+    (
+        (
+            "FAILED",
+            ["verification.business_violation"],
+            {
+                "identity_valid": True,
+                "blocking_failure": False,
+                "needs_human": True,
+                "repairable_failure": False,
+            },
+            "needs_human",
+        ),
+        (
+            "INCOMPLETE",
+            ["verification.required_evidence_missing"],
+            {
+                "identity_valid": True,
+                "blocking_failure": True,
+                "needs_human": False,
+                "repairable_failure": False,
+            },
+            "blocked",
+        ),
+        (
+            "INCOMPLETE",
+            [
+                "verification.generated_bridge_missing",
+                "verification.required_evidence_missing",
+            ],
+            {
+                "identity_valid": True,
+                "blocking_failure": False,
+                "needs_human": False,
+                "repairable_failure": True,
+            },
+            "repairable_execution_failure",
+        ),
+    ),
+)
+def test_verified_inspection_ignores_agent_pass_and_uses_closed_disposition(
+    verdict: str,
+    reason_codes: list[str],
+    failure_facts: dict[str, bool],
+    expected: str,
+) -> None:
+    state = _publish_state()
+    output = _inspect_output()
+    verification_ref = {
+        "path": "qa/changes/CH-DEMO-001/inspect/epochs/2/batches/20260822T000000Z/verification.json",
+        "digest": "a" * 64,
+    }
+    state_assessment = cast(dict[str, object], state["assessment_inputs"])
+    output_assessment = cast(dict[str, object], output["assessment"])
+    state_assessment["verification_ref"] = verification_ref
+    output_assessment["verification_ref"] = verification_ref
+    missing = verdict == "INCOMPLETE"
+    output["verification"] = {
+        "schema_version": "1",
+        "validation_profile": "api_db.v1",
+        "execution_id": "12345678-1234-4123-8123-123456789abc",
+        "case_id": "TC_USER_CREATE_001",
+        "verdict": verdict,
+        "required": 1,
+        "executed": 0 if missing else 1,
+        "evaluated": 0 if missing else 1,
+        "satisfied": 0,
+        "obligations": [
+            {
+                "obligation_id": "user.row_count",
+                "kind": "business",
+                "evidence_status": "missing" if missing else "observed",
+                "business_status": "not_evaluated" if missing else "violated",
+                "expected": 1,
+                "actual": None if missing else 0,
+                "reason": (
+                    "required_observation_missing" if missing else "actual_differs_from_frozen_expected"
+                ),
+            }
+        ],
+        "reason_codes": reason_codes,
+    }
+    output["failure_facts"] = failure_facts
+    output["reason_codes"] = reason_codes
+
+    published = publish_inspect(state, output, _receipt())
+
+    inspection = cast(dict[str, object], published["inspection_outcome"])
+    assert inspection["disposition"] == expected
+    assert inspection["verification_status"] == verdict
+    assert output["agent_result"]["status"] == "no_failures"  # type: ignore[index]
+
+
 def test_publish_inspect_routes_coverage_shortfall_to_case_rework() -> None:
     output = _inspect_output()
     metrics = MetricsDocument.model_validate(output["metrics"])

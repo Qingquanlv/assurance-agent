@@ -57,6 +57,8 @@ from assurance_quality.operations.identity import (
     problem_id,
 )
 from assurance_quality.operations.inspect import build_failure_classification_facts
+from assurance_quality.contracts.verification import VerificationVerdictV1
+from assurance_quality.operations.verification import verification_failure_facts
 from assurance_quality.resource_loader import resource_bytes, resource_text
 
 FACT_BASELINE_SKILL = "skills/aa-fact-baseline/SKILL.md"
@@ -221,6 +223,7 @@ def _authenticate_assessment_input(business: AssessmentSkillInputV1, root: Path)
         business.assessment.metrics_ref,
         business.assessment.sufficiency_ref,
         business.assessment.execution_ref,
+        *(() if business.assessment.verification_ref is None else (business.assessment.verification_ref,)),
     )
     for ref in refs:
         _authenticate_ref(root, ref)
@@ -450,26 +453,37 @@ class InspectFinalizeHandler:
                 business.assessment.sufficiency_ref,
                 TraceSufficiencyFacts,
             )
-            execution = _load_json_ref(
-                context.project_root,
-                business.assessment.execution_ref,
-                ExecutionEvidenceV1,
-            )
-            failure_facts, reason_codes = build_failure_classification_facts(
-                execution,
-                metrics,
-                adversarial_required="fuzz" in business.assessment.scope.selected_families,
-            )
-            has_failures = any(item.status == "failed" for item in execution.results)
-            if has_failures and not document.classification_performed:
-                raise OutputError("inspection did not classify the authenticated execution failures")
-            if document.status == "no_failures" and has_failures:
-                raise OutputError("inspection claims no failures for a failing execution")
-            if document.status == "failed":
-                failure_facts = failure_facts.model_copy(
-                    update={"identity_valid": False, "needs_human": True}
+            verification: VerificationVerdictV1 | None = None
+            if business.assessment.verification_ref is not None:
+                verification = _load_json_ref(
+                    context.project_root,
+                    business.assessment.verification_ref,
+                    VerificationVerdictV1,
                 )
-                reason_codes = tuple(sorted({*reason_codes, "inspection.analysis_failed"}))
+                assert verification is not None
+                failure_facts = verification_failure_facts(verification)
+                reason_codes = verification.reason_codes
+            else:
+                execution = _load_json_ref(
+                    context.project_root,
+                    business.assessment.execution_ref,
+                    ExecutionEvidenceV1,
+                )
+                failure_facts, reason_codes = build_failure_classification_facts(
+                    execution,
+                    metrics,
+                    adversarial_required="fuzz" in business.assessment.scope.selected_families,
+                )
+                has_failures = any(item.status == "failed" for item in execution.results)
+                if has_failures and not document.classification_performed:
+                    raise OutputError("inspection did not classify the authenticated execution failures")
+                if document.status == "no_failures" and has_failures:
+                    raise OutputError("inspection claims no failures for a failing execution")
+                if document.status == "failed":
+                    failure_facts = failure_facts.model_copy(
+                        update={"identity_valid": False, "needs_human": True}
+                    )
+                    reason_codes = tuple(sorted({*reason_codes, "inspection.analysis_failed"}))
             finalized = FinalizedInspectionV1(
                 agent_result=document,
                 assessment=business.assessment,
@@ -480,6 +494,7 @@ class InspectFinalizeHandler:
                 failure_facts=failure_facts,
                 fact_baseline_ref=business.fact_baseline_ref,
                 reason_codes=reason_codes,
+                verification=verification,
             )
             return TaskOutcome.succeeded(cast(JSONValue, finalized.model_dump(mode="json")))
         except InputError as error:

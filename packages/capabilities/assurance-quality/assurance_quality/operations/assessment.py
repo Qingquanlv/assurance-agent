@@ -19,7 +19,21 @@ from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.execution import (
+    ExecutionCommandReceiptV1,
+    ExecutionReceiptV1,
+    RawTestResultV1,
+)
 from assurance_execution.contracts.selection import ClosedMappingV1
+from assurance_execution.contracts.selection import SelectedTargets
+from assurance_execution.contracts.verification import (
+    VerificationEvidenceV1,
+    VerificationManifestV1,
+    VerifiedExecutionResultV1,
+)
+from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
+from assurance_generation.contracts.admission import GenerationAdmissionError, admit_verified_generation
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1
 from assurance_generation.contracts.families import LayerName
 from assurance_intake.contracts.cases import (
     CaseEntryAuthoring,
@@ -70,6 +84,8 @@ from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
 from assurance_quality.operations.common import json_digest
 from assurance_quality.operations.goal_scope import has_layer_evidence, obligation_goal
+from assurance_quality.contracts.verification import VerificationVerdictV1
+from assurance_quality.operations.verification import evaluate_verification
 
 
 class AssessmentInputError(ValueError):
@@ -427,6 +443,176 @@ def _write_document(write_root: Path, path: str, value: BaseModel | JSONValue) -
     return EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(data).hexdigest())
 
 
+def _verified_materials(
+    root: Path,
+    request: MaterializeAssessmentInputV1,
+    cycle: VerifiedExecutionCycleResultV1,
+) -> tuple[ClosedMappingV1, ExecutionEvidenceV1, VerificationVerdictV1]:
+    """Authenticate the complete verified closure before deriving assessment facts."""
+
+    try:
+        preliminary_mapping = ClosedMappingV1.model_validate(_load_json(root, cycle.mapping_ref))
+        capability_leafs = tuple(sorted({item.capability for item in preliminary_mapping.mappings}))
+        frozen_plan = decode_plan(_read_ref(root, request.plan_ref), request.plan_ref)
+        admission = admit_verified_generation(
+            root,
+            root,
+            change_id=cycle.change_id,
+            coverage_epoch=cycle.coverage_epoch,
+            plan_digest=cycle.plan_digest,
+            plan_ref=cycle.plan_ref,
+            reviewed_case=cycle.reviewed_case,
+            validation_profile=cycle.validation_profile,
+            selected_test_families=frozen_plan.selected_test_families,
+            capability_leafs=capability_leafs,
+            case_execution_plan_ref=cycle.case_execution_plan_ref,
+        )
+        if (
+            admission.closed_mapping != preliminary_mapping
+            or admission.reviewed_case != request.reviewed_case
+            or admission.source_refs != request.generation.source_refs
+            or admission.plan_refs != request.generation.plan_refs
+            or request.generation.case_execution_plan_ref != cycle.case_execution_plan_ref
+            or request.generation.mapping_ref != cycle.mapping_ref
+            or cycle.source_refs != request.generation.source_refs
+        ):
+            raise AssessmentInputError("verified generation closure differs from the committed cycle")
+        verified = VerifiedExecutionResultV1.model_validate_json(_read_ref(root, cycle.execution_index_ref))
+        manifest = VerificationManifestV1.model_validate_json(_read_ref(root, cycle.manifest_ref))
+        outcome = TaskOutcome.model_validate_json(_read_ref(root, cycle.evidence_ref))
+        evidence = VerificationEvidenceV1.model_validate(outcome.output)
+        for ref in cycle.raw_evidence_refs:
+            _read_ref(root, ref)
+        expected_cycle = {
+            "validation_profile": verified.validation_profile,
+            "change_id": verified.change_id,
+            "case_id": verified.case_id,
+            "reviewed_case": verified.reviewed_case,
+            "coverage_epoch": verified.coverage_epoch,
+            "repair_round": verified.repair_round,
+            "plan_digest": verified.plan_digest,
+            "plan_ref": verified.plan_ref,
+            "case_execution_plan_ref": verified.case_execution_plan_ref,
+            "case_execution_plan_digest": verified.case_execution_plan_digest,
+            "spec_digest": verified.spec_digest,
+            "execution_id": verified.execution_id,
+            "attempt_key": verified.attempt_key,
+            "batch_id": verified.batch_id,
+            "executed_at": verified.executed_at,
+            "completion_status": verified.completion_status,
+            "mapping_digest": verified.mapping_digest,
+            "manifest_ref": verified.manifest_ref,
+            "evidence_ref": verified.evidence_ref,
+            "raw_evidence_refs": verified.raw_evidence_refs,
+        }
+        if any(getattr(cycle, key) != value for key, value in expected_cycle.items()):
+            raise AssessmentInputError("verified execution index differs from its committed cycle")
+        observation_refs = tuple(
+            item.evidence_ref for item in evidence.observations if item.evidence_ref is not None
+        )
+        if (
+            outcome.status != "succeeded"
+            or verified.evidence != evidence
+            or evidence.manifest_digest != cycle.manifest_ref.digest
+            or evidence.receipt_ref not in cycle.raw_evidence_refs
+            or any(ref not in cycle.raw_evidence_refs for ref in observation_refs)
+        ):
+            raise AssessmentInputError("verified outcome differs from its authenticated evidence")
+        try:
+            machine_plan: CaseExecutionPlanV1 = next(
+                item for item in admission.machine_plans.cases if item.case_id == cycle.case_id
+            )
+        except StopIteration as error:
+            raise AssessmentInputError(
+                "verified execution case is absent from the authenticated machine plans"
+            ) from error
+        if (
+            manifest.execution_id != cycle.execution_id
+            or manifest.change_id != cycle.change_id
+            or manifest.case_id != cycle.case_id
+            or manifest.attempt_key != cycle.attempt_key
+            or manifest.coverage_epoch != cycle.coverage_epoch
+            or manifest.repair_round != cycle.repair_round
+            or manifest.plan_digest != cycle.plan_digest
+            or manifest.plan_ref != cycle.plan_ref.path
+            or manifest.case_execution_plan_ref != cycle.case_execution_plan_ref.path
+            or manifest.case_execution_plan_digest != cycle.case_execution_plan_digest
+            or manifest.spec_digest != cycle.spec_digest
+            or manifest.mapping_digest != cycle.mapping_digest
+            or manifest.validation_profile != cycle.validation_profile
+            or manifest.inputs.model_dump(mode="python") != machine_plan.inputs
+        ):
+            raise AssessmentInputError("verified manifest identity differs from the committed cycle")
+        evidence_prefix = f"{manifest.evidence_root}/"
+        if cycle.evidence_ref.path != f"{manifest.evidence_root}/outcome.json" or any(
+            not ref.path.startswith(evidence_prefix) for ref in cycle.raw_evidence_refs
+        ):
+            raise AssessmentInputError("verified raw evidence does not belong to this execution")
+        verdict = evaluate_verification(
+            machine_plan,
+            evidence,
+            completion_status=cycle.completion_status,
+            execution_id=cycle.execution_id,
+        )
+    except (GenerationAdmissionError, ValidationError, ValueError) as error:
+        if isinstance(error, AssessmentInputError):
+            raise
+        raise AssessmentInputError(f"invalid verified execution evidence: {error}") from error
+
+    # Existing coverage projection consumes test execution facts. This adapter
+    # is derived from the business verdict, never from pytest's self-report or
+    # from the cycle's collection status.
+    passed = verdict.verdict == "PASSED"
+    results = tuple(
+        RawTestResultV1(
+            test=item.test,
+            case_id=item.case_id,
+            status="passed" if passed else "failed",
+            duration_ms=0,
+            message="" if passed else f"verification_{verdict.verdict.lower()}",
+        )
+        for item in admission.closed_mapping.mappings
+    )
+    selected = SelectedTargets(
+        api=any(item.layer == "api" for item in admission.closed_mapping.mappings),
+        e2e=any(item.layer == "e2e" for item in admission.closed_mapping.mappings),
+        fuzz=any(item.layer == "fuzz" for item in admission.closed_mapping.mappings),
+        performance=any(item.layer == "performance" for item in admission.closed_mapping.mappings),
+    )
+    commands = tuple(
+        ExecutionCommandReceiptV1(
+            family=family,
+            command=("pytest",),
+            exit_code=0 if passed else 1,
+            collected=sum(item.layer == family for item in admission.closed_mapping.mappings),
+            passed=sum(item.layer == family for item in admission.closed_mapping.mappings) if passed else 0,
+            failed=sum(item.layer == family for item in admission.closed_mapping.mappings)
+            if not passed
+            else 0,
+            skipped=0,
+        )
+        for family in _FAMILY_ORDER
+        if getattr(selected, family)
+    )
+    projected = ExecutionEvidenceV1(
+        status="passed" if passed else "failed",
+        change_id=cycle.change_id,
+        batch_id=cycle.batch_id,
+        selected_targets=selected,
+        mapping=admission.closed_mapping,
+        baseline_tree_id=cycle.manifest_ref.digest,
+        runner_profile_digest=cycle.receipt.receipt_digest,
+        receipt=ExecutionReceiptV1(commands=commands),
+        results=results,
+        plan_digest=cycle.plan_digest,
+        plan_ref=cycle.plan_ref,
+        executed_at=cycle.executed_at,
+        mapping_digest=cycle.mapping_digest,
+        receipt_digest=cycle.receipt.receipt_digest,
+    )
+    return admission.closed_mapping, projected, verdict
+
+
 def materialize_assessment_inputs(
     request: MaterializeAssessmentInputV1,
     *,
@@ -464,26 +650,35 @@ def materialize_assessment_inputs(
     cases = _cases(project_root, request, capability_leafs=goal_leafs)
     case_ids = frozenset(case.case_id for case in cases)
     capability_leafs = frozenset(key for case in cases for key in case.trace)
-    try:
-        mapping = ClosedMappingV1.model_validate(
-            _load_json(project_root, request.generation.mapping_ref),
-            context={"case_ids": case_ids, "capability_leafs": capability_leafs},
-        )
-        evidence = ExecutionEvidenceV1.model_validate(
-            _load_json(project_root, request.execution.evidence_ref),
-            context={"case_ids": case_ids, "capability_leafs": capability_leafs},
-        )
-    except ValidationError as error:
-        raise AssessmentInputError(f"invalid mapping or execution evidence: {error}") from error
-    if evidence.executed_at != request.execution.executed_at:
-        raise AssessmentInputError("execution evidence time differs from its committed cycle")
-    if evidence.change_id != request.execution.change_id or evidence.batch_id != request.execution.batch_id:
-        raise AssessmentInputError("execution evidence identity does not match the execution cycle")
-    if evidence.mapping != mapping:
-        raise AssessmentInputError("execution evidence mapping differs from the locked generation mapping")
-    expected_status = "PASS" if evidence.status == "passed" else "FAIL"
-    if request.execution.final_status != expected_status:
-        raise AssessmentInputError("execution cycle final_status disagrees with evidence")
+    verification: VerificationVerdictV1 | None = None
+    if isinstance(request.execution, VerifiedExecutionCycleResultV1):
+        mapping, evidence, verification = _verified_materials(project_root, request, request.execution)
+    else:
+        try:
+            mapping = ClosedMappingV1.model_validate(
+                _load_json(project_root, request.generation.mapping_ref),
+                context={"case_ids": case_ids, "capability_leafs": capability_leafs},
+            )
+            evidence = ExecutionEvidenceV1.model_validate(
+                _load_json(project_root, request.execution.evidence_ref),
+                context={"case_ids": case_ids, "capability_leafs": capability_leafs},
+            )
+        except ValidationError as error:
+            raise AssessmentInputError(f"invalid mapping or execution evidence: {error}") from error
+        if evidence.executed_at != request.execution.executed_at:
+            raise AssessmentInputError("execution evidence time differs from its committed cycle")
+        if (
+            evidence.change_id != request.execution.change_id
+            or evidence.batch_id != request.execution.batch_id
+        ):
+            raise AssessmentInputError("execution evidence identity does not match the execution cycle")
+        if evidence.mapping != mapping:
+            raise AssessmentInputError(
+                "execution evidence mapping differs from the locked generation mapping"
+            )
+        expected_status = "PASS" if evidence.status == "passed" else "FAIL"
+        if request.execution.final_status != expected_status:
+            raise AssessmentInputError("execution cycle final_status disagrees with evidence")
     policy, sufficiency_policy = _policy(project_root, request)
     if plan.policy_resource_id != request.policy_resource_id:
         raise AssessmentInputError("assessment policy resource differs from frozen plan")
@@ -630,6 +825,11 @@ def materialize_assessment_inputs(
     gaps_ref = _write_document(write_root, f"{base}/coverage-gaps.json", gaps)
     metrics_ref = _write_document(write_root, f"{base}/metrics.json", metrics)
     sufficiency_ref = _write_document(write_root, f"{base}/trace-sufficiency.json", sufficiency)
+    verification_ref = (
+        _write_document(write_root, f"{base}/verification.json", verification)
+        if verification is not None
+        else None
+    )
     return AssessmentInputsV1(
         change_id=request.reviewed_case.change_id,
         coverage_epoch=request.reviewed_case.coverage_epoch,
@@ -642,7 +842,12 @@ def materialize_assessment_inputs(
         gaps_ref=gaps_ref,
         metrics_ref=metrics_ref,
         sufficiency_ref=sufficiency_ref,
-        execution_ref=request.execution.evidence_ref,
+        execution_ref=(
+            request.execution.execution_index_ref
+            if isinstance(request.execution, VerifiedExecutionCycleResultV1)
+            else request.execution.evidence_ref
+        ),
+        verification_ref=verification_ref,
         healing_ref=request.healing_ref,
         issue_ref=request.issue_ref,
     )

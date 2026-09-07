@@ -17,6 +17,7 @@ from assurance_quality.contracts.common import (
     ReportRiskLevel,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_quality.contracts.verification import VerificationVerdictV1
 
 ScoreValue = float | Literal["N/A"]
 
@@ -104,3 +105,4 @@ class QualityReport(BaseModel):
     # here for humans; never copied into ``final_status``. Absent when the
     # materialize step has not run (or the file is unreadable).
     metrics: dict[str, Any] | None = None
+    verification: VerificationVerdictV1 | None = None

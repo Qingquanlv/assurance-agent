@@ -53,6 +53,7 @@ def test_quality_owns_five_agent_contracts() -> None:
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/metrics.json",
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace.json",
+        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/verification.json",
     )
     expected = {
         "fact-baseline": ("aa-fact-baseline", "assurance-v1-doc-author", FactBaselineResultV1),

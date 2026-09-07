@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, TypedDict
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1
+from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_improvement.contracts.retro import RetroWindow
 from assurance_intake.contracts.workflow import (
@@ -186,7 +186,7 @@ class ProductStateDocument(FrozenModel):
     source_artifacts: list[dict[str, str]]
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
-    execution_result: ExecutionCycleResultV1
+    execution_result: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
@@ -293,7 +293,7 @@ class ProductState(CheckpointBridgeState, total=False):
     source_artifacts: list[dict[str, str]]
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
-    execution_result: ExecutionCycleResultV1
+    execution_result: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1

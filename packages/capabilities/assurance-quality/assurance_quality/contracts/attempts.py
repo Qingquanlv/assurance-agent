@@ -159,6 +159,7 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",
+            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/verification.json",
         ),
     ),
     retry=_RETRY,
