@@ -1,7 +1,6 @@
 from graph_engine.attempts.context import AttemptExecutionContext, AuthorizedAttemptScope
 from graph_engine.attempts.contracts import (
     AttemptExecutor,
-    AttemptResultProvenanceV1,
     AttemptRetryPolicy,
     AttemptTimeoutPolicy,
     ExecutedAttemptResult,
@@ -13,7 +12,6 @@ from graph_engine.attempts.contracts import (
     resolve_contract,
 )
 from graph_engine.attempts.keys import AttemptKey, BusinessActivation, derive_attempt_key
-from graph_engine.attempts.node_factory import AuthenticatedAttemptResult
 from graph_engine.attempts.resolutions import (
     AttemptResolution,
     CommittedEffectFailure,
@@ -29,12 +27,10 @@ from graph_engine.attempts.resolutions import (
 __all__ = [
     "AttemptExecutionContext",
     "AttemptExecutor",
-    "AttemptResultProvenanceV1",
     "AttemptKey",
     "AttemptResolution",
     "AttemptRetryPolicy",
     "AttemptTimeoutPolicy",
-    "AuthenticatedAttemptResult",
     "AuthorizedAttemptScope",
     "BusinessActivation",
     "CommittedEffectFailure",

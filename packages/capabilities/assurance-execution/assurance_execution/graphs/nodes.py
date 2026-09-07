@@ -11,15 +11,13 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.verification import VerifiedExecutionResultV1
 from assurance_execution.contracts.workflow import (
-    ExecutionAttemptBindingV1,
     ExecutionCycleResultV1,
+    VerifiedBridgeDefectResultV1,
     VerifiedExecutionCycleResultV1,
-    VerifiedGenerationDefectAttemptV1,
-    VerifiedGenerationDefectCycleV1,
+    VerifiedIncompleteExecutionV1,
 )
-from assurance_generation.contracts.workflow import GenerationCycleResultV1, VerifiedGenerationDefectV1
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_execution.graphs.state import ExecutionPublicOutput, ExecutionState
-from graph_engine.attempts import AuthenticatedAttemptResult
 from graph_engine.attempts.resolutions import ReceiptRef
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from graph_engine.attempts.keys import BusinessActivation
@@ -83,7 +81,6 @@ def publish_execution(
     receipt: object,
     *,
     semantic_node_id: Literal["execution.execute", "execution.run"] = "execution.execute",
-    attempt_authority: AuthenticatedAttemptResult | None = None,
 ) -> dict[str, object]:
     payload = output.model_dump(mode="json") if isinstance(output, BaseModel) else output
     if not isinstance(payload, Mapping):
@@ -91,81 +88,34 @@ def publish_execution(
     branch = execution_result_branch(state.get("validation_profile"))
     if branch == "verified_host":
         try:
-            defect_attempt = VerifiedGenerationDefectAttemptV1.model_validate(payload)
+            bridge_defect = VerifiedBridgeDefectResultV1.model_validate(payload)
         except ValidationError:
-            defect_attempt = None
-        if defect_attempt is not None:
-            if attempt_authority is None:
-                raise ValueError("generation defect requires an authenticated execution attempt")
-            defect = defect_attempt.defect
+            bridge_defect = None
+        if bridge_defect is not None:
             generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
-            if defect.generation != generation or defect.validation_profile != state.get(
-                "validation_profile"
-            ):
-                raise ValueError("verified generation defect differs from execution input")
-            receipt_ref = ReceiptRef.model_validate(receipt)
-            provenance = attempt_authority.provenance
-            attempt_document = defect_attempt.model_dump(mode="json")
             if (
-                provenance.output_digest != canonical_digest(cast(JSONValue, attempt_document))
-                or provenance.attempt_key != defect.attempt_key
-                or provenance.semantic_node_id != semantic_node_id
-                or provenance.source_terminal_receipt != defect_attempt.authority_receipt
-                or provenance.promotion_receipt != receipt_ref
+                bridge_defect.defect.generation != generation
+                or bridge_defect.defect.validation_profile != state.get("validation_profile")
+                or bridge_defect.defect.repair_round != _int(state, "repair_round")
+                or semantic_node_id != "execution.execute"
             ):
-                raise ValueError("generation defect differs from authenticated execution attempt")
-            cycle = VerifiedGenerationDefectCycleV1(
-                attempt=defect_attempt,
-                execution_provenance=provenance,
+                raise ValueError("bridge defect differs from the initial execution input")
+            incomplete = VerifiedIncompleteExecutionV1(
+                **bridge_defect.model_dump(mode="python"),
+                receipt=ReceiptRef.model_validate(receipt),
             )
-            document = cycle.model_dump(mode="json")
+            document = incomplete.model_dump(mode="json")
             published = ExecutionPublicOutput(
-                batch_id=defect.attempt_key.digest,
+                batch_id=incomplete.batch_id,
                 execution_evidence=document,
                 execution_digest=canonical_digest(cast(JSONValue, document)),
                 execution_semantic_node_id=semantic_node_id,
                 rounds_budget=_int(state, "rounds_budget"),
                 rounds_used=_int(state, "rounds_used"),
-                status="generation_defect",
+                status="incomplete",
             ).model_dump(mode="json")
             published["execution_result"] = document
-            published["generation_defect"] = document
-            published["generation_defect_authority_ref"] = defect_attempt.authority_receipt.model_dump(
-                mode="json"
-            )
-            activation = (
-                activation_execute(state)
-                if semantic_node_id == "execution.execute"
-                else activation_rerun(state)
-            )
-            binding = ExecutionAttemptBindingV1(
-                invocation_id=provenance.invocation_id,
-                public_entrypoint=provenance.public_entrypoint,
-                semantic_node_id=semantic_node_id,
-                attempt_key=provenance.attempt_key,
-                business_activation=activation,
-                graph_revision=provenance.graph_revision,
-                contract_id=(
-                    "assurance.execution.task.execute.v1"
-                    if semantic_node_id == "execution.execute"
-                    else "assurance.execution.task.run.v1"
-                ),
-                contract_digest=provenance.contract_digest,
-                input_digest=provenance.input_digest,
-                change_id=generation.change_id,
-                coverage_epoch=generation.coverage_epoch,
-                repair_round=_int(state, "repair_round"),
-                validation_profile=defect.validation_profile,
-                generation_digest=canonical_digest(cast(JSONValue, generation.model_dump(mode="json"))),
-            )
-            published["generation_defect_execution_binding"] = binding.model_dump(mode="json")
             return published
-        try:
-            VerifiedGenerationDefectV1.model_validate(payload)
-        except ValidationError:
-            pass
-        else:
-            raise ValueError("generation defect requires an authenticated execution attempt")
         try:
             verified = VerifiedExecutionResultV1.model_validate(payload)
         except ValidationError as error:

@@ -15,11 +15,6 @@ from assurance_product.graphs.revisions import (
 )
 from assurance_product.graphs.state import ProductState, ProductStateDocument
 from assurance_product.models import PRODUCT_ENTRYPOINTS, THIN_ENTRYPOINTS
-from assurance_execution.contracts.workflow import (
-    ExecutionAttemptBindingV1,
-    VerifiedGenerationDefectCycleV1,
-)
-from graph_engine.attempts.contracts import TerminalReceiptRef
 from assurance_quality.contracts.agent import InspectionResultV1
 from graph_engine.boot.graph_revision import EntrypointGraphContract
 from graph_engine.canonical import JSONValue, canonical_digest
@@ -154,29 +149,6 @@ def test_state_schema_digest_tracks_product_state_runtime_schema() -> None:
     assert contract.state_model == "assurance_product.graphs.state.ProductState"
     assert contract.state_schema_digest == runtime_digest
     assert contract.state_schema_digest != document_digest
-
-
-def test_product_state_declares_generation_defect_result_and_nullable_execution_reference() -> None:
-    runtime = get_type_hints(ProductState, include_extras=True)
-    document = get_type_hints(ProductStateDocument, include_extras=True)
-
-    assert VerifiedGenerationDefectCycleV1 in get_args(runtime["execution_result"])
-    assert VerifiedGenerationDefectCycleV1 in get_args(document["execution_result"])
-    assert type(None) in get_args(runtime["execution_ref"])
-    assert type(None) in get_args(document["execution_ref"])
-    assert runtime["generation_defect"] == VerifiedGenerationDefectCycleV1 | None
-    assert document["generation_defect"] == VerifiedGenerationDefectCycleV1 | None
-    assert runtime["generation_defect_authority_ref"] == TerminalReceiptRef | None
-    assert document["generation_defect_authority_ref"] == TerminalReceiptRef | None
-    assert runtime["generation_defect_execution_binding"] == ExecutionAttemptBindingV1 | None
-    assert document["generation_defect_execution_binding"] == ExecutionAttemptBindingV1 | None
-    required = set(ProductStateDocument.model_json_schema().get("required", ()))
-    assert {
-        "generation_defect",
-        "generation_defect_authority_ref",
-        "generation_defect_execution_binding",
-        "execution_ref",
-    }.isdisjoint(required)
 
 
 def test_state_schema_digest_excludes_function_addresses() -> None:

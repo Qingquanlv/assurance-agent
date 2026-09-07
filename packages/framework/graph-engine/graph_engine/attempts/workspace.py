@@ -19,7 +19,6 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
 from graph_engine.attempts.keys import AttemptKey
-from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.errors import GraphEngineError
 from graph_engine.plugin_api import (
@@ -307,29 +306,6 @@ def _receipt(identity_digest: str, staged_digest: str) -> PromotionReceipt:
         staged_digest=staged_digest,
         receipt_digest=canonical_digest(cast("JSONValue", payload)),
     )
-
-
-def authenticate_promotion_receipt(receipts_root: Path, ref: ReceiptRef) -> PromotionReceipt:
-    """Read and authenticate one immutable promotion receipt by its kernel reference."""
-
-    if not isinstance(ref, ReceiptRef):
-        ref = ReceiptRef.model_validate(ref)
-    if len(ref.receipt_id) != 64 or any(ch not in "0123456789abcdef" for ch in ref.receipt_id):
-        raise TaskWorkspaceViolation("promotion receipt identity is not canonical")
-    root_fd = _open_pinned_directory(Path(receipts_root), "receipts root")
-    try:
-        content, _digest, _mode = _read_regular_at(root_fd, f"{ref.receipt_id}.json", "promotion receipt")
-    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError) as error:
-        raise TaskWorkspaceViolation("cannot authenticate promotion receipt") from error
-    finally:
-        os.close(root_fd)
-    try:
-        receipt = PromotionReceipt.model_validate_json(content)
-    except (ValueError, json.JSONDecodeError) as error:
-        raise TaskWorkspaceViolation("cannot authenticate promotion receipt") from error
-    if receipt.identity_digest != ref.receipt_id or receipt.receipt_digest != ref.receipt_digest:
-        raise TaskWorkspaceViolation("promotion receipt differs from its kernel reference")
-    return receipt
 
 
 def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:

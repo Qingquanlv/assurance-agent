@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Annotated, Any, Self, TypedDict
-
-from pydantic import model_validator
+from typing import Annotated, Any, TypedDict
 
 from assurance_execution.contracts.workflow import (
-    ExecutionAttemptBindingV1,
     ExecutionCycleResultV1,
     VerifiedExecutionCycleResultV1,
-    VerifiedGenerationDefectCycleV1,
+    VerifiedIncompleteExecutionV1,
 )
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
+from assurance_healing.contracts.application import RepairAuthorizationV1
 from assurance_improvement.contracts.retro import RetroWindow
 from assurance_intake.contracts.workflow import (
     CaseFlowResultV1,
@@ -26,7 +24,6 @@ from assurance_quality.contracts.assessment import (
     ReportPurpose,
 )
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.attempts.contracts import TerminalReceiptRef
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
@@ -194,12 +191,7 @@ class ProductStateDocument(FrozenModel):
     source_artifacts: list[dict[str, str]]
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
-    execution_result: (
-        ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 | VerifiedGenerationDefectCycleV1
-    )
-    generation_defect: VerifiedGenerationDefectCycleV1 | None = None
-    generation_defect_authority_ref: TerminalReceiptRef | None = None
-    generation_defect_execution_binding: ExecutionAttemptBindingV1 | None = None
+    execution_result: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 | VerifiedIncompleteExecutionV1
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
@@ -229,7 +221,7 @@ class ProductStateDocument(FrozenModel):
     proposal_ref: EvidenceArtifactRefV1
     approval_ref: EvidenceArtifactRefV1 | None
     execution_ref: EvidenceArtifactRefV1 | None = None
-
+    repair_authorization: RepairAuthorizationV1 | None = None
     mapping_ref: EvidenceArtifactRefV1
     source_refs: list[dict[str, str]]
     allowed_test_paths: list[str]
@@ -238,26 +230,6 @@ class ProductStateDocument(FrozenModel):
     proposal_receipt: dict[str, str]
     repair_result: dict[str, Any]
     effect_refs: list[dict[str, str]]
-
-    @model_validator(mode="after")
-    def _defect_branch_has_complete_authority(self) -> Self:
-        if isinstance(self.execution_result, VerifiedGenerationDefectCycleV1):
-            cycle = self.execution_result
-            binding = self.generation_defect_execution_binding
-            if (
-                self.generation_defect != cycle
-                or self.generation_defect_authority_ref != cycle.attempt.authority_receipt
-                or binding is None
-                or binding.attempt_key != cycle.execution_provenance.attempt_key
-                or binding.invocation_id != cycle.execution_provenance.invocation_id
-                or binding.public_entrypoint != cycle.execution_provenance.public_entrypoint
-                or binding.semantic_node_id != cycle.execution_provenance.semantic_node_id
-                or binding.graph_revision != cycle.execution_provenance.graph_revision
-                or binding.contract_digest != cycle.execution_provenance.contract_digest
-                or binding.input_digest != cycle.execution_provenance.input_digest
-            ):
-                raise ValueError("generation defect state is missing its current execution authority")
-        return self
 
 
 class ProductState(CheckpointBridgeState, total=False):
@@ -327,12 +299,7 @@ class ProductState(CheckpointBridgeState, total=False):
     source_artifacts: list[dict[str, str]]
     case_result: CaseFlowResultV1
     generation_result: GenerationCycleResultV1
-    execution_result: (
-        ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 | VerifiedGenerationDefectCycleV1
-    )
-    generation_defect: VerifiedGenerationDefectCycleV1 | None
-    generation_defect_authority_ref: TerminalReceiptRef | None
-    generation_defect_execution_binding: ExecutionAttemptBindingV1 | None
+    execution_result: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 | VerifiedIncompleteExecutionV1
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
@@ -362,6 +329,7 @@ class ProductState(CheckpointBridgeState, total=False):
     proposal_ref: EvidenceArtifactRefV1
     approval_ref: EvidenceArtifactRefV1 | None
     execution_ref: EvidenceArtifactRefV1 | None
+    repair_authorization: RepairAuthorizationV1 | None
     mapping_ref: EvidenceArtifactRefV1
     source_refs: list[dict[str, str]]
     allowed_test_paths: list[str]

@@ -175,9 +175,9 @@ def verification_failure_facts(verdict: VerificationVerdictV1):
 
     return FailureClassificationFactsV1(
         identity_valid=True,
-        blocking_failure=verdict.verdict == "INCOMPLETE",
+        blocking_failure=verdict.verdict == "INCOMPLETE" and not verdict.repairable_bridge_defect,
         needs_human=verdict.verdict == "FAILED",
-        repairable_failure=False,
+        repairable_failure=verdict.repairable_bridge_defect,
     )
 
 

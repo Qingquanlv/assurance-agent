@@ -31,6 +31,9 @@ from assurance_execution.contracts.verification import (
     VerifiedExecutionResultV1,
 )
 from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
+from assurance_execution.contracts.workflow import VerifiedIncompleteExecutionV1
+from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
+from graph_engine.attempts.resolutions import ReceiptRef
 from typing import cast
 
 EXECUTION_ID = "12345678-1234-4123-8123-123456789abc"
@@ -408,6 +411,73 @@ def test_untyped_bridge_reason_cannot_make_verified_incomplete_repairable(tmp_pa
             classify_inspection_disposition(facts=verification_failure_facts(ordinary), coverage_state=None)
             == "blocked"
         )
+
+
+def test_authenticated_generated_bridge_defect_is_the_only_repairable_incomplete(
+    tmp_path: Path,
+) -> None:
+    prepared = accepted_verified_execution_input(tmp_path)
+    generation = prepared.generation_result
+    assert generation is not None
+    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    bridge_path = tmp_path / bridge.path
+    bridge_path.write_text("def test_tc_user_create_001__create():\n    pass\n")
+    replacement_ref = bridge.model_copy(
+        update={"digest": hashlib.sha256(bridge_path.read_bytes()).hexdigest()}
+    )
+    generation = generation.model_copy(
+        update={
+            "source_refs": tuple(
+                replacement_ref if ref.path == bridge.path else ref for ref in generation.source_refs
+            )
+        }
+    )
+    attempt_key = AttemptKey(digest="4" * 64)
+    defect = diagnose_verified_bridge_defect(
+        tmp_path,
+        generation=generation,
+        validation_profile="api_db.v1",
+        selected_test_families=prepared.selected_test_families,
+        capability_leafs=prepared.capability_leafs,
+        attempt_key=attempt_key,
+    )
+    cycle = VerifiedIncompleteExecutionV1(
+        defect=defect,
+        batch_id=attempt_key.digest,
+        executed_at=datetime(2026, 9, 6, tzinfo=UTC),
+        receipt=ReceiptRef(receipt_id="kernel", receipt_digest="9" * 64),
+    )
+    from assurance_intake.contracts.plan import decode_plan
+
+    frozen_plan = decode_plan((tmp_path / prepared.plan_ref.path).read_bytes(), prepared.plan_ref)
+    request = MaterializeAssessmentInputV1(
+        plan_digest=generation.plan_digest,
+        plan_ref=generation.plan_ref,
+        reviewed_case=generation.reviewed_case,
+        generation=generation,
+        execution=cycle,
+        policy_resource_id="assurance.product.configuration.product-policy",
+        policy_sha256=frozen_plan.policy_digest,
+        execution_at=cycle.executed_at,
+    )
+
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+    )
+
+    assert assessment.verification_ref is not None
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "INCOMPLETE"
+    assert verdict.repairable_bridge_defect
+    facts = verification_failure_facts(verdict)
+    assert facts.repairable_failure and not facts.blocking_failure
+    assert classify_inspection_disposition(facts=facts, coverage_state=None) == (
+        "repairable_execution_failure"
+    )
 
 
 def _write(root: Path, relative: str, payload: bytes):

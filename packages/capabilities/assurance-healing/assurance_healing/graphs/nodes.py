@@ -136,6 +136,8 @@ def select_coverage(state: Mapping[str, object]) -> CoverageRepairInputV1:
 
 def select_application(state: Mapping[str, object]) -> ApplyTestRepairInputV1:
     repair_round = state.get("repair_round", state.get("rounds_used"))
+    repair_authorization = state.get("repair_authorization")
+    verified_repair = repair_authorization is not None
     return ApplyTestRepairInputV1.model_validate(
         {
             "change_id": state["change_id"],
@@ -146,14 +148,15 @@ def select_application(state: Mapping[str, object]) -> ApplyTestRepairInputV1:
             "reviewed_case": state["reviewed_case"],
             "proposal_ref": state["proposal_ref"],
             "approval_ref": state.get("approval_ref"),
-            "execution_ref": state.get("execution_ref"),
+            "execution_ref": state["execution_ref"],
             "mapping_ref": state["mapping_ref"],
             "source_refs": state["source_refs"],
             "allowed_test_paths": state["allowed_test_paths"],
-            "validation_profile": state.get("validation_profile"),
-            "selected_test_families": state.get("selected_test_families", []),
-            "capability_leafs": state.get("capability_leafs", []),
-            "generation_defect": state.get("generation_defect"),
+            "generation": state.get("generation_result") if verified_repair else None,
+            "validation_profile": state.get("validation_profile") if verified_repair else None,
+            "selected_test_families": (state.get("selected_test_families", ()) if verified_repair else ()),
+            "capability_leafs": state.get("capability_leafs", ()) if verified_repair else (),
+            "repair_authorization": repair_authorization,
         }
     )
 

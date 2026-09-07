@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,17 +9,15 @@ import pytest
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.attempts import AttemptKey
-from graph_engine.attempts.host_authority import HostSealingAuthority
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from pydantic import ValidationError
 
 from assurance_healing.contracts.application import (
     AppliedTestRepairV1,
     ApplyTestRepairInputV1,
+    RepairAuthorizationV1,
     TestRepairResultV1 as RepairAgentResultV1,
 )
-from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
 from assurance_healing.operations.application import (
@@ -32,10 +29,9 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import BINDING, execute_task
 from tests.acg_plan_fixture import install_plan
-from tests.verified_generation_fixture import (
-    accepted_verified_execution_input,
-    install_verified_generation_defect_cycle,
-)
+from tests.verified_generation_fixture import accepted_verified_execution_input
+from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
+from graph_engine.attempts import AttemptKey
 
 CHANGE = "CH-REPAIR-1"
 SOURCE = f"qa/changes/{CHANGE}/generated/api/files/tests/api/test_users.py"
@@ -222,9 +218,9 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
     return payload, before
 
 
-def _agent_result(output_files: list[str], *, change_id: str = CHANGE) -> dict[str, object]:
+def _agent_result(output_files: list[str]) -> dict[str, object]:
     result = RepairAgentResultV1(
-        schema_version="1", change_id=change_id, output_files=tuple(output_files), summary="repair fixture"
+        schema_version="1", change_id=CHANGE, output_files=tuple(output_files), summary="repair fixture"
     )
     raw = cast(JSONValue, result.model_dump(mode="json"))
     envelope = AgentRunResult(
@@ -240,72 +236,55 @@ def _agent_result(output_files: list[str], *, change_id: str = CHANGE) -> dict[s
 async def _finalize(project: Path, stage: Path, payload: dict[str, object], outputs: list[str]):
     return await execute_task(
         ApplyTestRepairFinalizeHandler(),
-        cast(
-            JSONValue,
-            {
-                **payload,
-                "agent_result": _agent_result(outputs, change_id=str(payload["change_id"])),
-            },
-        ),
+        cast(JSONValue, {**payload, "agent_result": _agent_result(outputs)}),
         project,
         write_root=stage,
         capability_id="assurance.healing.apply-test-repair.finalize",
     )
 
 
-def _verified_repair_fixture(
-    project: Path,
-    *,
-    record_current: bool = True,
-) -> tuple[dict[str, object], str, bytes]:
-    from assurance_execution.contracts.authority import record_current_generation_defect
-    from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-    from assurance_execution.contracts.workflow import ExecutionAttemptBindingV1
-    from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
-    from graph_engine.attempts import BusinessActivation, derive_attempt_key
-
-    prepared = accepted_verified_execution_input(project)
+def _verified_fixture(project: Path) -> tuple[dict[str, object], bytes, str]:
+    prepared = accepted_verified_execution_input(project, change_id=CHANGE)
     generation = prepared.generation_result
     assert generation is not None
     bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
-    original = (
-        b"from assurance_execution.bridge import execute_case\n\n"
-        b"def test_tc_user_create_001__create():\n"
-        b'    execute_case("TC_USER_CREATE_001")\n'
+    bridge_path = project / bridge.path
+    bridge_path.write_text("def test_tc_user_create_001__create():\n    pass\n")
+    bridge = bridge.model_copy(update={"digest": hashlib.sha256(bridge_path.read_bytes()).hexdigest()})
+    generation = generation.model_copy(
+        update={
+            "source_refs": tuple(bridge if ref.path == bridge.path else ref for ref in generation.source_refs)
+        }
     )
-    (project / bridge.path).write_text("def forged():\n    return True\n", encoding="utf-8")
-    invocation_id = "inv-1"
-    public_entrypoint = "phase5"
-    graph_revision = "3" * 64
-    contract = TASK_ATTEMPT_CONTRACTS["assurance.execution.task.execute.v1"]
-    activation = BusinessActivation.for_trigger(f"coverage.{generation.coverage_epoch}.execute")
-    attempt_key = derive_attempt_key(
-        invocation_id=invocation_id,
-        graph_revision=graph_revision,
-        public_entrypoint=public_entrypoint,
-        semantic_node_id="execution.execute",
-        business_activation=activation,
-        contract_id="assurance.execution.task.execute.v1",
-        validated_input=prepared,
-    )
+    attempt_key = AttemptKey(digest="4" * 64)
     defect = diagnose_verified_bridge_defect(
         project,
         generation=generation,
         validation_profile="api_db.v1",
-        selected_test_families=("api",),
-        capability_leafs=("entities.item.create",),
+        selected_test_families=prepared.selected_test_families,
+        capability_leafs=prepared.capability_leafs,
         attempt_key=attempt_key,
     )
-    assert hashlib.sha256(original).hexdigest() == defect.expected_digest
-    proposal_path = f"qa/changes/{generation.change_id}/healing/fix-proposal.json"
-    approval_path = f"qa/changes/{generation.change_id}/healing/approval.json"
+    authorization = RepairAuthorizationV1(
+        attempt_key=attempt_key,
+        invocation_id="invocation",
+        semantic_node_id="execution.execute",
+        coverage_epoch=generation.coverage_epoch,
+        generation_digest=canonical_digest(cast(JSONValue, generation.model_dump(mode="json"))),
+        case_id=defect.case_id,
+        bridge_symbol=defect.bridge_symbol,
+        bridge_ref=defect.bridge_ref,
+        observed_digest=defect.observed_digest,
+        expected_digest=defect.expected_digest,
+        receipt=ReceiptRef(receipt_id="kernel", receipt_digest="9" * 64),
+    )
     proposal = {
         "schema_version": "1",
-        "change_id": generation.change_id,
+        "change_id": CHANGE,
         "summary": {"eligible_count": 1},
         "proposals": [
             {
-                "proposal_id": "FIX-BRIDGE-1",
+                "proposal_id": "FIX-BRIDGE",
                 "target": "api",
                 "eligible": True,
                 "risk_level": "low",
@@ -314,6 +293,7 @@ def _verified_repair_fixture(
             }
         ],
     }
+    proposal_ref = _write(project, PROPOSAL, _json_bytes(proposal))
     proposal_digest = canonical_digest(cast(JSONValue, proposal))
     approval = {
         "schema_version": "1",
@@ -324,15 +304,15 @@ def _verified_repair_fixture(
             policy_digest="d" * 64,
             proposal_digest=proposal_digest,
         ),
-        "change_id": generation.change_id,
+        "change_id": CHANGE,
         "owner_id": "assurance.healing",
-        "root_invocation_id": "inv-verified",
-        "interrupt_task_id": "approval-verified",
-        "source_gate_attempt_id": "inspect-verified",
+        "root_invocation_id": "invocation",
+        "interrupt_task_id": "approval-bridge",
+        "source_gate_attempt_id": "quality-inspect",
         "source_tree_id": "tree-before",
         "target_tree_id": "tree-after",
         "proposal_digest": proposal_digest,
-        "fixer_authority_digest": SHA,
+        "fixer_authority_digest": "a" * 64,
         "candidate_digest": defect.expected_digest,
         "baseline_digest": bridge.digest,
         "policy_digest": "d" * 64,
@@ -340,572 +320,33 @@ def _verified_repair_fixture(
         "paths": [bridge.path],
         "action": "approve_and_apply",
     }
-    binding = ExecutionAttemptBindingV1(
-        invocation_id=invocation_id,
-        public_entrypoint=public_entrypoint,
-        semantic_node_id="execution.execute",
-        attempt_key=attempt_key,
-        business_activation=activation,
-        graph_revision=graph_revision,
-        contract_id="assurance.execution.task.execute.v1",
-        contract_digest=canonical_digest(cast(JSONValue, contract.canonical_projection())),
-        input_digest=canonical_digest(cast(JSONValue, prepared.model_dump(mode="json"))),
-        change_id=generation.change_id,
-        coverage_epoch=generation.coverage_epoch,
-        repair_round=0,
-        validation_profile=defect.validation_profile,
-        generation_digest=canonical_digest(cast(JSONValue, generation.model_dump(mode="json"))),
-    )
-    cycle = install_verified_generation_defect_cycle(
-        project,
-        defect,
-        execution_binding=binding,
-    )
-    if record_current:
-        record_current_generation_defect(
-            project,
-            cycle,
-            binding,
-            selection_authority=HostSealingAuthority.open_for_project(project),
-        )
+    approval_ref = _write(project, APPROVAL, _json_bytes(approval))
     payload = {
-        "change_id": generation.change_id,
+        "change_id": CHANGE,
         "plan_digest": generation.plan_digest,
         "plan_ref": generation.plan_ref.model_dump(mode="json"),
         "coverage_epoch": generation.coverage_epoch,
         "repair_round": 1,
         "reviewed_case": generation.reviewed_case.model_dump(mode="json"),
-        "proposal_ref": _write(project, proposal_path, _json_bytes(proposal)),
-        "approval_ref": _write(project, approval_path, _json_bytes(approval)),
+        "proposal_ref": proposal_ref,
+        "approval_ref": approval_ref,
         "execution_ref": None,
         "mapping_ref": generation.mapping_ref.model_dump(mode="json"),
         "source_refs": [ref.model_dump(mode="json") for ref in generation.source_refs],
         "allowed_test_paths": [bridge.path],
+        "generation": generation.model_dump(mode="json"),
         "validation_profile": "api_db.v1",
-        "selected_test_families": ["api"],
-        "capability_leafs": ["entities.item.create"],
-        "generation_defect": cycle.model_dump(mode="json"),
-        "generation_defect_execution_binding": binding.model_dump(mode="json"),
+        "selected_test_families": list(prepared.selected_test_families),
+        "capability_leafs": list(prepared.capability_leafs),
+        "repair_authorization": authorization.model_dump(mode="json"),
     }
-    return payload, bridge.path, original
-
-
-def _alternative_authenticated_cycle(
-    project: Path,
-    cycle: VerifiedGenerationDefectCycleV1,
-    binding: object,
-    *,
-    invocation_id: str | None = None,
-    input_digest: str = "e" * 64,
-):
-    from assurance_execution.contracts.workflow import ExecutionAttemptBindingV1
-    from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
-
-    original = ExecutionAttemptBindingV1.model_validate(binding)
-    selected_invocation = invocation_id or original.invocation_id
-    key = AttemptKey(
-        digest=canonical_digest(
-            {
-                "invocation_id": selected_invocation,
-                "graph_revision": original.graph_revision,
-                "public_entrypoint": original.public_entrypoint,
-                "semantic_node_id": original.semantic_node_id,
-                "business_activation": original.business_activation.model_dump(mode="json"),
-                "contract_id": original.contract_id,
-                "task_input_digest": input_digest,
-            }
-        )
-    )
-    defect = diagnose_verified_bridge_defect(
-        project,
-        generation=cycle.attempt.defect.generation,
-        validation_profile=cycle.attempt.defect.validation_profile,
-        selected_test_families=("api",),
-        capability_leafs=("entities.item.create",),
-        attempt_key=key,
-    )
-    alternative = original.model_copy(
-        update={
-            "invocation_id": selected_invocation,
-            "attempt_key": key,
-            "input_digest": input_digest,
-        }
-    )
-    installed = install_verified_generation_defect_cycle(
-        project,
-        defect,
-        execution_binding=alternative,
-    )
-    return installed, alternative
-
-
-def _current_index_root(project: Path, change_id: str, invocation_id: str = "inv-1") -> Path:
-    return (
-        project
-        / "qa"
-        / "changes"
-        / change_id
-        / ".runtime"
-        / "current-generation-defects"
-        / hashlib.sha256(invocation_id.encode()).hexdigest()
-    )
-
-
-def _install_unsigned_current_index(
-    project: Path,
-    cycle: VerifiedGenerationDefectCycleV1,
-    binding: object,
-) -> Path:
-    from assurance_execution.contracts.authority import CurrentGenerationDefectAuthorityV1
-    from assurance_execution.contracts.workflow import ExecutionAttemptBindingV1
-
-    typed_binding = ExecutionAttemptBindingV1.model_validate(binding)
-    record = CurrentGenerationDefectAuthorityV1(
-        binding=typed_binding,
-        cycle=cycle,
-        terminal_receipt=cycle.attempt.authority_receipt,
-        promotion_receipt=cycle.execution_provenance.promotion_receipt,
-    )
-    path = _current_index_root(project, typed_binding.change_id, typed_binding.invocation_id) / (
-        f"{typed_binding.attempt_key.digest}.json"
-    )
-    path.write_bytes(canonical_json_bytes(record.model_dump(mode="json")))
-    path.chmod(0o400)
-    return path
-
-
-def _host_selection_receipt_path(project: Path, change_id: str) -> Path:
-    root = (
-        project
-        / "qa"
-        / "changes"
-        / change_id
-        / ".runtime"
-        / "activities"
-        / "inv-1"
-        / "receipts"
-        / ".selections"
-    )
-    matches = list(root.glob("*/*.json"))
-    assert len(matches) == 1
-    return matches[0]
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_reauthenticates_defect_and_preserves_machine_plan(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "succeeded", result.outcome.failure
-    output = cast(dict[str, Any], result.outcome.output)
-    assert output["changed_test_refs"] == [
-        {"path": bridge_path, "digest": hashlib.sha256(expected).hexdigest()}
-    ]
-    history = (
-        stage
-        / f"qa/changes/{payload['change_id']}/healing/epochs/{payload['coverage_epoch']}/rounds/1/repair.json"
-    )
-    first_history = history.read_bytes()
-
-    resumed = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert resumed.outcome.status == "succeeded", resumed.outcome.failure
-    assert history.read_bytes() == first_history
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_requires_independent_current_execution_record(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path, record_current=False)
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "current execution" in result.outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_rejects_caller_advanced_round_projection(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    binding = cast(dict[str, object], payload["generation_defect_execution_binding"])
-    payload["generation_defect_execution_binding"] = {**binding, "repair_round": 1}
-    payload["repair_round"] = 2
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "current execution" in result.outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_rejects_authentic_same_invocation_foreign_attempt(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    current = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    foreign_cycle, foreign_binding = _alternative_authenticated_cycle(
-        tmp_path,
-        current,
-        payload["generation_defect_execution_binding"],
-    )
-    payload["generation_defect"] = foreign_cycle.model_dump(mode="json")
-    payload["generation_defect_execution_binding"] = foreign_binding.model_dump(mode="json")
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "current execution" in result.outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_rejects_replaced_index_for_another_authentic_attempt(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    current = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    foreign_cycle, foreign_binding = _alternative_authenticated_cycle(
-        tmp_path,
-        current,
-        payload["generation_defect_execution_binding"],
-    )
-    index_root = _current_index_root(tmp_path, str(payload["change_id"]))
-    for path in index_root.iterdir():
-        path.unlink()
-    _install_unsigned_current_index(tmp_path, foreign_cycle, foreign_binding)
-    payload["generation_defect"] = foreign_cycle.model_dump(mode="json")
-    payload["generation_defect_execution_binding"] = foreign_binding.model_dump(mode="json")
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "selection" in result.outcome.failure.message
-    assert not (
-        stage
-        / f"qa/changes/{payload['change_id']}/healing/epochs/{payload['coverage_epoch']}/rounds/1/repair.json"
-    ).exists()
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_rejects_publicly_recomputed_selection_for_authentic_attempt(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    current = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    foreign_cycle, foreign_binding = _alternative_authenticated_cycle(
-        tmp_path,
-        current,
-        payload["generation_defect_execution_binding"],
-    )
-    index_root = _current_index_root(tmp_path, str(payload["change_id"]))
-    for path in index_root.iterdir():
-        path.unlink()
-    _install_unsigned_current_index(tmp_path, foreign_cycle, foreign_binding)
-    selection_path = _host_selection_receipt_path(tmp_path, str(payload["change_id"]))
-    document = cast(dict[str, object], json.loads(selection_path.read_bytes()))
-    selection: dict[str, object] = {
-        "schema_version": "1",
-        "attempt_key": foreign_binding.attempt_key.model_dump(mode="json"),
-        "binding_digest": canonical_digest(cast(JSONValue, foreign_binding.model_dump(mode="json"))),
-        "cycle_digest": canonical_digest(cast(JSONValue, foreign_cycle.model_dump(mode="json"))),
-        "execution_id": None,
-        "terminal_receipt": foreign_cycle.attempt.authority_receipt.model_dump(mode="json"),
-        "promotion_receipt": foreign_cycle.execution_provenance.promotion_receipt.model_dump(mode="json"),
-    }
-    document["selection"] = selection
-    document["selection_digest"] = canonical_digest(cast(JSONValue, selection))
-    selection_path.chmod(0o600)
-    selection_path.write_bytes(canonical_json_bytes(cast(JSONValue, document)))
-    selection_path.chmod(0o400)
-    payload["generation_defect"] = foreign_cycle.model_dump(mode="json")
-    payload["generation_defect_execution_binding"] = foreign_binding.model_dump(mode="json")
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "selection" in result.outcome.failure.message
-    assert not (
-        stage
-        / f"qa/changes/{payload['change_id']}/healing/epochs/{payload['coverage_epoch']}/rounds/1/repair.json"
-    ).exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("attack", ["delete", "payload_mismatch"])
-async def test_verified_bridge_repair_requires_intact_host_current_selection(
-    tmp_path: Path,
-    attack: str,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    selection_path = _host_selection_receipt_path(tmp_path, str(payload["change_id"]))
-    if attack == "delete":
-        selection_path.unlink()
-    else:
-        document = json.loads(selection_path.read_bytes())
-        document["selection_digest"] = "f" * 64
-        selection_path.chmod(0o600)
-        selection_path.write_bytes(canonical_json_bytes(cast(JSONValue, document)))
-        selection_path.chmod(0o400)
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "selection" in result.outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_rejects_ambiguous_current_execution_records(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    current = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    competing_cycle, competing_binding = _alternative_authenticated_cycle(
-        tmp_path,
-        current,
-        payload["generation_defect_execution_binding"],
-        input_digest="f" * 64,
-    )
-    _install_unsigned_current_index(tmp_path, competing_cycle, competing_binding)
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "ambiguous" in result.outcome.failure.message
-
-
-def test_generation_defect_current_selection_publication_is_idempotent_and_cas(
-    tmp_path: Path,
-) -> None:
-    from assurance_execution.contracts.authority import (
-        load_current_generation_defect,
-        record_current_generation_defect,
-    )
-    from assurance_execution.contracts.workflow import ExecutionAttemptBindingV1
-
-    payload, _bridge_path, _expected = _verified_repair_fixture(tmp_path)
-    current_cycle = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    current_binding = ExecutionAttemptBindingV1.model_validate(payload["generation_defect_execution_binding"])
-
-    authority = HostSealingAuthority.open_for_project(tmp_path)
-    replayed = record_current_generation_defect(
-        tmp_path,
-        current_cycle,
-        current_binding,
-        selection_authority=authority,
-    )
-
-    assert replayed.cycle == current_cycle
-    assert (
-        load_current_generation_defect(
-            tmp_path,
-            change_id=current_binding.change_id,
-            invocation_id=current_binding.invocation_id,
-            public_entrypoint=current_binding.public_entrypoint,
-        ).binding
-        == current_binding
-    )
-    competing_cycle, competing_binding = _alternative_authenticated_cycle(
-        tmp_path,
-        current_cycle,
-        current_binding,
-        input_digest="f" * 64,
-    )
-    with pytest.raises(ValueError, match="publication failed"):
-        record_current_generation_defect(
-            tmp_path,
-            competing_cycle,
-            competing_binding,
-            selection_authority=authority,
-        )
-
-
-def test_generation_defect_current_selection_rejects_cross_project_copy(tmp_path: Path) -> None:
-    from assurance_execution.contracts.authority import load_current_generation_defect
-    from assurance_execution.contracts.workflow import ExecutionAttemptBindingV1
-
-    first = tmp_path / "first"
-    first.mkdir()
-    payload, _bridge_path, _expected = _verified_repair_fixture(first)
-    binding = ExecutionAttemptBindingV1.model_validate(payload["generation_defect_execution_binding"])
-    copied = tmp_path / "copied"
-    shutil.copytree(first, copied)
-
-    with pytest.raises(ValueError, match="coordinates"):
-        load_current_generation_defect(
-            copied,
-            change_id=binding.change_id,
-            invocation_id=binding.invocation_id,
-            public_entrypoint=binding.public_entrypoint,
-        )
-
-
-@pytest.mark.parametrize("field", ["repair_round", "business_activation", "contract_id"])
-def test_generation_defect_authority_validates_the_complete_attempt_projection(
-    tmp_path: Path,
-    field: str,
-) -> None:
-    from assurance_execution.contracts.authority import authenticate_generation_defect_cycle
-    from assurance_execution.contracts.workflow import ExecutionAttemptBindingV1
-    from graph_engine.attempts import BusinessActivation
-
-    payload, _bridge_path, _expected = _verified_repair_fixture(tmp_path)
-    cycle = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    binding = ExecutionAttemptBindingV1.model_validate(payload["generation_defect_execution_binding"])
-    replacement: object
-    if field == "repair_round":
-        replacement = 1
-    elif field == "business_activation":
-        replacement = BusinessActivation.for_trigger("coverage.2.repair.1.rerun")
-    else:
-        replacement = "assurance.execution.task.run.v1"
-    attacked = binding.model_copy(update={field: replacement})
-
-    with pytest.raises(ValueError, match="expected execution attempt|repair round"):
-        authenticate_generation_defect_cycle(tmp_path, cycle, attacked)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("attack", ["forged_proof", "wrong_bridge"])
-async def test_verified_bridge_repair_rejects_untrusted_or_noncanonical_candidate(
-    tmp_path: Path, attack: str
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    stage = tmp_path / ".stage"
-    if attack == "forged_proof":
-        defect = cast(
-            dict[str, object],
-            cast(dict[str, object], payload["generation_defect"])["attempt"],
-        )["defect"]
-        defect = cast(dict[str, object], defect)
-        defect["expected_digest"] = "9" * 64
-        candidate = expected
-    else:
-        candidate = b"from assurance_execution.bridge import execute_case\n\ndef test_forged():\n    execute_case('forged')\n"
-    _write(stage, bridge_path, candidate)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert result.outcome.failure.kind in {"invalid_input", "invalid_output"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("attack", ["attempt_replay", "receipt_substitution"])
-async def test_verified_bridge_repair_rejects_cross_attempt_or_receipt_substitution(
-    tmp_path: Path, attack: str
-) -> None:
-    from assurance_execution.contracts.workflow import VerifiedGenerationDefectCycleV1
-    from graph_engine.canonical import canonical_digest
-
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    cycle = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    if attack == "attempt_replay":
-        identity = cycle.attempt.authority_identity.model_copy(
-            update={"invocation_id": "inv-replayed-by-caller"}
-        )
-        authority_ref = cycle.attempt.authority_receipt.model_copy(
-            update={"identity_digest": canonical_digest(identity.model_dump(mode="json"))}
-        )
-        attempt = cycle.attempt.model_copy(
-            update={"authority_identity": identity, "authority_receipt": authority_ref}
-        )
-        provenance = cycle.execution_provenance.model_copy(
-            update={
-                "invocation_id": identity.invocation_id,
-                "source_terminal_receipt": authority_ref,
-                "output_digest": canonical_digest(attempt.model_dump(mode="json")),
-            }
-        )
-        forged = VerifiedGenerationDefectCycleV1(
-            attempt=attempt,
-            execution_provenance=provenance,
-        )
-    else:
-        provenance = cycle.execution_provenance.model_copy(
-            update={
-                "promotion_receipt": cycle.execution_provenance.promotion_receipt.model_copy(
-                    update={"receipt_digest": "f" * 64}
-                )
-            }
-        )
-        forged = VerifiedGenerationDefectCycleV1(
-            attempt=cycle.attempt,
-            execution_provenance=provenance,
-        )
-    payload["generation_defect"] = forged.model_dump(mode="json")
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "authority" in result.outcome.failure.message or "promotion" in result.outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_bridge_repair_rejects_complete_old_invocation_authority_tuple(
-    tmp_path: Path,
-) -> None:
-    payload, bridge_path, expected = _verified_repair_fixture(tmp_path)
-    current = VerifiedGenerationDefectCycleV1.model_validate(payload["generation_defect"])
-    old_cycle, old_binding = _alternative_authenticated_cycle(
-        tmp_path,
-        current,
-        payload["generation_defect_execution_binding"],
-        invocation_id="inv-old-complete-tuple",
-    )
-    payload["generation_defect"] = old_cycle.model_dump(mode="json")
-    payload["generation_defect_execution_binding"] = old_binding.model_dump(mode="json")
-    stage = tmp_path / ".stage"
-    _write(stage, bridge_path, expected)
-
-    result = await _finalize(tmp_path, stage, payload, [bridge_path])
-
-    assert result.outcome.status == "failed"
-    assert result.outcome.failure is not None
-    assert "current invocation" in result.outcome.failure.message
-
-
-def test_verified_generation_defect_rejects_substituted_old_execution_evidence(tmp_path: Path) -> None:
-    payload, _bridge_path, _expected = _verified_repair_fixture(tmp_path)
-    attempt = cast(dict[str, object], payload["generation_defect"])["attempt"]
-    defect = cast(dict[str, object], cast(dict[str, object], attempt)["defect"])
-    generation = defect["generation"]
-    old_ref = cast(dict[str, object], generation)["mapping_ref"]
-    payload["execution_ref"] = old_ref
-
-    with pytest.raises(ValidationError, match="pre-dispatch generation defect"):
-        ApplyTestRepairInputV1.model_validate(payload)
+    expected = (
+        "from assurance_execution.bridge import execute_case\n\n"
+        "def test_tc_user_create_001__create():\n"
+        '    execute_case("TC_USER_CREATE_001")\n'
+    ).encode()
+    assert hashlib.sha256(expected).hexdigest() == defect.expected_digest
+    return payload, expected, bridge.path
 
 
 def test_applied_requires_committed_changed_tests() -> None:
@@ -972,6 +413,42 @@ async def test_finalize_proves_existing_test_bytes_changed(tmp_path: Path) -> No
 
     assert resumed.outcome.status == "succeeded"
     assert history_path.read_bytes() == first_history
+
+
+@pytest.mark.asyncio
+async def test_verified_bridge_repair_is_admitted_and_preserves_generation_obligations(
+    tmp_path: Path,
+) -> None:
+    payload, expected, bridge_path = _verified_fixture(tmp_path)
+    stage = tmp_path / ".stage"
+    _write(stage, bridge_path, expected)
+
+    result = await _finalize(tmp_path, stage, payload, [bridge_path])
+
+    assert result.outcome.status == "succeeded", result.outcome.failure
+    output = cast(dict[str, Any], result.outcome.output)
+    assert output["repair_round"] == 1
+    assert output["changed_test_refs"] == [
+        {"path": bridge_path, "digest": hashlib.sha256(expected).hexdigest()}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_verified_bridge_repair_rejects_stale_authorization_before_history(
+    tmp_path: Path,
+) -> None:
+    payload, expected, bridge_path = _verified_fixture(tmp_path)
+    authorization = cast(dict[str, object], payload["repair_authorization"])
+    authorization["observed_digest"] = "0" * 64
+    stage = tmp_path / ".stage"
+    _write(stage, bridge_path, expected)
+
+    result = await _finalize(tmp_path, stage, payload, [bridge_path])
+
+    assert result.outcome.status == "failed"
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind == "invalid_output"
+    assert not (stage / f"qa/changes/{CHANGE}/healing/epochs/2/rounds/1/repair.json").exists()
 
 
 @pytest.mark.asyncio

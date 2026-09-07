@@ -40,6 +40,7 @@ class VerificationVerdictV1(FrozenModel):
     satisfied: int = Field(ge=0)
     obligations: tuple[VerificationObligationV1, ...]
     reason_codes: tuple[str, ...]
+    repairable_bridge_defect: bool = False
 
     @model_validator(mode="after")
     def _closed_counts(self) -> Self:
@@ -78,6 +79,8 @@ class VerificationVerdictV1(FrozenModel):
         )
         if self.verdict != derived_verdict:
             raise ValueError("verification verdict contradicts obligation and completion facts")
+        if self.repairable_bridge_defect and self.verdict != "INCOMPLETE":
+            raise ValueError("repairable bridge defect must be incomplete")
         reason_facts = {
             "verification.business_violation": business_violated,
             "verification.required_evidence_missing": unavailable,

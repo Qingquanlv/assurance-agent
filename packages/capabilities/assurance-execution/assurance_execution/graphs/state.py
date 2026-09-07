@@ -13,7 +13,7 @@ class ExecutionPublicOutput(FrozenModel):
     execution_semantic_node_id: Literal["execution.execute", "execution.run"]
     rounds_budget: int
     rounds_used: int
-    status: Literal["failed", "passed", "collected", "incomplete", "generation_defect"]
+    status: Literal["failed", "passed", "collected", "incomplete"]
 
 
 class ExecutionState(CheckpointBridgeState, total=False):
@@ -24,9 +24,6 @@ class ExecutionState(CheckpointBridgeState, total=False):
     verification_config_digest: str | None
     verification: dict[str, object]
     execution_result: dict[str, object]
-    generation_defect: dict[str, object]
-    generation_defect_authority_ref: dict[str, str]
-    generation_defect_execution_binding: dict[str, object]
     change_id: str
     plan_digest: str
     plan_ref: dict[str, str]
@@ -42,7 +39,7 @@ class ExecutionState(CheckpointBridgeState, total=False):
     rounds_budget: int
     rounds_used: int
     activation: dict[str, str]
-    status: Literal["failed", "passed", "collected", "incomplete", "generation_defect"]
+    status: Literal["failed", "passed", "collected", "incomplete"]
     execution_evidence: dict[str, object]
     execution_digest: str
     execution_semantic_node_id: Literal["execution.execute", "execution.run"]

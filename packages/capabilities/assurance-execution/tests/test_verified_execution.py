@@ -12,7 +12,10 @@ from assurance_execution.contracts.verification import (
     VerificationEvidenceV1,
     VerifiedExecutionResultV1,
 )
-from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
+from assurance_execution.contracts.workflow import (
+    VerifiedBridgeDefectResultV1,
+    VerifiedExecutionCycleResultV1,
+)
 from assurance_execution.graphs.nodes import publish_execution
 
 import httpx
@@ -146,199 +149,6 @@ def test_verified_publish_rejects_agent_all_pass_without_host_evidence() -> None
             execution_evidence(),
             {"receipt_id": "kernel-receipt", "receipt_digest": "9" * 64},
         )
-
-
-def test_verified_publish_rejects_caller_chosen_generation_defect_and_unrelated_receipt(
-    tmp_path: Path,
-) -> None:
-    from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
-    from tests.verified_generation_fixture import accepted_verified_execution_input
-
-    prepared = accepted_verified_execution_input(tmp_path)
-    generation = prepared.generation_result
-    assert generation is not None
-    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
-    (tmp_path / bridge.path).unlink()
-    defect = diagnose_verified_bridge_defect(
-        tmp_path,
-        generation=generation,
-        validation_profile="api_db.v1",
-        selected_test_families=("api",),
-        capability_leafs=("entities.item.create",),
-        attempt_key=AttemptKey(digest="4" * 64),
-    )
-
-    with pytest.raises(ValueError, match="authenticated execution attempt"):
-        publish_execution(
-            {
-                "validation_profile": "api_db.v1",
-                "generation_result": generation.model_dump(mode="json"),
-                "coverage_epoch": generation.coverage_epoch,
-                "rounds_budget": 1,
-                "rounds_used": 0,
-            },
-            defect,
-            {"receipt_id": "unrelated", "receipt_digest": "9" * 64},
-        )
-
-
-@pytest.mark.asyncio
-async def test_durable_attempt_journal_authority_publishes_real_generation_defect(
-    tmp_path: Path,
-) -> None:
-    from types import SimpleNamespace
-
-    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
-    from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
-    from assurance_execution.contracts.verification import ExecutionDispatchResultV1
-    from assurance_execution.contracts.workflow import (
-        ExecutionAttemptBindingV1,
-        VerifiedGenerationDefectCycleV1,
-    )
-    from assurance_execution.graphs.nodes import activation_execute, select_execute
-    from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
-    from graph_engine.attempts import AttemptExecutionContext, CommittedTaskResult, derive_attempt_key
-    from graph_engine.attempts.events import (
-        ActivityPrepared,
-        ActivityTerminalObserved,
-        AttemptOpened,
-        AttemptTerminated,
-        CommitPrepared,
-        ResourcesAuthorized,
-        ResourcesReleased,
-        WorkspacePromoted,
-    )
-    from graph_engine.attempts.node_factory import AttemptNodeFactory
-    from graph_engine.canonical import canonical_digest
-    from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
-    from tests.verified_generation_fixture import (
-        accepted_verified_execution_input,
-        install_verified_generation_defect_cycle,
-    )
-
-    prepared = accepted_verified_execution_input(tmp_path)
-    generation = prepared.generation_result
-    assert generation is not None
-    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
-    (tmp_path / bridge.path).unlink()
-    state = {
-        **prepared.model_dump(mode="json"),
-        "rounds_budget": 1,
-        "rounds_used": 0,
-    }
-    contract = TASK_ATTEMPT_CONTRACTS["assurance.execution.task.execute.v1"]
-    revision = "a" * 64
-    validated = ExecutionPrepareInputV1.model_validate(select_execute(state))
-    key = derive_attempt_key(
-        invocation_id="inv-real-defect",
-        graph_revision=revision,
-        public_entrypoint="full",
-        semantic_node_id="execution.execute",
-        business_activation=activation_execute(state),
-        contract_id=contract.contract_id,
-        validated_input=validated,
-    )
-    defect = diagnose_verified_bridge_defect(
-        tmp_path,
-        generation=generation,
-        validation_profile="api_db.v1",
-        selected_test_families=("api",),
-        capability_leafs=("entities.item.create",),
-        attempt_key=key,
-    )
-    expected = install_verified_generation_defect_cycle(
-        tmp_path,
-        defect,
-        invocation_id="inv-real-defect",
-        authorization_id="d" * 64,
-        graph_revision=revision,
-    )
-    output = ExecutionDispatchResultV1(expected.attempt)
-    output_payload = output.model_dump(mode="json")
-    promotion = expected.execution_provenance.promotion_receipt
-    journal = MemoryAttemptJournal()
-    await journal.append(
-        key,
-        (
-            AttemptOpened(
-                contract_digest=canonical_digest(contract.canonical_projection()),
-                input_digest=canonical_digest(validated.model_dump(mode="json")),
-                graph_revision=revision,
-                invocation_id="inv-real-defect",
-                public_entrypoint="full",
-                semantic_node_id="execution.execute",
-            ),
-            ResourcesAuthorized(authorization_id="d" * 64),
-            ActivityPrepared(activity_id=key.digest),
-            ActivityTerminalObserved(
-                activity_id=key.digest,
-                outcome=output_payload,
-                outcome_digest=canonical_digest(output_payload),
-                source_identity_digest=expected.attempt.authority_receipt.identity_digest,
-                source_receipt_digest=expected.attempt.authority_receipt.receipt_digest,
-            ),
-            CommitPrepared(prepared_digest="b" * 64),
-            WorkspacePromoted(
-                receipt_id=promotion.receipt_id,
-                receipt_digest=promotion.receipt_digest,
-                staged_digest="c" * 64,
-            ),
-            AttemptTerminated(
-                resolution_kind="committed",
-                output=output_payload,
-                receipt_id=promotion.receipt_id,
-                receipt_digest=promotion.receipt_digest,
-            ),
-            ResourcesReleased(authorization_id="d" * 64),
-        ),
-        expected_revision=0,
-        fencing_token=1,
-    )
-
-    class Kernel:
-        async def execute_or_recover(
-            self,
-            attempt_key: AttemptKey,
-            contract: object,
-            validated_input: object,
-            context: AttemptExecutionContext,
-        ) -> CommittedTaskResult[ExecutionDispatchResultV1]:
-            del contract, validated_input, context
-            assert attempt_key == key
-            return CommittedTaskResult(output=output, receipt=promotion)
-
-    node = AttemptNodeFactory(journal=journal, kernel=Kernel()).attempt(
-        contract,
-        semantic_node_id="execution.execute",
-        activation=activation_execute,
-        select=select_execute,
-        publish=publish_execution,
-    )
-    published = await node(
-        state,
-        runtime=SimpleNamespace(
-            invocation_id="inv-real-defect",
-            revision_id=revision,
-            fencing_token=1,
-            public_entrypoint="full",
-        ),
-    )
-
-    published_cycle = VerifiedGenerationDefectCycleV1.model_validate(published["execution_result"])
-    assert published_cycle.attempt == expected.attempt
-    assert published_cycle.execution_provenance.attempt_key == key
-    assert published_cycle.execution_provenance.invocation_id == "inv-real-defect"
-    assert published_cycle.execution_provenance.promotion_receipt == promotion
-    assert published["generation_defect"] == published["execution_result"]
-    assert published["generation_defect_authority_ref"] == (
-        expected.attempt.authority_receipt.model_dump(mode="json")
-    )
-    binding = ExecutionAttemptBindingV1.model_validate(published["generation_defect_execution_binding"])
-    assert binding.attempt_key == key
-    assert binding.invocation_id == "inv-real-defect"
-    assert binding.public_entrypoint == "full"
-    assert binding.semantic_node_id == "execution.execute"
-    assert binding.repair_round == 0
 
 
 @pytest.mark.parametrize("record", ["action_terminal", "process_terminal", "outcome"])
@@ -703,6 +513,62 @@ def test_accepted_generation_closure_authenticates_before_verified_dispatch(tmp_
     authenticate_generation_result(root, tmp_path)
 
 
+def test_exact_invalid_generated_bridge_becomes_typed_incomplete_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+    from assurance_product.models import VerificationHostConfigV1
+    from assurance_product.verification_execution import (
+        ProfiledExecutionExecutor,
+        VerificationConfiguration,
+    )
+
+    attempt_key = AttemptKey(digest="4" * 64)
+    root = _accepted_verified_root(tmp_path)
+    damaged = ExecutionPrepareInputV1.model_validate(_damage_generation(tmp_path, root, "forged_bridge"))
+    calls: list[str] = []
+    facade = ProfiledExecutionExecutor(
+        config=VerificationConfiguration(
+            validation_profile="api_db.v1",
+            host=VerificationHostConfigV1(
+                managed_sut_authority_handle="sut.authority",
+                credential_handle="sut.credential",
+            ),
+        ),
+        config_digest="c" * 64,
+        legacy=None,
+        callable_path="assurance_execution.operations.verified_attempt:VerifiedAttemptHandler.execute",
+    )
+
+    class Host:
+        async def execute(self, call):
+            calls.append("host")
+            return SimpleNamespace(outcome=None)
+
+    facade._host = Host()
+    result = asyncio.run(
+        facade.execute(
+            damaged,
+            cast(
+                Any,
+                SimpleNamespace(
+                    workspace=SimpleNamespace(project_root=tmp_path),
+                    execution=SimpleNamespace(attempt_key=attempt_key),
+                ),
+            ),
+        )
+    )
+
+    defect = VerifiedBridgeDefectResultV1.model_validate(result.output.root)
+    assert defect.completion_status == "incomplete"
+    assert defect.defect.defect_kind == "invalid_bridge"
+    assert defect.defect.attempt_key == attempt_key
+    assert defect.batch_id == attempt_key.digest
+    assert calls == []
+
+
 def test_legacy_execution_rejects_generation_from_a_stale_coverage_epoch(tmp_path: Path) -> None:
     from assurance_execution.contracts.agent import ExecutionPrepareInputV1
     from assurance_execution.operations.agent_skills import authenticate_generation_result
@@ -730,65 +596,6 @@ def test_legacy_execution_accepts_generation_with_matching_identity(tmp_path: Pa
     legacy = ExecutionPrepareInputV1.model_validate(raw)
 
     authenticate_generation_result(legacy, tmp_path)
-
-
-@pytest.mark.parametrize("fault", ["deleted_bridge", "forged_bridge"])
-def test_verified_facade_refuses_bridge_defect_without_host_attempt_authority(
-    tmp_path: Path, fault: str
-) -> None:
-    from types import SimpleNamespace
-
-    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
-    from assurance_product.models import VerificationHostConfigV1
-    from assurance_product.verification_execution import (
-        ProfiledExecutionExecutor,
-        VerificationConfiguration,
-    )
-
-    root = _accepted_verified_root(tmp_path)
-    if fault == "deleted_bridge":
-        generation = root.generation_result
-        assert generation is not None
-        bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
-        (tmp_path / bridge.path).unlink()
-        damaged = root
-    else:
-        damaged = ExecutionPrepareInputV1.model_validate(_damage_generation(tmp_path, root, fault))
-    calls: list[str] = []
-    facade = ProfiledExecutionExecutor(
-        config=VerificationConfiguration(
-            validation_profile="api_db.v1",
-            host=VerificationHostConfigV1(
-                managed_sut_authority_handle="sut.authority",
-                credential_handle="sut.credential",
-            ),
-        ),
-        config_digest="c" * 64,
-        legacy=None,
-        callable_path="assurance_execution.operations.verified_attempt:VerifiedAttemptHandler.execute",
-    )
-
-    class Host:
-        async def execute(self, call):
-            calls.append("host")
-            return SimpleNamespace(outcome=None)
-
-    facade._host = Host()
-    with pytest.raises((AttributeError, ValueError), match="authorization_id|authorized production host"):
-        asyncio.run(
-            facade.execute(
-                damaged,
-                cast(
-                    Any,
-                    SimpleNamespace(
-                        workspace=SimpleNamespace(project_root=tmp_path),
-                        execution=SimpleNamespace(attempt_key=AttemptKey(digest="4" * 64)),
-                    ),
-                ),
-            )
-        )
-
-    assert calls == []
 
 
 @pytest.mark.parametrize(

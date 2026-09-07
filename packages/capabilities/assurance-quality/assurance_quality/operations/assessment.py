@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import cast
+from uuid import UUID
 
 import yaml
 from pydantic import BaseModel, ValidationError
@@ -38,9 +39,16 @@ from assurance_execution.contracts.verification import (
     VerifiedExecutionResultV1,
     VerifiedProcessReceiptV1,
 )
-from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
-from assurance_generation.contracts.admission import GenerationAdmissionError, admit_verified_generation
-from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1
+from assurance_execution.contracts.workflow import (
+    VerifiedExecutionCycleResultV1,
+    VerifiedIncompleteExecutionV1,
+)
+from assurance_generation.contracts.admission import (
+    GenerationAdmissionError,
+    admit_verified_generation,
+    diagnose_verified_bridge_defect,
+)
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1, CaseExecutionPlanV1
 from assurance_generation.contracts.families import LayerName
 from assurance_intake.contracts.cases import (
     CaseEntryAuthoring,
@@ -91,7 +99,7 @@ from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
 from assurance_quality.operations.common import json_digest
 from assurance_quality.operations.goal_scope import has_layer_evidence, obligation_goal
-from assurance_quality.contracts.verification import VerificationVerdictV1
+from assurance_quality.contracts.verification import VerificationObligationV1, VerificationVerdictV1
 from assurance_quality.operations.verification import evaluate_verification
 
 
@@ -999,6 +1007,115 @@ def _verified_materials(
     return admission.closed_mapping, projected, verdict
 
 
+def _defect_execution_id(attempt_digest: str) -> str:
+    raw = bytearray.fromhex(attempt_digest[:32])
+    raw[6] = (raw[6] & 0x0F) | 0x40
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    return str(UUID(bytes=bytes(raw)))
+
+
+def _generation_defect_materials(
+    root: Path,
+    request: MaterializeAssessmentInputV1,
+    cycle: VerifiedIncompleteExecutionV1,
+) -> tuple[ClosedMappingV1, ExecutionEvidenceV1, VerificationVerdictV1]:
+    """Re-diagnose the exact generation-owned defect before quality classifies it."""
+
+    defect = cycle.defect
+    mapping = ClosedMappingV1.model_validate(_load_json(root, defect.generation.mapping_ref))
+    capability_leafs = tuple(sorted({item.capability for item in mapping.mappings}))
+    frozen_plan = decode_plan(_read_ref(root, request.plan_ref), request.plan_ref)
+    diagnosed = diagnose_verified_bridge_defect(
+        root,
+        generation=defect.generation,
+        validation_profile=defect.validation_profile,
+        selected_test_families=frozen_plan.selected_test_families,
+        capability_leafs=capability_leafs,
+        attempt_key=defect.attempt_key,
+    )
+    if diagnosed != defect or defect.generation != request.generation:
+        raise AssessmentInputError("bridge defect differs from deterministic generation diagnosis")
+    machine_ref = defect.generation.case_execution_plan_ref
+    if machine_ref is None:
+        raise AssessmentInputError("bridge defect generation has no machine plan")
+    plans = CaseExecutionPlanSetV1.model_validate(_load_json(root, machine_ref))
+    try:
+        plan = next(item for item in plans.cases if item.case_id == defect.case_id)
+    except StopIteration:
+        raise AssessmentInputError("bridge defect case is absent from the machine plan") from None
+    execution_id = _defect_execution_id(defect.attempt_key.digest)
+    obligations = tuple(
+        VerificationObligationV1(
+            obligation_id=obligation_id,
+            kind="business"
+            if obligation_id in {item.assertion_id for item in plan.assertions}
+            else "completion",
+            evidence_status="missing",
+            business_status="not_evaluated",
+            reason="generated bridge is not dispatchable",
+        )
+        for obligation_id in plan.required
+    )
+    verdict = VerificationVerdictV1(
+        validation_profile=defect.validation_profile,
+        execution_id=execution_id,
+        case_id=defect.case_id,
+        verdict="INCOMPLETE",
+        required=len(obligations),
+        executed=0,
+        evaluated=0,
+        satisfied=0,
+        obligations=obligations,
+        reason_codes=("verification.required_evidence_missing",),
+        repairable_bridge_defect=True,
+    )
+    selected = SelectedTargets(
+        api=any(item.layer == "api" for item in mapping.mappings),
+        e2e=any(item.layer == "e2e" for item in mapping.mappings),
+        fuzz=any(item.layer == "fuzz" for item in mapping.mappings),
+        performance=any(item.layer == "performance" for item in mapping.mappings),
+    )
+    commands = tuple(
+        ExecutionCommandReceiptV1(
+            family=family,
+            command=("pytest",) if family != "performance" else ("locust",),
+            exit_code=1,
+            collected=sum(item.layer == family for item in mapping.mappings),
+            passed=0,
+            failed=sum(item.layer == family for item in mapping.mappings),
+            skipped=0,
+        )
+        for family in _FAMILY_ORDER
+        if getattr(selected, family)
+    )
+    evidence = ExecutionEvidenceV1(
+        status="failed",
+        change_id=cycle.change_id,
+        batch_id=cycle.batch_id,
+        selected_targets=selected,
+        mapping=mapping,
+        baseline_tree_id=defect.generation.mapping_ref.digest,
+        runner_profile_digest=defect.attempt_key.digest,
+        receipt=ExecutionReceiptV1(commands=commands),
+        results=tuple(
+            RawTestResultV1(
+                test=item.test,
+                case_id=item.case_id,
+                status="failed",
+                duration_ms=0,
+                message="deterministic generated bridge admission defect",
+            )
+            for item in mapping.mappings
+        ),
+        plan_digest=cycle.plan_digest,
+        plan_ref=cycle.plan_ref,
+        executed_at=cycle.executed_at,
+        mapping_digest=defect.generation.mapping_ref.digest,
+        receipt_digest=cycle.receipt.receipt_digest,
+    )
+    return mapping, evidence, verdict
+
+
 def materialize_assessment_inputs(
     request: MaterializeAssessmentInputV1,
     *,
@@ -1039,7 +1156,13 @@ def materialize_assessment_inputs(
     case_ids = frozenset(case.case_id for case in cases)
     capability_leafs = frozenset(key for case in cases for key in case.trace)
     verification: VerificationVerdictV1 | None = None
-    if isinstance(request.execution, VerifiedExecutionCycleResultV1):
+    if isinstance(request.execution, VerifiedIncompleteExecutionV1):
+        mapping, evidence, verification = _generation_defect_materials(
+            project_root,
+            request,
+            request.execution,
+        )
+    elif isinstance(request.execution, VerifiedExecutionCycleResultV1):
         mapping, evidence, verification = _verified_materials(
             project_root,
             request,

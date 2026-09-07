@@ -161,7 +161,7 @@ class _ProductExecutionFactory:
         self._bound = True
         artifact = self._ports._compile_bound(
             invocation_id=self._invocation_id,
-            entrypoint=self._entrypoint,
+            public_entrypoint=self._entrypoint,
             root_input_digest=self._root_input_digest,
             fencing_token=runner_lease.fencing_token,
         )
@@ -420,7 +420,7 @@ class ProductRuntimePorts:
         self,
         *,
         invocation_id: str,
-        entrypoint: str,
+        public_entrypoint: str,
         root_input_digest: str,
         fencing_token: int,
     ) -> BootArtifact:
@@ -430,9 +430,6 @@ class ProductRuntimePorts:
         from assurance_improvement.graphs.factory import build_improvement_graphs
         from assurance_intake.graphs.factory import build_intake_graphs
         from assurance_product.graphs.factory import build_product_graphs
-        from assurance_product.generation_defect_authority import (
-            GenerationDefectRouteAuthenticator,
-        )
         from assurance_quality.graphs.factory import build_quality_graphs
 
         if fencing_token < 1:
@@ -478,13 +475,15 @@ class ProductRuntimePorts:
                 context.for_capability("assurance.improvement")
             ),
         }
+        from assurance_product.repair_authorization import RepairAuthorizationIssuer
+
         graphs = build_product_graphs(
             context=context,
             features=features,
-            authenticate_generation_defect=GenerationDefectRouteAuthenticator(
-                project_root=self.workspace.paths.project_root,
+            repair_authorization_issuer=RepairAuthorizationIssuer(
+                journal=self.attempt_journal,
                 invocation_id=invocation_id,
-                public_entrypoint=entrypoint,
+                public_entrypoint=public_entrypoint,
                 graph_revision=self.revision_id,
             ),
         )
@@ -516,7 +515,7 @@ class ProductRuntimePorts:
             raise ValueError("invocation entrypoint is unavailable")
         artifact = self._compile_bound(
             invocation_id=invocation_id,
-            entrypoint=entrypoint,
+            public_entrypoint=entrypoint,
             root_input_digest=root_input_digest or started.root_input_digest,
             fencing_token=started.fencing_token,
         )

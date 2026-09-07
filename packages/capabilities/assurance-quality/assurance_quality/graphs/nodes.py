@@ -325,6 +325,9 @@ def publish_inspect(
         coverage_state=coverage_state,
         verification_ref=assessment.verification_ref,
         verification_status=(None if finalized.verification is None else finalized.verification.verdict),
+        verification_repairable_bridge=(
+            False if finalized.verification is None else finalized.verification.repairable_bridge_defect
+        ),
     )
     return QualityAssessPublicV1(
         change_id=assessment.change_id,

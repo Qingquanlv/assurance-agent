@@ -7,9 +7,6 @@ mapping.
 ## Required behavior
 
 - Apply only eligible items from the authenticated fix proposal and approval.
-- When the input carries a verified generation defect, replace only its exact bridge
-  path with the canonical `execute_case(<Case ID>)` bridge. Do not derive expected
-  values or assertions from the failed source, runtime observations, DB, or Trace.
 - Preserve every mapped test function or method and its Case identity.
 - Preserve assertions, expected values, `pytest.raises` contracts, and skip/xfail
   behavior. If the repair requires changing an oracle, do not edit the file.
@@ -18,21 +15,11 @@ mapping.
 - Return `TestRepairResultV1` with the exact sorted `output_files` write set and a
   concise summary.
 
-Before repair routing, the product authenticates the exact host terminal receipt and
-kernel promotion receipt against an AttemptKey rederived from the current invocation,
-entrypoint, graph revision, execution input, contract, and activation. The runtime
-prepare and finalizer repeat durable receipt authentication and bind the checkpointed
-execution identity to their current invocation. After route verification, the product
-publishes one create-once selection in the host-owned receipt store. A persistent host
-authority whose key is outside every project workspace seals the full selection,
-including project identity, scope, AttemptKey, complete execution binding and cycle
-digests, terminal receipt, and promotion receipt. Publication uses a locked,
-crash-recoverable transaction marker, so an exact retry resumes safely while a
-conflicting retry fails. The finalizer verifies the host seal before consulting the
-project index and rejects missing, changed, conflicting, or ambiguous records before
-it accepts the caller-carried defect. Both underlying receipts are authenticated again
-at the mutation boundary. The finalizer requires the requested repair round to be
-exactly the verified upstream round plus one. It recompiles the machine plan from the
-frozen ReviewedCase and assertion sources, and rejects replay from another invocation,
-execution attempt, or repair round, plus any changed verification obligation. A
+The runtime finalizer compares staged bytes with the authenticated source refs. A
 proposal or summary alone never counts as an applied repair.
+
+For a verified bridge repair, the product derives `RepairAuthorizationV1` from the
+current anchored workflow state and committed execution Attempt journal. Treat that
+authorization as an exact transition input: it permits only the named bridge repair,
+and the finalizer must re-run generation admission and preserve the machine plan's
+business-obligation projection before publishing the result.

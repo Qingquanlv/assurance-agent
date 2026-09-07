@@ -8,21 +8,38 @@ from typing import Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from graph_engine.attempts.resolutions import ReceiptRef
-from graph_engine.canonical import canonical_digest
+from graph_engine.attempts import AttemptKey
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
+from assurance_generation.contracts.execution_plan import ValidationProfile
+from assurance_generation.contracts.families import LayerName
+from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
     require_same_plan,
 )
-from assurance_generation.contracts.execution_plan import ValidationProfile
-from assurance_execution.contracts.workflow import (
-    ExecutionAttemptBindingV1,
-    VerifiedGenerationDefectCycleV1,
-)
 
 AppliedTestRepairStatus = Literal["applied", "needs_review", "not_eligible", "exhausted", "failed"]
+
+
+class RepairAuthorizationV1(FrozenModel):
+    """Product-owned transition from one committed execution defect into healing."""
+
+    schema_version: Literal["1"] = "1"
+    attempt_key: AttemptKey
+    invocation_id: str = Field(min_length=1)
+    semantic_node_id: Literal["execution.execute"]
+    coverage_epoch: int = Field(ge=0)
+    repair_round: Literal[0] = 0
+    generation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    case_id: str = Field(min_length=1)
+    bridge_symbol: str = Field(min_length=1)
+    bridge_ref: EvidenceArtifactRefV1
+    observed_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    expected_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt: ReceiptRef
 
 
 def _canonical_paths(values: tuple[str, ...], *, required: bool) -> tuple[str, ...]:
@@ -66,11 +83,11 @@ class ApplyTestRepairInputV1(FrozenModel):
     mapping_ref: EvidenceArtifactRefV1
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     allowed_test_paths: tuple[str, ...] = Field(min_length=1)
+    generation: GenerationCycleResultV1 | None = None
     validation_profile: ValidationProfile | None = None
-    selected_test_families: tuple[str, ...] = ()
+    selected_test_families: tuple[LayerName, ...] = ()
     capability_leafs: tuple[str, ...] = ()
-    generation_defect: VerifiedGenerationDefectCycleV1 | None = None
-    generation_defect_execution_binding: ExecutionAttemptBindingV1 | None = None
+    repair_authorization: RepairAuthorizationV1 | None = None
 
     @field_validator("source_refs")
     @classmethod
@@ -107,42 +124,39 @@ class ApplyTestRepairInputV1(FrozenModel):
         source_paths = {ref.path for ref in self.source_refs}
         if any(path not in source_paths for path in self.allowed_test_paths):
             raise ValueError("allowed test paths must be current generation source refs")
-        if self.generation_defect is None:
+        if self.repair_authorization is None:
             if self.execution_ref is None:
-                raise ValueError("legacy repair requires failed execution evidence")
+                raise ValueError("legacy repair requires execution evidence")
             if (
-                self.validation_profile is not None
+                any(value is not None for value in (self.generation, self.validation_profile))
                 or self.selected_test_families
-                or self.generation_defect_execution_binding is not None
+                or self.capability_leafs
             ):
-                raise ValueError("legacy repair cannot carry verified generation defect inputs")
+                raise ValueError("legacy repair cannot carry verified generation inputs")
         else:
-            defect = self.generation_defect.attempt.defect
-            generation = defect.generation
-            binding = self.generation_defect_execution_binding
-            if self.execution_ref is not None:
-                raise ValueError("pre-dispatch generation defect cannot carry execution evidence")
+            authorization = self.repair_authorization
             if (
-                binding is None
-                or binding.repair_round != self.repair_round - 1
-                or binding.attempt_key != defect.attempt_key
-                or binding.change_id != self.change_id
-                or binding.coverage_epoch != self.coverage_epoch
-                or binding.validation_profile != defect.validation_profile
-                or binding.generation_digest != canonical_digest(generation.model_dump(mode="json"))
-                or self.validation_profile != defect.validation_profile
+                self.execution_ref is not None
+                or self.generation is None
+                or self.validation_profile is None
                 or not self.selected_test_families
                 or not self.capability_leafs
-                or generation.change_id != self.change_id
-                or generation.coverage_epoch != self.coverage_epoch
-                or generation.reviewed_case != self.reviewed_case
-                or generation.plan_digest != self.plan_digest
-                or generation.plan_ref != self.plan_ref
-                or generation.mapping_ref != self.mapping_ref
-                or generation.source_refs != self.source_refs
-                or self.allowed_test_paths != (defect.bridge_ref.path,)
             ):
-                raise ValueError("verified generation defect inputs do not match repair closure")
+                raise ValueError("verified repair requires its closed generation inputs")
+            generation_payload: JSONValue = self.generation.model_dump(mode="json")
+            if (
+                self.repair_round != authorization.repair_round + 1
+                or self.coverage_epoch != authorization.coverage_epoch
+                or self.generation.change_id != self.change_id
+                or self.generation.coverage_epoch != self.coverage_epoch
+                or self.generation.reviewed_case != self.reviewed_case
+                or self.generation.mapping_ref != self.mapping_ref
+                or self.generation.source_refs != self.source_refs
+                or canonical_digest(generation_payload) != authorization.generation_digest
+                or authorization.bridge_ref not in self.source_refs
+                or self.allowed_test_paths != (authorization.bridge_ref.path,)
+            ):
+                raise ValueError("verified repair authorization differs from its generation cycle")
         return self
 
 
@@ -205,6 +219,7 @@ __all__ = [
     "AppliedTestRepairStatus",
     "AppliedTestRepairV1",
     "ApplyTestRepairInputV1",
+    "RepairAuthorizationV1",
     "TestRepairResultV1",
     "VerifiedTestRepairV1",
 ]

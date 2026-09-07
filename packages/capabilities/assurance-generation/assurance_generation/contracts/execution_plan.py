@@ -321,6 +321,41 @@ class CaseExecutionPlanV1(FrozenModel):
     required: tuple[str, ...] = Field(min_length=1)
     bindings: tuple[ObligationBindingV1, ...] = Field(min_length=1)
 
+    def obligation_projection(self) -> JSONValue:
+        """Return the generation-owned business contract a repair must preserve.
+
+        Technical binding versions, credentials and authenticated SUT/config
+        digests may change when generation recompiles the same specification.
+        Everything that determines business meaning remains in this projection.
+        """
+
+        technical = {"binding_id", "binding_version", "credential_ref"}
+        action = self.action.model_dump(mode="json", exclude=technical)
+        oracle = self.oracle.model_dump(mode="json", exclude=technical)
+        bindings = [
+            {
+                "obligation_id": binding.obligation_id,
+                "expected_id": binding.expected_id,
+                "comparator": binding.comparator,
+                "actual": binding.actual.model_dump(mode="json", exclude=technical),
+            }
+            for binding in self.bindings
+        ]
+        return cast(
+            JSONValue,
+            self.model_dump(
+                mode="json",
+                exclude={
+                    "technical_config_digest",
+                    "sut_digest",
+                    "action",
+                    "oracle",
+                    "bindings",
+                },
+            )
+            | {"action": action, "oracle": oracle, "bindings": bindings},
+        )
+
     @field_validator("inputs")
     @classmethod
     def _complete_inputs(cls, value: dict[InputKey, Any]) -> dict[InputKey, Any]:

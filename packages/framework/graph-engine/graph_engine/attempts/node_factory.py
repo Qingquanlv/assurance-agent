@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-import inspect
-from typing import Any, cast
+from typing import Any
 
 from langgraph.config import get_config
 from langgraph.errors import GraphInterrupt
@@ -12,7 +10,6 @@ from pydantic import BaseModel, ValidationError
 
 from graph_engine.attempts.context import AttemptExecutionContext
 from graph_engine.attempts.contracts import ResolvedAttemptContract, TaskAttemptContract
-from graph_engine.attempts.contracts import AttemptResultProvenanceV1, TerminalReceiptRef
 from graph_engine.attempts.events import (
     ActiveSystemInterrupt,
     AttemptSnapshot,
@@ -27,7 +24,7 @@ from graph_engine.attempts.resolutions import (
     PermanentTaskFailure,
     RejectedTaskResult,
 )
-from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.canonical import canonical_digest
 from graph_engine.persistence.attempt_journal import AttemptJournalPort
 from graph_engine.stategraph.checkpoint_bridge import (
     CHECKPOINT_MARKERS_STATE_KEY,
@@ -131,11 +128,7 @@ class AttemptNodeFactory:
                 issued=issued,
                 resolution=resolution,
             )
-        authority = None
-        if isinstance(resolution, CommittedTaskResult) and _accepts_attempt_authority(publish):
-            snapshot = await self._journal.load(key)
-            authority = _authenticate_committed_result(snapshot, resolution, key)
-        return _map_resolution(resolution, state, publish, key, issued, authority)
+        return _map_resolution(resolution, state, publish, key, issued)
 
     async def _issue_interrupt(
         self,
@@ -313,20 +306,11 @@ def _map_resolution(
     publish: object,
     key: AttemptKey,
     issued: tuple[ActiveSystemInterrupt, ...],
-    authority: AuthenticatedAttemptResult | None,
 ) -> dict[str, object]:
     if isinstance(resolution, CommittedTaskResult):
         if not callable(publish):
             raise TypeError("publish must be callable")
-        if _accepts_attempt_authority(publish):
-            published = publish(
-                state,
-                resolution.output,
-                resolution.receipt,
-                attempt_authority=authority,
-            )
-        else:
-            published = publish(state, resolution.output, resolution.receipt)
+        published = publish(state, resolution.output, resolution.receipt)
         if not isinstance(published, Mapping):
             raise TypeError("publish must return a mapping")
         update = {str(name): value for name, value in published.items()}
@@ -372,106 +356,6 @@ def _map_resolution(
     raise TypeError(f"unsupported attempt resolution: {type(resolution)!r}")
 
 
-def _accepts_attempt_authority(publish: object) -> bool:
-    try:
-        parameter = inspect.signature(cast(Callable[..., object], publish)).parameters.get(
-            "attempt_authority"
-        )
-    except (TypeError, ValueError):
-        return False
-    return parameter is not None and parameter.kind in {
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        inspect.Parameter.KEYWORD_ONLY,
-    }
-
-
-_AUTHORITY_TOKEN = object()
-
-
-@dataclass(frozen=True, slots=True, init=False)
-class AuthenticatedAttemptResult:
-    """In-process capability minted only after reading the durable Attempt journal."""
-
-    provenance: AttemptResultProvenanceV1
-
-    def __init__(self, provenance: AttemptResultProvenanceV1, token: object) -> None:
-        if token is not _AUTHORITY_TOKEN:
-            raise TypeError("authenticated attempt authority is engine-owned")
-        object.__setattr__(self, "provenance", provenance)
-
-
-def _authenticate_committed_result(
-    snapshot: AttemptSnapshot | None,
-    resolution: CommittedTaskResult[object],
-    key: AttemptKey,
-) -> AuthenticatedAttemptResult:
-    if snapshot is None or snapshot.attempt_key != key:
-        raise ValueError("committed result is absent from the Attempt journal")
-    output = cast(
-        JSONValue,
-        resolution.output.model_dump(mode="json")
-        if isinstance(resolution.output, BaseModel)
-        else resolution.output,
-    )
-    output_digest = canonical_digest(output)
-    terminal = snapshot.terminal
-    required = (
-        snapshot.invocation_id,
-        snapshot.public_entrypoint,
-        snapshot.semantic_node_id,
-        snapshot.graph_revision,
-        snapshot.contract_digest,
-        snapshot.input_digest,
-        snapshot.authorization_id,
-        snapshot.activity_id,
-    )
-    if any(value is None or value == "" for value in required):
-        raise ValueError("committed result lacks authenticated Attempt provenance")
-    assert snapshot.invocation_id is not None
-    assert snapshot.public_entrypoint is not None
-    assert snapshot.semantic_node_id is not None
-    assert snapshot.graph_revision is not None
-    assert snapshot.contract_digest is not None
-    assert snapshot.input_digest is not None
-    assert snapshot.authorization_id is not None
-    assert snapshot.activity_id is not None
-    if (
-        snapshot.activity_outcome != output
-        or canonical_digest(snapshot.activity_outcome) != output_digest
-        or terminal is None
-        or terminal.resolution_kind != "committed"
-        or terminal.output != output
-        or terminal.receipt_id != resolution.receipt.receipt_id
-        or terminal.receipt_digest != resolution.receipt.receipt_digest
-        or snapshot.promotion_receipt_id != resolution.receipt.receipt_id
-        or snapshot.promotion_receipt_digest != resolution.receipt.receipt_digest
-        or not snapshot.released
-    ):
-        raise ValueError("committed result disagrees with the Attempt journal")
-    provenance = AttemptResultProvenanceV1(
-        attempt_key=key,
-        invocation_id=snapshot.invocation_id,
-        public_entrypoint=snapshot.public_entrypoint,
-        semantic_node_id=snapshot.semantic_node_id,
-        graph_revision=snapshot.graph_revision,
-        contract_digest=snapshot.contract_digest,
-        input_digest=snapshot.input_digest,
-        authorization_id=snapshot.authorization_id,
-        activity_id=snapshot.activity_id,
-        output_digest=output_digest,
-        source_terminal_receipt=(
-            None
-            if snapshot.source_identity_digest is None or snapshot.source_receipt_digest is None
-            else TerminalReceiptRef(
-                identity_digest=snapshot.source_identity_digest,
-                receipt_digest=snapshot.source_receipt_digest,
-            )
-        ),
-        promotion_receipt=resolution.receipt,
-    )
-    return AuthenticatedAttemptResult(provenance, _AUTHORITY_TOKEN)
-
-
 def _with_completion(
     update: dict[str, object],
     key: AttemptKey,
@@ -496,4 +380,4 @@ def _with_completion(
     return update
 
 
-__all__ = ["AttemptNodeFactory", "AuthenticatedAttemptResult"]
+__all__ = ["AttemptNodeFactory"]

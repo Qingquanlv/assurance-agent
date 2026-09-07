@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from copy import copy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -12,7 +13,6 @@ from graph_engine.attempts import (
     ExecutedAttemptResult,
     IndeterminateTaskResult,
     SystemReference,
-    TerminalReceiptRef,
 )
 from graph_engine.attempts.events import AttemptSnapshot
 from graph_engine.attempts.host_protocol import (
@@ -30,7 +30,7 @@ from graph_engine.attempts.secret_sources import (
 )
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.verification import ExecutionDispatchResultV1
-from assurance_execution.contracts.workflow import VerifiedGenerationDefectAttemptV1
+from assurance_execution.contracts.workflow import VerifiedBridgeDefectResultV1
 from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
 from assurance_execution.operations.readiness import authenticate_host_readiness, HostReadinessError
 from assurance_execution.operations.host_secrets import HostSecretDocumentError
@@ -48,7 +48,6 @@ FACADE_DELEGATES = {
     "assurance.execution.task.run.v1": "assurance.execution.agent.run.v1",
 }
 HANDLER_ID = "assurance.execution.verified-attempt"
-GENERATION_DEFECT_HANDLER_ID = "assurance.execution.generation-defect"
 
 
 class VerificationConfiguration(FrozenModel):
@@ -184,7 +183,7 @@ class ProfiledExecutionExecutor:
         try:
             authenticate_generation_result(value, scope.workspace.project_root)
         except InputError as original:
-            if value.validation_profile is None or value.generation_result is None:
+            if value.validation_profile is None or value.generation_result is None or value.repair_round != 0:
                 raise
             execution = getattr(scope, "execution", None)
             attempt_key = getattr(execution, "attempt_key", None)
@@ -206,8 +205,7 @@ class ProfiledExecutionExecutor:
     def _call(self, value: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope) -> TaskHostExecuteCall:
         from assurance_product.runtime_bindings import _attempt_root, _task_request
 
-        authorization_id = getattr(scope.execution, "authorization_id", None)
-        if self._host is None or authorization_id is None:
+        if self._host is None or scope.execution.authorization_id is None:
             raise ValueError("verified execution requires an authorized production host")
         runner = self.config.host.runner
         request = _task_request(
@@ -225,7 +223,7 @@ class ProfiledExecutionExecutor:
         )
         fields = current_bound_identity(
             attempt_key_digest=scope.execution.attempt_key.digest,
-            authorization_id=authorization_id,
+            authorization_id=scope.execution.authorization_id,
             workspace_identity_digest=scope.workspace.identity.identity_digest,
             request_digest=canonical_digest(request.model_dump(mode="json")),
             graph_revision=self._graph_revision,
@@ -276,77 +274,15 @@ class ProfiledExecutionExecutor:
             output=ExecutionDispatchResultV1.model_validate(outcome.output), effects=outcome.effects
         )
 
-    def _certify_generation_defect(
-        self,
-        defect: VerifiedGenerationDefectV1,
-        scope: AuthorizedAttemptScope,
-    ) -> VerifiedGenerationDefectAttemptV1:
-        if self._host is None or scope.execution.authorization_id is None:
-            raise ValueError("generation defect requires an authorized production host")
-        task_id = scope.execution.attempt_key.digest
-        outcome = TaskOutcome.succeeded(defect.model_dump(mode="json"))
-        request_digest = canonical_digest({"phase": "runtime", "task_id": task_id, "staged_paths": []})
-        bound = current_bound_identity(
-            attempt_key_digest=task_id,
-            authorization_id=scope.execution.authorization_id,
-            workspace_identity_digest=scope.workspace.identity.identity_digest,
-            request_digest=request_digest,
-            graph_revision=self._graph_revision,
-            product_lock_digest=self._lock_digest,
-            handler_id=GENERATION_DEFECT_HANDLER_ID,
-            fencing_token=scope.execution.fencing_token,
-            phase="runtime",
-        )
-        identity = TaskHostCallIdentity(
-            invocation_id=scope.execution.invocation_id,
-            task_id=task_id,
-            activation_id=scope.execution.semantic_node_id,
-            attempt=scope.workspace.identity.attempt,
-            activity_id=task_id,
-            operation="execute",
-            **bound,  # type: ignore[arg-type]
-        )
-        authenticated = self._host.read_terminal_receipts(identity)
-        if not authenticated:
-            receipt = self._host.persist_phase_delta(
-                scope=scope,
-                phase="runtime",
-                task_id=task_id,
-                handler_id=GENERATION_DEFECT_HANDLER_ID,
-                staged_paths=(),
-                outcome=outcome,
-                graph_revision=self._graph_revision,
-                product_lock_digest=self._lock_digest,
-            )
-            authenticated = self._host.read_terminal_receipts(identity)
-        elif len(authenticated) == 1:
-            receipt = TerminalReceiptRef(
-                identity_digest=canonical_digest(identity.model_dump(mode="json")),
-                receipt_digest=canonical_digest(authenticated[0].model_dump(mode="json")),
-            )
-        else:
-            raise ValueError("generation defect host authority is not authentic")
-        if (
-            len(authenticated) != 1
-            or authenticated[0].outcome != outcome
-            or canonical_digest(authenticated[0].model_dump(mode="json")) != receipt.receipt_digest
-        ):
-            raise ValueError("generation defect host authority is not authentic")
-        return VerifiedGenerationDefectAttemptV1(
-            defect=defect,
-            authority_identity=identity,
-            authority_receipt=receipt,
-        )
-
     async def execute(self, validated_input: ExecutionPrepareInputV1, scope: AuthorizedAttemptScope) -> Any:
         defect = self._validate(validated_input, scope)
         if defect is not None:
-            certified = self._certify_generation_defect(defect, scope)
-            return ExecutedAttemptResult(
-                output=ExecutionDispatchResultV1(certified),
-                effects=(),
-                source_terminal_receipt=certified.authority_receipt,
+            result = VerifiedBridgeDefectResultV1(
+                defect=defect,
+                batch_id=defect.attempt_key.digest,
+                executed_at=datetime.now(UTC),
             )
+            return ExecutedAttemptResult(output=ExecutionDispatchResultV1(result))
         if self._legacy is not None:
             result = await self._legacy.execute(validated_input, scope)
             if isinstance(result, ExecutedAttemptResult):
@@ -366,12 +302,12 @@ class ProfiledExecutionExecutor:
     ) -> Any:
         defect = self._validate(validated_input, scope)
         if defect is not None:
-            certified = self._certify_generation_defect(defect, scope)
-            return ExecutedAttemptResult(
-                output=ExecutionDispatchResultV1(certified),
-                effects=(),
-                source_terminal_receipt=certified.authority_receipt,
+            result = VerifiedBridgeDefectResultV1(
+                defect=defect,
+                batch_id=defect.attempt_key.digest,
+                executed_at=datetime.now(UTC),
             )
+            return ExecutedAttemptResult(output=ExecutionDispatchResultV1(result))
         if self._legacy is not None:
             result = await self._legacy.reconcile(validated_input, scope, snapshot)
             if isinstance(result, ExecutedAttemptResult):

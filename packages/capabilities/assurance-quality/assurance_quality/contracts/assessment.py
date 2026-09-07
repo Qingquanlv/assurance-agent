@@ -11,7 +11,11 @@ from agent_runtime_contracts import AgentRunResult
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_execution.contracts.workflow import ExecutionCycleResultV1, VerifiedExecutionCycleResultV1
+from assurance_execution.contracts.workflow import (
+    ExecutionCycleResultV1,
+    VerifiedExecutionCycleResultV1,
+    VerifiedIncompleteExecutionV1,
+)
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import (
     EvidenceArtifactRefV1,
@@ -44,7 +48,7 @@ class MaterializeAssessmentInputV1(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     reviewed_case: ReviewedCaseV1
     generation: GenerationCycleResultV1
-    execution: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1
+    execution: ExecutionCycleResultV1 | VerifiedExecutionCycleResultV1 | VerifiedIncompleteExecutionV1
     policy_resource_id: str = Field(min_length=1)
     policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_at: AwareDatetime
@@ -221,11 +225,12 @@ class FinalizedInspectionV1(FrozenModel):
         if (self.assessment.verification_ref is None) != (self.verification is None):
             raise ValueError("inspection verification must match assessment mode")
         if self.verification is not None:
+            repairable = self.verification.repairable_bridge_defect
             expected_facts = FailureClassificationFactsV1(
                 identity_valid=True,
-                blocking_failure=self.verification.verdict == "INCOMPLETE",
+                blocking_failure=self.verification.verdict == "INCOMPLETE" and not repairable,
                 needs_human=self.verification.verdict == "FAILED",
-                repairable_failure=False,
+                repairable_failure=repairable,
             )
             if self.failure_facts != expected_facts:
                 raise ValueError("inspection failure facts contradict verification")
@@ -249,6 +254,7 @@ class InspectionOutcomeV1(FrozenModel):
     coverage_state: CoverageState | None = None
     verification_ref: EvidenceArtifactRefV1 | None = None
     verification_status: VerificationStatus | None = None
+    verification_repairable_bridge: bool = False
 
     @model_validator(mode="after")
     def _identity_and_disposition_are_closed(self) -> Self:
@@ -283,16 +289,22 @@ class InspectionOutcomeV1(FrozenModel):
             raise ValueError("inspection reason_codes must be sorted and unique")
         if (self.verification_ref is None) != (self.verification_status is None):
             raise ValueError("inspection verification ref and status must be supplied together")
+        if self.verification_repairable_bridge and self.verification_status != "INCOMPLETE":
+            raise ValueError("repairable bridge disposition requires incomplete verification")
         expected_dispositions = {
             "PASSED": {"satisfied", "coverage_insufficient", "blocked"},
             "FAILED": {"needs_human"},
-            "INCOMPLETE": {"blocked"},
+            "INCOMPLETE": {"blocked", "repairable_execution_failure"},
         }
         if (
             self.verification_status is not None
             and self.disposition not in expected_dispositions[self.verification_status]
         ):
             raise ValueError("inspection disposition contradicts verification status")
+        if self.verification_status == "INCOMPLETE" and self.disposition != (
+            "repairable_execution_failure" if self.verification_repairable_bridge else "blocked"
+        ):
+            raise ValueError("incomplete verification disposition lacks a typed bridge defect")
         return self
 
 
