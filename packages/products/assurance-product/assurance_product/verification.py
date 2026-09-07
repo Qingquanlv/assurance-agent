@@ -216,10 +216,7 @@ def authenticate_verified_delivery(
             None,
         )
         if execution_ref is not None:
-            try:
-                payload = json.loads(_read_ref(project, execution_ref, "execution assessment"))
-            except (TypeError, ValueError):
-                payload = None
+            payload = json.loads(_read_ref(project, execution_ref, "execution assessment"))
             if isinstance(payload, dict) and payload.get("validation_profile") in {
                 "api_db.v1",
                 "api_db_trace.v1",

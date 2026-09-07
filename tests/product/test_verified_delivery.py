@@ -419,6 +419,35 @@ def test_export_rejects_verified_profile_downgrade(tmp_path: Path) -> None:
         publish_achieved(project, CHANGE_ID)
 
 
+def test_export_rejects_verified_profile_downgrade_when_execution_ref_drifted(
+    tmp_path: Path,
+) -> None:
+    from assurance_product.export import PublishError, publish_achieved
+    from assurance_product.status import finalize_achieved
+
+    project, snapshot = _verified_terminal(tmp_path)
+    finalize_achieved(project, CHANGE_ID, ("api",), invocation=_render(snapshot))
+    status_path = project / f"qa/changes/{CHANGE_ID}/status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["execution_gate"].update(
+        {
+            "validation_profile": None,
+            "execution_receipt_id": None,
+            "execution_receipt_digest": None,
+        }
+    )
+    inspection = status["quality_gate"]["inspection"]
+    inspection.update({"verification_ref": None, "verification_status": None})
+    execution_ref = next(
+        ref for ref in inspection["assessment_refs"] if ref["path"].endswith("execute-result.json")
+    )
+    (project / execution_ref["path"]).write_bytes(b"drifted")
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    with pytest.raises(PublishError, match="verified delivery"):
+        publish_achieved(project, CHANGE_ID)
+
+
 def test_verified_delivery_rejects_stale_execution_id(tmp_path: Path) -> None:
     from assurance_product.status import finalize_achieved
 
