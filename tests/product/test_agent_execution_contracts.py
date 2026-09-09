@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -296,7 +297,7 @@ try {
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
-def test_opencode_boundary_reports_read_paths_the_agent_can_write_back_to(tmp_path: Path) -> None:
+def test_opencode_boundary_reports_paths_the_agent_can_write_back_to(tmp_path: Path) -> None:
     from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
 
     project = tmp_path / "project"
@@ -324,16 +325,21 @@ const { default: createPlugin } = await import(pathToFileURL(pluginPath).href);
 const hooks = await createPlugin({
   client: { session: { get: async () => ({ data: payload.session }) } },
 });
-const input = { tool: "read", sessionID: payload.session.id, callID: "call-test" };
-const before = { args: { filePath: payload.logical } };
-await hooks["tool.execute.before"](input, before);
-const after = {
-  title: before.args.filePath,
-  output: `<path>${before.args.filePath}</path>`,
-  metadata: { paths: [before.args.filePath] },
-};
-await hooks["tool.execute.after"](input, after);
-process.stdout.write(JSON.stringify({ opened: before.args.filePath, after }));
+const report = {};
+for (const tool of ["read", "write"]) {
+  const input = { tool, sessionID: payload.session.id, callID: "call-test" };
+  const before = { args: { filePath: payload.logical } };
+  await hooks["tool.execute.before"](input, before);
+  const touched = before.args.filePath;
+  const after = {
+    title: touched.slice(1),
+    output: `<path>${touched}</path>`,
+    metadata: { filepath: touched },
+  };
+  await hooks["tool.execute.after"](input, after);
+  report[tool] = { touched, after };
+}
+process.stdout.write(JSON.stringify(report));
 """
     completed = subprocess.run(
         [
@@ -361,12 +367,16 @@ process.stdout.write(JSON.stringify({ opened: before.args.filePath, after }));
     assert completed.returncode == 0, completed.stderr
     reported = json.loads(completed.stdout)
 
-    assert reported["opened"] == str(staged.resolve())
-    canonical = str((project.resolve() / logical))
-    assert reported["after"]["title"] == canonical
-    assert reported["after"]["output"] == f"<path>{canonical}</path>"
-    assert reported["after"]["metadata"]["paths"] == [canonical]
-    assert ".staging" not in json.dumps(reported["after"])
+    canonical = str(project.resolve() / logical)
+    staged_prefix = str(project.resolve() / write_root) + os.sep
+    for tool in ("read", "write"):
+        touched = reported[tool]["touched"]
+        after = reported[tool]["after"]
+        assert touched.startswith(staged_prefix), tool
+        assert after["title"] == canonical.lstrip(os.sep), tool
+        assert after["output"] == f"<path>{canonical}</path>", tool
+        assert after["metadata"]["filepath"] == canonical, tool
+        assert ".staging" not in json.dumps(after), tool
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")

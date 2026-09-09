@@ -530,12 +530,14 @@ const rewriteRead = (tool, args, binding, root) => {
   args[key] = path.resolve(root, logical);
 };
 
-const hideStagingMirror = (value, stagedPrefix, rootPrefix) => {
-  if (typeof value === "string") return value.split(stagedPrefix).join(rootPrefix);
-  if (Array.isArray(value)) return value.map((item) => hideStagingMirror(item, stagedPrefix, rootPrefix));
+// Dropping the write root collapses a staged path onto its logical path in both the
+// absolute and the project-relative form the tools report.
+const hideStagingMirror = (value, stagedSegment) => {
+  if (typeof value === "string") return value.split(stagedSegment).join("");
+  if (Array.isArray(value)) return value.map((item) => hideStagingMirror(item, stagedSegment));
   if (value !== null && typeof value === "object") {
     for (const key of Object.keys(value)) {
-      value[key] = hideStagingMirror(value[key], stagedPrefix, rootPrefix);
+      value[key] = hideStagingMirror(value[key], stagedSegment);
     }
   }
   return value;
@@ -551,12 +553,12 @@ export default async ({ client }) => ({
       },
     },
   },
-  // Reads are redirected into the staging mirror, and the read tools report the path they
-  // actually opened. Left visible, that path contradicts the one the agent wrote to and
-  // reads as its own mistake, so map it back to the logical path the agent asked for.
+  // Both sides of the boundary are redirected into the staging mirror, and the tools report
+  // the path they actually touched. Left visible, that path contradicts the one the agent
+  // asked for and reads as its own mistake, so map it back to the logical path.
   "tool.execute.after": async (input, output) => {
     const tool = input.tool.toLowerCase();
-    if (!READ_TOOLS.has(tool)) return;
+    if (!READ_TOOLS.has(tool) && !WRITE_TOOLS.has(tool)) return;
     if (typeof client?.session?.get !== "function") {
       throw new Error("Assurance path boundary: session lookup unavailable");
     }
@@ -567,11 +569,9 @@ export default async ({ client }) => ({
     }
     const root = canonicalize(session.directory, session.directory);
     const binding = parseBinding(session, root);
-    const stagedPrefix = `${stagedPhysical(root, binding.write_root, ".")}${path.sep}`;
-    const rootPrefix = `${root}${path.sep}`;
-    if (stagedPrefix === rootPrefix) return;
+    const stagedSegment = `${binding.write_root}/`;
     for (const key of ["title", "output", "metadata"]) {
-      if (key in output) output[key] = hideStagingMirror(output[key], stagedPrefix, rootPrefix);
+      if (key in output) output[key] = hideStagingMirror(output[key], stagedSegment);
     }
   },
   "tool.execute.before": async (input, output) => {
