@@ -55,7 +55,7 @@ from assurance_execution.operations.managed_sut import (
 )
 from assurance_execution.operations.verified_process import (
     ActionControl,
-    DockerVerificationHost,
+    SubprocessVerificationHost,
     ProcessLimits,
     VerifiedProcessReceiptV1,
 )
@@ -589,16 +589,7 @@ class VerifiedExecutionHandler:
     def _process_host(self, request: TaskRequest) -> VerifiedProcessHost:
         if self._host is not None:
             return self._host
-        binding = request.binding_data
-        config = binding.get("verification_runner") if isinstance(binding, Mapping) else None
-        if not isinstance(config, Mapping) or set(config) != {"source_root", "qualification_path"}:
-            raise ValueError("NOT_READY: qualified OCI runner configuration is required")
-        if not all(isinstance(item, str) for item in config.values()):
-            raise ValueError("NOT_READY: runner paths must be strings")
-        return DockerVerificationHost(
-            source_root=Path(str(config["source_root"])),
-            qualification_path=Path(str(config["qualification_path"])),
-        )
+        return SubprocessVerificationHost()
 
     def _execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         payload, manifest, plan, journal = _authenticate(request, context)

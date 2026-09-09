@@ -1,13 +1,14 @@
-"""Mandatory real OCI qualification; missing Docker/record is a failure, never skipped.
+"""Optional real OCI qualification; explicitly enabled runs require Docker and a real record.
 
 Prepare explicitly: uv run python scripts/build_verification_runner.py
-Then: uv run pytest packages/capabilities/assurance-execution/tests/test_verified_runner_qualification.py -q
+Then: AA_RUN_OCI_QUALIFICATION=1 uv run pytest packages/capabilities/assurance-execution/tests/test_verified_runner_qualification.py -q
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ from assurance_execution.contracts.verification import VerifiedExecutionResultV1
 from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
 from assurance_execution.operations.verified_process import DockerVerificationHost
 from test_verified_execution import handler_case, managed_sut  # pyright: ignore[reportMissingImports] # noqa: F401
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("AA_RUN_OCI_QUALIFICATION") != "1",
+    reason="optional OCI experiment not enabled (AA_RUN_OCI_QUALIFICATION=1)",
+)
 
 REPO = Path(__file__).resolve().parents[4]
 

@@ -64,6 +64,7 @@ def profiled_composition(request, installed_sources, tmp_path):
 
     document = yaml.safe_load(Path("tests/product/fixtures/deployment/opencode.yaml").read_text())
     document["validation_profile"] = request.param
+    document["verification_host"] = {"sut_source_root": "/installed/sut-source"}
     manifest = tmp_path / "deployment.yaml"
     manifest.write_text(yaml.safe_dump(document))
     wheel = build_deployment_wheel(manifest, tmp_path / "wheel")
@@ -96,6 +97,7 @@ def test_profiles_boot_same_facade_schema_and_change_lock_revision(
 
     config, digest = verification_configuration(profiled_composition)
     assert config.validation_profile in {"api_db.v1", "api_db_trace.v1"}
+    assert config.host.sut_source_root == "/installed/sut-source"
     assert len(digest) == 64
     assert profiled_composition.lock.digest != opencode_composition.lock.digest
     assert (
@@ -216,17 +218,12 @@ def test_authenticated_host_prerequisites_are_profile_specific(tmp_path, monkeyp
     authorization = InvocationRuntimeAuthorization(
         schema_version="1", secret_sources=sources, digest=runtime_authorization_digest(sources)
     )
-    qualification = tmp_path / "qualification.json"
-    qualification.write_bytes(b"test-only-qualified-host-fixture")
+
     config = VerificationConfiguration.model_validate(
         {
             "validation_profile": profile,
             "host": {
-                "runner": {
-                    "source_root": str(tmp_path),
-                    "qualification_path": str(tmp_path / "qualification.json"),
-                    "qualification_digest": hashlib.sha256(qualification.read_bytes()).hexdigest(),
-                },
+                "sut_source_root": str(tmp_path),
                 "managed_sut_authority_handle": "sut.authority",
                 "credential_handle": "sut.credential",
             },
@@ -234,8 +231,9 @@ def test_authenticated_host_prerequisites_are_profile_specific(tmp_path, monkeyp
     )
     with pytest.raises(ValueError, match="NOT_READY"):
         preflight_verification(config, authorization)
-    # Unit fixture supplies the independently authenticated runner capability, never an image ID.
-    monkeypatch.setattr(DockerVerificationHost, "preflight", lambda self: {"test_qualified_host": True})
+    monkeypatch.setattr(
+        DockerVerificationHost, "preflight", lambda self: pytest.fail("unexpected OCI dependency")
+    )
     if profile == "api_db_trace.v1":
         with pytest.raises(ValueError, match="NOT_READY"):
             preflight_verification(config, authorization)
@@ -328,11 +326,23 @@ def test_legacy_facade_preserves_finalize_phase_write_claims(opencode_compositio
         store.close()
 
 
-def test_runner_qualification_digest_is_frozen():
-    from assurance_product.models import VerificationRunnerConfigV1
+def test_sut_source_root_is_independent_and_runner_configuration_is_rejected():
+    from assurance_product.models import VerificationHostConfigV1
 
-    assert "qualification_digest" in VerificationRunnerConfigV1.model_fields
-    assert VerificationRunnerConfigV1.model_fields["qualification_digest"].is_required()
+    assert "sut_source_root" in VerificationHostConfigV1.model_fields
+    host = VerificationHostConfigV1(sut_source_root="/installed/sut-source")
+    assert host.sut_source_root == "/installed/sut-source"
+    for field in ("runner", "qualification_path", "qualification_digest"):
+        assert field not in VerificationHostConfigV1.model_fields
+        with pytest.raises(ValueError):
+            VerificationHostConfigV1.model_validate({field: "obsolete"})
+    import json
+    from importlib.resources import files
+
+    schema = json.loads(
+        files("assurance_product").joinpath("resources/declarations/deployment.schema.json").read_text()
+    )
+    assert schema["properties"]["verification_host"] == VerificationHostConfigV1.model_json_schema()
 
 
 def test_legacy_facade_rejects_verified_root_plan(opencode_composition, tmp_path, monkeypatch):

@@ -324,17 +324,12 @@ def test_dynamic_host_readiness_with_real_sut_and_authenticated_host_receipts(
 
     host, secrets, selection, _ = live_sut
     collector, _ = collector_receipt
-    qualification = tmp_path / "runner-qualification.json"
-    qualification.write_text("test-only qualification injection; no Docker image qualification claimed")
+
     config = VerificationConfiguration.model_validate(
         {
             "validation_profile": "api_db.v1",
             "host": {
-                "runner": {
-                    "source_root": str(host.source_root),
-                    "qualification_path": str(qualification),
-                    "qualification_digest": digest(qualification),
-                },
+                "sut_source_root": str(host.source_root),
                 "managed_sut_readiness_handle": "sut.selection",
                 "managed_sut_authority_handle": "sut.authority",
                 "credential_handle": "sut.credential",
@@ -431,11 +426,7 @@ def test_public_readiness_errors_never_disclose_secret_documents(live_sut, monke
         {
             "validation_profile": "api_db_trace.v1",
             "host": {
-                "runner": {
-                    "source_root": str(host.source_root),
-                    "qualification_path": "/missing",
-                    "qualification_digest": "c" * 64,
-                },
+                "sut_source_root": str(host.source_root),
                 "managed_sut_readiness_handle": "sut.selection",
                 "managed_sut_authority_handle": "sut.authority",
                 "collector_readiness_handle": "sut.collector",
@@ -534,17 +525,12 @@ def test_root_static_db_preflight_needs_no_instance_or_readiness_selection(tmp_p
     selected = load("user_oracle_harness").materialize_project(project_dir=project)
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
-    qualification = tmp_path / "qualification.json"
-    qualification.write_text("test runner preflight injection")
+
     config = VerificationConfiguration.model_validate(
         {
             "validation_profile": "api_db.v1",
             "host": {
-                "runner": {
-                    "source_root": str(Path(__file__).resolve().parents[2]),
-                    "qualification_path": str(qualification),
-                    "qualification_digest": digest(qualification),
-                },
+                "sut_source_root": str(Path(__file__).resolve().parents[2]),
                 "managed_sut_authority_handle": "sut.authority",
                 "credential_handle": "sut.credential",
             },
@@ -581,7 +567,9 @@ def test_root_static_db_preflight_needs_no_instance_or_readiness_selection(tmp_p
     auth = InvocationRuntimeAuthorization(
         schema_version="1", secret_sources=sources, digest=runtime_authorization_digest(sources)
     )
-    monkeypatch.setattr(DockerVerificationHost, "preflight", lambda self: {"test_qualified_host": True})
+    monkeypatch.setattr(
+        DockerVerificationHost, "preflight", lambda self: pytest.fail("unexpected OCI dependency")
+    )
     preflight_verification(config, auth, "c" * 64, workspace_root=project)
     assert not (project / ".aa/managed-user").exists()
     assert list(private.iterdir()) == []

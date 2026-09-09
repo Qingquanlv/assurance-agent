@@ -37,7 +37,6 @@ from assurance_execution.operations.user_attempt import authenticate_user_invoca
 from assurance_execution.operations.host_secrets import HostSecretDocumentError
 from assurance_execution.operations.agent_skills import authenticate_generation_result
 from assurance_execution.operations.common import InputError
-from assurance_execution.operations.verified_process import DockerVerificationHost
 from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
 from assurance_generation.contracts.workflow import VerifiedGenerationDefectV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
@@ -105,8 +104,12 @@ def _preflight_verification(
     from assurance_product.runtime_ports import AuthorizedSecretResolver
 
     host = config.host
-    if host.runner is None or host.managed_sut_authority_handle is None or host.credential_handle is None:
-        raise ValueError("NOT_READY: managed SUT and qualified verification runner are required")
+    if (
+        host.sut_source_root is None
+        or host.managed_sut_authority_handle is None
+        or host.credential_handle is None
+    ):
+        raise ValueError("NOT_READY: managed SUT source and required host handles are required")
     if config_digest is None or workspace_root is None:
         raise ValueError("NOT_READY: frozen configuration and workspace are required")
     handles = (host.managed_sut_authority_handle, host.credential_handle, *SUT_SECRET_HANDLES)
@@ -120,7 +123,7 @@ def _preflight_verification(
         resolver,
         host.managed_sut_authority_handle,
         workspace_root=workspace_root,
-        source_root=Path(host.runner.source_root),
+        source_root=Path(host.sut_source_root),
     )
     for handle in (host.credential_handle, *SUT_SECRET_HANDLES):
         if not resolver.resolve(handle):
@@ -128,14 +131,6 @@ def _preflight_verification(
     if config.validation_profile == "api_db_trace.v1":
         assert host.collector_readiness_handle is not None
         authenticate_collector_artifacts(resolver, host.collector_readiness_handle, config_digest)
-    if (
-        hashlib.sha256(Path(host.runner.qualification_path).read_bytes()).hexdigest()
-        != host.runner.qualification_digest
-    ):
-        raise ValueError("runner qualification digest drifted")
-    DockerVerificationHost(
-        source_root=Path(host.runner.source_root), qualification_path=Path(host.runner.qualification_path)
-    ).preflight()
 
 
 class ProfiledExecutionExecutor:
@@ -221,7 +216,6 @@ class ProfiledExecutionExecutor:
 
         if self._host is None or scope.execution.authorization_id is None:
             raise ValueError("verified execution requires an authorized production host")
-        runner = self.config.host.runner
         request = _task_request(
             capability_id=HANDLER_ID,
             payload=value.model_dump(mode="json"),
@@ -229,8 +223,8 @@ class ProfiledExecutionExecutor:
             task_id=scope.execution.attempt_key.digest,
             lock_digest=self._lock_digest,
             binding_data={
-                "verification_runner": None if runner is None else runner.model_dump(mode="json"),
                 "user_host": {
+                    "sut_source_root": self.config.host.sut_source_root,
                     "authority_handle": self.config.host.managed_sut_authority_handle,
                     "credential_handle": self.config.host.credential_handle,
                     "configuration_digest": self.config_digest,

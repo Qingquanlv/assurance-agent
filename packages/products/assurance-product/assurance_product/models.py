@@ -191,14 +191,8 @@ class OpenCodeBindingV1(FrozenModel):
         return value
 
 
-class VerificationRunnerConfigV1(FrozenModel):
-    qualification_digest: str = Field(pattern=_SHA256)
-    source_root: str = Field(min_length=1)
-    qualification_path: str = Field(min_length=1)
-
-
 class VerificationHostConfigV1(FrozenModel):
-    runner: VerificationRunnerConfigV1 | None = None
+    sut_source_root: str | None = Field(default=None, min_length=1)
     managed_sut_readiness_handle: str | None = None
     managed_sut_authority_handle: str | None = None
     credential_handle: str | None = None

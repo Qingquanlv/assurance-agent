@@ -32,7 +32,10 @@ from assurance_execution.operations.verified_execution import (
     VerifiedExecutionHandler,
     VerifiedExecutionInputV1,
 )
-from assurance_execution.operations.verified_process import DockerVerificationHost, VerifiedProcessReceiptV1
+from assurance_execution.operations.verified_process import (
+    SubprocessVerificationHost,
+    VerifiedProcessReceiptV1,
+)
 
 
 def execution_handlers(
@@ -59,7 +62,7 @@ def execution_handlers(
 
 __all__ = [
     "ConfinedExecutionProcessHost",
-    "DockerVerificationHost",
+    "SubprocessVerificationHost",
     "VerifiedExecutionHandler",
     "VerifiedExecutionInputV1",
     "VerifiedProcessReceiptV1",

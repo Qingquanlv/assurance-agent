@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import asyncio
 from dataclasses import replace
 from graph_engine.attempts import AttemptKey
@@ -44,18 +43,10 @@ class VerifiedAttemptHandler:
         self, request: TaskRequest, context: TaskContext, *, recovering: bool = False
     ) -> TaskRequest:
         binding = request.binding_data
-        runner = binding.get("verification_runner") if isinstance(binding, Mapping) else None
-        if not isinstance(runner, Mapping) or set(runner) != {
-            "source_root",
-            "qualification_path",
-            "qualification_digest",
-        }:
-            raise ValueError("NOT_READY: frozen runner qualification is required")
-        if not recovering and (
-            hashlib.sha256(Path(str(runner["qualification_path"])).read_bytes()).hexdigest()
-            != runner["qualification_digest"]
-        ):
-            raise ValueError("NOT_READY: runner qualification digest drifted")
+        host = binding.get("user_host") if isinstance(binding, Mapping) else None
+        source = host.get("sut_source_root") if isinstance(host, Mapping) else None
+        if not isinstance(source, str) or not source:
+            raise ValueError("NOT_READY: SUT source root is required")
         root = ExecutionPrepareInputV1.model_validate(request.input)
         if root.verification is None or root.validation_profile != root.verification.validation_profile:
             raise ValueError("NOT_READY: verified attempt requires the frozen verification profile")
@@ -65,9 +56,7 @@ class VerifiedAttemptHandler:
         selected = (
             authenticate_host_selection(readiness, secret_port=context.secrets)
             if recovering
-            else authenticate_host_readiness(
-                readiness, source_root=Path(str(runner["source_root"])), secret_port=context.secrets
-            )
+            else authenticate_host_readiness(readiness, source_root=Path(source), secret_port=context.secrets)
         )
         if (
             selected.workspace_root != str(context.project_root.resolve())
@@ -102,9 +91,7 @@ class VerifiedAttemptHandler:
         return request.model_copy(
             update={
                 "input": payload.model_dump(mode="json"),
-                "binding_data": {
-                    "verification_runner": {key: runner[key] for key in ("source_root", "qualification_path")}
-                },
+                "binding_data": {},
             }
         )
 
@@ -119,9 +106,9 @@ class VerifiedAttemptHandler:
     ) -> tuple[TaskRequest, TaskContext, UserAttempt | None]:
         binding = request.binding_data
         host = binding.get("user_host") if isinstance(binding, Mapping) else None
-        if not isinstance(host, Mapping):
-            return self._request(request, context, recovering=recovering), context, None
         root = ExecutionPrepareInputV1.model_validate(request.input)
+        if not isinstance(host, Mapping) or set(host) == {"sut_source_root"}:
+            return self._request(request, context, recovering=recovering), context, None
         if root.verification is not None or root.validation_profile not in {"api_db.v1", "api_db_trace.v1"}:
             raise ValueError("NOT_READY: dynamic verification must be owned by the execution host")
         if (
@@ -132,20 +119,13 @@ class VerifiedAttemptHandler:
         ):
             raise ValueError("NOT_READY: authorized execution host context is required")
         assert isinstance(binding, Mapping)
-        runner = binding.get("verification_runner")
-        if not isinstance(runner, Mapping):
-            raise ValueError("NOT_READY: frozen runner qualification is required")
-        source = Path(str(runner["source_root"]))
+        source_value = host.get("sut_source_root")
+        if not isinstance(source_value, str) or not source_value:
+            raise ValueError("NOT_READY: SUT source root is required")
+        source = Path(source_value)
         authority_handle, credential_handle = host.get("authority_handle"), host.get("credential_handle")
         if not isinstance(authority_handle, str) or not isinstance(credential_handle, str):
             raise ValueError("NOT_READY: required host handles are missing")
-        if (
-            not recovering
-            and not cancelling
-            and hashlib.sha256(Path(str(runner["qualification_path"])).read_bytes()).hexdigest()
-            != runner["qualification_digest"]
-        ):
-            raise ValueError("NOT_READY: runner qualification digest drifted")
         key = AttemptKey(digest=context.workspace_identity.task_id)
         owned = recover_user_attempt(
             root,
@@ -241,11 +221,7 @@ class VerifiedAttemptHandler:
                 request.model_copy(
                     update={
                         "input": owned.record.prepared_input,
-                        "binding_data": {
-                            "verification_runner": {
-                                key: runner[key] for key in ("source_root", "qualification_path")
-                            }
-                        },
+                        "binding_data": {},
                     }
                 ),
                 private_context,

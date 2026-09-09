@@ -253,16 +253,16 @@ async def _run_host(tmp_path: Path, monkeypatch, cut):
 
 
 class OwnedAttemptProbe:
-    """Real installed lifecycle and HTTP/SQLite, with test-only pipe transport."""
+    """Real installed lifecycle, default subprocess bridge and HTTP/SQLite."""
 
     def __init__(self):
         from assurance_execution.operations.verified_attempt import VerifiedAttemptHandler
-        from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
 
         self.handler = VerifiedAttemptHandler()
-        self.handler._delegate = VerifiedExecutionHandler(process_host=PipeHost())
 
     async def execute(self, request, context):
+        assert "verification_runner" not in request.binding_data
+        assert request.binding_data["user_host"]["sut_source_root"]
         marker = context.project_root / ".test-crash-cut"
         cut = marker.read_text() if marker.exists() else None
         if cut in {"manifest_before_publish", "manifest_after_publish"}:
@@ -316,7 +316,6 @@ class OwnedAttemptProbe:
             if cut == "cancel_prepared":
                 _, _, owned = self.handler._owned_request(request, context)
                 assert owned is not None
-                Path(request.binding_data["verification_runner"]["qualification_path"]).unlink()
             cancelled = await self.handler.cancel(request, context, context.activity.snapshot)
             assert cancelled.status == "acknowledged"
             if cut == "cancel_before_start":
@@ -418,7 +417,7 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
         VerificationConfiguration,
         HANDLER_ID,
     )
-    from assurance_product.models import VerificationHostConfigV1, VerificationRunnerConfigV1
+    from assurance_product.models import VerificationHostConfigV1
     from graph_engine.attempts import AttemptExecutionContext, AttemptKey, AuthorizedAttemptScope
     from graph_engine.attempts.activity import journal_backed_activity_factory
     from graph_engine.attempts.events import (
@@ -440,7 +439,6 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
 
     project = tmp_path / "project"
     import json
-    import hashlib
     from tests.product.test_user_oracle_full_workflow import load
 
     selected = load("user_oracle_harness").materialize_project(project_dir=project)
@@ -449,19 +447,14 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
     ).model_copy(update={"verification": None})
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
-    qualification = tmp_path / "qualification.json"
-    qualification.write_text("test-only pipe transport, no OCI qualification claim")
+
     config = VerificationConfiguration(
         validation_profile="api_db.v1",
         host=VerificationHostConfigV1(
             managed_sut_authority_handle="sut.authority",
             managed_sut_readiness_handle="unused.dynamic.selection",
             credential_handle="sut.credential",
-            runner=VerificationRunnerConfigV1(
-                source_root=str(Path(__file__).resolve().parents[2]),
-                qualification_path=str(qualification),
-                qualification_digest=hashlib.sha256(qualification.read_bytes()).hexdigest(),
-            ),
+            sut_source_root=str(Path(__file__).resolve().parents[2]),
         ),
     )
     key = AttemptKey(digest="a" * 64)
@@ -633,7 +626,6 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
             staged = store.seal(workspace.identity)
             if cut == "promoted":
                 store.promote(workspace.identity, staged)
-        qualification.unlink()
         replay = await executor.reconcile(value, scope, await journal.load(key))
         assert replay.output == result.output
         assert len(list(private.glob("*.json"))) == 1

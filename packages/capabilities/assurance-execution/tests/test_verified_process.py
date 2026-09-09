@@ -403,3 +403,125 @@ def test_zero_collection_report_cannot_complete_even_after_action(tmp_path):
     )
     assert calls == ["case"]
     assert receipt.reason == "zero_collection"
+
+
+def test_bridge_and_pytest_do_not_inherit_parent_authority(tmp_path, monkeypatch):
+    import os
+    import subprocess
+
+    sensitive = {
+        "AA_API_TOKEN": "api-token-canary",
+        "AA_DB_PATH": "/private/db-canary.sqlite3",
+        "AA_MANAGED_AUTHORITY": "authority-secret-canary",
+        "AA_SECRET_HANDLES": "secret-handles-canary",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "http://collector-canary:4318",
+        "AA_EVIDENCE_PATH": "/private/evidence-canary",
+        "PYTHONPATH": "/private/python-path-canary",
+    }
+    for key, value in sensitive.items():
+        monkeypatch.setenv(key, value)
+    launched = []
+    original = subprocess.Popen
+
+    def capture(*args, **kwargs):
+        launched.append(kwargs.get("env"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", capture)
+    receipt, calls = child(
+        tmp_path,
+        """from assurance_execution.bridge import execute_case
+import os
+def test_case():
+    assert not set(%r).intersection(os.environ)
+    execute_case("TC_USER_CREATE_001")
+"""
+        % list(sensitive),
+    )
+    assert launched[0] is not None, "bridge must receive an explicit minimal environment"
+    assert not set(sensitive).intersection(launched[0])
+    assert calls == ["TC_USER_CREATE_001"]
+    assert receipt.reason is None and receipt.exit_code == 0
+    assert all(os.environ[key] == value for key, value in sensitive.items())
+
+
+def test_parent_process_loss_closes_bridge_and_reaps_pytest(tmp_path):
+    import os
+    import subprocess
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    pid_path = tmp_path / "pytest.pid"
+    (tests / "test_case.py").write_text(
+        "import os,time\nfrom pathlib import Path\ndef test_case():\n"
+        '    Path("pytest.pid").write_text(str(os.getpid()))\n'
+        "    time.sleep(60)\n"
+    )
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; "
+            "from assurance_execution.operations.verified_process import SubprocessVerificationHost; "
+            "SubprocessVerificationHost().run(view=Path.cwd(), nodeid='tests/test_case.py::test_case', "
+            "case_id='case', container_name='unused', execute=lambda *args: None, "
+            "cancel_requested=lambda: False)",
+        ],
+        cwd=tmp_path,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not pid_path.exists() and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pid_path.exists()
+        worker_pid = int(pid_path.read_text())
+        owner.kill()
+        owner.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(worker_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("pytest survived the loss of its parent host protocol")
+    finally:
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(timeout=5)
+        assert owner.stderr is not None
+        owner.stderr.close()
+
+
+def test_explicit_oci_client_keeps_only_its_connection_environment(tmp_path, monkeypatch):
+    from assurance_execution.operations.verified_process import DockerVerificationHost
+
+    # A real process stands in for the external CLI; this does not qualify OCI.
+    client = tmp_path / "docker"
+    client.write_text(
+        f"#!{sys.executable}\nimport json,os,sys\n"
+        "sys.stdin.readline()\nsys.stderr.write(json.dumps(dict(os.environ)))\n"
+    )
+    client.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "client-home"))
+    monkeypatch.setenv("DOCKER_CONTEXT", "test-only-colima-context")
+    monkeypatch.setenv("AA_API_TOKEN", "must-not-reach-the-cli")
+    host = DockerVerificationHost(source_root=tmp_path, qualification_path=tmp_path / "unused")
+    host._image = "sha256:" + "a" * 64
+    monkeypatch.setattr(host, "preflight", lambda: {})
+    receipt = host.run(
+        view=tmp_path,
+        nodeid="tests/test_case.py::test_case",
+        case_id="case",
+        container_name="aa-verify-12345678-1234-4123-8123-123456789abc",
+        execute=lambda *args: None,
+        cancel_requested=lambda: False,
+    )
+    environment = json.loads(receipt.stderr)
+    assert environment["HOME"] == str(tmp_path / "client-home")
+    assert environment["DOCKER_CONTEXT"] == "test-only-colima-context"
+    assert "AA_API_TOKEN" not in environment

@@ -14,6 +14,75 @@
     "secret_handles"
   ],
   "properties": {
+    "validation_profile": { "enum": ["api_db.v1", "api_db_trace.v1", null] },
+    "verification_host": {
+      "additionalProperties": false,
+      "properties": {
+        "sut_source_root": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sut Source Root"
+        },
+        "managed_sut_readiness_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Managed Sut Readiness Handle"
+        },
+        "managed_sut_authority_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Managed Sut Authority Handle"
+        },
+        "credential_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Credential Handle"
+        },
+        "collector_readiness_handle": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collector Readiness Handle"
+        }
+      },
+      "title": "VerificationHostConfigV1",
+      "type": "object"
+    },
     "schema_version": { "const": "1" },
     "runtime_plugin_id": {
       "type": "string",

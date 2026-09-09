@@ -667,8 +667,6 @@ def test_task_facade_and_verified_attempt_reject_generation_drift_before_side_ef
         )
     assert calls == []
 
-    qualification = tmp_path / "qualification.json"
-    qualification.write_bytes(b"qualified fixture")
     identity_raw = {
         "task_id": "d" * 64,
         "attempt": 1,
@@ -693,11 +691,7 @@ def test_task_facade_and_verified_attempt_reject_generation_drift_before_side_ef
         attempt=1,
         input=damaged.model_dump(mode="json"),
         binding_data={
-            "verification_runner": {
-                "source_root": str(REPO),
-                "qualification_path": str(qualification),
-                "qualification_digest": hashlib.sha256(qualification.read_bytes()).hexdigest(),
-            },
+            "user_host": {"sut_source_root": str(REPO)},
             "readiness": {
                 "selection_handle": "sut.selection",
                 "authority_handle": "sut.authority",
@@ -1660,18 +1654,6 @@ def test_http_total_deadline_bounds_a_continuously_streaming_peer(tmp_path, mana
     assert calls == ["/api/v1/user/create"]
 
 
-def test_production_handler_without_qualified_runner_is_not_ready(managed_sut):
-    from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
-
-    request, context, manifest, _ = handler_case(managed_sut, "not_ready")
-    outcome = asyncio.run(VerifiedExecutionHandler().execute(request, context))
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert outcome.failure.retryable is False
-    assert "NOT_READY" in outcome.failure.message
-    assert not (context.write_root / manifest.evidence_root / "action_started.json").exists()
-
-
 @pytest.mark.parametrize("degradation", ["expired", "stopped"])
 @pytest.mark.parametrize("method", ["reconcile", "cancel"])
 def test_actual_semantic_handler_recovers_without_live_collector(
@@ -1766,17 +1748,12 @@ def test_actual_semantic_handler_recovers_without_live_collector(
             verification_config_digest="c" * 64,
             verification=profile,
         )
-        qualification = tmp_path / "qualification.json"
-        qualification.write_text("test-only real pipe qualification")
+
         request = base.model_copy(
             update={
                 "input": root.model_dump(mode="json"),
                 "binding_data": {
-                    "verification_runner": {
-                        "source_root": str(REPO),
-                        "qualification_path": str(qualification),
-                        "qualification_digest": hashlib.sha256(qualification.read_bytes()).hexdigest(),
-                    },
+                    "user_host": {"sut_source_root": str(REPO)},
                     "readiness": {
                         "selection_handle": "sut.selection",
                         "authority_handle": "sut-authority",
@@ -1846,7 +1823,6 @@ def test_actual_semantic_handler_recovers_without_live_collector(
         else:
             process.terminate()
             process.wait(timeout=5)
-        qualification.unlink()
         assert context.activity is not None
         forged = context.activity.snapshot.model_copy(update={"state": "prepared"})
         rejected = asyncio.run(getattr(handler, method)(request, context, forged))
@@ -1878,3 +1854,24 @@ def test_actual_semantic_handler_recovers_without_live_collector(
         assert len(posts) == 1
     finally:
         listener.close()
+
+
+def test_default_verified_host_executes_real_bridge_without_oci(managed_sut, monkeypatch):
+    from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
+    from assurance_execution.operations.verified_process import DockerVerificationHost
+    import sys
+
+    def unavailable(self):
+        pytest.fail("business execution must not call Docker qualification")
+
+    monkeypatch.setattr(DockerVerificationHost, "preflight", unavailable)
+    monkeypatch.setenv("PATH", "/docker-and-colima-unavailable")
+    request, context, _, _ = handler_case(managed_sut, "subprocess-default")
+    request = request.model_copy(update={"binding_data": {}})
+    outcome = asyncio.run(VerifiedExecutionHandler().execute(request, context))
+    assert outcome.status == "succeeded"
+    result = VerifiedExecutionResultV1.model_validate(outcome.output)
+    assert result.evidence.state == "collected"
+    receipt_path = context.write_root / result.evidence.receipt_ref.path
+    receipt = json.loads(receipt_path.read_bytes())
+    assert receipt["payload"]["command"] == [sys.executable, "-m", "assurance_execution.bridge_runner"]

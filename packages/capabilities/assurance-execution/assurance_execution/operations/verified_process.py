@@ -1,11 +1,13 @@
-"""Bounded pipe transport and fixed OCI confinement for verified pytest."""
+"""Bounded fixed subprocess transport; OCI confinement is an optional experiment."""
 
 from __future__ import annotations
 
 import json
 import os
 import selectors
+import shutil
 import subprocess
+import sys
 import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -133,6 +135,7 @@ def run_bridge_process(
     limits: ProcessLimits = ProcessLimits(),
     cancel_requested: Callable[[], bool] = lambda: False,
     cleanup: Callable[[], bool] | None = None,
+    client_environment: dict[str, str] | None = None,
 ) -> VerifiedProcessReceiptV1:
     """Supervise pipes and the installed, bounded host action under one deadline."""
     reason: str | None = None
@@ -151,6 +154,13 @@ def run_bridge_process(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         shell=False,
+        env={
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "LC_ALL": "C.UTF-8",
+            **(client_environment or {}),
+        },
         start_new_session=True,
     )
     assert process.stdin is not None and process.stdout is not None and process.stderr is not None
@@ -285,6 +295,48 @@ def run_bridge_process(
     )
 
 
+class SubprocessVerificationHost:
+    """Installed local bridge, not a sandbox against malicious same-UID code.
+
+    The supervisor exits on host pipe EOF; run_bridge_process joins the local
+    worker and reaps its supervisor before returning a terminal receipt.
+    """
+
+    def __init__(self, *, limits: ProcessLimits = ProcessLimits()) -> None:
+        self.limits = limits
+
+    def preflight(self) -> dict[str, Any]:
+        return {
+            "command": [sys.executable, "-m", "assurance_execution.bridge_runner"],
+            "limits": self.limits.model_dump(mode="json"),
+        }
+
+    def run(
+        self,
+        *,
+        view: Path,
+        nodeid: str,
+        case_id: str,
+        container_name: str,
+        execute: Callable[[str, ActionControl], None],
+        cancel_requested: Callable[[], bool],
+    ) -> VerifiedProcessReceiptV1:
+        return run_bridge_process(
+            [sys.executable, "-m", "assurance_execution.bridge_runner"],
+            cwd=view.resolve(strict=True),
+            nodeid=nodeid,
+            case_id=case_id,
+            execute=execute,
+            limits=self.limits,
+            cancel_requested=cancel_requested,
+        )
+
+    def stop(self, container_name: str) -> bool:
+        # No external container exists. The owned pipe supervisor is bounded and
+        # stops on EOF; its transport always joins/reaps before terminal return.
+        return True
+
+
 def runner_source_inputs(root: Path) -> dict[str, str]:
     """Bytes that invalidate a qualification, including every shipped wheel source."""
     import hashlib
@@ -412,8 +464,12 @@ class DockerVerificationHost:
 
         if re.fullmatch(r"aa-verify-[0-9a-f-]{36}", container_name) is None:
             raise ValueError("invalid owned container name")
+        argv = container_argv(self._image, str(resolved), container_name)
+        # The Docker client may live outside os.defpath (e.g. Docker Desktop).
+        # Resolve it before launching with the same minimal transport environment.
+        argv[0] = shutil.which("docker") or "docker"
         return run_bridge_process(
-            container_argv(self._image, str(resolved), container_name),
+            argv,
             cwd=resolved,
             nodeid=nodeid,
             case_id=case_id,
@@ -421,6 +477,20 @@ class DockerVerificationHost:
             limits=self.limits,
             cancel_requested=cancel_requested,
             cleanup=lambda: self.stop(container_name),
+            # These configure only the opt-in Docker CLI; docker run has no -e
+            # flags, so they are not forwarded to its bridge/pytest container.
+            client_environment={
+                key: os.environ[key]
+                for key in (
+                    "HOME",
+                    "DOCKER_CONFIG",
+                    "DOCKER_CONTEXT",
+                    "DOCKER_HOST",
+                    "DOCKER_TLS_VERIFY",
+                    "DOCKER_CERT_PATH",
+                )
+                if key in os.environ
+            },
         )
 
     def stop(self, container_name: str) -> bool:
