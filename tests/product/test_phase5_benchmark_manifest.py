@@ -137,7 +137,7 @@ def test_opencode_benchmark_keeps_dept_api_only_and_adds_user_db_full(phase5_man
     assert dept.case_modules == ("system/dept",)
 
     user = phase5_manifest.item("opencode-user-api-db")
-    assert user.sut_item_id == "USER-create-oracle"
+    assert user.sut_item_id == "RET-user-management"
     assert user.product == "assurance-opencode"
     assert user.entrypoint == "full"
     assert user.selected_test_families == ("api",)

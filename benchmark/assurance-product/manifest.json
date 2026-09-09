@@ -1250,7 +1250,7 @@
       "selected_test_families": [
         "api"
       ],
-      "sut_item_id": "USER-create-oracle",
+      "sut_item_id": "RET-user-management",
       "sut_root": "benchmark/vue-fastapi-admin",
       "validation_profile": "api_db.v1"
     }

@@ -364,6 +364,10 @@ def test_verified_manifest_item_is_api_only_and_product_input_uses_candidates():
     assert item["case_modules"] == ["system/user"]
     assert item["selected_test_families"] == ["api"]
     assert item["validation_profile"] == "api_db.v1"
+    assert item["sut_item_id"] == "RET-user-management"
+    requirement = (REPO / item["requirement_path"]).read_text(encoding="utf-8")
+    assert "RET-user-management" in requirement
+    assert "仅覆盖" in requirement
     assert (
         '"candidate_test_families": list(arguments["selected_test_families"])' in runner._WRITE_PRODUCT_INPUT
     )
@@ -490,6 +494,58 @@ def test_fault_outcome_accepts_only_expected_non_delivery(fault, verdict):
     runner = load("run_item")
     assert runner._fault_outcome_errors(fault=fault, verdict=verdict, achieved=False, published=False) == []
     assert runner._fault_outcome_errors(fault=fault, verdict="PASSED", achieved=True, published=True)
+
+
+def test_missing_binding_fault_requires_its_generation_admission_boundary():
+    runner = load("run_item")
+    change_id = "CH-USER-MISSING-BINDING"
+    prefix = ("intake.intake", "intake.explore", "intake.case-design", "intake.case-review")
+    graphs = [
+        {"graph_instance_id": f"g-{step}", "graph_id": step} for step in (*prefix, "generation.api.plan")
+    ]
+    nodes = [
+        {
+            "graph_instance_id": f"g-{step}",
+            "node_id": f"{step}/finalize",
+            "state": "succeeded",
+        }
+        for step in prefix
+    ]
+    nodes.append(
+        {
+            "graph_instance_id": "g-generation.api.plan",
+            "node_id": "generation.api.plan/finalize",
+            "state": "failed",
+        }
+    )
+    status = {
+        "invocation_id": change_id,
+        "status": "failed",
+        "terminal_reason": "generation_binding_missing",
+        "selected_test_families": ["api"],
+        "change": {"change_id": change_id, "state": "failed"},
+        "graph_hierarchy": graphs,
+        "node_states": nodes,
+        "execution_gate": None,
+        "quality_gate": None,
+        "publication": {"status": "not_ready"},
+    }
+    item = runner._manifest_item(
+        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+        "opencode-user-api-db",
+        "opencode",
+    )
+
+    assert (
+        runner._fault_result_errors(fault="missing-binding", item=item, status=status, change_id=change_id)
+        == []
+    )
+    assert runner._fault_result_errors(
+        fault="missing-binding",
+        item=item,
+        status={**status, "node_states": []},
+        change_id=change_id,
+    )
 
 
 def test_attempt_rejects_reviewed_a_with_functional_frozen_b_before_any_post(tmp_path, monkeypatch):

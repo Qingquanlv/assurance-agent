@@ -119,7 +119,7 @@ def test_final_live_manifest_has_exactly_two_opencode_items(repo_root: Path) -> 
     }
     assert {item["sut_item_id"] for item in items} == {
         "RET-dept-management",
-        "USER-create-oracle",
+        "RET-user-management",
     }
     assert all(item["product"] == "assurance-opencode" for item in items)
     assert all(item["adapter_binding"]["protocol_profile"] == "opencode-http-v1" for item in items)

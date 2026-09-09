@@ -1,5 +1,7 @@
 # User 创建：API 与 SQLite 独立验证
 
+本规格回链原始需求 `RET-user-management`，并将本次机器验证范围收窄到一个 User 创建流程。
+
 仅覆盖 API 层的 User 创建，POST /api/v1/user/create；不宣称整个 User 管理模块已覆盖。
 使用本轮冻结的 username、email、is_active、is_superuser、dept_id，认证由执行 host 提供。
 机器计划与生成测试必须使用 api_db.v1，只有 API family。必须通过已安装的 execute_case 桥接发送一次创建请求；请求、DB 观察、判定均由父级 host 负责。

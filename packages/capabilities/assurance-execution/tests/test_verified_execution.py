@@ -874,17 +874,24 @@ def test_no_action_fault_runs_bridge_without_dispatching_business_action(tmp_pat
         ).encode(),
     )
 
-    terminal = journal.read("action_terminal")
-    assert terminal is not None
-    assert terminal["http"] == {"state": "skipped", "reason": "benchmark_no_action"}
-    assert terminal["oracle"] == {
-        "state": "skipped",
-        "reason": "action_not_dispatched",
-        "rows": [],
-    }
+    assert journal.read("action_started") is not None
+    assert journal.read("action_terminal") is None
     facts = {item.obligation_id: item for item in collect_facts(journal, plan)}
     assert facts["action.finished"].state == "missing"
     assert facts["oracle.executed"].state == "missing"
+    with pytest.raises(ValueError, match="already started"):
+        execute_frozen_action(
+            plan,
+            manifest,
+            journal,
+            json.dumps(
+                {
+                    "token": token,
+                    "user_password": "host-only-created-password",
+                    "benchmark_fault": "no-action",
+                }
+            ).encode(),
+        )
 
 
 def test_skip_oracle_fault_keeps_http_fact_but_marks_db_evidence_missing(tmp_path, managed_sut):

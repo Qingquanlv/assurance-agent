@@ -955,9 +955,27 @@ def test_expected_verified_fault_is_a_successful_benchmark_without_export(
 ) -> None:
     runner = _load_runner()
     change_id = "CH-USER-FAULT"
-    terminal = _failed_status(change_id=change_id)
+    terminal = _achieved_status(change_id=change_id)
+    terminal.update(
+        {
+            "invocation_id": change_id,
+            "status": "completed",
+            "terminal_reason": "not_achieved:verification_failed",
+            "change": {"change_id": change_id, "state": "stopped"},
+            "execution_gate": {
+                "validation_profile": "api_db.v1",
+                "batch_id": "batch-user-fault",
+                "execution_receipt_id": "receipt-user-fault",
+                "execution_receipt_digest": "d" * 64,
+            },
+        }
+    )
     terminal["quality_gate"] = {
-        "inspection": {"verification_status": "FAILED"},
+        "inspection": {
+            "batch_id": "batch-user-fault",
+            "verification_status": "FAILED",
+            "verification_ref": {"path": "verification.json", "digest": "e" * 64},
+        },
         "report": {},
     }
     fake = _FakeAA(
@@ -990,9 +1008,12 @@ def test_expected_verified_fault_is_a_successful_benchmark_without_export(
         input_path=tmp_path / "product-input.json",
         item={
             "entrypoint": "full",
+            "validation_profile": "api_db.v1",
             "fault": "wrong-value",
             "secret_handle": "opencode.token",
             "secret_env": "AA_NEXT_OPENCODE_TOKEN",
+            "selected_test_families": ["api"],
+            "required_steps": FULL_WORKFLOW_REQUIRED_STEPS,
         },
         env={},
         run_log=run_log,
@@ -1007,6 +1028,72 @@ def test_expected_verified_fault_is_a_successful_benchmark_without_export(
     assert evidence["outcome"] == "completed"
     assert evidence["validation"]["verification_verdict"] == "FAILED"
     assert finished[0][0] == 0
+
+
+def test_unrelated_crash_cannot_satisfy_verified_fault_benchmark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    change_id = "CH-USER-UNRELATED-CRASH"
+    terminal = _failed_status(change_id=change_id)
+    terminal.update(
+        {
+            "invocation_id": change_id,
+            "selected_test_families": ["api"],
+            "terminal_reason": "task_failed:execute:external_effect",
+            "execution_gate": {
+                "validation_profile": "api_db.v1",
+                "batch_id": "batch-user-fault",
+                "execution_receipt_id": "receipt-user-fault",
+                "execution_receipt_digest": "d" * 64,
+            },
+            "quality_gate": {
+                "inspection": {
+                    "batch_id": "batch-user-fault",
+                    "verification_status": "FAILED",
+                    "verification_ref": {"path": "verification.json", "digest": "e" * 64},
+                },
+                "report": {},
+            },
+        }
+    )
+    fake = _FakeAA(sut=tmp_path, change_id=change_id, terminal=terminal, export_receipt=None)
+    monkeypatch.setattr(
+        runner,
+        "_aa_next",
+        lambda binary, *args, **kwargs: fake.handle_aa([str(binary), *args]),
+    )
+    monkeypatch.setattr(runner.subprocess, "run", fake.handle_subprocess)
+    run_log = tmp_path / "run.log"
+    run_log.touch()
+    finished: list[int] = []
+
+    code = runner._drive_started_change(
+        aa_next=Path("/tmp/fake-aa-next"),
+        repo=tmp_path,
+        project_dir=tmp_path,
+        change_id=change_id,
+        source_args=(),
+        input_path=tmp_path / "product-input.json",
+        item={
+            "entrypoint": "full",
+            "validation_profile": "api_db.v1",
+            "fault": "wrong-value",
+            "secret_handle": "opencode.token",
+            "secret_env": "AA_NEXT_OPENCODE_TOKEN",
+            "selected_test_families": ["api"],
+            "required_steps": FULL_WORKFLOW_REQUIRED_STEPS,
+        },
+        env={},
+        run_log=run_log,
+        poll_seconds=0,
+        timeout_seconds=10,
+        evidence={},
+        finish=lambda code, **_kwargs: finished.append(code) or code,
+    )
+
+    assert code != 0
+    assert fake.export_calls == 0
 
 
 def test_nonzero_unstructured_run_fails_closed_without_status_polling(

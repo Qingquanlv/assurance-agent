@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, TypedDict
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -323,26 +323,164 @@ def _secret_args(item: Mapping[str, Any]) -> list[str]:
 
 
 def _fault_outcome_errors(*, fault: str, verdict: str | None, achieved: bool, published: bool) -> list[str]:
-    expected = {
-        "missing-binding": {"NOT_READY"},
-        "no-bridge": {"NOT_READY"},
-        "no-action": {"INCOMPLETE"},
-        "skip-oracle": {"INCOMPLETE"},
-        "wrong-value": {"FAILED"},
-        "rollback": {"FAILED"},
-        "rollback-success": {"FAILED"},
-        "db-unavailable": {"INCOMPLETE", "NOT_READY"},
-        "wrong-environment": {"NOT_READY"},
-        "unknown-http": {"INCOMPLETE"},
-        "forged-evidence": {"INCOMPLETE", "NOT_READY"},
-        "downgrade": {"NOT_READY"},
-        "missing-write": {"FAILED"},
-    }
+    expected = _FAULT_EXPECTATIONS.get(fault)
     errors: list[str] = []
-    if fault not in expected or verdict not in expected[fault]:
+    if expected is None or verdict != expected["verdict"]:
         errors.append(f"fault {fault!r} did not produce its expected verification verdict")
     if achieved or published:
         errors.append("fault benchmark must refuse achieved/export")
+    return errors
+
+
+class _FaultExpectation(TypedDict):
+    verdict: str
+    prefix_end: str
+    stop: str | None
+    terminal_status: str
+    change_state: str
+    reasons: tuple[str, ...]
+    verified_material: bool
+
+
+_FAULT_EXPECTATIONS: dict[str, _FaultExpectation] = {
+    "missing-binding": {
+        "verdict": "NOT_READY",
+        "prefix_end": "intake.case-review",
+        "stop": "generation.api.plan",
+        "terminal_status": "failed",
+        "change_state": "failed",
+        "reasons": ("binding", "generation"),
+        "verified_material": False,
+    },
+    "no-bridge": {
+        "verdict": "NOT_READY",
+        "prefix_end": "generation.api.plan-review",
+        "stop": "generation.api.codegen",
+        "terminal_status": "failed",
+        "change_state": "failed",
+        "reasons": ("bridge", "generation"),
+        "verified_material": False,
+    },
+    "db-unavailable": {
+        "verdict": "NOT_READY",
+        "prefix_end": "generation.api.codegen",
+        "stop": "execution.execute",
+        "terminal_status": "failed",
+        "change_state": "failed",
+        "reasons": ("db_unavailable", "database_unavailable", "not_ready"),
+        "verified_material": False,
+    },
+    "wrong-environment": {
+        "verdict": "NOT_READY",
+        "prefix_end": "generation.api.codegen",
+        "stop": "execution.execute",
+        "terminal_status": "failed",
+        "change_state": "failed",
+        "reasons": ("wrong_environment", "environment_mismatch", "not_ready"),
+        "verified_material": False,
+    },
+    "downgrade": {
+        "verdict": "NOT_READY",
+        "prefix_end": "generation.api.codegen",
+        "stop": "execution.execute",
+        "terminal_status": "failed",
+        "change_state": "failed",
+        "reasons": ("downgrade", "profile", "not_ready"),
+        "verified_material": False,
+    },
+}
+for _runtime_fault, _runtime_verdict in {
+    "no-action": "INCOMPLETE",
+    "skip-oracle": "INCOMPLETE",
+    "wrong-value": "FAILED",
+    "rollback": "FAILED",
+    "rollback-success": "FAILED",
+    "unknown-http": "INCOMPLETE",
+    "forged-evidence": "INCOMPLETE",
+    "missing-write": "FAILED",
+}.items():
+    _FAULT_EXPECTATIONS[_runtime_fault] = {
+        "verdict": _runtime_verdict,
+        "prefix_end": "quality.report",
+        "stop": None,
+        "terminal_status": "completed",
+        "change_state": "stopped",
+        "reasons": (
+            "not_achieved",
+            "not-achieved",
+            "verification_failed",
+            "verification_incomplete",
+        ),
+        "verified_material": True,
+    }
+
+
+def _fault_result_errors(
+    *, fault: str, item: Mapping[str, Any], status: Mapping[str, Any], change_id: str
+) -> list[str]:
+    expectation = _FAULT_EXPECTATIONS.get(fault)
+    if expectation is None:
+        return [f"fault {fault!r} has no benchmark expectation"]
+    publication = status.get("publication")
+    published = isinstance(publication, Mapping) and publication.get("status") == "published"
+    verdict = _verification_verdict(status)
+    errors = _fault_outcome_errors(
+        fault=fault,
+        verdict=verdict,
+        achieved=_change_is_achieved(status),
+        published=published,
+    )
+    change = status.get("change")
+    if (
+        status.get("invocation_id") != change_id
+        or not isinstance(change, Mapping)
+        or change.get("change_id") != change_id
+    ):
+        errors.append("fault result identity differs from the current invocation/change")
+    if tuple(status.get("selected_test_families") or ()) != tuple(item["selected_test_families"]):
+        errors.append("fault result selected families differ from the frozen item")
+    change_state = change.get("state") if isinstance(change, Mapping) else None
+    if status.get("status") != expectation["terminal_status"] or change_state != expectation["change_state"]:
+        errors.append(f"fault {fault!r} did not stop at its fixed product terminal boundary")
+    reason = str(status.get("terminal_reason") or "").lower()
+    if not any(fragment in reason for fragment in expectation["reasons"]):
+        errors.append(f"fault {fault!r} stopped for an unrelated terminal reason")
+
+    required = tuple(item["required_steps"])
+    prefix_end = str(expectation["prefix_end"])
+    try:
+        prefix = required[: required.index(prefix_end) + 1]
+    except ValueError:
+        errors.append(f"fault {fault!r} expectation is outside the item workflow")
+        prefix = ()
+    succeeded = _status_steps(status)
+    missing = [step for step in prefix if step not in succeeded]
+    if missing:
+        errors.append(f"fault {fault!r} missed required succeeded prefix: {missing}")
+    stop = expectation["stop"]
+    if stop is not None and not (_status_step_states(status).get(str(stop), set()) & {"failed", "stopped"}):
+        errors.append(f"fault {fault!r} did not stop at {stop}")
+
+    execution_gate = status.get("execution_gate")
+    quality_gate = status.get("quality_gate")
+    if expectation["verified_material"]:
+        if not isinstance(execution_gate, Mapping) or (
+            execution_gate.get("validation_profile") != item.get("validation_profile")
+            or not execution_gate.get("execution_receipt_id")
+            or not execution_gate.get("execution_receipt_digest")
+        ):
+            errors.append("runtime fault is missing its current verified execution gate")
+        inspection = quality_gate.get("inspection") if isinstance(quality_gate, Mapping) else None
+        if not isinstance(inspection, Mapping) or (
+            inspection.get("verification_status") != verdict
+            or not isinstance(inspection.get("verification_ref"), Mapping)
+            or not inspection.get("batch_id")
+            or not isinstance(execution_gate, Mapping)
+            or inspection.get("batch_id") != execution_gate.get("batch_id")
+        ):
+            errors.append("runtime fault is missing its current quality verification material")
+    elif execution_gate is not None or quality_gate is not None:
+        errors.append("pre-execution fault unexpectedly carried execution/quality material")
     return errors
 
 
@@ -1599,6 +1737,24 @@ def _status_steps(status: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(steps)
 
 
+def _status_step_states(status: Mapping[str, Any]) -> dict[str, set[str]]:
+    graphs = {
+        item["graph_instance_id"]: item
+        for item in status.get("graph_hierarchy") or []
+        if isinstance(item, dict)
+    }
+    states: dict[str, set[str]] = {}
+    for node in status.get("node_states") or []:
+        if not isinstance(node, dict):
+            continue
+        graph = graphs.get(node.get("graph_instance_id"), {})
+        step = _logical_step_from_node(str(node.get("node_id") or ""), str(graph.get("graph_id") or ""))
+        state = node.get("state")
+        if step is not None and isinstance(state, str):
+            states.setdefault(step, set()).add(state)
+    return states
+
+
 def _change_is_achieved(status: Mapping[str, Any]) -> bool:
     change = status.get("change")
     return isinstance(change, Mapping) and change.get("state") == "achieved"
@@ -1807,13 +1963,11 @@ def _drive_started_change(
     fault = str(item.get("fault") or "none")
     if fault != "none":
         verdict = _verification_verdict(last_status)
-        publication = last_status.get("publication")
-        published = isinstance(publication, Mapping) and publication.get("status") == "published"
-        errors = _fault_outcome_errors(
+        errors = _fault_result_errors(
             fault=fault,
-            verdict=verdict,
-            achieved=_change_is_achieved(last_status),
-            published=published,
+            item=item,
+            status=last_status,
+            change_id=change_id,
         )
         evidence["validation"] = {
             **evidence["validation"],

@@ -234,14 +234,6 @@ def execute_frozen_action(
         )
         return
     if credential_document.get("benchmark_fault") == "no-action":
-        journal.write(
-            "action_terminal",
-            {
-                "initial": initial,
-                "http": {"state": "skipped", "reason": "benchmark_no_action"},
-                "oracle": {"state": "skipped", "reason": "action_not_dispatched", "rows": []},
-            },
-        )
         return
     try:
         control.require(12)  # Do not dispatch if HTTP and observer bounds cannot fit.
