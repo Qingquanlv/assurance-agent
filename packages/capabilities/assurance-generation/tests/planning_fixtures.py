@@ -51,7 +51,6 @@ def family_plan_files(family: str, change_id: str = "CH-DEMO-001") -> tuple[str,
             "api-test-data-plan.md",
             "api-codegen-plan.md",
             "api-codegen-mapping.json",
-            "api-execution-bindings.json",
             "m3-review-summary.md",
         ),
         "e2e": (

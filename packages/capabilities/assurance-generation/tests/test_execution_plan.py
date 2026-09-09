@@ -156,7 +156,6 @@ def _finalize_input(
             "plan_digest": context.plan_digest,
             "plan_ref": context.plan_ref.model_dump(mode="json"),
             "reviewed_case": context.reviewed_case.model_dump(mode="json"),
-            "case_plan_context": context.model_dump(mode="json"),
             "assertion_sources": _sources(project),
             "validation_profile": "api_db.v1",
         }
@@ -412,7 +411,6 @@ async def test_plan_finalizer_alone_writes_the_formal_machine_plan(tmp_path: Pat
             "reviewed_case": context.reviewed_case.model_dump(mode="json"),
             "capability_leafs": list(VALID_LEAFS),
             "allowed_artifact_paths": list(paths),
-            "case_plan_context": context.model_dump(mode="json"),
             "assertion_sources": _sources(project),
             "validation_profile": "api_db.v1",
         }
@@ -529,3 +527,192 @@ async def test_plan_review_rejects_machine_plan_ref_digest_mismatch(tmp_path: Pa
     assert reviewed.failure is not None
     assert reviewed.failure.kind == "invalid_input"
     assert "ref and digest do not match" in reviewed.failure.message
+
+
+def test_plan_input_does_not_require_future_bindings_digest() -> None:
+    from assurance_generation.contracts.agent import PlanInputV1
+
+    context = cast(dict[str, Any], read_fixture("user-plan.json")["context"])
+    payload = {
+        key: context[key]
+        for key in ("change_id", "coverage_epoch", "plan_digest", "plan_ref", "reviewed_case")
+    }
+    result = PlanInputV1.model_validate(
+        {
+            **payload,
+            "capability_leafs": ["entities.item.create"],
+            "artifact_paths": ["qa"],
+            "validation_profile": "api_db.v1",
+        }
+    )
+    assert result.validation_profile == "api_db.v1"
+
+
+@pytest.mark.asyncio
+async def test_first_finalize_compiles_current_candidate_without_future_context(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    context = _materialize_context(project)
+    paths, result = _write_api_candidate(write_root)
+    payload = _finalize_input(result, project=project, context=context, artifact_paths=paths)
+    payload.pop("case_plan_context", None)
+    payload.pop("assertion_sources")
+    # Earlier committed bindings have different formatting and therefore different bytes.
+    candidate = write_root / "qa/changes/CH-USER-001/plans/api-execution-bindings.json"
+    assert hashlib.sha256(candidate.read_bytes()).hexdigest() != context.technical_config_digest
+    outcome = await execute_task(PlanFinalizeHandler("api"), payload, project, write_root=write_root)
+    assert outcome.status == "succeeded", outcome.failure
+    formal = CaseExecutionPlanSetV1.model_validate_json(
+        (write_root / _machine_ref(outcome.output).path).read_bytes()
+    )
+    assert formal.cases[0].technical_config_digest == hashlib.sha256(candidate.read_bytes()).hexdigest()
+    assert formal.cases[0].plan_digest == context.plan_digest
+
+
+@pytest.mark.asyncio
+async def test_review_without_context_still_rejects_agent_pass_on_missing_binding(tmp_path: Path) -> None:
+    context = _materialize_context(tmp_path)
+    candidate = tmp_path / "qa/changes/CH-USER-001/plans/api-execution-bindings.json"
+    document = json.loads(candidate.read_bytes())
+    document["bindings"].pop("user.row_count")
+    candidate.write_text(json.dumps(document))
+    formal = tmp_path / "qa/changes/CH-USER-001/plans/api-case-execution-plan.json"
+    ref = EvidenceArtifactRefV1(
+        path=formal.relative_to(tmp_path).as_posix(), digest=hashlib.sha256(formal.read_bytes()).hexdigest()
+    )
+    payload = _finalize_input(
+        {**review_result("api"), "change_id": context.change_id},
+        project=tmp_path,
+        context=context,
+        machine_ref=ref,
+    )
+    payload.pop("case_plan_context", None)
+    payload.pop("assertion_sources")
+    outcome = await execute_task(PlanReviewFinalizeHandler("api"), payload, tmp_path, write_root=tmp_path)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "user.row_count" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_plan_prepare_loads_authenticated_specification_before_bindings_exist(tmp_path: Path) -> None:
+    from agent_runtime_contracts import AgentRunRequest
+    from assurance_generation.operations.planning import PlanPrepareHandler
+    from planning_fixtures import BINDING  # pyright: ignore[reportMissingImports]
+
+    context = _materialize_context(tmp_path)
+    (tmp_path / "qa/changes/CH-USER-001/plans/api-execution-bindings.json").unlink()
+    (tmp_path / "qa/changes/CH-USER-001/plans/api-case-execution-plan.json").unlink()
+    payload = {
+        key: context.model_dump(mode="json")[key]
+        for key in ("change_id", "coverage_epoch", "plan_digest", "plan_ref", "reviewed_case")
+    }
+    payload.update(
+        {"validation_profile": "api_db.v1", "capability_leafs": list(VALID_LEAFS), "artifact_paths": ["qa"]}
+    )
+    outcome = await execute_task(PlanPrepareHandler("api"), payload, tmp_path, binding_data=BINDING)
+    assert outcome.status == "succeeded", outcome.failure
+    request = AgentRunRequest.model_validate(outcome.output)
+    text = request.model_dump_json()
+    assert "assertion_sources" in text
+    assert "api_db.v1" in text
+    assert "user.row_count" in text
+
+
+@pytest.mark.asyncio
+async def test_retry_cannot_compile_prior_bindings_when_current_candidate_is_missing(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    context = _materialize_context(project)
+    paths, result = _write_api_candidate(write_root)
+    (write_root / "qa/changes/CH-USER-001/plans/api-execution-bindings.json").unlink()
+    payload = _finalize_input(result, project=project, context=context, artifact_paths=paths)
+    payload["local_round"] = 1
+    outcome = await execute_task(PlanFinalizeHandler("api"), payload, project, write_root=write_root)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "bindings" in outcome.failure.message
+
+
+@pytest.mark.parametrize("stage", ["plan", "review"])
+@pytest.mark.asyncio
+async def test_hidden_profile_cannot_bypass_verified_root_missing_binding(tmp_path: Path, stage: str) -> None:
+    context = _materialize_context(tmp_path)
+    paths, result = _write_api_candidate(tmp_path)
+    candidate = tmp_path / "qa/changes/CH-USER-001/plans/api-execution-bindings.json"
+    document = json.loads(candidate.read_bytes())
+    document["bindings"].pop("user.row_count")
+    candidate.write_text(json.dumps(document))
+    formal = tmp_path / "qa/changes/CH-USER-001/plans/api-case-execution-plan.json"
+    ref = EvidenceArtifactRefV1(
+        path=formal.relative_to(tmp_path).as_posix(), digest=hashlib.sha256(formal.read_bytes()).hexdigest()
+    )
+    payload = _finalize_input(
+        result if stage == "plan" else {**review_result("api"), "change_id": context.change_id},
+        project=tmp_path,
+        context=context,
+        artifact_paths=paths,
+        machine_ref=ref if stage == "review" else None,
+    )
+    payload.pop("validation_profile")
+    payload.pop("assertion_sources")
+    handler = PlanFinalizeHandler("api") if stage == "plan" else PlanReviewFinalizeHandler("api")
+    outcome = await execute_task(handler, payload, tmp_path, write_root=tmp_path)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "user.row_count" in outcome.failure.message
+
+
+@pytest.mark.parametrize("missing", ["sources", "spec", "reviewed_case", "profile_mismatch"])
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_missing_or_inconsistent_authority(
+    tmp_path: Path, missing: str
+) -> None:
+    from assurance_generation.operations.planning import PlanPrepareHandler
+    from planning_fixtures import BINDING  # pyright: ignore[reportMissingImports]
+
+    context = _materialize_context(tmp_path)
+    payload = {
+        key: context.model_dump(mode="json")[key]
+        for key in ("change_id", "coverage_epoch", "plan_digest", "plan_ref", "reviewed_case")
+    }
+    payload.update(
+        {"validation_profile": "api_db.v1", "capability_leafs": list(VALID_LEAFS), "artifact_paths": ["qa"]}
+    )
+    if missing == "sources":
+        (tmp_path / "qa/changes/CH-USER-001/cases/system/user/assertion-sources.json").unlink()
+    elif missing == "spec":
+        (tmp_path / "qa/changes/CH-USER-001/requirement.md").unlink()
+    elif missing == "reviewed_case":
+        payload.pop("reviewed_case")
+    else:
+        payload["validation_profile"] = "api_db_trace.v1"
+    outcome = await execute_task(PlanPrepareHandler("api"), payload, tmp_path, binding_data=BINDING)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_does_not_replace_reviewed_spec_with_inline_cases(tmp_path: Path) -> None:
+    from agent_runtime_contracts import AgentRunRequest
+    from assurance_generation.operations.planning import PlanPrepareHandler
+    from planning_fixtures import BINDING, reviewed_cases  # pyright: ignore[reportMissingImports]
+
+    context = _materialize_context(tmp_path)
+    payload = {
+        key: context.model_dump(mode="json")[key]
+        for key in ("change_id", "coverage_epoch", "plan_digest", "plan_ref", "reviewed_case")
+    }
+    payload.update(
+        {
+            "validation_profile": "api_db.v1",
+            "capability_leafs": list(VALID_LEAFS),
+            "artifact_paths": ["qa"],
+            "reviewed_cases": reviewed_cases("api"),
+        }
+    )
+    outcome = await execute_task(PlanPrepareHandler("api"), payload, tmp_path, binding_data=BINDING)
+    assert outcome.status == "succeeded", outcome.failure
+    request = AgentRunRequest.model_validate(outcome.output)
+    assert "TC_USER_CREATE_001" in request.instructions[2].model_dump_json()
+    assert "TC_API_001" not in request.instructions[2].model_dump_json()

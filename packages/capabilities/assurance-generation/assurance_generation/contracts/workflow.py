@@ -11,7 +11,7 @@ from graph_engine.attempts import AttemptKey
 from graph_engine.plugin_api import FrozenModel
 
 from assurance_generation.contracts.codegen import CodegenMapping
-from assurance_generation.contracts.execution_plan import CasePlanContextV1, ValidationProfile
+from assurance_generation.contracts.execution_plan import ValidationProfile
 from assurance_generation.contracts.families import LayerName
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_intake.contracts.verification import AssertionSourcesV1
@@ -79,7 +79,6 @@ class ResolveGenerationInputV1(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     reviewed_case: ReviewedCaseV1 | None = None
     source_artifacts: tuple[EvidenceArtifactRefV1, ...] = ()
-    case_plan_context: CasePlanContextV1 | None = None
     assertion_sources: AssertionSourcesV1 | None = None
     validation_profile: ValidationProfile | None = None
 
@@ -92,17 +91,6 @@ class ResolveGenerationInputV1(FrozenModel):
                 self.reviewed_case.plan_digest,
                 self.reviewed_case.plan_ref,
             )
-        verified_inputs = (self.case_plan_context, self.assertion_sources, self.validation_profile)
-        if any(value is not None for value in verified_inputs):
-            if any(value is None for value in verified_inputs):
-                raise ValueError("verified plan inputs must be supplied together")
-            if self.reviewed_case is None:
-                raise ValueError("verified plan inputs require an inline ReviewedCase")
-            assert self.case_plan_context is not None
-            if self.case_plan_context.reviewed_case != self.reviewed_case:
-                raise ValueError("verified plan context does not match ReviewedCase")
-            if self.case_plan_context.coverage_epoch != self.coverage_epoch:
-                raise ValueError("verified plan context does not match generation epoch")
         return self
 
 

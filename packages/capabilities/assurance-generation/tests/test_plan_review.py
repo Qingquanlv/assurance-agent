@@ -271,3 +271,47 @@ async def test_plan_review_finalize_rejects_malformed_input(family: str, tmp_pat
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
     assert executed.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_legacy_api_five_file_package_completes_plan_and_review(tmp_path: Path) -> None:
+    from assurance_generation.operations.planning import PlanPrepareHandler, PlanFinalizeHandler
+    from test_planning import _write_plan_package  # pyright: ignore[reportMissingImports]
+
+    expected = {
+        "api-plan.md",
+        "api-test-data-plan.md",
+        "api-codegen-plan.md",
+        "api-codegen-mapping.json",
+        "m3-review-summary.md",
+    }
+    payload = plan_input("api")
+    prepared = await execute_task(PlanPrepareHandler("api"), payload, tmp_path, binding_data=BINDING)
+    assert prepared.status == "succeeded", prepared.failure
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert {Path(path).name for path in request.workspace.allowed_outputs} == expected
+    files = tuple(path for path in _write_plan_package(tmp_path, "api") if Path(path).name in expected)
+    candidate = tmp_path / "qa/changes/CH-DEMO-001/plans/api-execution-bindings.json"
+    candidate.unlink(missing_ok=True)
+    result = valid_plan_result("api")
+    result["output_files"] = list(files)
+    finalized = await execute_task(
+        PlanFinalizeHandler("api"),
+        fake_agent_result(result, artifact_paths=list(files)),
+        tmp_path,
+        write_root=tmp_path,
+    )
+    assert finalized.status == "succeeded", finalized.failure
+    review_input = {**payload, "reviewed_plan": finalized.output}
+    (tmp_path / "qa/changes/CH-DEMO-001/cases/items").mkdir(parents=True)
+    (tmp_path / "qa/changes/CH-DEMO-001/cases/items/case.yaml").write_text(
+        "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n"
+    )
+    (tmp_path / "qa/changes/CH-DEMO-001/proposal.md").write_text("proposal")
+    review = await execute_task(review_prepare_handler("api"), review_input, tmp_path, binding_data=BINDING)
+    assert review.status == "succeeded", review.failure
+    approved = await execute_task(
+        review_finalize_handler("api"), fake_agent_result(review_result("api")), tmp_path
+    )
+    assert approved.status == "succeeded", approved.failure
+    assert not candidate.exists()

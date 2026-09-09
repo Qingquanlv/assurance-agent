@@ -90,8 +90,13 @@ finally-safe cleanup in case the defective product unexpectedly persists data.
 - `qa/changes/<change-id>/plans/api-test-data-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/api-execution-bindings.json`
+- `qa/changes/<change-id>/plans/api-execution-bindings.json` (required only for `api_db.v1` or `api_db_trace.v1`)
 - `qa/changes/<change-id>/plans/m3-review-summary.md`
+
+Legacy API planning produces the five original files above and does not create
+User bindings or a formal machine plan. Follow the host-provided allowed outputs.
+The following bindings and host compilation instructions apply only to
+`api_db.v1` and `api_db_trace.v1`.
 
 `api-execution-bindings.json` is a candidate locator document with exactly
 `schema_version: "1"`, one reviewed `case_id`, and a `bindings` object keyed by

@@ -191,8 +191,6 @@ class GenerationState(CheckpointBridgeState, total=False):
     change_id: str
     plan_digest: str
     plan_ref: dict[str, str]
-    case_plan_context: dict[str, object]
-    assertion_sources: dict[str, object]
     validation_profile: str
     case_execution_plan_ref: dict[str, str]
     case_execution_plan_digest: str

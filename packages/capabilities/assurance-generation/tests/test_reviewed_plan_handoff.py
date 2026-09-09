@@ -137,3 +137,39 @@ async def test_plan_retry_handoff_preserves_previous_plan_but_not_across_epochs(
     # A fresh coverage epoch must plan from its new Case version, not a previous lane's plan.
     state.update(coverage_epoch=1, rounds_used=0)
     assert select_plan(state).reviewed_plan is None
+
+
+@pytest.mark.asyncio
+async def test_verified_first_plan_publishes_only_machine_identity_to_review_and_codegen(
+    tmp_path: Path,
+) -> None:
+    from assurance_generation.operations.planning import PlanFinalizeHandler
+    from test_execution_plan import _materialize_context, _write_api_candidate, _finalize_input  # pyright: ignore[reportMissingImports]
+
+    context = _materialize_context(tmp_path)
+    paths, result = _write_api_candidate(tmp_path)
+    payload = _finalize_input(result, project=tmp_path, context=context, artifact_paths=paths)
+    payload.pop("assertion_sources")
+    outcome = await execute_task(PlanFinalizeHandler("api"), payload, tmp_path, write_root=tmp_path)
+    assert outcome.status == "succeeded", outcome.failure
+    state = {
+        key: payload[key]
+        for key in (
+            "change_id",
+            "plan_ref",
+            "plan_digest",
+            "reviewed_case",
+            "coverage_epoch",
+            "validation_profile",
+            "capability_leafs",
+        )
+    }
+    state.update({"family": "api", "allowed_artifact_paths": list(paths)})
+    published = publish_plan(state, outcome.output, None)
+    assert "case_plan_context" not in published
+    state.update(published)
+    review, codegen = select_plan_review(state), select_codegen(state)
+    assert review.case_execution_plan_ref == codegen.case_execution_plan_ref
+    assert review.case_execution_plan_digest == codegen.case_execution_plan_digest
+    assert review.plan_digest == context.plan_digest
+    assert codegen.plan_digest == context.plan_digest

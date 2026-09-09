@@ -153,34 +153,17 @@ def test_generation_route_emits_exactly_four_sends() -> None:
     assert selected == {"api": True, "e2e": True, "fuzz": False, "performance": False}
 
 
-def test_generation_route_forwards_verified_machine_plan_inputs() -> None:
+def test_generation_route_forwards_only_stage_available_verified_references() -> None:
     state = {
         **valid_input(),
         "validation_profile": "api_db.v1",
-        "case_plan_context": {"authenticated": "context"},
-        "assertion_sources": {"authenticated": "sources"},
+        "source_artifacts": [{"path": "source", "digest": "a" * 64}],
     }
-
     sends = route_families(state)
-
     for send in sends:
         assert send.arg["validation_profile"] == state["validation_profile"]
-        assert send.arg["case_plan_context"] == state["case_plan_context"]
-        assert send.arg["assertion_sources"] == state["assertion_sources"]
-
-
-@pytest.mark.parametrize("missing", ("case_plan_context", "assertion_sources"))
-def test_generation_route_cannot_downgrade_incomplete_verified_inputs(missing: str) -> None:
-    state = {
-        **valid_input(),
-        "validation_profile": "api_db.v1",
-        "case_plan_context": {"authenticated": "context"},
-        "assertion_sources": {"authenticated": "sources"},
-    }
-    state.pop(missing)
-
-    with pytest.raises(InsufficientRouteMatches, match="verified plan inputs"):
-        route_families(state)
+        assert send.arg["source_artifacts"] == state["source_artifacts"]
+        assert "case_plan_context" not in send.arg
 
 
 def test_generation_route_fails_before_producing_any_send() -> None:

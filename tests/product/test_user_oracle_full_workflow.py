@@ -312,3 +312,25 @@ def test_attempt_rejects_stale_generation_before_starting_http(tmp_path, monkeyp
             authority_handle="sut.authority",
             credential_handle="sut.credential",
         )
+
+
+def test_generation_adapter_preserves_verified_profile_and_reviewed_references():
+    from assurance_product.graphs.execute import adapt_generation
+    from tests.product.test_product_input import valid_product_input
+
+    state = valid_product_input(validation_profile="api_db.v1", verification_config_digest="a" * 64)
+    state.update(
+        {
+            "reviewed_case": {"approved": True},
+            "source_artifacts": [{"path": "sources", "digest": "b" * 64}],
+            "plan_digest": "c" * 64,
+            "plan_ref": {"path": "plan", "digest": "d" * 64},
+        }
+    )
+    projected = adapt_generation(state)  # pyright: ignore[reportArgumentType]
+    assert projected["validation_profile"] == "api_db.v1"
+    assert projected["reviewed_case"] == state["reviewed_case"]
+    assert projected["source_artifacts"] == state["source_artifacts"]
+    assert projected["plan_ref"] == state["plan_ref"]
+    assert projected["plan_digest"] == state["plan_digest"]
+    assert "case_plan_context" not in projected

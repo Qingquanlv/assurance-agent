@@ -1,6 +1,3 @@
-import pytest
-from pydantic import ValidationError
-
 from assurance_generation.contracts.agent import (
     AgentFinalizeInputV1,
     CodegenInputV1,
@@ -46,7 +43,7 @@ def test_generation_contracts_require_plan_binding() -> None:
         assert model.model_fields["plan_ref"].is_required()
 
 
-def test_verified_generation_input_cannot_omit_authenticated_machine_inputs() -> None:
+def test_verified_generation_input_accepts_stage_available_references() -> None:
     payload = {
         "change_id": "CH-1",
         "coverage_epoch": 0,
@@ -58,8 +55,8 @@ def test_verified_generation_input_cannot_omit_authenticated_machine_inputs() ->
         "validation_profile": "api_db.v1",
     }
 
-    with pytest.raises(ValidationError, match="verified plan inputs"):
-        ResolveGenerationInputV1.model_validate(payload)
+    parsed = ResolveGenerationInputV1.model_validate(payload)
+    assert parsed.validation_profile == "api_db.v1"
 
 
 def test_plan_review_selection_carries_published_machine_plan_identity() -> None:
@@ -106,6 +103,5 @@ def test_non_api_plan_selection_does_not_compile_api_machine_plan() -> None:
 
     selected = select_plan(state)
 
-    assert selected.case_plan_context is None
     assert selected.assertion_sources is None
     assert selected.validation_profile is None

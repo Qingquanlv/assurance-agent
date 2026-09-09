@@ -95,8 +95,8 @@ has already verified these exact paths as regular files.
 - `qa/changes/<change-id>/plans/api-test-data-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-plan.md`
 - `qa/changes/<change-id>/plans/api-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/api-execution-bindings.json`
-- `qa/changes/<change-id>/plans/api-case-execution-plan.json` (when the frozen profile is present)
+- `qa/changes/<change-id>/plans/api-execution-bindings.json` (required only for `api_db.v1` or `api_db_trace.v1`)
+- `qa/changes/<change-id>/plans/api-case-execution-plan.json` (required only for `api_db.v1` or `api_db_trace.v1`)
 - `qa/changes/<change-id>/plans/m3-review-summary.md`
 - `qa/changes/<change-id>/cases/**/case.yaml`
 
@@ -165,7 +165,7 @@ Required capability closure:
 
 Runtime contract closure:
 
-- Treat the formal case execution plan as derived evidence. Verify that every
+- For `api_db.v1` and `api_db_trace.v1`, treat the formal case execution plan as derived evidence. Verify that every
   business assertion and every profile-required runtime obligation appears
   exactly once, every expected reference resolves to the frozen assertion,
   source/specification digests match, and Trace requirements match the frozen

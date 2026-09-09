@@ -101,6 +101,7 @@ def adapt_generation(state: ProductState) -> dict[str, object]:
         source_artifacts = [item.model_dump(mode="json") for item in payload.artifacts]
     feature_input = {
         "change_id": payload.change_id,
+        "validation_profile": payload.validation_profile,
         "plan_digest": state.get("plan_digest"),
         "plan_ref": state.get("plan_ref"),
         "coverage_epoch": int(state.get("coverage_epoch", 0)),

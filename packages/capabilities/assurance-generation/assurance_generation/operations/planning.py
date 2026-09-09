@@ -28,7 +28,12 @@ from assurance_generation.contracts.agent import (
 from assurance_generation.contracts.codegen import CodegenMapping, family_allows_target
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
-from assurance_generation.operations.execution_plan import PlanNotReady, compile_case_plan_artifact
+from assurance_generation.operations.execution_plan import (
+    PlanNotReady,
+    compile_case_plan_artifact,
+    frozen_validation_profile,
+    authenticated_plan_specification,
+)
 
 
 from assurance_generation.contracts.reviews import PlanReviewAuthoring
@@ -75,7 +80,6 @@ _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
         "api-test-data-plan.md",
         "api-codegen-plan.md",
         "api-codegen-mapping.json",
-        "api-execution-bindings.json",
         "m3-review-summary.md",
     ),
     "e2e": (
@@ -100,8 +104,11 @@ _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
 }
 
 
-def plan_outputs(change_id: str, family: Family) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{change_id}/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]))
+def plan_outputs(change_id: str, family: Family, validation_profile: str | None = None) -> tuple[str, ...]:
+    names = _PLAN_OUTPUT_NAMES[family]
+    if family == "api" and validation_profile is not None:
+        names = (*names, "api-execution-bindings.json")
+    return tuple(sorted(f"qa/changes/{change_id}/plans/{name}" for name in names))
 
 
 def plan_review_outputs(change_id: str, family: Family) -> tuple[str, ...]:
@@ -393,6 +400,7 @@ def plan_review_input_paths(
     *,
     change_id: str,
     family: Family,
+    validation_profile: str | None = None,
 ) -> tuple[str, ...]:
     """Return the mechanically locked files a plan reviewer must read exactly."""
     change_root = _change_root(workspace, change_id)
@@ -404,9 +412,9 @@ def plan_review_input_paths(
         raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
 
     formal = f"qa/changes/{change_id}/plans/{family}-case-execution-plan.json"
-    formal_paths = (formal,) if (workspace / formal).is_file() else ()
+    formal_paths = (formal,) if family == "api" and validation_profile is not None else ()
     relative_paths = (
-        *plan_outputs(change_id, family),
+        *plan_outputs(change_id, family, validation_profile),
         *formal_paths,
         f"qa/changes/{change_id}/proposal.md",
         *(path.relative_to(workspace).as_posix() for path in case_files),
@@ -480,6 +488,20 @@ def validate_plan_input(
         business = PlanInputV1.model_validate(data)
     except ValidationError as error:
         raise InputError(str(error)) from error
+    if family == "api":
+        try:
+            profile = frozen_validation_profile(workspace, business)
+            if profile is not None:
+                _, _, sources, _ = authenticated_plan_specification(workspace, business)
+                business = business.model_copy(
+                    update={
+                        "validation_profile": profile,
+                        "assertion_sources": next(iter(sources.values())),
+                        "reviewed_cases": None,
+                    }
+                )
+        except PlanNotReady as error:
+            raise InputError(str(error)) from error
     if business.reviewed_case is not None:
         try:
             reviewed = authenticate_reviewed_case(
@@ -571,6 +593,18 @@ def prepare_plan_outcome(
             }
         ),
     )
+    if business.validation_profile is not None:
+        instructions = (
+            *instructions,
+            InstructionPart.from_json(
+                {
+                    "validation_profile": business.validation_profile,
+                    "assertion_sources": business.assertion_sources.model_dump(mode="json")
+                    if business.assertion_sources
+                    else None,
+                }
+            ),
+        )
     if review_input_paths:
         instructions = (
             *instructions,
@@ -708,7 +742,7 @@ class PlanPrepareHandler:
                 binding=binding,
                 result_schema_id=PLAN_RESULT_ID,
                 context=context,
-                allowed_outputs=plan_outputs(business.change_id, family),
+                allowed_outputs=plan_outputs(business.change_id, family, business.validation_profile),
                 close_result_capabilities=True,
                 repair_review=repair_review,
             )
@@ -742,7 +776,8 @@ class PlanFinalizeHandler:
                 raise OutputError("the planner cannot author formal case execution plan identity")
             if payload.change_id is not None and document.change_id != payload.change_id:
                 raise OutputError("plan change_id does not match locked change_id")
-            if tuple(sorted(document.output_files)) != plan_outputs(document.change_id, family):
+            profile = frozen_validation_profile(context.project_root, payload) if family == "api" else None
+            if tuple(sorted(document.output_files)) != plan_outputs(document.change_id, family, profile):
                 raise OutputError("output_files must declare the complete family plan package")
             if payload.reviewed_case is not None:
                 try:
@@ -765,6 +800,10 @@ class PlanFinalizeHandler:
                     document.require_case_scope(cases)
                 except ValueError as error:
                     raise OutputError(str(error)) from error
+            if profile is not None:
+                candidate_path = f"qa/changes/{document.change_id}/plans/api-execution-bindings.json"
+                if not _workspace_file(context.write_root, candidate_path).is_file():
+                    raise OutputError("current attempt execution bindings are missing")
             images = _authenticate_files(
                 context.write_root,
                 document.output_files,
@@ -786,28 +825,20 @@ class PlanFinalizeHandler:
             contradictions = check_plan_consistency(images, mapping=mapping, facts=facts)
             if contradictions:
                 raise OutputError("; ".join(contradictions))
-            if payload.case_plan_context is not None:
+            if profile is not None:
                 if family != "api":
                     raise OutputError("machine case execution plans are supported only for api plans")
-                assert payload.assertion_sources is not None
-                assert payload.validation_profile is not None
-                candidate_relative = (
-                    f"qa/changes/{payload.case_plan_context.change_id}/plans/api-execution-bindings.json"
-                )
-                formal_relative = (
-                    f"qa/changes/{payload.case_plan_context.change_id}/plans/api-case-execution-plan.json"
-                )
+                candidate_relative = f"qa/changes/{document.change_id}/plans/api-execution-bindings.json"
+                formal_relative = f"qa/changes/{document.change_id}/plans/api-case-execution-plan.json"
                 if candidate_relative not in document.output_files:
                     raise OutputError("api plan must declare api-execution-bindings.json")
                 try:
                     _plan_set, machine_ref = compile_case_plan_artifact(
                         project_root=context.project_root,
                         write_root=context.write_root,
-                        bindings_path=candidate_relative,
+                        bindings_data=images[candidate_relative],
                         output_path=formal_relative,
-                        sources=payload.assertion_sources,
-                        validation_profile=payload.validation_profile,
-                        context=payload.case_plan_context,
+                        payload=payload,
                     )
                 except PlanNotReady as error:
                     raise OutputError(str(error)) from error
@@ -823,7 +854,7 @@ class PlanFinalizeHandler:
             return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
         except (InputError, ValidationError) as error:
             return failed_input(error)
-        except OutputError as error:
+        except (OutputError, PlanNotReady) as error:
             return failed_output(str(error))
 
 

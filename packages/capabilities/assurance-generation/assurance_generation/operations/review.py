@@ -12,7 +12,11 @@ from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskR
 
 from assurance_generation.contracts.agent import AgentBindingDataV1, AgentFinalizeInputV1
 from assurance_generation.contracts.reviews import PlanReviewAuthoring, normalize_public_review_outcome
-from assurance_generation.operations.execution_plan import PlanNotReady, validate_case_plan_artifact
+from assurance_generation.operations.execution_plan import (
+    PlanNotReady,
+    validate_case_plan_artifact,
+    frozen_validation_profile,
+)
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_REVIEW_RESULT_ID,
@@ -62,6 +66,7 @@ class PlanReviewPrepareHandler:
                 context.project_root,
                 change_id=business.change_id,
                 family=family,
+                validation_profile=business.validation_profile,
             )
             return prepare_plan_outcome(
                 family=family,
@@ -100,20 +105,17 @@ class PlanReviewFinalizeHandler:
             expected = f"{family}-plan"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
-            if payload.case_plan_context is not None:
+            profile = frozen_validation_profile(context.project_root, payload) if family == "api" else None
+            if profile is not None:
                 if family != "api":
                     raise OutputError("machine case execution plans are supported only for api plans")
-                assert payload.assertion_sources is not None
-                assert payload.validation_profile is not None
                 if payload.case_execution_plan_ref is None:
                     raise OutputError("verified plan review requires the published case execution plan ref")
                 try:
                     validate_case_plan_artifact(
                         project_root=context.project_root,
                         artifact_ref=payload.case_execution_plan_ref,
-                        sources=payload.assertion_sources,
-                        validation_profile=payload.validation_profile,
-                        context=payload.case_plan_context,
+                        payload=payload,
                     )
                 except PlanNotReady as error:
                     raise OutputError(str(error)) from error
@@ -131,6 +133,7 @@ class PlanReviewFinalizeHandler:
                     context.project_root,
                     change_id=document.change_id,
                     family=family,
+                    validation_profile=profile,
                 )
                 input_refs = tuple(evidence_ref(context.project_root, path) for path in input_paths)
                 review_ref = evidence_ref(
@@ -166,7 +169,7 @@ class PlanReviewFinalizeHandler:
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
-        except OutputError as error:
+        except (OutputError, PlanNotReady) as error:
             return failed_output(str(error))
 
 

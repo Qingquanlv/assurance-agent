@@ -80,8 +80,7 @@ def select_plan(state: Mapping[str, object]) -> PlanInputV1:
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": local_round,
             "reviewed_case": state.get("reviewed_case"),
-            "case_plan_context": state.get("case_plan_context") if api_machine_plan else None,
-            "assertion_sources": state.get("assertion_sources") if api_machine_plan else None,
+            "source_artifacts": state.get("source_artifacts") or (),
             "validation_profile": state.get("validation_profile") if api_machine_plan else None,
             "case_execution_plan_ref": (state.get("case_execution_plan_ref") if api_machine_plan else None),
             "case_execution_plan_digest": (
@@ -101,8 +100,6 @@ def select_generation_inputs(state: Mapping[str, object]) -> ResolveGenerationIn
             "coverage_epoch": state.get("coverage_epoch", 0),
             "reviewed_case": state.get("reviewed_case"),
             "source_artifacts": state.get("source_artifacts") or state.get("artifacts") or (),
-            "case_plan_context": state.get("case_plan_context"),
-            "assertion_sources": state.get("assertion_sources"),
             "validation_profile": state.get("validation_profile"),
         }
     )
