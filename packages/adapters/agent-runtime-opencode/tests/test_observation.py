@@ -675,6 +675,27 @@ def test_reasoning_beside_the_terminal_text_is_a_closed_result() -> None:
     )
 
 
+def test_completion_summary_before_the_result_object_is_rejected() -> None:
+    summary = (
+        "The read-back confirms `exploration.json` exists and is complete: all required "
+        "top-level fields present."
+    )
+    messages = _live_shaped_terminal(f'{summary}\n\n{{"output_files": ["explore/exploration.json"]}}')
+
+    with pytest.raises(ValueError) as caught:
+        parse_closed_terminal_result(messages)
+    assert summary[:40] in str(caught.value)
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "failed"
+    )
+
+
 def test_session_absent_from_status_map_counts_as_idle() -> None:
     assert (
         classify_provider_state(

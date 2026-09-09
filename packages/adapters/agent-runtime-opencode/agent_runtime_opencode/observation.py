@@ -473,43 +473,17 @@ def _parse_result_bearing_message(message: Mapping[str, object]) -> dict[str, An
 
 
 def _exact_json_object(text: str) -> dict[str, Any]:
-    # Try direct parsing first
     try:
         parsed = json.loads(text)
-        if not isinstance(parsed, dict):
-            raise ValueError("terminal text is not one JSON object")
-        return parsed
-    except json.JSONDecodeError:
-        pass
-    
-    # Try extracting JSON from markdown code block
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        # Find the first ```json or ``` and extract content until closing ```
-        lines = stripped.split("\n")
-        if lines[0].startswith("```"):
-            # Remove first line (```json or ```)
-            lines = lines[1:]
-            # Find closing ```
-            for i, line in enumerate(lines):
-                if line.strip() == "```":
-                    json_text = "\n".join(lines[:i])
-                    # Check that there's no content after the closing ```
-                    remaining = "\n".join(lines[i+1:]).strip()
-                    if remaining:
-                        # There's content after the code block, reject it
-                        raise ValueError(f"terminal text is not one JSON object (text preview: {text[:200]!r})")
-                    try:
-                        parsed = json.loads(json_text)
-                        if not isinstance(parsed, dict):
-                            raise ValueError("terminal text is not one JSON object")
-                        return parsed
-                    except json.JSONDecodeError:
-                        pass
-                    break
-    
-    # All parsing attempts failed
-    raise ValueError(f"terminal text is not one JSON object (text preview: {text[:200]!r})")
+    except json.JSONDecodeError as error:
+        raise ValueError(_not_one_json_object_message(text)) from error
+    if not isinstance(parsed, dict):
+        raise ValueError(_not_one_json_object_message(text))
+    return parsed
+
+
+def _not_one_json_object_message(text: str) -> str:
+    return f"terminal text is not one JSON object (text preview: {text[:200]!r})"
 
 
 def provider_error_message(
