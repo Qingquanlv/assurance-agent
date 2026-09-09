@@ -530,6 +530,17 @@ const rewriteRead = (tool, args, binding, root) => {
   args[key] = path.resolve(root, logical);
 };
 
+const hideStagingMirror = (value, stagedPrefix, rootPrefix) => {
+  if (typeof value === "string") return value.split(stagedPrefix).join(rootPrefix);
+  if (Array.isArray(value)) return value.map((item) => hideStagingMirror(item, stagedPrefix, rootPrefix));
+  if (value !== null && typeof value === "object") {
+    for (const key of Object.keys(value)) {
+      value[key] = hideStagingMirror(value[key], stagedPrefix, rootPrefix);
+    }
+  }
+  return value;
+};
+
 export default async ({ client }) => ({
   tool: {
     assurance_boundary_v1: {
@@ -539,6 +550,29 @@ export default async ({ client }) => ({
         return "assurance-boundary-v1";
       },
     },
+  },
+  // Reads are redirected into the staging mirror, and the read tools report the path they
+  // actually opened. Left visible, that path contradicts the one the agent wrote to and
+  // reads as its own mistake, so map it back to the logical path the agent asked for.
+  "tool.execute.after": async (input, output) => {
+    const tool = input.tool.toLowerCase();
+    if (!READ_TOOLS.has(tool)) return;
+    if (typeof client?.session?.get !== "function") {
+      throw new Error("Assurance path boundary: session lookup unavailable");
+    }
+    const response = await client.session.get({ path: { id: input.sessionID } });
+    const session = response?.data ?? response;
+    if (!session || typeof session.directory !== "string" || typeof session.agent !== "string") {
+      throw new Error("Assurance path boundary: session identity is missing");
+    }
+    const root = canonicalize(session.directory, session.directory);
+    const binding = parseBinding(session, root);
+    const stagedPrefix = `${stagedPhysical(root, binding.write_root, ".")}${path.sep}`;
+    const rootPrefix = `${root}${path.sep}`;
+    if (stagedPrefix === rootPrefix) return;
+    for (const key of ["title", "output", "metadata"]) {
+      if (key in output) output[key] = hideStagingMirror(output[key], stagedPrefix, rootPrefix);
+    }
   },
   "tool.execute.before": async (input, output) => {
     const tool = input.tool.toLowerCase();

@@ -296,6 +296,80 @@ try {
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_opencode_boundary_reports_read_paths_the_agent_can_write_back_to(tmp_path: Path) -> None:
+    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
+
+    project = tmp_path / "project"
+    write_root = "qa/changes/CH-1/.staging/task-1/attempt-1"
+    logical = "qa/changes/CH-1/explore/notes.md"
+    staged = project / write_root / logical
+    staged.parent.mkdir(parents=True)
+    staged.write_text("staged\n", encoding="utf-8")
+    _config, plugin = install_opencode_agents(project)
+    title = workspace_binding_title(
+        session_id="ses-test",
+        agent_profile="assurance-v1-explorer",
+        project_root=project,
+        write_root=write_root,
+        allowed_outputs=(logical,),
+        task_id="task-1",
+        attempt=1,
+        attempt_id="attempt-1",
+    )
+    driver = r"""
+import { pathToFileURL } from "node:url";
+const pluginPath = process.argv[1];
+const payload = JSON.parse(process.argv[2]);
+const { default: createPlugin } = await import(pathToFileURL(pluginPath).href);
+const hooks = await createPlugin({
+  client: { session: { get: async () => ({ data: payload.session }) } },
+});
+const input = { tool: "read", sessionID: payload.session.id, callID: "call-test" };
+const before = { args: { filePath: payload.logical } };
+await hooks["tool.execute.before"](input, before);
+const after = {
+  title: before.args.filePath,
+  output: `<path>${before.args.filePath}</path>`,
+  metadata: { paths: [before.args.filePath] },
+};
+await hooks["tool.execute.after"](input, after);
+process.stdout.write(JSON.stringify({ opened: before.args.filePath, after }));
+"""
+    completed = subprocess.run(
+        [
+            shutil.which("node") or "node",
+            "--input-type=module",
+            "-e",
+            driver,
+            str(plugin),
+            json.dumps(
+                {
+                    "session": {
+                        "id": "ses-test",
+                        "directory": str(project.resolve()),
+                        "agent": "assurance-v1-explorer",
+                        "title": title,
+                    },
+                    "logical": logical,
+                }
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    reported = json.loads(completed.stdout)
+
+    assert reported["opened"] == str(staged.resolve())
+    canonical = str((project.resolve() / logical))
+    assert reported["after"]["title"] == canonical
+    assert reported["after"]["output"] == f"<path>{canonical}</path>"
+    assert reported["after"]["metadata"]["paths"] == [canonical]
+    assert ".staging" not in json.dumps(reported["after"])
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 def test_opencode_boundary_allows_the_canonical_locust_command(tmp_path: Path) -> None:
     from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
 
