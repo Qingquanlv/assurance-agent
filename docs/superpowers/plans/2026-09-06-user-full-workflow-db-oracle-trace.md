@@ -6,9 +6,11 @@
 
 **Architecture:** 基于当前 Python StateGraph 与 semantic attempt kernel，复用 intake/generation/execution/quality/healing/product 主流程。保留 `execution.execute` / `execution.run` 两个业务节点，改接 execution 所有的稳定 TaskAttemptContract；product 仅装配闭集 profile executor，legacy 委托既有 raw Agent executor，新 profile 委托可恢复的权威执行后端。业务预期归 intake，机器计划归 generation，事实归 execution，业务判定归 quality；沿既有 application 终态认证与 export 扩展门禁。不新增 Agent、产品顶层节点或第二套图引擎。
 
-**Tech Stack:** Python 3.11、uv workspace、Pydantic v2、pytest、SQLite、HTTPX；benchmark 的 FastAPI 0.111.0 / Tortoise ORM 0.23.0 / aiosqlite 0.20.0；OTel Python/FastAPI/Tortoise instrumentation、OTLP HTTP、上游 Collector file exporter。受控 pytest 后端使用固定镜像的 Docker CLI 容器与标准输入/输出桥接，SUT/DB 观察仍由宿主执行器管理。
+**Tech Stack:** Python 3.11、uv workspace、Pydantic v2、pytest、SQLite、HTTPX；benchmark 的 FastAPI 0.111.0 / Tortoise ORM 0.23.0 / aiosqlite 0.20.0；OTel Python/FastAPI/Tortoise instrumentation、OTLP HTTP、上游 Collector file exporter。受控 pytest 使用当前已安装 Python 环境中的固定 subprocess 命令与标准输入/输出桥接，SUT/DB 观察仍由宿主执行器管理。Docker/OCI 仅保留为显式运行的可选安全增强实验。
 
 **Spec:** [User 全流程验证规格](../specs/2026-09-06-business-spec-api-db-oracle-trace-design.md)
+
+**2026-09-09 经用户确认的规格边界修订：** 本计划取代 spec §7.1 中“无法提供进程/写集隔离时新 profile 为 NOT_READY”的强沙箱要求。当前信任范围限定为受控本地 benchmark：固定 subprocess 不接收凭据、数据库/证据路径或父级写集，且其任何自报事实都不具备权威性；但不阻止同一 OS 用户下的恶意代码主动探测文件。OCI 强隔离仅作可选实验。spec 的其他业务真实性、证据认证和 A01–A26 要求保持不变。
 
 **实施基线与本次 Review：** 最初实施基线为 `1b4187660e273183a9aab71f63fd8ee70d4dddcc`，源 Plan 来自主工作区 `d7e6591a`。2026-09-09 已执行 `git fetch origin main`，固定审查远程 main 为 `99316670ef008d4551926ec76765f0182e5e806b`，当前 HEAD 为 `a025831990fb776187fe03670e2118c9b50e385e`；merge-base 等于该 main。审查命令为 `git diff 99316670...a0258319`，同时审查尚未完成的 T10–T13。本文只更新 `codex/user-full-workflow-db-oracle-trace` worktree 内的实施指引；不合并代码、不修改原工作区文档。
 
@@ -32,6 +34,7 @@
 - 完整交付保留真实 `aa compile/start/run/status/export` 路径；`entrypoint=full` 与 `run_mode=case` 是不同字段，不能把 run_mode 改成 full。
 - 本次补修保持既有 LangGraph 节点、边、重试路由与 semantic Attempt 提交机制。`prepare/finalize` 是节点内部阶段；SUT/Collector 启停属于 execution host。只调整必要的 selector/publish/Send 数据映射，不增加前置编排节点、Agent、第二套调度器或全图 `seed + context` 状态。
 - 冻结根计划决定是否启用验证；缺少调用方可选字段不能切回 legacy。业务规格/来源由现有认证入口读取，完整 `CasePlanContextV1` 在候选 bindings 产生后由 host 构造。Agent 不填写信任摘要，正式机器计划和下游接纳校验不放宽。
+- `api_db.v1` 与 `api_db_trace.v1` 的业务执行不依赖 Docker、Colima、镜像或 OCI qualification 文件。pytest 子进程只负责触发窄桥接；父级 host 独占 API 凭据、SUT/SQLite/Collector 句柄、业务动作、oracle 与证据写入。当前阶段不宣称能够隔离同一 OS 用户下的恶意测试代码。
 
 ### 2026-09-09 Review 状态与修正索引
 
@@ -40,8 +43,8 @@
 | T1 | 已有提交实现 | 本轮未确认新增缺陷；随 T10 验证真实规格派生 |
 | T2 | 已有提交，重新打开补修 | R1 生成时机；R2 legacy API 文件要求 |
 | T3 | 已有提交，重新打开补修 | R7 已评审源码与实际运行制品关联 |
-| T4 | 已有提交，尚未完成真实 OCI 资格验收 | R3 未知 HTTP 后置条件；真实隔离资格仍为阶段一前提 |
-| T5 | 已有提交，重新打开补修 | R4 静态预检与 attempt 动态实例分离 |
+| T4 | 已有提交，重新打开补修 | R3 已完成；R10 以固定 subprocess bridge 替代业务路径中的 Docker 硬依赖 |
+| T5 | 已有提交，重新打开补修 | R4 已完成；R10 从 profile preflight、配置和 Attempt binding 移除 OCI 资格门禁 |
 | T6 | 已有提交实现 | 随 T2/T7 回归机器计划引用、两类 verified 输出接线 |
 | T7 | 已有提交，重新打开补修 | R3 事实重放；R5 产品层 incomplete 接纳 |
 | T8 | 已有提交，需产品路径再验收 | R5 经安装 executor 的修复闭环；R8 收敛私有 graph 依赖 |
@@ -57,6 +60,7 @@
 | R4 / P1 | product `verification_execution.py:96–118` 在 root preflight 要求已运行实例；execution `operations/verified_attempt.py:48–65` 要求预填 selection，`user_attempt.start_user_attempt` 无生产调用者 | T5、T10 |
 | R5 / P1 | product `verification_quality.py:77–81` 拒绝合法 `VerifiedIncompleteExecutionV1`；现有修复测试直接调用 materializer，绕过真实安装 executor | T7、T8、T10 |
 | R8 / P2，封装判断 | product `repair_authorization.py:12,52–62` 调用 execution 私有 graph selector/activation 重算 AttemptKey；内部图输入变化会扩散到产品授权逻辑。保留独立 journal/receipt 认证，仅收敛接口 | T8 |
+| R10 / P1，过度设计 | execution `operations/verified_execution.py` 只构造 `DockerVerificationHost`；product `verification_execution.py` 和 `verified_attempt.py` 要求 qualification 文件并执行 Docker preflight。Docker/Colima 因而成为两个 verified profile 和 full workflow 的硬依赖，但当前目标只需要固定子进程触发父级权威动作 | T4、T5、T10、T13 |
 
 规格与执行正确性审查：
 
@@ -68,9 +72,9 @@
 | R7 / P1 | generation 的 `sut_digest` 来自已评审源引用，execution 复制到 manifest；harness `prepare:457–460` 另行复制固定快照，缺少两者文件内容关联，可能评审新代码却执行旧制品 | T3、T10、T13 |
 | R9 / P1，验收设计缺口 | generation `operations/codegen.py:469–475` / `contracts/admission.py:290–302,589` 会拒绝无 bridge 候选；原 T10 的 no-bridge 注入点无法证明 A03 的“pytest 通过但实际动作未执行” | T10、T13 |
 
-文档基线同步：远程 main 的 Dept benchmark 已是 API-only；不恢复四 family，也不恢复已移除的 codegen-fix 流程。当前安装目录为 32 条 Agent contracts、16 条 Task contracts；测试比较精确集合，不依赖计划中的旧数量。保留现有 kernel、独立 DB oracle、隔离 runner、冻结义务和交付认证；这些与规格一致，不因文件多而统一重写。
+文档基线同步：远程 main 的 Dept benchmark 已是 API-only；不恢复四 family，也不恢复已移除的 codegen-fix 流程。当前安装目录为 32 条 Agent contracts、16 条 Task contracts；测试比较精确集合，不依赖计划中的旧数量。保留现有 kernel、独立 DB oracle、窄 bridge 协议、冻结义务和交付认证；这些与规格一致，不因文件多而统一重写。
 
-补修顺序：T2 → T3/T4 → T5 → T7 → T8 → T10 阶段一真实验收 → T11 → T12 → T13。任务编号保持不变；每次只提交对应补修及必要 schema/declaration 更新，不能把这些问题合并成跨 capability 通用框架重构。
+补修顺序：T2 → T3/T4 → T5 → T7 → T8 → T10 阶段一真实验收 → T11 → T12 → T13。R10 在继续 T7 前完成 T4/T5 的最小补修；任务编号保持不变。每次只提交对应补修及必要 schema/declaration 更新，不能把这些问题合并成跨 capability 通用框架重构。
 
 ---
 
@@ -93,7 +97,7 @@
 
 两条稳定 Task facade 使用新增 contract IDs `assurance.execution.task.execute.v1` / `assurance.execution.task.run.v1`；图上业务 semantic IDs 保持 `execution.execute` / `execution.run`。闭合的 product 装配选择原 raw Agent executor 或新 host executor，执行期间不动态换配置。远程 main 的 Agent binding 精确集合保持原身份与目标，新 Task contracts 纳入安装目录与锁。无需给 CapabilityBuildContext 增加任意配置/handler API。
 
-强隔离后端仍为固定 OCI 镜像中的薄 pytest：只读测试视图、私有临时目录、禁外网，以父子管道请求父级执行冻结计划。父级持有 API 凭据、SUT/SQLite 绑定及事实；容器不挂载宿主 DB、证据目录或 Docker socket。Docker 不可用或资格不通过为 NOT_READY。此保证由 T4 真隔离实验验证，不由类名或资源声明推断。
+当前业务后端是在已安装 Python 环境中启动的薄 pytest subprocess，以固定 argv 和有界 JSONL 管道请求父级执行冻结计划。父级持有 API 凭据、SUT/SQLite 绑定及事实；子进程环境使用显式 allowlist，不接收凭据、数据库路径、证据写集或动态 host handle。该边界防止测试通过协议伪造业务事实，但不构成同一 OS 用户下的恶意代码沙箱。已有 OCI runner、构建脚本和真实资格测试保留为显式 opt-in 的安全实验，其结果独立记录，不进入 profile 选择、root preflight、业务 verdict、achieved/export 或普通 CI 门禁。
 
 恢复必须覆盖本基线的 kernel activity/reconcile：当前裸 `DeterministicTaskExecutor` 无 reconcile，且构造的 TaskContext 不提供真实取消/activity/secret ports，不能直接当作一次性 HTTP 副作用执行后端。T4/T5 复用 production task host 与恢复端口，并保持 kernel 的 seal/validate/promote/receipt 顺序。
 
@@ -117,12 +121,12 @@
 | --- | --- | --- |
 | intake | `assurance_intake/contracts/verification.py`、`resources/schemas/assertion-sources.v1.schema.json` | `contracts/{cases,plan,workflow,attempts}.py`、`operations/{finalize,agent_skills,resolve_plan}.py`、`graphs/{nodes,state}.py`、`validators/cases.py`、注册、case design/review skills |
 | generation | `assurance_generation/contracts/execution_plan.py`、`operations/execution_plan.py`、`resources/schemas/case-execution-plan.v1.schema.json` | `contracts/{plans,agent,codegen,workflow,attempts}.py`、`operations/{planning,review,codegen,cycle}.py`、`graphs/{nodes,state}.py`、`validators/plans.py`、注册及 API skills |
-| execution | `contracts/verification.py`、`operations/verification_manifest.py`、`operations/sqlite_oracle.py`、`operations/verified_execution.py`、`operations/verified_process.py`、`bridge.py`、`bridge_runner.py`、`operations/telemetry.py` | `execution_view.py`、`generated_merge.py`、`operations/{runner,agent_skills,__init__}.py`、`contracts/{agent,evidence,workflow,attempts}.py`、`graphs/{factory,nodes,state}.py`、schemas/注册/依赖 |
+| execution | `contracts/verification.py`、`operations/verification_manifest.py`、`operations/sqlite_oracle.py`、`operations/verified_execution.py`、`operations/verified_process.py`、`bridge.py`、`bridge_runner.py`、`operations/telemetry.py` | `execution_view.py`、`generated_merge.py`、`operations/{runner,agent_skills,__init__}.py`、`contracts/{agent,evidence,workflow,attempts}.py`、`graphs/{factory,nodes,state}.py`、schemas/注册/依赖；`DockerVerificationHost` 仅供可选实验 |
 | quality | `contracts/verification.py`、`operations/verification.py` | `operations/{assessment,agent_skills,inspect,metrics,report}.py`、`contracts/{assessment,attempts}.py`、`graphs/{assessment,nodes,state,routes}.py`、schema/注册 |
 | healing | `operations/verification_guard.py` | `operations/{application,safety,workflow_state}.py`、`contracts/application.py`、`graphs/{nodes,state}.py`、aa-apply-test-repair 技能及结果契约 |
 | product | `verification.py`、`verification_execution.py` | `models.py`、`binding_builder.py`、`product.py`、`agent_contracts.py`、`runtime_bindings.py`、`runtime_ports.py`、`application.py`、`status.py`、`export.py`、`graphs/{execute,routes,state,revisions}.py`、配置 schemas |
-| benchmark | `user_oracle_harness.py`、`fixtures/user-oracle/sut-source/`、`fixtures/user-oracle/{bootstrap.py,collector.yaml,runtime-lock.json,requirements.in,requirements.lock,runner.Dockerfile,runner-lock.json}` | `run_item.py`、`manifest.json`、`tests/validate_live_run.py` |
-| 构建/CI | `scripts/build_verification_runner.py` | `.github/workflows/ci.yml`、三个 wheel/engine smoke 脚本 |
+| benchmark | `user_oracle_harness.py`、`fixtures/user-oracle/sut-source/`、`fixtures/user-oracle/{bootstrap.py,collector.yaml,runtime-lock.json,requirements.in,requirements.lock}` | `run_item.py`、`manifest.json`、`tests/validate_live_run.py`；`runner.Dockerfile` / `runner-lock.json` 仅属于可选 OCI 实验 |
+| 构建/CI | 普通 CI 不新增容器构建步骤；`scripts/build_verification_runner.py` 仅为可选实验入口 | `.github/workflows/ci.yml`、三个 wheel/engine smoke 脚本 |
 | 测试素材 | `tests/verification_support.py`、`tests/fixtures/verification/{user-case.json,user-sources.json,user-plan.json}` | 各包现有 fixtures 与产品 full/manifest/交付测试 |
 
 `assurance_*` 的包目录分别在 `packages/capabilities/assurance-*/`；product 文件在 `packages/products/assurance-product/assurance_product/`；benchmark 文件在 `benchmark/assurance-product/`。每个新 schema 同步对应插件 `_SCHEMA_FILES`、静态 declaration 与 wheel 资源测试；不用新建跨 Feature 的万能 contracts wheel。
@@ -144,7 +148,7 @@ qa/changes/<change_id>/
   inspect/verification.json                    # 确定性业务/证据判定
 ```
 
-实际写入采用当前 raw-file + typed result 路径：Agent 仅在 phase_write_claims.runtime 允许位置写候选；确定性 finalizer 在其独占写集产出规范化机器材料；host 在本 attempt 授权 write_root 写事实。Kernel 封存实际 bytes、执行已声明验证、promote 并生成 receipt，graph publish 只投影已提交结果。动态 execution_id 子目录由 execution 父目录的受控 ResourceClaimTemplate 覆盖，并通过路径/身份验证收窄；不授予 Agent 或 pytest 容器此写集。拒绝绕过 seal/promote 直接写最终 change 目录，也不引入旧文档的 typed artifact materialization API。
+实际写入采用当前 raw-file + typed result 路径：Agent 仅在 phase_write_claims.runtime 允许位置写候选；确定性 finalizer 在其独占写集产出规范化机器材料；host 在本 attempt 授权 write_root 写事实。Kernel 封存实际 bytes、执行已声明验证、promote 并生成 receipt，graph publish 只投影已提交结果。动态 execution_id 子目录由 execution 父目录的受控 ResourceClaimTemplate 覆盖，并通过路径/身份验证收窄；不把此写集、凭据或数据库绑定传入 pytest subprocess。拒绝绕过 seal/promote 直接写最终 change 目录，也不引入旧文档的 typed artifact materialization API。
 
 ## 4. 冻结的最小接口
 
@@ -371,17 +375,19 @@ LIMIT 2
 - [ ] harness 只复制运行必需 app/migrations，使用 SQLite backup 或已停止种子库准备管理员；先绑定监听 socket 再启动服务，防止端口抢占；不复用未知 ready URL。启动/停止只控制本次拥有的 PID/实例，未知实例必须拒绝。阶段一即提交实际 SUT 源文件清单、基础依赖锁与摘要，不等到 OTel 阶段才锁环境；T11 在同一锁中增加经过兼容验证的 OTel 依赖。
 - [ ] 验证 `uv run pytest packages/capabilities/assurance-execution/tests/test_verification_manifest.py packages/capabilities/assurance-execution/tests/test_sqlite_oracle.py tests/unit/benchmark/test_user_oracle_harness.py tests/product/test_execution_view.py tests/product/test_candidate_execution_isolation.py -q`。提交 `feat(execution): bind isolated runs and observe SQLite state`。
 
-## Task 4: 真实受限 pytest、窄桥接与父级执行
+## Task 4: 固定 pytest subprocess、窄桥接与父级执行
 
-**Files:** 新建 execution `bridge.py`、`bridge_runner.py`、`operations/verified_process.py`、`operations/verified_execution.py`、benchmark `fixtures/user-oracle/runner.Dockerfile` 与 `runner-lock.json`、`scripts/build_verification_runner.py`；修改 execution `operations/runner.py`、`operations/__init__.py`、`pyproject.toml`、根 `uv.lock`。新增 `packages/capabilities/assurance-execution/tests/test_verified_process.py`、`test_verified_execution.py`。
+**Files:** 新建 execution `bridge.py`、`bridge_runner.py`、`operations/verified_process.py`、`operations/verified_execution.py`；修改 execution `operations/runner.py`、`operations/__init__.py`、`pyproject.toml`、根 `uv.lock`。新增 `packages/capabilities/assurance-execution/tests/test_verified_process.py`、`test_verified_execution.py`。已有 `runner.Dockerfile`、`runner-lock.json`、`scripts/build_verification_runner.py` 与 `test_verified_runner_qualification.py` 只保留为显式 opt-in 的 OCI 实验，不由产品导入。
 
 **Interfaces:** 测试只调用 `execute_case(case_id: str) -> None`。host 驱动 T3 固定 harness prepare/start/stop，通过结构化 receipt 认证实例；不得从配置加载任意命令或 Python 类。父级 `VerifiedExecutionHandler` 使用固定计划和 Manifest，接收 execute 请求并产生 Observation，不接收测试提供的 SQL/expected/status。`VerifiedProcessReceiptV1` 记录真正进程终态、raw pytest report、超时/取消原因和桥接请求数量。
 
 **2026-09-09 补修 R3：** 修改 `operations/verified_execution.py::{execute_frozen_action,collect_facts}` 和 `tests/test_verified_execution.py`；T7 同步独立重放，避免两个实现对事实含义不同。
 
+**2026-09-09 补修 R10：** 修改 `operations/verified_process.py`、`operations/verified_execution.py` 与对应测试，新增固定 `SubprocessVerificationHost`，作为两个 verified profile 的业务后端。已有 `DockerVerificationHost` 不删除，但只能由显式 OCI 实验调用；Docker/Colima 缺失不能使业务执行 `NOT_READY`。
+
 - [ ] HTTP timeout/连接中断且动作是否完成未知时，可保存当时的 DB rowset 作为诊断材料，但不把它提升为同步业务后置条件。`action.finished` 和依赖该终态的 `user.*` 义务保持 missing/not_evaluated，原始观察标明 `http_terminal_unknown`；不得因零行自动 FAILED，也不得因恰好一行 PASSED。
 - [ ] 写端到端事实比较测试：HTTP 终态未知＋零行→INCOMPLETE，未知＋一行→INCOMPLETE；已知成功 envelope＋零行→FAILED；已知终态真实回滚→FAILED。恢复同一 action_started 保留原诊断、不重发 POST；正常路径仍只做一次有界后态读取。
-- [ ] 保留原 runner/隔离方案，补齐已有 `test_verified_runner_qualification.py` 的真实 OCI 构建与资格实验后才可关闭 T4；不得将普通 subprocess 测试改名为隔离资格通过，也不把此门槛推迟到 T13 才发现。
+- [ ] **R10** 将 `SubprocessVerificationHost` 接入 `VerifiedExecutionHandler` 的默认构造。它只接受安装代码生成的固定 argv、测试视图、nodeid、case_id 和现有预算；外部 `.aa/` 配置不能提供命令、模块或 Python 类。Docker 不可用、qualification 文件缺失以及 Colima 未启动时，普通 verified 执行仍能完成。
 
 - [ ] 先写真实子进程测试：空入口、assert True、薄合法桥接、伪造完成帧、重复 execute 请求、未知 case、取消/超时及零收集。以下生成入口必须合法，通过与否取决于父级证据：
 
@@ -392,30 +398,26 @@ def test_create_user():
     execute_case("TC_USER_CREATE_001")
 ```
 
-- [ ] 构建固定 Python 3.11 runner 镜像，安装本次 execution wheel、pytest、pytest-json-report 及锁定依赖。runner-lock 记录平台、基础镜像摘要、实际 wheel 名/摘要、依赖锁摘要和构建 image ID；预检逐一比较。HTTPX 是宿主 execution wheel 的运行依赖，不能只加到 root dev。普通执行不在线安装依赖，不使用宿主 PATH 上碰巧存在的 pytest。旧 runner 不全局替换。
-- [ ] 构建入口为本任务新增的 `uv run python scripts/build_verification_runner.py`：复用现有 wheel smoke 的 wheel 构建清单，按 runner.Dockerfile 和锁定输入准备镜像，输出本次资格记录的位置。测试从该记录取得已构建镜像，验证记录绑定当前 wheel 摘要；源码变化后必须重新构建，不能套用已提交样本中的旧 image ID。镜像安装只发生在显式准备阶段。
-- [ ] 新后端使用 argv 列表调用 Docker；固定命令由安装代码生成，外部配置只能提供已核验镜像和限额。关键参数如下，实际字符串值从已验证运行清单获得：
+- [ ] `SubprocessVerificationHost` 使用当前安装环境的 `sys.executable`，固定运行已安装的 `assurance_execution.bridge_runner`。pytest 与 pytest-json-report 是 execution wheel 的声明运行依赖；普通执行不在线安装依赖，也不从 PATH 或项目配置选择另一份 pytest。HTTPX 同样是宿主 execution wheel 的运行依赖，不能只加到 root dev。
+- [ ] 子进程以测试视图为 cwd，使用显式环境 allowlist，至少固定 `PYTHONUNBUFFERED=1`、`PYTHONDONTWRITEBYTECODE=1`，并移除 API token、数据库路径、host authority/secret handles、Collector 地址和证据路径。允许传递的临时目录必须位于本 Attempt 的测试临时根。该控制只减少意外泄漏，不描述为 OS 沙箱。
+- [ ] 新业务后端使用固定 argv 列表，不调用 shell；外部配置不能改变命令：
 
 ```python
-def container_argv(image: str, view: str, container_name: str) -> list[str]:
+def subprocess_argv() -> list[str]:
     return [
-        "docker", "run", "--rm", "--pull=never", "-i",
-        "--name", container_name, "--network=none", "--read-only",
-        "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=65534:65534",
-        "--pids-limit=64", "--memory=512m", "--cpus=1",
-        "--tmpfs=/tmp:rw,nosuid,nodev,size=64m,mode=1777",
-        "--mount", f"type=bind,src={view},dst=/tests,readonly",
-        "--workdir=/tests", image,
-        "python", "-m", "assurance_execution.bridge_runner",
+        sys.executable,
+        "-m",
+        "assurance_execution.bridge_runner",
     ]
 ```
 
 - [ ] bridge_runner 在 pytest 捕获前保存原始管道，将 pytest 普通 stdout 转 stderr；stdout 仅传长度受限 JSONL 帧。协议仅 `execute(case_id)`、`runner_report(raw)`，父级返回 ack/error；所有子进程帧都不构成 oracle 完成证据。禁止 TTY、shell、任意 frame 路径和额外参数；分片、超长、非法 JSON、未知 frame 均记录协议错误。
 - [ ] 通过 production activity/dispatch receipt 绑定当前授权，在外部动作前持久化 `action_started`；父进程先确认初态，实际 HTTP POST 一次、读取后态并保存观察。HTTPX 设置 `follow_redirects=False`、10 秒总边界，不自动重试；凭据只在父级解析。函数输出只含真实实际值，expected 仍引用 T1/T2。
-- [ ] 使用 Popen 和有限等待/取消，默认 runner 总预算 60 秒，单帧最大 256 KiB、stderr 最多 8 MiB；这些是执行配置并进入摘要，不能由测试改变。终止拥有的 Docker 容器并确认退出，再封存；不能只 kill Docker CLI 留下容器继续运行。动作未知时保留 INCOMPLETE。恢复发现 action_started 且无终态时不执行第二次；再评估已有完整 evidence 时不重复请求。
+- [ ] 使用 Popen 和有限等待/取消，默认 runner 总预算 60 秒，单帧最大 256 KiB、stderr 最多 8 MiB；这些是执行配置并进入摘要，不能由测试改变。终止并 wait/reap 本次拥有的进程组后再封存，不能留下 pytest child。动作未知时保留 INCOMPLETE。恢复发现 action_started 且无终态时不执行第二次；再评估已有完整 evidence 时不重复请求。
 - [ ] 新 host executor 实现 recover/reconcile，符合 production task host 和 RecoverableTaskHandler/activity 端口。恢复界限：有终态但尚未 seal/promote 时采用相同材料；dispatch 已开始但动作终态未知时形成可提交的 INCOMPLETE；没有可认证历史时拒绝，不重发 POST。真实 cut 测试覆盖 dispatch 前、HTTP 返回但 terminal 未保存、seal 前及 promotion 后；同一 attempt 的实际 POST 总数最多 1。TaskAttemptContract 重试预算不代替此验证。
-- [ ] 真资格测试证明容器不能读/写宿主证据、不能修改只读测试文件、不能直接访问 SUT、不能拿到认证 canary；父级仍能收桥接请求并完成真实 HTTP→SQLite。本任务测试不能仅用 FakePytestHost；Docker 不可用时命令失败并记录未验证，不用 skip/xfail 作为任务完成。
-- [ ] Run: `uv run pytest packages/capabilities/assurance-execution/tests/test_verified_process.py packages/capabilities/assurance-execution/tests/test_verified_execution.py packages/capabilities/assurance-execution/tests/test_runner.py -q`。提交 `feat(execution): execute frozen plans behind a confined pytest bridge`。
+- [ ] 产品测试必须用真实 subprocess bridge 完成父级 HTTP→SQLite，不仅使用 FakePytestHost；同时证明子进程帧、pytest exit code、伪造 runner report 和子进程自报结果都不能生成或替代父级 oracle 事实。显式 OCI 实验仍可证明更强的文件/网络/canary 隔离，但其缺失只记录“OCI 实验未运行”，不影响本 Task、full workflow 或交付结论。
+- [ ] 将 `test_verified_runner_qualification.py` 改为仅在 `AA_RUN_OCI_QUALIFICATION=1` 时收集真实资格断言；默认 `uv run pytest` 明确显示为可选实验未启用，不因缺少 Docker/记录而失败。显式实验命令固定为先运行 `uv run python scripts/build_verification_runner.py`，再运行 `AA_RUN_OCI_QUALIFICATION=1 uv run pytest packages/capabilities/assurance-execution/tests/test_verified_runner_qualification.py -q`；实验失败只使该实验失败，不能改写业务 verdict。
+- [ ] Run: `uv run pytest packages/capabilities/assurance-execution/tests/test_verified_process.py packages/capabilities/assurance-execution/tests/test_verified_execution.py packages/capabilities/assurance-execution/tests/test_runner.py -q`。提交 `fix(execution): run verified bridge without OCI dependency`。
 
 ## Task 5: 冻结 profile 与 semantic attempt 装配
 
@@ -425,13 +427,15 @@ def container_argv(image: str, view: str, container_name: str) -> list[str]:
 
 **2026-09-09 补修 R4：** 继续修改 product `verification_execution.py`、`runtime_ports.py`；execution `operations/{verified_attempt,user_attempt,readiness}.py`、必要的 `contracts/{agent,readiness}.py`；补测 `tests/product/test_verified_readiness.py`、`test_verified_attempt_recovery.py`。SUT 生命周期只在现有 execution host 内装配。
 
-- [ ] root preflight 只验证已冻结 profile、源制品/依赖锁、runner 资格及必要 secret handles 的可用性；Trace 模式还验证已锁定 Collector/OTel 制品资格。此时不要求未来 case/Attempt 的 execution_id、运行中 SUT、动态地址或 DB selection，也不提前创建测试实例。保留原 full 其他 Agent 的预检。
+**2026-09-09 补修 R10：** 继续修改 product `models.py`、`verification_execution.py` 与 execution `operations/verified_attempt.py`，从 verified profile 的配置、preflight、binding data 和恢复检查中移除 runner qualification。现有 `runner.source_root` 承担了另一个必要职责，改名并上移为 `VerificationHostConfigV1.sut_source_root`，仅用于认证和物化受控 User SUT；它不选择 pytest runner。固定 subprocess 后端由已安装 execution wheel 决定，不增加第二个 profile/mode 参数。
+
+- [ ] root preflight 只验证已冻结 profile、SUT 源制品/依赖锁及必要 secret handles 的可用性；Trace 模式还验证已锁定 Collector/OTel 制品资格。它不读取 runner qualification、不执行 Docker 命令，也不要求未来 case/Attempt 的 execution_id、运行中 SUT、动态地址或 DB selection。保留原 full 其他 Agent 的预检。
 - [ ] 进入已授权的 `execution.execute/run` host 后，先认证 generation closure，再调用已有 `start_user_attempt`，从该 Attempt 身份派生 execution_id、独占 SUT/SQLite、凭据覆盖和动态 readiness；在实际 POST 前完成实例/DB/源码核验和 manifest 冻结。输入只携带冻结配置与已接纳引用，动态资料留在 host activity 和既有证据产物中。不能把起停逻辑塞进 `adapt_execution` 或 graph route。
 - [ ] 为既有 execute/reconcile/cancel 接上同一生命周期：启动失败也清理已拥有进程；正常完成在证据封存后清理；未知动作形成 INCOMPLETE；恢复读取原 activity/authority，不创建第二个实例或重新登录/POST。过期 liveness receipt 或已经正常停止的 SUT/Collector，不得阻止已封存事实重放及 cleanup。不同的新 Attempt 则必须获得新实例和业务键。
-- [ ] 单独验证 root 无实例也能进入 intake、进入执行后才生成实例，以及同一 invocation 两次 Attempt 使用不同 SQLite。对源码/资格/handle 不合法的静态输入仍立即 NOT_READY；对实例不一致的动态输入在 POST 前 NOT_READY。保留 `test_verified_attempt_recovery.py` 原 crash-cut 保证，并在 T10 用真实产品绑定验证，不靠手填完整 verification/readiness。
+- [ ] 单独验证 root 无实例也能进入 intake、进入执行后才生成实例，以及同一 invocation 两次 Attempt 使用不同 SQLite。对源码/依赖锁/handle 不合法的静态输入仍立即 NOT_READY；Docker/Colima/qualification 缺失不能阻止执行。对实例不一致的动态输入在 POST 前 NOT_READY。保留 `test_verified_attempt_recovery.py` 原 crash-cut 保证，并在 T10 用真实产品绑定验证，不靠手填完整 verification/readiness。
 
 - [ ] 先写 composition 红灯测试：两种 profile 均能 boot；未知值、输入/lock/根计划不一致均拒绝；profile=None 的 legacy 执行行为保持；新模式不会调用 raw Agent executor；仍有同一组产品业务 semantic node IDs。
-- [ ] graph factory 将现有业务节点的 contract ID 换成两个稳定 Task facade；profile 选择不放到 Feature graph context。product 的封闭装配只支持：None→现有 ResolvedRawAgentExecutor，api_db.v1/api_db_trace.v1→T4 可恢复 host executor。执行与 reconcile 必须选择同一已冻结 delegate，不嵌套第二个 kernel attempt。
+- [ ] graph factory 将现有业务节点的 contract ID 换成两个稳定 Task facade；profile 选择不放到 Feature graph context。product 的封闭装配只支持：None→现有 ResolvedRawAgentExecutor，api_db.v1/api_db_trace.v1→T4 使用固定 subprocess bridge 的可恢复 host executor。执行与 reconcile 必须选择同一已冻结 delegate，不嵌套第二个 kernel attempt。
 
 ```python
 def execution_backend(profile: str | None) -> str:
@@ -444,11 +448,12 @@ def execution_backend(profile: str | None) -> str:
 
 - [ ] 将 execution Task catalog 加入 product `FEATURE_TASK_ATTEMPT_CONTRACTS`；更新 `_resolve_task_contract`/boot 特定闭集装配，使两条 facade 得到对应 executor。仍认证当前安装目录全部 Agent binding 的目标/secret/resource closure，不将 raw runtime target 替换为 oracle handler。新增 task 及 delegate contract/schema/source/config 摘要全部纳入现有安装声明与 ProductLock/GraphBuildManifest 认证。
 - [ ] facade contract 的 I/O schema、resources、retry、timeout 固定发布；不按profile动态改同名contract的canonical projection。profile/config摘要进入已认证资源、ProductLock与validated input，GraphRevision/AttemptKey沿既有机制绑定它们；execute和reconcile都验证输入与冻结配置相等。
+- [ ] **R10 配置收敛：** 从当前 `DeploymentBindingsV1.verification_host`、binding builder、配置 schema 与 Task binding data 删除 `runner` / `qualification_path` / `qualification_digest`；新增唯一必要字段 `sut_source_root`，继承原 `runner.source_root` 的源码定位、project confinement、运行锁和 managed-SUT authority 认证。host binding 只传 `user_host.sut_source_root`，不再传 `verification_runner`。OCI 实验直接读取仓库内 `runner-lock.json` 和显式构建输出，不进入 `.aa/`、ProductLock 的业务配置或 AttemptKey。不要新增 `runner_mode`、`use_docker`、第三个 validation profile 或自动 fallback。
 - [ ] 新contract/schema导致GraphRevision变化时重新compile/start；不把旧运行中的invocation换装新contract继续执行。旧档案按版本读取，新invocation的resume只允许同一lock/revision/profile；增加漂移拒绝测试。
 - [ ] facade 的 resources、输出契约及 timeout 覆盖实际选定 delegate；legacy phase claims 继续有效，verified 新事实只能由 host 写。检查全仓 semantic contract 数量硬编码与相关快照，改成对安装目录精确集合的比较；不可简单删掉闭集检查。Agent binding 的集合保持远程 main 的现有定义，不把新 task 塞入 Agent routes。
-- [ ] 在 `runtime_ports._bind_executor_host` 的已安装装配路径穿透facade，为实际delegate接上production host/activity/reconcile；验证invocation、AttemptKey、授权fence和资源路径。当前裸 `_task_context` 的空activity/secrets、恒false cancel及以workspace identity代替lock的metadata不可当作新后端授权；由host绑定真实锁/授权/activity。attempt兼容字段仍不作运行身份依据。凭据只由受控secret handle或固定harness临时凭据交给host，不能进入候选文件、Docker环境或report。
+- [ ] 在 `runtime_ports._bind_executor_host` 的已安装装配路径穿透facade，为实际delegate接上production host/activity/reconcile；验证invocation、AttemptKey、授权fence和资源路径。当前裸 `_task_context` 的空activity/secrets、恒false cancel及以workspace identity代替lock的metadata不可当作新后端授权；由host绑定真实锁/授权/activity。attempt兼容字段仍不作运行身份依据。凭据只由受控secret handle或固定harness临时凭据交给父级 host，不能进入候选文件、pytest 子进程环境或report。
 - [ ] 更新 `_preflight_selected_root` 当前仅凭 `.agent.` 名称检测的逻辑，用安装代码中的闭集facade→实际backend依赖展开；legacy facade仍预检OpenCode，verified分支只预检本后端，full的其他Agent节点仍照常预检。不得因隐藏在facade后而漏掉依赖/授权。
-- [ ] 按 R4 区分静态资格与动态实例：`api_db.v1` 的 root 预检源锁/runner/host 配置，实际 SUT/DB 在 execution Attempt 内启动核验；只有 `api_db_trace.v1` 额外要求 Collector/OTel。缺少所选模式能力输出 NOT_READY，阶段一不依赖 Collector。prepared/dispatch_started/terminal/sealed/promoted 各 cut 的恢复调用同一 delegate，未知 POST 终态不得因 retry 或 resume 再次触发动作。
+- [ ] 按 R4/R10 区分静态输入与动态实例：`api_db.v1` 的 root 预检源锁和 host handles，实际 SUT/DB 在 execution Attempt 内启动核验；只有 `api_db_trace.v1` 额外要求 Collector/OTel。两个 profile 共用同一固定 subprocess bridge，不读取 OCI 配置。缺少所选业务能力输出 NOT_READY，阶段一不依赖 Collector。prepared/dispatch_started/terminal/sealed/promoted 各 cut 的恢复调用同一 delegate，未知 POST 终态不得因 retry 或 resume 再次触发动作。
 - [ ] Run: `uv run pytest tests/product/test_verified_execution_profile.py tests/product/test_verified_attempt_recovery.py tests/product/test_semantic_attempt_bindings.py tests/product/test_agent_execution_contracts.py tests/product/test_composition_authority.py tests/product/test_graph_revision_contracts.py tests/product/test_full_graph_audit.py -q`。提交 `feat(product): compose verified semantic execution attempts`。
 
 ## Task 6: 将生成物接到权威执行及重跑
@@ -566,7 +571,7 @@ def assert_protected_fields_equal(before: dict, after: dict) -> None:
 **Interfaces:** 新 manifest item ID 固定为 `opencode-user-api-db`；`entrypoint=full`、`run_mode=case`、`case_modules=['system/user']`、`selected_test_families=['api']`（manifest 字段）、`validation_profile='api_db.v1'`。现有 run_item 转成 ProductInput.candidate_test_families=[api]；policy.required/allowed 与本轮 quality goal 均限定 API，真实 intake.resolve-plan 冻结 selected=[api]。harness/run_item 的 `--fault` 闭集值为 `none,missing-binding,no-bridge,no-action,skip-oracle,wrong-value,rollback,rollback-success,db-unavailable,wrong-environment,unknown-http,forged-evidence,downgrade,missing-write`；其中 `no-action` 为本次 R9 补充，第二阶段在 T13 扩展 Trace 值。故障选择在本次 full 启动前冻结。
 
 - [ ] 更新 manifest 校验红灯测试，添加独立 User item；保留最新远程 main 的 Dept API-only 选择、模型路由和现有要求，不恢复旧四 family 约束。两种新 profile 限制最终 selected 只能为 API；不能向 ProductInput 填已移除的 selected_test_families 或绕过 resolve-plan。
-- [ ] 先完成 R1/R2/R3/R4/R5/R7 的确定性补修测试、T8 的 R8 封装补修和 T4 真实 OCI 资格。用现有 scripted Agent 驱动安装产品的完整 graph，从空 change 逐节点产生 case/review/bindings/机器计划/codegen；禁止使用 `accepted_verified_execution_input` 预填链路产物、测试侧预造完整 context/readiness，或直接调用底层 materializer 替代产品 executor。这一测试只证明装配，之后仍须真实 Agent full 验收。
+- [ ] 先完成 R1/R2/R3/R4/R5/R7/R10 的确定性补修测试和 T8 的 R8 封装补修。用现有 scripted Agent 驱动安装产品的完整 graph，从空 change 逐节点产生 case/review/bindings/机器计划/codegen；禁止使用 `accepted_verified_execution_input` 预填链路产物、测试侧预造完整 context/readiness，或直接调用底层 materializer 替代产品 executor。这一测试只证明装配，之后仍须真实 Agent full 验收。测试环境没有 Docker CLI、Colima、qualification 文件或 image 时仍必须通过产品装配并到达真实 subprocess 执行。
 - [ ] 在 `run_item.main` 的 runtime 分派处，新 profile 跳过现有 `_managed_sut_runtime`（它固定9999/3100并要求web/node_modules），由T4 host管理每个case attempt的SUT/DB及第二阶段Collector。run_item只准备显式project副本和冻结配置，使用动态受控端口，API-only不启动frontend。添加同invocation两次attempt都能独立start/drain/stop、无旧runtime抢占的测试。必要节点必须真正 succeeded，不接受 `_status_steps` 当前把 stopped 算完成的做法。
 - [ ] 需求文件收窄到 User 创建与本 spec 八条断言，不宣称整个 User 管理模块已覆盖。harness 的源文件摘要清单包含 app、migrations、配置及启动覆盖；原 SUT 源码漂移时预检失败，不能拿主仓库 Git HEAD 替代。
 - [ ] 同一真实 full invocation 从空 change 开始，经 intake/explore/resolve-plan/case/review/机器plan/review/codegen，执行本次生成测试，再质量判定/报告/retro/apply/achieved/export。沿用现有真实 Agent adapter；scripted Agent 只用于快速产品路由测试，不能充当此 live 门槛。
@@ -662,7 +667,7 @@ HTTP 动作有终态 → 独立 DB 查询结束 → client span 结束
 - [ ] `refactor` 在 intake/explore 前生成并冻结真实的新制品：函数改名/提取 helper、等价 ORM 写法、增加辅助 span；使实际 runtime 对应新源文件与锁，经过重新评审、bindings 编译和真实执行。业务断言/需求内容及检查点语义不变，技术来源摘要可以变化。不能只替换 trace JSON，或在运行时打补丁却继续使用旧源摘要。
 - [ ] 矩阵明确记录阻止阶段与期望 verdict：no-bridge 候选拒绝不冒充运行期验证；no-action/skip-oracle/unknown-http/遥测缺失为 INCOMPLETE；真实错误字段/回滚（含提前 completed）为 FAILED；语义等价 refactor 为 PASSED。已确认业务违反叠加 telemetry 缺失保持 FAILED＋缺失明细，不缩减 required 集合。
 - [ ] 每个 Trace 场景验证 raw OTLP/分阶段完成记录的封存及 assessment 重放，正常项须通过现有 achieved/export；缺文件、过期实例或摘要漂移在已发布快速路径也拒绝。首次执行、合法修复重跑和恢复的记录分别保留，不能用普通 incomplete 自动触发 bridge healing。
-- [ ] 保存三类独立结果：确定性单元/安装产品图测试、真实 OCI/OTel 兼容实验、真实 Agent full 矩阵。任何一类未跑均明确记录未验收；不以另外两类替代，也不将测试文件名含 full 当作验收依据。
+- [ ] 保存三类交付结果：确定性单元/安装产品图测试、真实 OTel 兼容实验、真实 Agent full 矩阵。任何一类未跑均明确记录未验收；不以另外两类替代，也不将测试文件名含 full 当作验收依据。OCI 隔离结果如显式运行则作为第四类可选安全实验单列，缺失不阻止交付，也不能被描述为已验证隔离。
 
 - [ ] 明确第二项配置只选 `api_db_trace.v1`，同一 User 规范，不复制一份可自行漂移的 expected。Stage1 与 Stage2 共用 DB observer/比较器/业务 assertion IDs。
 - [ ] 逐项跑完 full 矩阵，从无预填产物的新 change 开始；每个故障在应到达的真实产品边界被阻止，保存节点状态/门禁结论，禁止用单独 evaluator 的失败输出替代 full 失败。
@@ -676,12 +681,11 @@ uv run python benchmark/assurance-product/run_item.py --item opencode-user-api-d
 ```
 
 - [ ] 验证正常运行 publish receipt、apply manifest、测试/规格/计划/证据摘要全部一致；异常运行无成功发布。重复 export 幂等；重跑、恢复、缺证据、legacy/profile降级均不能误报 achieved。
-- [ ] 打包验证 execution wheel 具备 HTTPX/OTel 等运行依赖、runner 镜像具备 pytest-json-report，SUT 独立锁能重建；所有受控 harness 变体和 bootstrap 已跟踪，不依赖忽略目录中的未提交改动。
-- [ ] 在 CI 的确定性测试前执行 Task 4 镜像构建/资格步骤，并将生成记录传给真实 runner 测试；CI 不依赖开发者预先构建的镜像，也不因没有 Docker 而悄悄跳过。真实 Agent full benchmark 单独按本节命令验收，普通 CI 使用 scripted Agent 做路由测试，二者结果分开保存。
+- [ ] 打包验证 execution wheel 具备 HTTPX、pytest、pytest-json-report 与 OTel 等声明运行依赖，SUT 独立锁能重建；所有受控 harness 变体和 bootstrap 已跟踪，不依赖忽略目录中的未提交改动。wheel smoke 必须实际运行固定 subprocess bridge。
+- [ ] 普通 CI 不构建镜像、不启动 Docker/Colima、不读取 qualification 文件；确定性测试和 wheel smoke 在仅有 uv workspace 的环境中完成。`scripts/build_verification_runner.py` 与真实 OCI 资格测试只通过独立显式命令运行，结果保存到实验记录且不参与普通 CI、业务 verdict 或 achieved/export。真实 Agent full benchmark 单独按本节命令验收，普通 CI 使用 scripted Agent 做路由测试，二者结果分开保存。
 - [ ] 执行全部 CI（每项通过后才进入最终验收归档）：
 
 ```bash
-uv run python scripts/build_verification_runner.py
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
@@ -710,12 +714,12 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 | A14 正常重构 | T3/R7 源到运行制品绑定、T8 义务保护、T11兼容、T12匹配、T13 真实新制品 full |
 | A15 弱化义务 | T2/T8/T9、两阶段 full |
 | A16/A17 重跑/未知终态 | T3 身份、T4/R3 恢复及后置条件依赖、T7 重放、T9 有效执行索引、两阶段 full |
-| A18 伪造 evidence | T4 真实隔离、T6 接纳、T7/T9 验证、两阶段 full |
+| A18 伪造 evidence | T4 父级忽略子进程自报事实、T6 接纳、T7/T9 认证、两阶段 full；不依赖 OS 沙箱声明 |
 | A19 无显式assert的合法入口 | T4/T6、T10/T13正常 full |
 | A20 legacy/profile降级 | T5/T8/T9/T13 |
 | A22 其他DB操作冒充写入 | T3/T7/T10，T12/T13加Trace |
 | A23/A24/A25 绕过生成/修复/最终门禁 | T6/T8/T9、T10/T13 full |
-| A26 真驱动兼容及无凭据泄漏 | T4 子进程边界、T11 真实锁定兼容、T12/T13 |
+| A26 真驱动兼容及无凭据泄漏 | T4 固定 subprocess 协议及环境 allowlist、T11 真实锁定兼容、T12/T13；可选 OCI 实验另记 |
 
 ## 6. 计划执行与文档维护
 
@@ -743,4 +747,4 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 | SUT缺失与旧runtime | `.gitignore`；benchmark `run_item.py::_resolve_sut` / `_managed_sut_runtime` / `main` |
 | 完整CI | `.github/workflows/ci.yml` 的 lint/typecheck/import-contracts/tests/packaging-smoke |
 
-实施前不需要重做数据库选型或新增 workflow 业务节点；需要按本修订完成边界适配。OTel 的版本兼容、Docker 资格、真实 Agent full 矩阵都仍是实施任务，文档review不证明它们已通过。
+实施前不需要重做数据库选型或新增 workflow 业务节点；需要按本修订完成边界适配。OTel 的版本兼容和真实 Agent full 矩阵仍是交付任务；Docker/OCI 资格仅为独立可选实验。文档 review 不证明这些验收已通过。
