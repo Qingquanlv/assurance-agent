@@ -223,6 +223,8 @@ def test_dept_create_rejects_names_longer_than_the_database_column() -> None:
     module.DeptCreate(name="x" * 20)
     with pytest.raises(ValidationError):
         module.DeptCreate(name="x" * 21)
+    with pytest.raises(ValidationError):
+        module.DeptCreate(name="")
 
 
 def test_full_benchmark_declares_its_required_e2e_journey() -> None:

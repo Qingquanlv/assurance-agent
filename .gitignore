@@ -17,6 +17,14 @@ dist/
 # Benchmark: commit the harness, ignore generated artifacts and the vendored SUT app.
 benchmark/assurance-product/results/
 benchmark/vue-fastapi-admin/*
+!benchmark/vue-fastapi-admin/app/
+benchmark/vue-fastapi-admin/app/*
+!benchmark/vue-fastapi-admin/app/schemas/
+benchmark/vue-fastapi-admin/app/schemas/*
+!benchmark/vue-fastapi-admin/app/schemas/depts.py
+!benchmark/vue-fastapi-admin/app/controllers/
+benchmark/vue-fastapi-admin/app/controllers/*
+!benchmark/vue-fastapi-admin/app/controllers/dept.py
 !benchmark/vue-fastapi-admin/benchmark/
 !benchmark/vue-fastapi-admin/eval-fixtures/
 # Stable benchmark policy and L1 data; other SUT state remains ignored.
