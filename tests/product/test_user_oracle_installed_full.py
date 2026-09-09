@@ -7,7 +7,7 @@ from tests.product.cli_support import SECRET_ENV
 from tests.product.test_user_oracle_full_workflow import BENCHMARK, REPO, load
 
 
-def _installed_user_sources(tmp_path: Path, installed_sources):
+def _installed_user_sources(tmp_path: Path, installed_sources, *, fault: str = "none"):
     import shutil
 
     from assurance_product.binding_builder import build_deployment_wheel
@@ -18,7 +18,7 @@ def _installed_user_sources(tmp_path: Path, installed_sources):
     del installed_sources
     runner = load("run_item")
     project = tmp_path / "project"
-    runner._prepare_user_project(repo=REPO, project_dir=project, fault="none")
+    runner._prepare_user_project(repo=REPO, project_dir=project, fault=fault)
     config_tree = tmp_path / "config-tree"
     shutil.copytree(REPO / "tests/product/fixtures/project-config", config_tree)
     runner._prepare_project_config_tree(config_tree, project)
@@ -31,7 +31,7 @@ def _installed_user_sources(tmp_path: Path, installed_sources):
     )
     output = tmp_path / "runtime"
     output.mkdir()
-    runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault="none")
+    runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault=fault)
     deployment = tmp_path / "deployment.yaml"
     runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
     document = json.loads(deployment.read_text(encoding="utf-8"))
@@ -124,6 +124,18 @@ def _write_logical(write_root: Path, relative: str, content: str | bytes) -> Non
         path.write_bytes(content)
 
 
+def _business_json(agent_run) -> dict:
+    from graph_engine.frozen_json import thaw_json
+
+    for part in agent_run.instructions:
+        if part.media_type != "application/json" or part.json_content is None:
+            continue
+        payload = thaw_json(part.json_content)
+        if isinstance(payload, dict) and "change_id" in payload:
+            return payload
+    raise AssertionError("scripted quality job is missing its business JSON instruction")
+
+
 def _agent_success(payload: object):
     from agent_runtime_contracts import AgentRunResult
     from agent_runtime_contracts.schema import canonical_digest
@@ -188,7 +200,7 @@ def _user_case_entry() -> dict:
     }
 
 
-def _scripted_opencode_execute(request, context):
+def _scripted_opencode_execute(request, context, *, fault: str = "none"):
     import hashlib
     import json
 
@@ -499,11 +511,22 @@ def _scripted_opencode_execute(request, context):
         staged = (
             f"qa/changes/{change_id}/generated/api/files/tests/api/test_user_create.py"
         )
-        _write_logical(
-            write_root,
-            staged,
-            _expected_bridge_bytes(mapping, "tests/api/test_user_create.py"),
-        )
+        if fault == "no-bridge":
+            _write_logical(
+                write_root,
+                staged,
+                (
+                    "from assurance_execution.bridge import execute_case\n\n"
+                    "def test_tc_user_create_001__create():\n"
+                    "    return None\n"
+                ),
+            )
+        else:
+            _write_logical(
+                write_root,
+                staged,
+                _expected_bridge_bytes(mapping, "tests/api/test_user_create.py"),
+            )
         authoring = {
             "schema_version": "1",
             "change_id": change_id,
@@ -526,12 +549,135 @@ def _scripted_opencode_execute(request, context):
         )
         return _agent_success(authoring)
 
+    if schema_id.endswith("fact-baseline.v1"):
+        from assurance_quality.contracts.agent import FactBaselineResultV1
+
+        document = FactBaselineResultV1.model_validate(
+            {
+                "source": "seed_file",
+                "schema_version": "1",
+                "change_id": change_id,
+                "warnings": [],
+                "facts": {"route_prefix": "/api/v1"},
+                "seed_file": "app/core/init_app.py",
+            }
+        )
+        payload = document.model_dump(mode="json")
+        _write_logical(write_root, allowed[0], json.dumps(payload, indent=2) + "\n")
+        return _agent_success(payload)
+
+    if schema_id.endswith("inspection.v1") or schema_id.endswith("inspect.v1"):
+        from assurance_quality.contracts.agent import InspectionResultV1
+        from graph_engine.canonical import canonical_digest
+
+        business = _business_json(agent_run)
+        assessment = business["assessment"]
+        execution_ref = assessment.get("execution_ref")
+        execution_digest = (
+            execution_ref["digest"]
+            if isinstance(execution_ref, dict)
+            else canonical_digest(assessment["incomplete_execution"])
+        )
+        healing = assessment.get("healing_ref")
+        document = InspectionResultV1.model_validate(
+            {
+                "schema_version": "1.0",
+                "change_id": change_id,
+                "batch_id": business["batch_id"],
+                "inspect_mode": "primary",
+                "classification_performed": True,
+                "status": "analyzed",
+                "execution_digest": execution_digest,
+                "healing_digest": healing["digest"] if isinstance(healing, dict) else None,
+                "trace_digest": assessment["trace_ref"]["digest"],
+                "coverage_digest": assessment["gaps_ref"]["digest"],
+                "metrics_digest": assessment["metrics_ref"]["digest"],
+            }
+        )
+        payload = document.model_dump(mode="json")
+        _write_logical(write_root, allowed[0], json.dumps(payload, indent=2) + "\n")
+        return _agent_success(payload)
+
+    if schema_id.endswith("issue-analysis.v1"):
+        from assurance_quality.contracts.agent import IssueAnalysisResultV1
+
+        business = _business_json(agent_run)
+        owned = list(business.get("owned_evidence_ids") or [])
+        document = IssueAnalysisResultV1.model_validate(
+            {
+                "schema_version": "1.0",
+                "change_id": change_id,
+                "batch_id": business["batch_id"],
+                "evidence_bundle_digest": business["evidence_bundle_digest"],
+                "status": "completed",
+                "candidate_count": 1 if owned else 0,
+                "candidates": (
+                    [
+                        {
+                            "candidate_id": "CAND-USER-INCOMPLETE",
+                            "observation_ids": owned,
+                            "proposed": {
+                                "title": "Verified User create is incomplete",
+                                "classification": "product_bug",
+                                "severity": "high",
+                                "root_cause_hypothesis": "required verification facts were not observed",
+                            },
+                            "affected_surface": {"kind": "module", "value": "User create"},
+                            "fingerprint_inputs": {
+                                "surface": "user.create",
+                                "symptom": "incomplete verification",
+                            },
+                            "possible_problem_ids": [],
+                            "confidence": 0.8,
+                            "recommended_action": "triage",
+                        }
+                    ]
+                    if owned
+                    else []
+                ),
+            }
+        )
+        payload = document.model_dump(mode="json")
+        _write_logical(write_root, allowed[0], json.dumps(payload, indent=2) + "\n")
+        return _agent_success(payload)
+
+    if schema_id.endswith("report.v1"):
+        from assurance_quality.contracts.agent import ReportResultV1
+
+        business = _business_json(agent_run)
+        document = ReportResultV1.model_validate(
+            {
+                "schema_version": "1.1",
+                "change_id": change_id,
+                "batch_id": business["batch_id"],
+                "purpose": business["purpose"],
+                "report_files": list(allowed),
+                "case_digest": business["case_digest"],
+                "plan_digest": business["plan_digest"],
+                "mapping_digest": business["mapping_digest"],
+                "execution_digest": business["execution_digest"],
+                "healing_digest": business.get("healing_digest"),
+                "trace_digest": business["trace_digest"],
+                "coverage_digest": business["coverage_digest"],
+                "issue_digest": business.get("issue_digest"),
+                "metrics_digest": business["metrics_digest"],
+            }
+        )
+        payload = document.model_dump(mode="json")
+        _write_logical(write_root, allowed[0], "# User verification report\n")
+        return _agent_success(payload)
+
     raise AssertionError(f"unhandled scripted schema: {schema_id} allowed={allowed}")
 
 
-def test_installed_full_assembles_empty_change_through_codegen(
-    tmp_path, installed_sources, monkeypatch
-):
+class _InstalledFullRun:
+    def __init__(self, **values):
+        self.__dict__.update(values)
+
+
+def _drive_installed_user_full(
+    tmp_path, installed_sources, monkeypatch, *, fault: str, change_id: str
+) -> _InstalledFullRun:
     from agent_runtime_opencode.discovery import agent_run_from_request
     from agent_runtime_opencode.handler import OpenCodeHandler
     from assurance_product.application import AssuranceProductApplication
@@ -539,31 +685,38 @@ def test_installed_full_assembles_empty_change_through_codegen(
     from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_bindings import _HostBackedInstalledPhase, _task_context
 
-    project, item, composition, _config_tree = _installed_user_sources(tmp_path, installed_sources)
-    change_id = "CH-USER-FULL-001"
+    project, item, composition, _config_tree = _installed_user_sources(
+        tmp_path, installed_sources, fault=fault
+    )
     input_path = tmp_path / "input.json"
     _write_full_input(input_path, composition, change_id=change_id)
     requests = []
     paths = _assembly_paths(project, change_id)
     assert not paths["requirement"].exists()
 
-    async def in_process_invoke(self, request, scope):
-        return await self._handler.execute(request, _task_context(scope))
+    original_invoke = _HostBackedInstalledPhase._invoke
+
+    async def scripted_or_hosted_invoke(self, request, scope):
+        if isinstance(self._handler, OpenCodeHandler):
+            return await self._handler.execute(request, _task_context(scope))
+        return await original_invoke(self, request, scope)
 
     async def scripted_execute(self, request, context):
         del self
         agent_run = agent_run_from_request(request)
         requests.append(agent_run)
-        return _scripted_opencode_execute(request, context)
+        return _scripted_opencode_execute(request, context, fault=fault)
 
-    monkeypatch.setattr(_HostBackedInstalledPhase, "_invoke", in_process_invoke)
+    monkeypatch.setattr(_HostBackedInstalledPhase, "_invoke", scripted_or_hosted_invoke)
     monkeypatch.setattr(OpenCodeHandler, "execute", scripted_execute)
     monkeypatch.setenv(SECRET_ENV, "local-script-token")
     authorization = _authorization([f"opencode.token=env:{SECRET_ENV}", *_host_secret_values(item)])
     workspace = prepare_change_workspace(project, change_id)
+    application = AssuranceProductApplication()
     run_error = None
+    result, mapped, code = None, None, None
     try:
-        result, mapped, code = AssuranceProductApplication().run(
+        result, mapped, code = application.run(
             project_dir=project,
             change_id=change_id,
             invocation_id=change_id,
@@ -576,25 +729,169 @@ def test_installed_full_assembles_empty_change_through_codegen(
         )
     except Exception as error:
         run_error = error
-        if not requests:
-            raise AssertionError(f"installed run failed before first agent request: {error!r}") from error
-        result, mapped, code = None, type(error).__name__, 40
-    if not requests:
-        raise AssertionError(f"no agent request; mapped={mapped} code={code} result={result!r}")
-    assert requests[0].workspace.write_root.startswith(f"qa/changes/{change_id}/.staging/")
-    schemas = [item.result_contract.schema_id for item in requests]
-    status_path = project / "qa" / "changes" / change_id / "status.json"
-    status_text = status_path.read_text(encoding="utf-8") if status_path.is_file() else "no-status"
-    result_text = repr(result)[:800] if result is not None else "no-result"
+    status = None
+    status_error = None
+    try:
+        status = application.status(
+            workspace=workspace,
+            composition=composition,
+            authorization=authorization,
+            invocation_id=change_id,
+            change_id=change_id,
+        )
+    except Exception as error:
+        status_error = error
+    return _InstalledFullRun(
+        project=project,
+        item=item,
+        composition=composition,
+        workspace=workspace,
+        authorization=authorization,
+        application=application,
+        paths=paths,
+        requests=requests,
+        result=result,
+        mapped=mapped,
+        code=code,
+        run_error=run_error,
+        status=status,
+        status_error=status_error,
+        change_id=change_id,
+        fault=fault,
+    )
+
+
+def _status_payload(driven: _InstalledFullRun) -> dict:
+    if driven.status is not None:
+        return driven.status.model_dump(mode="json")
+    status_path = driven.project / "qa" / "changes" / driven.change_id / "status.json"
+    if status_path.is_file():
+        return json.loads(status_path.read_text(encoding="utf-8"))
+    raise AssertionError(
+        "installed run produced no product status envelope: "
+        f"run_error={driven.run_error!r} status_error={driven.status_error!r} "
+        f"mapped={driven.mapped} code={driven.code}"
+    )
+
+
+def _assessment_failure_messages(project: Path) -> list[str]:
+    messages: list[str] = []
+    for path in project.rglob("*.json"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if '"invalid_input"' not in text and "differs from" not in text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        stack = [payload]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                kind = current.get("kind")
+                message = current.get("message")
+                if kind == "invalid_input" and isinstance(message, str):
+                    messages.append(message)
+                stack.extend(current.values())
+            elif isinstance(current, list):
+                stack.extend(current)
+    return sorted(set(messages))
+
+
+def _quality_debug(project: Path, change_id: str) -> str:
+    bits: list[str] = []
+    root = project / "qa" / "changes" / change_id
+    for path in sorted(root.rglob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if path.name == "observations.json":
+            bits.append(f"observations={len(payload.get('observations') or [])}")
+        elif path.name == "verification.json":
+            obligations = [
+                f"{item.get('obligation_id')}={item.get('business_status')}/{item.get('evidence_status')}:{item.get('actual')!r}"
+                for item in payload.get("obligations") or ()
+                if item.get("business_status") == "violated" or item.get("evidence_status") != "observed"
+            ]
+            bits.append(
+                f"verdict={payload.get('verdict')} reasons={payload.get('reason_codes')} "
+                f"open={obligations}"
+            )
+        elif path.name == "action_terminal.json" or (
+            isinstance(payload.get("payload"), dict) and "http" in payload["payload"]
+        ):
+            http = payload.get("http") or payload.get("payload", {}).get("http")
+            if isinstance(http, dict):
+                bits.append(f"http={http}")
+        elif path.name == "inspection.json":
+            bits.append(f"inspect_status={payload.get('status')}")
+        elif isinstance(payload.get("inspection_outcome"), dict):
+            outcome = payload["inspection_outcome"]
+            bits.append(
+                f"disposition={outcome.get('disposition')} "
+                f"verification_status={outcome.get('verification_status')} "
+                f"owned={payload.get('owned_evidence_ids')}"
+            )
+    return " ".join(bits) or "no-quality-debug"
+
+
+def _run_detail(driven: _InstalledFullRun, status: dict | None = None) -> str:
+    schemas = [item.result_contract.schema_id for item in driven.requests]
     change_files = sorted(
-        path.relative_to(project).as_posix()
-        for path in (project / "qa" / "changes" / change_id).rglob("*")
+        path.relative_to(driven.project).as_posix()
+        for path in (driven.project / "qa" / "changes" / driven.change_id).rglob("*")
         if path.is_file()
     )
-    detail = (
-        f"mapped={mapped} code={code} schemas={schemas} error={run_error!r} "
-        f"result={result_text} status={status_text[:800]} files={change_files[:40]}"
+    result_text = repr(driven.result)[:800] if driven.result is not None else "no-result"
+    return (
+        f"fault={driven.fault} mapped={driven.mapped} code={driven.code} schemas={schemas} "
+        f"run_error={driven.run_error!r} status_error={driven.status_error!r} "
+        f"assessment_failures={_assessment_failure_messages(driven.project)} "
+        f"quality={_quality_debug(driven.project, driven.change_id)} "
+        f"result={result_text} status={status} files={change_files[:40]}"
     )
+
+
+def _process_receipts(project: Path) -> list[Path]:
+    return list(project.rglob("**/owned-process.json")) + list(project.rglob("**/verified-process*.json"))
+
+
+def _healing_artifacts(project: Path) -> list[Path]:
+    return [
+        path
+        for path in project.rglob("*")
+        if path.is_file()
+        and (
+            "healing" in path.relative_to(project).parts
+            or path.name.startswith("repair-authorization")
+        )
+    ]
+
+
+def test_installed_full_assembles_empty_change_through_codegen(
+    tmp_path, installed_sources, monkeypatch
+):
+    change_id = "CH-USER-FULL-001"
+    driven = _drive_installed_user_full(
+        tmp_path, installed_sources, monkeypatch, fault="none", change_id=change_id
+    )
+    assert driven.run_error is None, _run_detail(driven)
+    assert driven.requests, _run_detail(driven)
+    assert driven.requests[0].workspace.write_root.startswith(f"qa/changes/{change_id}/.staging/")
+    status = _status_payload(driven)
+    detail = _run_detail(driven, status)
+    assert status["change"]["state"] != "stopped", detail
+    runner = load("run_item")
+    succeeded = runner._status_steps(status)
+    prefix = tuple(driven.item["required_steps"][: driven.item["required_steps"].index("generation.api.codegen") + 1])
+    missing = [step for step in prefix if step not in succeeded]
+    assert not missing, f"required assembly nodes were not succeeded: {missing} {detail}"
     for name in (
         "requirement",
         "exploration",
@@ -605,9 +902,64 @@ def test_installed_full_assembles_empty_change_through_codegen(
         "machine_plan",
         "codegen",
     ):
-        assert paths[name].is_file(), f"missing assembled {name}: {detail}"
-    assert not list(project.rglob("**/qualification*"))
-    process_receipts = list(project.rglob("**/owned-process.json")) + list(
-        project.rglob("**/verified-process*.json")
+        assert driven.paths[name].is_file(), f"missing assembled {name}: {detail}"
+    assert not list(driven.project.rglob("**/qualification*"))
+    assert _process_receipts(driven.project), f"did not reach real subprocess execution: {detail}"
+
+
+def test_no_bridge_fault_is_generation_admission_not_runtime_a03(
+    tmp_path, installed_sources, monkeypatch
+):
+    change_id = "CH-USER-NO-BRIDGE"
+    driven = _drive_installed_user_full(
+        tmp_path, installed_sources, monkeypatch, fault="no-bridge", change_id=change_id
     )
-    assert process_receipts, f"did not reach real subprocess execution: {detail}"
+    status = _status_payload(driven)
+    detail = _run_detail(driven, status)
+    runner = load("run_item")
+    errors = runner._fault_result_errors(
+        fault="no-bridge", item=driven.item, status=status, change_id=change_id
+    )
+    assert errors == [], f"{errors} {detail}"
+    assert not _process_receipts(driven.project), f"no-bridge counted as a run pytest A03: {detail}"
+    staged = list(driven.project.rglob("**/generated/api/files/tests/api/test_user_create.py"))
+    assert staged, f"no-bridge did not form a generation candidate: {detail}"
+
+
+def test_no_action_requires_runtime_verification_material(
+    tmp_path, installed_sources, monkeypatch
+):
+    change_id = "CH-USER-NO-ACTION"
+    driven = _drive_installed_user_full(
+        tmp_path, installed_sources, monkeypatch, fault="no-action", change_id=change_id
+    )
+    status = _status_payload(driven)
+    detail = _run_detail(driven, status)
+    runner = load("run_item")
+    errors = runner._fault_result_errors(
+        fault="no-action", item=driven.item, status=status, change_id=change_id
+    )
+    assert errors == [], f"{errors} {detail}"
+    assert driven.paths["codegen"].is_file(), f"no-action was not generated: {detail}"
+    assert _process_receipts(driven.project), f"no-action did not actually run the bridge: {detail}"
+    assert not _healing_artifacts(driven.project), f"no-action received auto healing authorization: {detail}"
+    dumped = json.dumps(status)
+    assert "incomplete" in dumped.lower(), f"no-action missing incomplete completion: {detail}"
+
+
+def test_db_unavailable_requires_runtime_verification_material(
+    tmp_path, installed_sources, monkeypatch
+):
+    change_id = "CH-USER-DB-UNAVAILABLE"
+    driven = _drive_installed_user_full(
+        tmp_path, installed_sources, monkeypatch, fault="db-unavailable", change_id=change_id
+    )
+    status = _status_payload(driven)
+    detail = _run_detail(driven, status)
+    runner = load("run_item")
+    errors = runner._fault_result_errors(
+        fault="db-unavailable", item=driven.item, status=status, change_id=change_id
+    )
+    assert errors == [], f"{errors} {detail}"
+    assert _process_receipts(driven.project), f"db-unavailable stopped before runtime: {detail}"
+    assert status.get("execution_gate") is not None, f"db-unavailable was pre-execution NOT_READY: {detail}"

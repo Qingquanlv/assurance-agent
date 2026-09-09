@@ -120,6 +120,9 @@ class AssessmentInputError(ValueError):
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
 _GOAL_ORDER = ("constraint_coverage", "auth_matrix_coverage", "journey_coverage")
 _BATCH_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_EXECUTION_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 _GOAL_RESOURCE_PATHS = {
     "assurance.product.configuration.capability-catalog": ".aa/capability-catalog.json",
     "assurance.product.configuration.data-knowledge": ".aa/data-knowledge.yaml",
@@ -470,13 +473,25 @@ _JOURNAL_NAMES = ("action_started", "action_terminal", "process_terminal", "clea
 
 
 def _host_authority(
-    *, secret_port: SecretPort | None, authority_handle: str | None
+    *,
+    secret_port: SecretPort | None,
+    authority_handle: str | None,
+    execution_id: str,
 ) -> tuple[ManagedSutAuthorityV1, bytes]:
     if secret_port is None or authority_handle is None:
         raise AssessmentInputError("verified assessment requires independent host authority")
     try:
-        authority = ManagedSutAuthorityV1.model_validate_json(secret_port.resolve(authority_handle))
-    except (KeyError, OSError, ValidationError, ValueError, TypeError):
+        raw = secret_port.resolve(authority_handle)
+        document = json.loads(raw)
+        if isinstance(document, dict) and document.get("kind") == "user-invocation-host.v1":
+            if _EXECUTION_ID.fullmatch(execution_id) is None:
+                raise AssessmentInputError("independent host authority is unavailable or invalid")
+            retained = Path(document["authority_root"]) / f"{execution_id}.json"
+            document = json.loads(retained.read_bytes())
+            if isinstance(document, dict) and "authority" in document:
+                document = document["authority"]
+        authority = ManagedSutAuthorityV1.model_validate(document)
+    except (KeyError, OSError, ValidationError, ValueError, TypeError, json.JSONDecodeError):
         raise AssessmentInputError("independent host authority is unavailable or invalid") from None
     token_path = Path(authority.ownership_token.path)
     if token_path != Path(authority.run_root) / ".ownership-token":
@@ -751,7 +766,9 @@ def _verified_materials(
         ):
             raise AssessmentInputError("verified generation closure differs from the committed cycle")
         authority, ownership_token = _host_authority(
-            secret_port=secret_port, authority_handle=authority_handle
+            secret_port=secret_port,
+            authority_handle=authority_handle,
+            execution_id=cycle.execution_id,
         )
         verified = VerifiedExecutionResultV1.model_validate_json(_read_ref(root, cycle.execution_index_ref))
         manifest = VerificationManifestV1.model_validate_json(_read_ref(root, cycle.manifest_ref))
@@ -1152,6 +1169,45 @@ def _issue_observations(
     return tuple(observations[key] for key in sorted(observations))
 
 
+def _verification_issue_observations(
+    *,
+    verification: VerificationVerdictV1,
+    verification_ref: EvidenceArtifactRefV1,
+    change_id: str,
+    batch_id: str,
+    observed_at: str,
+) -> tuple[Observation, ...]:
+    if verification.verdict == "PASSED":
+        return ()
+    signature = f"verification_{verification.verdict.lower()}"
+    identity = ObservationIdentityInput(
+        change_id=change_id,
+        batch_id=batch_id,
+        kind="anomaly",
+        target="api",
+        case_id=verification.case_id,
+        source_artifact=verification_ref.path,
+        source_json_pointer="/verdict",
+        signature=signature,
+    )
+    item = Observation(
+        observation_id=observation_id(identity),
+        change_id=change_id,
+        batch_id=batch_id,
+        kind="anomaly",
+        target="api",
+        case_id=verification.case_id,
+        source=ObservationSource(
+            artifact=verification_ref.path,
+            json_pointer="/verdict",
+        ),
+        evidence_refs=[verification_ref.path],
+        signature=signature,
+        observed_at=observed_at,
+    )
+    return (item,)
+
+
 def _issue_evidence_manifest(
     *,
     change_id: str,
@@ -1434,13 +1490,25 @@ def materialize_assessment_inputs(
         else request.execution.evidence_ref
     )
     observations: tuple[Observation, ...] = ()
-    if verification is None:
-        assert evidence is not None and execution_ref is not None
+    if evidence is not None and execution_ref is not None:
         observations = _issue_observations(
             evidence=evidence,
             execution_ref=execution_ref,
             metrics=metrics,
             metrics_ref=metrics_ref,
+        )
+    if (
+        not observations
+        and verification is not None
+        and verification_ref is not None
+        and verification.verdict != "PASSED"
+    ):
+        observations = _verification_issue_observations(
+            verification=verification,
+            verification_ref=verification_ref,
+            change_id=request.reviewed_case.change_id,
+            batch_id=request.execution.batch_id,
+            observed_at=request.execution_at.isoformat(),
         )
     observations_ref = _write_document(
         write_root,

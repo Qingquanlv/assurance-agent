@@ -5,7 +5,7 @@
   "spec_digest": "1111111111111111111111111111111111111111111111111111111111111111",
   "inputs": {
     "username": "oracle_user",
-    "email": "oracle_user@example.test",
+    "email": "oracle_user@example.com",
     "is_active": true,
     "is_superuser": false,
     "dept_id": null

@@ -664,16 +664,44 @@ def _execution_gate_from_snapshot(snapshot: object | None) -> ExecutionGateRefV1
     )
 
 
+def _diagnostic_report_outcome(values: Mapping[str, object]) -> Mapping[str, object] | None:
+    from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
+    from graph_engine.attempts.resolutions import ReceiptRef
+
+    if not values.get("inspection_outcome") or not values.get("report_refs") or not values.get("report_receipt"):
+        return None
+    refs = values["report_refs"]
+    if not isinstance(refs, (list, tuple)):
+        return None
+    try:
+        inspection = InspectionOutcomeV1.model_validate(values["inspection_outcome"])
+        return ReportOutcomeV1(
+            change_id=inspection.change_id,
+            coverage_epoch=inspection.coverage_epoch,
+            batch_id=inspection.batch_id,
+            inspection_receipt=inspection.inspection_receipt,
+            plan_digest=inspection.plan_digest,
+            plan_ref=inspection.plan_ref,
+            report_refs=tuple(refs),
+            report_receipt=ReceiptRef.model_validate(values["report_receipt"]),
+        ).model_dump(mode="json")
+    except (TypeError, ValueError):
+        return None
+
+
 def _quality_gate_from_snapshot(
     snapshot: object | None,
     change_id: str,
 ) -> QualityGateRefV1 | None:
     values = getattr(snapshot, "values", None)
-    if not isinstance(values, Mapping) or not values.get("report_outcome"):
+    if not isinstance(values, Mapping):
+        return None
+    report = values.get("report_outcome") or _diagnostic_report_outcome(values)
+    if not report:
         return None
     try:
         gate = QualityGateRefV1.model_validate(
-            {"inspection": values.get("inspection_outcome"), "report": values["report_outcome"]}
+            {"inspection": values.get("inspection_outcome"), "report": report}
         )
     except ValueError as error:
         raise ValueError("terminal quality checkpoint is invalid") from error

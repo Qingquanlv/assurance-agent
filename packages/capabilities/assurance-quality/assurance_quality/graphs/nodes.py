@@ -117,14 +117,19 @@ def select_quality(state: Mapping[str, object]) -> QualitySkillInputV1:
     return QualitySkillInputV1.model_validate(_skill_payload(state))
 
 
+def _optional_artifact_ref(value: object) -> EvidenceArtifactRefV1 | None:
+    if value is None or value == {} or value == ():
+        return None
+    return EvidenceArtifactRefV1.model_validate(value)
+
+
 def _assessment_skill_input(
     state: Mapping[str, object], *, require_fact_baseline: bool
 ) -> AssessmentSkillInputV1:
     assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
     reviewed_case = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
-    baseline_raw = state.get("fact_baseline_ref")
-    baseline = EvidenceArtifactRefV1.model_validate(baseline_raw) if baseline_raw is not None else None
+    baseline = _optional_artifact_ref(state.get("fact_baseline_ref"))
     if require_fact_baseline and baseline is None:
         raise ValueError("Inspect requires the committed fact baseline")
     return AssessmentSkillInputV1.model_validate(
@@ -163,8 +168,8 @@ def select_materialize_assessment(state: Mapping[str, object]) -> MaterializeAss
             "policy_resource_id": state.get("policy_resource_id"),
             "policy_sha256": state.get("policy_sha256"),
             "execution_at": state.get("execution_at"),
-            "healing_ref": state.get("healing_ref"),
-            "issue_ref": state.get("issue_ref"),
+            "healing_ref": _optional_artifact_ref(state.get("healing_ref")),
+            "issue_ref": _optional_artifact_ref(state.get("issue_ref")),
         }
     )
 
@@ -174,10 +179,7 @@ def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
     inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
     assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
-    issue_analysis_raw = state.get("issue_analysis_ref")
-    issue_analysis_ref = (
-        EvidenceArtifactRefV1.model_validate(issue_analysis_raw) if issue_analysis_raw is not None else None
-    )
+    issue_analysis_ref = _optional_artifact_ref(state.get("issue_analysis_ref"))
     digests = {
         "execution_digest": assessment.execution_digest,
         "healing_digest": assessment.healing_ref.digest if assessment.healing_ref is not None else None,
@@ -252,6 +254,10 @@ def publish_materialize_assessment(
     return {
         "assessment_inputs": assessment.model_dump(mode="json"),
         "evidence_refs": [ref.model_dump(mode="json") for ref in assessment.artifact_refs()],
+        "owned_evidence_ids": list(assessment.owned_evidence_ids),
+        "evidence_bundle_digest": assessment.evidence_bundle_digest,
+        "observations_ref": assessment.observations_ref.model_dump(mode="json"),
+        "issue_evidence_manifest_ref": assessment.issue_evidence_manifest_ref.model_dump(mode="json"),
     }
 
 

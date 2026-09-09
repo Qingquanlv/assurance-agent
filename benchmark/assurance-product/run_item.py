@@ -368,7 +368,7 @@ _FAULT_EXPECTATIONS: dict[str, _FaultExpectation] = {
         "stop": "generation.api.codegen",
         "terminal_status": "failed",
         "change_state": "failed",
-        "reasons": ("bridge", "generation"),
+        "reasons": ("bridge", "generation", "not_achieved"),
         "verified_material": False,
     },
     "wrong-environment": {
@@ -405,8 +405,8 @@ for _runtime_fault, _runtime_verdict in {
         "verdict": _runtime_verdict,
         "prefix_end": "quality.report",
         "stop": None,
-        "terminal_status": "completed",
-        "change_state": "stopped",
+        "terminal_status": "failed",
+        "change_state": "failed",
         "reasons": (
             "not_achieved",
             "not-achieved",

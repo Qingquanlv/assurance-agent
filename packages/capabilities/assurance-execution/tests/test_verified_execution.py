@@ -924,6 +924,38 @@ def test_skip_oracle_fault_keeps_http_fact_but_marks_db_evidence_missing(tmp_pat
     assert facts["oracle.executed"].state == "missing"
 
 
+def test_db_unavailable_fault_keeps_http_fact_but_marks_oracle_error(tmp_path, managed_sut):
+    from assurance_execution.operations.verified_execution import collect_facts
+
+    plan, manifest, journal, token = setup_action(tmp_path, managed_sut, "db-unavailable")
+    execute_frozen_action(
+        plan,
+        manifest,
+        journal,
+        json.dumps(
+            {
+                "token": token,
+                "user_password": "host-only-created-password",
+                "benchmark_fault": "db-unavailable",
+            }
+        ).encode(),
+    )
+
+    terminal = journal.read("action_terminal")
+    assert terminal is not None
+    assert terminal["http"]["state"] == "observed"
+    assert terminal["oracle"] == {
+        "state": "error",
+        "reason": "database_unavailable",
+        "rows": [],
+        "database_identity": None,
+        "database_metadata": None,
+    }
+    facts = {item.obligation_id: item for item in collect_facts(journal, plan)}
+    assert facts["action.finished"].state == "observed"
+    assert facts["oracle.executed"].state == "missing"
+
+
 def test_journal_drift_is_rejected(tmp_path, managed_sut):
     _, _, journal, _ = setup_action(tmp_path, managed_sut, "drift")
     journal.write("action_started", {"state": "started"})

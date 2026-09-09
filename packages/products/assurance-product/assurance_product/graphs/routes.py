@@ -72,13 +72,19 @@ def quality_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     if inspection is not None and disposition in {"blocked", "analysis_required"}:
         try:
             assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+            state_owned = state.get("owned_evidence_ids")
+            owned = list(assessment.owned_evidence_ids)
+            if state_owned is None:
+                state_owned = owned
+            state_digest = state.get("evidence_bundle_digest") or assessment.evidence_bundle_digest
             diagnostic_ready = (
-                bool(assessment.owned_evidence_ids)
+                bool(owned)
                 and assessment.change_id == inspection.change_id
                 and assessment.batch_id == inspection.batch_id
                 and assessment.coverage_epoch == inspection.coverage_epoch
-                and state.get("owned_evidence_ids") == list(assessment.owned_evidence_ids)
-                and state.get("evidence_bundle_digest") == assessment.evidence_bundle_digest
+                and isinstance(state_owned, (list, tuple))
+                and list(state_owned) == owned
+                and state_digest == assessment.evidence_bundle_digest
             )
         except (TypeError, ValueError):
             pass

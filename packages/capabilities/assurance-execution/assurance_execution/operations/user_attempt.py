@@ -349,10 +349,10 @@ def start_user_attempt(
             "token": token,
             "user_password": secrets.resolve(credential_handle).decode(),
         }
-        if seed.fault in {"no-action", "skip-oracle"}:
+        if seed.fault in {"no-action", "skip-oracle", "db-unavailable"}:
             credential_payload["benchmark_fault"] = seed.fault
         credential = json.dumps(credential_payload).encode()
-        username = "u" + execution_id.replace("-", "")[:18]
+        user_inputs = FrozenUserInputsV1.model_validate(admission.machine_plans.cases[0].inputs)
         profile = VerifiedExecutionPrepareV1(
             validation_profile=root.validation_profile,
             case_execution_plan_ref=generation.case_execution_plan_ref,
@@ -366,7 +366,7 @@ def start_user_attempt(
             sut_base_url=str(started["base_url"]),
             managed_sqlite_path=str(started["sqlite_path"]),
             observer_sqlite_path=str(started["sqlite_path"]),
-            user_inputs=FrozenUserInputsV1(username=username, email=username + "@example.com"),
+            user_inputs=user_inputs,
             managed_sut_prepare_receipt_ref=prepare_ref,
             managed_sut_start_receipt_ref=start_ref,
             managed_sut_authority_handle=authority_handle,

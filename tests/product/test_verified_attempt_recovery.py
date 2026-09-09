@@ -271,10 +271,10 @@ class OwnedAttemptProbe:
             publish = publication._publish_exclusive
 
             def interrupted(source, destination):
-                if destination.name == "verification-manifest.json" and cut == "manifest_before_publish":
+                if destination.name == "manifest.json" and cut == "manifest_before_publish":
                     raise RuntimeError("test-only interrupted manifest publication")
                 publish(source, destination)
-                if destination.name == "verification-manifest.json":
+                if destination.name == "manifest.json":
                     raise RuntimeError("test-only interrupted manifest publication")
 
             with pytest.MonkeyPatch.context() as patch:
@@ -572,7 +572,7 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
             (project / ".test-crash-cut").unlink()
             if cut.startswith("manifest_"):
                 manifests = list(
-                    workspace.write_root.glob("qa/changes/c/execution/*/verification-manifest.json")
+                    workspace.write_root.glob("qa/changes/c/execution/*/manifest.json")
                 )
                 if cut == "manifest_before_publish":
                     assert manifests == []
@@ -619,7 +619,7 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
 
         with sqlite3.connect(runs[0] / "runtime/sut/db.sqlite3") as database:
             assert database.execute(
-                "select count(*) from user where username like 'u%' and username != 'admin'"
+                "select count(*) from user where username = 'oracle_user'"
             ).fetchone()[0] == (0 if cut == "dispatch_started" else 1)
         if cut in {"sealed", "promoted"}:
             staged = store.seal(workspace.identity)
@@ -819,7 +819,7 @@ def test_retained_attempt_recovers_credentials_without_login_and_rejects_links(o
         assert second.execution_id != first.execution_id
         assert second.verification.sut_instance_id != first.verification.sut_instance_id
         assert second.verification.managed_sqlite_path != first.verification.managed_sqlite_path
-        assert second.verification.user_inputs != first.verification.user_inputs
+        assert second.verification.user_inputs == first.verification.user_inputs
         assert len(logins) == 2
     finally:
         second.stop()

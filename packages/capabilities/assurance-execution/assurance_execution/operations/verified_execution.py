@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from assurance_execution.contracts.verification import VerificationManifestV1
-from assurance_execution.operations.sqlite_oracle import observe_user
+from assurance_execution.operations.sqlite_oracle import _failed, observe_user
 from assurance_execution.operations.record_publication import _publish_exclusive, publish_record
 from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1
@@ -243,6 +243,8 @@ def execute_frozen_action(
     # A fresh independent read-only connection observes committed post-action state.
     if credential_document.get("benchmark_fault") == "skip-oracle":
         oracle = {"state": "skipped", "reason": "benchmark_skip_oracle", "rows": []}
+    elif credential_document.get("benchmark_fault") == "db-unavailable":
+        oracle = _failed("error", "database_unavailable")
     elif control.stopped:
         oracle = {"state": "skipped", "reason": "action_budget_cancelled_or_expired", "rows": []}
     else:
@@ -510,7 +512,7 @@ def _verified_outcome(
     # Publish the already authenticated manifest under the attempt evidence root.
     # Its preparation reference may name the host's private candidate workspace.
     manifest_bytes = _read_ref(context.project_root, payload.manifest_ref)
-    public_manifest = journal.root / "verification-manifest.json"
+    public_manifest = journal.root / "manifest.json"
     publish_record(public_manifest, manifest_bytes)
     authority = VerifiedExecutionAuthorityV1(
         validation_profile=manifest.validation_profile,
@@ -529,7 +531,7 @@ def _verified_outcome(
         batch_id=payload.view.batch_id,
         mapping_digest=manifest.mapping_digest,
         manifest_ref=EvidenceArtifactRefV1(
-            path=f"{manifest.evidence_root}/verification-manifest.json", digest=payload.manifest_ref.digest
+            path=f"{manifest.evidence_root}/manifest.json", digest=payload.manifest_ref.digest
         ),
         evidence_ref=EvidenceArtifactRefV1(
             path=f"{manifest.evidence_root}/outcome.json",
@@ -730,7 +732,7 @@ def _credentials(value: bytes) -> dict[str, str]:
         not isinstance(document, dict)
         or not {"token", "user_password"} <= set(document)
         or not set(document) <= {"token", "user_password", "benchmark_fault"}
-        or document.get("benchmark_fault") not in {None, "no-action", "skip-oracle"}
+        or document.get("benchmark_fault") not in {None, "no-action", "skip-oracle", "db-unavailable"}
         or any(
             not isinstance(item, str) or not item or "\n" in item or "\r" in item
             for item in document.values()

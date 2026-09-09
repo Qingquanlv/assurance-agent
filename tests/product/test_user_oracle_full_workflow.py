@@ -648,10 +648,10 @@ def test_no_action_requires_runtime_verification_material():
     required = tuple(item["required_steps"])
     status = {
         "invocation_id": change_id,
-        "status": "completed",
+        "status": "failed",
         "terminal_reason": "verification_incomplete",
         "selected_test_families": ["api"],
-        "change": {"change_id": change_id, "state": "stopped"},
+        "change": {"change_id": change_id, "state": "failed"},
         "graph_hierarchy": [{"graph_instance_id": f"g-{step}", "graph_id": step} for step in required],
         "node_states": [
             {
@@ -751,10 +751,10 @@ def test_db_unavailable_requires_runtime_verification_material():
     required = tuple(item["required_steps"])
     status = {
         "invocation_id": change_id,
-        "status": "completed",
+        "status": "failed",
         "terminal_reason": "verification_incomplete",
         "selected_test_families": ["api"],
-        "change": {"change_id": change_id, "state": "stopped"},
+        "change": {"change_id": change_id, "state": "failed"},
         "graph_hierarchy": [
             {"graph_instance_id": f"g-{step}", "graph_id": step} for step in required
         ],

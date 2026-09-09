@@ -225,8 +225,8 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "policy_resource_id": payload.product_policy.resource_id,
         "policy_sha256": payload.product_policy.sha256,
         "execution_at": execution.executed_at.isoformat(),
-        "healing_ref": state.get("healing_ref"),
-        "issue_ref": state.get("issue_ref"),
+        "healing_ref": state.get("healing_ref") or None,
+        "issue_ref": state.get("issue_ref") or None,
         "activation": {
             "kind": "trigger",
             "value": f"inspect.{execution.coverage_epoch}.{batch_token}.{execution.repair_round}",

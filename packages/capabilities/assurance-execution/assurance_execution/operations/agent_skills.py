@@ -681,6 +681,13 @@ def _prepare_verified_execution(
         or plan.validation_profile != profile.validation_profile
     ):
         raise InputError("verified execution profile does not match the frozen machine plan")
+    generation = root.generation_result
+    if generation is None:
+        raise InputError("verified execution requires the accepted generation result")
+    mapping_path = _regular_input_file(workspace, generation.mapping_ref.path)
+    mapping_bytes = mapping_path.read_bytes()
+    if hashlib.sha256(mapping_bytes).hexdigest() != generation.mapping_ref.digest:
+        raise InputError("generation mapping digest changed before verified prepare")
     authorization_digest = context.workspace_identity.identity_digest
     activity_digest = canonical_digest(
         {
@@ -719,7 +726,7 @@ def _prepare_verified_execution(
         case_execution_plan_ref=profile.case_execution_plan_ref.path,
         case_execution_plan_digest=profile.case_execution_plan_ref.digest,
         spec_digest=plan.spec_digest,
-        mapping_digest=mapping_digest(closed),
+        mapping_digest=generation.mapping_ref.digest,
         sut_digest=plan.sut_digest,
         technical_config_digest=plan.technical_config_digest,
         validation_profile=profile.validation_profile,
