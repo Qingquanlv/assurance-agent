@@ -108,19 +108,22 @@ def test_comparison_only_surface_is_removed(repo_root: Path) -> None:
     assert not (repo_root / "benchmark/assurance-product-phase5").exists()
 
 
-def test_final_live_manifest_has_exactly_one_opencode_item(repo_root: Path) -> None:
+def test_final_live_manifest_has_exactly_two_opencode_items(repo_root: Path) -> None:
     document = json.loads((repo_root / MANIFEST_PATH.relative_to(repo_root)).read_text(encoding="utf-8"))
     assert document["schema_version"] == "1"
     items = document["items"]
     assert isinstance(items, list)
-    assert len(items) == 1
-    item = items[0]
-    assert item["sut_item_id"] == "RET-dept-management"
-    assert item["id"] == "opencode-ret-dept-management"
-    assert item["product"] == "assurance-opencode"
-    assert item["adapter_binding"]["protocol_profile"] == "opencode-http-v1"
-    encoded = json.dumps(item)
-    assert "cursor" not in encoded.lower()
+    assert {item["id"] for item in items} == {
+        "opencode-ret-dept-management",
+        "opencode-user-api-db",
+    }
+    assert {item["sut_item_id"] for item in items} == {
+        "RET-dept-management",
+        "USER-create-oracle",
+    }
+    assert all(item["product"] == "assurance-opencode" for item in items)
+    assert all(item["adapter_binding"]["protocol_profile"] == "opencode-http-v1" for item in items)
+    assert "cursor" not in json.dumps(items).lower()
     assert all("cursor" not in json.dumps(entry).lower() for entry in items)
 
 

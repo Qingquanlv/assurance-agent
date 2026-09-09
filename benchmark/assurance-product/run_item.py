@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 from fnmatch import fnmatchcase
 import hashlib
+import importlib.util
 from importlib.resources import files
 import json
 import os
@@ -112,6 +113,17 @@ def main() -> int:
             "execution_retries": 2,
         },
     }
+    if arguments.get("validation_profile"):
+        from assurance_product.verification_execution import verification_configuration
+
+        config, digest = verification_configuration(composition)
+        payload.update(
+            validation_profile=config.validation_profile,
+            verification_config_digest=digest,
+            verification_policy=_ref(
+                composition, "assurance.product.configuration.verification-policy"
+            ),
+        )
     value = ProductInputV1.model_validate(payload)
     value.validate_for_entrypoint(arguments["entrypoint"]).authenticate_against(composition)
     destination = Path(arguments["output"])
@@ -186,6 +198,8 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
     if workers != {"max"}:
         raise SystemExit(f"OpenCode worker mismatch: {sorted(workers)}")
     families = tuple(item.get("selected_test_families") or ())
+    if item.get("validation_profile") in {"api_db.v1", "api_db_trace.v1"} and families != ("api",):
+        raise SystemExit("verified profiles require an API-only family selection")
     canonical_families = ("api", "e2e", "fuzz", "performance")
     if item.get("entrypoint") == "full" and (
         not families or families != tuple(family for family in canonical_families if family in families)
@@ -206,6 +220,143 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
         ):
             raise SystemExit(f"case_modules contains an unsafe module path: {module!r}")
     return item
+
+
+def _user_harness() -> Any:
+    path = Path(__file__).with_name("user_oracle_harness.py")
+    spec = importlib.util.spec_from_file_location("user_oracle_harness", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("User oracle harness cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _prepare_user_project(*, repo: Path, project_dir: Path, fault: str) -> dict[str, Any]:
+    harness = _user_harness()
+    locked = harness.materialize_project(project_dir=project_dir, fault=fault)
+    config_dir = project_dir / ".aa"
+    policy = {
+        "schema_version": "1",
+        "organization": "assurance-user-oracle",
+        "test_family_policy": {"required": ["api"], "allowed": ["api"]},
+    }
+    knowledge = {
+        "schema_version": "1",
+        "entities": {
+            "user": {
+                "constraints": {
+                    "username": True,
+                    "email": True,
+                    "is_active": True,
+                    "is_superuser": True,
+                    "dept_id": True,
+                }
+            }
+        },
+        "notes": ["POST /api/v1/user/create with independent SQLite verification."],
+    }
+    (config_dir / "policy.yaml").write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+    (config_dir / "data-knowledge.yaml").write_text(
+        yaml.safe_dump(knowledge, sort_keys=False), encoding="utf-8"
+    )
+    (config_dir / "verification-policy.yaml").write_text("validation_profile: api_db.v1\n", encoding="utf-8")
+    (project_dir / "opencode.json").write_text(
+        json.dumps(_product_locked_opencode_config(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    plugin = project_dir / ".opencode/plugins/assurance-boundary.mjs"
+    plugin.parent.mkdir(parents=True, exist_ok=True)
+    plugin.write_bytes(
+        files("assurance_product").joinpath("resources", "opencode", "assurance-boundary.mjs").read_bytes()
+    )
+    _write_json(config_dir / "user-oracle-selection.json", locked)
+    return locked
+
+
+def _configure_user_host(
+    *, repo: Path, project: Path, output: Path, item: dict[str, Any], fault: str
+) -> None:
+    private = output / "host-authority"
+    private.mkdir(mode=0o700)
+    secret_dir = output / "host-secrets"
+    secret_dir.mkdir(mode=0o700)
+    frozen_lock = project / ".aa/user-oracle/runtime-lock.json"
+    authority = {
+        "kind": "user-invocation-host.v1",
+        "authority_root": str(private),
+        "fault": fault,
+        "frozen_artifact_ref": {
+            "path": ".aa/user-oracle/runtime-lock.json",
+            "digest": _sha256(frozen_lock.read_bytes()),
+        },
+    }
+    values = {
+        "sut.authority": json.dumps(authority, sort_keys=True).encode(),
+        "sut.credential": secrets.token_urlsafe(32).encode(),
+        "managed-sut.admin-password": secrets.token_urlsafe(32).encode(),
+        "managed-sut.reset-password": secrets.token_urlsafe(32).encode(),
+        "managed-sut.secret-key": secrets.token_urlsafe(32).encode(),
+    }
+    host_args: list[str] = []
+    for handle, content in values.items():
+        path = secret_dir / handle
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        try:
+            os.write(descriptor, content)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        host_args.extend(("--secret", f"{handle}=file:{path}"))
+    item["host_secret_args"] = host_args
+    item["verification_host"] = {
+        "sut_source_root": str(repo),
+        "managed_sut_authority_handle": "sut.authority",
+        "managed_sut_readiness_handle": None,
+        "credential_handle": "sut.credential",
+        "collector_readiness_handle": None,
+    }
+
+
+def _secret_args(item: Mapping[str, Any]) -> list[str]:
+    return ["--secret", _secret_arg(item), *item.get("host_secret_args", [])]
+
+
+def _fault_outcome_errors(*, fault: str, verdict: str | None, achieved: bool, published: bool) -> list[str]:
+    expected = {
+        "missing-binding": {"NOT_READY"},
+        "no-bridge": {"NOT_READY"},
+        "no-action": {"INCOMPLETE"},
+        "skip-oracle": {"INCOMPLETE"},
+        "wrong-value": {"FAILED"},
+        "rollback": {"FAILED"},
+        "rollback-success": {"FAILED"},
+        "db-unavailable": {"INCOMPLETE", "NOT_READY"},
+        "wrong-environment": {"NOT_READY"},
+        "unknown-http": {"INCOMPLETE"},
+        "forged-evidence": {"INCOMPLETE", "NOT_READY"},
+        "downgrade": {"NOT_READY"},
+        "missing-write": {"FAILED"},
+    }
+    errors: list[str] = []
+    if fault not in expected or verdict not in expected[fault]:
+        errors.append(f"fault {fault!r} did not produce its expected verification verdict")
+    if achieved or published:
+        errors.append("fault benchmark must refuse achieved/export")
+    return errors
+
+
+def _verification_verdict(status: Mapping[str, Any]) -> str | None:
+    quality_gate = status.get("quality_gate")
+    if isinstance(quality_gate, Mapping):
+        inspection = quality_gate.get("inspection")
+        if isinstance(inspection, Mapping):
+            verdict = inspection.get("verification_status")
+            if verdict in {"PASSED", "FAILED", "INCOMPLETE"}:
+                return str(verdict)
+    if not _change_is_achieved(status) and status.get("execution_gate") is None:
+        return "NOT_READY"
+    return None
 
 
 def _resolve_sut(repo: Path, relative: str) -> Path:
@@ -510,6 +661,30 @@ def _prepare_project_config_tree(config_tree: Path, project_dir: Path) -> None:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise SystemExit("benchmark project configuration must be a mapping")
+    verification_path = project_dir / ".aa" / "verification-policy.yaml"
+    if verification_path.is_file():
+        verification_bytes = verification_path.read_bytes()
+        destination = config_tree / ".aa" / "verification-policy.yaml"
+        destination.write_bytes(verification_bytes)
+        config["verification_policy"] = yaml.safe_load(verification_bytes)
+        plugin_path = config_tree / "plugin.yaml"
+        plugin = yaml.safe_load(plugin_path.read_text(encoding="utf-8"))
+        files_list = plugin.get("files") if isinstance(plugin, dict) else None
+        if not isinstance(files_list, list):
+            raise SystemExit("benchmark configuration plugin files are invalid")
+        resource_id = "assurance.product.configuration.verification-policy"
+        if not any(
+            isinstance(entry, dict) and entry.get("resource_id") == resource_id for entry in files_list
+        ):
+            files_list.append(
+                {
+                    "kind": "resource",
+                    "resource_id": resource_id,
+                    "path": ".aa/verification-policy.yaml",
+                    "media_type": "application/yaml",
+                }
+            )
+        plugin_path.write_text(yaml.safe_dump(plugin, sort_keys=False), encoding="utf-8")
     config["product_policy"] = policy
     config["data_knowledge"] = knowledge
     catalog = {
@@ -1312,6 +1487,19 @@ def _write_deployment_manifest(
         },
         "secret_handles": [item["secret_handle"]],
     }
+    if item.get("validation_profile"):
+        document["validation_profile"] = item["validation_profile"]
+        document["verification_host"] = item.get("verification_host", {})
+        document["secret_handles"] = sorted(
+            {
+                *document["secret_handles"],
+                "sut.authority",
+                "sut.credential",
+                "managed-sut.admin-password",
+                "managed-sut.reset-password",
+                "managed-sut.secret-key",
+            }
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(document, indent=2, sort_keys=True)
     # bindings build accepts YAML; JSON is valid YAML.
@@ -1402,7 +1590,7 @@ def _status_steps(status: Mapping[str, Any]) -> tuple[str, ...]:
     }
     steps: list[str] = []
     for node in status.get("node_states") or []:
-        if not isinstance(node, dict) or node.get("state") not in {"succeeded", "stopped"}:
+        if not isinstance(node, dict) or node.get("state") != "succeeded":
             continue
         graph = graphs.get(node.get("graph_instance_id"), {})
         step = _logical_step_from_node(str(node.get("node_id") or ""), str(graph.get("graph_id") or ""))
@@ -1521,8 +1709,7 @@ def _drive_started_change(
         str(item["entrypoint"]),
         "--input",
         str(input_path),
-        "--secret",
-        _secret_arg(item),
+        *_secret_args(item),
         cwd=repo,
         env=env,
         timeout=600,
@@ -1537,8 +1724,8 @@ def _drive_started_change(
     last_status: dict[str, Any] = {}
     last_run: dict[str, Any] = {}
     transitions: list[dict[str, Any]] = []
-    run_args = ["run", "--json", *change_args, "--secret", _secret_arg(item)]
-    status_args = ["status", "--json", *change_args, "--secret", _secret_arg(item)]
+    run_args = ["run", "--json", *change_args, *_secret_args(item)]
+    status_args = ["status", "--json", *change_args, *_secret_args(item)]
 
     while True:
         remaining = deadline - time.monotonic()
@@ -1617,6 +1804,32 @@ def _drive_started_change(
         time.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
 
     evidence["validation"] = {"transitions": transitions, "last_run": last_run}
+    fault = str(item.get("fault") or "none")
+    if fault != "none":
+        verdict = _verification_verdict(last_status)
+        publication = last_status.get("publication")
+        published = isinstance(publication, Mapping) and publication.get("status") == "published"
+        errors = _fault_outcome_errors(
+            fault=fault,
+            verdict=verdict,
+            achieved=_change_is_achieved(last_status),
+            published=published,
+        )
+        evidence["validation"] = {
+            **evidence["validation"],
+            "verification_verdict": verdict,
+            "errors": errors,
+        }
+        if errors:
+            evidence["outcome"] = "blocked"
+            return finish(1, notes="; ".join(errors), status=last_status)
+        evidence["outcome"] = "completed"
+        return finish(
+            0,
+            notes=f"fault {fault!r} produced {verdict!r} and refused delivery",
+            status=last_status,
+        )
+
     errors = _validate_live_result(item=item, status=last_status)
     if (
         errors
@@ -1665,7 +1878,7 @@ def _drive_started_change(
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--item", required=True)
     parser.add_argument("--adapter", choices=("opencode",), required=True)
@@ -1674,13 +1887,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--timeout-seconds", type=int, default=28800)
     parser.add_argument("--nonce")
     parser.add_argument("--stamp")
-    arguments = parser.parse_args(argv)
+    parser.add_argument("--fault", choices=_user_harness().FAULTS, default="none")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    arguments = _parser().parse_args(argv)
 
     _reject_ambient_overrides()
     repo = _repo_root()
     manifest_path = repo / "benchmark" / "assurance-product" / "manifest.json"
     document = _load_manifest(manifest_path)
-    item = _manifest_item(document, arguments.item, arguments.adapter)
+    item = dict(_manifest_item(document, arguments.item, arguments.adapter))
+    item["fault"] = arguments.fault
+    if arguments.fault != "none" and item.get("validation_profile") is None:
+        return _fail("--fault requires a verified User benchmark item")
 
     started_at = _utc_now()
     stamp = arguments.stamp or datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -1695,8 +1916,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     output.mkdir(parents=True, exist_ok=True)
 
     try:
-        sut_root = _resolve_sut(repo, str(item["sut_root"]))
-    except SystemExit as error:
+        if item.get("validation_profile"):
+            sut_root = output / "project"
+            _prepare_user_project(repo=repo, project_dir=sut_root, fault=arguments.fault)
+        else:
+            sut_root = _resolve_sut(repo, str(item["sut_root"]))
+    except (SystemExit, ValueError) as error:
         return _fail(str(error))
     change_root = sut_root / "qa" / "changes" / change_id
     run_log = output / "run.log"
@@ -1704,6 +1929,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     evidence: dict[str, Any] = {
         "item_id": arguments.item,
+        "fault": arguments.fault,
+        "validation_profile": item.get("validation_profile"),
         "product": item["product"],
         "entrypoint": item["entrypoint"],
         "sut_item_id": item["sut_item_id"],
@@ -1790,7 +2017,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     isolated_env.pop("UV_PROJECT", None)
     isolated_env["PYTHONNOUSERSITE"] = "1"
 
-    runtime_environment_errors = _runtime_environment_errors(os.environ, output=output)
+    runtime_environment_errors = (
+        [] if item.get("validation_profile") else _runtime_environment_errors(os.environ, output=output)
+    )
     if runtime_environment_errors:
         evidence["outcome"] = "blocked"
         return finish(1, notes="; ".join(runtime_environment_errors))
@@ -1824,6 +2053,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return finish(
             1,
             notes="OpenCode resolved agent preflight failed: " + "; ".join(agent_profile_errors),
+        )
+
+    if item.get("validation_profile"):
+        _configure_user_host(
+            repo=repo,
+            project=project_dir,
+            output=output,
+            item=item,
+            fault=arguments.fault,
         )
 
     config_tree = output / "config-tree"
@@ -1906,6 +2144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "selected_test_families": list(item["selected_test_families"]),
             "case_modules": list(item["case_modules"]),
             "entrypoint": item["entrypoint"],
+            "validation_profile": item.get("validation_profile"),
             "output": str(input_path),
         },
     )
@@ -1922,6 +2161,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return finish(written.returncode, notes=f"product input write failed: {written.stderr.strip()}")
 
     try:
+        if item.get("validation_profile"):
+            return _drive_started_change(
+                aa_next=aa_next,
+                repo=repo,
+                project_dir=project_dir,
+                change_id=change_id,
+                source_args=source_args,
+                input_path=input_path,
+                item=item,
+                env=isolated_env,
+                run_log=run_log,
+                poll_seconds=arguments.poll_seconds,
+                timeout_seconds=arguments.timeout_seconds,
+                evidence=evidence,
+                finish=finish,
+            )
         with _managed_sut_runtime(
             repo=repo,
             project_dir=project_dir,

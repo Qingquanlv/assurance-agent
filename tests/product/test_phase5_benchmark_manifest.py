@@ -121,28 +121,37 @@ def phase5_manifest() -> Phase5Manifest:
     return Phase5Manifest(loaded)
 
 
-def test_opencode_benchmark_is_one_full_locked_item(phase5_manifest):
+def test_opencode_benchmark_keeps_dept_api_only_and_adds_user_db_full(phase5_manifest):
     document = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     items = document["items"]
     assert isinstance(items, list)
-    assert len(items) == 1
-    assert items[0]["id"] == "opencode-ret-dept-management"
-    assert items[0]["sut_item_id"] == "RET-dept-management"
-    assert items[0]["adapter_binding"]["protocol_profile"] == "opencode-http-v1"
+    assert {item["id"] for item in items} == {
+        "opencode-ret-dept-management",
+        "opencode-user-api-db",
+    }
+    assert all(item["adapter_binding"]["protocol_profile"] == "opencode-http-v1" for item in items)
     assert all("cursor" not in str(entry.get("id", "")).lower() for entry in items)
-    item = phase5_manifest.item("opencode-ret-dept-management")
-    assert item.sut_item_id == "RET-dept-management"
-    assert item.product == "assurance-opencode"
-    assert item.entrypoint == "full"
-    assert item.selected_test_families == ("api",)
-    assert item.case_modules == ("system/dept",)
-    assert item.adapter_version == "0.1.0"
-    assert item.expected_terminal == "completed"
-    assert item.required_steps == FULL_WORKFLOW_REQUIRED_STEPS
-    assert set(item.routing_assignments) == set(PREPARE_IDS)
-    assert item.routing_assignments == item.deployment_binding_routes
-    assert all(route.provider_model == "openai/gpt-5.6-terra" for route in item.routing_assignments.values())
-    assert all(route.worker_profile == "max" for route in item.routing_assignments.values())
+    dept = phase5_manifest.item("opencode-ret-dept-management")
+    assert dept.sut_item_id == "RET-dept-management"
+    assert dept.selected_test_families == ("api",)
+    assert dept.case_modules == ("system/dept",)
+
+    user = phase5_manifest.item("opencode-user-api-db")
+    assert user.sut_item_id == "USER-create-oracle"
+    assert user.product == "assurance-opencode"
+    assert user.entrypoint == "full"
+    assert user.selected_test_families == ("api",)
+    assert user.case_modules == ("system/user",)
+    assert user.adapter_version == "0.1.0"
+    assert user.expected_terminal == "completed"
+    assert user.required_steps == FULL_WORKFLOW_REQUIRED_STEPS
+    assert set(user.routing_assignments) == set(PREPARE_IDS)
+    assert user.routing_assignments == user.deployment_binding_routes
+    assert all(route.provider_model == "openai/gpt-5.6-terra" for route in user.routing_assignments.values())
+    assert all(route.worker_profile == "max" for route in user.routing_assignments.values())
+    raw_user = next(item for item in items if item["id"] == "opencode-user-api-db")
+    assert raw_user["run_mode"] == "case"
+    assert raw_user["validation_profile"] == "api_db.v1"
 
 
 def test_opencode_benchmark_allows_four_review_fix_rounds() -> None:

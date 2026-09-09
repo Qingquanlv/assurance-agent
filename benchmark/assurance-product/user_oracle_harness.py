@@ -34,6 +34,7 @@ FAULTS = (
     "none",
     "missing-binding",
     "no-bridge",
+    "no-action",
     "skip-oracle",
     "wrong-value",
     "rollback",

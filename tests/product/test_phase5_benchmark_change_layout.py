@@ -714,7 +714,7 @@ def test_runner_has_no_project_copy_or_export_tree_helpers() -> None:
     assert "_copy_sut" not in source
     assert "_SUT_COPY_IGNORE" not in source
     assert "auto_archive" not in source
-    assert 'output / "project"' not in source
+    assert 'sut_root = output / "project"' in source
     assert 'output / "export"' not in source
     assert "workspace/trees" not in source
     assert "HEAD.json" not in source
@@ -948,6 +948,65 @@ def test_failure_leaves_original_sut_tests_unchanged_and_skips_export(
     assert evidence["change_root"] == str(sut / "qa" / "changes" / change_id)
     assert evidence["terminal_status"] == "failed"
     assert evidence.get("publish_receipt") in (None, {})
+
+
+def test_expected_verified_fault_is_a_successful_benchmark_without_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    change_id = "CH-USER-FAULT"
+    terminal = _failed_status(change_id=change_id)
+    terminal["quality_gate"] = {
+        "inspection": {"verification_status": "FAILED"},
+        "report": {},
+    }
+    fake = _FakeAA(
+        sut=tmp_path,
+        change_id=change_id,
+        terminal=terminal,
+        export_receipt=None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_aa_next",
+        lambda binary, *args, **kwargs: fake.handle_aa([str(binary), *args]),
+    )
+    monkeypatch.setattr(runner.subprocess, "run", fake.handle_subprocess)
+    evidence: dict[str, Any] = {}
+    finished: list[tuple[int, str, Mapping[str, Any] | None]] = []
+    run_log = tmp_path / "run.log"
+    run_log.touch()
+
+    def finish(code: int, *, notes: str, status: Mapping[str, Any] | None = None) -> int:
+        finished.append((code, notes, status))
+        return code
+
+    code = runner._drive_started_change(
+        aa_next=Path("/tmp/fake-aa-next"),
+        repo=tmp_path,
+        project_dir=tmp_path,
+        change_id=change_id,
+        source_args=(),
+        input_path=tmp_path / "product-input.json",
+        item={
+            "entrypoint": "full",
+            "fault": "wrong-value",
+            "secret_handle": "opencode.token",
+            "secret_env": "AA_NEXT_OPENCODE_TOKEN",
+        },
+        env={},
+        run_log=run_log,
+        poll_seconds=0,
+        timeout_seconds=10,
+        evidence=evidence,
+        finish=finish,
+    )
+
+    assert code == 0
+    assert fake.export_calls == 0
+    assert evidence["outcome"] == "completed"
+    assert evidence["validation"]["verification_verdict"] == "FAILED"
+    assert finished[0][0] == 0
 
 
 def test_nonzero_unstructured_run_fails_closed_without_status_polling(

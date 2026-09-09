@@ -215,7 +215,7 @@ def execute_frozen_action(
     control: ActionControl | None = None,
 ) -> None:
     """Execute once; no terminal record after a crash ever authorizes another POST."""
-    _credentials(credential)
+    credential_document = _credentials(credential)
     if journal.read("action_started") is not None:
         raise ValueError("action already started; recovery must not resend POST")
     control = control or ActionControl(time.monotonic() + 60)
@@ -233,17 +233,28 @@ def execute_frozen_action(
             },
         )
         return
+    if credential_document.get("benchmark_fault") == "no-action":
+        journal.write(
+            "action_terminal",
+            {
+                "initial": initial,
+                "http": {"state": "skipped", "reason": "benchmark_no_action"},
+                "oracle": {"state": "skipped", "reason": "action_not_dispatched", "rows": []},
+            },
+        )
+        return
     try:
         control.require(12)  # Do not dispatch if HTTP and observer bounds cannot fit.
         http = asyncio.run(_supervised_post(plan, manifest, credential, control))
     except (httpx.HTTPError, TimeoutError):
         http = {"state": "timeout", "reason": "http_terminal_unknown"}
     # A fresh independent read-only connection observes committed post-action state.
-    oracle = (
-        {"state": "skipped", "reason": "action_budget_cancelled_or_expired", "rows": []}
-        if control.stopped
-        else observe_user(*args, timeout_s=min(2.0, control.remaining), expected_identity=manifest.sqlite)
-    )
+    if credential_document.get("benchmark_fault") == "skip-oracle":
+        oracle = {"state": "skipped", "reason": "benchmark_skip_oracle", "rows": []}
+    elif control.stopped:
+        oracle = {"state": "skipped", "reason": "action_budget_cancelled_or_expired", "rows": []}
+    else:
+        oracle = observe_user(*args, timeout_s=min(2.0, control.remaining), expected_identity=manifest.sqlite)
     journal.write("action_terminal", {"initial": initial, "http": http, "oracle": oracle})
 
 
@@ -725,7 +736,9 @@ def _credentials(value: bytes) -> dict[str, str]:
         pass
     if (
         not isinstance(document, dict)
-        or set(document) != {"token", "user_password"}
+        or not {"token", "user_password"} <= set(document)
+        or not set(document) <= {"token", "user_password", "benchmark_fault"}
+        or document.get("benchmark_fault") not in {None, "no-action", "skip-oracle"}
         or any(
             not isinstance(item, str) or not item or "\n" in item or "\r" in item
             for item in document.values()

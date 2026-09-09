@@ -345,9 +345,13 @@ def start_user_attempt(
             )
             response.raise_for_status()
             token = response.json()["data"]["access_token"]
-        credential = json.dumps(
-            {"token": token, "user_password": secrets.resolve(credential_handle).decode()}
-        ).encode()
+        credential_payload = {
+            "token": token,
+            "user_password": secrets.resolve(credential_handle).decode(),
+        }
+        if seed.fault in {"no-action", "skip-oracle"}:
+            credential_payload["benchmark_fault"] = seed.fault
+        credential = json.dumps(credential_payload).encode()
         username = "u" + execution_id.replace("-", "")[:18]
         profile = VerifiedExecutionPrepareV1(
             validation_profile=root.validation_profile,

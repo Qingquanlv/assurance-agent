@@ -35,6 +35,8 @@ _ENVELOPE_RESOURCE_ID = "assurance.product.configuration.project-config"
 _POLICY_RESOURCE_ID = "assurance.product.configuration.product-policy"
 _KNOWLEDGE_RESOURCE_ID = "assurance.product.configuration.data-knowledge"
 _CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
+_VERIFICATION_POLICY_RESOURCE_ID = "assurance.product.configuration.verification-policy"
+_VERIFICATION_POLICY_PATH = ".aa/verification-policy.yaml"
 _NODE_POLICY_RESOURCE_ID = "assurance.product.configuration.node-policy-values"
 _REQUIRED_FILES = frozenset({_PLUGIN_MANIFEST, _CONFIG_PATH, _POLICY_PATH, _KNOWLEDGE_PATH, _CATALOG_PATH})
 _ALLOWED_DECLARED_RESOURCE_IDS = frozenset(
@@ -174,7 +176,7 @@ def load_project_configuration(tree: ConfigTree) -> PluginContribution:
         raise ProjectConfigurationError(str(error)) from error
     _authenticate_configuration_plugin(loaded)
     files = {item.path: item.content for item in loaded.snapshot.files}
-    if set(files) != _REQUIRED_FILES:
+    if set(files) not in (_REQUIRED_FILES, _REQUIRED_FILES | {_VERIFICATION_POLICY_PATH}):
         raise ProjectConfigurationError("unknown or missing project configuration files")
     parsed = parse_project_config(_yaml_mapping(files[_CONFIG_PATH], "project configuration"))
     policy = _yaml_mapping(files[_POLICY_PATH], "product policy")
@@ -194,8 +196,24 @@ def load_project_configuration(tree: ConfigTree) -> PluginContribution:
         raise ProjectConfigurationError("capability catalog file disagrees with typed knowledge leaves")
     if thaw_json(parsed.capability_catalog) != catalog:
         raise ProjectConfigurationError("capability catalog file disagrees with project configuration")
+    verification_resources: tuple[ResourceContribution, ...] = ()
+    if parsed.verification_policy is not None:
+        content = files.get(_VERIFICATION_POLICY_PATH)
+        expected = parsed.verification_policy.model_dump(mode="json")
+        if content is None or _yaml_mapping(content, "verification policy") != expected:
+            raise ProjectConfigurationError("verification policy file disagrees with configuration")
+        verification_resources = (
+            ResourceContribution(
+                resource_id=_VERIFICATION_POLICY_RESOURCE_ID,
+                media_type="application/yaml",
+                content=content,
+            ),
+        )
+    elif _VERIFICATION_POLICY_PATH in files:
+        raise ProjectConfigurationError("verification policy has no frozen configuration selection")
     return PluginContribution(
         resources=(
+            *verification_resources,
             ResourceContribution(
                 resource_id=_POLICY_RESOURCE_ID,
                 media_type="application/yaml",
@@ -243,7 +261,7 @@ def _authenticate_configuration_plugin(loaded: DeclarativePlugin) -> None:
     if loaded.contribution.effects:
         raise ProjectConfigurationError("project configuration must not contribute effects")
     declared_ids = {item.resource_id for item in loaded.document.files}
-    unknown = declared_ids - _ALLOWED_DECLARED_RESOURCE_IDS
+    unknown = declared_ids - _ALLOWED_DECLARED_RESOURCE_IDS - {_VERIFICATION_POLICY_RESOURCE_ID}
     if unknown:
         raise ProjectConfigurationError(f"unknown project configuration resource: {min(unknown)}")
     missing = _ALLOWED_DECLARED_RESOURCE_IDS - declared_ids

@@ -288,10 +288,15 @@ class ConfiguredResourceV1(FrozenModel):
         return _qualified_id(value, "schema_id")
 
 
+class VerificationPolicyConfigV1(FrozenModel):
+    validation_profile: Literal["api_db.v1", "api_db_trace.v1"]
+
+
 class ProjectConfigV1(FrozenModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["1"]
     product_policy: FrozenJSONValue
+    verification_policy: VerificationPolicyConfigV1 | None = None
     data_knowledge: FrozenJSONValue
     capability_catalog: FrozenJSONValue
     node_policy_values: Mapping[str, FrozenJSONValue] = Field(default_factory=dict)

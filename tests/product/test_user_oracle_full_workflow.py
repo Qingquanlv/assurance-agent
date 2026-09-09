@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 BENCHMARK = REPO / "benchmark/assurance-product"
@@ -12,6 +13,7 @@ FAULTS = (
     "none",
     "missing-binding",
     "no-bridge",
+    "no-action",
     "skip-oracle",
     "wrong-value",
     "rollback",
@@ -351,6 +353,143 @@ def test_generation_adapter_preserves_verified_profile_and_reviewed_references()
     assert projected["plan_ref"] == state["plan_ref"]
     assert projected["plan_digest"] == state["plan_digest"]
     assert "case_plan_context" not in projected
+
+
+def test_verified_manifest_item_is_api_only_and_product_input_uses_candidates():
+    runner = load("run_item")
+    document = json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8"))
+    item = runner._manifest_item(document, "opencode-user-api-db", "opencode")
+    assert item["entrypoint"] == "full"
+    assert item["run_mode"] == "case"
+    assert item["case_modules"] == ["system/user"]
+    assert item["selected_test_families"] == ["api"]
+    assert item["validation_profile"] == "api_db.v1"
+    assert (
+        '"candidate_test_families": list(arguments["selected_test_families"])' in runner._WRITE_PRODUCT_INPUT
+    )
+    assert (
+        '"selected_test_families": list(arguments["selected_test_families"])'
+        not in runner._WRITE_PRODUCT_INPUT
+    )
+
+
+def test_verified_manifest_rejects_non_api_families_and_stopped_required_nodes():
+    runner = load("run_item")
+    document = json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8"))
+    user = next(item for item in document["items"] if item["id"] == "opencode-user-api-db")
+    invalid = {**user, "selected_test_families": ["api", "e2e"]}
+    with pytest.raises(SystemExit, match="API-only"):
+        runner._manifest_item({"items": [invalid]}, "opencode-user-api-db", "opencode")
+    assert (
+        runner._status_steps(
+            {
+                "graph_hierarchy": [{"graph_instance_id": "inspect", "graph_id": "quality.inspect"}],
+                "node_states": [
+                    {
+                        "graph_instance_id": "inspect",
+                        "node_id": "finalize",
+                        "state": "stopped",
+                    }
+                ],
+            }
+        )
+        == ()
+    )
+
+
+def test_user_project_is_api_only_empty_change_with_no_frontend(tmp_path):
+    runner = load("run_item")
+    project = tmp_path / "project"
+    selected = runner._prepare_user_project(repo=REPO, project_dir=project, fault="none")
+
+    assert not (project / "web").exists()
+    assert not (project / "tests").exists()
+    assert not (project / "qa/changes").exists()
+    assert (project / "app/models/admin.py").is_file()
+    policy = yaml.safe_load((project / ".aa/policy.yaml").read_text(encoding="utf-8"))
+    assert policy["test_family_policy"] == {"required": ["api"], "allowed": ["api"]}
+    assert selected["fault"] == "none"
+
+
+def test_user_configuration_and_host_binding_are_fixed_without_oci(tmp_path):
+    import shutil
+
+    runner = load("run_item")
+    project = tmp_path / "project"
+    runner._prepare_user_project(repo=REPO, project_dir=project, fault="none")
+    tree = tmp_path / "config-tree"
+    shutil.copytree(REPO / "tests/product/fixtures/project-config", tree)
+    runner._prepare_project_config_tree(tree, project)
+    plugin = yaml.safe_load((tree / "plugin.yaml").read_text(encoding="utf-8"))
+    resources = {item["resource_id"] for item in plugin["files"]}
+    assert "assurance.product.configuration.verification-policy" in resources
+    from graph_engine.composition import ConfigTreePluginSource
+    from assurance_product.configuration import load_project_configuration
+
+    contribution = load_project_configuration(ConfigTreePluginSource(path=tree))
+    published = {resource.resource_id: resource for resource in contribution.resources}
+    assert yaml.safe_load(published["assurance.product.configuration.verification-policy"].content) == {
+        "validation_profile": "api_db.v1"
+    }
+
+    item = dict(
+        runner._manifest_item(
+            json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+            "opencode-user-api-db",
+            "opencode",
+        )
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault="none")
+    assert item["verification_host"] == {
+        "sut_source_root": str(REPO),
+        "managed_sut_authority_handle": "sut.authority",
+        "managed_sut_readiness_handle": None,
+        "credential_handle": "sut.credential",
+        "collector_readiness_handle": None,
+    }
+    assert "runner" not in item["verification_host"]
+    deployment = tmp_path / "deployment.json"
+    runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
+    document = json.loads(deployment.read_text(encoding="utf-8"))
+    assert document["validation_profile"] == "api_db.v1"
+    assert document["verification_host"] == item["verification_host"]
+    assert {"sut.authority", "sut.credential"} <= set(document["secret_handles"])
+    assert "qualification" not in json.dumps(document)
+
+
+def test_user_fault_parser_includes_runtime_no_action(tmp_path):
+    runner = load("run_item")
+    parser = runner._parser()
+    args = parser.parse_args(
+        [
+            "--item",
+            "opencode-user-api-db",
+            "--adapter",
+            "opencode",
+            "--output",
+            str(tmp_path),
+            "--fault",
+            "no-action",
+        ]
+    )
+    assert args.fault == "no-action"
+
+
+@pytest.mark.parametrize(
+    ("fault", "verdict"),
+    (
+        ("no-action", "INCOMPLETE"),
+        ("skip-oracle", "INCOMPLETE"),
+        ("wrong-value", "FAILED"),
+        ("rollback-success", "FAILED"),
+    ),
+)
+def test_fault_outcome_accepts_only_expected_non_delivery(fault, verdict):
+    runner = load("run_item")
+    assert runner._fault_outcome_errors(fault=fault, verdict=verdict, achieved=False, published=False) == []
+    assert runner._fault_outcome_errors(fault=fault, verdict="PASSED", achieved=True, published=True)
 
 
 def test_attempt_rejects_reviewed_a_with_functional_frozen_b_before_any_post(tmp_path, monkeypatch):

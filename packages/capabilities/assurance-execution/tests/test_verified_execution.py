@@ -857,6 +857,66 @@ def test_real_parent_http_then_new_sqlite_observer(tmp_path, managed_sut, monkey
         )
 
 
+def test_no_action_fault_runs_bridge_without_dispatching_business_action(tmp_path, managed_sut):
+    from assurance_execution.operations.verified_execution import collect_facts
+
+    plan, manifest, journal, token = setup_action(tmp_path, managed_sut, "no-action")
+    execute_frozen_action(
+        plan,
+        manifest,
+        journal,
+        json.dumps(
+            {
+                "token": token,
+                "user_password": "host-only-created-password",
+                "benchmark_fault": "no-action",
+            }
+        ).encode(),
+    )
+
+    terminal = journal.read("action_terminal")
+    assert terminal is not None
+    assert terminal["http"] == {"state": "skipped", "reason": "benchmark_no_action"}
+    assert terminal["oracle"] == {
+        "state": "skipped",
+        "reason": "action_not_dispatched",
+        "rows": [],
+    }
+    facts = {item.obligation_id: item for item in collect_facts(journal, plan)}
+    assert facts["action.finished"].state == "missing"
+    assert facts["oracle.executed"].state == "missing"
+
+
+def test_skip_oracle_fault_keeps_http_fact_but_marks_db_evidence_missing(tmp_path, managed_sut):
+    from assurance_execution.operations.verified_execution import collect_facts
+
+    plan, manifest, journal, token = setup_action(tmp_path, managed_sut, "skip-oracle")
+    execute_frozen_action(
+        plan,
+        manifest,
+        journal,
+        json.dumps(
+            {
+                "token": token,
+                "user_password": "host-only-created-password",
+                "benchmark_fault": "skip-oracle",
+            }
+        ).encode(),
+    )
+
+    terminal = journal.read("action_terminal")
+    assert terminal is not None
+    assert terminal["http"]["state"] == "observed"
+    assert terminal["oracle"] == {
+        "state": "skipped",
+        "reason": "benchmark_skip_oracle",
+        "rows": [],
+    }
+    facts = {item.obligation_id: item for item in collect_facts(journal, plan)}
+    assert facts["action.finished"].state == "observed"
+    assert facts["oracle.executed"].state == "missing"
+
+
 def test_journal_drift_is_rejected(tmp_path, managed_sut):
     _, _, journal, _ = setup_action(tmp_path, managed_sut, "drift")
     journal.write("action_started", {"state": "started"})
