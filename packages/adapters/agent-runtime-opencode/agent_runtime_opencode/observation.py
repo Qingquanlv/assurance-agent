@@ -430,7 +430,7 @@ _RESULT_PART_TYPES = frozenset({"text", "step-start", "step-finish", "patch", "r
 
 def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
     result_bearing: list[Mapping[str, object]] = []
-    for message in messages:
+    for message in _answers_to_the_last_prompt(messages):
         if not isinstance(message, Mapping):
             raise ValueError("terminal message is not an object")
         info = message.get("info")
@@ -462,8 +462,25 @@ def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
     return parsed[0]
 
 
+def _answers_to_the_last_prompt(messages: Sequence[object]) -> Sequence[object]:
+    """Narrow a session to the turns that answer its most recent prompt.
+
+    A corrective turn supersedes the response that provoked it, so the superseded text
+    must not be read as a competing result. Sessions carrying a single prompt, which is
+    every session the adapter does not have to correct, are returned unchanged.
+    """
+    last_prompt = -1
+    for index, message in enumerate(messages):
+        if not isinstance(message, Mapping):
+            continue
+        info = message.get("info")
+        if isinstance(info, Mapping) and info.get("role") == "user":
+            last_prompt = index
+    return messages[last_prompt + 1 :] if last_prompt >= 0 else messages
+
+
 def _has_result_bearing_assistant(messages: Sequence[object]) -> bool:
-    for message in messages:
+    for message in _answers_to_the_last_prompt(messages):
         if not isinstance(message, Mapping):
             continue
         info = message.get("info")

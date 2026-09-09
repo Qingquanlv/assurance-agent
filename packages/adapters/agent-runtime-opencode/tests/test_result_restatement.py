@@ -3,6 +3,7 @@ from __future__ import annotations
 from agent_runtime_contracts.schema import canonical_digest
 from agent_runtime_opencode.discovery import restatement_message_id
 from agent_runtime_opencode.observation import (
+    classify_provider_state,
     parse_closed_terminal_result,
     restatement_admission_body,
     terminal_result_is_contract_violation,
@@ -161,3 +162,86 @@ def test_the_corrective_turn_does_not_change_result_parsing() -> None:
     messages = _closed_session_messages('{"output_files": ["a.json"]}')
 
     assert parse_closed_terminal_result(messages) == {"output_files": ["a.json"]}
+
+
+def _corrected_session(first: str, second: str) -> list[dict[str, object]]:
+    messages = _closed_session_messages(first)
+    messages.append(
+        {
+            "info": {"id": "msg_restate", "role": "user"},
+            "parts": [{"type": "text", "text": "# Final response rejected"}],
+        }
+    )
+    messages.append(
+        {
+            "info": {
+                "id": "msg_second",
+                "role": "assistant",
+                "time": {"created": 3, "completed": 4},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": second},
+                {"type": "step-finish", "reason": "stop"},
+            ],
+        }
+    )
+    return messages
+
+
+def test_the_superseded_response_does_not_defeat_the_corrected_one() -> None:
+    messages = _corrected_session(
+        'All four outputs written and read back.\n\n{"output_files": ["a.json"]}',
+        '{"output_files": ["a.json"]}',
+    )
+
+    assert parse_closed_terminal_result(messages) == {"output_files": ["a.json"]}
+    assert terminal_result_is_contract_violation({"id": "ses_live"}, messages) is False
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+def test_a_second_violation_after_the_corrective_turn_still_fails() -> None:
+    messages = _corrected_session(
+        'Read-back passed.\n\n{"output_files": ["a.json"]}',
+        'Confirming once more.\n\n{"output_files": ["a.json"]}',
+    )
+
+    assert terminal_result_is_contract_violation({"id": "ses_live"}, messages) is True
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "failed"
+    )
+
+
+def test_a_pending_corrective_turn_keeps_the_session_running() -> None:
+    messages = _closed_session_messages('Read-back passed.\n\n{"output_files": ["a.json"]}')
+    messages.append(
+        {
+            "info": {"id": "msg_restate", "role": "user"},
+            "parts": [{"type": "text", "text": "# Final response rejected"}],
+        }
+    )
+
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "running"
+    )
