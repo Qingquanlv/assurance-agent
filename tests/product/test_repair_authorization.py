@@ -24,6 +24,7 @@ from assurance_execution.contracts.verification import (
 )
 from assurance_execution.contracts.workflow import (
     VerifiedBridgeDefectResultV1,
+    VerifiedExecutionCycleResultV1,
     VerifiedIncompleteExecutionV1,
 )
 from assurance_execution.graphs.factory import ExecutionGraphs
@@ -56,15 +57,12 @@ from assurance_improvement.graphs.factory import ImprovementGraphs
 from assurance_product.graphs.execute import build_execute_graph
 from assurance_product.graphs.factory import ProductFeatureBundles
 from assurance_product.graphs.state import ProductState
-from assurance_product.models import ProductInputV1, VerificationHostConfigV1
+from assurance_product.models import ProductInputV1
 from assurance_product.repair_authorization import RepairAuthorizationIssuer
-from assurance_product.verification_execution import (
-    ProfiledExecutionExecutor,
-    VerificationConfiguration,
-)
-from assurance_product.verification_quality import ProfiledAssessmentExecutor
 from assurance_quality.contracts.agent import InspectionResultV1
 from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
+    FailureClassificationFactsV1,
     FinalizedInspectionV1,
     InspectionOutcomeV1,
 )
@@ -88,11 +86,13 @@ from graph_engine.attempts.events import (
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
-from graph_engine.plugin_api import TaskOutcome
 from agent_runtime_contracts import AgentRunResult
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import execute_task
-from tests.product.test_execution_quality_flow import _installed_assessment
+from tests.product.test_execution_quality_flow import (
+    _installed_assessment,
+    assessment_composition as _assessment_composition_fixture,  # noqa: F401
+)
 from tests.product.test_product_input import valid_product_input
 from tests.verified_generation_fixture import accepted_verified_execution_input
 
@@ -102,22 +102,23 @@ REVISION = "f" * 64
 CONTRACT_ID = "assurance.execution.task.execute.v1"
 
 
+@pytest.fixture(scope="module")
+def assessment_composition(request: pytest.FixtureRequest) -> Any:
+    """Expose Task 7's installed composition under its original fixture name."""
+
+    return request.getfixturevalue("_assessment_composition_fixture")
+
+
 async def _repairable_state(
     project: Path,
     *,
     technical_refactor: str | None = None,
     journal_semantic_node: str = "execution.execute",
 ) -> tuple[dict[str, object], MemoryAttemptJournal, RepairAuthorizationIssuer]:
-    prepared = accepted_verified_execution_input(project)
-    if technical_refactor is not None:
-        prepared = _recompile_after_technical_refactor(project, prepared, technical_refactor)
+    state = _missing_bridge_generation_state(project, technical_refactor=technical_refactor)
+    prepared = ExecutionPrepareInputV1.model_validate(state)
     generation = prepared.generation_result
     assert generation is not None
-    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
-    bridge_path = project / bridge.path
-    bridge_path.unlink()
-    state = cast(dict[str, object], prepared.model_dump(mode="json"))
-    state["generation_result"] = generation.model_dump(mode="json")
     selected = select_execute(state)
     contract = TASK_ATTEMPT_CONTRACTS[CONTRACT_ID]
     attempt_key = derive_attempt_key(
@@ -220,6 +221,26 @@ async def _repairable_state(
             graph_revision=REVISION,
         ),
     )
+
+
+def _missing_bridge_generation_state(
+    project: Path,
+    *,
+    technical_refactor: str | None = None,
+) -> dict[str, object]:
+    prepared = ExecutionPrepareInputV1.model_validate(
+        accepted_verified_execution_input(project).model_dump(mode="json", exclude_computed_fields=True)
+    )
+    if technical_refactor is not None:
+        prepared = _recompile_after_technical_refactor(project, prepared, technical_refactor)
+    generation = prepared.generation_result
+    assert generation is not None
+    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    bridge_path = project / bridge.path
+    bridge_path.unlink()
+    state = cast(dict[str, object], prepared.model_dump(mode="json"))
+    state["generation_result"] = generation.model_dump(mode="json")
+    return state
 
 
 def _recompile_after_technical_refactor(
@@ -608,6 +629,7 @@ def _product_input_for_generation(
     verification: object,
     *,
     policy_digest: str,
+    verification_config_digest: str = "c" * 64,
 ) -> dict[str, object]:
     payload = valid_product_input(
         change_id=generation.change_id,
@@ -619,7 +641,7 @@ def _product_input_for_generation(
             "sha256": policy_digest,
         },
         validation_profile="api_db.v1",
-        verification_config_digest="c" * 64,
+        verification_config_digest=verification_config_digest,
         verification_policy={
             "resource_id": "assurance.product.configuration.verification-policy",
             "sha256": "f" * 64,
@@ -638,33 +660,134 @@ def _product_input_for_generation(
     return state
 
 
+def _plan_policy_digest(project: Path, generation: GenerationCycleResultV1) -> str:
+    document = json.loads((project / generation.plan_ref.path).read_bytes())
+    return cast(str, document["policy_digest"])
+
+
+async def _run_installed_initial_execution(
+    project: Path,
+    state: Mapping[str, object],
+    composition: Any,
+    journal: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, object], Any]:
+    from assurance_execution.graphs.factory import build_execution_graphs
+    from graph_engine.attempts.contracts import resolve_contract
+    from graph_engine.attempts.host_receipts import TerminalReceiptStore
+    from graph_engine.attempts.kernel import AssuranceAttemptKernel
+    from graph_engine.attempts.node_factory import AttemptNodeFactory
+    from graph_engine.attempts.production_host import create_production_task_execution_host
+    from graph_engine.attempts.resource_arbiter import ResourceArbiter
+    from graph_engine.attempts.secret_sources import (
+        InvocationRuntimeAuthorization,
+        SecretSourceBinding,
+        runtime_authorization_digest,
+    )
+    from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
+    from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
+    from graph_engine.testing import RecordingCapabilityBuildContext
+
+    contracts = composition.semantic_attempt_contracts
+    resolved = contracts[CONTRACT_ID]
+    handler_id = resolved.contract.handler_id
+    monkeypatch.setenv("AA_TASK8_AUTHORITY", "unused-bridge-authority")
+    sources = (SecretSourceBinding("sut.authority", "environment", "AA_TASK8_AUTHORITY"),)
+    authorization = InvocationRuntimeAuthorization(
+        schema_version="1",
+        secret_sources=sources,
+        digest=runtime_authorization_digest(sources),
+    )
+
+    def activity_factory(call, *, remaining_deadline):
+        del call, remaining_deadline
+        raise AssertionError("a diagnosed missing bridge must not dispatch to the SUT host")
+
+    store = TaskWorkspaceStore(
+        project,
+        project / ".task8-attempts",
+        project / ".task8-receipts",
+    )
+    host = create_production_task_execution_host(
+        authorization=authorization,
+        handlers={handler_id: composition.registries.capabilities.task_handlers[handler_id]},
+        store=store,
+        receipts=TerminalReceiptStore.create(project / ".task8-host-receipts"),
+        activity_factory=activity_factory,
+        invocation_root=project,
+    )
+    bound = resolve_contract(
+        resolved.contract,
+        executor=resolved.executor.with_host(
+            host,
+            graph_revision=REVISION,
+            product_lock_digest=composition.lock.digest,
+        ),
+        validation_context=resolved.validation_context,
+    )
+    workspace = TaskWorkspaceProvider(store)
+    kernel = AssuranceAttemptKernel(
+        journal=journal,
+        arbiter=ResourceArbiter(MemoryResourceAuthorizationStore()),
+        workspace=workspace,
+        graph_revision=REVISION,
+    )
+    context = RecordingCapabilityBuildContext(
+        owner_id="assurance.execution",
+        contracts={
+            CONTRACT_ID: bound,
+            "assurance.execution.task.run.v1": contracts["assurance.execution.task.run.v1"],
+        },
+        attempt_factory=AttemptNodeFactory(journal=journal, kernel=kernel),
+    )
+    try:
+        graph = build_execution_graphs(context).execute
+        result = await graph.ainvoke(
+            dict(state),
+            config={
+                "configurable": {
+                    "thread_id": INVOCATION_ID,
+                    "assurance_revision_id": REVISION,
+                    "assurance_product_lock_digest": composition.lock.digest,
+                    "assurance_root_input_digest": canonical_digest(cast(JSONValue, dict(state))),
+                    "assurance_fencing_token": 1,
+                    "assurance_entrypoint": ENTRYPOINT,
+                }
+            },
+        )
+        execution = VerifiedIncompleteExecutionV1.model_validate(result["execution_result"])
+        from graph_engine.attempts import AttemptKey as InstalledAttemptKey
+
+        current_key = InstalledAttemptKey(digest=execution.defect.attempt_key.digest)
+        snapshot = await journal.load(current_key)
+        assert snapshot is not None
+        return dict(result), snapshot
+    finally:
+        store.close()
+
+
 def _real_task8_graph(
     project: Path,
     initial: Mapping[str, object],
     *,
     repeat_defect: bool,
     monkeypatch: pytest.MonkeyPatch,
+    assessment_composition: Any,
     obligation_mutation: str | None = None,
 ):
-    config = VerificationConfiguration(
-        validation_profile="api_db.v1",
-        host=VerificationHostConfigV1(
-            managed_sut_authority_handle="sut.authority",
-            credential_handle="sut.credential",
-        ),
+    from assurance_product.repair_authorization import (
+        RepairAuthorizationIssuer as InstalledRepairAuthorizationIssuer,
     )
-    facade = ProfiledExecutionExecutor(
-        config=config,
-        config_digest="c" * 64,
-        legacy=None,
-        callable_path="assurance_execution.operations.verified_attempt:VerifiedAttemptHandler.execute",
+    from graph_engine.persistence.attempt_journal import (
+        MemoryAttemptJournal as InstalledMemoryAttemptJournal,
     )
-    initial_execution = VerifiedIncompleteExecutionV1.model_validate(initial["execution_result"])
+
     initial_results: list[VerifiedIncompleteExecutionV1] = []
+    initial_snapshots: list[Any] = []
     rerun_keys: list[AttemptKey] = []
     host_calls: list[str] = []
-    live_journal = MemoryAttemptJournal()
-    live_issuer = RepairAuthorizationIssuer(
+    live_journal = InstalledMemoryAttemptJournal()
+    live_issuer = InstalledRepairAuthorizationIssuer(
         journal=live_journal,
         invocation_id=INVOCATION_ID,
         public_entrypoint=ENTRYPOINT,
@@ -672,74 +795,40 @@ def _real_task8_graph(
     )
 
     class RerunHost:
-        async def execute(self, value: ExecutionPrepareInputV1):
+        async def execute(self, value: Any):
+            from graph_engine.plugin_api import TaskOutcome as InstalledTaskOutcome
+
             host_calls.append("rerun")
+            selected = ExecutionPrepareInputV1.model_validate(
+                value.model_dump(mode="json", exclude_computed_fields=True)
+            )
             return SimpleNamespace(
-                outcome=TaskOutcome.succeeded(
+                outcome=InstalledTaskOutcome.succeeded(
                     cast(
                         JSONValue,
-                        _successful_rerun(project, value, rerun_keys[-1]).model_dump(mode="json"),
+                        _successful_rerun(project, selected, rerun_keys[-1]).model_dump(mode="json"),
                     )
                 )
             )
 
-    facade._host = RerunHost()
+    run_contract = assessment_composition.semantic_attempt_contracts["assurance.execution.task.run.v1"]
+    facade = run_contract.executor.with_host(
+        RerunHost(),
+        graph_revision=REVISION,
+        product_lock_digest=assessment_composition.lock.digest,
+    )
     facade._call = lambda value, _scope: value  # type: ignore[method-assign]
 
     async def execute_node(state: Mapping[str, object]) -> dict[str, object]:
-        value = select_execute(state)
-        result = await facade.execute(
-            value,
-            cast(
-                Any,
-                SimpleNamespace(
-                    workspace=SimpleNamespace(project_root=project),
-                    execution=SimpleNamespace(attempt_key=initial_execution.defect.attempt_key),
-                ),
-            ),
+        published, snapshot = await _run_installed_initial_execution(
+            project,
+            state,
+            assessment_composition,
+            live_journal,
+            monkeypatch,
         )
-        raw = VerifiedBridgeDefectResultV1.model_validate(result.output.root)
-        contract = TASK_ATTEMPT_CONTRACTS[CONTRACT_ID]
-        raw_payload = cast(JSONValue, raw.model_dump(mode="json"))
-        selected_payload = cast(JSONValue, value.model_dump(mode="json"))
-        contract_payload = cast(JSONValue, contract.canonical_projection())
-        await live_journal.append(
-            raw.defect.attempt_key,
-            (
-                AttemptOpened(
-                    contract_digest=canonical_digest(contract_payload),
-                    input_digest=canonical_digest(selected_payload),
-                    graph_revision=REVISION,
-                    invocation_id=INVOCATION_ID,
-                    public_entrypoint=ENTRYPOINT,
-                    semantic_node_id="execution.execute",
-                ),
-                ResourcesAuthorized(authorization_id="a" * 64),
-                ActivityPrepared(activity_id=raw.defect.attempt_key.digest),
-                ActivityTerminalObserved(
-                    activity_id=raw.defect.attempt_key.digest,
-                    outcome=raw_payload,
-                    outcome_digest=canonical_digest(raw_payload),
-                ),
-                CommitPrepared(prepared_digest="b" * 64),
-                WorkspacePromoted(
-                    receipt_id=initial_execution.receipt.receipt_id,
-                    receipt_digest=initial_execution.receipt.receipt_digest,
-                    staged_digest="c" * 64,
-                ),
-                AttemptTerminated(
-                    resolution_kind="committed",
-                    output=raw_payload,
-                    receipt_id=initial_execution.receipt.receipt_id,
-                    receipt_digest=initial_execution.receipt.receipt_digest,
-                ),
-                ResourcesReleased(authorization_id="a" * 64),
-            ),
-            expected_revision=0,
-            fencing_token=1,
-        )
-        published = publish_execution(state, result.output, initial_execution.receipt)
         initial_results.append(VerifiedIncompleteExecutionV1.model_validate(published["execution_result"]))
+        initial_snapshots.append(snapshot)
         return published
 
     quality_calls = {"count": 0}
@@ -752,8 +841,6 @@ def _real_task8_graph(
                 state["execution_result"],
             )
             execution = cast(Any, cycle)
-            from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
-
             verified = VerifiedExecutionCycleResultV1.model_validate(execution)
             inspection = InspectionOutcomeV1(
                 change_id=verified.change_id,
@@ -773,6 +860,7 @@ def _real_task8_graph(
         installed = await _run_installed_assessment(
             project,
             request,
+            assessment_composition,
             monkeypatch,
         )
         assert hasattr(installed, "output"), installed
@@ -806,7 +894,9 @@ def _real_task8_graph(
             mapping_ref=request.generation.mapping_ref,
             metrics=metrics,
             sufficiency=sufficiency,
-            failure_facts=verification_failure_facts(verdict),
+            failure_facts=FailureClassificationFactsV1.model_validate(
+                verification_failure_facts(verdict).model_dump(mode="json", exclude_computed_fields=True)
+            ),
             fact_baseline_ref=fact_ref,
             reason_codes=verdict.reason_codes,
             verification=verdict,
@@ -904,7 +994,8 @@ def _real_task8_graph(
             assert generation is not None
             bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
             bridge_path = project / bridge.path
-            bridge_path.write_text(f"def {initial_execution.defect.bridge_symbol}():\n    pass\n")
+            assert initial_results
+            bridge_path.write_text(f"def {initial_results[0].defect.bridge_symbol}():\n    pass\n")
             damaged_ref = bridge.model_copy(
                 update={"digest": hashlib.sha256(bridge_path.read_bytes()).hexdigest()}
             )
@@ -917,8 +1008,11 @@ def _real_task8_graph(
             )
             value = value.model_copy(update={"generation_result": generation})
         try:
+            installed_value = run_contract.contract.input_model.model_validate(
+                value.model_dump(mode="json", exclude_computed_fields=True)
+            )
             result = await facade.execute(
-                value,
+                installed_value,
                 cast(
                     Any,
                     SimpleNamespace(
@@ -985,49 +1079,35 @@ def _real_task8_graph(
         validate=False,
         repair_authorization_issuer=live_issuer,
     ).compile(checkpointer=None)
-    return graph, rerun_keys, host_calls, initial_results
+    return graph, rerun_keys, host_calls, initial_results, initial_snapshots, live_journal
 
 
 async def _run_installed_assessment(
     project: Path,
-    request: object,
+    request: Any,
+    composition: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Any:
-    from assurance_quality.operations.assessment import MaterializeAssessmentHandler
-
-    handler_id = "assurance.quality.materialize-assessment-inputs.execute"
-    handler = MaterializeAssessmentHandler()
-    executor = ProfiledAssessmentExecutor(
-        config=VerificationConfiguration(
-            validation_profile="api_db.v1",
-            host=VerificationHostConfigV1(managed_sut_authority_handle="sut.authority"),
-        ),
-        config_digest="c" * 64,
-        legacy=None,
-        handler_id=handler_id,
-        handler=handler,
-        callable_path=("assurance_quality.operations.assessment:MaterializeAssessmentHandler.execute"),
+    resolved = composition.semantic_attempt_contracts["assurance.quality.materialize-assessment-inputs"]
+    installed_request = resolved.contract.input_model.model_validate(
+        request.model_dump(mode="json", exclude_computed_fields=True)
     )
-    resolved = SimpleNamespace(
-        contract=SimpleNamespace(handler_id=handler_id),
-        executor=executor,
-    )
-    composition = SimpleNamespace(
-        semantic_attempt_contracts={
-            "assurance.quality.materialize-assessment-inputs": resolved,
-        },
-        registries=SimpleNamespace(
-            capabilities=SimpleNamespace(task_handlers={handler_id: handler}),
-        ),
-        lock=SimpleNamespace(digest="b" * 64),
-    )
-    return await _installed_assessment(
+    result = await _installed_assessment(
         project,
-        request,
+        installed_request,
         composition,
         None,
         monkeypatch,
     )
+    if hasattr(result, "output"):
+        return result.model_copy(
+            update={
+                "output": AssessmentInputsV1.model_validate(
+                    result.output.model_dump(mode="json", exclude_computed_fields=True)
+                )
+            }
+        )
+    return result
 
 
 def _tamper_machine_plan(
@@ -1052,24 +1132,26 @@ def _tamper_machine_plan(
 @pytest.mark.parametrize("repeat_defect", [False, True])
 def test_real_product_graph_uses_installed_assessment_then_reruns_with_fresh_identity(
     tmp_path: Path,
+    assessment_composition,
     repeat_defect: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    issuer_state, _journal, _issuer = asyncio.run(_repairable_state(tmp_path))
+    issuer_state = _missing_bridge_generation_state(tmp_path)
     generation = GenerationCycleResultV1.model_validate(issuer_state["generation_result"])
-    from assurance_intake.contracts.plan import decode_plan
-
-    plan = decode_plan((tmp_path / generation.plan_ref.path).read_bytes(), generation.plan_ref)
     start = _product_input_for_generation(
         generation,
         issuer_state["verification"],
-        policy_digest=plan.policy_digest,
+        policy_digest=_plan_policy_digest(tmp_path, generation),
+        verification_config_digest=assessment_composition.semantic_attempt_contracts[
+            CONTRACT_ID
+        ].executor.config_digest,
     )
-    graph, rerun_keys, host_calls, initial_results = _real_task8_graph(
+    graph, rerun_keys, host_calls, initial_results, initial_snapshots, live_journal = _real_task8_graph(
         tmp_path,
         issuer_state,
         repeat_defect=repeat_defect,
         monkeypatch=monkeypatch,
+        assessment_composition=assessment_composition,
     )
 
     result = asyncio.run(graph.ainvoke(cast(ProductState, start), config={"recursion_limit": 50}))
@@ -1080,6 +1162,17 @@ def test_real_product_graph_uses_installed_assessment_then_reruns_with_fresh_ide
     assert AppliedTestRepairV1.model_validate(result["repair_result"]).repair_round == 1
     assert len(initial_results) == 1
     initial_execution = initial_results[0]
+    assert len(initial_snapshots) == 1
+    original_snapshot = initial_snapshots[0]
+    from graph_engine.attempts import AttemptKey as InstalledAttemptKey
+
+    current_attempt_key = InstalledAttemptKey(digest=initial_execution.defect.attempt_key.digest)
+    retained_snapshot = asyncio.run(live_journal.load(current_attempt_key))
+    assert retained_snapshot is not None
+    assert retained_snapshot.terminal == original_snapshot.terminal
+    assert retained_snapshot.activity_outcome == original_snapshot.activity_outcome
+    assert retained_snapshot.promotion_receipt_id == original_snapshot.promotion_receipt_id
+    assert retained_snapshot.promotion_receipt_digest == original_snapshot.promotion_receipt_digest
     assert initial_execution.defect.defect_kind == "missing_bridge"
     assert authorization.attempt_key == initial_execution.defect.attempt_key
     assert authorization.receipt == initial_execution.receipt
@@ -1093,13 +1186,15 @@ def test_real_product_graph_uses_installed_assessment_then_reruns_with_fresh_ide
         assert result["terminal"] == {"status": "failed", "reason": "blocked"}
         assert host_calls == []
     else:
-        from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
-
         rerun = VerifiedExecutionCycleResultV1.model_validate(result["execution_result"])
         assert rerun.repair_round == 1
         assert rerun.attempt_key == rerun_keys[0]
         verification = cast(Mapping[str, object], start["verification"])
         assert rerun.execution_id == _execution_id(rerun_keys[0], cast(str, verification["nodeid"]))
+        assert rerun.execution_id != _execution_id(
+            initial_execution.defect.attempt_key,
+            cast(str, verification["nodeid"]),
+        )
         assert rerun.batch_id != initial_execution.batch_id
         assert host_calls == ["rerun"]
 
@@ -1110,31 +1205,32 @@ def test_real_product_graph_uses_installed_assessment_then_reruns_with_fresh_ide
 )
 def test_legal_technical_refactor_recompiles_then_applies_and_reruns(
     tmp_path: Path,
+    assessment_composition,
     technical_refactor: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    issuer_state, _journal, _issuer = asyncio.run(
-        _repairable_state(tmp_path, technical_refactor=technical_refactor)
+    issuer_state = _missing_bridge_generation_state(
+        tmp_path,
+        technical_refactor=technical_refactor,
     )
     generation = GenerationCycleResultV1.model_validate(issuer_state["generation_result"])
-    from assurance_intake.contracts.plan import decode_plan
-
-    plan = decode_plan((tmp_path / generation.plan_ref.path).read_bytes(), generation.plan_ref)
     start = _product_input_for_generation(
         generation,
         issuer_state["verification"],
-        policy_digest=plan.policy_digest,
+        policy_digest=_plan_policy_digest(tmp_path, generation),
+        verification_config_digest=assessment_composition.semantic_attempt_contracts[
+            CONTRACT_ID
+        ].executor.config_digest,
     )
-    graph, rerun_keys, host_calls, initial_results = _real_task8_graph(
+    graph, rerun_keys, host_calls, initial_results, _snapshots, _journal = _real_task8_graph(
         tmp_path,
         issuer_state,
         repeat_defect=False,
         monkeypatch=monkeypatch,
+        assessment_composition=assessment_composition,
     )
 
     result = asyncio.run(graph.ainvoke(cast(ProductState, start), config={"recursion_limit": 50}))
-
-    from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
 
     rerun = VerifiedExecutionCycleResultV1.model_validate(result["execution_result"])
     assert len(initial_results) == len(rerun_keys) == 1
@@ -1150,24 +1246,26 @@ def test_legal_technical_refactor_recompiles_then_applies_and_reruns(
 )
 def test_real_product_graph_rejects_weakened_obligation_before_rerun(
     tmp_path: Path,
+    assessment_composition,
     weakened_obligation: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    issuer_state, _journal, _issuer = asyncio.run(_repairable_state(tmp_path))
+    issuer_state = _missing_bridge_generation_state(tmp_path)
     generation = GenerationCycleResultV1.model_validate(issuer_state["generation_result"])
-    from assurance_intake.contracts.plan import decode_plan
-
-    plan = decode_plan((tmp_path / generation.plan_ref.path).read_bytes(), generation.plan_ref)
     start = _product_input_for_generation(
         generation,
         issuer_state["verification"],
-        policy_digest=plan.policy_digest,
+        policy_digest=_plan_policy_digest(tmp_path, generation),
+        verification_config_digest=assessment_composition.semantic_attempt_contracts[
+            CONTRACT_ID
+        ].executor.config_digest,
     )
-    graph, rerun_keys, host_calls, _initial_results = _real_task8_graph(
+    graph, rerun_keys, host_calls, _initial_results, _snapshots, _journal = _real_task8_graph(
         tmp_path,
         issuer_state,
         repeat_defect=False,
         monkeypatch=monkeypatch,
+        assessment_composition=assessment_composition,
         obligation_mutation=weakened_obligation,
     )
 
