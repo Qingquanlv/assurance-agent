@@ -265,6 +265,21 @@ class OwnedAttemptProbe:
     async def execute(self, request, context):
         marker = context.project_root / ".test-crash-cut"
         cut = marker.read_text() if marker.exists() else None
+        if cut in {"manifest_before_publish", "manifest_after_publish"}:
+            from assurance_execution.operations import record_publication as publication
+
+            publish = publication._publish_exclusive
+
+            def interrupted(source, destination):
+                if destination.name == "verification-manifest.json" and cut == "manifest_before_publish":
+                    raise RuntimeError("test-only interrupted manifest publication")
+                publish(source, destination)
+                if destination.name == "verification-manifest.json":
+                    raise RuntimeError("test-only interrupted manifest publication")
+
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(publication, "_publish_exclusive", interrupted)
+                return await self.handler.execute(request, context)
         if cut == "wrong_recovery_scope":
             assert context.activity is not None
             self.handler._owned_request(request, context)
@@ -377,6 +392,8 @@ class CrashPipeHost(PipeHost):
 @pytest.mark.parametrize(
     "cut",
     [
+        "manifest_before_publish",
+        "manifest_after_publish",
         "wrong_recovery_scope",
         "dynamic_db_mismatch",
         "dynamic_instance_mismatch",
@@ -548,13 +565,28 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
             "dynamic_instance_mismatch",
         }:
             (project / ".test-crash-cut").write_text(cut)
-        if cut in {"prepared", "dispatch_started", "terminal_unreported"}:
+        if cut in {
+            "prepared",
+            "dispatch_started",
+            "terminal_unreported",
+            "manifest_before_publish",
+            "manifest_after_publish",
+        }:
             from graph_engine.attempts.production_host import ProductionHostError
 
             (project / ".test-crash-cut").write_text(cut)
             with pytest.raises(ProductionHostError, match="test-only"):
                 await executor.execute(value, scope)
             (project / ".test-crash-cut").unlink()
+            if cut.startswith("manifest_"):
+                manifests = list(
+                    workspace.write_root.glob("qa/changes/c/execution/*/verification-manifest.json")
+                )
+                if cut == "manifest_before_publish":
+                    assert manifests == []
+                else:
+                    assert len(manifests) == 1
+                    assert json.loads(manifests[0].read_bytes())["change_id"] == "c"
             record = json.loads(next(private.glob("*.json")).read_bytes())
             retained_credential = record["credential"]
             result = await executor.reconcile(value, scope, await journal.load(key))
@@ -800,3 +832,78 @@ def test_retained_attempt_recovers_credentials_without_login_and_rejects_links(o
         assert len(logins) == 2
     finally:
         second.stop()
+
+
+@pytest.mark.parametrize("cut", ["before", "after"])
+def test_owned_cleanup_publication_recovers_without_partial_final(owned_input, monkeypatch, cut):
+    import json
+    import os
+    from assurance_execution.operations.user_attempt import start_user_attempt
+    from assurance_execution.operations import record_publication as publication
+
+    root, kwargs, _ = owned_input
+    owned = start_user_attempt(root, **kwargs)
+    run = Path(owned.authority.run_root)
+    stopped = run / "stopped-process.json"
+    marker = run / f"live-{owned.verification.sut_instance_id}.json"
+    publish = publication._publish_exclusive
+
+    def interrupted(source, destination):
+        if destination.name == "stopped-process.json" and cut == "before":
+            raise RuntimeError("test-only interrupted cleanup publication")
+        publish(source, destination)
+        if destination.name == "stopped-process.json":
+            raise RuntimeError("test-only interrupted cleanup publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(publication, "_publish_exclusive", interrupted)
+        with pytest.raises(RuntimeError, match="interrupted cleanup"):
+            owned.stop()
+    assert marker.exists()
+    if cut == "before":
+        assert not stopped.exists()
+    else:
+        assert json.loads(stopped.read_bytes())["state"] == "stopped"
+    kill = os.kill
+    signals = []
+
+    def observe_kill(pid, sig):
+        signals.append(sig)
+        return kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", observe_kill)
+    owned.stop()
+    final = stopped.read_bytes()
+    owned.stop()
+    assert stopped.read_bytes() == final
+    assert json.loads(final)["instance_id"] == owned.verification.sut_instance_id
+    assert not marker.exists()
+    assert not any(signals)
+    assert stopped.stat().st_nlink == 1
+    assert stopped.stat().st_mode & 0o777 == 0o400
+
+
+@pytest.mark.parametrize("raced", [False, True])
+@pytest.mark.parametrize("winner", [b'{"state":"sealed"}', b'{"state":"other"}', b'{"state":'])
+def test_host_record_publication_authenticates_existing_winner(tmp_path, monkeypatch, raced, winner):
+    from assurance_execution.operations import record_publication as publication
+
+    expected = b'{"state":"sealed"}'
+    destination = tmp_path / "record.json"
+    if raced:
+        publish = publication._publish_exclusive
+
+        def competing_writer(source, target):
+            target.write_bytes(winner)
+            publish(source, target)
+
+        monkeypatch.setattr(publication, "_publish_exclusive", competing_writer)
+    else:
+        destination.write_bytes(winner)
+    if winner == expected:
+        publication.publish_record(destination, expected)
+    else:
+        with pytest.raises(ValueError, match="bytes differ"):
+            publication.publish_record(destination, expected)
+    assert destination.read_bytes() == winner
+    assert list(tmp_path.iterdir()) == [destination]

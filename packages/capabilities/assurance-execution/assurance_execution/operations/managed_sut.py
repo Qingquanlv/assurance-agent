@@ -18,6 +18,7 @@ from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
 from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
 from assurance_execution.contracts.verification import ManagedSutAuthorityV1, SqliteFileIdentityV1
 from assurance_execution.operations.common import InputError
+from assurance_execution.operations.record_publication import publish_record
 from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_execution.operations.verification_manifest import sqlite_file_identity
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -456,27 +457,27 @@ class ManagedUserSutHost:
                 k: v for k, v in expected.items() if k != "receipt_digest"
             }:
                 raise ValueError("NOT_READY: retained cleanup identity drifted")
-            return
-        pid = started.get("pid")
-        if type(pid) is not int or pid <= 1:
-            raise ValueError("NOT_READY: owned process identity is invalid")
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            pass
         else:
-            if process_birth_identity(pid) == started.get("process_birth_identity"):
-                os.kill(pid, signal.SIGTERM)
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline:
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        break
-                    time.sleep(0.05)
-                else:
-                    raise ValueError("NOT_READY: owned process cleanup is unconfirmed")
-            # A different birth identity means this owned process already exited.
+            pid = started.get("pid")
+            if type(pid) is not int or pid <= 1:
+                raise ValueError("NOT_READY: owned process identity is invalid")
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                if process_birth_identity(pid) == started.get("process_birth_identity"):
+                    os.kill(pid, signal.SIGTERM)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        try:
+                            os.kill(pid, 0)
+                        except ProcessLookupError:
+                            break
+                        time.sleep(0.05)
+                    else:
+                        raise ValueError("NOT_READY: owned process cleanup is unconfirmed")
+                # A different birth identity means this owned process already exited.
         unsigned = {k: v for k, v in started.items() if k != "receipt_digest"}
         unsigned.update(state="stopped", reason="owned_sut_stopped")
         raw = json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
@@ -484,14 +485,7 @@ class ManagedUserSutHost:
             **unsigned,
             "receipt_digest": "hmac-sha256:" + hmac.new(token, raw, hashlib.sha256).hexdigest(),
         }
-        fd = os.open(stopped, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-        try:
-            with os.fdopen(fd, "wb", closefd=False) as stream:
-                stream.write(json.dumps(document, sort_keys=True).encode())
-                stream.flush()
-                os.fsync(fd)
-        finally:
-            os.close(fd)
+        publish_record(stopped, json.dumps(document, sort_keys=True).encode())
         (run / f"live-{started['instance_id']}.json").unlink(missing_ok=True)
 
 

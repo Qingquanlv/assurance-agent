@@ -7,8 +7,6 @@ import hashlib
 import hmac
 import json
 import os
-import ctypes
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -18,6 +16,7 @@ import httpx
 
 from assurance_execution.contracts.verification import VerificationManifestV1
 from assurance_execution.operations.sqlite_oracle import observe_user
+from assurance_execution.operations.record_publication import _publish_exclusive, publish_record
 from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1
 
@@ -66,24 +65,6 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 def _bytes(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-
-
-def _publish_exclusive(source: Path, destination: Path) -> None:
-    """Atomic no-replace rename; final records never have a partial or two-link state."""
-    library = ctypes.CDLL(None, use_errno=True)
-    if sys.platform == "darwin":
-        rename = library.renamex_np
-        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-        result = rename(os.fsencode(source), os.fsencode(destination), 4)  # RENAME_EXCL
-    elif sys.platform == "linux":
-        rename = library.renameat2
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        result = rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1)  # RENAME_NOREPLACE
-    else:
-        raise OSError("atomic exclusive journal publication requires Linux or macOS")
-    if result != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), str(destination))
 
 
 class ActionJournal:
@@ -527,23 +508,7 @@ def _verified_outcome(
     # Its preparation reference may name the host's private candidate workspace.
     manifest_bytes = _read_ref(context.project_root, payload.manifest_ref)
     public_manifest = journal.root / "verification-manifest.json"
-    if public_manifest.exists():
-        _read_ref(
-            context.write_root,
-            EvidenceArtifactRefV1(
-                path=f"{manifest.evidence_root}/verification-manifest.json",
-                digest=payload.manifest_ref.digest,
-            ),
-        )
-    else:
-        fd = os.open(public_manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
-        try:
-            with os.fdopen(fd, "wb", closefd=False) as stream:
-                stream.write(manifest_bytes)
-                stream.flush()
-                os.fsync(fd)
-        finally:
-            os.close(fd)
+    publish_record(public_manifest, manifest_bytes)
     authority = VerifiedExecutionAuthorityV1(
         validation_profile=manifest.validation_profile,
         change_id=manifest.change_id,
