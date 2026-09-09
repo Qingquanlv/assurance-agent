@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import selectors
+import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -125,6 +127,35 @@ def _valid_report(raw: Any, nodeid: str, exit_code: int | None = None) -> bool:
     ) and code == int(outcome == "failed")
 
 
+def _stop_owned_process_group(process: subprocess.Popen[bytes]) -> bool:
+    """Reap our session leader and confirm its entire owned pgid has vanished.
+
+    Popen(start_new_session=True) established pgid == this child's PID. A dead
+    leader does not imply a dead group: pytest may still own inherited pipes.
+    """
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            process.poll()
+            return True
+        except PermissionError:
+            # macOS can briefly report EPERM while an orphaned group is exiting.
+            # It is not confirmation: keep checking, and fail closed on expiry.
+            pass
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            process.poll()  # Reap our child so its zombie cannot retain the group.
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                pass
+            time.sleep(0.02)
+    return False
+
+
 def run_bridge_process(
     argv: list[str],
     *,
@@ -157,6 +188,7 @@ def run_bridge_process(
         env={
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONUNBUFFERED": "1",
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "LC_ALL": "C.UTF-8",
             **(client_environment or {}),
@@ -167,7 +199,7 @@ def run_bridge_process(
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-    cleanup_confirmed = cleanup is None
+    cleanup_confirmed = False
     try:
         process.stdin.write(json.dumps({"type": "start", "nodeid": nodeid}).encode() + b"\n")
         process.stdin.flush()
@@ -258,16 +290,10 @@ def run_bridge_process(
             if error is not None and not isinstance(error, Exception):
                 fatal = error
         selector.close()
-        if process.poll() is None:
-            # Give the installed supervisor time to terminate and reap pytest.
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, 9)
-        process.wait(timeout=10)
+        cleanup_confirmed = _stop_owned_process_group(process)
         if cleanup is not None:
-            cleanup_confirmed = cleanup()
+            external_cleanup_confirmed = cleanup()
+            cleanup_confirmed = cleanup_confirmed and external_cleanup_confirmed
         process.stdin.close()
         process.stdout.close()
         process.stderr.close()
@@ -321,15 +347,20 @@ class SubprocessVerificationHost:
         execute: Callable[[str, ActionControl], None],
         cancel_requested: Callable[[], bool],
     ) -> VerifiedProcessReceiptV1:
-        return run_bridge_process(
-            [sys.executable, "-m", "assurance_execution.bridge_runner"],
-            cwd=view.resolve(strict=True),
-            nodeid=nodeid,
-            case_id=case_id,
-            execute=execute,
-            limits=self.limits,
-            cancel_requested=cancel_requested,
-        )
+        resolved = view.resolve(strict=True)
+        # The authenticated view is read-only. Its parent is inside this Attempt's
+        # staging workspace; crash leftovers therefore remain lifecycle-owned.
+        with tempfile.TemporaryDirectory(prefix=".bridge-tmp-", dir=resolved.parent) as temporary:
+            return run_bridge_process(
+                [sys.executable, "-m", "assurance_execution.bridge_runner"],
+                cwd=resolved,
+                nodeid=nodeid,
+                case_id=case_id,
+                execute=execute,
+                limits=self.limits,
+                cancel_requested=cancel_requested,
+                client_environment={"TMPDIR": temporary, "TMP": temporary, "TEMP": temporary},
+            )
 
     def stop(self, container_name: str) -> bool:
         # No external container exists. The owned pipe supervisor is bounded and

@@ -667,13 +667,22 @@ class VerifiedExecutionHandler:
                 raise ValueError("activity reference differs from authenticated execution")
             if activity.reference is None:
                 context.activity.bind(reference)
-            if not await asyncio.to_thread(
-                self._process_host(request).stop, "aa-verify-" + manifest.execution_id
+            host = self._process_host(request)
+            process = journal.read("process_terminal")
+            if (
+                isinstance(host, SubprocessVerificationHost)
+                and process is not None
+                and not process["cleanup_confirmed"]
             ):
+                # A local stop(name) no-op cannot authenticate a vanished pgid.
+                # Keep an unconfirmed transport receipt nonterminal on recovery.
+                return TaskActivityReconcileResult(
+                    status="indeterminate", reason="process_group_cleanup_unconfirmed"
+                )
+            if not await asyncio.to_thread(host.stop, "aa-verify-" + manifest.execution_id):
                 return TaskActivityReconcileResult(
                     status="indeterminate", reason="container_cleanup_unconfirmed"
                 )
-            process = journal.read("process_terminal")
             if process is not None and not process["cleanup_confirmed"]:
                 journal.write(
                     "cleanup_terminal",

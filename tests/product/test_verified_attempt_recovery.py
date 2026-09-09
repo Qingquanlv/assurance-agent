@@ -367,14 +367,13 @@ class PipeHost:
         return {"transport": "test-only-real-pipe"}
 
     def run(self, *, view, nodeid, case_id, container_name, execute, cancel_requested):
-        import sys
-        from assurance_execution.operations.verified_process import run_bridge_process
+        from assurance_execution.operations.verified_process import SubprocessVerificationHost
 
-        return run_bridge_process(
-            [sys.executable, "-m", "assurance_execution.bridge_runner"],
-            cwd=view,
+        return SubprocessVerificationHost().run(
+            view=view,
             nodeid=nodeid,
             case_id=case_id,
+            container_name=container_name,
             execute=execute,
             cancel_requested=cancel_requested,
         )

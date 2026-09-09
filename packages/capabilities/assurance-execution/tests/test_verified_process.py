@@ -10,6 +10,7 @@ import pytest
 
 from assurance_execution.operations.verified_process import (
     ProcessLimits,
+    SubprocessVerificationHost,
     container_argv,
     run_bridge_process,
 )
@@ -209,13 +210,12 @@ def child(tmp_path: Path, source: str, *, timeout: float = 10, cancel=lambda: Fa
     tests.mkdir(exist_ok=True)
     (tests / "test_case.py").write_text(source)
     calls: list[str] = []
-    receipt = run_bridge_process(
-        [sys.executable, "-m", "assurance_execution.bridge_runner"],
-        cwd=tmp_path,
+    receipt = SubprocessVerificationHost(limits=ProcessLimits(timeout_seconds=timeout)).run(
+        view=tmp_path,
         nodeid="tests/test_case.py::test_case",
         case_id="TC_USER_CREATE_001",
+        container_name="unused",
         execute=lambda case, _: calls.append(case),
-        limits=ProcessLimits(timeout_seconds=timeout),
         cancel_requested=cancel,
     )
     return receipt, calls
@@ -449,12 +449,14 @@ def test_parent_process_loss_closes_bridge_and_reaps_pytest(tmp_path):
     import os
     import subprocess
 
-    tests = tmp_path / "tests"
-    tests.mkdir()
-    pid_path = tmp_path / "pytest.pid"
+    view = tmp_path / "attempt/view"
+    tests = view / "tests"
+    tests.mkdir(parents=True)
+    pid_path = view / "pytest.pid"
     (tests / "test_case.py").write_text(
-        "import os,time\nfrom pathlib import Path\ndef test_case():\n"
+        "import os,time,tempfile\nfrom pathlib import Path\ndef test_case():\n"
         '    Path("pytest.pid").write_text(str(os.getpid()))\n'
+        '    Path("temporary-root").write_text(tempfile.gettempdir())\n'
         "    time.sleep(60)\n"
     )
     owner = subprocess.Popen(
@@ -467,7 +469,7 @@ def test_parent_process_loss_closes_bridge_and_reaps_pytest(tmp_path):
             "case_id='case', container_name='unused', execute=lambda *args: None, "
             "cancel_requested=lambda: False)",
         ],
-        cwd=tmp_path,
+        cwd=view,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
@@ -488,6 +490,9 @@ def test_parent_process_loss_closes_bridge_and_reaps_pytest(tmp_path):
             time.sleep(0.02)
         else:
             pytest.fail("pytest survived the loss of its parent host protocol")
+        temporary = Path((view / "temporary-root").read_text())
+        assert temporary.is_relative_to(tmp_path / "attempt")
+        assert temporary.is_dir()  # A killed owner cannot execute normal finally cleanup.
     finally:
         if owner.poll() is None:
             owner.kill()
@@ -525,3 +530,89 @@ def test_explicit_oci_client_keeps_only_its_connection_environment(tmp_path, mon
     assert environment["HOME"] == str(tmp_path / "client-home")
     assert environment["DOCKER_CONTEXT"] == "test-only-colima-context"
     assert "AA_API_TOKEN" not in environment
+
+
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_killed_supervisor_cannot_leave_its_pytest_process_group(tmp_path, ignore_term):
+    import os
+    import signal
+
+    pids = tmp_path / "owned-pids.json"
+    source = f"""import json, os, signal, time
+from pathlib import Path
+def test_case():
+    signal.signal(signal.SIGTERM, signal.SIG_IGN if {ignore_term!r} else signal.SIG_DFL)
+    Path({str(pids)!r}).write_text(json.dumps([os.getpid(), os.getpgrp()]))
+    os.kill(os.getppid(), signal.SIGKILL)
+    time.sleep(60)
+"""
+    try:
+        receipt, calls = child(tmp_path, source, timeout=2)
+        worker_pid, pgid = json.loads(pids.read_text())
+        assert receipt.exit_code == -signal.SIGKILL
+        assert calls == []
+        # The orphan reaper may briefly retain an already-dead worker PID after
+        # the process group has vanished. Confirm its final removal as well.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(worker_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        with pytest.raises(ProcessLookupError):
+            os.kill(worker_pid, 0)
+        with pytest.raises(ProcessLookupError):
+            os.killpg(pgid, 0)
+        assert receipt.cleanup_confirmed
+    finally:
+        if pids.exists():
+            _, pgid = json.loads(pids.read_text())
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_default_host_keeps_all_temporary_files_in_attempt(tmp_path, monkeypatch, timeout):
+    from assurance_execution.operations.verified_process import SubprocessVerificationHost
+
+    attempt = tmp_path / "attempt"
+    view = attempt / "view"
+    (view / "tests").mkdir(parents=True)
+    observed = attempt / "observed.json"
+    monkeypatch.setenv("TMPDIR", "/parent-secret-temp-dir")
+    monkeypatch.setenv("TMP", "/parent-secret-temp")
+    monkeypatch.setenv("TEMP", "/parent-secret-temp")
+    (view / "tests/test_case.py").write_text(f"""import json, os, tempfile, time
+from pathlib import Path
+from assurance_execution.bridge import execute_case
+def test_case(tmp_path):
+    Path({str(observed)!r}).write_text(json.dumps({{
+        "temp": tempfile.gettempdir(), "pytest": str(tmp_path),
+        "environment": {{key: os.environ.get(key) for key in ("TMPDIR", "TMP", "TEMP", "PYTHONUNBUFFERED")}}
+    }}))
+    {"time.sleep(60)" if timeout else 'execute_case("case")'}
+""")
+    receipt = SubprocessVerificationHost(limits=ProcessLimits(timeout_seconds=2)).run(
+        view=view,
+        nodeid="tests/test_case.py::test_case",
+        case_id="case",
+        container_name="unused",
+        execute=lambda *args: None,
+        cancel_requested=lambda: False,
+    )
+    snapshot = json.loads(observed.read_text())
+    temporary = Path(snapshot["temp"])
+    assert temporary.is_relative_to(attempt)
+    assert Path(snapshot["pytest"]).is_relative_to(temporary)
+    assert snapshot["environment"] == {
+        "TMPDIR": str(temporary),
+        "TMP": str(temporary),
+        "TEMP": str(temporary),
+        "PYTHONUNBUFFERED": "1",
+    }
+    assert not temporary.exists()
+    assert receipt.reason == ("timeout" if timeout else None)
+    assert receipt.cleanup_confirmed

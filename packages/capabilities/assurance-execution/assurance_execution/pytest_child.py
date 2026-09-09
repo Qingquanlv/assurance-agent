@@ -6,6 +6,8 @@ import json
 import os
 import socket
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from assurance_execution import bridge
@@ -59,6 +61,8 @@ def main() -> int:
             "-p",
             "no:cacheprovider",
             "--noconftest",
+            "--basetemp",
+            str(Path(tempfile.gettempdir()) / "pytest"),
             "-q",
         ],
         plugins=[report],

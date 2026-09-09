@@ -1002,14 +1002,13 @@ class RealPipeHost:
         return {"transport": "real-pipe-contract-test"}
 
     def run(self, *, view, nodeid, case_id, container_name, execute, cancel_requested):
-        import sys
-        from assurance_execution.operations.verified_process import run_bridge_process
+        from assurance_execution.operations.verified_process import SubprocessVerificationHost
 
-        return run_bridge_process(
-            [sys.executable, "-m", "assurance_execution.bridge_runner"],
-            cwd=view,
+        return SubprocessVerificationHost().run(
+            view=view,
             nodeid=nodeid,
             case_id=case_id,
+            container_name=container_name,
             execute=execute,
             cancel_requested=cancel_requested,
         )
@@ -1875,3 +1874,23 @@ def test_default_verified_host_executes_real_bridge_without_oci(managed_sut, mon
     receipt_path = context.write_root / result.evidence.receipt_ref.path
     receipt = json.loads(receipt_path.read_bytes())
     assert receipt["payload"]["command"] == [sys.executable, "-m", "assurance_execution.bridge_runner"]
+
+
+def test_subprocess_cleanup_uncertainty_cannot_be_promoted_by_noop_stop(managed_sut):
+    from graph_engine.attempts.activity import TaskActivityIndeterminate
+    from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
+    from assurance_execution.operations.verified_process import SubprocessVerificationHost
+
+    class UnconfirmedHost(SubprocessVerificationHost):
+        def run(self, **kwargs):
+            return super().run(**kwargs).model_copy(update={"cleanup_confirmed": False})
+
+    request, context, manifest, _ = handler_case(managed_sut, "uncertain-process-group")
+    handler = VerifiedExecutionHandler(process_host=UnconfirmedHost())
+    with pytest.raises(TaskActivityIndeterminate, match="cleanup"):
+        asyncio.run(handler.execute(request, context))
+    assert context.activity is not None
+    result = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
+    assert result.status == "indeterminate"
+    assert not (context.write_root / manifest.evidence_root / "cleanup_terminal.json").exists()
+    assert not (context.write_root / manifest.evidence_root / "outcome.json").exists()
