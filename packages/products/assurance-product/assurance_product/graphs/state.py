@@ -141,6 +141,7 @@ class ProductStateDocument(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     family_policy: dict[str, list[str]]
     case_delta_paths: list[str]
+    assertion_source_paths: list[str]
     capability_leafs: list[str]
     capability_catalog: dict[str, str]
     product_policy: dict[str, str]
@@ -265,6 +266,7 @@ class ProductState(CheckpointBridgeState, total=False):
     plan_ref: dict[str, str]
     family_policy: dict[str, object]
     case_delta_paths: list[str]
+    assertion_source_paths: list[str]
     capability_leafs: list[str]
     capability_catalog: dict[str, str]
     product_policy: dict[str, str]

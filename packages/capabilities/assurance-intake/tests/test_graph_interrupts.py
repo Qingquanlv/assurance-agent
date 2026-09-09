@@ -159,6 +159,47 @@ def _config() -> RunnableConfig:
     }
 
 
+def test_publish_case_review_uses_finalized_reviewed_case() -> None:
+    from graph_engine.attempts.resolutions import ReceiptRef
+
+    digest = "a" * 64
+    plan_path = f"qa/changes/CH-1/plan/{digest}/resolved-assurance-plan.json"
+    finalized = {
+        "change_id": "CH-1",
+        "coverage_epoch": 0,
+        "plan_digest": digest,
+        "plan_ref": {"path": plan_path, "digest": digest},
+        "preparation_refs": [
+            {"path": plan_path, "digest": digest},
+            {"path": "src/app.py", "digest": "b" * 64},
+        ],
+        "case_refs": [{"path": "qa/changes/CH-1/cases/x/case.yaml", "digest": "c" * 64}],
+        "review_ref": {"path": "qa/changes/CH-1/review/case-review.json", "digest": "d" * 64},
+    }
+    state = {
+        "change_id": "CH-1",
+        "coverage_epoch": 0,
+        "plan_digest": digest,
+        "plan_ref": finalized["plan_ref"],
+        "preparation_refs": [finalized["preparation_refs"][0]],
+        "case_refs": finalized["case_refs"],
+        "rounds_used": 0,
+        "rounds_budget": 2,
+    }
+    published = publish_case_review(
+        state,
+        {
+            "decision": "pass",
+            "auto_fix_allowed": False,
+            "human_review_required": False,
+            "reviewed_case": finalized,
+            "artifacts": [finalized["review_ref"]],
+        },
+        ReceiptRef(receipt_id="r1", receipt_digest="e" * 64),
+    )
+    assert published["reviewed_case"]["preparation_refs"] == finalized["preparation_refs"]
+
+
 def test_publish_case_review_ignores_agent_authored_rounds() -> None:
     state = {"rounds_used": 0, "rounds_budget": 2}
     result = _review_result_v1("needs_fix", auto_fix=True)

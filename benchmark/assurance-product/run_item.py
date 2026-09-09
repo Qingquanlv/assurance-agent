@@ -240,6 +240,16 @@ def _prepare_user_project(*, repo: Path, project_dir: Path, fault: str) -> dict[
         "schema_version": "1",
         "organization": "assurance-user-oracle",
         "test_family_policy": {"required": ["api"], "allowed": ["api"]},
+        "coverage_floor_by_tier": {
+            "low": 0.7,
+            "medium": 0.8,
+            "high": 0.9,
+            "critical": 1.0,
+        },
+        "evidence_sufficiency": {
+            "recency_hours": 24,
+            "require_current_batch": True,
+        },
     }
     knowledge = {
         "schema_version": "1",
@@ -361,15 +371,6 @@ _FAULT_EXPECTATIONS: dict[str, _FaultExpectation] = {
         "reasons": ("bridge", "generation"),
         "verified_material": False,
     },
-    "db-unavailable": {
-        "verdict": "NOT_READY",
-        "prefix_end": "generation.api.codegen",
-        "stop": "execution.execute",
-        "terminal_status": "failed",
-        "change_state": "failed",
-        "reasons": ("db_unavailable", "database_unavailable", "not_ready"),
-        "verified_material": False,
-    },
     "wrong-environment": {
         "verdict": "NOT_READY",
         "prefix_end": "generation.api.codegen",
@@ -392,6 +393,7 @@ _FAULT_EXPECTATIONS: dict[str, _FaultExpectation] = {
 for _runtime_fault, _runtime_verdict in {
     "no-action": "INCOMPLETE",
     "skip-oracle": "INCOMPLETE",
+    "db-unavailable": "INCOMPLETE",
     "wrong-value": "FAILED",
     "rollback": "FAILED",
     "rollback-success": "FAILED",

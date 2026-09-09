@@ -236,7 +236,11 @@ def test_one_invocation_prepares_independent_sut_attempts(tmp_path):
                 ).encode()
             return b"task10-local-only-password"
 
+    from urllib.error import URLError
+    from urllib.request import urlopen
+
     attempts = []
+    previous_url = None
     for char in ("a", "b"):
         owned = start_user_attempt(
             root,
@@ -253,15 +257,22 @@ def test_one_invocation_prepares_independent_sut_attempts(tmp_path):
             credential_handle="sut.credential",
         )
         try:
+            if previous_url is not None:
+                with pytest.raises(URLError):
+                    urlopen(previous_url + "/api/v1/base/access_token", timeout=1)
             attempts.append(owned.verification)
             assert owned.verification.sut_base_url.startswith("http://127.0.0.1:")
             assert owned.verification.sut_base_url != "http://127.0.0.1:9999"
             assert json.loads(owned.secrets.resolve("sut.credential"))["token"]
         finally:
+            previous_url = owned.verification.sut_base_url
             owned.stop()
     assert attempts[0].sut_instance_id != attempts[1].sut_instance_id
     assert attempts[0].managed_sqlite_path != attempts[1].managed_sqlite_path
+    assert attempts[0].sut_base_url != attempts[1].sut_base_url
     assert len(list(host.glob("*.json"))) == 2
+    with pytest.raises(URLError):
+        urlopen(attempts[1].sut_base_url + "/api/v1/base/access_token", timeout=1)
 
 
 @pytest.mark.parametrize("member", ["app", "migrations"])
@@ -355,6 +366,52 @@ def test_generation_adapter_preserves_verified_profile_and_reviewed_references()
     assert "case_plan_context" not in projected
 
 
+def test_prepare_adapter_locks_assertion_sources_for_verified_profile():
+    from assurance_product.graphs.entrypoints import adapt_case, adapt_prepare
+    from tests.product.test_product_input import valid_product_input
+
+    case_path = "qa/changes/CH-DEMO-001/cases/system/user/case.yaml"
+    source_path = "qa/changes/CH-DEMO-001/cases/system/user/assertion-sources.json"
+    state = valid_product_input(
+        validation_profile="api_db.v1",
+        verification_config_digest="a" * 64,
+        case_delta_paths=[case_path],
+        candidate_test_families=["api"],
+    )
+    prepared = adapt_prepare(state)  # pyright: ignore[reportArgumentType]
+    assert prepared["assertion_source_paths"] == [source_path]
+    assert prepared["feature_input"]["assertion_source_paths"] == [source_path]
+
+    state.update(
+        {
+            "plan_digest": "c" * 64,
+            "plan_ref": {"path": "plan", "digest": "d" * 64},
+            "selected_test_families": ["api"],
+        }
+    )
+    cased = adapt_case(state)  # pyright: ignore[reportArgumentType]
+    assert cased["assertion_source_paths"] == [source_path]
+    assert cased["feature_input"]["assertion_source_paths"] == [source_path]
+    from typing import get_type_hints
+
+    from assurance_product.graphs.state import ProductState
+
+    assert "assertion_source_paths" in get_type_hints(ProductState)
+
+
+def test_prepare_adapter_omits_assertion_sources_for_legacy_profile():
+    from assurance_product.graphs.entrypoints import adapt_prepare
+    from tests.product.test_product_input import valid_product_input
+
+    state = valid_product_input(
+        case_delta_paths=["qa/changes/CH-DEMO-001/cases/system/user/case.yaml"],
+        candidate_test_families=["api"],
+    )
+    prepared = adapt_prepare(state)  # pyright: ignore[reportArgumentType]
+    assert "assertion_source_paths" not in prepared
+    assert "assertion_source_paths" not in prepared["feature_input"]
+
+
 def test_verified_manifest_item_is_api_only_and_product_input_uses_candidates():
     runner = load("run_item")
     document = json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8"))
@@ -435,6 +492,17 @@ def test_user_configuration_and_host_binding_are_fixed_without_oci(tmp_path):
     assert yaml.safe_load(published["assurance.product.configuration.verification-policy"].content) == {
         "validation_profile": "api_db.v1"
     }
+    published_policy = yaml.safe_load(published["assurance.product.configuration.product-policy"].content)
+    assert published_policy["coverage_floor_by_tier"] == {
+        "low": 0.7,
+        "medium": 0.8,
+        "high": 0.9,
+        "critical": 1.0,
+    }
+    assert published_policy["evidence_sufficiency"] == {
+        "recency_hours": 24,
+        "require_current_batch": True,
+    }
 
     item = dict(
         runner._manifest_item(
@@ -486,6 +554,7 @@ def test_user_fault_parser_includes_runtime_no_action(tmp_path):
     (
         ("no-action", "INCOMPLETE"),
         ("skip-oracle", "INCOMPLETE"),
+        ("db-unavailable", "INCOMPLETE"),
         ("wrong-value", "FAILED"),
         ("rollback-success", "FAILED"),
     ),
@@ -494,6 +563,129 @@ def test_fault_outcome_accepts_only_expected_non_delivery(fault, verdict):
     runner = load("run_item")
     assert runner._fault_outcome_errors(fault=fault, verdict=verdict, achieved=False, published=False) == []
     assert runner._fault_outcome_errors(fault=fault, verdict="PASSED", achieved=True, published=True)
+
+
+def test_no_bridge_fault_is_generation_admission_not_runtime_a03():
+    runner = load("run_item")
+    change_id = "CH-USER-NO-BRIDGE"
+    prefix = (
+        "intake.intake",
+        "intake.explore",
+        "intake.case-design",
+        "intake.case-review",
+        "generation.api.plan",
+        "generation.api.plan-review",
+    )
+    graphs = [
+        {"graph_instance_id": f"g-{step}", "graph_id": step}
+        for step in (*prefix, "generation.api.codegen")
+    ]
+    nodes = [
+        {
+            "graph_instance_id": f"g-{step}",
+            "node_id": f"{step}/finalize",
+            "state": "succeeded",
+        }
+        for step in prefix
+    ]
+    nodes.append(
+        {
+            "graph_instance_id": "g-generation.api.codegen",
+            "node_id": "generation.api.codegen/finalize",
+            "state": "failed",
+        }
+    )
+    status = {
+        "invocation_id": change_id,
+        "status": "failed",
+        "terminal_reason": "generation_bridge_missing",
+        "selected_test_families": ["api"],
+        "change": {"change_id": change_id, "state": "failed"},
+        "graph_hierarchy": graphs,
+        "node_states": nodes,
+        "execution_gate": None,
+        "quality_gate": None,
+        "publication": {"status": "not_ready"},
+    }
+    item = runner._manifest_item(
+        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+        "opencode-user-api-db",
+        "opencode",
+    )
+    assert runner._fault_result_errors(fault="no-bridge", item=item, status=status, change_id=change_id) == []
+    runtime_a03 = {
+        **status,
+        "status": "completed",
+        "terminal_reason": "verification_incomplete",
+        "change": {"change_id": change_id, "state": "stopped"},
+        "execution_gate": {
+            "validation_profile": "api_db.v1",
+            "execution_receipt_id": "execution-receipt",
+            "execution_receipt_digest": "a" * 64,
+            "batch_id": "batch-current",
+        },
+        "quality_gate": {
+            "inspection": {
+                "verification_status": "INCOMPLETE",
+                "verification_ref": {"path": "verification.json", "digest": "b" * 64},
+                "batch_id": "batch-current",
+            }
+        },
+    }
+    assert runner._fault_result_errors(
+        fault="no-bridge", item=item, status=runtime_a03, change_id=change_id
+    )
+
+
+def test_no_action_requires_runtime_verification_material():
+    runner = load("run_item")
+    change_id = "CH-USER-NO-ACTION"
+    item = runner._manifest_item(
+        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+        "opencode-user-api-db",
+        "opencode",
+    )
+    required = tuple(item["required_steps"])
+    status = {
+        "invocation_id": change_id,
+        "status": "completed",
+        "terminal_reason": "verification_incomplete",
+        "selected_test_families": ["api"],
+        "change": {"change_id": change_id, "state": "stopped"},
+        "graph_hierarchy": [{"graph_instance_id": f"g-{step}", "graph_id": step} for step in required],
+        "node_states": [
+            {
+                "graph_instance_id": f"g-{step}",
+                "node_id": f"{step}/finalize",
+                "state": "succeeded",
+            }
+            for step in required
+        ],
+        "execution_gate": {
+            "validation_profile": "api_db.v1",
+            "execution_receipt_id": "execution-receipt",
+            "execution_receipt_digest": "a" * 64,
+            "batch_id": "batch-current",
+        },
+        "quality_gate": {
+            "inspection": {
+                "verification_status": "INCOMPLETE",
+                "verification_ref": {"path": "verification.json", "digest": "b" * 64},
+                "batch_id": "batch-current",
+            }
+        },
+        "publication": {"status": "not_ready"},
+    }
+    assert runner._fault_result_errors(fault="no-action", item=item, status=status, change_id=change_id) == []
+    admission = {
+        **status,
+        "status": "failed",
+        "terminal_reason": "generation_bridge_missing",
+        "change": {"change_id": change_id, "state": "failed"},
+        "execution_gate": None,
+        "quality_gate": None,
+    }
+    assert runner._fault_result_errors(fault="no-action", item=item, status=admission, change_id=change_id)
 
 
 def test_missing_binding_fault_requires_its_generation_admission_boundary():
@@ -545,6 +737,68 @@ def test_missing_binding_fault_requires_its_generation_admission_boundary():
         item=item,
         status={**status, "node_states": []},
         change_id=change_id,
+    )
+
+
+def test_db_unavailable_requires_runtime_verification_material():
+    runner = load("run_item")
+    change_id = "CH-USER-DB-UNAVAILABLE"
+    item = runner._manifest_item(
+        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+        "opencode-user-api-db",
+        "opencode",
+    )
+    required = tuple(item["required_steps"])
+    status = {
+        "invocation_id": change_id,
+        "status": "completed",
+        "terminal_reason": "verification_incomplete",
+        "selected_test_families": ["api"],
+        "change": {"change_id": change_id, "state": "stopped"},
+        "graph_hierarchy": [
+            {"graph_instance_id": f"g-{step}", "graph_id": step} for step in required
+        ],
+        "node_states": [
+            {
+                "graph_instance_id": f"g-{step}",
+                "node_id": f"{step}/finalize",
+                "state": "succeeded",
+            }
+            for step in required
+        ],
+        "execution_gate": {
+            "validation_profile": "api_db.v1",
+            "execution_receipt_id": "execution-receipt",
+            "execution_receipt_digest": "a" * 64,
+            "batch_id": "batch-current",
+        },
+        "quality_gate": {
+            "inspection": {
+                "verification_status": "INCOMPLETE",
+                "verification_ref": {"path": "verification.json", "digest": "b" * 64},
+                "batch_id": "batch-current",
+            }
+        },
+        "publication": {"status": "not_ready"},
+    }
+
+    assert (
+        runner._fault_result_errors(
+            fault="db-unavailable", item=item, status=status, change_id=change_id
+        )
+        == []
+    )
+    pre_execution = {
+        **status,
+        "status": "failed",
+        "terminal_reason": "database_unavailable",
+        "change": {"change_id": change_id, "state": "failed"},
+        "node_states": status["node_states"][:-3],
+        "execution_gate": None,
+        "quality_gate": None,
+    }
+    assert runner._fault_result_errors(
+        fault="db-unavailable", item=item, status=pre_execution, change_id=change_id
     )
 
 

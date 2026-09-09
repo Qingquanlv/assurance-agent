@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import Any, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
@@ -68,6 +69,14 @@ def _input_from_state(state: object) -> ProductInputV1:
     return ProductInputV1.model_validate(_public_payload(state))
 
 
+def _verified_assertion_source_paths(payload: ProductInputV1) -> list[str] | None:
+    if payload.validation_profile is None:
+        return None
+    return sorted(
+        str(PurePosixPath(path).with_name("assertion-sources.json")) for path in payload.case_delta_paths
+    )
+
+
 def validate_public_input(entrypoint: str):
     def node(state: ProductState) -> dict[str, object]:
         _input_from_state(state).validate_for_entrypoint(entrypoint)
@@ -115,6 +124,9 @@ def adapt_prepare(state: ProductState) -> dict[str, object]:
                 else None,
             }
         )
+    sources = _verified_assertion_source_paths(payload)
+    if sources is not None:
+        feature_input["assertion_source_paths"] = sources
     return {**feature_input, "feature_input": feature_input}
 
 
@@ -177,6 +189,9 @@ def adapt_case(state: ProductState) -> dict[str, object]:
     }
     if rework_context is not None:
         feature_input["case_rework_context"] = rework_context
+    sources = _verified_assertion_source_paths(payload)
+    if sources is not None:
+        feature_input["assertion_source_paths"] = sources
     return {**feature_input, "feature_input": feature_input}
 
 

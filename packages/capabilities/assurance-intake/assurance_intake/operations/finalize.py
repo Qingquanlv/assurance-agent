@@ -152,6 +152,29 @@ def _file_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _review_source_refs(
+    project_root: Path, document: CaseReviewResultV1
+) -> tuple[EvidenceArtifactRefV1, ...]:
+    refs: list[EvidenceArtifactRefV1] = []
+    for relative in document.source_verification.reviewed_source_files:
+        data = _read_regular_bytes(project_root, relative, kind="case-review product source")
+        refs.append(EvidenceArtifactRefV1(path=relative, digest=_file_digest(data)))
+    return tuple(refs)
+
+
+def _merge_preparation_refs(
+    current: tuple[EvidenceArtifactRefV1, ...],
+    extra: tuple[EvidenceArtifactRefV1, ...],
+) -> tuple[EvidenceArtifactRefV1, ...]:
+    by_path = {ref.path: ref for ref in current}
+    for ref in extra:
+        existing = by_path.get(ref.path)
+        if existing is not None and existing != ref:
+            raise OutputError(f"case-review source digest conflict: {ref.path}")
+        by_path[ref.path] = ref
+    return tuple(by_path[path] for path in sorted(by_path))
+
+
 def _canonical_relative(path: str) -> bool:
     posix = PurePosixPath(path)
     return not (
@@ -1266,8 +1289,12 @@ class CaseReviewFinalizeHandler:
                 review_ref = EvidenceArtifactRefV1.model_validate(
                     next(item for item in artifacts if item["path"] == review_relative)
                 )
+                preparation_refs = _merge_preparation_refs(
+                    payload.preparation_refs,
+                    _review_source_refs(context.project_root, document),
+                )
                 input_refs = tuple(
-                    sorted((*payload.preparation_refs, *payload.case_refs), key=lambda item: item.path)
+                    sorted((*preparation_refs, *payload.case_refs), key=lambda item: item.path)
                 )
                 input_digest = canonical_digest(
                     cast(JSONValue, [item.model_dump(mode="json") for item in input_refs])
@@ -1299,7 +1326,7 @@ class CaseReviewFinalizeHandler:
                     coverage_epoch=payload.coverage_epoch,
                     plan_digest=payload.plan_digest,
                     plan_ref=payload.plan_ref,
-                    preparation_refs=payload.preparation_refs,
+                    preparation_refs=preparation_refs,
                     case_refs=payload.case_refs,
                     review_ref=review_ref,
                 )

@@ -352,17 +352,22 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
     )
     if review_ref is None:
         return update
-    reviewed = ReviewedCaseV1.model_validate(
-        {
-            "change_id": state["change_id"],
-            "coverage_epoch": state.get("coverage_epoch", 0),
-            "plan_digest": state["plan_digest"],
-            "plan_ref": state["plan_ref"],
-            "preparation_refs": state.get("preparation_refs", ()),
-            "case_refs": state.get("case_refs", ()),
-            "review_ref": review_ref,
-        }
-    )
+    if payload.get("reviewed_case") is not None:
+        reviewed = ReviewedCaseV1.model_validate(payload["reviewed_case"])
+        if reviewed.review_ref != review_ref:
+            raise ValueError("finalized reviewed_case.review_ref must match the review artifact")
+    else:
+        reviewed = ReviewedCaseV1.model_validate(
+            {
+                "change_id": state["change_id"],
+                "coverage_epoch": state.get("coverage_epoch", 0),
+                "plan_digest": state["plan_digest"],
+                "plan_ref": state["plan_ref"],
+                "preparation_refs": state.get("preparation_refs", ()),
+                "case_refs": state.get("case_refs", ()),
+                "review_ref": review_ref,
+            }
+        )
     receipt_ref = receipt if isinstance(receipt, ReceiptRef) else None
     if receipt_ref is None and isinstance(receipt, Mapping):
         receipt_ref = ReceiptRef.model_validate(receipt)

@@ -151,10 +151,17 @@ def _assertion_sources(
 
     requirement_path = f"qa/changes/{reviewed.change_id}/requirement.md"
     requirement_refs = [ref for ref in reviewed.preparation_refs if ref.path == requirement_path]
-    if len(requirement_refs) != 1 or requirement_refs[0].digest != root_plan.requirement_digest:
+    if len(requirement_refs) != 1:
         raise GenerationAdmissionError("ReviewedCase does not bind the root-plan requirement")
     if _evidence_ref(root, requirement_path) != requirement_refs[0]:
         raise GenerationAdmissionError("root-plan requirement bytes changed")
+    requirement_text = _regular_file(root, requirement_path).read_text(encoding="utf-8").strip()
+    content_digest = canonical_digest({"requirement": requirement_text})
+    if (
+        requirement_refs[0].digest != root_plan.requirement_digest
+        and content_digest != root_plan.requirement_digest
+    ):
+        raise GenerationAdmissionError("ReviewedCase does not bind the root-plan requirement")
 
     source_paths = {
         str(PurePosixPath(ref.path).parent / "assertion-sources.json") for ref in reviewed.case_refs

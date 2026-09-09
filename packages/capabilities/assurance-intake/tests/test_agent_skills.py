@@ -1163,6 +1163,9 @@ async def _finalize_review_with_written_cases(
 ) -> TaskOutcome:
     _, write_root = dual_roots(workspace)
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    source = workspace / "src/app.py"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("def create_item():\n    return 200\n", encoding="utf-8")
     case_relative = _write_case_delta(workspace, authored)
     matrix_relative = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
     review_relative = "qa/changes/CH-DEMO-001/review/case-review.json"
@@ -2706,6 +2709,9 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
+    source_path = project / "src/app.py"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("def create_item():\n    return 200\n", encoding="utf-8")
     review_document = _case_review_document(missing=[])
     review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2746,6 +2752,11 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     output = cast(dict[str, object], executed.output)
     reviewed = cast(dict[str, object], output["reviewed_case"])
     assert reviewed["case_refs"] == case_refs
+    source_ref = {
+        "path": "src/app.py",
+        "digest": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+    }
+    assert source_ref in reviewed["preparation_refs"]
     manifest = write_root / "qa/changes/CH-DEMO-001/cases/reviewed-case.json"
     assert json.loads(manifest.read_bytes()) == reviewed
 
@@ -2762,6 +2773,9 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
+    source_path = project / "src/app.py"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("def create_item():\n    return 200\n", encoding="utf-8")
     review_document = _case_review_document(missing=[])
     review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
