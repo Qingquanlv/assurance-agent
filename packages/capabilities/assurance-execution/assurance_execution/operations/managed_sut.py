@@ -181,7 +181,7 @@ def authenticate_managed_sut_receipts(
     return managed_path, observer_path, identity, authority_digest
 
 
-_MANAGED_HARNESS_SHA256 = "e92d2168f270d6e4f0d851961dd630f8ef4a212e2313d6485de1a1532769a465"
+_MANAGED_HARNESS_SHA256 = "028f820fb8de8c37586d45e7662f8d18a5a6f880d3af40444432bb3b67545a0d"
 
 
 class ManagedUserSutHost:

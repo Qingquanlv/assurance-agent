@@ -140,7 +140,8 @@ def test_real_user_create_observes_commit_and_transaction_rollback(
     assert json.loads((run / "stopped-process.json").read_text())["state"] == "stopped"
 
 
-def test_source_preflight_rejects_original_sut_drift(tmp_path, monkeypatch):
+@pytest.fixture
+def locked_original_source(tmp_path, monkeypatch):
     import hashlib
 
     harness = load("user_oracle_harness")
@@ -155,7 +156,12 @@ def test_source_preflight_rejects_original_sut_drift(tmp_path, monkeypatch):
         files[member] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
     (fixture / "original-source-lock.json").write_text(json.dumps({"files": files}))
     monkeypatch.setattr(harness, "FIXTURE_ROOT", fixture)
-    harness.verify_original_source(source)
+    assert harness.verify_original_source(source) == files
+    return harness, source
+
+
+def test_source_preflight_rejects_original_sut_drift(locked_original_source):
+    harness, source = locked_original_source
     (source / "app/controllers/user.py").write_text("# drift\n")
     with pytest.raises(ValueError, match="source.*drift"):
         harness.verify_original_source(source)
@@ -244,18 +250,25 @@ def test_one_invocation_prepares_independent_sut_attempts(tmp_path):
     assert len(list(host.glob("*.json"))) == 2
 
 
-def test_source_preflight_rejects_symlinked_source_directory(tmp_path):
-    harness = load("user_oracle_harness")
-    source = load("run_item")._resolve_sut(REPO, "benchmark/vue-fastapi-admin")
-    copied = tmp_path / "source"
-    copied.mkdir()
-    import shutil
-
-    (copied / "app").symlink_to(source / "app")
-    shutil.copytree(source / "migrations", copied / "migrations")
-    shutil.copy2(source / "run.py", copied / "run.py")
+@pytest.mark.parametrize("member", ["app", "migrations"])
+def test_source_preflight_rejects_symlinked_source_directory(locked_original_source, member):
+    harness, source = locked_original_source
+    directory = source / member
+    outside = source.parent / f"original-{member}"
+    directory.rename(outside)
+    directory.symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match="source"):
-        harness.verify_original_source(copied)
+        harness.verify_original_source(source)
+
+
+@pytest.mark.parametrize("member", ["app/extra", "migrations/extra", "app/__pycache__"])
+def test_source_preflight_rejects_extra_directory_symlinks(locked_original_source, member):
+    harness, source = locked_original_source
+    outside = source.parent / "outside"
+    outside.mkdir()
+    (source / member).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="source"):
+        harness.verify_original_source(source)
 
 
 def test_attempt_rejects_stale_generation_before_starting_http(tmp_path, monkeypatch):

@@ -50,14 +50,21 @@ FAULTS = (
 def verify_original_source(source_root: Path) -> dict[str, str]:
     lock = json.loads((FIXTURE_ROOT / "original-source-lock.json").read_bytes())
     actual = {}
-    for member in ("app", "migrations", "run.py"):
-        root = source_root / member
-        for path in sorted(root.rglob("*") if root.is_dir() else [root]):
-            if "__pycache__" in path.parts or path.suffix == ".pyc" or path.is_dir():
-                continue
-            if path.is_symlink() or not path.is_file():
-                raise ValueError("NOT_READY: original SUT source is missing or drifted")
-            actual[path.relative_to(source_root).as_posix()] = _sha256(path)
+    if source_root.is_symlink():
+        raise ValueError("NOT_READY: original SUT source is missing or drifted")
+    pending = [source_root / member for member in ("app", "migrations", "run.py")]
+    while pending:
+        path = pending.pop()
+        if path.is_symlink():
+            raise ValueError("NOT_READY: original SUT source is missing or drifted")
+        if path.is_dir():
+            pending.extend(sorted(path.iterdir()))
+            continue
+        if "__pycache__" in path.parts or path.suffix == ".pyc":
+            continue
+        if not path.is_file():
+            raise ValueError("NOT_READY: original SUT source is missing or drifted")
+        actual[path.relative_to(source_root).as_posix()] = _sha256(path)
     if actual != lock["files"]:
         raise ValueError("NOT_READY: original SUT source bytes drifted")
     return actual
