@@ -34,6 +34,7 @@ PromptCut = Literal[
 TerminalMode = Literal[
     "artifact_array_busy",
     "busy",
+    "contract_violation",
     "idle_only",
     "mixed_result_busy",
     "schema_retry_busy",
@@ -643,6 +644,28 @@ class OpenCodeFakeServer:
                         {"type": "step-finish", "reason": "stop"},
                     ],
                 },
+            ]
+        if mode == "contract_violation":
+            return [
+                {
+                    "info": {
+                        "id": "msg_terminal_prose",
+                        "role": "assistant",
+                        "time": {"created": 1, "completed": 2},
+                        "finish": "stop",
+                    },
+                    "parts": [
+                        {"type": "step-start"},
+                        {
+                            "type": "text",
+                            "text": (
+                                "The read-back confirms the artifact is complete.\n\n"
+                                f"{json.dumps(self.structured_result)}"
+                            ),
+                        },
+                        {"type": "step-finish", "reason": "stop"},
+                    ],
+                }
             ]
         if mode == "error":
             return [

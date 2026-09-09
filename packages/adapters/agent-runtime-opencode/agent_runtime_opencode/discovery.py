@@ -93,6 +93,16 @@ def expected_message_id(snapshot: TaskActivitySnapshot) -> str:
     return f"msg_{digest}"
 
 
+def restatement_message_id(prompt_message_id: str) -> str:
+    digest = canonical_digest(
+        {
+            "kind": "opencode-result-restatement-message",
+            "prompt_message_id": prompt_message_id,
+        }
+    )
+    return f"msg_{digest}"
+
+
 def prompt_body_digest(agent_run: AgentRunRequest) -> str:
     return canonical_digest(agent_run.model_dump(mode="json"))
 
@@ -140,4 +150,5 @@ __all__ = [
     "expected_message_id",
     "metadata_match_digest",
     "prompt_body_digest",
+    "restatement_message_id",
 ]

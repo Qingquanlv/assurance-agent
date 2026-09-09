@@ -106,21 +106,80 @@ def prompt_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[s
             )
         )
     )
-    model: OpenCodeModelSelection | None = None
-    selected = agent_run.execution.provider_model
-    if selected != "provider_default":
-        provider, separator, model_id = selected.partition("/")
-        model = OpenCodeModelSelection(
-            providerID=provider,
-            modelID=model_id if separator else provider,
-        )
     typed = OpenCodePromptAdmissionBody(
         messageID=message_id,
         parts=tuple(parts),
         agent=agent_run.workspace.agent_profile,
-        model=model,
+        model=_model_selection(agent_run),
     )
     return typed.model_dump(mode="json", exclude_none=True)
+
+
+def _model_selection(agent_run: AgentRunRequest) -> OpenCodeModelSelection | None:
+    selected = agent_run.execution.provider_model
+    if selected == "provider_default":
+        return None
+    provider, separator, model_id = selected.partition("/")
+    return OpenCodeModelSelection(
+        providerID=provider,
+        modelID=model_id if separator else provider,
+    )
+
+
+def restatement_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[str, Any]:
+    """Build the single corrective turn admitted when a closed session carries no lone JSON object.
+
+    The body deliberately omits the skill instructions: the contract only loses adherence once
+    the surrounding session grows long, so restating it alone is what restores salience.
+    """
+    schema_document = resolve_result_schema(
+        agent_run.result_contract.schema_digest,
+        schema_document=agent_run.result_contract.schema_document,
+    )
+    schema_text = canonical_json_text(thaw_json(schema_document))
+    parts = (
+        OpenCodeTextPart(
+            text=(
+                "# Final response rejected\n\n"
+                "Your last response was not exactly one JSON object, so it could not be "
+                "accepted. Every required tool call and file write from this task is already "
+                "complete and verified: do not call tools again, do not rewrite any file, and "
+                "do not redo any work.\n\n"
+                "Reply now with the result object and nothing else. The first character of your "
+                "reply must be `{` and the last character must be `}`. No preamble, no "
+                "completion summary, no Markdown fence, no trailing text.\n\n"
+                f"delivery_mode: {agent_run.result_contract.delivery_mode}\n"
+                f"schema_id: {agent_run.result_contract.schema_id}\n"
+                f"schema_digest: {agent_run.result_contract.schema_digest}\n"
+                f"schema: {schema_text}"
+            )
+        ),
+    )
+    typed = OpenCodePromptAdmissionBody(
+        messageID=message_id,
+        parts=parts,
+        agent=agent_run.workspace.agent_profile,
+        model=_model_selection(agent_run),
+    )
+    return typed.model_dump(mode="json", exclude_none=True)
+
+
+def terminal_result_is_contract_violation(
+    session: Mapping[str, object],
+    messages: Sequence[object],
+) -> bool:
+    """Report whether a closed session failed only because its final text broke the contract."""
+    if _terminal_error_kind(session, messages) is not None:
+        return False
+    if _has_open_tool_work(messages):
+        return False
+    if not _has_result_bearing_assistant(messages):
+        return False
+    try:
+        parse_closed_terminal_result(messages)
+    except ValueError:
+        return True
+    return False
 
 
 def parse_sse_frames(payload: bytes) -> tuple[SseFrame, ...]:

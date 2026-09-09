@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -35,6 +36,7 @@ from agent_runtime_opencode.discovery import (
     expected_message_id,
     metadata_match_digest,
     prompt_body_digest,
+    restatement_message_id,
 )
 from agent_runtime_opencode.observation import (
     classify_admission,
@@ -43,6 +45,8 @@ from agent_runtime_opencode.observation import (
     parse_sse_frames,
     prompt_admission_body,
     reduce_sse_frames,
+    restatement_admission_body,
+    terminal_result_is_contract_violation,
     user_prompt_already_admitted,
 )
 from agent_runtime_opencode.protocol import (
@@ -586,6 +590,44 @@ class OpenCodeHandler:
             raise
         return None
 
+    async def _admit_result_restatement(
+        self,
+        client: OpenCodeHttpClient,
+        *,
+        agent_run: AgentRunRequest,
+        session_id: str,
+        prompt_message_id: str,
+        messages: Sequence[object],
+        reference_dump: dict[str, Any],
+    ) -> TaskActivityReconcileResult | None:
+        """Admit at most one corrective turn, or report None once that turn has been spent."""
+        message_id = restatement_message_id(prompt_message_id)
+        body = restatement_admission_body(agent_run, message_id)
+        if user_prompt_already_admitted(messages, body):
+            return None
+        try:
+            record = await client.get_message(session_id, message_id)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+        else:
+            if classify_admission(record, body) == "conflict":
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="prompt identity conflict",
+                )
+            return None
+        try:
+            await client.admit_message(session_id, body)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in {400, 409}:
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="prompt identity conflict",
+                )
+            raise
+        return TaskActivityReconcileResult(status="running", reference=reference_dump)
+
     async def _observe_bound(
         self,
         client: OpenCodeHttpClient,
@@ -694,6 +736,17 @@ class OpenCodeHandler:
                         status="indeterminate",
                         reason=str(error) or "busy session abort is indeterminate",
                     )
+        if kind == "failed" and not busy and terminal_result_is_contract_violation(session, messages):
+            restated = await self._admit_result_restatement(
+                client,
+                agent_run=agent_run,
+                session_id=session_id,
+                prompt_message_id=reference.expected_message_id,
+                messages=messages,
+                reference_dump=dumped,
+            )
+            if restated is not None:
+                return restated
         try:
             diff = await client.get_session_diff(session_id)
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:

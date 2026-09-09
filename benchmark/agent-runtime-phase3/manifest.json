@@ -29,7 +29,7 @@
     "distribution": "agent-runtime-fixture",
     "version": "1.0.0",
     "source_root": "examples/agent-runtime-fixture",
-    "source_digest": "b5bf4af274f0a724b50904fecf44012dfae4ea7a31e3d2e866c396424e2e5396",
+    "source_digest": "a6f81bfe5793699d30d95c0d2d1fd8608c12336793b1fbd3af663006cada6a45",
     "wheel_name": "agent_runtime_fixture-1.0.0-py3-none-any.whl",
     "wheel_sha256": "ffd65f939ae432c1e3737008e57e70a5cce723c9b038f8d48d7f268c6fe006fa"
   },
