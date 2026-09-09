@@ -3,7 +3,7 @@
     "attempt_contracts": [
       {
         "contract_id": "toy.a.greet",
-        "digest": "da3aa66ac0f99eaa408a27d3bb233d966dcd4c64cd815589a6e6bf5e5985d47a"
+        "digest": "ce0dad32b9cfa43f696515bd26129d01a4891dcf77620aedb0d787c33fa9f658"
       }
     ],
     "bindings": [],

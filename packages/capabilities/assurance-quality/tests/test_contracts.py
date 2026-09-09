@@ -138,7 +138,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.workflow.assess.output.v1": (
         "1",
-        "a1aea10520d347b534db54671809d79d4b0953c0afabaa836a3510f7a93a4c68",
+        "9c56f7eeadc4b9adbb1b456e63e0a56f50cc4897e866ef267de07cb5c968af6c",
     ),
     "assurance.quality.workflow.issue-analyze.input.v1": (
         "1",
@@ -166,7 +166,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.workflow.report.input.v1": (
         "1",
-        "1f25aa49b2344f970b5cfe84a62ca25966bceb1bf44377feb3e33487845bf689",
+        "625267a443a78a2c04c56455d833e4280d0640d9997cfcda7b134f9dc210691c",
     ),
     "assurance.quality.workflow.report.output.v1": (
         "1",

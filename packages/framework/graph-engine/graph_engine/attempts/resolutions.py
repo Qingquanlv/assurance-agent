@@ -32,6 +32,7 @@ class RejectedTaskResult(FrozenModel):
 class PermanentTaskFailure(FrozenModel):
     kind: FailureKind
     message: str = Field(min_length=1)
+    retryable: bool = False
     writes_promoted: Literal[False] = False
 
 

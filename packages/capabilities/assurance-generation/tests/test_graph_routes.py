@@ -10,7 +10,6 @@ from langgraph.types import Send
 from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
 from assurance_generation.graphs.routes import (
     InsufficientRouteMatches,
-    codegen_named_matches,
     family_select_named_matches,
     plan_advance_named_matches,
     plan_advance_retry_named_matches,
@@ -30,7 +29,6 @@ _EXCLUSIVE_ROUTE_ROWS = (
     ("assurance.generation.workflow.graph.generation", "select-e2e", "e2e-skip"),
     ("assurance.generation.workflow.graph.generation", "select-fuzz", "fuzz-skip"),
     ("assurance.generation.workflow.graph.generation", "select-performance", "performance-skip"),
-    ("assurance.generation.workflow.graph.generation-api", "codegen", "exhausted"),
     ("assurance.generation.workflow.graph.generation-api", "plan-human-review", "exhausted"),
     ("assurance.generation.workflow.graph.generation-api", "plan-human-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-api", "plan-review", "exhausted"),
@@ -41,7 +39,6 @@ _EXCLUSIVE_ROUTE_ROWS = (
         "plan-review-round-advance-retry",
         "exhausted",
     ),
-    ("assurance.generation.workflow.graph.generation-e2e", "codegen", "exhausted"),
     ("assurance.generation.workflow.graph.generation-e2e", "plan-human-review", "exhausted"),
     ("assurance.generation.workflow.graph.generation-e2e", "plan-human-review-retry", "exhausted"),
     ("assurance.generation.workflow.graph.generation-e2e", "plan-review", "exhausted"),
@@ -112,9 +109,8 @@ def _review_state(
     rounds_used: int = 0,
     rounds_budget: int = 2,
     action: str | None = None,
-    verdict: str | None = None,
-    needs_fix: bool | None = None,
     selected_test_families: tuple[str, ...] | None = None,
+    attempt_failure: dict[str, object] | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "decision": decision,
@@ -126,12 +122,10 @@ def _review_state(
     }
     if action is not None:
         payload["human_action"] = action
-    if verdict is not None:
-        payload["codegen_verdict"] = verdict
-    if needs_fix is not None:
-        payload["needs_fix"] = needs_fix
     if selected_test_families is not None:
         payload["selected_test_families"] = list(selected_test_families)
+    if attempt_failure is not None:
+        payload["attempt_failure"] = attempt_failure
     return payload
 
 
@@ -146,7 +140,6 @@ def _named_matches_for(node_id: str) -> Callable[[Mapping[str, object]], dict[st
         "plan-human-review-retry": plan_human_review_retry_named_matches,
         "plan-review-round-advance": plan_advance_named_matches,
         "plan-review-round-advance-retry": plan_advance_retry_named_matches,
-        "codegen": codegen_named_matches,
     }
     return builders[node_id]
 
@@ -155,6 +148,7 @@ def test_generation_route_emits_exactly_four_sends() -> None:
     sends = route_families(valid_input())
     assert all(isinstance(send, Send) for send in sends)
     assert tuple(send.node for send in sends) == ("api", "e2e", "fuzz", "performance")
+    assert {send.arg.get("rounds_budget") for send in sends} == {3}
     selected = {send.node: send.arg.get("lane_selected") for send in sends}
     assert selected == {"api": True, "e2e": True, "fuzz": False, "performance": False}
 
@@ -274,6 +268,18 @@ def test_plan_review_pass_auto_fix_reject_human_and_not_ready() -> None:
         )
         == "exhausted"
     )
+    assert (
+        route_plan_review(
+            _review_state(
+                decision="needs_fix",
+                auto_fix_allowed=True,
+                rounds_used=0,
+                rounds_budget=2,
+                attempt_failure={"resolution_kind": "permanent"},
+            )
+        )
+        == "failed"
+    )
 
 
 def test_plan_review_retry_and_human_review_routes() -> None:
@@ -307,16 +313,6 @@ def test_plan_review_retry_and_human_review_routes() -> None:
         route_plan_human_review_retry(_review_state(action="request_rework", rounds_used=1, rounds_budget=2))
         == "plan-review-round-advance-retry"
     )
-
-
-def test_codegen_routes_accepted_needs_fix_and_otherwise() -> None:
-    from assurance_generation.graphs.routes import route_codegen
-
-    assert route_codegen(_review_state(verdict="accepted")) == "done"
-    assert route_codegen(_review_state(needs_fix=False)) == "done"
-    assert route_codegen(_review_state(verdict="needs_fix")) == "codegen-round-advance"
-    assert route_codegen(_review_state(needs_fix=True)) == "codegen-round-advance"
-    assert route_codegen(_review_state()) == "exhausted"
 
 
 def test_last_budgeted_plan_advance_joins_after_increment() -> None:

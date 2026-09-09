@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import ValidationError
@@ -20,9 +21,12 @@ from assurance_improvement.contracts.agent import (
     ImprovementReviewResultV1,
     ImprovementSkillInputV1,
     RetroAnalysisResultV3,
+    RetroAnalysisInputV1,
+    RetroSynthesisInputV1,
+    RetroAnalysisFinalizeInputV1,
+    RetroSynthesisFinalizeInputV1,
 )
 from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
-from assurance_improvement.contracts.retro import ImprovementCandidateDocumentV3
 from assurance_improvement.operations.common import (
     InputError,
     OutputError,
@@ -31,6 +35,7 @@ from assurance_improvement.operations.common import (
     validate_input,
 )
 from assurance_improvement.resource_loader import resource_bytes, resource_text
+from assurance_improvement.validators.paths import canonical_relative
 
 RETRO_SKILL = "skills/aa-retro/SKILL.md"
 RETRO_EVAL_SKILL = "skills/aa-retro-eval-analysis/SKILL.md"
@@ -141,14 +146,23 @@ def prepare_outcome(
     return TaskOutcome.succeeded(agent_request.model_dump(mode="json"))
 
 
-def _structured(payload: AgentFinalizeInputV1) -> object:
+def _structured(
+    payload: AgentFinalizeInputV1 | RetroAnalysisFinalizeInputV1 | RetroSynthesisFinalizeInputV1,
+) -> object:
     return thaw_json(payload.agent_result.result_payload)
 
 
 def _prepare(
     skill: str, persona: str, result_id: str, request: TaskRequest, context: TaskContext
 ) -> TaskOutcome:
-    business = validate_input(ImprovementSkillInputV1, request.input)
+    input_model = (
+        RetroSynthesisInputV1
+        if skill == RETRO_SKILL
+        else RetroAnalysisInputV1
+        if skill in {RETRO_EVAL_SKILL, RETRO_ISSUE_SKILL, RETRO_WORKFLOW_SKILL}
+        else ImprovementSkillInputV1
+    )
+    business = validate_input(input_model, request.input)
     binding = validate_binding(request.binding_data)
     return prepare_outcome(
         skill_path=skill,
@@ -169,41 +183,71 @@ def _source_ids(result: RetroAnalysisResultV3) -> tuple[str, ...]:
     return tuple(ids)
 
 
+def _workspace_file(workspace: Path, relative: str) -> Path:
+    if not relative or not canonical_relative(relative):
+        raise OutputError("Retro result path must be canonical and relative")
+    path = workspace / relative
+    path.resolve(strict=True).relative_to(workspace.resolve(strict=True))
+    for part in (path, *path.parents):
+        if part == workspace:
+            break
+        if part.is_symlink():
+            raise OutputError("Retro result path must not contain symlinks")
+    if not path.is_file() or path.stat().st_nlink != 1:
+        raise OutputError("Retro result must be a regular single-link file")
+    return path
+
+
 def _finalize_retro(
     request: TaskRequest,
+    context: TaskContext,
     *,
     expected_domain: DomainName | None,
 ) -> TaskOutcome:
-    payload = validate_input(AgentFinalizeInputV1, request.input)
+    payload = validate_input(
+        RetroSynthesisFinalizeInputV1 if expected_domain is None else RetroAnalysisFinalizeInputV1,
+        request.input,
+    )
     try:
         document = RetroAnalysisResultV3.model_validate(_structured(payload))
     except ValidationError as error:
         raise OutputError(str(error)) from error
-    if document.retro_id != payload.retro_id:
+    locked = payload.context if expected_domain is None else payload.evidence_slice
+    if document.retro_id != locked.retro_id:
         raise OutputError("retro analysis identity does not match the locked retro")
-    if expected_domain is not None and document.domain != expected_domain:
+    if document.domain != expected_domain:
         raise OutputError(f"retro analysis domain must be {expected_domain}")
-    allowed = payload.source_manifest.resolvable_ids()
+    if expected_domain is not None:
+        if locked.domain != expected_domain:
+            raise InputError("analysis input slice domain does not match its handler")
+        if document.candidates:
+            raise OutputError("domain analysis produces signals, not improvement candidates")
+        allowed = locked.resolvable_ids()
+        ids = [signal.signal_id for signal in document.signals]
+        deterministic_ids = {signal.signal_id for signal in locked.deterministic_signals}
+        if len(ids) != len(set(ids)) or deterministic_ids.intersection(ids):
+            raise OutputError("analysis signals must be unique and must not repeat deterministic signals")
+    else:
+        allowed = locked.source_manifest.resolvable_ids()
+        if document.signals:
+            raise OutputError("synthesis cannot change the locked context signals")
+        from assurance_improvement.operations.retro import validate_candidates
+
+        try:
+            validate_candidates(locked, document.candidates)
+        except (InputError, ValidationError) as error:
+            raise OutputError(str(error)) from error
     for source_id in _source_ids(document):
         if source_id not in allowed:
             raise OutputError("candidate source is outside the retro manifest")
-    if document.candidates:
-        ImprovementCandidateDocumentV3.model_validate(
-            {
-                "schema_version": "3",
-                "retro_id": document.retro_id,
-                "context_sha256": payload.context_digest
-                if payload.context_digest.startswith("sha256:")
-                else f"sha256:{payload.context_digest}",
-                "candidates": [item.model_dump(mode="json") for item in document.candidates],
-            },
-            context={"retro_manifest": payload.source_manifest},
-        )
-        locked = frozenset(payload.locked_signal_ids)
-        if locked:
-            for candidate in document.candidates:
-                if any(signal_id not in locked for signal_id in candidate.signal_ids):
-                    raise OutputError("candidate cites a signal outside the locked context")
+    suffix = f"retro-{expected_domain}-analysis" if expected_domain else "retro"
+    try:
+        path = _workspace_file(context.write_root, f"qa/changes/{payload.change_id}/retro/{suffix}.json")
+        written = RetroAnalysisResultV3.model_validate_json(path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise OutputError(f"required Retro result artifact is invalid: {suffix}.json") from error
+    if written != document:
+        raise OutputError("written Retro result differs from the assistant result")
     return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
 
 
@@ -256,12 +300,11 @@ class ArchivePrepareHandler:
 
 
 class RetroFinalizeHandler:
-    input_model = AgentFinalizeInputV1
+    input_model = RetroSynthesisFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _finalize_retro(request, expected_domain=None)
+            return _finalize_retro(request, context, expected_domain=None)
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
@@ -269,12 +312,11 @@ class RetroFinalizeHandler:
 
 
 class RetroEvalFinalizeHandler:
-    input_model = AgentFinalizeInputV1
+    input_model = RetroAnalysisFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _finalize_retro(request, expected_domain="eval")
+            return _finalize_retro(request, context, expected_domain="eval")
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
@@ -282,12 +324,11 @@ class RetroEvalFinalizeHandler:
 
 
 class RetroIssueFinalizeHandler:
-    input_model = AgentFinalizeInputV1
+    input_model = RetroAnalysisFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _finalize_retro(request, expected_domain="issue")
+            return _finalize_retro(request, context, expected_domain="issue")
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
@@ -295,12 +336,11 @@ class RetroIssueFinalizeHandler:
 
 
 class RetroWorkflowFinalizeHandler:
-    input_model = AgentFinalizeInputV1
+    input_model = RetroAnalysisFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
-            return _finalize_retro(request, expected_domain="workflow")
+            return _finalize_retro(request, context, expected_domain="workflow")
         except InputError as error:
             return failed_input(error)
         except OutputError as error:

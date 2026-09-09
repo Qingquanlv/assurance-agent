@@ -14,20 +14,15 @@ from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
-from assurance_generation.contracts.codegen import CodegenResultV2
 from assurance_generation.operations.codegen import (
     CodegenFinalizeHandler,
     codegen_finalize_handler,
-    codegen_fix_finalize_handler,
-    codegen_fix_prepare_handler,
     codegen_prepare_handler,
-    validate_codegen_fix_input,
     validate_codegen_input,
 )
-from assurance_generation.operations.planning import InputError
+from assurance_generation.operations.planning import Family, InputError
 from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
-    codegen_fix_input,
     codegen_input,
     codegen_result,
     family_case_id,
@@ -109,12 +104,47 @@ def test_codegen_input_rejects_reviewed_plan_for_a_different_change(tmp_path: Pa
         validate_codegen_input(payload, "api", tmp_path)
 
 
-def test_codegen_fix_input_rejects_reviewed_plan_for_a_different_change() -> None:
-    payload = codegen_fix_input("api")
-    payload["reviewed_plan"]["change_id"] = "CH-OTHER-001"
+@pytest.mark.parametrize("family", FAMILIES)
+def test_codegen_input_rejects_case_scope_drift(family: Family, tmp_path: Path) -> None:
+    payload = codegen_input(family)
+    payload["reviewed_plan"]["case_ids"] = ["TC_UNREVIEWED_001"]
+    payload["reviewed_plan"]["coverage"][0]["case_id"] = "TC_UNREVIEWED_001"
+    with pytest.raises(InputError, match="reviewed plan case_ids"):
+        validate_codegen_input(payload, family, tmp_path)
 
-    with pytest.raises(InputError, match="reviewed plan change_id"):
-        validate_codegen_fix_input(payload, "api")
+
+@pytest.mark.parametrize(
+    "field,value", [("endpoint", "GET /unreviewed"), ("p95_ms", 2000), ("error_rate_max", 0.9)]
+)
+def test_performance_codegen_rejects_scenario_drift_from_cases(
+    field: str, value: object, tmp_path: Path
+) -> None:
+    payload = codegen_input("performance")
+    payload["reviewed_plan"]["performance_scenarios"][0][field] = value
+    with pytest.raises(InputError, match="performance scenarios must match reviewed cases"):
+        validate_codegen_input(payload, "performance", tmp_path)
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_mapping_order_has_no_semantic_effect(family: str, tmp_path: Path) -> None:
+    target = family_test_file(family)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, target)
+    authored = codegen_result(files=[target], family=family)
+    second_id = f"TC_{family.upper()}_002"
+    authored["mapping"]["entries"].append(
+        {"case_id": second_id, "symbol": "test_second_case", "target_file": target}
+    )
+    authored["files"][0]["case_ids"].append(second_id)
+    _write_manifest(write_root, authored)
+    payload = fake_agent_result(authored)
+    payload["reviewed_mapping"] = {
+        **authored["mapping"],
+        "entries": list(reversed(authored["mapping"]["entries"])),
+    }
+    outcome = await execute_task(codegen_finalize_handler(family), payload, project, write_root=write_root)
+    assert outcome.status == "succeeded", outcome.failure
 
 
 @pytest.mark.asyncio
@@ -131,15 +161,18 @@ async def test_codegen_finalize_rejects_claimed_but_missing_file(tmp_path: Path)
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tmp_path: Path) -> None:
+    _write_plan_mapping(tmp_path, family, [family_test_file(family)])
     handler = codegen_prepare_handler(family)
     first = await execute_task(handler, codegen_input(family), tmp_path, binding_data=PLAN_BINDING)
     second = await execute_task(handler, codegen_input(family), tmp_path, binding_data=PLAN_BINDING)
+    assert first.status == second.status == "succeeded"
     assert canonical_json_bytes(first.output) == canonical_json_bytes(second.output)
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_path: Path) -> None:
+    _write_plan_mapping(tmp_path, family, [family_test_file(family)])
     payload = codegen_input(family)
     payload["artifact_paths"] = ["qa/archive", "qa/cases", "qa/changes", "tests"]
 
@@ -155,7 +188,8 @@ async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_pa
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_path: Path) -> None:
+async def test_codegen_prepare_uses_reviewed_plan_and_constraints(family: str, tmp_path: Path) -> None:
+    _write_plan_mapping(tmp_path, family, [family_test_file(family)])
     prepared = await execute_task(
         codegen_prepare_handler(family),
         codegen_input(family),
@@ -176,7 +210,6 @@ async def test_codegen_prepare_uses_reviewed_plan_and_baseline(family: str, tmp_
     plan_payload = cast(dict[str, object], plan.json_content)
     context_payload = cast(dict[str, object], context.json_content)
     assert plan_payload["family"] == family
-    assert context_payload["baseline_tree_id"] == "0" * 64
     assert context_payload["generated_files_root"] == (f"qa/changes/CH-DEMO-001/generated/{family}/files")
     encoded = request.canonical_bytes().decode("utf-8").lower()
     assert "opencode" not in encoded
@@ -218,6 +251,8 @@ async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: s
     request = AgentRunRequest.model_validate(prepared.output)
     staged = staged_generated_file(family, mapped)
     assert staged in request.workspace.allowed_outputs
+    context_payload = cast(dict[str, object], request.instructions[4].json_content)
+    assert context_payload["allowed_outputs"] == request.workspace.allowed_outputs
     assert staged_generated_file(family, extra) not in request.workspace.allowed_outputs
     assert all("**" not in path for path in request.workspace.allowed_outputs)
     assert all(not path.startswith("tests/") for path in request.workspace.allowed_outputs)
@@ -228,9 +263,7 @@ async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: s
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_omits_generated_writes_when_mapping_is_absent(
-    family: str, tmp_path: Path
-) -> None:
+async def test_codegen_prepare_rejects_missing_mapping(family: str, tmp_path: Path) -> None:
     prepared = await execute_task(
         codegen_prepare_handler(family),
         codegen_input(family),
@@ -238,22 +271,14 @@ async def test_codegen_prepare_omits_generated_writes_when_mapping_is_absent(
         binding_data=PLAN_BINDING,
     )
 
-    assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
-    assert request.workspace.allowed_outputs == (
-        f"qa/changes/CH-DEMO-001/codegen/{family}-codegen-summary.md",
-        f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json",
-    )
-    assert all(
-        not path.startswith("qa/changes/CH-DEMO-001/generated/") for path in request.workspace.allowed_outputs
-    )
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert "closed codegen mapping is missing" in prepared.failure.message
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_hydrates_missing_business_input_from_workspace(
-    family: str, tmp_path: Path
-) -> None:
+async def test_codegen_prepare_rejects_missing_reviewed_plan(family: str, tmp_path: Path) -> None:
     _write_reviewed_cases(tmp_path, family)
     prepared = await execute_task(
         codegen_prepare_handler(family),
@@ -266,13 +291,40 @@ async def test_codegen_prepare_hydrates_missing_business_input_from_workspace(
         tmp_path,
         binding_data=PLAN_BINDING,
     )
-    assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
-    plan = cast(dict[str, object], request.instructions[2].json_content)
-    context = cast(dict[str, object], request.instructions[4].json_content)
-    assert plan["family"] == family
-    assert plan["case_ids"] == (f"TC_{family.upper()}_001",)
-    assert "baseline_tree_id" not in context
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert "reviewed_plan" in prepared.failure.message
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_symbol_drift_from_reviewed_mapping(
+    family: str, tmp_path: Path
+) -> None:
+    target = family_test_file(family)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, target)
+    authored = codegen_result(files=[target], family=family)
+    authored["mapping"]["entries"][0]["symbol"] = "different_unreviewed_symbol"
+    _write_manifest(write_root, authored)
+    payload = fake_agent_result(authored)
+    payload["reviewed_mapping"] = mapping_document(family)
+    outcome = await execute_task(codegen_finalize_handler(family), payload, project, write_root=write_root)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "mapping must exactly match the reviewed plan" in outcome.failure.message
+
+
+@pytest.mark.parametrize("field", ("reviewed_mapping", "required_capabilities"))
+@pytest.mark.asyncio
+async def test_codegen_missing_trusted_input_does_not_retry_the_agent(field: str, tmp_path: Path) -> None:
+    payload = fake_agent_result(codegen_result(files=[family_test_file("api")]))
+    del payload[field]
+    outcome = await execute_task(codegen_finalize_handler("api"), payload, tmp_path)
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert outcome.failure.retryable is False
 
 
 @pytest.mark.asyncio
@@ -307,9 +359,11 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
             "target_file": second,
         },
     ]
+    finalize_input = fake_agent_result(payload)
+    finalize_input["reviewed_mapping"] = payload["mapping"]
     executed = await execute_task(
         codegen_finalize_handler("api"),
-        fake_agent_result(payload),
+        finalize_input,
         project,
         write_root=write_root,
     )
@@ -317,6 +371,7 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
     assert executed.failure.retryable is True
+    assert f"codegen mapping is missing: {second}" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -392,63 +447,13 @@ async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_p
     )
     assert executed.status == "succeeded"
     output = cast(dict[str, object], executed.output)
-    if family in {"api", "e2e"}:
-        assert output["verdict"] == "accepted"
-        assert "repair" not in output or output["repair"] is None
-    else:
-        assert output["needs_fix"] is False
+    assert output["schema_version"] == "1"
+    assert {"verdict", "repair", "needs_fix"}.isdisjoint(output)
     assert output["layer"] == family
     files = cast(list[dict[str, object]], output["files"])
     assert files[0]["repo_path"] == relative
     assert files[0]["content_sha256"] == digest
     assert files[0]["case_ids"] == [family_case_id(family)]
-
-
-@pytest.mark.parametrize("family", ("api", "e2e"))
-@pytest.mark.asyncio
-async def test_codegen_fix_finalize_authenticates_attempt_bytes(family: str, tmp_path: Path) -> None:
-    allowed = family_test_file(family)
-    project, write_root = dual_roots(tmp_path)
-    digest = _write_generated(write_root, family, allowed)
-    payload = codegen_result(files=[allowed], family=family)
-    _write_manifest(write_root, payload)
-
-    executed = await execute_task(
-        codegen_fix_finalize_handler(family),
-        fake_agent_result(
-            payload,
-            allowed_paths=[allowed],
-            baseline_tree_id="0" * 64,
-        ),
-        project,
-        write_root=write_root,
-    )
-
-    assert executed.status == "succeeded"
-    output = cast(dict[str, object], executed.output)
-    assert output["family"] == family
-    files = cast(list[dict[str, object]], output["files"])
-    assert files[0]["content_sha256"] == digest
-
-
-@pytest.mark.asyncio
-async def test_codegen_fix_finalize_rejects_two_cases_collapsed_to_one_bridge(tmp_path: Path) -> None:
-    target = family_test_file("api")
-    project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", target)
-    payload = _collapsed_symbol_result()
-    _write_manifest(write_root, payload)
-
-    executed = await execute_task(
-        codegen_fix_finalize_handler("api"),
-        fake_agent_result(payload, allowed_paths=[target], baseline_tree_id="0" * 64),
-        project,
-        write_root=write_root,
-    )
-
-    assert executed.status == "failed"
-    assert executed.failure is not None
-    assert "target_file" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -554,6 +559,99 @@ async def test_codegen_finalize_rejects_unknown_leaf(family: str, tmp_path: Path
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
+async def test_codegen_finalize_rejects_capabilities_dropped_from_reviewed_plan(
+    family: str,
+    tmp_path: Path,
+) -> None:
+    relative = family_test_file(family)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, relative)
+    payload = codegen_result(
+        files=[relative],
+        family=family,
+        required_capabilities=["entities.item.create"],
+    )
+    _write_manifest(write_root, payload)
+    finalize_input = fake_agent_result(payload)
+    finalize_input["required_capabilities"] = [
+        "auth.session.create",
+        "entities.item.create",
+    ]
+
+    executed = await execute_task(
+        codegen_finalize_handler(family),
+        finalize_input,
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "required_capabilities must exactly match the reviewed plan" in executed.failure.message
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_finalize_canonicalizes_capability_order(family: str, tmp_path: Path) -> None:
+    relative = family_test_file(family)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, relative)
+    payload = codegen_result(
+        files=[relative],
+        family=family,
+        required_capabilities=["entities.item.create", "auth.session.create"],
+    )
+    _write_manifest(write_root, payload)
+
+    executed = await execute_task(
+        codegen_finalize_handler(family),
+        fake_agent_result(payload),
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "succeeded", executed.failure
+    assert isinstance(executed.output, dict)
+    assert executed.output["required_capabilities"] == [
+        "auth.session.create",
+        "entities.item.create",
+    ]
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_legacy_wrapped_input(
+    family: str,
+    tmp_path: Path,
+) -> None:
+    relative = family_test_file(family)
+    project, write_root = dual_roots(tmp_path)
+    _write_generated(write_root, family, relative)
+    payload = codegen_result(
+        files=[relative],
+        family=family,
+        required_capabilities=["entities.item.create"],
+    )
+    _write_manifest(write_root, payload)
+    flat = fake_agent_result(payload)
+    agent_result = flat.pop("agent_result")
+
+    executed = await execute_task(
+        codegen_finalize_handler(family),
+        {"validated_input": flat, "agent_result": agent_result},
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_input"
+    assert executed.failure.retryable is False
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
 async def test_codegen_finalize_rejects_undeclared_file(family: str, tmp_path: Path) -> None:
     relative = family_test_file(family)
     extra = "tests/unmapped_test.py"
@@ -570,62 +668,6 @@ async def test_codegen_finalize_rejects_undeclared_file(family: str, tmp_path: P
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-
-
-@pytest.mark.parametrize("family", ("api", "e2e"))
-@pytest.mark.asyncio
-async def test_codegen_fix_prepare_includes_allowed_paths(family: str, tmp_path: Path) -> None:
-    prepared = await execute_task(
-        codegen_fix_prepare_handler(family),
-        codegen_fix_input(family),
-        tmp_path,
-        binding_data=PLAN_BINDING,
-    )
-    assert prepared.status == "succeeded"
-    request = AgentRunRequest.model_validate(prepared.output)
-    assert request.workspace.scope_id == CHANGE_ID
-    skill, _persona, _plan, _cases, context = request.instructions
-    assert f"{family} codegen fix" in (skill.text_content or "").lower()
-    context_payload = cast(dict[str, object], context.json_content)
-    assert list(cast(list[str], context_payload["allowed_paths"])) == [family_test_file(family)]
-    proposal = cast(dict[str, object], context_payload["approved_proposal"])
-    assert proposal["status"] == "approved"
-    staged = staged_generated_file(family)
-    assert staged in request.workspace.allowed_outputs
-    assert all("**" not in path for path in request.workspace.allowed_outputs)
-    assert all(not path.startswith("tests/") for path in request.workspace.allowed_outputs)
-
-
-@pytest.mark.parametrize("family", ("api", "e2e"))
-@pytest.mark.asyncio
-async def test_codegen_fix_finalize_rejects_file_outside_allowed_set(family: str, tmp_path: Path) -> None:
-    allowed = family_test_file(family)
-    extra = "tests/testdata/domain/users.py"
-    project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, allowed)
-    _write_generated(write_root, family, extra)
-    payload = codegen_result(files=[allowed, extra], family=family)
-    executed = await execute_task(
-        codegen_fix_finalize_handler(family),
-        fake_agent_result(
-            payload,
-            allowed_paths=[allowed],
-            baseline_tree_id="0" * 64,
-        ),
-        project,
-        write_root=write_root,
-    )
-    assert executed.status == "failed"
-    assert executed.failure is not None
-    assert executed.failure.kind == "invalid_output"
-
-
-@pytest.mark.parametrize("family", ("fuzz", "performance"))
-def test_codegen_fix_has_no_handler_for_fuzz_or_performance(family: str) -> None:
-    with pytest.raises(ValueError, match="codegen-fix has no handler"):
-        codegen_fix_prepare_handler(family)
-    with pytest.raises(ValueError, match="codegen-fix has no handler"):
-        codegen_fix_finalize_handler(family)
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -700,49 +742,24 @@ async def test_codegen_finalize_rejects_target_outside_family_policy(family: str
     assert executed.failure.kind == "invalid_output"
 
 
-@pytest.mark.parametrize("family", ("api", "e2e"))
-def test_api_e2e_codegen_result_v2_needs_fix_requires_repair_payload(family: str) -> None:
-    payload = {
-        "schema_version": "2",
-        "verdict": "needs_fix",
-        "change_id": CHANGE_ID,
-        "layer": family,
-        "files": [
-            {
-                "repo_path": family_test_file(family),
-                "disposition": "generated",
-                "role": "test_entry",
-                "case_ids": [family_case_id(family)],
-                "content_sha256": "sha256:" + "a" * 64,
-            }
-        ],
-        "mapping": mapping_document(family),
-        "required_capabilities": ["entities.item.create"],
-    }
-    with pytest.raises(ValidationError, match="repair"):
-        CodegenResultV2.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
-    payload["repair"] = {
-        "allowed_paths": [family_test_file(family)],
-        "summary": "repair the generated assertion",
-    }
-    model = CodegenResultV2.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
-    assert model.verdict == "needs_fix"
-    assert model.repair is not None
-
-
-@pytest.mark.parametrize("family", ("fuzz", "performance"))
-def test_fuzz_performance_codegen_does_not_advertise_fixer_outcome(family: str) -> None:
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize(
+    "control_field,control_value", [("needs_fix", False), ("verdict", "accepted"), ("repair", None)]
+)
+def test_codegen_rejects_repair_control_fields(
+    family: str, control_field: str, control_value: object
+) -> None:
     from assurance_generation.contracts.codegen import CodegenResultV1
 
     payload = {
         "schema_version": "1",
-        "needs_fix": True,
+        control_field: control_value,
         "change_id": CHANGE_ID,
         "layer": family,
         "files": [],
         "mapping": mapping_document(family),
     }
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         CodegenResultV1.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
 
 

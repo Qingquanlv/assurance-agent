@@ -7,9 +7,50 @@ Do not look up a global skill catalog.
 
 Before producing output, check whether `.aa/memory/aa-case-design.md` exists in the project root. If it exists, read it before producing output and apply only entries that are not marked `deprecated:`. Treat the file as read-only runtime guidance; do not create, edit, or delete `.aa/memory/**`.
 
+## Prepared source observations
+
+The JSON instruction includes `planning_facts`: bounded static observations with
+file digests, exact symbol names/signature shapes, fixture names, and environment
+variable names. Use the indexed paths for direct reads instead of rediscovering
+them. `unknown` and `uninspected_paths` never prove absence; imports, plugins,
+dynamic registrations and transitive environment dependencies may be unresolved.
+Environment names expose no values and do not establish availability or necessity.
+Check original source for behavior, auth semantics and oracle claims. Keep owner
+requirements and frozen assertion intent distinct from observed implementation;
+a source defect must not weaken the expected test behavior.
+
+Use exact indexed identifiers and paths where applicable. Keep Case IDs, trace
+keys and MRC references consistent across every authored file. Preserve the frozen
+owner oracle when the implementation differs. The inventory is evidence for
+source inspection, not permission to add cases or change the selected families.
+
 ## Context Contract
 
 Do not rely on prior conversation context.
+
+### Validation repair fast path
+
+When graph input contains `validation_attempt: 1`, enter **repair-only mode** before
+the normal procedure below. Read the existing graph-declared outputs and the frozen
+plan, then repair every semicolon-separated validation error in `validation_error` in
+one pass. Do not repeat source discovery, risk analysis, proposal design, or initial
+case authoring. You must apply at least one narrow patch and read the changed files
+back; returning the unchanged receipt is a failure. For a missing selected-family
+error, activate the existing required cases for every named family. For an E2E journey
+mapping error, follow the exact authenticated-key rule in Step 8. Return the locked
+receipt only after all reported errors are satisfied and the complete self-review
+passes.
+
+Build the repair mutation set directly from the reported errors before editing:
+
+- If the only error is `case design is missing required automated cases`, the repair
+  is status-only: change one existing required case per named family from `draft` to
+  `active`. Every other byte remains the baseline, including every MRC row.
+- If an error is `E2E cases have no valid journey mapping`, add or repair only the
+  reported E2E MRC mapping as specified in Step 8. A key in the authenticated project
+  journey set is a valid MRC key even when the advisory MRC did not list it.
+- For semicolon-separated errors, take the union of those exact mutations. The final
+  self-review verifies the result; it does not authorize edits outside that union.
 
 **Before doing any work:**
 
@@ -73,6 +114,10 @@ Do not rely on prior conversation context.
    fields not named by the error. Re-read every output and run the complete self-review
    before returning the locked receipt. Do not reinterpret the error as permission to
    widen scope, derive a new capability key, or change a valid trace entry.
+   If the error says `E2E cases have no valid journey mapping`, add or repair an E2E
+   matrix row whose key is copied exactly from the reported `authenticated journey keys`
+   and whose `covered_by_cases` contains the reported E2E case IDs. Never invent a
+   journey key or modify `.aa/data-knowledge.yaml`.
 9. **Coverage rework:** When `case_rework_context` is provided, read its authenticated
    `gaps_ref` and the report's `minimum_coverage` gaps under the same frozen
    `plan_digest` / `plan_ref`. Add or modify cases and their matrix mappings to supply
@@ -105,6 +150,13 @@ Every active required case must also have `type.lower()` in that frozen set.
 Report a `family scope conflict` if a required case or obligation needs an unselected
 family; do not reselect families, mutate the plan, or weaken its obligation or oracle.
 Explore recommendations and `.qa.yaml` approval text cannot change the frozen scope.
+
+For every authored E2E case with `automation.required: true`, include that case ID in
+at least one MRC row whose key is copied exactly from the authenticated project journey
+set. This mapping is required even when Explore's advisory `e2e` obligation array is
+empty: the selected E2E case creates the evidence-to-journey mapping, while the project
+journey set supplies its closed key. If the authenticated journey set is empty, stop
+instead of authoring an unmapped E2E case.
 
 Keep every required baseline obligation and its matrix row. `skipped_by_scope`
 records an unresolved gap; it does not satisfy or waive a frozen obligation. Never
@@ -620,6 +672,7 @@ After clarifying questions, analyze risks internally. Do NOT dump this full anal
 - API / UI consistency (are the same business rules enforced at both layers?)
 - Regression risk (what existing behavior could this break?)
 - Flaky automation risk (timing issues, dynamic data, environment-sensitive steps)
+- Every successful step that creates persistent test data must have a matching cleanup action in `postconditions`, including valid boundary-value records and secondary setup entities.
 
 ---
 
@@ -1417,7 +1470,9 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 
 **YAML structure:**
 
-1. YAML is valid and parseable.
+1. YAML is valid and parseable. Author `case.yaml` with block-style mappings and
+   sequences; nested case fields use indented keys and `-` items, not `{...}` or
+   `[...]` flow collections.
    - Must be validated with a real YAML parser after writing, not only visually inspected.
    - Pay special attention to natural-language list items containing `: `, quotes, parentheses, or HTTP/status fragments.
 2. `schema_version` exists.
@@ -1454,6 +1509,7 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 27. `steps` — not empty.
 28. `assertions` — not empty.
 29. `postconditions` — exists (may be empty list, but must be present).
+    - Every persistent entity that a successful test step can create is named in a matching cleanup action. This includes baseline records, valid boundary-value records, and secondary setup entities; rejected inputs do not need cleanup.
 30. `edge_cases` — exists (may be empty list, but must be present).
 31. `related_cases` — exists (may be empty list, but must be present).
 32. `automation` — has `required`, `framework`, `status` (there is **no** `automation.target` — `type` is the single source of truth).

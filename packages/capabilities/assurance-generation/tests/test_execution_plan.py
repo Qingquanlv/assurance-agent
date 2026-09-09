@@ -13,6 +13,7 @@ from graph_engine.canonical import JSONValue, canonical_json_bytes
 from assurance_generation.contracts.execution_plan import (
     BASE_RUNTIME_OBLIGATIONS,
     TRACE_OBLIGATIONS,
+    CaseExecutionPlanSetV1,
     CaseExecutionPlanV1,
     CasePlanContextV1,
     USER_SQLITE_BINDING_ID,
@@ -35,6 +36,7 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
 )
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 from tests.verification_support import read_fixture
+from tests.verified_generation_fixture import accepted_verified_execution_input
 
 
 def _fixture() -> tuple[dict[str, object], AssertionSourcesV1, dict[str, object], CasePlanContextV1]:
@@ -48,14 +50,29 @@ def _fixture() -> tuple[dict[str, object], AssertionSourcesV1, dict[str, object]
 
 
 def _materialize_context(project: Path) -> CasePlanContextV1:
-    case = read_fixture("user-case.json")
-    case_path = project / "qa/changes/CH-USER-001/cases/system/user/case.yaml"
-    case_path.parent.mkdir(parents=True, exist_ok=True)
-    data = canonical_json_bytes(cast(JSONValue, case))
-    case_path.write_bytes(data)
-    raw = cast(dict[str, Any], copy.deepcopy(read_fixture("user-plan.json")["context"]))
-    raw["reviewed_case"]["case_refs"][0]["digest"] = hashlib.sha256(data).hexdigest()
-    return CasePlanContextV1.model_validate(raw)
+    root = accepted_verified_execution_input(project)
+    generation = root.generation_result
+    assert generation is not None and generation.case_execution_plan_ref is not None
+    machine = CaseExecutionPlanSetV1.model_validate_json(
+        (project / generation.case_execution_plan_ref.path).read_bytes()
+    )
+    formal = machine.cases[0]
+    return CasePlanContextV1(
+        change_id=formal.change_id,
+        coverage_epoch=formal.coverage_epoch,
+        plan_digest=formal.plan_digest,
+        plan_ref=formal.plan_ref,
+        reviewed_case=formal.reviewed_case,
+        verification_policy_digest=formal.verification_policy_digest,
+        technical_config_digest=formal.technical_config_digest,
+        sut_digest=formal.sut_digest,
+    )
+
+
+def _sources(project: Path) -> dict[str, JSONValue]:
+    return json.loads(
+        (project / "qa/changes/CH-USER-001/cases/system/user/assertion-sources.json").read_bytes()
+    )
 
 
 def _write_api_candidate(write_root: Path) -> tuple[tuple[str, ...], dict[str, Any]]:
@@ -122,6 +139,7 @@ def _write_api_candidate(write_root: Path) -> tuple[tuple[str, ...], dict[str, A
 def _finalize_input(
     result: dict[str, Any],
     *,
+    project: Path,
     context: CasePlanContextV1,
     artifact_paths: tuple[str, ...] = (),
     machine_ref: EvidenceArtifactRefV1 | None = None,
@@ -133,11 +151,13 @@ def _finalize_input(
     )
     payload.update(
         {
+            "change_id": context.change_id,
+            "coverage_epoch": context.coverage_epoch,
             "plan_digest": context.plan_digest,
             "plan_ref": context.plan_ref.model_dump(mode="json"),
             "reviewed_case": context.reviewed_case.model_dump(mode="json"),
             "case_plan_context": context.model_dump(mode="json"),
-            "assertion_sources": read_fixture("user-sources.json"),
+            "assertion_sources": _sources(project),
             "validation_profile": "api_db.v1",
         }
     )
@@ -393,7 +413,7 @@ async def test_plan_finalizer_alone_writes_the_formal_machine_plan(tmp_path: Pat
             "capability_leafs": list(VALID_LEAFS),
             "allowed_artifact_paths": list(paths),
             "case_plan_context": context.model_dump(mode="json"),
-            "assertion_sources": read_fixture("user-sources.json"),
+            "assertion_sources": _sources(project),
             "validation_profile": "api_db.v1",
         }
     )
@@ -432,7 +452,7 @@ async def test_plan_review_finalizer_rejects_invalid_closure_even_when_agent_pas
     paths, result = _write_api_candidate(project)
     finalized = await execute_task(
         PlanFinalizeHandler("api"),
-        _finalize_input(result, context=context, artifact_paths=paths),
+        _finalize_input(result, project=project, context=context, artifact_paths=paths),
         project,
         write_root=project,
     )
@@ -445,7 +465,7 @@ async def test_plan_review_finalizer_rejects_invalid_closure_even_when_agent_pas
 
     reviewed = await execute_task(
         PlanReviewFinalizeHandler("api"),
-        _finalize_input(review_result("api"), context=context, machine_ref=machine_ref),
+        _finalize_input(review_result("api"), project=project, context=context, machine_ref=machine_ref),
         project,
         write_root=project,
     )
@@ -467,7 +487,7 @@ async def test_plan_review_recompiles_and_rejects_valid_shaped_plan_drift(
     paths, result = _write_api_candidate(project)
     finalized = await execute_task(
         PlanFinalizeHandler("api"),
-        _finalize_input(result, context=context, artifact_paths=paths),
+        _finalize_input(result, project=project, context=context, artifact_paths=paths),
         project,
         write_root=project,
     )
@@ -476,7 +496,7 @@ async def test_plan_review_recompiles_and_rejects_valid_shaped_plan_drift(
 
     reviewed = await execute_task(
         PlanReviewFinalizeHandler("api"),
-        _finalize_input(review_result("api"), context=context, machine_ref=drifted_ref),
+        _finalize_input(review_result("api"), project=project, context=context, machine_ref=drifted_ref),
         project,
         write_root=project,
     )
@@ -491,7 +511,7 @@ async def test_plan_review_recompiles_and_rejects_valid_shaped_plan_drift(
 async def test_plan_review_rejects_machine_plan_ref_digest_mismatch(tmp_path: Path) -> None:
     project = tmp_path
     context = _materialize_context(project)
-    payload = _finalize_input(review_result("api"), context=context)
+    payload = _finalize_input(review_result("api"), project=project, context=context)
     payload["case_execution_plan_ref"] = {
         "path": "qa/changes/CH-USER-001/plans/api-case-execution-plan.json",
         "digest": "1" * 64,

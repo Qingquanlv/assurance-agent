@@ -188,6 +188,32 @@
           "title": "Execution Digest",
           "type": "string"
         },
+        "execution_receipt_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Receipt Digest"
+        },
+        "execution_receipt_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Receipt Id"
+        },
         "semantic_node_id": {
           "enum": [
             "execution.execute",
@@ -211,32 +237,6 @@
           ],
           "default": null,
           "title": "Validation Profile"
-        },
-        "execution_receipt_id": {
-          "anyOf": [
-            {
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Execution Receipt Id"
-        },
-        "execution_receipt_digest": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Execution Receipt Digest"
         }
       },
       "required": [
@@ -341,6 +341,7 @@
             "satisfied",
             "coverage_insufficient",
             "repairable_execution_failure",
+            "analysis_required",
             "needs_human",
             "blocked"
           ],
@@ -382,6 +383,11 @@
           ],
           "default": null
         },
+        "verification_repairable_bridge": {
+          "default": false,
+          "title": "Verification Repairable Bridge",
+          "type": "boolean"
+        },
         "verification_status": {
           "anyOf": [
             {
@@ -398,11 +404,6 @@
           ],
           "default": null,
           "title": "Verification Status"
-        },
-        "verification_repairable_bridge": {
-          "default": false,
-          "title": "Verification Repairable Bridge",
-          "type": "boolean"
         }
       },
       "required": [

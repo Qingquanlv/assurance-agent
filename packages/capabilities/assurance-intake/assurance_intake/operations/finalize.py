@@ -34,6 +34,7 @@ from assurance_intake.contracts.agent import (
 )
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
 from assurance_intake.contracts.loop_history import build_loop_round_history
+from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (
     CaseMinimumCoverageReview,
     normalized_auto_fix_case_id,
@@ -123,12 +124,18 @@ def _validate_case_review_repair_scope(
         key = finding.locator.key
         if not isinstance(key, str) or not key.strip():
             raise OutputError("automatic case repair requires an exact locator key")
+        locator_paths = tuple(part.strip() for part in key.split(",") if part.strip())
+        if artifact in payload.case_delta_paths and "case_id" in locator_paths:
+            raise OutputError(
+                "case_id identifies the case and cannot be an automatic repair field; "
+                "use added or modified to authorize whole-case removal"
+            )
         try:
             ReviewRepairActionV1(
                 finding_id=finding_id,
                 artifact=artifact,
                 case_id=finding.locator.case_id,
-                allowed_paths=tuple(part.strip() for part in key.split(",") if part.strip()),
+                allowed_paths=locator_paths,
                 instructions=edits,
             )
         except ValidationError as error:
@@ -217,6 +224,32 @@ def _read_regular_bytes(workspace: Path, relative: str, *, kind: str) -> bytes:
     return data
 
 
+_DATA_KNOWLEDGE_RESOURCE_ID = "assurance.product.configuration.data-knowledge"
+_DATA_KNOWLEDGE_PATH = ".aa/data-knowledge.yaml"
+
+
+def _authenticated_journey_keys(
+    workspace: Path,
+    source_resource_digests: tuple[tuple[str, str], ...],
+) -> tuple[str, ...]:
+    expected_digest = dict(source_resource_digests).get(_DATA_KNOWLEDGE_RESOURCE_ID)
+    if expected_digest is None:
+        raise InputError("frozen assurance plan does not bind data knowledge")
+    try:
+        data = _read_regular_bytes(workspace, _DATA_KNOWLEDGE_PATH, kind="data knowledge")
+    except OutputError as error:
+        raise InputError(str(error)) from error
+    if _file_digest(data) != expected_digest:
+        raise InputError("data knowledge does not match the frozen assurance plan")
+    try:
+        document = yaml.safe_load(data)
+        if not isinstance(document, Mapping):
+            raise ValueError("data knowledge must be a mapping")
+        return journey_keys_from_document(document)
+    except (yaml.YAMLError, ValueError) as error:
+        raise InputError(f"invalid data knowledge: {error}") from error
+
+
 def _allowed_by_lock(relative: str, locked: tuple[str, ...]) -> bool:
     return any(relative == prefix or relative.startswith(f"{prefix}/") for prefix in locked)
 
@@ -255,6 +288,34 @@ def _authenticate_review_repair_images(
             raise OutputError(f"declared output file is missing: {relative}")
         artifacts.append({"path": relative, "digest": _file_digest(data)})
     return artifacts
+
+
+def _validation_repair_images(
+    project_root: Path,
+    write_root: Path,
+    declared: tuple[str, ...],
+    locked: tuple[str, ...],
+) -> dict[str, bytes]:
+    if not locked:
+        raise InputError("artifact_paths must lock the expected output files")
+    images: dict[str, bytes] = {}
+    for relative in declared:
+        if not _allowed_by_lock(relative, locked):
+            raise OutputError(f"undeclared output file: {relative}")
+        candidate = _workspace_file(write_root, relative)
+        if candidate.exists() or candidate.is_symlink():
+            images[relative] = _read_regular_bytes(
+                write_root,
+                relative,
+                kind="validation repair output",
+            )
+        else:
+            images[relative] = _read_regular_bytes(
+                project_root,
+                relative,
+                kind="validation repair baseline",
+            )
+    return images
 
 
 def _artifact_list(payload: AgentFinalizeInputV1) -> ArtifactListResultV1:
@@ -480,6 +541,7 @@ def _load_minimum_coverage_matrix(
     relative: str,
     authored: CaseYamlAuthoring,
     selected: tuple[str, ...],
+    journey_keys: tuple[str, ...],
     images: Mapping[str, bytes] | None = None,
 ) -> MinimumCoverageMatrixAuthoring:
     document = _read_minimum_coverage_matrix(
@@ -496,8 +558,13 @@ def _load_minimum_coverage_matrix(
         "e2e": "e2e",
         "e2e_if_enabled": "e2e",
     }
+    journey_cases: set[str] = set()
     for row in document.root:
-        expected_layer = row.layer or (category_layer.get(row.category) if row.category else None)
+        expected_layer = (
+            row.layer
+            or (category_layer.get(row.category) if row.category else None)
+            or ("e2e" if row.key in journey_keys else None)
+        )
         required_families = (
             {"api", "e2e"}
             if expected_layer == "both"
@@ -516,12 +583,24 @@ def _load_minimum_coverage_matrix(
                     f"minimum coverage row {row.mrc_id} requires {expected_layer} case coverage"
                 )
             required_families.add(case.type.lower())
+        if expected_layer == "e2e" and row.key in journey_keys:
+            journey_cases.update(row.covered_by_cases)
         excluded = sorted(required_families.difference(selected))
         if row.required and excluded:
             raise OutputError(
                 f"family scope conflict: required minimum coverage row {row.mrc_id} "
                 f"needs unselected test families: {', '.join(excluded)}"
             )
+    unmapped_e2e = sorted(
+        case.case_id
+        for case in cases.values()
+        if case.type == "E2E" and case.automation.required and case.case_id not in journey_cases
+    )
+    if unmapped_e2e:
+        raise OutputError(
+            f"E2E cases have no valid journey mapping: {unmapped_e2e}; "
+            f"authenticated journey keys: {list(journey_keys)}"
+        )
     return document
 
 
@@ -619,6 +698,12 @@ def _validate_case_repair_document(
 ) -> None:
     before_entries = _case_entries(before, artifact=artifact)
     after_entries = _case_entries(after, artifact=artifact)
+    actions_by_case: dict[str, list[ReviewRepairActionV1]] = {}
+    for action in actions:
+        if action.case_id is None:
+            raise OutputError(f"case.yaml review repair requires an exact case_id: {action.finding_id}")
+        actions_by_case.setdefault(action.case_id, []).append(action)
+
     before_identity = {
         section: [case_id for case_id, item in before_entries.items() if item[0] == section]
         for section in ("added", "modified")
@@ -627,7 +712,39 @@ def _validate_case_repair_document(
         section: [case_id for case_id, item in after_entries.items() if item[0] == section]
         for section in ("added", "modified")
     }
-    if before_identity != after_identity:
+    authorized_removals: set[str] = set()
+    for case_id, (section, _, _) in before_entries.items():
+        if case_id in after_entries:
+            continue
+        case_actions = actions_by_case.get(case_id, [])
+        if case_actions and all(
+            {_case_allowed_path(path) for path in action.allowed_paths} == {(section,)}
+            for action in case_actions
+        ):
+            authorized_removals.add(case_id)
+    authorized_additions: set[str] = set()
+    for case_id, (section, _, _) in after_entries.items():
+        if case_id in before_entries:
+            continue
+        case_actions = actions_by_case.get(case_id, [])
+        if (
+            section == "added"
+            and case_actions
+            and all(
+                {_case_allowed_path(path) for path in action.allowed_paths} == {(section,)}
+                for action in case_actions
+            )
+        ):
+            authorized_additions.add(case_id)
+    expected_existing_identity = {
+        section: [case_id for case_id in case_ids if case_id not in authorized_removals]
+        for section, case_ids in before_identity.items()
+    }
+    actual_existing_identity = {
+        section: [case_id for case_id in case_ids if case_id not in authorized_additions]
+        for section, case_ids in after_identity.items()
+    }
+    if expected_existing_identity != actual_existing_identity:
         raise OutputError(f"review repair added, removed, moved, or reordered a case: {artifact}")
     if not isinstance(before, Mapping) or not isinstance(after, Mapping):
         raise OutputError(f"repair baseline is not a case document: {artifact}")
@@ -637,12 +754,9 @@ def _validate_case_repair_document(
     if before_structure != after_structure:
         raise OutputError(f"review repair changed case document structure: {artifact}")
 
-    actions_by_case: dict[str, list[ReviewRepairActionV1]] = {}
-    for action in actions:
-        if action.case_id is None:
-            raise OutputError(f"case.yaml review repair requires an exact case_id: {action.finding_id}")
-        actions_by_case.setdefault(action.case_id, []).append(action)
     for case_id in set(before_entries) | set(after_entries):
+        if case_id in authorized_removals or case_id in authorized_additions:
+            continue
         if case_id not in before_entries or case_id not in after_entries:
             raise OutputError(f"review repair changed case identity: {case_id}")
         before_entry = before_entries[case_id][2]
@@ -971,6 +1085,18 @@ class CaseDesignFinalizeHandler:
                     receipt.output_files,
                     payload.artifact_paths,
                 )
+            elif payload.validation_attempt == 1:
+                images = _validation_repair_images(
+                    context.project_root,
+                    context.write_root,
+                    receipt.output_files,
+                    payload.artifact_paths,
+                )
+                artifacts = _authenticate_review_repair_images(
+                    images,
+                    receipt.output_files,
+                    payload.artifact_paths,
+                )
             else:
                 images = None
                 artifacts = _authenticate_files(
@@ -999,22 +1125,37 @@ class CaseDesignFinalizeHandler:
                     authority_refs=authority[2],
                     images=images,
                 )
+
+            validation_errors: list[str] = []
             if payload.selected_test_families:
-                _require_selected_test_families(authored, payload.selected_test_families)
+                try:
+                    _require_selected_test_families(authored, payload.selected_test_families)
+                except OutputError as error:
+                    validation_errors.append(str(error))
             if authored.added or authored.modified:
-                _load_minimum_coverage_matrix(
-                    context.write_root,
-                    relative=matrix_relative,
-                    authored=authored,
-                    selected=plan.selected_test_families,
-                    images=images,
+                journey_keys = _authenticated_journey_keys(
+                    context.project_root,
+                    plan.quality_goal.source_resource_digests,
                 )
+                try:
+                    _load_minimum_coverage_matrix(
+                        context.write_root,
+                        relative=matrix_relative,
+                        authored=authored,
+                        selected=plan.selected_test_families,
+                        journey_keys=journey_keys,
+                        images=images,
+                    )
+                except OutputError as error:
+                    validation_errors.append(str(error))
             else:
                 _read_minimum_coverage_matrix(
                     context.write_root,
                     relative=matrix_relative,
                     images=images,
                 )
+            if validation_errors:
+                raise OutputError("; ".join(validation_errors))
             output = CaseDesignOutputV1(
                 validation_status="pass",
                 validation_attempt=payload.validation_attempt,
@@ -1025,6 +1166,10 @@ class CaseDesignFinalizeHandler:
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
+            if parsed is not None and parsed.review_repair is not None:
+                # A review repair is bound to the committed baseline. Reject
+                # invalid candidates before promotion so that retry keeps it.
+                return failed_output(str(error))
             if isinstance(request.input, dict) and request.input.get("validation_attempt") == 0:
                 repair_output = CaseDesignOutputV1(
                     validation_status="needs_fix",
@@ -1094,6 +1239,10 @@ class CaseReviewFinalizeHandler:
                 relative=matrix_relative,
                 authored=authored,
                 selected=plan.selected_test_families,
+                journey_keys=_authenticated_journey_keys(
+                    context.project_root,
+                    plan.quality_goal.source_resource_digests,
+                ),
                 images=images,
             )
             required = [row for row in matrix.root if row.required]

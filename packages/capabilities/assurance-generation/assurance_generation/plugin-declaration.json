@@ -16,8 +16,6 @@
     "plugin_version": "0.2.0",
     "engine_api": "2.0",
     "task_handlers": [
-      "assurance.generation.api.codegen-fix.finalize",
-      "assurance.generation.api.codegen-fix.prepare",
       "assurance.generation.api.codegen.finalize",
       "assurance.generation.api.codegen.prepare",
       "assurance.generation.api.plan-review.finalize",
@@ -25,8 +23,6 @@
       "assurance.generation.api.plan.finalize",
       "assurance.generation.api.plan.prepare",
       "assurance.generation.complete",
-      "assurance.generation.e2e.codegen-fix.finalize",
-      "assurance.generation.e2e.codegen-fix.prepare",
       "assurance.generation.e2e.codegen.finalize",
       "assurance.generation.e2e.codegen.prepare",
       "assurance.generation.e2e.plan-review.finalize",
@@ -51,7 +47,6 @@
     ],
     "commit_validators": [
       "assurance.generation.validator.api-plan.v1",
-      "assurance.generation.validator.codegen-fix-candidate.v1",
       "assurance.generation.validator.codegen-mapping.v1",
       "assurance.generation.validator.e2e-plan.v1",
       "assurance.generation.validator.fuzz-plan.v1",
@@ -78,15 +73,12 @@
     "resources": [
       "assurance.generation.persona.reviewer.v1",
       "assurance.generation.persona.test-author.v1",
-      "assurance.generation.result.codegen-fix.v1",
       "assurance.generation.result.codegen.v1",
       "assurance.generation.result.plan-review.v1",
       "assurance.generation.result.plan.v1",
-      "assurance.generation.skill.aa-api-codegen-fixer.v1",
       "assurance.generation.skill.aa-api-codegen.v1",
       "assurance.generation.skill.aa-api-plan-reviewer.v1",
       "assurance.generation.skill.aa-api-plan.v1",
-      "assurance.generation.skill.aa-e2e-codegen-fixer.v1",
       "assurance.generation.skill.aa-e2e-codegen.v1",
       "assurance.generation.skill.aa-e2e-plan-reviewer.v1",
       "assurance.generation.skill.aa-e2e-plan.v1",
@@ -101,68 +93,60 @@
     "bindings": [],
     "attempt_contracts": [
       {
-        "contract_id": "assurance.generation.agent.api.codegen-fix.v1",
-        "digest": "3dd37745ec297c4ea71fda9c04c3eec7413d78d4021085fa462020254e7546aa"
-      },
-      {
         "contract_id": "assurance.generation.agent.api.codegen.v1",
-        "digest": "41cd5899672b356411da6348c61fb0b6307c4c3313b9e0090f5bdadc1c7491ca"
+        "digest": "21f5ca5c79ee3882b406fde49c58af1e88cdcc71556982f183c8f2bacdb841bc"
       },
       {
         "contract_id": "assurance.generation.agent.api.plan-review.v1",
-        "digest": "1c61dd1d34ed93ffbc92ad596ecea814250535df99ab39ed604f962953019947"
+        "digest": "08c5ce72d854dd61fa45363606ec2dab08fa9b61ef9122c27df3ccbb1323c0b9"
       },
       {
         "contract_id": "assurance.generation.agent.api.plan.v1",
-        "digest": "fd760dc54e94bd956850e8505c58bcf9d1d27ac7366563bf0bbdc93b1446dea3"
-      },
-      {
-        "contract_id": "assurance.generation.agent.e2e.codegen-fix.v1",
-        "digest": "33c41fb13279898f3318c503bd0ae3290140156388b8b2b240774ede20f52e33"
+        "digest": "ef47d5d4d7bdbe4f5f18df34f5f26e231479dec987d437631f1bad9bca3cdf61"
       },
       {
         "contract_id": "assurance.generation.agent.e2e.codegen.v1",
-        "digest": "56d355d9aaff962160b32b57f241135cd3be95107ff7f929c080a3a0a252bad1"
+        "digest": "027212628ccdf8f402661d8b4b4e79d0aa1f7eabd022c1366dcd411ae7b10520"
       },
       {
         "contract_id": "assurance.generation.agent.e2e.plan-review.v1",
-        "digest": "0513d25c36e68820e7302acc2cc2e95a93c3091adb9ee73a4929da10375d3f20"
+        "digest": "553f48d8f1a48b8f15e17fb7ba6b019bc65101ed90c534f4658f65f603ad37f5"
       },
       {
         "contract_id": "assurance.generation.agent.e2e.plan.v1",
-        "digest": "e07a50139e62887f8130bff3e85c2d247d975f5e8d6e82c688f6ca6079a7dd61"
+        "digest": "92a55d83da09063772062ca6cdf364860e6ec12e604602d0ed81f37d734c9875"
       },
       {
         "contract_id": "assurance.generation.agent.fuzz.codegen.v1",
-        "digest": "0b21b07ca72af0485b7c580aefd21e3004ce46850812d11c9773b1e2ad0a53e7"
+        "digest": "d2e6150df1fa6031bcd1512be5846894e10761adcc47a88ededa8673f77faf41"
       },
       {
         "contract_id": "assurance.generation.agent.fuzz.plan-review.v1",
-        "digest": "fb73fbc1280a52c430b2a4a32808b97f65d7049f1b97be766618008646c03579"
+        "digest": "ee0725af16d545a71fcd7706bcd2ab9e7c21f0b517235aaef04605514b8cf39f"
       },
       {
         "contract_id": "assurance.generation.agent.fuzz.plan.v1",
-        "digest": "5ff86c759571293c2e5e0fc4ad95b444edd2cc1bbf92cf2237a724bf6b8f9f23"
+        "digest": "cf86b2814355224c54252782aab65ac8aaa8cf6628879377e89565ad9d37c855"
       },
       {
         "contract_id": "assurance.generation.agent.performance.codegen.v1",
-        "digest": "b33db57ec64afe939c86e447eb0f6d1d21190bee46ec7ad07faf65df051e06da"
+        "digest": "f6b62e6f1ac5a95557e11eefa1c46573f67af5f6fd05ad7a363624d1d707ee96"
       },
       {
         "contract_id": "assurance.generation.agent.performance.plan-review.v1",
-        "digest": "251188148aaf183abce72f64512b0b6b841e6c9db666117583949a19c39521d9"
+        "digest": "db3b302fb42c3be425cc0ef710f99ce00441e6b54376b57a919ce2771e3a324e"
       },
       {
         "contract_id": "assurance.generation.agent.performance.plan.v1",
-        "digest": "737f195b1765f8a1693932bd56dd99bce9f1a947a894c47cb2ff1b83ce5eae84"
+        "digest": "b978baa23242377c7008f63949121caf1730ad1d9bdc8755ffc6340ad32d01ca"
       },
       {
         "contract_id": "assurance.generation.publish-cycle",
-        "digest": "aee31de5307dac0e301802e680dbaa15026f6a7cbcae3dc332bb2c6527be8790"
+        "digest": "a68b1eda18bde7df90d40a8003eac77ccf13cf4111d102b097f55fb2b9da4b74"
       },
       {
         "contract_id": "assurance.generation.resolve-inputs",
-        "digest": "4da5c5c788481163b59896ad2f6833cf8ac0874ffea5ca54530ce877d2f1c38c"
+        "digest": "594db1fb8665b66d860a59cb70cc67d13a26b5169357ebdc6a941ba296ba0fed"
       }
     ]
   },

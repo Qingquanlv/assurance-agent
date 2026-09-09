@@ -14,7 +14,7 @@ from assurance_execution.contracts.evidence import ExecutionAgentResultV1, Execu
 from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 
 _EXECUTOR = "assurance-v1-executor"
-_RETRY = AttemptRetryPolicy(max_attempts=1)
+_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
@@ -46,7 +46,7 @@ def _job(
             reads=("qa",),
             writes=attempt_writes,
         ),
-        retry=_RETRY,
+        retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
@@ -82,7 +82,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
                 # The explicit result leaf preserves the legacy finalize phase claim.
                 writes=_paths(".staging/execution", "execution", f"execution/{base}-result.json"),
             ),
-            retry=_RETRY,
+            retry=AttemptRetryPolicy(max_attempts=1),
             # Covers all three legacy host phases, each bounded at 3600 seconds.
             timeout=AttemptTimeoutPolicy(seconds=10800),
             validators=(),

@@ -25,6 +25,24 @@ adapter requirement merely because the test performs create, list, get,
 update, or delete operations. Require an adapter leaf only when the plan
 actually consumes that cataloged reusable adapter symbol.
 
+## Prepared source observations
+
+The JSON instruction includes `planning_facts`: bounded static observations with
+file digests, exact symbol names/signature shapes, fixture names, and environment
+variable names. Use the indexed paths for direct reads instead of rediscovering
+them. `unknown` and `uninspected_paths` never prove absence; imports, plugins,
+dynamic registrations and transitive environment dependencies may be unresolved.
+Environment names expose no values and do not establish availability or necessity.
+Check original source for behavior, auth semantics and oracle claims. Keep owner
+requirements and frozen assertion intent distinct from observed implementation;
+a source defect must not weaken the expected test behavior.
+
+Use exact indexed identifiers when applicable. Before returning, reconcile the
+closed mapping with every displayed Test Function Mapping, validate table capability
+keys, and distinguish an existing helper amendment from create-if-missing. On repair,
+check the whole package for consistency while editing only authorized locators;
+if another required edit is outside them, report the scope gap without broadening it.
+
 ## Inputs
 
 Read `proposal.md` first. When its `Product Source Verification` section lists
@@ -32,6 +50,19 @@ exact product-source paths, read every listed path directly before any discovery
 A glob result of `No files found` is not evidence that product source is absent;
 ignored source files remain exact-readable. Only declare source unavailable after
 those exact reads and a path-scoped grep both fail.
+
+Before authoring the first plan, close a complete support/runtime inventory for
+the whole API package. For every mapped target, exact-read every candidate
+support module and read every ancestor `conftest.py` from the target directory
+through the test root. Resolve each consumed dotted symbol to its implementation,
+compare each helper's real signature with the planned data need, and trace its
+environment, credential, and persistence requirements. Never assign `missing`
+or `create-if-missing` from glob or grep output when an exact declared path can
+be read. If an existing helper cannot express a lifecycle step such as nested
+entity creation, keep the helper only for the operations its signature supports
+and map the remaining step to a source-proven test-local boundary. For every
+negative request, retain the ideal non-creation assertion and plan bounded
+finally-safe cleanup in case the defective product unexpectedly persists data.
 
 ### required
 
@@ -119,6 +150,12 @@ Do not run the product test runner or execute data setup during planning.
 Do not silently guess endpoints, methods, auth, schemas, fixtures, cleanup, or
 product behavior.
 
+When a negative request omits the field that would identify a created entity,
+prove non-creation with a bounded before/after collection or tree snapshot (or
+an equivalent source-backed invariant). Never invent a sentinel value that is
+absent from the request and then query for that value; it cannot identify any
+side effect of the request.
+
 Before naming an endpoint, payload, response field, or reusable helper, inspect
 the declared product source and test inputs. A plan must describe the observed
 contract, including create operations whose success response has no identifier
@@ -145,8 +182,10 @@ assertion intent, data setup and cleanup, factory/adapter ownership, and
 separate Plan Readiness and Codegen Readiness. Unknown product facts remain
 explicit review items or blockers; they are never guessed.
 
-When `review/api-plan-review.json` exists with `decision: needs_fix`, apply only
-the findings named in `auto_fix_plan` and only their `locator` targets. Apply
+On planner re-entry, the final JSON instruction's `plan_repair_review` is the
+authoritative current review. Do not glob for or read any other plan-review
+file; apply only the findings named in `auto_fix_plan` and only their `locator`
+targets. Apply
 every listed finding in the same planner re-entry; do not return after repairing
 only the first finding. Treat each locator as authorizing exactly its named
 artifact and key/section, and do not infer permission to edit a second artifact
@@ -154,6 +193,19 @@ from prose in another finding. Do not rewrite unmentioned plan sections or
 mapping rows. Keep
 `plans/api-codegen-mapping.json` as the closed Case ID → symbol → target file
 contract; the markdown plan is narrative only.
+
+Before editing an authorized section, exact-read every fixture or helper
+implementation named by a current finding. Resolve dotted Python symbols to
+their `.py` modules, read ancestor `conftest.py` files for mapped pytest
+targets, and inspect any named configuration or environment boundary. Do not
+preserve an `absent`, `missing`, or `create-if-missing` claim after the exact
+referenced file opens and proves the symbol exists. After the edits, exact-read
+all required plan outputs and verify every authorized finding is no longer
+contradicted in its located section before returning.
+
+On every return, `output_files` is the complete plan-package manifest. List all
+required output paths above, including required files that were unchanged in
+this repair. Do not return only the files edited in the current repair.
 
 Shared business-valid factories belong in `tests/testdata/domain/`. They own
 domain defaults and invariant-preserving create/cleanup behavior, return plain
@@ -164,9 +216,12 @@ Reusable cross-test API lifecycle and transport glue belongs in
 domain factory or API adapter when it actually consumes one. Requests that are
 the behavior under test, and existing helpers private to the closed-mapping
 target, stay in that mapped API test and do not require an adapter capability.
-The first active codegen layer may own a shared module that is absent from L1 as
-`create-if-missing`; every L1-declared symbol and every later-layer reference
-is `reuse`.
+L1 declaration identifies the contract; on-disk inspection determines
+implementation availability. When an exact L1-declared symbol has no on-disk
+implementation, the first selected codegen layer may mark its bounded target
+`create-if-missing`. After that owner is selected, later selected layers must
+reuse that implementation. Never treat the mere absence of a declared module
+as a reason to block codegen.
 
 Authoring tables (keep column names exact):
 
@@ -187,9 +242,10 @@ Authoring tables (keep column names exact):
   function is named `test_<case_id_lowercase>__<desc>`; the full case_id and
   double underscore are mandatory.
 - Factory Mapping uses `Entity | Shared Module | Function | Ownership | Required By`.
-  `Shared Module` names `tests/testdata/domain/<entity>.py`, and Ownership is
-  `reuse` for every symbol already declared by L1 knowledge. Use
-  `create-if-missing` only when L1 does not declare that shared symbol.
+  `Shared Module` names `tests/testdata/domain/<entity>.py`. Ownership is
+  `reuse` when the implementation exists or an earlier selected layer owns its
+  creation; otherwise the first selected layer uses `create-if-missing` for the
+  exact bounded L1-declared symbol.
 - Adapter Mapping uses `Entity | API Adapter | Transport | Cleanup`.
 - Fixture Mapping uses `Fixture | Source Factory | Wrapper Only (yes/no) | Required By`.
 - Helper Mapping uses `Helper | Purpose | Required By`.

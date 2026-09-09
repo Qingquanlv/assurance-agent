@@ -7,7 +7,7 @@ from graph_engine.boot.boot import CapabilityBuildContext
 
 
 def build_performance_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    return compile_family_graph(context, "performance", has_codegen_fix=False)
+    return compile_family_graph(context, "performance")
 
 
 __all__ = ["build_performance_graph"]

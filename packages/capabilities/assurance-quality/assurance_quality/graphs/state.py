@@ -29,6 +29,10 @@ class QualityAssessPublicV1(FrozenModel):
     coverage_state: CoverageState | None
     inspection_outcome: InspectionOutcomeV1
     evidence_refs: list[dict[str, str]]
+    observations_ref: EvidenceArtifactRefV1
+    issue_evidence_manifest_ref: EvidenceArtifactRefV1
+    owned_evidence_ids: tuple[str, ...]
+    evidence_bundle_digest: str
     rounds_budget: int
     rounds_used: int
 
@@ -70,6 +74,7 @@ class QualityReportPublicV1(FrozenModel):
 
 
 class QualityState(CheckpointBridgeState, total=False):
+    issue_analysis: dict[str, object] | None
     change_id: str
     batch_id: str
     coverage_epoch: int
@@ -81,6 +86,7 @@ class QualityState(CheckpointBridgeState, total=False):
     execution_at: str
     healing_ref: EvidenceArtifactRefV1 | None
     issue_ref: EvidenceArtifactRefV1 | None
+    issue_analysis_ref: EvidenceArtifactRefV1 | None
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
@@ -99,7 +105,7 @@ class QualityState(CheckpointBridgeState, total=False):
     report_receipt: ReceiptRef | None
     report_outcome: ReportOutcomeV1
     report_purpose: ReportPurpose
-    execution_digest: str
+    execution_evidence_digest: str
     healing_digest: str | None
     trace_digest: str
     coverage_digest: str
@@ -109,6 +115,10 @@ class QualityState(CheckpointBridgeState, total=False):
     plan_ref: EvidenceArtifactRefV1
     mapping_digest: str
     issue_digest: str | None
+    observations_ref: EvidenceArtifactRefV1
+    issue_evidence_manifest_ref: EvidenceArtifactRefV1
+    owned_evidence_ids: tuple[str, ...]
+    evidence_bundle_digest: str
     status: str
     attempt_failure: dict[str, object]
 

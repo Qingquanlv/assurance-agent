@@ -57,6 +57,8 @@ class ImprovementState(CheckpointBridgeState, total=False):
     issue_analysis: Annotated[dict[str, object] | None, replace_issue_analysis]
     workflow_analysis: Annotated[dict[str, object] | None, replace_workflow_analysis]
     ledger: dict[str, object]
+    retro_status: dict[str, object]
+    analysis_status: str
     projection: dict[str, object]
     assessment: dict[str, object]
     review_id: str

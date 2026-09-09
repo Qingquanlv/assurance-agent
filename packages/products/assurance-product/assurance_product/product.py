@@ -249,10 +249,10 @@ def _authenticate_assurance_composition(
         raise AssuranceCompositionError("composition lock is not ProductLock v3")
 
     bindings = _capability_bindings(composition)
-    if set(bindings) != expected_bindings or len(bindings) != 34:
-        raise AssuranceCompositionError("composition binding set is not the exact 34 semantic contracts")
+    if set(bindings) != expected_bindings:
+        raise AssuranceCompositionError("composition binding set is not the exact semantic contract catalog")
     if _lock_binding_ids(composition) != expected_bindings:
-        raise AssuranceCompositionError("lock binding projection is not the exact 34 semantic contracts")
+        raise AssuranceCompositionError("lock binding projection is not the exact semantic contract catalog")
     if set(bindings) != set(AGENT_EXECUTION_CONTRACTS):
         raise AssuranceCompositionError("composition bindings drifted from semantic Agent contracts")
 

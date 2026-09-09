@@ -11,7 +11,7 @@ from tests.product.test_change_local_output_routing import dual_roots, execute_t
 from tests.verified_generation_fixture import accepted_verified_execution_input
 
 from assurance_generation.contracts.execution_plan import CasePlanContextV1, CaseExecutionPlanSetV1
-from assurance_generation.operations.codegen import CodegenFinalizeHandler, CodegenFixFinalizeHandler
+from assurance_generation.operations.codegen import CodegenFinalizeHandler
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from codegen_fixtures import fake_agent_result  # pyright: ignore[reportMissingImports]
 from planning_fixtures import VALID_LEAFS  # pyright: ignore[reportMissingImports]
@@ -71,7 +71,7 @@ async def _finalize(
     *,
     mutate_mapping: Callable[[dict[str, Any]], None] | None = None,
     source: str | None = None,
-    fix: bool = False,
+    verified_reviewed_mapping: bool = False,
 ):
     project, write_root = dual_roots(tmp_path, "CH-USER-001")
     context, machine_ref, spec_digest = _verified_inputs(project, write_root)
@@ -110,12 +110,17 @@ async def _finalize(
             "validation_profile": "api_db.v1",
             "case_execution_plan_ref": machine_ref.model_dump(mode="json"),
             "case_execution_plan_digest": machine_ref.digest,
+            "reviewed_mapping": _mapping(context, machine_ref, spec_digest)
+            if verified_reviewed_mapping
+            else {
+                key: value
+                for key, value in _mapping(context, machine_ref, spec_digest).items()
+                if key in {"schema_version", "layer", "entries"}
+            },
         }
     )
-    if fix:
-        finalize.update(allowed_paths=[target], baseline_tree_id="0" * 64)
     return await execute_task(
-        CodegenFixFinalizeHandler("api") if fix else CodegenFinalizeHandler("api"),
+        CodegenFinalizeHandler("api"),
         finalize,
         project,
         write_root=write_root,
@@ -123,23 +128,16 @@ async def _finalize(
 
 
 @pytest.mark.asyncio
-async def test_verified_codegen_accepts_only_the_frozen_bridge_entry(tmp_path: Path) -> None:
-    outcome = await _finalize(tmp_path)
+@pytest.mark.parametrize("verified_reviewed_mapping", (False, True))
+async def test_verified_codegen_accepts_only_the_frozen_bridge_entry(
+    tmp_path: Path, verified_reviewed_mapping: bool
+) -> None:
+    outcome = await _finalize(tmp_path, verified_reviewed_mapping=verified_reviewed_mapping)
 
     assert outcome.status == "succeeded", outcome.failure
     output = cast(dict[str, Any], outcome.output)
     assert output["mapping"]["validation_profile"] == "api_db.v1"
     assert output["mapping"]["case_execution_plan_digest"] != output["mapping"]["plan_digest"]
-
-
-@pytest.mark.asyncio
-async def test_verified_codegen_fix_reuses_deterministic_admission(tmp_path: Path) -> None:
-    outcome = await _finalize(tmp_path, fix=True)
-
-    assert outcome.status == "succeeded", outcome.failure
-    output = cast(dict[str, Any], outcome.output)
-    assert output["family"] == "api"
-    assert output["mapping"]["validation_profile"] == "api_db.v1"
 
 
 @pytest.mark.asyncio
@@ -150,6 +148,8 @@ async def test_verified_codegen_fix_reuses_deterministic_admission(tmp_path: Pat
         (lambda value: value["reviewed_case"].update(coverage_epoch=1), "ReviewedCase"),
         (lambda value: value.update(plan_digest="0" * 64), "plan binding"),
         (lambda value: value.update(case_execution_plan_digest="1" * 64), "machine plan"),
+        (lambda value: value["entries"][0].update(symbol="test_reassigned_case"), "reviewed plan"),
+        (lambda value: value.update(schema_case_ids=["TC_USER_CREATE_001"]), "reviewed plan"),
         (
             lambda value: value["case_spec_digests"].update(TC_USER_CREATE_001="2" * 64),
             "spec digest",

@@ -7,6 +7,8 @@
 
 version: 1
 accounts: {}
+journeys:
+  - dept_management_crud
 auth:
   api_admin_token:
     method: token
@@ -18,15 +20,27 @@ auth:
   api_limited_role_user_token:
     method: token
     symbol: tests.api.conftest.limited_role_user_token
+    acquire:
+      source: pytest_fixture
+      provisioner: tests.api.conftest
+    notes: Fixture creates a temporary user with an empty-permission role, logs in,
+      and cleans up inside the test process; no token environment variable required
   api_no_role_superuser_token:
     method: token
     symbol: tests.api.conftest.no_role_superuser_token
+    acquire:
+      source: pytest_fixture
+      provisioner: tests.api.conftest
     notes: Superuser token whose user has no role bindings; used to pin 
-      superuser bypass behavior
+      superuser bypass behavior; fixture creates, logs in, and cleans up locally
   api_no_role_user_token:
     method: token
     symbol: tests.api.conftest.no_role_user_token
-    notes: Non-superuser token whose user has no role bindings
+    acquire:
+      source: pytest_fixture
+      provisioner: tests.api.conftest
+    notes: Non-superuser token whose user has no role bindings; fixture creates,
+      logs in, and cleans up locally
   e2e_admin_login:
     method: login
     symbol: tests.e2e.conftest.e2e_login_admin
@@ -37,7 +51,12 @@ auth:
   e2e_limited_user_login:
     method: login
     symbol: tests.e2e.conftest.e2e_login_limited_user
-    notes: 'depends_on: adapters.e2e.auth.seed_limited_user; create-if-missing: true'
+    acquire:
+      source: environment
+      username_env: QA_LIMITED_USERNAME
+      password_env: QA_LIMITED_PASSWORD
+      provisioner: benchmark-managed-sut
+    notes: 'create-if-missing: true'
 entities:
   dept:
     required_fields:
@@ -46,6 +65,7 @@ entities:
       name_non_empty: true
       name_has_max_length: true
       name_unique: true
+      parent_child_tree_consistency: true
   role:
     required_fields:
       - name
@@ -412,16 +432,21 @@ capabilities:
             make list-based cleanup unavailable.
     performance:
       dept:
+        auth:
+          kind: helper
+          symbol: tests.perf.adapters.admin_auth.acquire_admin_token
+          create-if-missing: false
+          notes: Administrator token acquisition for generated Locust scenarios.
         setup:
           kind: helper
           symbol: tests.perf.adapters.dept_seed.setup
-          create-if-missing: true
+          create-if-missing: false
           notes: Pre-run 3-level dept tree seed for TC_DEPT_PERF_001; manifest 
             at tests/perf/adapters/.manifests/dept_seed.json
         cleanup:
           kind: helper
           symbol: tests.perf.adapters.dept_seed.cleanup
-          create-if-missing: true
+          create-if-missing: false
           notes: Manifest-driven idempotent cleanup via domain cleanup_dept
       menu:
         setup:

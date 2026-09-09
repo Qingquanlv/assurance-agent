@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from tests.product.goal_loop_fixture import GoalLoopScenario, run_goal_loop
 
 
@@ -25,8 +26,13 @@ def test_report_follows_successful_existing_test_repair(tmp_path) -> None:
     assert run.state["status"] == "completed"
 
 
-@pytest.mark.parametrize("disposition", ("blocked", "needs_human"))
-def test_nonrepairable_execution_failure_has_no_normal_report(tmp_path, disposition) -> None:
+@pytest.mark.parametrize(
+    ("disposition", "expected_reports"),
+    (("blocked", 1), ("needs_human", 0)),
+)
+def test_nonrepairable_execution_failure_has_no_normal_report(
+    tmp_path, disposition, expected_reports
+) -> None:
     run = asyncio.run(
         run_goal_loop(
             tmp_path,
@@ -35,7 +41,12 @@ def test_nonrepairable_execution_failure_has_no_normal_report(tmp_path, disposit
     )
 
     assert run.dispatch_count("healing.apply-test-repair") == 0
-    assert run.dispatch_count("quality.report") == 0
+    assert run.dispatch_count("quality.report") == expected_reports
+    assert not run.state.get("report_outcome")
+    if disposition == "blocked":
+        assert run.dispatch_count("quality.issue-analyze") == 1
+        assert ExecuteTailResultV1.model_validate(run.state["tail_result"]).status == "diagnostic"
+        assert run.state["report_refs"]
     assert "retro" not in run.node_visits
     assert run.state["status"] == "failed"
 

@@ -26,8 +26,8 @@
     "routes": {
       "type": "object",
       "additionalProperties": false,
-      "minProperties": 34,
-      "maxProperties": 34
+      "minProperties": 32,
+      "maxProperties": 32
     },
     "permission_profiles": {
       "type": "object",

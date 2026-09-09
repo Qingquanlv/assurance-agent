@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from typing import Literal
 
@@ -10,7 +11,7 @@ from pathlib import PurePosixPath
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from assurance_generation.contracts.families import KNOWN_PLAN_CHECK_IDS, PLAN_CHECK_IDS, LayerName
-from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr, RiskTier
+from assurance_intake.contracts import CaseYamlAuthoring, EvidenceArtifactRefV1, NonEmptyStr, RiskTier
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -170,8 +171,8 @@ class PerformanceScenarioV1(BaseModel):
     scenario_id: NonEmptyStr
     capability: NonEmptyStr
     endpoint: NonEmptyStr
-    p95_ms: float
-    error_rate_max: float
+    p95_ms: float = Field(gt=0, allow_inf_nan=False)
+    error_rate_max: float = Field(ge=0, le=1, allow_inf_nan=False)
 
 
 class PlanResultV1(BaseModel):
@@ -190,6 +191,30 @@ class PlanResultV1(BaseModel):
     case_execution_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     fuzz_strategy: FuzzStrategyV1 | None = None
     performance_scenarios: tuple[PerformanceScenarioV1, ...] = ()
+
+    def require_case_scope(self, cases: CaseYamlAuthoring) -> None:
+        entries = (*cases.added, *cases.modified)
+        if self.case_ids != tuple(sorted(case.case_id for case in entries)):
+            raise ValueError("reviewed plan case_ids must exactly match reviewed cases")
+        if self.family != "performance":
+            return
+        expected = Counter(
+            (
+                scenario.capability,
+                scenario.endpoint,
+                scenario.thresholds.p95_ms,
+                scenario.thresholds.error_rate_max,
+            )
+            for case in entries
+            if case.automation.performance is not None
+            for scenario in (case.automation.performance.scenario,)
+        )
+        actual = Counter(
+            (scenario.capability, scenario.endpoint, scenario.p95_ms, scenario.error_rate_max)
+            for scenario in self.performance_scenarios
+        )
+        if actual != expected:
+            raise ValueError("performance scenarios must match reviewed cases and their thresholds")
 
     @field_validator("output_files")
     @classmethod
@@ -225,6 +250,9 @@ class PlanResultV1(BaseModel):
         if self.family == "performance":
             if not self.performance_scenarios:
                 raise ValueError("performance plan requires scenario identity and numeric thresholds")
+            scenario_ids = [scenario.scenario_id for scenario in self.performance_scenarios]
+            if len(scenario_ids) != len(set(scenario_ids)):
+                raise ValueError("performance scenario_id values must be unique")
             for scenario in self.performance_scenarios:
                 if scenario.capability not in leafs:
                     raise ValueError(f"unknown capability leaf: {scenario.capability}")

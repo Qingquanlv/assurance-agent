@@ -66,6 +66,7 @@ class ScriptedKernel:
     def __init__(self, resolution: AttemptResolution | None = None) -> None:
         self.resolutions: list[AttemptResolution] = [] if resolution is None else [resolution]
         self.seen_key: AttemptKey | None = None
+        self.seen_keys: list[AttemptKey] = []
         self.calls = 0
         self.seen_inputs: list[RunInput] = []
 
@@ -81,6 +82,7 @@ class ScriptedKernel:
     ) -> AttemptResolution:
         del contract, context
         self.seen_key = attempt_key
+        self.seen_keys.append(attempt_key)
         self.calls += 1
         if isinstance(validated_input, RunInput):
             self.seen_inputs.append(validated_input)
@@ -99,7 +101,9 @@ class ScriptedJournal(MemoryAttemptJournal):
         self.kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
 
 
-def _contract() -> TaskAttemptContract[RunInput, RunOutput]:
+def _contract(
+    *, max_attempts: int = 1, interval_seconds: float = 0
+) -> TaskAttemptContract[RunInput, RunOutput]:
     return TaskAttemptContract(
         contract_id="assurance.execution.run.v1",
         owner_id="assurance.execution",
@@ -107,19 +111,21 @@ def _contract() -> TaskAttemptContract[RunInput, RunOutput]:
         input_model=RunInput,
         output_model=RunOutput,
         resources=ResourceClaims(),
-        retry=AttemptRetryPolicy(max_attempts=1),
+        retry=AttemptRetryPolicy(max_attempts=max_attempts, interval_seconds=interval_seconds),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
     )
 
 
-def _resolved():
+def _resolved(*, max_attempts: int = 1, interval_seconds: float = 0):
     class _Executor:
         async def execute(self, validated_input: RunInput, scope: object) -> RunOutput:
             del validated_input, scope
             return OUTPUT
 
-    return resolve_contract(_contract(), executor=_Executor())
+    return resolve_contract(
+        _contract(max_attempts=max_attempts, interval_seconds=interval_seconds), executor=_Executor()
+    )
 
 
 def _state(
@@ -211,6 +217,106 @@ async def test_committed_resolution_publishes_typed_output_and_receipt() -> None
     assert update == {"execution": output, "receipts": (receipt_ref,)}
 
 
+async def test_retryable_failure_uses_contract_budget_and_isolated_attempt_keys() -> None:
+    kernel = ScriptedKernel(
+        PermanentTaskFailure(kind="transient", message="provider TLS failed", retryable=True)
+    )
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    factory = _factory(kernel)
+    node = factory.attempt(
+        _resolved(max_attempts=2),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+
+    update = await node(_state(), runtime=_runtime(kernel))
+
+    assert update == {"execution": OUTPUT, "receipts": (RECEIPT,)}
+    assert kernel.calls == 2
+    assert kernel.seen_keys[0] == _expected_key()
+    assert kernel.seen_keys[1] == derive_attempt_key(
+        invocation_id="inv-1",
+        graph_revision=REVISION,
+        public_entrypoint="execute",
+        semantic_node_id="execution.run",
+        business_activation=BusinessActivation.one_shot(),
+        contract_id="assurance.execution.run.v1",
+        validated_input=RunInput(change_id="chg-1"),
+        technical_attempt=2,
+    )
+    assert kernel.seen_keys[1] != kernel.seen_keys[0]
+
+
+@pytest.mark.parametrize("succeed_on_last_attempt", [False, True])
+async def test_ten_attempts_wait_ten_seconds_only_between_retryable_failures(
+    monkeypatch: pytest.MonkeyPatch, succeed_on_last_attempt: bool
+) -> None:
+    failure = PermanentTaskFailure(
+        kind="transient",
+        message="provider TLS failed",
+        retryable=True,
+    )
+    kernel = ScriptedKernel(failure)
+    for _ in range(8):
+        kernel.push(failure)
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT) if succeed_on_last_attempt else failure)
+    waits: list[tuple[int, float]] = []
+
+    async def record_sleep(seconds: float) -> None:
+        waits.append((kernel.calls, seconds))
+
+    monkeypatch.setattr("asyncio.sleep", record_sleep)
+    factory = _factory(kernel)
+    node = factory.attempt(
+        _resolved(max_attempts=10, interval_seconds=10),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+
+    update = await node(_state(), runtime=_runtime(kernel))
+
+    assert kernel.calls == 10
+    assert len(set(kernel.seen_keys)) == 10
+    assert waits == [(attempt, 10) for attempt in range(1, 10)]
+    assert update == (
+        {"execution": OUTPUT, "receipts": (RECEIPT,)}
+        if succeed_on_last_attempt
+        else {
+            "attempt_failure": {
+                "resolution_kind": "permanent",
+                "kind": "transient",
+                "message": "provider TLS failed",
+                "writes_promoted": False,
+            }
+        }
+    )
+
+
+async def test_nonretryable_failure_ignores_unused_retry_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unexpected_sleep(seconds: float) -> None:
+        pytest.fail(f"nonretryable failure must not wait: {seconds}")
+
+    monkeypatch.setattr("asyncio.sleep", unexpected_sleep)
+    kernel = ScriptedKernel(PermanentTaskFailure(kind="invalid_input", message="bad input"))
+    factory = _factory(kernel)
+    node = factory.attempt(
+        _resolved(max_attempts=10, interval_seconds=10),
+        semantic_node_id="execution.run",
+        activation=select_activation,
+        select=select_input,
+        publish=publish_output,
+    )
+
+    update = await node(_state(), runtime=_runtime(kernel))
+
+    assert kernel.calls == 1
+    assert update["attempt_failure"]["kind"] == "invalid_input"
+
+
 def test_owner_context_rejects_foreign_contract_and_node_site_authority() -> None:
     kernel = ScriptedKernel()
     factory = _factory(kernel)
@@ -297,14 +403,20 @@ async def test_rejected_permanent_and_effect_failure_are_typed_and_never_termina
             assert failure["promotion_receipt"] == RECEIPT
 
 
-async def test_pending_and_indeterminate_emit_system_interrupts_without_terminal() -> None:
+async def test_pending_and_indeterminate_emit_system_interrupts_without_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unexpected_sleep(seconds: float) -> None:
+        pytest.fail(f"unresolved attempt must not retry: {seconds}")
+
+    monkeypatch.setattr("asyncio.sleep", unexpected_sleep)
     pending = PendingTaskResult(wakeup=SystemReference(reference_id="wake-1"))
     indeterminate = IndeterminateTaskResult(reconciliation=SystemReference(reference_id="recon-1"))
     for resolution, kind in ((pending, "system_wake"), (indeterminate, "system_block")):
         kernel = ScriptedKernel(resolution)
         factory = _factory(kernel)
         node = factory.attempt(
-            _resolved(),
+            _resolved(max_attempts=10, interval_seconds=10),
             semantic_node_id="execution.run",
             activation=select_activation,
             select=select_input,
@@ -312,6 +424,7 @@ async def test_pending_and_indeterminate_emit_system_interrupts_without_terminal
         )
         with pytest.raises(GraphInterrupt) as exc_info:
             await node(_state(), runtime=_runtime(kernel))
+        assert kernel.calls == 1
         interrupt = exc_info.value.args[0][0]
         payload = interrupt.value
         assert payload["kind"] == kind

@@ -4,9 +4,36 @@ Capability-owned case-review skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 Do not claim the generation-owned reviewer persona.
 
+## Prepared source observations
+
+The JSON instruction includes `planning_facts`: bounded static observations with
+file digests, exact symbol names/signature shapes, fixture names, and environment
+variable names. Use the indexed paths for direct reads instead of rediscovering
+them. `unknown` and `uninspected_paths` never prove absence; imports, plugins,
+dynamic registrations and transitive environment dependencies may be unresolved.
+Environment names expose no values and do not establish availability or necessity.
+Check original source for behavior, auth semantics and oracle claims. Keep owner
+requirements and frozen assertion intent distinct from observed implementation;
+a source defect must not weaken the expected test behavior.
+
+Independently verify source behavior and owner-defined expectations. Before
+returning findings, trace each defect across cases, proposal and MRC, and supply
+all affected locators in the same review using the existing repair contract.
+A repair must be reviewed again; a target repair count never authorizes a pass.
+
 ## Context Contract
 
 Do not rely on prior conversation context.
+
+### Frozen Explore oracle hard gate
+
+Before judging whether a case has an owner-defined oracle, read the authenticated
+Explore advisory. When a resolved priority hint or open question declares
+`assertion_intent: assert_ideal`, that ideal behavior is a frozen oracle even when
+the owner requirement omits it and current source does not enforce it. The reviewer
+must not remove its covering case and must not mark its MRC row `skipped_by_scope`.
+Treat a source mismatch as the product fault that downstream execution and issue
+analysis are expected to expose.
 
 **Before doing any work:**
 
@@ -54,6 +81,12 @@ Do not rely on prior conversation context.
    Do not stop after the first defect. Include every currently observable finding
    and every bounded repair in the same review artifact so one defect does not
    consume one graph review round.
+   For every added or modified case, cross-check every assertion against the
+   locked owner requirement and independently read product source, then cross-check
+   every trace key against that case's own steps and assertions. On review re-entry,
+   re-review every case in full after checking the requested repairs; a repaired
+   locator is not proof that the rest of the file is valid. Do not defer a currently
+   observable finding to a later review round.
 
 **After completing work:**
 
@@ -743,6 +776,14 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
   fields use `"key":"steps,assertions"` with a comma separator. The form
   `"key":"steps/assertions"` is invalid; `/`, `|`, prose, JSONPath, and YAML
   selectors are not accepted by the repair contract.
+- When the one proven repair is to add an entire missing current-change case,
+  keep its intended `case_id` in both the finding and plan and use `added` as
+  `locator.key`. When the repair is to remove an entire current-change case, keep
+  its exact `case_id` and use the exact current delta section: `added` or
+  `modified` as `locator.key`. Never use `case_id` as `locator.key`: `case_id`
+  identifies the case; it is not a mutable field scope. Do not use this structural
+  authorization to move, reorder, or rewrite another case, or to remove a case
+  required by the owner scope or frozen Explore oracle.
 - For a `proposal.md` finding, `locator.key` MUST be one complete, unique level-two
   ATX heading exactly as written in the file, including the `## ` prefix (for
   example `"key":"## Data Needs"`). A bare title, heading fragment, line range,

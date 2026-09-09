@@ -11,6 +11,7 @@ from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
+    FinalizedIssueAnalysisV1,
     InspectionResultV1,
     IssueAnalysisResultV1,
     IssueTriageResultV1,
@@ -30,7 +31,8 @@ from assurance_quality.contracts.assessment import (
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REPORTER = "assurance-v1-reporter"
 _REVIEWER = "assurance-v1-reviewer"
-_RETRY = AttemptRetryPolicy(max_attempts=1)
+_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
+_TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
@@ -63,7 +65,7 @@ def _job(
             reads=("qa",),
             writes=_paths(*outputs),
         ),
-        retry=_RETRY,
+        retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=_paths(*outputs), finalize=()),
@@ -96,7 +98,7 @@ _JOBS: tuple[tuple[str, str, str, type[Any], tuple[str, ...], type[Any], type[An
         IssueAnalysisResultV1,
         ("inspect/issue-analysis.json",),
         QualitySkillInputV1,
-        None,
+        FinalizedIssueAnalysisV1,
     ),
     (
         "issue-triage",
@@ -157,12 +159,14 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
         writes=(
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
+            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/observations.json",
+            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/issue-evidence-manifest.json",
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",
             "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/verification.json",
         ),
     ),
-    retry=_RETRY,
+    retry=_TASK_RETRY,
     timeout=_TIMEOUT,
     validators=(),
 )

@@ -59,9 +59,9 @@ _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
         "**qa/changes/**/plans/**",
         "**qa/changes/**/proposal.md",
         "**qa/changes/**/requirement.md",
+        "**qa/changes/**/retro/**",
         "**qa/changes/**/review/**",
         "**qa/changes/**/trace/**",
-        "**qa/retro/**",
     ),
     "assurance-v1-executor": ("**qa/changes/**/execution/**",),
     "assurance-v1-explorer": ("**qa/changes/**/explore/**",),
@@ -97,7 +97,7 @@ _EXECUTOR_COMMANDS = (
     (
         "PYTHONDONTWRITEBYTECODE=1 "
         "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
-        f"uv run --isolated pytest -p no:cacheprovider --rootdir {_EXECUTION_VIEW} *"
+        f"uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir {_EXECUTION_VIEW} *"
     ),
     f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile {_EXECUTION_VIEW} *",
 )

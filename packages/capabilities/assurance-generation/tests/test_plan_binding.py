@@ -3,7 +3,6 @@ from pydantic import ValidationError
 
 from assurance_generation.contracts.agent import (
     AgentFinalizeInputV1,
-    CodegenFixInputV1,
     CodegenInputV1,
     PlanInputV1,
 )
@@ -14,6 +13,7 @@ from assurance_generation.contracts.workflow import (
 )
 from assurance_generation.graphs.nodes import select_plan, select_plan_review
 from assurance_generation.graphs.routes import route_families
+from planning_fixtures import valid_plan_result  # pyright: ignore[reportMissingImports]
 
 
 def test_all_authored_sends_preserve_plan_binding() -> None:
@@ -40,7 +40,6 @@ def test_generation_contracts_require_plan_binding() -> None:
         GenerationCycleResultV1,
         PlanInputV1,
         CodegenInputV1,
-        CodegenFixInputV1,
         AgentFinalizeInputV1,
     ):
         assert model.model_fields["plan_digest"].is_required()
@@ -79,6 +78,7 @@ def test_plan_review_selection_carries_published_machine_plan_identity() -> None
             "digest": "c" * 64,
         },
         "case_execution_plan_digest": "c" * 64,
+        "reviewed_plan": {**valid_plan_result("api"), "change_id": "CH-1"},
     }
 
     selected = select_plan_review(state)

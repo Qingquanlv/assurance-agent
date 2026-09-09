@@ -21,6 +21,7 @@ from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.coverage import CoverageGapsDocument, classify_coverage_state
 from assurance_quality.contracts.decisions import classify_inspection_disposition
 from assurance_quality.contracts.metrics import MetricKey, MetricsDocument
+from assurance_quality.contracts.issues import IssueEvidenceManifest, ObservationDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
@@ -107,6 +108,8 @@ def _workspace_input(
     matrix_rows: list[dict[str, object]] | None = None,
     family: Literal["api", "e2e"] = "api",
     candidates: tuple[TestFamily, ...] | None = None,
+    result_status: Literal["passed", "failed"] = "passed",
+    result_message: str = "",
 ) -> dict[str, Any]:
     plan_document, plan_ref = install_plan(
         root,
@@ -197,7 +200,7 @@ def _workspace_input(
     mapping_ref = _write_json(root, MAPPING_PATH, mapping)
     evidence = {
         "schema_version": "1",
-        "status": "passed",
+        "status": result_status,
         "change_id": CHANGE_ID,
         "batch_id": BATCH_ID,
         "executed_at": EXECUTED_AT.isoformat(),
@@ -220,10 +223,10 @@ def _workspace_input(
                     "family": family,
                     **{
                         "command": ["pytest", selector],
-                        "exit_code": 0,
+                        "exit_code": 0 if result_status == "passed" else 1,
                         "collected": 1,
-                        "passed": 1,
-                        "failed": 0,
+                        "passed": 1 if result_status == "passed" else 0,
+                        "failed": 1 if result_status == "failed" else 0,
                         "skipped": 0,
                     },
                 }
@@ -232,9 +235,10 @@ def _workspace_input(
         "results": [
             {
                 "test": selector,
-                "status": "passed",
+                "status": result_status,
                 "duration_ms": 5,
                 "case_id": "TC_ITEM_001",
+                "message": result_message,
             }
         ],
     }
@@ -274,7 +278,7 @@ def _workspace_input(
             "executed_at": EXECUTED_AT.isoformat(),
             "plan_digest": plan_document.plan_digest,
             "plan_ref": plan_ref,
-            "final_status": "PASS",
+            "final_status": "PASS" if result_status == "passed" else "FAIL",
             "evidence_ref": evidence_ref,
             "mapping_ref": mapping_ref,
             "source_refs": [source],
@@ -336,6 +340,44 @@ async def test_materializes_authenticated_case_mapping_execution_and_policy(tmp_
     assert metrics.computed_at == EXECUTED_AT
 
 
+@pytest.mark.asyncio
+async def test_materializes_owned_observations_and_evidence_bundle_for_failed_execution(
+    tmp_path: Path,
+) -> None:
+    request = _workspace_input(
+        tmp_path,
+        result_status="failed",
+        result_message="500 internal server error",
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    observations = ObservationDocument.model_validate_json(
+        result.workspace_bytes[output.observations_ref.path]
+    )
+    manifest = IssueEvidenceManifest.model_validate_json(
+        result.workspace_bytes[output.issue_evidence_manifest_ref.path]
+    )
+    assert observations.change_id == CHANGE_ID
+    assert observations.batch_id == BATCH_ID
+    assert len(observations.observations) == 1
+    assert observations.observations[0].kind == "test_failure"
+    assert observations.observations[0].target == "api"
+    assert output.owned_evidence_ids == (observations.observations[0].observation_id,)
+    assert output.evidence_bundle_digest == manifest.digest
+    manifest_refs = {entry.path: entry.digest for entry in manifest.entries}
+    assert manifest_refs[output.observations_ref.path] == f"sha256:{output.observations_ref.digest}"
+    assert manifest_refs[EVIDENCE_PATH] == f"sha256:{request['execution']['evidence_ref']['digest']}"
+    for ref in (
+        *request["generation"]["source_refs"],
+        *request["reviewed_case"]["case_refs"],
+        *request["reviewed_case"]["preparation_refs"],
+    ):
+        assert manifest_refs[ref["path"]] == f"sha256:{ref['digest']}"
+
+
 def _matrix_row(
     key: str,
     sequence: int,
@@ -386,7 +428,7 @@ async def test_unmapped_required_api_operation_remains_a_repairable_evidence_gap
         json.loads((tmp_path / EVIDENCE_PATH).read_bytes()),
         context={"case_ids": frozenset({"TC_ITEM_001"}), "capability_leafs": frozenset({capability})},
     )
-    failure_facts, _ = build_failure_classification_facts(execution, metrics, adversarial_required=False)
+    failure_facts, _ = build_failure_classification_facts(execution, metrics)
     assert (
         classify_inspection_disposition(facts=failure_facts, coverage_state="repair_required")
         == "coverage_insufficient"
@@ -650,6 +692,46 @@ async def test_passing_e2e_trace_cannot_override_reviewed_api_obligation_layer(t
     gaps = json.loads(result.workspace_bytes[output.gaps_ref.path])
     api_item = next(item for item in gaps["minimum_coverage"]["items"] if item["key"] == CAPABILITY)
     assert api_item["case_ids"] == ["TC_ITEM_002"]
+
+
+@pytest.mark.asyncio
+async def test_api_obligation_accepts_fuzz_as_supplemental_case_evidence(tmp_path: Path) -> None:
+    api_case = _case("TC_ITEM_001", CAPABILITY)
+    fuzz_case = _case("TC_ITEM_FUZZ_001", CAPABILITY)
+    fuzz_case["type"] = "Fuzz"
+    fuzz_case["related_cases"] = ["TC_ITEM_001"]
+    fuzz_case["automation"] = {
+        "required": True,
+        "framework": "schemathesis",
+        "status": "automated",
+        "fuzz": {
+            "endpoints": [{"method": "POST", "path": "/api/v1/items"}],
+            "property": "item.create.payload",
+            "expectations": ["no generated input returns a 5xx response"],
+        },
+    }
+    request = _workspace_input(
+        tmp_path,
+        candidates=("api", "fuzz"),
+        minimum_required_coverage={"api": ["create_item"]},
+        case_entries=[api_case, fuzz_case],
+        matrix_rows=[
+            _matrix_row(
+                "create_item",
+                1,
+                case_ids=("TC_ITEM_001", "TC_ITEM_FUZZ_001"),
+            )
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    gaps = CoverageGapsDocument.model_validate(json.loads(result.workspace_bytes[output.gaps_ref.path]))
+    assert gaps.minimum_coverage is not None
+    obligation = next(item for item in gaps.minimum_coverage.items if item.key == "create_item")
+    assert obligation.case_ids == ("TC_ITEM_001", "TC_ITEM_FUZZ_001")
 
 
 @pytest.mark.asyncio

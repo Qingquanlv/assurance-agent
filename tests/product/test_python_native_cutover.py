@@ -72,7 +72,7 @@ def all_agent_contracts_resolve_with_raw_executor() -> bool:
     from assurance_product.agent_contracts import all_feature_agent_contracts
 
     contracts = all_feature_agent_contracts()
-    if len(contracts) != 34:
+    if len(contracts) != 32:
         return False
     source = (
         _REPO_ROOT
@@ -162,8 +162,8 @@ def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact: BootArtifact)
     import assurance_product.agent_contracts as agent_contracts
 
     assert set(boot_artifact.attempt_contracts) == all_semantic_contract_ids()
-    assert count_semantic_agent_contracts() == 34
-    assert count_raw_agent_runtime_bindings() == 34
+    assert count_semantic_agent_contracts() == 32
+    assert count_raw_agent_runtime_bindings() == 32
     assert all_agent_contracts_resolve_with_raw_executor()
     assert not registered_ids_with_prefix(_AGENT_PREFIX)
     assert not hasattr(agent_contracts, "LEGACY_AGENT_PHASE_ALIASES")
@@ -227,4 +227,4 @@ def test_semantic_agent_ids_match_product_contracts() -> None:
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     assert SEMANTIC_AGENT_CONTRACT_IDS == frozenset(AGENT_EXECUTION_CONTRACTS)
-    assert len(SEMANTIC_AGENT_CONTRACT_IDS) == 34
+    assert len(SEMANTIC_AGENT_CONTRACT_IDS) == 32

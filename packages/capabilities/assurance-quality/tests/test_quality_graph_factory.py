@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import fields
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,6 +20,7 @@ from assurance_quality.contracts.metrics import (
 )
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.graphs.factory import QualityGraphs, build_quality_graphs
+from assurance_quality.graphs.nodes import publish_issue_analysis, select_quality, activation_issue_analysis
 from assurance_quality.operations.metrics import BoundRisk
 from graph_engine.attempts.contracts import TaskAttemptContract
 from graph_engine.attempts.keys import BusinessActivation
@@ -97,6 +98,8 @@ def quality_graph_input(
     payload: dict[str, object] = {
         "change_id": "CH-DEMO-001",
         "batch_id": "20260822T000000Z",
+        "owned_evidence_ids": ["OBS-DEMO-001"],
+        "evidence_bundle_digest": f"sha256:{_SHA}",
         "capability_leafs": ["entities.item.create"],
         "allowed_artifact_paths": ["qa/changes"],
         "evidence_refs": [{"path": "qa/changes/CH-DEMO-001/execution/result.json", "digest": _SHA}],
@@ -107,6 +110,7 @@ def quality_graph_input(
         "plan_ref": _plan_ref(),
         **_skill_digests(),
     }
+    payload["execution_evidence_digest"] = payload.pop("execution_digest")
     if activation is not None:
         payload["activation"] = activation
     if coverage_state is not None:
@@ -219,6 +223,13 @@ def _assessment_output() -> dict[str, object]:
             "path": "qa/changes/CH-DEMO-001/execution/execute-result.json",
             "digest": _SHA,
         },
+        "observations_ref": {"path": f"{base}/observations.json", "digest": _SHA},
+        "issue_evidence_manifest_ref": {
+            "path": f"{base}/issue-evidence-manifest.json",
+            "digest": _SHA,
+        },
+        "owned_evidence_ids": ["OBS-DEMO-001"],
+        "evidence_bundle_digest": f"sha256:{_SHA}",
         "healing_ref": None,
         "issue_ref": None,
     }
@@ -306,6 +317,7 @@ def _inspect_output() -> dict[str, object]:
             "blocking_failure": False,
             "needs_human": False,
             "repairable_failure": False,
+            "analysis_required": False,
         },
         "fact_baseline_ref": {
             "path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json",
@@ -323,6 +335,84 @@ def _issue_output(*, classification: str = "test", fix_eligible: bool = True) ->
         "rounds_budget": 2,
         "rounds_used": 0,
     }
+
+
+def _finalized_issue_analysis_output() -> dict[str, object]:
+    return {
+        "agent_result": {
+            "schema_version": "1.0",
+            "change_id": "CH-DEMO-001",
+            "batch_id": "20260822T000000Z",
+            "evidence_bundle_digest": f"sha256:{_SHA}",
+            "status": "completed",
+            "candidate_count": 1,
+            "candidates": [
+                {
+                    "candidate_id": "CAND-1",
+                    "observation_ids": ["OBS-DEMO-001"],
+                    "proposed": {
+                        "title": "Generated test is incorrect",
+                        "classification": "test_bug",
+                        "severity": "high",
+                        "root_cause_hypothesis": "test expectation differs from the contract",
+                    },
+                    "affected_surface": {"kind": "test", "value": "tests/a.py"},
+                    "fingerprint_inputs": {"surface": "tests/a.py", "symptom": "assertion failed"},
+                    "possible_problem_ids": [],
+                    "confidence": 0.9,
+                    "recommended_action": "repair test",
+                }
+            ],
+            "reason": None,
+        },
+        "candidate_digest": f"sha256:{_SHA}",
+        "issue_analysis_ref": {
+            "path": "qa/changes/CH-DEMO-001/inspect/issue-analysis.json",
+            "digest": _SHA,
+        },
+    }
+
+
+def test_incomplete_issue_analysis_preserves_evidence_without_authorizing_repair() -> None:
+    output = _finalized_issue_analysis_output()
+    agent_result = cast(dict[str, object], output["agent_result"])
+    agent_result.update(status="pending", candidate_count=0, candidates=[], reason="awaiting evidence")
+    output["candidate_digest"] = None
+
+    published = publish_issue_analysis(quality_graph_input(), output, _receipt())
+
+    assert published["evidence_refs"] == [output["issue_analysis_ref"]]
+    assert published["classification"] == "unknown"
+    assert published["fix_eligible"] is False
+    issue_analysis = cast(Mapping[str, object], published["issue_analysis"])
+    assert issue_analysis["candidate_digest"] is None
+
+
+def test_issue_selection_preserves_evidence_ownership_and_batch_activation() -> None:
+    state = quality_graph_input()
+    selected = select_quality(state)
+    assert selected.owned_evidence_ids == ("OBS-DEMO-001",)
+    assert selected.evidence_bundle_digest == f"sha256:{_SHA}"
+    assert selected.execution_digest == "e" * 64
+    first = activation_issue_analysis(state)
+    assert activation_issue_analysis(dict(state)) == first
+    assert activation_issue_analysis({**state, "batch_id": "20260908T010000Z"}) != first
+
+
+def test_issue_analysis_mixed_product_and_test_bugs_never_authorizes_test_repair() -> None:
+    from copy import deepcopy
+
+    output = _finalized_issue_analysis_output()
+    result = cast(dict, output["agent_result"])
+    candidates = cast(list, result["candidates"])
+    product_bug = deepcopy(candidates[0])
+    product_bug["candidate_id"] = "CAND-2"
+    product_bug["proposed"].update(classification="product_bug", severity="low")
+    candidates.append(product_bug)
+    result["candidate_count"] = 2
+    published = publish_issue_analysis(quality_graph_input(), output, _receipt())
+    assert published["classification"] == "product_bug"
+    assert published["fix_eligible"] is False
 
 
 def _report_output() -> dict[str, object]:
@@ -460,7 +550,7 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     receipt_payload = inspection_outcome["inspection_receipt"]
     assert isinstance(receipt_payload, dict)
     assert receipt_payload["receipt_id"] == _RECEIPT_ID
-    assert len(evidence_refs) == 6
+    assert len(evidence_refs) == 8
     assert result.terminal is not None
 
 
@@ -501,7 +591,16 @@ async def test_issue_exports_are_independently_callable(
     result = await harness.run(
         graph,
         input=quality_graph_input(classification="test"),
-        script={semantic_node_id: [committed(_issue_output(), _receipt())]},
+        script={
+            semantic_node_id: [
+                committed(
+                    _finalized_issue_analysis_output()
+                    if graph_name in {"issue_analyze", "issue_reconcile"}
+                    else _issue_output(),
+                    _receipt(),
+                )
+            ]
+        },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [semantic_node_id]
     assert [call.contract_id for call in result.semantic_calls] == [contract_id]

@@ -8,7 +8,7 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
     VALID_LEAFS,
     family_case_id,
-    fake_agent_result,
+    fake_agent_result as planning_agent_result,
     plan_input,
     reviewed_cases,
     valid_plan_result,
@@ -61,6 +61,12 @@ def mapping_document(family: str, *, target_file: str | None = None) -> dict[str
     }
 
 
+def fake_agent_result(structured_result: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    result = planning_agent_result(structured_result, **kwargs)
+    result["reviewed_mapping"] = mapping_document(structured_result["layer"])
+    return result
+
+
 def codegen_result(
     files: list[str],
     *,
@@ -96,20 +102,7 @@ def codegen_input(family: str) -> dict[str, Any]:
         "reviewed_plan": valid_plan_result(family),
         "reviewed_cases": reviewed_cases(family),
         "family_constraints": payload["family_constraints"],
-        "baseline_tree_id": "0" * 64,
     }
-
-
-def codegen_fix_input(family: str, *, allowed_paths: list[str] | None = None) -> dict[str, Any]:
-    payload = codegen_input(family)
-    paths = allowed_paths or [family_test_file(family)]
-    payload["allowed_paths"] = paths
-    payload["approved_proposal"] = {
-        "proposal_id": f"FIX-{family.upper()}-001",
-        "status": "approved",
-        "files_to_modify": paths,
-    }
-    return payload
 
 
 def generated_candidate(family: str, extra_file: str | None = None) -> CandidateWriteSet:
@@ -147,7 +140,6 @@ __all__ = [
     "FAMILY_TEST_ROOTS",
     "VALID_LEAFS",
     "candidate_with",
-    "codegen_fix_input",
     "codegen_input",
     "codegen_result",
     "family_case_id",

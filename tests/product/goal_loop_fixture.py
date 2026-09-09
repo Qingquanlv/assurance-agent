@@ -26,14 +26,17 @@ from langgraph.graph import END, START, StateGraph
 
 from tests.product.test_product_stategraph_flow import (
     _applied,
+    _analysis_result,
     _build_context,
     _case,
+    _diagnostic_report,
     _echo,
     _execution,
     _flow_features,
     _generation,
     _inspection,
     _public_input,
+    _ref,
     _report,
     _reviewed,
 )
@@ -373,7 +376,26 @@ def _scenario_features(
             checkpointer=checkpointer,
         ),
         issue_review=_echo({}),
-        issue_analyze=_echo({}),
+        issue_analyze=_recording_graph(
+            root=root,
+            label="issue-analyze",
+            semantic_id="quality.issue-analyze",
+            updates=(
+                {
+                    **_analysis_result("product_bug"),
+                    "classification": "product_bug",
+                    "fix_eligible": False,
+                    "evidence_refs": [
+                        _ref("qa/changes/CH-DEMO-001/inspect/issue-analysis.json").model_dump(mode="json")
+                    ],
+                    "status": "passed",
+                },
+            ),
+            visits=visits,
+            dispatches=dispatches,
+            attempt_keys=attempt_keys,
+            select_index=lambda state: 0,
+        ),
         issue_reconcile=_echo({}),
         report=_recording_graph(
             root=root,
@@ -382,7 +404,15 @@ def _scenario_features(
             updates=(
                 {"status": "failed", "attempt_failure": {"kind": "runtime"}}
                 if scenario.report_fails
-                else _bind_plan(_report(report_epoch), plan, plan_ref),
+                else _bind_plan(
+                    (
+                        _diagnostic_report(report_epoch)
+                        if scenario.execution_failures and scenario.execution_disposition == "blocked"
+                        else _report(report_epoch)
+                    ),
+                    plan,
+                    plan_ref,
+                ),
             ),
             visits=visits,
             dispatches=dispatches,

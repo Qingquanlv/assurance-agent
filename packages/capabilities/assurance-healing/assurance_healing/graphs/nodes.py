@@ -119,6 +119,7 @@ def select_failure(state: Mapping[str, object]) -> FixProposalInputV1:
             "policy_digest": state["policy_digest"],
             "mapping_paths": state["mapping_paths"],
             "execution_evidence_digest": state["execution_evidence_digest"],
+            "issue_analysis_ref": state.get("issue_analysis_ref"),
         }
     )
 

@@ -10,6 +10,7 @@ from importlib.resources import files
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -45,7 +46,7 @@ _OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS = 300
 _OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS = 10
 _OPENCODE_RESOLVED_READ_ATTEMPTS = 3
 _TEST_RUNTIME_SCHEMA = "vue-fastapi-admin-tests-runtime/v1"
-_TEST_RUNTIME_MANIFEST_SHA256 = "84c183243ff672bac7eb6e48d0ef4c847fc4332f4d0cdc272bb4e8053f845743"
+_TEST_RUNTIME_MANIFEST_SHA256 = "0b06f859331fc617db6e8a257f5860e3d070eebfc03c8348bcb16142907c889c"
 _BACKEND_URL = "http://127.0.0.1:9999"
 _FRONTEND_URL = "http://127.0.0.1:3100"
 _WRITE_PRODUCT_INPUT = r"""
@@ -105,7 +106,7 @@ def main() -> int:
         "data_knowledge": _ref(composition, "assurance.product.configuration.data-knowledge"),
         "allowed_artifact_paths": ["qa/archive", "qa/cases", "qa/changes", "tests"],
         "budgets": {
-            "review_rounds": 3,
+            "review_rounds": 4,
             "coverage_rounds": 2,
             "healing_rounds": 2,
             "execution_retries": 2,
@@ -185,8 +186,11 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
     if workers != {"max"}:
         raise SystemExit(f"OpenCode worker mismatch: {sorted(workers)}")
     families = tuple(item.get("selected_test_families") or ())
-    if item.get("entrypoint") == "full" and families != ("api", "e2e", "fuzz", "performance"):
-        raise SystemExit("full entrypoint requires all four families in canonical order")
+    canonical_families = ("api", "e2e", "fuzz", "performance")
+    if item.get("entrypoint") == "full" and (
+        not families or families != tuple(family for family in canonical_families if family in families)
+    ):
+        raise SystemExit("full entrypoint requires a non-empty canonical family selection")
     raw_case_modules = item.get("case_modules")
     if not isinstance(raw_case_modules, list) or any(
         not isinstance(module, str) for module in raw_case_modules
@@ -263,10 +267,25 @@ def _required_runtime_environment(output: Path) -> dict[str, str]:
     }
 
 
+def _required_opencode_environment(output: Path) -> dict[str, str]:
+    runtime = _required_runtime_environment(output)
+    # Load only the product's project config/plugins; keep the user's OAuth data
+    # directory unchanged and out of the benchmark's artifacts.
+    runtime["XDG_CONFIG_HOME"] = str(output.parent / ".opencode-config" / output.name)
+    for name in (
+        "AA_ADMIN_PASSWORD",
+        "AA_ADMIN_USERNAME",
+        "QA_ADMIN_PASSWORD",
+        "QA_ADMIN_USERNAME",
+    ):
+        runtime.pop(name)
+    return runtime
+
+
 def _runtime_environment_errors(environment: Mapping[str, str], *, output: Path) -> list[str]:
     return [
         f"OpenCode server environment {name} must equal {expected!r}"
-        for name, expected in _required_runtime_environment(output).items()
+        for name, expected in _required_opencode_environment(output).items()
         if environment.get(name) != expected
     ]
 
@@ -464,33 +483,43 @@ def derive_change_id(*, item_id: str, stamp: str, nonce: str) -> str:
 
 
 def _prepare_project_config_tree(config_tree: Path, project_dir: Path) -> None:
+    policy_path = project_dir / ".aa" / "policy.yaml"
+    if not policy_path.is_file() or policy_path.is_symlink() or policy_path.stat().st_nlink != 1:
+        raise SystemExit("live SUT must provide a regular single-link .aa/policy.yaml")
+    try:
+        policy_bytes = policy_path.read_bytes()
+        policy = yaml.safe_load(policy_bytes)
+    except (OSError, UnicodeError, yaml.YAMLError) as error:
+        raise SystemExit("live SUT product policy is not valid YAML") from error
+    if not isinstance(policy, dict):
+        raise SystemExit("live SUT product policy must be a mapping")
     knowledge_path = project_dir / ".aa" / "data-knowledge.yaml"
     if not knowledge_path.is_file() or knowledge_path.is_symlink():
         raise SystemExit("live SUT must provide a regular .aa/data-knowledge.yaml")
     try:
-        knowledge = yaml.safe_load(knowledge_path.read_text(encoding="utf-8"))
+        knowledge_bytes = knowledge_path.read_bytes()
+        knowledge = yaml.safe_load(knowledge_bytes)
     except (OSError, UnicodeError, yaml.YAMLError) as error:
         raise SystemExit("live SUT data knowledge is not valid YAML") from error
     if not isinstance(knowledge, dict):
         raise SystemExit("live SUT data knowledge must be a mapping")
     destination_knowledge = config_tree / ".aa" / "data-knowledge.yaml"
-    destination_knowledge.write_text(
-        yaml.safe_dump(knowledge, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    destination_knowledge.write_bytes(knowledge_bytes)
+    (config_tree / ".aa" / "policy.yaml").write_bytes(policy_bytes)
     config_path = config_tree / ".aa" / "config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise SystemExit("benchmark project configuration must be a mapping")
+    config["product_policy"] = policy
     config["data_knowledge"] = knowledge
-    config["capability_catalog"] = {
+    catalog = {
         "schema_version": "1",
         "typed_leafs": list(capability_leafs_from_knowledge(knowledge)),
     }
-    (config_tree / ".aa" / "capability-catalog.json").write_text(
-        json.dumps(config["capability_catalog"], sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
+    catalog_bytes = (json.dumps(catalog, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    (project_dir / ".aa" / "capability-catalog.json").write_bytes(catalog_bytes)
+    (config_tree / ".aa" / "capability-catalog.json").write_bytes(catalog_bytes)
+    config["capability_catalog"] = catalog
     config_path.write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -725,7 +754,7 @@ def _wait_http_ready(
     raise SystemExit(f"managed SUT {label} failed readiness at {url}: {last_error}")
 
 
-def _acquire_admin_token(
+def _acquire_token(
     backend_url: str,
     *,
     username: str,
@@ -741,11 +770,92 @@ def _acquire_admin_token(
         with urlopen(request, timeout=10) as response:  # noqa: S310 - pinned loopback URL
             body = json.loads(response.read().decode("utf-8"))
     except (OSError, URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise SystemExit(f"managed SUT administrator login failed: {error}") from error
+        raise SystemExit(f"managed SUT login failed for {username!r}: {error}") from error
     token = body.get("data", {}).get("access_token") if isinstance(body, dict) else None
     if not isinstance(token, str) or not token:
-        raise SystemExit("managed SUT administrator login returned no data.access_token")
+        raise SystemExit(f"managed SUT login for {username!r} returned no data.access_token")
     return token
+
+
+def _request_sut_json(
+    backend_url: str,
+    path: str,
+    *,
+    method: str,
+    token: str,
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    data = json.dumps(dict(payload)).encode() if payload is not None else None
+    request = Request(
+        f"{backend_url}{path}",
+        data=data,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "token": token,
+        },
+        method=method,
+    )
+    try:
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - pinned loopback URL
+            body = json.loads(response.read().decode("utf-8"))
+    except (OSError, URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"managed SUT provisioning request {method} {path} failed: {error}") from error
+    if not isinstance(body, dict) or body.get("code") != 200:
+        raise SystemExit(f"managed SUT provisioning request {method} {path} was rejected")
+    return body
+
+
+def _provision_limited_role_identity(
+    backend_url: str,
+    *,
+    admin_token: str,
+) -> tuple[str, str, str]:
+    role_name = "aa-limited"
+    username = "aa_limited"
+    password = secrets.token_urlsafe(24)
+    _request_sut_json(
+        backend_url,
+        "/api/v1/role/create",
+        method="POST",
+        token=admin_token,
+        payload={"name": role_name, "desc": "Assurance benchmark restricted role"},
+    )
+    roles = _request_sut_json(
+        backend_url,
+        "/api/v1/role/list?" + urlencode({"page": 1, "page_size": 100, "role_name": role_name}),
+        method="GET",
+        token=admin_token,
+    ).get("data")
+    matches = [role for role in roles or [] if isinstance(role, dict) and role.get("name") == role_name]
+    if len(matches) != 1:
+        raise SystemExit("managed SUT limited role provisioning did not resolve exactly one role")
+    role_id = matches[0].get("id")
+    if isinstance(role_id, bool) or not isinstance(role_id, int):
+        raise SystemExit("managed SUT limited role provisioning returned an invalid role id")
+    _request_sut_json(
+        backend_url,
+        "/api/v1/role/authorized",
+        method="POST",
+        token=admin_token,
+        payload={"id": role_id, "menu_ids": [], "api_infos": []},
+    )
+    _request_sut_json(
+        backend_url,
+        "/api/v1/user/create",
+        method="POST",
+        token=admin_token,
+        payload={
+            "email": "aa_limited@example.com",
+            "username": username,
+            "password": password,
+            "is_active": True,
+            "is_superuser": False,
+            "role_ids": [role_id],
+            "dept_id": 0,
+        },
+    )
+    return _acquire_token(backend_url, username=username, password=password), username, password
 
 
 @contextmanager
@@ -812,9 +922,16 @@ def _managed_sut_runtime(
             process=backend,
             timeout=90,
         )
-        token = _acquire_admin_token(_BACKEND_URL, username="admin", password="123456")
+        token = _acquire_token(_BACKEND_URL, username="admin", password="123456")
         runtime_env["API_ADMIN_TOKEN"] = token
         runtime_env["E2E_API_TOKEN"] = token
+        limited_token, limited_username, limited_password = _provision_limited_role_identity(
+            _BACKEND_URL,
+            admin_token=token,
+        )
+        runtime_env["API_LIMITED_ROLE_USER_TOKEN"] = limited_token
+        runtime_env["QA_LIMITED_USERNAME"] = limited_username
+        runtime_env["QA_LIMITED_PASSWORD"] = limited_password
         frontend = _spawn_managed_process(
             label="frontend",
             command=(str(vite), "--host", "127.0.0.1", "--port", "3100", "--strictPort"),

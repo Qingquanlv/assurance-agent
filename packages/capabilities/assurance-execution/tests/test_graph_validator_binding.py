@@ -265,8 +265,7 @@ def _assert_shipped_inventory(contribution: PluginContribution) -> None:
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
     assert _TEST_CONTRACT_ID not in {item.contract_id for item in contribution.attempt_contracts}
     assert _TEST_CONTRACT_ID not in all_feature_agent_contracts()
-    assert len(all_feature_agent_contracts()) == 34
-    assert len(all_feature_agent_contracts()) == 34
+    assert len(all_feature_agent_contracts()) == 32
     assert _EVIDENCE_VALIDATOR_ID in contribution.commit_validators
 
 

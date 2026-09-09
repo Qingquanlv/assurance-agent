@@ -209,14 +209,7 @@ class GenerationState(CheckpointBridgeState, total=False):
     human_review_required: bool
     human_action: str
     codegen_readiness: str
-    codegen_verdict: str
-    needs_fix: bool
-    repair_allowed_paths: list[str]
     reviewed_plan: dict[str, object]
-    reviewed_cases: dict[str, object]
-    family_constraints: dict[str, object]
-    baseline_tree_id: str
-    approved_proposal: dict[str, object]
     artifacts: list[dict[str, object]]
     plan_round_inbox: Annotated[PlanRoundInbox, merge_plan_round_inbox]
     current_trigger: PlanRoundArrival | None

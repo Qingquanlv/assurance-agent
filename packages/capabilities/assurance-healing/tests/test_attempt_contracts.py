@@ -66,7 +66,8 @@ def test_healing_owns_three_agent_contracts() -> None:
         expected_output_model = VerifiedTestRepairV1 if base == "apply-test-repair" else result_model
         assert contract.output_model is expected_output_model
         assert contract.validators == ()
-        assert contract.retry.max_attempts == 1
+        assert contract.retry.max_attempts == 10
+        assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
         assert set(claims.runtime) | set(claims.finalize) == set(contract.resources.writes)

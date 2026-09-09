@@ -19,14 +19,15 @@ from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     IssueEvidenceSlice,
     RetroBuildSlicesInputV1,
+    RetroCollectInput,
     SignalDocumentV3,
     WorkflowEvidenceSlice,
 )
 from assurance_improvement.operations.retro import (
     AssembleRetroContextHandler,
+    reconcile_improvements,
     ReconcileImprovementsHandler,
     RetroCollectHandler,
-    RetroCollectInput,
 )
 from tests.product.test_change_local_output_routing import execute_task
 
@@ -225,11 +226,8 @@ async def test_three_analyses_assemble_context_before_reconcile() -> None:
         current=empty,
         ts="2026-08-22T00:00:00Z",
     )
-    reconcile = await execute_task(
-        ReconcileImprovementsHandler(),
-        json_value(reconcile_input.model_dump(mode="json")),
-    )
-    assert reconcile.status == "succeeded"
+    reconcile = reconcile_improvements(reconcile_input)
+    assert reconcile["last_seq"] == 0
 
 
 @pytest.mark.asyncio
@@ -270,18 +268,13 @@ async def test_reconcile_receives_context_candidates_and_current_projection() ->
     assert selected.context.retro_id == RETRO_ID
     assert len(selected.candidates) == 1
     assert selected.current.last_seq == 0
-    outcome = await execute_task(
-        ReconcileImprovementsHandler(),
-        json_value(selected.model_dump(mode="json")),
-    )
-    assert outcome.status == "succeeded"
-    payload = as_object(outcome.output)
-    assert payload["last_seq"] >= 1
+    payload = reconcile_improvements(selected)
+    assert as_object(payload)["last_seq"] >= 1
     assert payload["improvements"]
 
 
 @pytest.mark.asyncio
-async def test_final_retro_agent_receives_the_reconciled_typed_value() -> None:
+async def test_reconciliation_returns_a_complete_typed_projection() -> None:
     collected = select_retro_collect(complete_collect_payload())
     issue = select_analysis_slice(collected, domain="issue")
     workflow = select_analysis_slice(collected, domain="workflow")
@@ -312,17 +305,13 @@ async def test_final_retro_agent_receives_the_reconciled_typed_value() -> None:
         ),
         ts="2026-08-22T00:00:00Z",
     )
-    outcome = await execute_task(
-        ReconcileImprovementsHandler(),
-        json_value(selected.model_dump(mode="json")),
-    )
-    assert outcome.status == "succeeded"
+    payload = reconcile_improvements(selected)
     ledger = ImprovementLedgerProjection.model_validate(
         {
-            "schema_version": as_object(outcome.output)["schema_version"],
-            "last_seq": as_object(outcome.output)["last_seq"],
-            "improvements": as_object(outcome.output)["improvements"],
-            "by_fingerprint": as_object(outcome.output)["by_fingerprint"],
+            "schema_version": payload["schema_version"],
+            "last_seq": payload["last_seq"],
+            "improvements": payload["improvements"],
+            "by_fingerprint": payload["by_fingerprint"],
         }
     )
     received = select_retro_agent(ledger)

@@ -35,9 +35,17 @@ from assurance_product.repair_authorization import RepairAuthorizationIssuer
 from assurance_product.graphs.tail_contracts import (
     ExecuteTailInputV1,
     ExecuteTailResultV1,
+    diagnostic_tail_result,
     reported_tail_result,
 )
-from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
+from assurance_quality.contracts.assessment import (
+    AssessmentInputsV1,
+    InspectionOutcomeV1,
+    ReportOutcomeV1,
+)
+from assurance_quality.contracts.agent import FinalizedIssueAnalysisV1
+from assurance_quality.contracts.decisions import classify_issue_candidates
+from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.canonical import JSONValue, canonical_digest
 
@@ -194,6 +202,7 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
     current_reviewed = state.get("reviewed_case")
     if current_reviewed is not None and ReviewedCaseV1.model_validate(current_reviewed) != reviewed:
         raise ValueError("execution does not use the current Reviewed Case")
+    batch_token = canonical_digest(execution.batch_id)[:16]
     feature_input = {
         "change_id": payload.change_id,
         "plan_digest": generation.plan_digest,
@@ -204,6 +213,8 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "rounds_budget": payload.budgets.coverage_rounds,
         "rounds_used": int(state.get("coverage_epoch", 0)),
         "evidence_refs": [],
+        "issue_analysis": None,
+        "issue_analysis_ref": None,
         "execution_status": execution_status,
         "batch_id": execution.batch_id,
         "coverage_epoch": execution.coverage_epoch,
@@ -217,7 +228,7 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "issue_ref": state.get("issue_ref"),
         "activation": {
             "kind": "trigger",
-            "value": f"inspect.{execution.coverage_epoch}.{execution.batch_id}.{execution.repair_round}",
+            "value": f"inspect.{execution.coverage_epoch}.{batch_token}.{execution.repair_round}",
         },
     }
     public = payload.model_dump(mode="json", exclude={"retro_window"})
@@ -263,6 +274,18 @@ def _adapt_repair_failure(
             "repair_authorization": authorization.model_dump(mode="json"),
         }
     allowed_roots = tuple(sorted({path.split("/", 1)[0] for path in allowed_paths}))
+    inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+    classification = "test"
+    analysis_ref = None
+    if inspection.disposition == "analysis_required":
+        analysis = _current_issue_analysis(state)
+        summary = classify_issue_candidates(analysis.agent_result)
+        if not summary.fix_eligible:
+            raise ValueError("issue analysis does not authorize a test repair")
+        classification = summary.classification
+        analysis_ref = _issue_analysis_ref(state).model_dump(mode="json")
+    elif inspection.disposition != "repairable_execution_failure":
+        raise ValueError("inspection does not authorize a test repair")
     feature_input = {
         "change_id": payload.change_id,
         "plan_digest": generation.plan_digest,
@@ -270,7 +293,7 @@ def _adapt_repair_failure(
         "capability_leafs": list(payload.capability_leafs),
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
         "budgets": payload.budgets.model_dump(mode="json"),
-        "classification": "test",
+        "classification": classification,
         "fix_eligible": True,
         "kind": "failure",
         "rounds_budget": payload.budgets.healing_rounds,
@@ -287,6 +310,7 @@ def _adapt_repair_failure(
         "mapping_paths": [generation.mapping_ref.path],
         "execution_evidence_digest": execution_digest,
         "coverage_epoch": generation.coverage_epoch,
+        "issue_analysis_ref": analysis_ref,
         "reviewed_case": reviewed.model_dump(mode="json"),
         "mapping_ref": generation.mapping_ref.model_dump(mode="json"),
         "source_refs": [ref.model_dump(mode="json") for ref in generation.source_refs],
@@ -310,7 +334,121 @@ async def _adapt_authorized_repair_failure(
     return _adapt_repair_failure(state, authorization=await issuer.issue(state))
 
 
-def adapt_report(state: ProductState) -> dict[str, object]:
+def adapt_issue_analysis(state: ProductState) -> dict[str, object]:
+    payload = _input_from_state(state)
+    inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    if inspection.disposition not in {"blocked", "analysis_required"}:
+        raise ValueError("issue analysis requires a failed inspection")
+    if not assessment.owned_evidence_ids:
+        raise ValueError("blocked inspection has no owned observations")
+    generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+    # Fact baseline is produced after the immutable analysis bundle. Do not expose
+    # that unbound document to the analyzer as if it were authenticated evidence.
+    fact_baseline_path = f"qa/changes/{inspection.change_id}/facts/fact-baseline.json"
+    refs = {
+        (ref.path, ref.digest): ref
+        for ref in (
+            *inspection.assessment_refs,
+            assessment.observations_ref,
+            assessment.issue_evidence_manifest_ref,
+            inspection.mapping_ref,
+            inspection.reviewed_case.review_ref,
+            *inspection.reviewed_case.case_refs,
+            *inspection.reviewed_case.preparation_refs,
+            *generation.source_refs,
+            *generation.plan_refs,
+        )
+        if ref.path != fact_baseline_path
+    }
+    feature_input = {
+        "change_id": payload.change_id,
+        "batch_id": inspection.batch_id,
+        "capability_leafs": list(payload.capability_leafs),
+        "allowed_artifact_paths": [path for path, _digest in sorted(refs)],
+        "owned_evidence_ids": list(assessment.owned_evidence_ids),
+        "evidence_bundle_digest": assessment.evidence_bundle_digest,
+        "execution_evidence_digest": assessment.execution_digest,
+        "healing_digest": assessment.healing_ref.digest if assessment.healing_ref is not None else None,
+        "trace_digest": assessment.trace_ref.digest,
+        "coverage_digest": assessment.gaps_ref.digest,
+        "metrics_digest": assessment.metrics_ref.digest,
+        "case_digest": inspection.reviewed_case.review_ref.digest,
+        "plan_digest": inspection.plan_digest,
+        "plan_ref": inspection.plan_ref.model_dump(mode="json"),
+        "mapping_digest": inspection.mapping_ref.digest,
+        "issue_digest": assessment.issue_ref.digest if assessment.issue_ref is not None else None,
+        "evidence_refs": [ref.model_dump(mode="json") for ref in refs.values()],
+        "issue_analysis": None,
+        "issue_analysis_ref": None,
+    }
+    return {**feature_input, "feature_input": feature_input}
+
+
+def _issue_analysis_ref(state: ProductState) -> EvidenceArtifactRefV1:
+    if state.get("attempt_failure"):
+        raise ValueError("failed issue analysis cannot publish evidence")
+    change_id = str(state.get("change_id"))
+    expected = f"qa/changes/{change_id}/inspect/issue-analysis.json"
+    raw_refs = state.get("evidence_refs")
+    if not isinstance(raw_refs, list):
+        raise ValueError("issue analysis evidence refs must be a list")
+    matches = [EvidenceArtifactRefV1.model_validate(ref) for ref in raw_refs]
+    matches = [ref for ref in matches if ref.path == expected]
+    if len(matches) != 1:
+        raise ValueError("issue analysis must publish exactly one current-change result")
+    return matches[0]
+
+
+def bind_issue_analysis(state: ProductState) -> dict[str, object]:
+    return {"issue_analysis_ref": _issue_analysis_ref(state).model_dump(mode="json")}
+
+
+def _current_issue_analysis(state: ProductState) -> FinalizedIssueAnalysisV1:
+    if state.get("attempt_failure"):
+        raise ValueError("failed issue analysis cannot publish a business result")
+    analysis = FinalizedIssueAnalysisV1.model_validate(state.get("issue_analysis"))
+    inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    result = analysis.agent_result
+    if (result.change_id, result.batch_id, result.evidence_bundle_digest) != (
+        inspection.change_id,
+        inspection.batch_id,
+        assessment.evidence_bundle_digest,
+    ):
+        raise ValueError("issue analysis belongs to a different assessment batch")
+    result.require_complete_coverage(frozenset(assessment.owned_evidence_ids))
+    if _issue_analysis_ref(state) != analysis.issue_analysis_ref:
+        raise ValueError("issue analysis result reference changed")
+    return analysis
+
+
+def route_issue_analysis(state: ProductState) -> Literal["report", "repair", "needs-human", "blocked"]:
+    try:
+        analysis = _current_issue_analysis(state)
+    except (TypeError, ValueError):
+        return "blocked"
+    if analysis.agent_result.status == "failed":
+        return "blocked"
+    summary = classify_issue_candidates(analysis.agent_result)
+    if summary.classification == "unknown":
+        return "needs-human"
+    if summary.fix_eligible:
+        inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+        if inspection.disposition != "analysis_required":
+            return "report"
+        budget = _input_from_state(state).budgets.healing_rounds
+        if int(state.get("healing_rounds_used", 0)) >= budget:
+            return "needs-human"
+        return "repair"
+    return "report"
+
+
+def _adapt_report(
+    state: ProductState,
+    *,
+    purpose: Literal["normal", "diagnostic"],
+) -> dict[str, object]:
     payload = _input_from_state(state)
     inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
     feature_input = {
@@ -321,23 +459,44 @@ def adapt_report(state: ProductState) -> dict[str, object]:
         "allowed_artifact_paths": list(payload.allowed_artifact_paths),
         "budgets": payload.budgets.model_dump(mode="json"),
         "evidence_refs": [ref.model_dump(mode="json") for ref in inspection.assessment_refs],
-        "execution_status": "passed",
+        "execution_status": "passed" if purpose == "normal" else "failed",
         "rounds_budget": payload.budgets.healing_rounds,
         "rounds_used": int(state.get("healing_rounds_used", 0)),
         "coverage_state": inspection.coverage_state,
-        "report_purpose": "normal",
+        "report_purpose": purpose,
+        "issue_analysis_ref": state.get("issue_analysis_ref"),
     }
     return {**feature_input, "feature_input": feature_input}
+
+
+def adapt_report(state: ProductState) -> dict[str, object]:
+    return _adapt_report(state, purpose="normal")
+
+
+def adapt_diagnostic_report(state: ProductState) -> dict[str, object]:
+    return _adapt_report(state, purpose="diagnostic")
 
 
 def _finish_inspection(status: Literal["coverage_insufficient", "needs_human"]):
     def node(state: ProductState) -> dict[str, object]:
         inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+        analysis_ref = None
+        reason = None
+        if status == "needs_human" and inspection.disposition in {"analysis_required", "blocked"}:
+            analysis = _current_issue_analysis(state)
+            analysis_ref = analysis.issue_analysis_ref
+            reason = (
+                "healing budget exhausted"
+                if classify_issue_candidates(analysis.agent_result).fix_eligible
+                else analysis.agent_result.reason or "issue analysis could not determine ownership"
+            )
         tail = ExecuteTailResultV1(
             status=status,
             plan_digest=inspection.plan_digest,
             plan_ref=inspection.plan_ref,
             inspection=inspection,
+            issue_analysis_ref=analysis_ref,
+            reason=reason,
         )
         return {
             "tail_result": tail.model_dump(mode="json"),
@@ -359,9 +518,34 @@ def _finish_reported(state: ProductState) -> dict[str, object]:
     }
 
 
-def _route_report(state: ProductState) -> str:
+def _diagnostic_tail_from_state(state: ProductState) -> ExecuteTailResultV1:
+    inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+    raw_refs = state.get("report_refs")
+    if not isinstance(raw_refs, list):
+        raise ValueError("diagnostic report refs must be a list")
+    refs = tuple(EvidenceArtifactRefV1.model_validate(ref) for ref in raw_refs)
+    receipt = ReceiptRef.model_validate(state.get("report_receipt"))
+    return diagnostic_tail_result(inspection, refs, receipt)
+
+
+def _finish_diagnostic(state: ProductState) -> dict[str, object]:
+    tail = _diagnostic_tail_from_state(state)
+    return {
+        "tail_result": tail.model_dump(mode="json"),
+        "terminal": {"status": "failed", "reason": "not_achieved"},
+        "status": "failed",
+    }
+
+
+def _route_report(state: ProductState) -> Literal["reported", "diagnostic", "blocked"]:
     if state.get("attempt_failure"):
         return "blocked"
+    if state.get("report_purpose") == "diagnostic":
+        try:
+            _diagnostic_tail_from_state(state)
+        except (TypeError, ValueError):
+            return "blocked"
+        return "diagnostic"
     try:
         reported_tail_result(
             InspectionOutcomeV1.model_validate(state.get("inspection_outcome")),
@@ -481,8 +665,13 @@ def build_execute_graph(
     builder.add_node("adapt-rerun", cast(Any, adapt_rerun))
     builder.add_node("run", typed.execution.rerun)
     builder.add_node("adapt-report", cast(Any, adapt_report))
+    builder.add_node("adapt-issue-analysis", cast(Any, adapt_issue_analysis))
+    builder.add_node("issue-analyze", typed.quality.issue_analyze)
+    builder.add_node("bind-issue-analysis", cast(Any, bind_issue_analysis))
+    builder.add_node("adapt-diagnostic-report", cast(Any, adapt_diagnostic_report))
     builder.add_node("report", typed.quality.report)
     builder.add_node("finish-reported", cast(Any, _finish_reported))
+    builder.add_node("finish-diagnostic", cast(Any, _finish_diagnostic))
     builder.add_node("finish-coverage-insufficient", cast(Any, _finish_inspection("coverage_insufficient")))
     builder.add_node("finish-needs-human", cast(Any, _finish_inspection("needs_human")))
     builder.add_node("blocked", cast(Any, blocked))
@@ -512,6 +701,7 @@ def build_execute_graph(
             "coverage-insufficient": "finish-coverage-insufficient",
             "fix-proposal": "adapt-repair-failure",
             "needs-human": "finish-needs-human",
+            "diagnostic": "adapt-issue-analysis",
             "blocked": "blocked",
         },
     )
@@ -528,13 +718,31 @@ def build_execute_graph(
         {"quality": "adapt-quality", "blocked": "blocked"},
     )
     builder.add_edge("adapt-report", "report")
+    builder.add_edge("adapt-issue-analysis", "issue-analyze")
+    builder.add_conditional_edges(
+        "issue-analyze",
+        cast(Callable[..., Any], route_issue_analysis),
+        {
+            "report": "bind-issue-analysis",
+            "repair": "adapt-repair-failure",
+            "needs-human": "finish-needs-human",
+            "blocked": "blocked",
+        },
+    )
+    builder.add_edge("bind-issue-analysis", "adapt-diagnostic-report")
+    builder.add_edge("adapt-diagnostic-report", "report")
     builder.add_conditional_edges(
         "report",
         cast(Callable[..., Any], _route_report),
-        {"reported": "finish-reported", "blocked": "blocked"},
+        {
+            "reported": "finish-reported",
+            "diagnostic": "finish-diagnostic",
+            "blocked": "blocked",
+        },
     )
     for node in (
         "finish-reported",
+        "finish-diagnostic",
         "finish-coverage-insufficient",
         "finish-needs-human",
         "blocked",
@@ -584,6 +792,7 @@ def build_execute_root(
 
 
 __all__ = [
+    "adapt_diagnostic_report",
     "adapt_execution",
     "adapt_execute_tail_input",
     "adapt_generation",

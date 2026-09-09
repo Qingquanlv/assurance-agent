@@ -45,6 +45,7 @@ class ExecuteTailInputV1(FrozenModel):
 class ExecuteTailResultV1(FrozenModel):
     status: Literal[
         "reported",
+        "diagnostic",
         "coverage_insufficient",
         "repairable_execution_failure",
         "needs_human",
@@ -53,6 +54,7 @@ class ExecuteTailResultV1(FrozenModel):
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     plan_ref: EvidenceArtifactRefV1
     inspection: InspectionOutcomeV1 | None = None
+    issue_analysis_ref: EvidenceArtifactRefV1 | None = None
     report: ReportOutcomeV1 | None = None
     report_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     report_receipt: ReceiptRef | None = None
@@ -99,13 +101,27 @@ class ExecuteTailResultV1(FrozenModel):
                 self.report.plan_digest,
                 self.report.plan_ref,
             )
+        elif self.status == "diagnostic":
+            if self.inspection is None or self.inspection.disposition not in {"blocked", "analysis_required"}:
+                raise ValueError("diagnostic tail requires a failed Inspect outcome")
+            if not self.report_refs or self.report_receipt is None:
+                raise ValueError("diagnostic tail requires committed diagnostic report evidence")
         elif self.status == "coverage_insufficient":
             if self.inspection is None or self.inspection.disposition != "coverage_insufficient":
                 raise ValueError("coverage_insufficient tail requires matching Inspect evidence")
             if self.report_refs or self.report_receipt is not None:
                 raise ValueError("coverage retry cannot publish an intermediate Report")
         elif self.status in {"repairable_execution_failure", "needs_human"}:
-            if self.inspection is None or self.inspection.disposition != self.status:
+            analyzed_failure = (
+                self.status == "needs_human"
+                and self.inspection is not None
+                and self.inspection.disposition in {"analysis_required", "blocked"}
+                and self.issue_analysis_ref is not None
+                and bool(self.reason)
+            )
+            if self.inspection is None or (
+                self.inspection.disposition != self.status and not analyzed_failure
+            ):
                 raise ValueError(f"{self.status} tail requires matching Inspect evidence")
             if self.report_refs or self.report_receipt is not None:
                 raise ValueError("unresolved execution result cannot publish a Report")
@@ -142,4 +158,24 @@ def reported_tail_result(
     )
 
 
-__all__ = ["ExecuteTailInputV1", "ExecuteTailResultV1", "reported_tail_result"]
+def diagnostic_tail_result(
+    inspection: InspectionOutcomeV1,
+    report_refs: tuple[EvidenceArtifactRefV1, ...],
+    report_receipt: ReceiptRef,
+) -> ExecuteTailResultV1:
+    return ExecuteTailResultV1(
+        status="diagnostic",
+        plan_digest=inspection.plan_digest,
+        plan_ref=inspection.plan_ref,
+        inspection=inspection,
+        report_refs=report_refs,
+        report_receipt=report_receipt,
+    )
+
+
+__all__ = [
+    "ExecuteTailInputV1",
+    "ExecuteTailResultV1",
+    "diagnostic_tail_result",
+    "reported_tail_result",
+]

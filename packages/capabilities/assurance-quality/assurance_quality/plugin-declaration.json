@@ -143,27 +143,27 @@
     "attempt_contracts": [
       {
         "contract_id": "assurance.quality.agent.fact-baseline.v1",
-        "digest": "038b8e5787200a420ac3b375da65d9d550a754640bcae4552a64e68a51d73d96"
+        "digest": "fac6ff4992208f2d44ed6a82646c78d88cddc0043d9b1e89410582e0d9990afd"
       },
       {
         "contract_id": "assurance.quality.agent.inspect.v1",
-        "digest": "a81ebb670fc216d7c2d3d432948caaed70412b15fedebb034240918ff48a00dd"
+        "digest": "1462333622110b3579bb716f243971b821ad9abb3bb68088e9f210c6c1a788cd"
       },
       {
         "contract_id": "assurance.quality.agent.issue-analysis.v1",
-        "digest": "8ea830acdd593537f6e98e9df1efe9f85e84ef5564b5f91669a5996bd3ea5de8"
+        "digest": "d606efac2bc2a5128faccc259d1b19301c157406ae3ef55cfcdf6f532ac38d1f"
       },
       {
         "contract_id": "assurance.quality.agent.issue-triage.v1",
-        "digest": "eb3891b87afa3bf5cf2d32936b1b96e737ef6b85ed3d4cfd2a154ff5181212f3"
+        "digest": "f1c52c2e398f3b1923721a5dfc4e999f69e34b762b0e0de8104568a70c6c5710"
       },
       {
         "contract_id": "assurance.quality.agent.report.v1",
-        "digest": "7dc504e488d79201e5de64672687d16b4b6b89208702c47741028fdbdfa97428"
+        "digest": "a52d387b9d5002bb2e8c699da1792cc3b93d8fcc18755decc9d8deebbc7e9474"
       },
       {
         "contract_id": "assurance.quality.materialize-assessment-inputs",
-        "digest": "5a1a5c3912002b7f95446b986e73199bcb05a2380cf5892a9179ef6e086e263c"
+        "digest": "127248b22ac33eefdf0351fc3d91147a6eeef93ae8bd0dabecb038fef10371f3"
       }
     ]
   },

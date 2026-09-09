@@ -68,9 +68,14 @@ def derive_attempt_key(
     business_activation: BusinessActivation,
     contract_id: str,
     validated_input: BaseModel,
+    technical_attempt: int = 1,
 ) -> AttemptKey:
     if not isinstance(validated_input, BaseModel):
         raise TypeError("validated_input must be a Pydantic model")
+    if isinstance(technical_attempt, bool) or not isinstance(technical_attempt, int):
+        raise TypeError("technical_attempt must be an integer")
+    if technical_attempt < 1:
+        raise ValueError("technical_attempt must be positive")
     input_payload: JSONValue = validated_input.model_dump(mode="json")
     projection: JSONValue = {
         "invocation_id": invocation_id,
@@ -82,6 +87,7 @@ def derive_attempt_key(
             "value": business_activation.value,
         },
         "contract_id": contract_id,
+        "technical_attempt": technical_attempt,
         "task_input_digest": canonical_digest(input_payload),
     }
     return AttemptKey(digest=canonical_digest(projection))

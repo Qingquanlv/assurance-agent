@@ -1,85 +1,20 @@
 {
   "descriptor": {
-    "attempt_contracts": [
-      {
-        "contract_id": "assurance.healing.agent.apply-test-repair.v1",
-        "digest": "56f6ac6b25c3dfb898c3d278bf99e7284c5ecce70265cad83ab00ef09a922386"
-      },
-      {
-        "contract_id": "assurance.healing.agent.coverage-repair.v1",
-        "digest": "3248a9c70157f418556ad67ba664ffaaf62eaa16388b305a4c4c0a2313063f68"
-      },
-      {
-        "contract_id": "assurance.healing.agent.fix-proposal.v1",
-        "digest": "d6f0a0ae00c20749b747b2bcaed620cb22debb762059210f466f817a18e9071b"
-      }
-    ],
-    "bindings": [],
-    "commit_validators": [
-      "assurance.healing.validator.override.v1",
-      "assurance.healing.validator.repair-candidate.v1",
-      "assurance.healing.validator.test-tree.v1"
-    ],
-    "dependencies": [
-      {
-        "plugin_id": "assurance.intake",
-        "version_specifier": "==0.2.0"
-      },
-      {
-        "plugin_id": "assurance.generation",
-        "version_specifier": "==0.2.0"
-      },
-      {
-        "plugin_id": "assurance.execution",
-        "version_specifier": "==0.2.0"
-      }
-    ],
-    "effects": [
-      "assurance.healing.effect.allocation.v2",
-      "assurance.healing.effect.heal-apply.v2",
-      "assurance.healing.effect.proposal-approved.v1"
-    ],
-    "engine_api": "2.0",
-    "plugin_id": "assurance.healing",
-    "plugin_version": "0.2.0",
-    "resources": [
-      "assurance.healing.persona.fix-proposer.v1",
-      "assurance.healing.policy.test-change-policy.v1",
-      "assurance.healing.result.applied-test-repair.v1",
-      "assurance.healing.result.coverage-repair.v1",
-      "assurance.healing.result.fix-proposal.v1",
-      "assurance.healing.skill.aa-apply-test-repair.v1",
-      "assurance.healing.skill.aa-coverage-repair.v1",
-      "assurance.healing.skill.aa-fix-proposal.v1"
-    ],
     "schema_version": "1",
-    "schemas": [
-      "assurance.healing.schema.allocation-intent.v2",
-      "assurance.healing.schema.allocation-receipt.v2",
-      "assurance.healing.schema.coverage-repair.v1",
-      "assurance.healing.schema.fix-proposal.v1",
-      "assurance.healing.schema.heal-apply-intent.v2",
-      "assurance.healing.schema.heal-apply-receipt.v2",
-      "assurance.healing.schema.healing-safety.v1",
-      "assurance.healing.schema.healing-status.v1",
-      "assurance.healing.schema.proposal-approved-intent.v1",
-      "assurance.healing.schema.proposal-approved-receipt.v1",
-      "assurance.healing.workflow.repair-coverage.input.v1",
-      "assurance.healing.workflow.repair-coverage.output.v1",
-      "assurance.healing.workflow.repair-failure.input.v1",
-      "assurance.healing.workflow.repair-failure.output.v1"
-    ],
     "source": {
-      "declaration_path": "assurance_healing/plugin-declaration.json",
       "distribution": "assurance-healing",
+      "version": "0.2.0",
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "healing",
       "entrypoint_value": "assurance_healing.plugin:HealingPlugin",
+      "declaration_path": "assurance_healing/plugin-declaration.json",
       "import_roots": [
         ""
-      ],
-      "version": "0.2.0"
+      ]
     },
+    "plugin_id": "assurance.healing",
+    "plugin_version": "0.2.0",
+    "engine_api": "2.0",
     "task_handlers": [
       "assurance.healing.allocate-coverage-repair-attempt",
       "assurance.healing.allocate-healing-attempt",
@@ -99,6 +34,71 @@
       "assurance.healing.record-fixer-approval",
       "assurance.healing.record-healing-status",
       "assurance.healing.repair-round.advance"
+    ],
+    "commit_validators": [
+      "assurance.healing.validator.override.v1",
+      "assurance.healing.validator.repair-candidate.v1",
+      "assurance.healing.validator.test-tree.v1"
+    ],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.2.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.2.0"
+      },
+      {
+        "plugin_id": "assurance.execution",
+        "version_specifier": "==0.2.0"
+      }
+    ],
+    "schemas": [
+      "assurance.healing.schema.allocation-intent.v2",
+      "assurance.healing.schema.allocation-receipt.v2",
+      "assurance.healing.schema.coverage-repair.v1",
+      "assurance.healing.schema.fix-proposal.v1",
+      "assurance.healing.schema.heal-apply-intent.v2",
+      "assurance.healing.schema.heal-apply-receipt.v2",
+      "assurance.healing.schema.healing-safety.v1",
+      "assurance.healing.schema.healing-status.v1",
+      "assurance.healing.schema.proposal-approved-intent.v1",
+      "assurance.healing.schema.proposal-approved-receipt.v1",
+      "assurance.healing.workflow.repair-coverage.input.v1",
+      "assurance.healing.workflow.repair-coverage.output.v1",
+      "assurance.healing.workflow.repair-failure.input.v1",
+      "assurance.healing.workflow.repair-failure.output.v1"
+    ],
+    "resources": [
+      "assurance.healing.persona.fix-proposer.v1",
+      "assurance.healing.policy.test-change-policy.v1",
+      "assurance.healing.result.applied-test-repair.v1",
+      "assurance.healing.result.coverage-repair.v1",
+      "assurance.healing.result.fix-proposal.v1",
+      "assurance.healing.skill.aa-apply-test-repair.v1",
+      "assurance.healing.skill.aa-coverage-repair.v1",
+      "assurance.healing.skill.aa-fix-proposal.v1"
+    ],
+    "effects": [
+      "assurance.healing.effect.allocation.v2",
+      "assurance.healing.effect.heal-apply.v2",
+      "assurance.healing.effect.proposal-approved.v1"
+    ],
+    "bindings": [],
+    "attempt_contracts": [
+      {
+        "contract_id": "assurance.healing.agent.apply-test-repair.v1",
+        "digest": "90391021c459b629ebf46daca7f86f3c83050a9dea9e9a3227311a970a86d2b3"
+      },
+      {
+        "contract_id": "assurance.healing.agent.coverage-repair.v1",
+        "digest": "7b0d0a6f0c9e8cdbf9fe3e907b62c1d8e2aa8d4df7a41f0d9d542501dddebfff"
+      },
+      {
+        "contract_id": "assurance.healing.agent.fix-proposal.v1",
+        "digest": "f7a17eae59980af0836884a862ae6868d3566a8c203ee86d1e24ebb0643f2b17"
+      }
     ]
   },
   "kind": "plugin",

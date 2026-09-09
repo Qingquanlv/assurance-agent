@@ -8,7 +8,11 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_serializer, model_validator
 
-from assurance_improvement.contracts.improvements import ImprovementCandidateV3, ImprovementSourceRefs
+from assurance_improvement.contracts.improvements import (
+    ImprovementCandidateV3,
+    ImprovementSourceRefs,
+    ReconcileResultV1,
+)
 from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -267,7 +271,6 @@ class LoopRoundEvidenceEntry(_WorkflowEvidenceBase):
         "coverage",
         "case_review",
         "plan_review",
-        "codegen_fix",
         "implementation_repair",
     ]
     family: Literal["api", "e2e", "fuzz", "performance"] | None = None
@@ -277,7 +280,7 @@ class LoopRoundEvidenceEntry(_WorkflowEvidenceBase):
 
     @model_validator(mode="after")
     def _validate_family_and_sources(self) -> Self:
-        family_loop = self.loop_kind in {"plan_review", "codegen_fix"}
+        family_loop = self.loop_kind == "plan_review"
         if family_loop != (self.family is not None):
             raise ValueError("family is required only for family-specific generation loops")
         ordered = tuple(sorted(self.source_refs, key=lambda item: (item.path, item.digest)))
@@ -647,6 +650,38 @@ class RetroContextV3(BaseModel):
     @property
     def allows_domain_knowledge(self) -> bool:
         return self.integrity.status == "complete"
+
+
+class RetroCollectInput(BaseModel):
+    model_config = _FROZEN
+
+    retro_id: str = Field(min_length=1)
+    window: RetroWindow
+    issue_slice: IssueEvidenceSlice
+    workflow_slice: WorkflowEvidenceSlice
+    eval_slice: EvalEvidenceSlice
+    discovery_slice: DiscoveryEvidenceSlice | None = None
+    coverage_gap_slice: CoverageGapEvidenceSlice | None = None
+
+
+class RetroCollectedV1(RetroCollectInput):
+    generated_at: str = Field(min_length=1)
+
+
+class RetroReconcileInputV1(BaseModel):
+    model_config = _FROZEN
+
+    change_id: str = Field(min_length=1)
+    context: RetroContextV3
+    candidates: tuple[ImprovementCandidateV3, ...]
+
+
+class RetroReconcileResultV1(BaseModel):
+    model_config = _FROZEN
+
+    reconciliation: ReconcileResultV1
+    status: RetroRunStatus
+    artifact_refs: tuple[EvidenceArtifactRefV1, ...]
 
 
 class ImprovementCandidateDocumentDraftV3(BaseModel):

@@ -18,6 +18,7 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     fake_agent_result,
     plan_input,
     review_result,
+    valid_plan_result,
 )
 
 
@@ -79,6 +80,34 @@ async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: 
     assert output["required_capabilities"] == ["entities.item.create"]
     assert "rounds_used" not in output
     assert "rounds_budget" not in output
+
+
+@pytest.mark.parametrize("fix_ids", (["F1"], ["F1", "F1", "F2"]))
+@pytest.mark.asyncio
+async def test_plan_review_requires_complete_unique_repair_set(fix_ids: list[str], tmp_path: Path) -> None:
+    review = review_result("api")
+    review.update(
+        {
+            "decision": "needs_fix",
+            "auto_fix_allowed": True,
+            "codegen_readiness": "not_ready",
+            "findings": [
+                {
+                    "id": name,
+                    "severity": "medium",
+                    "category": "consistency",
+                    "message": "Repair this affected section",
+                    "locator": {"artifact": f"qa/changes/CH-DEMO-001/plans/{file}", "key": "Factory Mapping"},
+                }
+                for name, file in (("F1", "api-codegen-plan.md"), ("F2", "api-test-data-plan.md"))
+            ],
+            "auto_fix_plan": fix_ids,
+        }
+    )
+    outcome = await execute_task(review_finalize_handler("api"), fake_agent_result(review), tmp_path)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "every finding exactly once" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -162,18 +191,23 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
 
     prepared = await execute_task(
         review_prepare_handler(family),
-        plan_input(family),
+        {**plan_input(family), "reviewed_plan": valid_plan_result(family)},
         tmp_path,
         binding_data=BINDING,
     )
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    assert len(request.instructions) == 5
-    skill, persona, reviewed, constraints, locked_inputs = request.instructions
+    assert len(request.instructions) == 6
+    skill, persona, reviewed, constraints, locked_inputs, _typed_plan = request.instructions
     assert f"{family} plan review" in (skill.text_content or "").lower()
     assert "reviewer persona" in (persona.text_content or "").lower()
     assert reviewed.media_type == "application/json"
     assert constraints.media_type == "application/json"
+    facts = cast(dict[str, object], constraints.json_content)["planning_facts"]
+    assert cast(dict[str, object], facts)["capability_leafs"] == (
+        "auth.session.create",
+        "entities.item.create",
+    )
     assert locked_inputs.json_content == {
         "review_input_paths": tuple(
             sorted(
@@ -205,7 +239,7 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
 
     prepared = await execute_task(
         review_prepare_handler("api"),
-        plan_input("api"),
+        {**plan_input("api"), "reviewed_plan": valid_plan_result("api")},
         tmp_path,
         binding_data=BINDING,
     )
@@ -215,6 +249,18 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
     assert prepared.failure.kind == "invalid_input"
     assert "plan input is not a regular single-link file" in prepared.failure.message
     assert "qa/changes/CH-DEMO-001/plans/api-" in prepared.failure.message
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_plan_review_prepare_requires_the_published_typed_plan(family: str, tmp_path: Path) -> None:
+    outcome = await execute_task(
+        review_prepare_handler(family), plan_input(family), tmp_path, binding_data=BINDING
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert "reviewed_plan is required" in outcome.failure.message
 
 
 @pytest.mark.parametrize("family", FAMILIES)

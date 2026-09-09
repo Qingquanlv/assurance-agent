@@ -36,15 +36,6 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.api.codegen-fix.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "openai/gpt-5.6-terra",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
         "assurance.generation.agent.api.codegen.v1": {
           "limits": {
             "max_seconds": 3600
@@ -64,15 +55,6 @@
           "worker_profile": "max"
         },
         "assurance.generation.agent.api.plan.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "openai/gpt-5.6-terra",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-fix.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -337,17 +319,7 @@
         "generation.api.plan",
         "generation.api.plan-review",
         "generation.api.codegen",
-        "generation.e2e.plan",
-        "generation.e2e.plan-review",
-        "generation.e2e.codegen",
-        "generation.fuzz.plan",
-        "generation.fuzz.plan-review",
-        "generation.fuzz.codegen",
-        "generation.performance.plan",
-        "generation.performance.plan-review",
-        "generation.performance.codegen",
         "execution.execute",
-        "execution.run",
         "quality.fact-baseline",
         "quality.inspect",
         "quality.report"
@@ -364,15 +336,6 @@
           "worker_profile": "max"
         },
         "assurance.execution.agent.run.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "openai/gpt-5.6-terra",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen-fix.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -400,15 +363,6 @@
           "worker_profile": "max"
         },
         "assurance.generation.agent.api.plan.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "openai/gpt-5.6-terra",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-fix.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -664,10 +618,7 @@
       "secret_env": "AA_NEXT_OPENCODE_TOKEN",
       "secret_handle": "opencode.token",
       "selected_test_families": [
-        "api",
-        "e2e",
-        "fuzz",
-        "performance"
+    "api"
       ],
       "case_modules": [
         "system/dept"

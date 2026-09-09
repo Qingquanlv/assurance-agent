@@ -128,6 +128,11 @@ class CodegenMapping(BaseModel):
     case_execution_plan_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     case_spec_digests: dict[str, str] | None = None
 
+    @field_validator("entries")
+    @classmethod
+    def _canonical_entries(cls, value: tuple[CodegenMappingEntry, ...]) -> tuple[CodegenMappingEntry, ...]:
+        return tuple(sorted(value, key=lambda item: item.case_id))
+
     @model_validator(mode="after")
     def _unique_case_ids(self) -> Self:
         ids = tuple(item.case_id for item in self.entries)
@@ -198,6 +203,11 @@ class CodegenAuthoringV1(CodegenGeneratedFilesAuthoring):
     mapping: CodegenMapping
     required_capabilities: tuple[NonEmptyStr, ...] = ()
 
+    @field_validator("required_capabilities")
+    @classmethod
+    def _canonical_required_capabilities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(sorted(value))
+
     @model_validator(mode="after")
     def _validate_authoring(self, info: ValidationInfo) -> Self:
         _require_exact_leafs(self.required_capabilities, info)
@@ -212,51 +222,12 @@ class CodegenAuthoringV1(CodegenGeneratedFilesAuthoring):
         return self
 
 
-class CodegenRepairPayloadV2(BaseModel):
-    """Bounded repair set required when codegen asks for the API/E2E fixer."""
-
-    model_config = _FROZEN
-
-    allowed_paths: tuple[NonEmptyStr, ...] = Field(min_length=1)
-    summary: NonEmptyStr
-
-
-class CodegenResultV2(BaseModel):
-    """Versioned API/E2E codegen result with a reachable fixer verdict."""
-
-    model_config = _FROZEN
-
-    schema_version: Literal["2"]
-    verdict: Literal["accepted", "needs_fix"]
-    change_id: NonEmptyStr
-    layer: Literal["api", "e2e"]
-    files: tuple[GeneratedFileEntryV1, ...]
-    mapping: CodegenMapping
-    required_capabilities: tuple[NonEmptyStr, ...] = ()
-    repair: CodegenRepairPayloadV2 | None = None
-
-    @model_validator(mode="after")
-    def _validate_result(self, info: ValidationInfo) -> Self:
-        _require_exact_leafs(self.required_capabilities, info)
-        if self.mapping.layer != self.layer:
-            raise ValueError(f"mapping layer {self.mapping.layer!r} does not match {self.layer}")
-        paths = tuple(entry.repo_path for entry in self.files)
-        if paths != tuple(sorted(paths)):
-            raise ValueError("files.repo_path must be canonically sorted")
-        if self.verdict == "needs_fix" and self.repair is None:
-            raise ValueError("needs_fix codegen requires a repair payload")
-        if self.verdict == "accepted" and self.repair is not None:
-            raise ValueError("accepted codegen cannot carry a repair payload")
-        return self
-
-
 class CodegenResultV1(BaseModel):
     """Typed codegen result: hashed generated files plus the closed mapping."""
 
     model_config = _FROZEN
 
     schema_version: Literal["1"]
-    needs_fix: Literal[False] = False
     change_id: NonEmptyStr
     layer: CodegenLayer
     files: tuple[GeneratedFileEntryV1, ...]
@@ -271,32 +242,4 @@ class CodegenResultV1(BaseModel):
         paths = tuple(entry.repo_path for entry in self.files)
         if paths != tuple(sorted(paths)):
             raise ValueError("files.repo_path must be canonically sorted")
-        return self
-
-
-class CodegenFixCandidateV1(BaseModel):
-    """Approved API/E2E codegen-fix candidate with an authenticated allowed set."""
-
-    model_config = _FROZEN
-
-    schema_version: Literal["1"]
-    change_id: NonEmptyStr
-    family: Literal["api", "e2e"]
-    baseline_tree_id: NonEmptyStr
-    allowed_paths: tuple[NonEmptyStr, ...]
-    files: tuple[GeneratedFileEntryV1, ...]
-    mapping: CodegenMapping
-    required_capabilities: tuple[NonEmptyStr, ...] = ()
-
-    @model_validator(mode="after")
-    def _validate_fix_candidate(self, info: ValidationInfo) -> Self:
-        _require_exact_leafs(self.required_capabilities, info)
-        if self.mapping.layer != self.family:
-            raise ValueError(f"mapping layer {self.mapping.layer!r} does not match {self.family}")
-        allowed = tuple(sorted(set(self.allowed_paths)))
-        if self.allowed_paths != allowed:
-            raise ValueError("allowed_paths must be sorted and unique")
-        for entry in self.files:
-            if entry.repo_path not in allowed:
-                raise ValueError(f"undeclared generated/modified test file: {entry.repo_path}")
         return self

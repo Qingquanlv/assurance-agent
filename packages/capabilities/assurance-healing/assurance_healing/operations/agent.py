@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -175,6 +176,9 @@ def _prepare_lock_fields(payload: FixProposalFinalizeInputV1 | FixProposalInputV
         "plan_digest": payload.plan_digest,
         "plan_ref": payload.plan_ref.model_dump(mode="json"),
         "execution_evidence_digest": payload.execution_evidence_digest,
+        "issue_analysis_ref": payload.issue_analysis_ref.model_dump(mode="json")
+        if payload.issue_analysis_ref
+        else None,
         "policy_digest": payload.policy_digest,
         "require_approval": payload.require_approval,
     }
@@ -199,6 +203,11 @@ class FixProposalPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             business = validate_input(FixProposalInputV1, request.input)
+            if business.issue_analysis_ref is not None:
+                ref = business.issue_analysis_ref
+                data = _workspace_file(context.project_root, ref.path).read_bytes()
+                if hashlib.sha256(data).hexdigest() != ref.digest:
+                    raise OutputError("issue analysis digest changed")
             binding = validate_binding(request.binding_data)
             return prepare_outcome(
                 skill_path=FIX_PROPOSAL_SKILL,
@@ -209,7 +218,7 @@ class FixProposalPrepareHandler:
                 context=context,
                 allowed_outputs=(f"qa/changes/{business.change_id}/healing/fix-proposal.json",),
             )
-        except InputError as error:
+        except (InputError, OutputError) as error:
             return failed_input(error)
 
 

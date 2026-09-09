@@ -10,7 +10,7 @@ from assurance_execution.contracts.workflow import (
 )
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_healing.contracts.application import RepairAuthorizationV1
-from assurance_improvement.contracts.retro import RetroWindow
+from assurance_improvement.contracts.retro import RetroWindow, RetroRunStatus
 from assurance_intake.contracts.workflow import (
     CaseFlowResultV1,
     CaseReworkContextV1,
@@ -149,6 +149,9 @@ class ProductStateDocument(FrozenModel):
     budgets: dict[str, int]
     artifacts: list[dict[str, Any]]
     retro_window: RetroWindow | None
+    retro_id: str
+    retro_status: RetroRunStatus
+    window: RetroWindow
     decision: str
     receipts: list[dict[str, str]]
     output: dict[str, Any]
@@ -171,6 +174,13 @@ class ProductStateDocument(FrozenModel):
     terminal: dict[str, str]
     execution_evidence: dict[str, Any]
     execution_digest: str
+    healing_digest: str | None
+    trace_digest: str
+    coverage_digest: str
+    metrics_digest: str
+    case_digest: str
+    mapping_digest: str
+    issue_digest: str | None
     execution_semantic_node_id: str
     families: dict[str, dict[str, bool]]
     selected_families: list[str]
@@ -209,6 +219,12 @@ class ProductStateDocument(FrozenModel):
     execution_at: str
     healing_ref: EvidenceArtifactRefV1 | None
     issue_ref: EvidenceArtifactRefV1 | None
+    issue_analysis_ref: EvidenceArtifactRefV1 | None
+    issue_analysis: dict[str, object] | None
+    observations_ref: EvidenceArtifactRefV1
+    issue_evidence_manifest_ref: EvidenceArtifactRefV1
+    owned_evidence_ids: list[str]
+    evidence_bundle_digest: str
     kind: str
     owner_id: str
     allowed_paths: list[str]
@@ -257,6 +273,9 @@ class ProductState(CheckpointBridgeState, total=False):
     budgets: dict[str, int]
     artifacts: list[dict[str, object]]
     retro_window: RetroWindow | None
+    retro_id: str
+    retro_status: dict[str, object]
+    window: dict[str, object]
     decision: str
     receipts: Annotated[list[dict[str, object]], replace_receipts]
     output: dict[str, object]
@@ -279,6 +298,13 @@ class ProductState(CheckpointBridgeState, total=False):
     terminal: dict[str, str]
     execution_evidence: dict[str, object]
     execution_digest: str
+    healing_digest: str | None
+    trace_digest: str
+    coverage_digest: str
+    metrics_digest: str
+    case_digest: str
+    mapping_digest: str
+    issue_digest: str | None
     execution_semantic_node_id: str
     families: dict[str, dict[str, bool]]
     selected_families: list[str]
@@ -317,6 +343,12 @@ class ProductState(CheckpointBridgeState, total=False):
     execution_at: str
     healing_ref: EvidenceArtifactRefV1 | None
     issue_ref: EvidenceArtifactRefV1 | None
+    issue_analysis_ref: EvidenceArtifactRefV1 | None
+    issue_analysis: dict[str, object] | None
+    observations_ref: EvidenceArtifactRefV1
+    issue_evidence_manifest_ref: EvidenceArtifactRefV1
+    owned_evidence_ids: list[str]
+    evidence_bundle_digest: str
     kind: str
     owner_id: str
     allowed_paths: list[str]

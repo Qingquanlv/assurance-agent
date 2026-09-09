@@ -42,6 +42,7 @@ class HealingState(CheckpointBridgeState, total=False):
     policy_digest: str
     mapping_paths: list[str]
     execution_evidence_digest: str
+    issue_analysis_ref: dict[str, str] | None
     reviewed_case: dict[str, object]
     proposal_ref: dict[str, str]
     approval_ref: dict[str, str] | None

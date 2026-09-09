@@ -307,6 +307,8 @@ def publish_case_design(state: Mapping[str, object], output: object, receipt: ob
         for item in artifacts
         if isinstance(item, Mapping) and str(item.get("path", "")).endswith("/case.yaml")
     ]
+    # Carry committed preparation replacements forward, including the frozen
+    # plan; never re-hash mutable project files when publishing Case Design.
     preparation_refs = [
         EvidenceArtifactRefV1.model_validate(item).model_dump(mode="json")
         for item in (*_mapping_items(state.get("preparation_refs")), *artifacts)

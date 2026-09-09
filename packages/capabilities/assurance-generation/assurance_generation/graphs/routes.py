@@ -121,17 +121,6 @@ def plan_advance_retry_named_matches(state: Mapping[str, object]) -> dict[str, s
     return plan_advance_named_matches(state)
 
 
-def codegen_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    verdict = state.get("codegen_verdict")
-    needs_fix = state.get("needs_fix")
-    accepted = verdict == "accepted" or needs_fix is False
-    fix = verdict == "needs_fix" or needs_fix is True
-    return {
-        "accepted": "done" if accepted and not fix else None,
-        "needs_fix": "codegen-round-advance" if fix else None,
-    }
-
-
 def family_entry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     return {"selected": "plan" if state.get("lane_selected") else None}
 
@@ -166,7 +155,7 @@ def route_families(state: Mapping[str, object]) -> list[Send]:
                     "family": family,
                     "lane_selected": family in selected,
                     "rounds_used": 0,
-                    "rounds_budget": 2,
+                    "rounds_budget": 3,
                     "review_stage": "plan",
                 },
             )
@@ -178,11 +167,19 @@ def route_family_entry(state: Mapping[str, object]) -> str:
     return select_exclusive_route(family_entry_named_matches(state), otherwise="skip")
 
 
+def route_attempt_result(state: Mapping[str, object]) -> str:
+    return "failed" if state.get("attempt_failure") else "committed"
+
+
 def route_plan_review(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return "failed"
     return select_exclusive_route(plan_review_named_matches(state), otherwise="exhausted")
 
 
 def route_plan_review_retry(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return "failed"
     return select_exclusive_route(plan_review_retry_named_matches(state), otherwise="exhausted")
 
 
@@ -202,13 +199,8 @@ def route_plan_advance_retry(state: Mapping[str, object]) -> str:
     return select_exclusive_route(plan_advance_retry_named_matches(state), otherwise="exhausted")
 
 
-def route_codegen(state: Mapping[str, object]) -> str:
-    return select_exclusive_route(codegen_named_matches(state), otherwise="exhausted")
-
-
 __all__ = [
     "InsufficientRouteMatches",
-    "codegen_named_matches",
     "family_entry_named_matches",
     "family_select_named_matches",
     "plan_advance_named_matches",
@@ -217,7 +209,7 @@ __all__ = [
     "plan_human_review_retry_named_matches",
     "plan_review_named_matches",
     "plan_review_retry_named_matches",
-    "route_codegen",
+    "route_attempt_result",
     "route_families",
     "route_family_entry",
     "route_plan_advance",

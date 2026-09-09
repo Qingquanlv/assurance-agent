@@ -10,7 +10,9 @@ from graph_engine.boot.boot import CapabilityBuildContext
 
 from assurance_quality.graphs.nodes import (
     activation_one_shot,
+    activation_issue_analysis,
     publish_issue,
+    publish_issue_analysis,
     select_quality,
     terminal_done,
 )
@@ -42,9 +44,13 @@ def build_issue_graph(context: CapabilityBuildContext, *, export: IssueExport) -
             context.attempt(
                 _CONTRACT_BY_EXPORT[export],
                 semantic_node_id=semantic_node_id,
-                activation=activation_one_shot,
+                activation=activation_one_shot if export == "issue-review" else activation_issue_analysis,
                 select=select_quality,
-                publish=publish_issue,
+                publish=(
+                    publish_issue_analysis
+                    if export in {"issue-analyze", "issue-reconcile"}
+                    else publish_issue
+                ),
             ),
         ),
     )

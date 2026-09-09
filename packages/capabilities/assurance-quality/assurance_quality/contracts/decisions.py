@@ -9,6 +9,7 @@ from assurance_quality.contracts.assessment import (
     InspectionDisposition,
 )
 from assurance_quality.contracts.coverage import COVERAGE_STATES, CoverageState
+from assurance_quality.contracts.agent import IssueAnalysisResultV1
 
 FailureClassification = Literal[
     "environment_failure",
@@ -44,6 +45,30 @@ class CoverageAssessmentPublicV1(BaseModel):
     rounds_used: int
 
 
+def classify_issue_candidates(result: IssueAnalysisResultV1) -> IssueAnalysisPublicV1:
+    """Only an entirely test-owned batch can authorize a test repair."""
+    kinds = {candidate.proposed.classification for candidate in result.candidates}
+    classification: FailureClassification = "unknown"
+    if result.status == "completed" and kinds and "unknown" not in kinds:
+        if kinds <= {"test_bug", "test_data_issue"}:
+            classification = "test" if "test_bug" in kinds else "test-data"
+        else:
+            for kind, target in (
+                ("product_bug", "product_bug"),
+                ("workflow_issue", "infrastructure_failure"),
+                ("environment_issue", "environment_failure"),
+                ("performance_issue", "failed"),
+                ("coverage_gap", "failed"),
+            ):
+                if kind in kinds:
+                    classification = target  # type: ignore[assignment]
+                    break
+    return IssueAnalysisPublicV1(
+        classification=classification,
+        fix_eligible=classification in FIX_ELIGIBLE_CLASSIFICATIONS,
+    )
+
+
 def classify_inspection_disposition(
     *,
     facts: FailureClassificationFactsV1,
@@ -51,6 +76,8 @@ def classify_inspection_disposition(
 ) -> InspectionDisposition:
     if not facts.identity_valid:
         return "blocked"
+    if facts.analysis_required:
+        return "analysis_required"
     if facts.blocking_failure:
         return "blocked"
     if facts.needs_human:

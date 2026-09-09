@@ -6,6 +6,7 @@ from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 from agent_runtime_contracts import AgentExecutionContract
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
+    FinalizedIssueAnalysisV1,
     InspectionResultV1,
     IssueAnalysisResultV1,
     IssueTriageResultV1,
@@ -51,6 +52,8 @@ def test_quality_owns_five_agent_contracts() -> None:
     assert resolved.writes == (
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/coverage-gaps.json",
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/metrics.json",
+        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/observations.json",
+        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace.json",
         "qa/changes/CH-1/inspect/epochs/2/batches/B-1/verification.json",
@@ -82,13 +85,15 @@ def test_quality_owns_five_agent_contracts() -> None:
         expected_output = {
             "fact-baseline": FinalizedFactBaselineV1,
             "inspect": FinalizedInspectionV1,
+            "issue-analysis": FinalizedIssueAnalysisV1,
             "report": FinalizedReportV1,
         }.get(base, result_model)
         assert contract.input_model is expected_input
         assert contract.agent_result_model is result_model
         assert contract.output_model is expected_output
         assert contract.validators == ()
-        assert contract.retry.max_attempts == 1
+        assert contract.retry.max_attempts == 10
+        assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
 
 

@@ -8,7 +8,7 @@ from assurance_execution.contracts.workflow import (
     VerifiedIncompleteExecutionV1,
 )
 from assurance_healing.contracts.application import AppliedTestRepairV1
-from assurance_quality.contracts.assessment import InspectionOutcomeV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1, InspectionOutcomeV1
 from graph_engine.stategraph.routing import select_exclusive_route
 
 _BLOCKED = "blocked"
@@ -61,10 +61,25 @@ def run_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
 
 def quality_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     disposition: object = None
+    inspection: InspectionOutcomeV1 | None = None
     if not state.get("attempt_failure"):
         try:
             inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
             disposition = inspection.disposition
+        except (TypeError, ValueError):
+            pass
+    diagnostic_ready = False
+    if inspection is not None and disposition in {"blocked", "analysis_required"}:
+        try:
+            assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+            diagnostic_ready = (
+                bool(assessment.owned_evidence_ids)
+                and assessment.change_id == inspection.change_id
+                and assessment.batch_id == inspection.batch_id
+                and assessment.coverage_epoch == inspection.coverage_epoch
+                and state.get("owned_evidence_ids") == list(assessment.owned_evidence_ids)
+                and state.get("evidence_bundle_digest") == assessment.evidence_bundle_digest
+            )
         except (TypeError, ValueError):
             pass
     return {
@@ -74,7 +89,7 @@ def quality_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
         ),
         "fix-proposal": ("fix-proposal" if disposition == "repairable_execution_failure" else None),
         "needs-human": "needs-human" if disposition == "needs_human" else None,
-        "blocked": "blocked" if disposition == "blocked" else None,
+        "diagnostic": "diagnostic" if diagnostic_ready else None,
     }
 
 

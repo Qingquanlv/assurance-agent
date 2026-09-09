@@ -264,15 +264,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
     from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     expected = {
-        "api.codegen-fix": (
-            "aa-api-codegen-fixer",
-            "assurance-v1-test-author",
-            (
-                "qa/changes/{change_id}/codegen/api-codegen-fix-summary.md",
-                "qa/changes/{change_id}/codegen/api-generated-files.json",
-                "qa/changes/{change_id}/codegen/api/fixes/epochs/{coverage_epoch}/rounds/{review_round}.json",
-            ),
-        ),
         "api.codegen": (
             "aa-api-codegen",
             "assurance-v1-test-author",
@@ -301,15 +292,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
                 "qa/changes/{change_id}/plans/api-plan.md",
                 "qa/changes/{change_id}/plans/api-test-data-plan.md",
                 "qa/changes/{change_id}/plans/m3-review-summary.md",
-            ),
-        ),
-        "e2e.codegen-fix": (
-            "aa-e2e-codegen-fixer",
-            "assurance-v1-test-author",
-            (
-                "qa/changes/{change_id}/codegen/e2e-codegen-fix-summary.md",
-                "qa/changes/{change_id}/codegen/e2e-generated-files.json",
-                "qa/changes/{change_id}/codegen/e2e/fixes/epochs/{coverage_epoch}/rounds/{review_round}.json",
             ),
         ),
         "e2e.codegen": (
@@ -397,7 +379,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
     assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
-    assert len(AGENT_JOB_CONTRACTS) == 14
+    assert len(AGENT_JOB_CONTRACTS) == 12
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
     assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
     for base, (skill_id, agent_profile, writes) in expected.items():
@@ -409,7 +391,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
         expected_claims = tuple(
             path for path in writes if "{coverage_epoch}" not in path and "{review_round}" not in path
         )
-        if stage in {"codegen", "codegen-fix"}:
+        if stage == "codegen":
             expected_claims = tuple(sorted((*writes, f"qa/changes/{{change_id}}/generated/{family}/files")))
             expected_claims = tuple(
                 path
@@ -419,10 +401,6 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
         if stage == "plan-review":
             expected_claims = tuple(
                 sorted((*expected_claims, f"qa/changes/{{change_id}}/plan/{family}/reviews"))
-            )
-        elif stage == "codegen-fix":
-            expected_claims = tuple(
-                sorted((*expected_claims, f"qa/changes/{{change_id}}/codegen/{family}/fixes"))
             )
         assert contract.resources.writes == expected_claims
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
@@ -439,16 +417,15 @@ def test_codegen_job_claims_cover_dynamic_change_local_mapping_targets() -> None
     from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     for family in ("api", "e2e", "fuzz", "performance"):
-        for suffix in ("codegen", "codegen-fix") if family in {"api", "e2e"} else ("codegen",):
-            base = f"{family}.{suffix}"
-            resources = AGENT_JOB_CONTRACTS[base].resources
-            assert isinstance(resources, ResourceClaimTemplate)
-            claims = resources.resolve({"change_id": "CH-1"}).writes
-            dynamic_root = f"qa/changes/CH-1/generated/{family}/files"
-            assert dynamic_root in claims
-            assert dynamic_root not in tuple(
-                path.replace("{change_id}", "CH-1") for path in OUTPUT_ROUTE_TEMPLATES[base]
-            )
+        base = f"{family}.codegen"
+        resources = AGENT_JOB_CONTRACTS[base].resources
+        assert isinstance(resources, ResourceClaimTemplate)
+        claims = resources.resolve({"change_id": "CH-1"}).writes
+        dynamic_root = f"qa/changes/CH-1/generated/{family}/files"
+        assert dynamic_root in claims
+        assert dynamic_root not in tuple(
+            path.replace("{change_id}", "CH-1") for path in OUTPUT_ROUTE_TEMPLATES[base]
+        )
 
 
 def test_generation_schema_bytes_equal_model_schema() -> None:

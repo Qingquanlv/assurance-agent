@@ -126,6 +126,10 @@ def _state(*, batch_id: str = _BATCH, verified: bool = False) -> dict[str, objec
         "verification_ref": (
             _ref(f"{assessment_base}/verification.json", _VERDICT_DIGEST) if verified else None
         ),
+        "observations_ref": _ref(f"{assessment_base}/observations.json"),
+        "issue_evidence_manifest_ref": _ref(f"{assessment_base}/issue-evidence-manifest.json"),
+        "owned_evidence_ids": ["OBS-REPORT-1"],
+        "evidence_bundle_digest": f"sha256:{_DIGEST}",
         "healing_ref": None,
         "issue_ref": None,
     }
@@ -136,6 +140,8 @@ def _state(*, batch_id: str = _BATCH, verified: bool = False) -> dict[str, objec
             assessment["gaps_ref"],
             assessment["metrics_ref"],
             assessment["sufficiency_ref"],
+            assessment["observations_ref"],
+            assessment["issue_evidence_manifest_ref"],
             execution_ref,
             fact_ref,
             *([] if assessment["verification_ref"] is None else [assessment["verification_ref"]]),
@@ -248,6 +254,10 @@ def _write_authenticated_inputs(project: Path, selected: ReportSkillInputV1) -> 
             and ref == selected.assessment.verification_ref
             else _BYTES
         )
+    if selected.issue_analysis_ref is not None:
+        path = project / selected.issue_analysis_ref.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(_BYTES)
     policy = project / ".aa/policy.yaml"
     policy.parent.mkdir(parents=True, exist_ok=True)
     policy.write_bytes(_BYTES)
@@ -266,6 +276,32 @@ def test_report_selector_binds_current_satisfied_inspection_chain() -> None:
     assert selected.coverage_epoch == 0
     assert selected.inspection.disposition == "satisfied"
     assert selected.inspection.batch_id == selected.batch_id
+
+
+def test_diagnostic_report_binds_current_issue_analysis() -> None:
+    state = _state()
+    inspection = cast(dict[str, object], state["inspection_outcome"])
+    inspection["disposition"] = "blocked"
+    inspection["coverage_state"] = None
+    state["report_purpose"] = "diagnostic"
+    issue_ref = _ref(f"qa/changes/{_CHANGE}/inspect/issue-analysis.json")
+    state["issue_analysis_ref"] = issue_ref
+
+    selected = cast(ReportSkillInputV1, select_report(state))
+
+    assert selected.issue_analysis_ref == EvidenceArtifactRefV1.model_validate(issue_ref)
+    assert selected.issue_digest == issue_ref["digest"]
+
+
+def test_diagnostic_report_rejects_missing_issue_analysis() -> None:
+    state = _state()
+    inspection = cast(dict[str, object], state["inspection_outcome"])
+    inspection["disposition"] = "blocked"
+    inspection["coverage_state"] = None
+    state["report_purpose"] = "diagnostic"
+
+    with pytest.raises(ValidationError, match="issue analysis"):
+        select_report(state)
 
 
 def test_report_selector_rejects_an_inspection_from_a_previous_batch() -> None:
@@ -544,6 +580,7 @@ def test_diagnostic_report_cannot_publish_a_normal_success_outcome() -> None:
     state["inspection_outcome"] = inspection.model_dump(mode="json")
     state["coverage_state"] = None
     state["report_purpose"] = "diagnostic"
+    state["issue_analysis_ref"] = _ref(f"qa/changes/{_CHANGE}/inspect/issue-analysis.json")
     selected = cast(ReportSkillInputV1, select_report(state))
     ref = EvidenceArtifactRefV1.model_validate(_ref(f"qa/changes/{_CHANGE}/report/report.md"))
     finalized = FinalizedReportV1(

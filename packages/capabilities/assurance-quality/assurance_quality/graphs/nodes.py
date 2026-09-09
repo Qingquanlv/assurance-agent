@@ -8,7 +8,7 @@ from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import canonical_digest
 
-from assurance_quality.contracts.agent import QualitySkillInputV1
+from assurance_quality.contracts.agent import FinalizedIssueAnalysisV1, QualitySkillInputV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_quality.contracts.assessment import (
@@ -26,6 +26,7 @@ from assurance_quality.contracts.coverage import classify_coverage_state
 from assurance_quality.contracts.decisions import (
     IssueAnalysisPublicV1,
     classify_inspection_disposition,
+    classify_issue_candidates,
 )
 from assurance_quality.graphs.state import (
     QualityAssessPublicV1,
@@ -36,8 +37,23 @@ from assurance_quality.graphs.state import (
 
 activation_one_shot = BusinessActivation.one_shot()
 
+
+def activation_issue_analysis(state: Mapping[str, object]) -> BusinessActivation:
+    business = select_quality(state)
+    if not business.evidence_bundle_digest:
+        raise ValueError("issue analysis requires an evidence bundle identity")
+    return BusinessActivation.for_trigger(
+        canonical_digest(
+            {
+                "change_id": business.change_id,
+                "batch_id": business.batch_id,
+                "evidence_bundle_digest": business.evidence_bundle_digest,
+            }
+        )
+    )
+
+
 _SKILL_DIGESTS = (
-    "execution_digest",
     "healing_digest",
     "trace_digest",
     "coverage_digest",
@@ -88,6 +104,11 @@ def _skill_payload(state: Mapping[str, object]) -> dict[str, object]:
         "batch_id": state["batch_id"],
         "capability_leafs": state["capability_leafs"],
         "artifact_paths": state["allowed_artifact_paths"],
+        "owned_evidence_ids": state.get("owned_evidence_ids", ()),
+        "evidence_bundle_digest": state.get("evidence_bundle_digest"),
+        # Artifact bytes and the Product terminal execution object have different
+        # digests. Only the artifact digest belongs in the Agent evidence input.
+        "execution_digest": state.get("execution_evidence_digest"),
         **{name: state.get(name) for name in _SKILL_DIGESTS},
     }
 
@@ -153,6 +174,10 @@ def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
     inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
     assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
+    issue_analysis_raw = state.get("issue_analysis_ref")
+    issue_analysis_ref = (
+        EvidenceArtifactRefV1.model_validate(issue_analysis_raw) if issue_analysis_raw is not None else None
+    )
     digests = {
         "execution_digest": assessment.execution_digest,
         "healing_digest": assessment.healing_ref.digest if assessment.healing_ref is not None else None,
@@ -163,7 +188,13 @@ def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
         "plan_digest": generation.plan_digest,
         "plan_ref": generation.plan_ref.model_dump(mode="json"),
         "mapping_digest": inspection.mapping_ref.digest,
-        "issue_digest": assessment.issue_ref.digest if assessment.issue_ref is not None else None,
+        "issue_digest": (
+            issue_analysis_ref.digest
+            if issue_analysis_ref is not None
+            else assessment.issue_ref.digest
+            if assessment.issue_ref is not None
+            else None
+        ),
     }
     return ReportSkillInputV1.model_validate(
         {
@@ -178,6 +209,7 @@ def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
             "assessment": assessment,
             "generation": generation,
             "fact_baseline_ref": state.get("fact_baseline_ref"),
+            "issue_analysis_ref": issue_analysis_ref,
         }
     )
 
@@ -270,7 +302,11 @@ def publish_inspect(
         raise ValueError("inspection identity no longer matches the active assessment cycle")
     facts = finalized.failure_facts
     has_execution_problem = (
-        not facts.identity_valid or facts.blocking_failure or facts.needs_human or facts.repairable_failure
+        not facts.identity_valid
+        or facts.blocking_failure
+        or facts.analysis_required
+        or facts.needs_human
+        or facts.repairable_failure
     )
     coverage_state = None
     if not has_execution_problem:
@@ -317,6 +353,10 @@ def publish_inspect(
         coverage_state=coverage_state,
         inspection_outcome=outcome,
         evidence_refs=[ref.model_dump(mode="json") for ref in assessment_refs],
+        observations_ref=assessment.observations_ref,
+        issue_evidence_manifest_ref=assessment.issue_evidence_manifest_ref,
+        owned_evidence_ids=assessment.owned_evidence_ids,
+        evidence_bundle_digest=assessment.evidence_bundle_digest,
         rounds_budget=_published_int({}, "rounds_budget", state.get("rounds_budget", 0)),
         rounds_used=_published_int({}, "rounds_used", state.get("rounds_used", 0)),
     ).model_dump(mode="json")
@@ -346,6 +386,27 @@ def publish_issue(
         rounds_budget=_published_int(payload, "rounds_budget", state.get("rounds_budget", 0)),
         rounds_used=_published_int(payload, "rounds_used", state.get("rounds_used", 0)),
     ).model_dump(mode="json")
+
+
+def publish_issue_analysis(
+    state: Mapping[str, object],
+    output: object,
+    receipt: object,
+) -> dict[str, object]:
+    del receipt
+    finalized = FinalizedIssueAnalysisV1.model_validate(output)
+    summary = classify_issue_candidates(finalized.agent_result)
+    if state.get("change_id") != finalized.agent_result.change_id:
+        raise ValueError("issue analysis changed the active change identity")
+    published = QualityIssuePublicV1(
+        change_id=finalized.agent_result.change_id,
+        classification=summary.classification,
+        evidence_refs=[finalized.issue_analysis_ref.model_dump(mode="json")],
+        fix_eligible=summary.fix_eligible,
+        rounds_budget=_published_int({}, "rounds_budget", state.get("rounds_budget", 0)),
+        rounds_used=_published_int({}, "rounds_used", state.get("rounds_used", 0)),
+    ).model_dump(mode="json")
+    return {**published, "issue_analysis": finalized.model_dump(mode="json")}
 
 
 def publish_report(
@@ -422,6 +483,7 @@ __all__ = [
     "publish_inspect",
     "publish_materialize_assessment",
     "publish_issue",
+    "publish_issue_analysis",
     "publish_report",
     "route_report_attempt",
     "select_fact_baseline",

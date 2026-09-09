@@ -65,19 +65,19 @@
     "attempt_contracts": [
       {
         "contract_id": "assurance.execution.agent.execute.v1",
-        "digest": "15dd88c1fe8f8c57d14010005017bd00fb1572354b9f04dc9f5d8e5ee85a82b5"
+        "digest": "1d50b15db83129e6cfccc76396159967cd125f7aaea2ca828fbf61fd425fbe12"
       },
       {
         "contract_id": "assurance.execution.agent.run.v1",
-        "digest": "b3344c11b11abf3c472df925781aab869ed5e86d1b6da8252f184f888ec0d891"
+        "digest": "758ee88b7f828d7bf1c78c86f5ef68d61162760207ffa0fa337f0e9cd708f45c"
       },
       {
         "contract_id": "assurance.execution.task.execute.v1",
-        "digest": "7e6ec949b955e7445371721e7bf09de74243d1c8bf2a4f13f2ebe29486c0f849"
+        "digest": "3af1a5269bfba3324440b829edbbcb9a109c32240af27aafa4756d67c3358289"
       },
       {
         "contract_id": "assurance.execution.task.run.v1",
-        "digest": "2fbe0562e56be82b2a3f2fc2fcc7727456ad398cffa7277f69176f78e090e0cc"
+        "digest": "b7c7637456d0c8ad7dc6bc6f452793e4259bf7c0830f0c439d9b5f5316668a1e"
       }
     ]
   },

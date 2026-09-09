@@ -230,7 +230,6 @@ def fake_agent_result(
     artifact_paths: list[str] | None = None,
     capability_leafs: tuple[str, ...] = VALID_LEAFS,
     allowed_paths: list[str] | None = None,
-    baseline_tree_id: str | None = None,
 ) -> dict[str, JSONValue]:
     payload = cast(JSONValue, structured_result)
     result = AgentRunResult(
@@ -248,6 +247,7 @@ def fake_agent_result(
         "artifact_paths": list(artifact_paths or []),
         "allowed_paths": list(allowed_paths or []),
     }
-    if baseline_tree_id is not None:
-        document["baseline_tree_id"] = baseline_tree_id
+    required_capabilities = structured_result.get("required_capabilities")
+    if isinstance(required_capabilities, list):
+        document["required_capabilities"] = cast(JSONValue, required_capabilities)
     return document

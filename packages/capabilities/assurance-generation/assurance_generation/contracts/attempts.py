@@ -9,12 +9,10 @@ from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, Task
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
-from assurance_generation.contracts.agent import CodegenFixInputV1, CodegenInputV1, PlanInputV1
+from assurance_generation.contracts.agent import CodegenInputV1, PlanInputV1
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
-    CodegenFixCandidateV1,
     CodegenResultV1,
-    CodegenResultV2,
 )
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
@@ -28,7 +26,8 @@ from assurance_intake.contracts.workflow import ReviewedCaseV1
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REVIEWER = "assurance-v1-reviewer"
 _TEST_AUTHOR = "assurance-v1-test-author"
-_RETRY = AttemptRetryPolicy(max_attempts=1)
+_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
+_TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 _PLAN_FILES: Mapping[str, tuple[str, ...]] = MappingProxyType(
@@ -73,10 +72,9 @@ def _review_outputs(family: str) -> tuple[str, ...]:
     return (f"review/{family}-plan-review.json", f"review/{family}-plan-review-summary.md")
 
 
-def _codegen_outputs(family: str, *, fix: bool = False) -> tuple[str, ...]:
-    suffix = "-fix" if fix else ""
+def _codegen_outputs(family: str) -> tuple[str, ...]:
     return (
-        f"codegen/{family}-codegen{suffix}-summary.md",
+        f"codegen/{family}-codegen-summary.md",
         f"codegen/{family}-generated-files.json",
     )
 
@@ -96,12 +94,10 @@ def _job(
     if base == "api.plan":
         claim_outputs = tuple(output for output in outputs if output != "plans/api-case-execution-plan.json")
         finalize_suffixes = ("plans/api-case-execution-plan.json",)
-    if stage in {"codegen", "codegen-fix"}:
+    if stage == "codegen":
         claim_outputs = (*outputs, f"generated/{family}/files")
     if stage == "plan-review":
         finalize_suffixes = (f"plan/{family}/reviews",)
-    elif stage == "codegen-fix":
-        finalize_suffixes = (f"codegen/{family}/fixes",)
     runtime_writes = _paths(*claim_outputs)
     finalize_writes = _paths(*finalize_suffixes)
     writes = tuple(sorted((*runtime_writes, *finalize_writes)))
@@ -120,7 +116,7 @@ def _job(
             reads=("qa",),
             writes=writes,
         ),
-        retry=_RETRY,
+        retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
@@ -134,21 +130,12 @@ _JOBS: tuple[
     ...,
 ] = (
     (
-        "api.codegen-fix",
-        "aa-api-codegen-fixer",
-        _TEST_AUTHOR,
-        CodegenFixInputV1,
-        CodegenAuthoringV1,
-        CodegenFixCandidateV1,
-        _codegen_outputs("api", fix=True),
-    ),
-    (
         "api.codegen",
         "aa-api-codegen",
         _TEST_AUTHOR,
         CodegenInputV1,
         CodegenAuthoringV1,
-        CodegenResultV2,
+        CodegenResultV1,
         _codegen_outputs("api"),
     ),
     (
@@ -170,21 +157,12 @@ _JOBS: tuple[
         _PLAN_FILES["api"],
     ),
     (
-        "e2e.codegen-fix",
-        "aa-e2e-codegen-fixer",
-        _TEST_AUTHOR,
-        CodegenFixInputV1,
-        CodegenAuthoringV1,
-        CodegenFixCandidateV1,
-        _codegen_outputs("e2e", fix=True),
-    ),
-    (
         "e2e.codegen",
         "aa-e2e-codegen",
         _TEST_AUTHOR,
         CodegenInputV1,
         CodegenAuthoringV1,
-        CodegenResultV2,
+        CodegenResultV1,
         _codegen_outputs("e2e"),
     ),
     (
@@ -279,14 +257,7 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                             "epochs/{coverage_epoch}/rounds/{review_round}.json",
                         )
                         if base.partition(".")[2] == "plan-review"
-                        else (
-                            (
-                                f"qa/changes/{{change_id}}/codegen/{base.partition('.')[0]}/fixes/"
-                                "epochs/{coverage_epoch}/rounds/{review_round}.json",
-                            )
-                            if base.partition(".")[2] == "codegen-fix"
-                            else ()
-                        )
+                        else ()
                     ),
                 )
             )
@@ -301,7 +272,7 @@ _RESOLVE_INPUTS = TaskAttemptContract(
     input_model=ResolveGenerationInputV1,
     output_model=ReviewedCaseV1,
     resources=ResourceClaims(reads=("qa",)),
-    retry=_RETRY,
+    retry=_TASK_RETRY,
     timeout=_TIMEOUT,
     validators=(),
 )
@@ -316,7 +287,7 @@ _PUBLISH_CYCLE = TaskAttemptContract(
         reads=("qa/changes/{change_id}",),
         writes=("qa/changes/{change_id}/generation/epochs/{coverage_epoch}/mapping.json",),
     ),
-    retry=_RETRY,
+    retry=_TASK_RETRY,
     timeout=_TIMEOUT,
     validators=(),
 )

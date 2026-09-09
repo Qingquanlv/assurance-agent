@@ -33,6 +33,9 @@ from assurance_intake.contracts.verification import (
     BusinessAssertionV1,
     validate_assertion_provenance,
 )
+
+
+from assurance_intake.contracts.planning_facts import build_planning_facts
 from assurance_intake.contracts.explore import ExploreAdvisoryV1, build_explore_context
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
@@ -421,12 +424,16 @@ def prepare_outcome(
     result_schema_id: str,
     context: TaskContext,
     allowed_outputs: tuple[str, ...],
+    planning_facts: dict[str, Any] | None = None,
 ) -> TaskOutcome:
+    business_input = business.model_dump(mode="json")
+    if planning_facts is not None:
+        business_input["planning_facts"] = planning_facts
     agent_request = AgentRunRequest(
         instructions=(
             InstructionPart.text("text/plain", resource_text(skill_path)),
             InstructionPart.text("text/plain", resource_text(persona_path)),
-            InstructionPart.from_json(business.model_dump(mode="json")),
+            InstructionPart.from_json(business_input),
         ),
         result_contract=result_contract(result_schema_id),
         execution=binding.execution,
@@ -553,6 +560,12 @@ class CaseDesignPrepareHandler:
                     business.case_delta_paths,
                     business.assertion_source_paths,
                 ),
+                planning_facts=build_planning_facts(
+                    context.project_root,
+                    change_id=business.change_id,
+                    capability_leafs=business.capability_leafs,
+                    families=plan.selected_test_families,
+                ),
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
@@ -608,6 +621,12 @@ class CaseReviewPrepareHandler:
                 result_schema_id=CASE_REVIEW_RESULT_ID,
                 context=context,
                 allowed_outputs=case_review_outputs(business.change_id),
+                planning_facts=build_planning_facts(
+                    context.project_root,
+                    change_id=business.change_id,
+                    capability_leafs=business.capability_leafs,
+                    families=plan.selected_test_families,
+                ),
             )
         except InputError as error:
             return failed_input(error)

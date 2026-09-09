@@ -211,8 +211,8 @@ def runtime_bindings_from_composition(
         contracts,
         adapter=_PROVIDER,
     )
-    if len(resolved) != 34:
-        raise ValueError("composition runtime binding set is not the exact 34 Agent contracts")
+    if set(resolved) != set(contracts):
+        raise ValueError("composition runtime binding set is not the exact Agent contract catalog")
     return MappingProxyType(resolved)
 
 
@@ -450,7 +450,11 @@ def _outcome_failure(outcome: TaskOutcome) -> PermanentTaskFailure | None:
         "configuration",
     }:
         kind = "internal"
-    return PermanentTaskFailure(kind=kind, message=outcome.failure.message)
+    return PermanentTaskFailure(
+        kind=kind,
+        message=outcome.failure.message,
+        retryable=outcome.failure.retryable,
+    )
 
 
 class InstalledPreparePhase(_HostBackedInstalledPhase):

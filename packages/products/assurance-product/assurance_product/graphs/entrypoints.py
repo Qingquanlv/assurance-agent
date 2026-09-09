@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from graph_engine.boot.boot import GraphBuildContext
+from graph_engine.application.status import TerminalEnvelope
 from graph_engine.stategraph.checkpoint_bridge import omit_checkpoint_bridge_fields
 
 from assurance_product.graphs.routes import route_prepare
@@ -329,7 +330,15 @@ def publish_public_output(state: ProductState) -> dict[str, object]:
         receipts=tuple(ProductReceiptRefV1.model_validate(item) for item in _receipt_items(cleaned)),
     )
     dumped = output.model_dump(mode="json")
-    return {"output": dumped, "status": dumped["status"], "receipts": list(dumped["receipts"])}
+    terminal = TerminalEnvelope.model_validate(
+        cleaned.get("terminal") or {"status": output.status, "reason": output.status}
+    )
+    return {
+        "output": dumped,
+        "status": dumped["status"],
+        "receipts": list(dumped["receipts"]),
+        "terminal": terminal.model_dump(mode="json"),
+    }
 
 
 def compile_thin_root(

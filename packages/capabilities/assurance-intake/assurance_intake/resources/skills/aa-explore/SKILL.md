@@ -175,7 +175,7 @@ business obligations.
 2. Every `priority_hint` / watchlist item **must** reference ≥1 evidence ID (`context.evidence[].id` or Step 3 `SC-*` ID) via `evidence_ids[]`.
 3. No `evidence_ids` → item MUST be `confidence: low`. Do not generate `priority_hint`/watchlist items with no evidence.
 4. `case_design_guidance` is an **evidence-anchored channel** — never write case files. `priority_hints` is the **sole channel for risk-area signals** (there is no separate `hotspots` array — every `priority_hint` carries its own `confidence`, following the same §5.7 rules as watchlist). When ALL evidence (historical AND source code) is empty, set `priority_hints`, `suggested_scenarios`, and `regression_focus` to `[]`. Do **not** fill them with generic advice — generic "at least cover" guidance belongs exclusively in `minimum_required_coverage`; degraded disclaimers belong exclusively in `executive_summary`.
-4a. `test_strategy` is the **macro plan channel** — scope / data focus / layer recommendation / approach. It is a proposal consumed once by the deterministic resolver, which preserves required obligations and policy within the candidate families. Case design consumes the frozen result. Never ask the user about scope/data/layer/approach as an `open_questions_for_case_design` item. `test_strategy.layer_recommendation` MUST enumerate all four layers (`API`, `E2E`, `Fuzz`, `Performance`) with explicit `recommended: true|false` and `rationale`; when evidence is empty, emit all four as `recommended: false` with the evidence-limit reason and leave `scope`/`approach` unset rather than guessing. Keep applicable required obligations even when their layer is not recommended.
+4a. `test_strategy` is the **macro plan channel** — scope / data focus / layer recommendation / approach. It is a proposal consumed once by the deterministic resolver, which preserves required obligations and policy within the candidate families. Case design consumes the frozen result. Never ask the user about scope/data/layer/approach as an `open_questions_for_case_design` item. `test_strategy.layer_recommendation` MUST enumerate all four layers (`API`, `E2E`, `Fuzz`, `Performance`) with explicit `recommended: true|false`, `rationale`, and `evidence_ids`. Every layer recommendation entry MUST include `evidence_ids`: use supporting evidence IDs for a recommended layer and an empty list for an evidence-limited declined layer. When evidence is empty, emit all four as `recommended: false` with the evidence-limit reason, set `scope` and `approach` to JSON `null`, and set `depth` to `"smoke"` rather than guessing. Keep applicable required obligations even when their layer is not recommended.
 5. Respect `parse_confidence_cap` on evidence — do not exceed cap in item confidence. All `source: "source_code"` evidence has cap `medium`; do not assign `high` confidence to any item backed only by SC-* evidence.
 6. Use `evidence[]` IDs only — do not use unstable path expressions like `context.test_health[menus].pass_rate`.
 7. If `context.staleness.stale == true` → cap all confidence at `medium`; add staleness disclaimer to Executive Summary.
@@ -207,6 +207,16 @@ Required top-level fields: `schema_version`, `change_id`, `context_ref`, `genera
 and `test_strategy`. `schema_version` must be exactly `"1"`.
 `test_strategy.layer_recommendation` must contain all four layers,
 including explicit declined entries when evidence does not support a layer.
+Every entry must include `layer`, `recommended`, `rationale`, and
+`evidence_ids`; `evidence_ids` may be empty only when the layer is declined for
+lack of supporting evidence.
+`test_strategy` must always contain the keys `scope`, `data_focus`, `depth`,
+`layer_recommendation`, and `approach`. Nullable means an explicit JSON `null`,
+not an omitted key. With no supporting evidence, use `scope: null`,
+`data_focus: []`, `depth: "smoke"`, and `approach: null`.
+`data_focus` is an array of plain strings such as `["Dept.name", "Dept.parent_id"]`,
+never objects with `field` or `evidence_ids` keys. Evidence identifiers belong on
+`source_code_evidence` and `layer_recommendation`, not inside `data_focus`.
 The required `context_ref` value is exactly `"explore/context.json"`.
 
 ### `case_design_guidance.priority_hints` — schema and derivation
@@ -259,9 +269,9 @@ finalizer enforces the installed model after read-back.
 
 | Field | Derive from |
 |-------|-------------|
-| `scope.in_scope` / `scope.out_of_scope` | Diff-changed modules/files (`context.json` `impact.modules`) + requirement text scope; uncertain areas go to `out_of_scope` with a note in `executive_summary`, not a guess |
+| `scope.in_scope` / `scope.out_of_scope` | Diff-changed modules/files (`context.json` `impact.modules`) + requirement text scope; uncertain areas go to `out_of_scope` with a note in `executive_summary`, not a guess. When no evidence supports a scope, the required `scope` key is JSON `null`. |
 | `data_focus` | Model/entity fields read in Step 3 (SC-* `model_field` evidence) that are central to the change |
-| `layer_recommendation` | Exactly one entry per `API/E2E/Fuzz/Performance`: `recommended: true` only when evidence supports it; `recommended: false` when evidence does not support the layer; cite `evidence_ids` for supported recommendations and give a concrete evidence-limit reason for declined ones |
+| `layer_recommendation` | Exactly one entry per `API/E2E/Fuzz/Performance`; every entry includes `evidence_ids`: `recommended: true` only when evidence supports it and cites those IDs; `recommended: false` when evidence does not support the layer and uses `evidence_ids: []` plus a concrete evidence-limit reason |
 | `approach` | One sentence combining the recommended layers, e.g. "API + E2E，并对 UserCreate/UserUpdate schema 增加 Fuzz 覆盖" |
 
 `depth` (`smoke | core | exhaustive`) reflects how much evidence supports broad coverage — `low`/no evidence caps depth at `smoke`.
@@ -320,11 +330,11 @@ Generate applicable obligations from the **module's domain shape** (CRUD operati
 | Sub-array | What to include |
 |-----------|----------------|
 | `api` | One entry per main API operation the module exposes (CRUD + any module-specific queries). Name in snake_case (`verb_noun`). |
-| `e2e` | Every applicable business-required user journey, using an exact key from authenticated data knowledge's `journeys`. A `recommended: false` E2E row must not erase a required journey. |
+| `e2e` | Every applicable business-required user journey, using an exact key from authenticated data knowledge's `journeys`. A `recommended: false` E2E row must not erase a required journey. However, an explicit API-only requirement makes E2E journeys inapplicable: set `minimum_required_coverage.e2e` to `[]`. The candidate set alone is not enough to make a journey inapplicable. |
 | `negative` | Exact authenticated capability-catalog leaf keys for required-field, foreign-key, boundary, or authorization obligations. Do not invent scenario names as keys. |
 | `data_integrity` | Exact authenticated capability-catalog leaf keys for consistency invariants, such as hierarchy, ordering, or relationship constraints. Do not invent scenario names as keys. |
 
-Resolve conditional requiredness/applicability from requirement and authenticated policy/data evidence before finalizing. Write resolved required E2E journeys under `e2e`, regardless of the recommendation or candidate family set. An unresolved condition blocks plan freezing; do not turn it into `required: false`, erase it, or use a family recommendation as its condition. The legacy `e2e_if_enabled` category may be absent or `[]`; non-empty entries are unresolved and rejected.
+Resolve conditional requiredness/applicability from requirement and authenticated policy/data evidence before finalizing. Write resolved required E2E journeys under `e2e`, regardless of the recommendation or candidate family set. When the authenticated requirement explicitly limits scope to API-only, that requirement resolves E2E journeys as inapplicable and the `e2e` array must be empty even if the data-knowledge catalog contains matching journeys. An unresolved condition blocks plan freezing; do not turn it into `required: false`, erase it, or use a family recommendation as its condition. The legacy `e2e_if_enabled` category may be absent or `[]`; non-empty entries are unresolved and rejected.
 
 An entry is either a canonical non-empty key string (required by default) or a closed object with only `id`, `key`, `category`, `required`, and `layer`. `category`, if present, must match its containing sub-array. `layer` defaults to `e2e` for `e2e` and `api` for the other categories; use `both` only when both kinds of evidence are required. Resolve `required` to a boolean using the evidence above. Keep IDs and keys unique across all categories. If a required closed key is unavailable, report the unresolved obligation instead of inventing a key or silently omitting it.
 
@@ -453,8 +463,10 @@ After reconciliation, re-run a mental check: for every answered OQ, no surviving
 
 Read `exploration.json` and verify the required top-level fields above, the three
 `case_design_guidance` arrays, all three `evidence_inventory` arrays, a non-empty
-`minimum_required_coverage` object, and four `test_strategy.layer_recommendation`
-entries. Do not run a validator command. The product finalizer performs the
+`minimum_required_coverage` object, every required `test_strategy` key (`scope`,
+`data_focus`, `depth`, `layer_recommendation`, `approach`), and four
+`test_strategy.layer_recommendation` entries, each with an explicit
+`evidence_ids` array. Do not run a validator command. The product finalizer performs the
 authoritative typed validation after this agent returns.
 
 - Incomplete → rewrite the complete object and repeat the read-back check.
