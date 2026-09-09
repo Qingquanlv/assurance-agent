@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType
 from typing import Any, Mapping, cast
 
 import pytest
@@ -28,11 +28,7 @@ from assurance_execution.contracts.workflow import (
     VerifiedIncompleteExecutionV1,
 )
 from assurance_execution.graphs.factory import ExecutionGraphs
-from assurance_execution.graphs.nodes import (
-    activation_rerun,
-    publish_execution,
-    select_rerun,
-)
+from assurance_execution.graphs.nodes import select_rerun
 from assurance_execution.operations.agent_skills import _execution_id
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from assurance_generation.contracts.admission import (
@@ -100,6 +96,29 @@ INVOCATION_ID = "invocation"
 ENTRYPOINT = "execute"
 REVISION = "f" * 64
 CONTRACT_ID = "assurance.execution.task.execute.v1"
+RUN_CONTRACT_ID = "assurance.execution.task.run.v1"
+
+
+class _Task8SuccessfulExecutionHandler:
+    """Deterministic transport endpoint exercised through the production task host."""
+
+    async def execute(self, request: Any, context: Any) -> Any:
+        from assurance_execution.contracts.agent import (
+            ExecutionPrepareInputV1 as InstalledExecutionPrepareInputV1,
+        )
+        from graph_engine.attempts import AttemptKey as InstalledAttemptKey
+        from graph_engine.plugin_api import TaskOutcome as InstalledTaskOutcome
+
+        assert context.activity is not None
+        assert context.secrets is not None
+        assert context.secrets.resolve("sut.authority") == b"unused-bridge-authority"
+        value = InstalledExecutionPrepareInputV1.model_validate(request.input)
+        key = InstalledAttemptKey(digest=request.task_id)
+        result = _successful_rerun(context.project_root, value, key)
+        activity = {"execution_id": result.execution_id}
+        context.activity.mark_dispatch_started(activity)
+        context.activity.bind(activity)
+        return InstalledTaskOutcome.succeeded(result.model_dump(mode="json"))
 
 
 @pytest.fixture(scope="module")
@@ -665,14 +684,45 @@ def _plan_policy_digest(project: Path, generation: GenerationCycleResultV1) -> s
     return cast(str, document["policy_digest"])
 
 
-async def _run_installed_initial_execution(
+def _installed_full_chain_input(
+    project: Path,
+    composition: Any,
+) -> tuple[dict[str, object], GenerationCycleResultV1, dict[str, object]]:
+    state = _missing_bridge_generation_state(project)
+    generation = GenerationCycleResultV1.model_validate(state["generation_result"])
+    start = _product_input_for_generation(
+        generation,
+        state["verification"],
+        policy_digest=_plan_policy_digest(project, generation),
+        verification_config_digest=composition.semantic_attempt_contracts[CONTRACT_ID].executor.config_digest,
+    )
+    return state, generation, start
+
+
+async def _run_installed_execution_attempt(
     project: Path,
     state: Mapping[str, object],
     composition: Any,
     journal: Any,
     monkeypatch: pytest.MonkeyPatch,
-) -> tuple[dict[str, object], Any]:
+    *,
+    semantic_node_id: str,
+    host_calls: list[str] | None = None,
+) -> tuple[dict[str, object], Any, Any]:
+    from assurance_execution.contracts.attempts import (
+        activation_execute as installed_activation_execute,
+        select_execute as installed_select_execute,
+    )
     from assurance_execution.graphs.factory import build_execution_graphs
+    from assurance_execution.graphs.nodes import (
+        activation_rerun as installed_activation_rerun,
+        select_rerun as installed_select_rerun,
+    )
+    from graph_engine.attempts import (
+        AttemptKey as InstalledAttemptKey,
+        derive_attempt_key as derive_installed_attempt_key,
+    )
+    from graph_engine.attempts.activity import JournalBackedTaskActivityPort
     from graph_engine.attempts.contracts import resolve_contract
     from graph_engine.attempts.host_receipts import TerminalReceiptStore
     from graph_engine.attempts.kernel import AssuranceAttemptKernel
@@ -688,8 +738,12 @@ async def _run_installed_initial_execution(
     from graph_engine.persistence.resource_authorization import MemoryResourceAuthorizationStore
     from graph_engine.testing import RecordingCapabilityBuildContext
 
+    if semantic_node_id not in {"execution.execute", "execution.run"}:
+        raise AssertionError(semantic_node_id)
+    is_rerun = semantic_node_id == "execution.run"
+    contract_id = RUN_CONTRACT_ID if is_rerun else CONTRACT_ID
     contracts = composition.semantic_attempt_contracts
-    resolved = contracts[CONTRACT_ID]
+    resolved = contracts[contract_id]
     handler_id = resolved.contract.handler_id
     monkeypatch.setenv("AA_TASK8_AUTHORITY", "unused-bridge-authority")
     sources = (SecretSourceBinding("sut.authority", "environment", "AA_TASK8_AUTHORITY"),)
@@ -699,26 +753,62 @@ async def _run_installed_initial_execution(
         digest=runtime_authorization_digest(sources),
     )
 
-    def activity_factory(call, *, remaining_deadline):
-        del call, remaining_deadline
-        raise AssertionError("a diagnosed missing bridge must not dispatch to the SUT host")
+    owner_loop = asyncio.get_running_loop()
 
+    async def assert_live_fence() -> None:
+        return None
+
+    def activity_factory(call, *, remaining_deadline):
+        if not is_rerun:
+            raise AssertionError("a diagnosed missing bridge must not dispatch to the SUT host")
+        if host_calls is not None and "rerun" not in host_calls:
+            host_calls.append("rerun")
+        return JournalBackedTaskActivityPort(
+            journal=journal,
+            attempt_key=InstalledAttemptKey(digest=call.identity.attempt_key_digest),
+            identity=call.activity_rpc,
+            workspace_identity=call.attempt_root.workspace_identity,
+            assert_live_fence=assert_live_fence,
+            owner_loop=owner_loop,
+            remaining_deadline=remaining_deadline,
+            expected_request_digest=canonical_digest(cast(JSONValue, call.request.model_dump(mode="json"))),
+            expected_product_lock_digest=call.request.invocation.lock_digest,
+            expected_handler_id=call.request.capability_id,
+        )
+
+    attempt_name = "rerun" if is_rerun else "initial"
     store = TaskWorkspaceStore(
         project,
-        project / ".task8-attempts",
-        project / ".task8-receipts",
+        project / f".task8-{attempt_name}-attempts",
+        project / f".task8-{attempt_name}-receipts",
     )
+    if is_rerun:
+        executor = type(resolved.executor)(
+            config=resolved.executor.config,
+            config_digest=resolved.executor.config_digest,
+            legacy=None,
+            callable_path=(
+                "tests.product.test_repair_authorization:_Task8SuccessfulExecutionHandler.execute"
+            ),
+        )
+        handler = _Task8SuccessfulExecutionHandler()
+        handler_import_roots = {handler_id: (str(Path(__file__).resolve().parents[2]),)}
+    else:
+        executor = resolved.executor
+        handler = composition.registries.capabilities.task_handlers[handler_id]
+        handler_import_roots = None
     host = create_production_task_execution_host(
         authorization=authorization,
-        handlers={handler_id: composition.registries.capabilities.task_handlers[handler_id]},
+        handlers={handler_id: handler},
         store=store,
-        receipts=TerminalReceiptStore.create(project / ".task8-host-receipts"),
+        receipts=TerminalReceiptStore.create(project / f".task8-{attempt_name}-host-receipts"),
         activity_factory=activity_factory,
         invocation_root=project,
+        handler_import_roots=handler_import_roots,
     )
     bound = resolve_contract(
         resolved.contract,
-        executor=resolved.executor.with_host(
+        executor=executor.with_host(
             host,
             graph_revision=REVISION,
             product_lock_digest=composition.lock.digest,
@@ -735,35 +825,85 @@ async def _run_installed_initial_execution(
     context = RecordingCapabilityBuildContext(
         owner_id="assurance.execution",
         contracts={
-            CONTRACT_ID: bound,
-            "assurance.execution.task.run.v1": contracts["assurance.execution.task.run.v1"],
+            CONTRACT_ID: bound if not is_rerun else contracts[CONTRACT_ID],
+            RUN_CONTRACT_ID: bound if is_rerun else contracts[RUN_CONTRACT_ID],
         },
         attempt_factory=AttemptNodeFactory(journal=journal, kernel=kernel),
     )
+    if is_rerun:
+        selected = installed_select_rerun(state)
+        activation = installed_activation_rerun(state)
+    else:
+        selected = installed_select_execute(state)
+        activation = installed_activation_execute(state)
+    current_key = derive_installed_attempt_key(
+        invocation_id=INVOCATION_ID,
+        graph_revision=REVISION,
+        public_entrypoint=ENTRYPOINT,
+        semantic_node_id=semantic_node_id,
+        business_activation=activation,
+        contract_id=contract_id,
+        validated_input=selected,
+    )
     try:
-        graph = build_execution_graphs(context).execute
-        result = await graph.ainvoke(
-            dict(state),
-            config={
-                "configurable": {
-                    "thread_id": INVOCATION_ID,
-                    "assurance_revision_id": REVISION,
-                    "assurance_product_lock_digest": composition.lock.digest,
-                    "assurance_root_input_digest": canonical_digest(cast(JSONValue, dict(state))),
-                    "assurance_fencing_token": 1,
-                    "assurance_entrypoint": ENTRYPOINT,
-                }
-            },
-        )
-        execution = VerifiedIncompleteExecutionV1.model_validate(result["execution_result"])
-        from graph_engine.attempts import AttemptKey as InstalledAttemptKey
-
-        current_key = InstalledAttemptKey(digest=execution.defect.attempt_key.digest)
+        graph_bundle = build_execution_graphs(context)
+        graph = graph_bundle.rerun if is_rerun else graph_bundle.execute
+        try:
+            result = await graph.ainvoke(
+                dict(state),
+                config={
+                    "configurable": {
+                        "thread_id": INVOCATION_ID,
+                        "assurance_revision_id": REVISION,
+                        "assurance_product_lock_digest": composition.lock.digest,
+                        "assurance_root_input_digest": canonical_digest(cast(JSONValue, dict(state))),
+                        "assurance_fencing_token": 1,
+                        "assurance_entrypoint": ENTRYPOINT,
+                    }
+                },
+            )
+        except ValueError as error:
+            if not is_rerun:
+                raise
+            result = {"attempt_failure": {"message": str(error)}, "status": "failed"}
         snapshot = await journal.load(current_key)
         assert snapshot is not None
-        return dict(result), snapshot
+        return dict(result), snapshot, current_key
     finally:
         store.close()
+
+
+def _attack_authorization_state(
+    state: Mapping[str, object],
+    attack: str,
+) -> dict[str, object]:
+    attacked = dict(state)
+    if attack == "profile":
+        attacked["validation_profile"] = "api_db_trace.v1"
+    elif attack == "selected_test_families":
+        attacked["selected_test_families"] = ["e2e"]
+    elif attack == "plan_digest":
+        attacked["plan_digest"] = "0" * 64
+    elif attack == "generation":
+        generation = dict(cast(Mapping[str, object], attacked["generation_result"]))
+        mapping_ref = dict(cast(Mapping[str, object], generation["mapping_ref"]))
+        mapping_ref["digest"] = "0" * 64
+        generation["mapping_ref"] = mapping_ref
+        attacked["generation_result"] = generation
+    elif attack == "coverage_epoch":
+        attacked["coverage_epoch"] = 3
+    elif attack == "repair_round":
+        attacked["repair_round"] = 1
+    elif attack == "receipt":
+        execution = dict(cast(Mapping[str, object], attacked["execution_result"]))
+        execution["receipt"] = {
+            "receipt_id": "stale",
+            "receipt_digest": "0" * 64,
+        }
+        attacked["execution_result"] = execution
+    else:  # pragma: no cover - closed test table
+        raise AssertionError(attack)
+    return attacked
 
 
 def _real_task8_graph(
@@ -774,6 +914,7 @@ def _real_task8_graph(
     monkeypatch: pytest.MonkeyPatch,
     assessment_composition: Any,
     obligation_mutation: str | None = None,
+    authorization_attack: str | None = None,
 ):
     from assurance_product.repair_authorization import (
         RepairAuthorizationIssuer as InstalledRepairAuthorizationIssuer,
@@ -784,6 +925,7 @@ def _real_task8_graph(
 
     initial_results: list[VerifiedIncompleteExecutionV1] = []
     initial_snapshots: list[Any] = []
+    rerun_snapshots: list[Any] = []
     rerun_keys: list[AttemptKey] = []
     host_calls: list[str] = []
     live_journal = InstalledMemoryAttemptJournal()
@@ -793,39 +935,23 @@ def _real_task8_graph(
         public_entrypoint=ENTRYPOINT,
         graph_revision=REVISION,
     )
+    authorization_issuer: Any = live_issuer
+    if authorization_attack is not None:
 
-    class RerunHost:
-        async def execute(self, value: Any):
-            from graph_engine.plugin_api import TaskOutcome as InstalledTaskOutcome
+        class _AttackingIssuer:
+            async def issue(self, state: Mapping[str, object]) -> Any:
+                return await live_issuer.issue(_attack_authorization_state(state, authorization_attack))
 
-            host_calls.append("rerun")
-            selected = ExecutionPrepareInputV1.model_validate(
-                value.model_dump(mode="json", exclude_computed_fields=True)
-            )
-            return SimpleNamespace(
-                outcome=InstalledTaskOutcome.succeeded(
-                    cast(
-                        JSONValue,
-                        _successful_rerun(project, selected, rerun_keys[-1]).model_dump(mode="json"),
-                    )
-                )
-            )
-
-    run_contract = assessment_composition.semantic_attempt_contracts["assurance.execution.task.run.v1"]
-    facade = run_contract.executor.with_host(
-        RerunHost(),
-        graph_revision=REVISION,
-        product_lock_digest=assessment_composition.lock.digest,
-    )
-    facade._call = lambda value, _scope: value  # type: ignore[method-assign]
+        authorization_issuer = _AttackingIssuer()
 
     async def execute_node(state: Mapping[str, object]) -> dict[str, object]:
-        published, snapshot = await _run_installed_initial_execution(
+        published, snapshot, _key = await _run_installed_execution_attempt(
             project,
             state,
             assessment_composition,
             live_journal,
             monkeypatch,
+            semantic_node_id="execution.execute",
         )
         initial_results.append(VerifiedIncompleteExecutionV1.model_validate(published["execution_result"]))
         initial_snapshots.append(snapshot)
@@ -978,17 +1104,6 @@ def _real_task8_graph(
 
     async def rerun_node(state: Mapping[str, object]) -> dict[str, object]:
         value = select_rerun(state)
-        contract = TASK_ATTEMPT_CONTRACTS["assurance.execution.task.run.v1"]
-        key = derive_attempt_key(
-            invocation_id=INVOCATION_ID,
-            graph_revision=REVISION,
-            public_entrypoint=ENTRYPOINT,
-            semantic_node_id="execution.run",
-            business_activation=activation_rerun(state),
-            contract_id=contract.contract_id,
-            validated_input=value,
-        )
-        rerun_keys.append(key)
         if repeat_defect:
             generation = value.generation_result
             assert generation is not None
@@ -1007,28 +1122,22 @@ def _real_task8_graph(
                 }
             )
             value = value.model_copy(update={"generation_result": generation})
-        try:
-            installed_value = run_contract.contract.input_model.model_validate(
-                value.model_dump(mode="json", exclude_computed_fields=True)
-            )
-            result = await facade.execute(
-                installed_value,
-                cast(
-                    Any,
-                    SimpleNamespace(
-                        workspace=SimpleNamespace(project_root=project),
-                        execution=SimpleNamespace(attempt_key=key),
-                    ),
-                ),
-            )
-        except ValueError as error:
-            return {"attempt_failure": {"message": str(error)}, "status": "failed"}
-        return publish_execution(
-            state,
-            result.output,
-            ReceiptRef(receipt_id="rerun", receipt_digest="5" * 64),
+        rerun_state = {
+            **state,
+            **value.model_dump(mode="json", exclude_computed_fields=True),
+        }
+        published, snapshot, installed_key = await _run_installed_execution_attempt(
+            project,
+            rerun_state,
+            assessment_composition,
+            live_journal,
+            monkeypatch,
             semantic_node_id="execution.run",
+            host_calls=host_calls,
         )
+        rerun_keys.append(AttemptKey(digest=installed_key.digest))
+        rerun_snapshots.append(snapshot)
+        return published
 
     generation = GenerationCycleResultV1.model_validate(initial["generation_result"])
     features = ProductFeatureBundles(
@@ -1077,9 +1186,17 @@ def _real_task8_graph(
     graph = build_execute_graph(
         features,
         validate=False,
-        repair_authorization_issuer=live_issuer,
+        repair_authorization_issuer=authorization_issuer,
     ).compile(checkpointer=None)
-    return graph, rerun_keys, host_calls, initial_results, initial_snapshots, live_journal
+    return (
+        graph,
+        rerun_keys,
+        host_calls,
+        initial_results,
+        initial_snapshots,
+        rerun_snapshots,
+        live_journal,
+    )
 
 
 async def _run_installed_assessment(
@@ -1146,7 +1263,15 @@ def test_real_product_graph_uses_installed_assessment_then_reruns_with_fresh_ide
             CONTRACT_ID
         ].executor.config_digest,
     )
-    graph, rerun_keys, host_calls, initial_results, initial_snapshots, live_journal = _real_task8_graph(
+    (
+        graph,
+        rerun_keys,
+        host_calls,
+        initial_results,
+        initial_snapshots,
+        rerun_snapshots,
+        live_journal,
+    ) = _real_task8_graph(
         tmp_path,
         issuer_state,
         repeat_defect=repeat_defect,
@@ -1181,12 +1306,20 @@ def test_real_product_graph_uses_installed_assessment_then_reruns_with_fresh_ide
         f"batches/{initial_execution.batch_id}/verification.json"
     ).is_file()
     assert len(rerun_keys) == 1
+    assert len(rerun_snapshots) == 1
     assert rerun_keys[0] != initial_execution.defect.attempt_key
     if repeat_defect:
         assert result["terminal"] == {"status": "failed", "reason": "blocked"}
+        assert not rerun_snapshots[0].released
         assert host_calls == []
     else:
+        assert rerun_snapshots[0].released
         rerun = VerifiedExecutionCycleResultV1.model_validate(result["execution_result"])
+        rerun_terminal = rerun_snapshots[0].terminal
+        assert rerun_terminal is not None
+        assert rerun_terminal.resolution_kind == "committed"
+        assert rerun_terminal.receipt_id == rerun.receipt.receipt_id
+        assert rerun_terminal.receipt_digest == rerun.receipt.receipt_digest
         assert rerun.repair_round == 1
         assert rerun.attempt_key == rerun_keys[0]
         verification = cast(Mapping[str, object], start["verification"])
@@ -1197,6 +1330,107 @@ def test_real_product_graph_uses_installed_assessment_then_reruns_with_fresh_ide
         )
         assert rerun.batch_id != initial_execution.batch_id
         assert host_calls == ["rerun"]
+
+
+@pytest.mark.parametrize("corruption", ["binding", "registry_handler"])
+def test_full_chain_rejects_broken_installed_assessment_composition(
+    tmp_path: Path,
+    assessment_composition,
+    corruption: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issuer_state, generation, start = _installed_full_chain_input(
+        tmp_path,
+        assessment_composition,
+    )
+    assessment_id = "assurance.quality.materialize-assessment-inputs"
+    resolved = assessment_composition.semantic_attempt_contracts[assessment_id]
+    handler_id = resolved.contract.handler_id
+    original_contracts = assessment_composition.semantic_attempt_contracts
+    capabilities = assessment_composition.registries.capabilities
+    original_handlers = capabilities.task_handlers
+    if corruption == "binding":
+        missing_id = assessment_id
+        object.__setattr__(
+            assessment_composition,
+            "semantic_attempt_contracts",
+            MappingProxyType(
+                {key: value for key, value in original_contracts.items() if key != assessment_id}
+            ),
+        )
+    else:
+        missing_id = handler_id
+        object.__setattr__(
+            capabilities,
+            "task_handlers",
+            MappingProxyType({key: value for key, value in original_handlers.items() if key != handler_id}),
+        )
+    try:
+        graph, rerun_keys, _calls, initial_results, snapshots, _reruns, _journal = _real_task8_graph(
+            tmp_path,
+            issuer_state,
+            repeat_defect=False,
+            monkeypatch=monkeypatch,
+            assessment_composition=assessment_composition,
+        )
+        with pytest.raises(KeyError) as error:
+            asyncio.run(graph.ainvoke(cast(ProductState, start), config={"recursion_limit": 50}))
+    finally:
+        object.__setattr__(
+            assessment_composition,
+            "semantic_attempt_contracts",
+            original_contracts,
+        )
+        object.__setattr__(capabilities, "task_handlers", original_handlers)
+
+    assert len(initial_results) == len(snapshots) == 1
+    assert error.value.args == (missing_id,)
+    assert snapshots[0].released
+    assert rerun_keys == []
+    verification = tmp_path / f"qa/changes/{generation.change_id}/inspect/epochs/{generation.coverage_epoch}"
+    assert not tuple(verification.glob("batches/*/verification.json"))
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "profile",
+        "selected_test_families",
+        "plan_digest",
+        "generation",
+        "coverage_epoch",
+        "repair_round",
+        "receipt",
+    ],
+)
+def test_full_chain_issuer_rejects_drift_from_real_installed_attempt(
+    tmp_path: Path,
+    assessment_composition,
+    attack: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issuer_state, generation, start = _installed_full_chain_input(
+        tmp_path,
+        assessment_composition,
+    )
+    graph, rerun_keys, host_calls, initial_results, snapshots, _reruns, _journal = _real_task8_graph(
+        tmp_path,
+        issuer_state,
+        repeat_defect=False,
+        monkeypatch=monkeypatch,
+        assessment_composition=assessment_composition,
+        authorization_attack=attack,
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(graph.ainvoke(cast(ProductState, start), config={"recursion_limit": 50}))
+
+    assert len(initial_results) == len(snapshots) == 1
+    assert snapshots[0].released
+    assert rerun_keys == []
+    assert host_calls == []
+    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    assert not (tmp_path / bridge.path).exists()
 
 
 @pytest.mark.parametrize(
@@ -1222,7 +1456,7 @@ def test_legal_technical_refactor_recompiles_then_applies_and_reruns(
             CONTRACT_ID
         ].executor.config_digest,
     )
-    graph, rerun_keys, host_calls, initial_results, _snapshots, _journal = _real_task8_graph(
+    graph, rerun_keys, host_calls, initial_results, _snapshots, _reruns, _journal = _real_task8_graph(
         tmp_path,
         issuer_state,
         repeat_defect=False,
@@ -1260,7 +1494,7 @@ def test_real_product_graph_rejects_weakened_obligation_before_rerun(
             CONTRACT_ID
         ].executor.config_digest,
     )
-    graph, rerun_keys, host_calls, _initial_results, _snapshots, _journal = _real_task8_graph(
+    graph, rerun_keys, host_calls, _initial_results, _snapshots, _reruns, _journal = _real_task8_graph(
         tmp_path,
         issuer_state,
         repeat_defect=False,
