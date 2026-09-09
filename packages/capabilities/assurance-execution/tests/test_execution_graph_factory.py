@@ -10,12 +10,17 @@ from langchain_core.runnables.config import RunnableConfig
 from pydantic import BaseModel
 
 from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
-from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
+from assurance_execution.contracts.attempts import (
+    AGENT_JOB_CONTRACTS,
+    TASK_ATTEMPT_CONTRACTS,
+    activation_execute,
+    select_execute,
+)
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
 from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs
-from assurance_execution.graphs.nodes import activation_execute, activation_rerun, publish_execution
+from assurance_execution.graphs.nodes import activation_rerun, publish_execution
 from assurance_execution.operations.agent_skills import assemble_execution_input
 from assurance_execution.operations.common import InputError
 from graph_engine.attempts.contracts import (
@@ -209,6 +214,12 @@ def test_execute_and_rerun_activations_bind_epoch_and_repair_round() -> None:
     assert activation_rerun({"coverage_epoch": 1, "repair_round": 0}) != activation_rerun(
         {"coverage_epoch": 1, "repair_round": 1}
     )
+
+
+def test_execute_attempt_projection_is_owned_by_the_public_execution_contract() -> None:
+    selected = select_execute(execution_graph_input())
+    assert selected.change_id == "CH-DEMO-001"
+    assert activation_execute({"coverage_epoch": 2}) == BusinessActivation.for_trigger("coverage.2.execute")
 
 
 async def test_execute_and_rerun_publish_typed_public_output() -> None:

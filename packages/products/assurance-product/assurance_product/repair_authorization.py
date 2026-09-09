@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
+from assurance_execution.contracts.attempts import (
+    TASK_ATTEMPT_CONTRACTS,
+    activation_execute,
+    select_execute,
+)
 from assurance_execution.contracts.workflow import (
     VerifiedBridgeDefectResultV1,
     VerifiedIncompleteExecutionV1,
 )
-from assurance_execution.graphs.nodes import activation_execute, select_execute
 from assurance_healing.contracts.application import RepairAuthorizationV1
 from assurance_quality.contracts.assessment import InspectionOutcomeV1
 from graph_engine.attempts import derive_attempt_key

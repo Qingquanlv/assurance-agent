@@ -5,7 +5,12 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
-from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
+from graph_engine.attempts import (
+    AttemptRetryPolicy,
+    AttemptTimeoutPolicy,
+    BusinessActivation,
+    TaskAttemptContract,
+)
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
 
@@ -13,9 +18,46 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 
+_SKILL_FIELDS = (
+    "change_id",
+    "plan_digest",
+    "plan_ref",
+    "capability_leafs",
+    "selected_test_families",
+    "coverage_epoch",
+    "repair_round",
+    "generation_result",
+    "verification",
+    "validation_profile",
+    "verification_config_digest",
+)
+
 _EXECUTOR = "assurance-v1-executor"
 _AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
+
+
+def _skill_payload(state: Mapping[str, object]) -> dict[str, object]:
+    return {name: state[name] for name in _SKILL_FIELDS if name in state}
+
+
+def _non_negative_int(state: Mapping[str, object], key: str, default: int = 0) -> int:
+    value = state.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise TypeError(f"{key} must be a non-negative int")
+    return value
+
+
+def select_execute(state: Mapping[str, object]) -> ExecutionPrepareInputV1:
+    """Project graph state into the authenticated execute Attempt input."""
+
+    return ExecutionPrepareInputV1.model_validate(_skill_payload(state))
+
+
+def activation_execute(state: Mapping[str, object]) -> BusinessActivation:
+    """Bind an execute Attempt to the current coverage epoch."""
+
+    return BusinessActivation.for_trigger(f"coverage.{_non_negative_int(state, 'coverage_epoch')}.execute")
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
@@ -111,5 +153,7 @@ __all__ = [
     "AGENT_JOB_CONTRACTS",
     "OUTPUT_ROUTE_TEMPLATES",
     "TASK_ATTEMPT_CONTRACTS",
+    "activation_execute",
     "attempt_contract_refs",
+    "select_execute",
 ]

@@ -8,6 +8,7 @@ from typing import Literal, cast
 from pydantic import BaseModel, ValidationError
 
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
+from assurance_execution.contracts.attempts import activation_execute, select_execute
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.verification import VerifiedExecutionResultV1
 from assurance_execution.contracts.workflow import (
@@ -23,31 +24,9 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.canonical import JSONValue, canonical_digest
 
-_SKILL_FIELDS = (
-    "change_id",
-    "plan_digest",
-    "plan_ref",
-    "capability_leafs",
-    "selected_test_families",
-    "coverage_epoch",
-    "repair_round",
-    "generation_result",
-    "verification",
-    "validation_profile",
-    "verification_config_digest",
-)
-
-
-def _skill_payload(state: Mapping[str, object]) -> dict[str, object]:
-    return {name: state[name] for name in _SKILL_FIELDS if name in state}
-
-
-def select_execute(state: Mapping[str, object]) -> ExecutionPrepareInputV1:
-    return ExecutionPrepareInputV1.model_validate(_skill_payload(state))
-
 
 def select_rerun(state: Mapping[str, object]) -> ExecutionPrepareInputV1:
-    return ExecutionPrepareInputV1.model_validate(_skill_payload(state))
+    return select_execute(state)
 
 
 def execution_result_branch(profile: object) -> Literal["verified_host", "legacy_agent"]:
@@ -63,10 +42,6 @@ def _int(state: Mapping[str, object], key: str, default: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise TypeError(f"{key} must be a non-negative int")
     return value
-
-
-def activation_execute(state: Mapping[str, object]) -> BusinessActivation:
-    return BusinessActivation.for_trigger(f"coverage.{_int(state, 'coverage_epoch')}.execute")
 
 
 def activation_rerun(state: Mapping[str, object]) -> BusinessActivation:
