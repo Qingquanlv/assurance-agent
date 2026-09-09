@@ -44,6 +44,7 @@ from assurance_healing.contracts.application import (
 from assurance_healing.graphs.factory import HealingGraphs
 from assurance_healing.graphs.nodes import publish_applied_repair, select_application
 from assurance_healing.operations.application import ApplyTestRepairFinalizeHandler
+import assurance_healing.operations.application as application_module
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.contracts.application import RepairAuthorizationV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -90,6 +91,7 @@ from agent_runtime_contracts import AgentRunResult
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import execute_task
 from tests.product.test_product_input import valid_product_input
+from tests.verification_support import with_weakened_user_machine_plan
 from tests.verified_generation_fixture import accepted_verified_execution_input
 
 INVOCATION_ID = "invocation"
@@ -808,7 +810,12 @@ def _real_task8_graph(
             write_root=stage,
             capability_id="assurance.healing.apply-test-repair.finalize",
         )
-        assert task.outcome.status == "succeeded", task.outcome.failure
+        if task.outcome.status != "succeeded":
+            assert task.outcome.failure is not None
+            return {
+                "attempt_failure": task.outcome.failure.model_dump(mode="json"),
+                "status": "failed",
+            }
         output = cast(dict[str, object], task.outcome.output)
         (project / authorization.bridge_ref.path).write_bytes(expected)
         return publish_applied_repair(
@@ -1001,3 +1008,42 @@ def test_legal_technical_refactor_recompiles_then_applies_and_reruns(
     verification = cast(Mapping[str, object], start["verification"])
     assert rerun.execution_id == _execution_id(rerun_keys[0], cast(str, verification["nodeid"]))
     assert host_calls == ["rerun"]
+
+
+@pytest.mark.parametrize("weakened_obligation", ["delete_db_oracle", "required_to_optional"])
+def test_real_product_graph_rejects_weakened_obligation_before_rerun(
+    tmp_path: Path,
+    weakened_obligation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issuer_state, _journal, _issuer = asyncio.run(_repairable_state(tmp_path))
+    generation = GenerationCycleResultV1.model_validate(issuer_state["generation_result"])
+    from assurance_intake.contracts.plan import decode_plan
+
+    plan = decode_plan((tmp_path / generation.plan_ref.path).read_bytes(), generation.plan_ref)
+    start = _product_input_for_generation(
+        generation,
+        issuer_state["verification"],
+        policy_digest=plan.policy_digest,
+    )
+    monkeypatch.setattr(
+        application_module,
+        "admit_verified_generation",
+        with_weakened_user_machine_plan(
+            application_module.admit_verified_generation,
+            weakened_obligation,
+        ),
+    )
+    graph, rerun_keys, host_calls, _initial_results = _real_task8_graph(
+        tmp_path,
+        issuer_state,
+        repeat_defect=False,
+    )
+
+    result = asyncio.run(graph.ainvoke(cast(ProductState, start), config={"recursion_limit": 50}))
+
+    assert result["terminal"] == {"status": "failed", "reason": "blocked"}
+    failure = cast(Mapping[str, object], result["attempt_failure"])
+    assert failure["message"] == "verification obligations changed"
+    assert rerun_keys == []
+    assert host_calls == []

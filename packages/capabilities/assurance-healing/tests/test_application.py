@@ -12,6 +12,7 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from pydantic import ValidationError
 
+from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
 from assurance_healing.contracts.application import (
     AppliedTestRepairV1,
     ApplyTestRepairInputV1,
@@ -20,6 +21,7 @@ from assurance_healing.contracts.application import (
 )
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
+import assurance_healing.operations.application as application_module
 from assurance_healing.operations.application import (
     ApplyTestRepairFinalizeHandler,
     ApplyTestRepairPrepareHandler,
@@ -29,8 +31,8 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.phase4.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import BINDING, execute_task
 from tests.acg_plan_fixture import install_plan
+from tests.verification_support import with_weakened_user_machine_plan
 from tests.verified_generation_fixture import accepted_verified_execution_input
-from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
 from graph_engine.attempts import AttemptKey
 
 CHANGE = "CH-REPAIR-1"
@@ -425,6 +427,31 @@ async def test_verified_bridge_repair_is_admitted_and_preserves_generation_oblig
     assert output["changed_test_refs"] == [
         {"path": bridge_path, "digest": hashlib.sha256(expected).hexdigest()}
     ]
+
+
+@pytest.mark.parametrize("mutation", ["delete_db_oracle", "required_to_optional"])
+@pytest.mark.asyncio
+async def test_verified_bridge_repair_rejects_weakened_machine_plan(
+    tmp_path: Path,
+    mutation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, expected, bridge_path = _verified_fixture(tmp_path)
+    monkeypatch.setattr(
+        application_module,
+        "admit_verified_generation",
+        with_weakened_user_machine_plan(application_module.admit_verified_generation, mutation),
+    )
+    stage = tmp_path / ".stage"
+    _write(stage, bridge_path, expected)
+
+    result = await _finalize(tmp_path, stage, payload, [bridge_path])
+
+    assert result.outcome.status == "failed"
+    assert result.outcome.failure is not None
+    assert result.outcome.failure.kind == "invalid_output"
+    assert result.outcome.failure.message == "verification obligations changed"
+    assert not (stage / f"qa/changes/{CHANGE}/healing/epochs/2/rounds/1/repair.json").exists()
 
 
 @pytest.mark.asyncio

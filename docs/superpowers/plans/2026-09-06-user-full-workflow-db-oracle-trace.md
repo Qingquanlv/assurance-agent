@@ -414,7 +414,7 @@ def reduce_verdict(*, violated: bool, complete: bool, runner_ok: bool) -> str:
 
 ## Task 8: healing 不得削弱业务义务
 
-**Files:** 新建 healing `operations/verification_guard.py`；修改 `operations/{application,safety,workflow_state}.py`、`contracts/application.py`、`graphs/{nodes,state}.py`、product `graphs/execute.py` 的 repair 输入适配、aa-apply-test-repair/API fixer skills 与契约。新增 `packages/capabilities/assurance-healing/tests/test_verification_guard.py`。
+**Files:** 新建 healing `operations/verification_guard.py`；修改 `operations/{application,safety,workflow_state}.py`、`contracts/application.py`、`graphs/{nodes,state}.py`、product `graphs/execute.py` 的 repair 输入适配、aa-apply-test-repair/API fixer skills 与契约。新增 `packages/capabilities/assurance-healing/tests/test_verification_guard.py`，扩展 `tests/verification_support.py` 与 `tests/product/test_repair_authorization.py`。
 
 **Interfaces:** `assert_same_obligations(before, after) -> None`，只消费 generation contracts；候选绑定允许指向重构后的新 SUT 摘要，但要求重新编译并保留规范。
 
@@ -437,7 +437,7 @@ def assert_protected_fields_equal(before: dict, after: dict) -> None:
 - [ ] 先贯通 product `adapt_repair_failure` 与 healing `_approved_sources` 的 profile-aware 来源认证。后者当前强制 legacy ExecutionEvidenceV1.status=failed 且存在failed test；新模式改为认证当前verified cycle/receipt、批准的修复提案和执行事实，仅允许已确定的生成缺陷（如missing bridge）进入修复，不能把任意INCOMPLETE都视为可修复。healing只消费允许的上游contracts与自身输入模型，不import quality实现。保留legacy failed门槛。
 - [ ] 增加正向例：只改 Python 函数定位、等价 ORM/SQL 绑定和新增 helper span，更新 SUT/技术配置摘要后重新编译，通过同一业务预期的真实执行；重跑新 execution_id，旧结果保留。
 - [ ] 在 `test_application.py` 和真实 apply-test-repair→rerun 产品路径测试删除/降级义务被拒绝，合法技术修复被接纳并获得新execution_id；不能只测guard纯函数。
-- [ ] Run: `uv run pytest packages/capabilities/assurance-healing/tests/test_verification_guard.py packages/capabilities/assurance-healing/tests/test_application.py packages/capabilities/assurance-healing/tests/test_safety.py packages/capabilities/assurance-healing/tests/test_workflow_state.py tests/product/test_issue_healing_flow.py -q`。提交 `feat(healing): preserve frozen verification obligations`。
+- [ ] Run: `uv run pytest packages/capabilities/assurance-healing/tests/test_verification_guard.py packages/capabilities/assurance-healing/tests/test_application.py packages/capabilities/assurance-healing/tests/test_safety.py packages/capabilities/assurance-healing/tests/test_workflow_state.py tests/product/test_issue_healing_flow.py tests/product/test_repair_authorization.py -q`。提交 `feat(healing): preserve frozen verification obligations`。
 
 ## Task 9: 扩展既有终态认证、achieved 与 export
 
