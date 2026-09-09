@@ -386,6 +386,9 @@ def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
         if not isinstance(parts, list):
             raise ValueError("terminal message parts are missing")
         if _nonempty_text_parts(parts):
+            finish = info.get("finish")
+            if finish is not None and finish not in _SUCCESS_FINISH_REASONS:
+                continue
             result_bearing.append(message)
             continue
         for part in parts:

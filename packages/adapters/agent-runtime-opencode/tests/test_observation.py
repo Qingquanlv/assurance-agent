@@ -529,6 +529,52 @@ def test_idle_non_closed_history_is_terminal_failure() -> None:
     )
 
 
+def test_intermediate_tool_call_narration_then_closed_terminal_succeeds() -> None:
+    messages = [
+        {
+            "info": {"id": "msg_user", "role": "user"},
+            "parts": [{"type": "text", "text": "write the result"}],
+        },
+        {
+            "info": {
+                "id": "msg_tool",
+                "role": "assistant",
+                "finish": "tool-calls",
+                "time": {"created": 1, "completed": 2},
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": "I will write the required files next."},
+                {"type": "tool", "state": {"status": "completed"}},
+                {"type": "step-finish", "reason": "tool-calls"},
+            ],
+        },
+        {
+            "info": {
+                "id": "msg_result",
+                "role": "assistant",
+                "time": {"created": 3, "completed": 4},
+                "finish": "stop",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": '{"ok": true}'},
+                {"type": "step-finish", "reason": "stop"},
+            ],
+        },
+    ]
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+    assert (
+        classify_provider_state(
+            session_id="ses_live",
+            status_map={"ses_live": {"type": "idle"}},
+            session={"id": "ses_live"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
 def test_intermediate_reasoning_then_closed_terminal_succeeds() -> None:
     messages = [
         {
