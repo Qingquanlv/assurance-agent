@@ -525,12 +525,16 @@ _TRANSIENT_PROVIDER_ERROR_MARKERS = (
     "enotfound",
     "gateway timeout",
     "network error",
+    "request burst",
+    "requestbursttoofast",
     "request timeout",
     "service unavailable",
     "temporarily unavailable",
     "temporary failure",
     "timed out",
     "tls handshake",
+    "too many requests",
+    "toomanyrequests",
 )
 
 

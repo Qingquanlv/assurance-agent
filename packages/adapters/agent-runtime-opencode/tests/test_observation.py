@@ -47,6 +47,31 @@ def test_nested_opencode_provider_error_message_is_transient() -> None:
     assert provider_error_is_transient({}, messages) is True
 
 
+def test_ark_request_burst_too_fast_is_transient() -> None:
+    messages = [
+        {
+            "info": {
+                "role": "assistant",
+                "error": {
+                    "name": "UnknownError",
+                    "data": {
+                        "message": (
+                            '{"message":"System protection triggered by request burst. '
+                            "Please slow down traffic growth and increase requests "
+                            'gradually before retrying.","type":"TooManyRequests",'
+                            '"param":"","code":"RequestBurstTooFast"}'
+                        )
+                    },
+                },
+            },
+            "parts": [],
+        }
+    ]
+
+    assert "RequestBurstTooFast" in provider_error_message({}, messages)
+    assert provider_error_is_transient({}, messages) is True
+
+
 def test_cyber_policy_rejection_that_invites_rephrasing_is_retryable() -> None:
     messages = [
         {
