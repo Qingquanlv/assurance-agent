@@ -180,7 +180,9 @@ def _seal_test_receipt(document: Mapping[str, Any], ownership_token: bytes) -> d
     }
 
 
-def _verified_prepare_input(project: Path, db: Path) -> _VerifiedPayload:
+def _verified_prepare_input(
+    project: Path, db: Path, *, runtime_source: bytes = b"def create_user(): pass\n"
+) -> _VerifiedPayload:
     payload = _prepare_input(project)
     case = read_fixture("user-case.json")
     case["case_id"] = "TC_A"
@@ -209,6 +211,17 @@ def _verified_prepare_input(project: Path, db: Path) -> _VerifiedPayload:
         "path": "qa/changes/CH-DEMO-001/review/case-review.json",
         "digest": "c" * 64,
     }
+    reviewed_source = project / "app/user.py"
+    reviewed_source.parent.mkdir(parents=True, exist_ok=True)
+    reviewed_source.write_bytes(b"def create_user(): pass\n")
+    source_ref = {"path": "app/user.py", "digest": hashlib.sha256(reviewed_source.read_bytes()).hexdigest()}
+    reviewed["preparation_refs"].append(source_ref)
+    reviewed["preparation_refs"].sort(key=lambda ref: ref["path"])
+    review_path = project / reviewed["review_ref"]["path"]
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps({"source_verification": {"reviewed_source_files": ["app/user.py"]}}))
+    reviewed["review_ref"]["digest"] = hashlib.sha256(review_path.read_bytes()).hexdigest()
+    context_payload["sut_digest"] = agent_skills.canonical_digest([source_ref])
     context = CasePlanContextV1.model_validate(context_payload)
     formal = compile_case_plan(
         case,
@@ -258,11 +271,44 @@ def _verified_prepare_input(project: Path, db: Path) -> _VerifiedPayload:
             json.dumps(qualification, separators=(",", ":"), sort_keys=True).encode()
         ).hexdigest()
     )
-    source_digest = "sha256:" + "d" * 64
-    runtime_digest = "sha256:" + "e" * 64
+    frozen = project / ".aa/user-oracle/sut-source/app/user.py"
+    runtime = db.parent / "app/user.py"
+    for member in (frozen, runtime):
+        member.parent.mkdir(parents=True, exist_ok=True)
+        member.write_bytes(runtime_source)
+    source_files = {"sut-source/app/user.py": "sha256:" + hashlib.sha256(runtime_source).hexdigest()}
+    source_digest = (
+        "sha256:"
+        + hashlib.sha256(json.dumps(sorted(source_files.items()), separators=(",", ":")).encode()).hexdigest()
+    )
+    bootstrap = project / ".aa/user-oracle/bootstrap.py"
+    bootstrap.write_bytes(b"# fixed lifecycle helper\n")
+    source_files["bootstrap.py"] = "sha256:" + hashlib.sha256(bootstrap.read_bytes()).hexdigest()
+    runtime_digest = (
+        "sha256:"
+        + hashlib.sha256(json.dumps(sorted(source_files.items()), separators=(",", ":")).encode()).hexdigest()
+    )
+    frozen_lock = project / ".aa/user-oracle/runtime-lock.json"
+    frozen_lock.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "fault": "none",
+                "files": source_files,
+                "source_digest": source_digest,
+                "runtime_digest": runtime_digest,
+            }
+        )
+    )
     prepare_unsigned = {
         "schema_version": "1",
         "state": "prepared",
+        "frozen_artifact": str(project / ".aa/user-oracle"),
+        "frozen_artifact_digest": "sha256:" + hashlib.sha256(frozen_lock.read_bytes()).hexdigest(),
+        "source_files": source_files,
+        "source_file_mapping": {
+            "app/user.py": {"frozen_path": "sut-source/app/user.py", "runtime_path": "app/user.py"}
+        },
         "workspace_root": str(project.resolve()),
         "run_root": str(run_root.resolve()),
         "sut_dir": str(db.parent.resolve()),
@@ -1428,3 +1474,48 @@ def test_cache_safe_pytest_recipe_does_not_dirty_candidate(tmp_path: Path) -> No
     assert not (candidate / ".pytest_cache").exists()
     assert not list(candidate.rglob("__pycache__"))
     assert not (candidate / ".hypothesis").exists()
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_self_consistent_unreviewed_runtime_before_action(
+    tmp_path: Path,
+) -> None:
+    payload = _verified_prepare_input(
+        tmp_path, tmp_path / ".managed/sut/db.sqlite3", runtime_source=b"def create_user(): return True\n"
+    )
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="7" * 64)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "reviewed source" in outcome.failure.message
+    assert not list(tmp_path.glob("qa/changes/*/.staging/**/verification-manifest.json"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("location", ["app", ".aa/user-oracle/sut-source/app", ".managed/sut/app"])
+@pytest.mark.parametrize("change", ["bytes", "symlink"])
+async def test_verified_prepare_rejects_reviewed_file_copy_drift(
+    tmp_path: Path, location: str, change: str
+) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    source = tmp_path / location / "user.py"
+    if change == "bytes":
+        source.write_bytes(b"def create_user(): return False\n")
+    else:
+        saved = source.parent.with_name(source.parent.name + "-saved")
+        source.parent.rename(saved)
+        source.parent.symlink_to(saved, target_is_directory=True)
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="8" * 64)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "reviewed source" in outcome.failure.message or "symbolic link" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_verified_prepare_rejects_changed_frozen_artifact_lock(tmp_path: Path) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    lock = tmp_path / ".aa/user-oracle/runtime-lock.json"
+    lock.write_bytes(lock.read_bytes() + b"\n")
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="9" * 64)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "frozen artifact" in outcome.failure.message

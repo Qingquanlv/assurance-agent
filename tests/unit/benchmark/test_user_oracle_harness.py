@@ -398,3 +398,92 @@ def test_stop_refuses_another_valid_uvicorn_process(tmp_path: Path) -> None:
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_attempt_copies_selected_frozen_artifact_without_default_source_fallback(tmp_path, monkeypatch):
+    import shutil
+
+    harness = _load_harness()
+    fixture = tmp_path / "installed-fixture"
+    shutil.copytree(FIXTURE, fixture)
+    monkeypatch.setattr(harness, "FIXTURE_ROOT", fixture)
+    project = tmp_path / "project"
+    selected = harness.materialize_project(project_dir=project, fault="wrong-value")
+    frozen = project / ".aa/user-oracle"
+    assert (frozen / "runtime-lock.json").is_file()
+    assert (frozen / "sut-source/app/controllers/user.py").stat().st_mode & 0o222 == 0
+    expected = (project / "app/controllers/user.py").read_bytes()
+    # Intake sees this project; later preparation must use the already selected copy.
+    (project / "app/controllers/user.py").write_bytes(b"# changed after freezing\n")
+    shutil.rmtree(fixture / "sut-source")
+    prepared = harness.prepare(
+        workspace_root=tmp_path,
+        project_dir=tmp_path / "attempt-source",
+        run_root=tmp_path / "attempt-runtime",
+        fault="wrong-value",
+        frozen_artifact=frozen,
+        frozen_artifact_digest=selected["frozen_artifact_digest"],
+    )
+    assert (Path(prepared["sut_dir"]) / "app/controllers/user.py").read_bytes() == expected
+    assert prepared["source_file_mapping"]["project/app/controllers/user.py"] == {
+        "frozen_path": "sut-source/app/controllers/user.py",
+        "runtime_path": "app/controllers/user.py",
+    }
+    assert prepared["frozen_artifact"] == str(frozen)
+    assert prepared["fault"] == "wrong-value"
+
+
+def test_selected_artifact_rejects_changed_installed_lifecycle_helper(tmp_path, monkeypatch):
+    import shutil
+
+    harness = _load_harness()
+    fixture = tmp_path / "installed-fixture"
+    shutil.copytree(FIXTURE, fixture)
+    monkeypatch.setattr(harness, "FIXTURE_ROOT", fixture)
+    selected = harness.materialize_project(project_dir=tmp_path / "project")
+    helper = fixture / "bootstrap.py"
+    helper.write_bytes(helper.read_bytes() + b"\n# different installed helper\n")
+    with pytest.raises(ValueError, match="NOT_READY:.*lifecycle helper"):
+        harness.prepare(
+            workspace_root=tmp_path,
+            project_dir=tmp_path / "attempt-source",
+            run_root=tmp_path / "run",
+            frozen_artifact=Path(selected["frozen_artifact"]),
+            frozen_artifact_digest=selected["frozen_artifact_digest"],
+        )
+    assert not (tmp_path / "run").exists()
+
+
+@pytest.mark.parametrize("drift", ["missing", "lock", "source", "fault", "symlink"])
+def test_selected_frozen_artifact_drift_cannot_fall_back_to_fixture(tmp_path, drift):
+    harness = _load_harness()
+    selected = harness.materialize_project(project_dir=tmp_path / "project")
+    frozen = Path(selected["frozen_artifact"])
+    lock = frozen / "runtime-lock.json"
+    fault = "none"
+    if drift == "missing":
+        lock.unlink()
+    elif drift == "lock":
+        lock.chmod(0o644)
+        lock.write_bytes(lock.read_bytes() + b"\n")
+    elif drift == "source":
+        member = frozen / "sut-source/app/controllers/user.py"
+        member.chmod(0o644)
+        member.write_bytes(member.read_bytes() + b"\n# changed\n")
+    elif drift == "fault":
+        fault = "wrong-value"
+    else:
+        original = frozen.with_name("original")
+        frozen.rename(original)
+        frozen.symlink_to(original, target_is_directory=True)
+    with pytest.raises(ValueError, match="NOT_READY"):
+        harness.prepare(
+            workspace_root=tmp_path,
+            project_dir=tmp_path / "attempt-source",
+            run_root=tmp_path / "run",
+            frozen_artifact=frozen,
+            frozen_artifact_digest=selected["frozen_artifact_digest"],
+            fault=fault,
+        )
+    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "attempt-source").exists()

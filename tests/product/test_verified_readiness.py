@@ -36,8 +36,18 @@ def live_sut(tmp_path_factory):
         }
     )
     host = ManagedUserSutHost(source_root=source, secret_port=secrets)
+    frozen = host._call("freeze", ["--project-dir", str(workspace / "project")])
+    workspace = workspace / "project"
+    from tests.verified_generation_fixture import accepted_verified_execution_input
+
+    accepted = accepted_verified_execution_input(workspace, reviewed_source_path="app/controllers/user.py")
+    assert accepted.verification is not None
     prepared = host.prepare(
-        workspace_root=workspace, project_dir=workspace / "project", run_root=workspace / "run"
+        workspace_root=workspace,
+        project_dir=workspace / "attempt-source",
+        run_root=workspace / "run",
+        frozen_artifact=workspace / ".aa/user-oracle",
+        frozen_artifact_digest=frozen["frozen_artifact_digest"],
     )
     started = host.start(workspace_root=workspace, prepare_receipt=workspace / "run/harness-prepare.json")
     token = workspace / "run/.ownership-token"
@@ -62,7 +72,7 @@ def live_sut(tmp_path_factory):
         "activity_receipt_digest": "b" * 64,
         "verification": {
             "validation_profile": "api_db.v1",
-            "case_execution_plan_ref": {"path": "case.json", "digest": "d" * 64},
+            "case_execution_plan_ref": accepted.verification.case_execution_plan_ref.model_dump(mode="json"),
             "nodeid": "tests/test_case.py::test_case",
             "business_activation": {"kind": "trigger", "value": "execution"},
             "sut_instance_id": started["instance_id"],
@@ -141,6 +151,8 @@ def test_managed_readiness_rejects_tampered_receipts_or_runtime(live_sut, name):
     if not path.exists():
         path = next((Path(document["workspace_root"]) / "run/sut/app").rglob("*.py"))
     original = path.read_bytes()
+    original_mode = path.stat().st_mode & 0o777
+    path.chmod(0o644)
     try:
         path.write_bytes(original + b"\n# changed")
         with pytest.raises(ValueError):
@@ -151,6 +163,7 @@ def test_managed_readiness_rejects_tampered_receipts_or_runtime(live_sut, name):
             )
     finally:
         path.write_bytes(original)
+        path.chmod(original_mode)
 
 
 def test_trace_boolean_is_not_a_readiness_receipt():

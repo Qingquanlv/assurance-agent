@@ -18,7 +18,7 @@ from graph_engine.plugin_api import SecretPort
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1, VerifiedExecutionPrepareV1
 from assurance_execution.contracts.verification import FrozenUserInputsV1
 from assurance_execution.operations.agent_skills import _execution_id, authenticate_generation_result
-from assurance_execution.operations.managed_sut import ManagedUserSutHost
+from assurance_execution.operations.managed_sut import ManagedUserSutHost, authenticate_reviewed_sut_source
 from assurance_execution.operations.verification_manifest import build_managed_sut_authority
 from assurance_generation.contracts.admission import admit_verified_generation
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -124,7 +124,7 @@ def start_user_attempt(
     seed = json.loads(secrets.resolve(authority_handle))
     if (
         not isinstance(seed, dict)
-        or set(seed) != {"kind", "authority_root", "fault"}
+        or set(seed) != {"kind", "authority_root", "fault", "frozen_artifact_ref"}
         or seed["kind"] != "user-invocation-host.v1"
     ):
         raise ValueError("NOT_READY: invocation host selection is invalid")
@@ -162,9 +162,18 @@ def start_user_attempt(
     base = workspace_root / ".aa" / "managed-user" / execution_id
     run = base / "runtime"
     host = ManagedUserSutHost(source_root=source_root, secret_port=secrets)
-    host.prepare(
-        workspace_root=workspace_root, project_dir=base / "source", run_root=run, fault=str(seed["fault"])
+    frozen_ref = EvidenceArtifactRefV1.model_validate(seed["frozen_artifact_ref"])
+    if frozen_ref.path != ".aa/user-oracle/runtime-lock.json":
+        raise ValueError("NOT_READY: selected frozen artifact path is invalid")
+    prepared = host.prepare(
+        workspace_root=workspace_root,
+        project_dir=base / "source",
+        run_root=run,
+        fault=str(seed["fault"]),
+        frozen_artifact=workspace_root / ".aa/user-oracle",
+        frozen_artifact_digest="sha256:" + frozen_ref.digest,
     )
+    authenticate_reviewed_sut_source(workspace_root, admission.machine_plans.cases[0], prepared)
     started = host.start(workspace_root=workspace_root, prepare_receipt=run / "harness-prepare.json")
     try:
 

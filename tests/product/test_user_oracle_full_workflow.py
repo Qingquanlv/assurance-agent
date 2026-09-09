@@ -209,8 +209,11 @@ def test_one_invocation_prepares_independent_sut_attempts(tmp_path):
     from graph_engine.attempts import AttemptKey
 
     project = tmp_path / "project"
-    project.mkdir()
-    root = accepted_verified_execution_input(project).model_copy(update={"verification": None})
+    harness = load("user_oracle_harness")
+    selected = harness.materialize_project(project_dir=project)
+    root = accepted_verified_execution_input(
+        project, reviewed_source_path="app/controllers/user.py"
+    ).model_copy(update={"verification": None})
     host = tmp_path / "host"
     host.mkdir(mode=0o700)
 
@@ -218,7 +221,15 @@ def test_one_invocation_prepares_independent_sut_attempts(tmp_path):
         def resolve(self, handle):
             if handle == "sut.authority":
                 return json.dumps(
-                    {"kind": "user-invocation-host.v1", "authority_root": str(host), "fault": "none"}
+                    {
+                        "kind": "user-invocation-host.v1",
+                        "authority_root": str(host),
+                        "fault": "none",
+                        "frozen_artifact_ref": {
+                            "path": ".aa/user-oracle/runtime-lock.json",
+                            "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
+                        },
+                    }
                 ).encode()
             return b"task10-local-only-password"
 
@@ -290,7 +301,12 @@ def test_attempt_rejects_stale_generation_before_starting_http(tmp_path, monkeyp
     class Secrets:
         def resolve(self, handle):
             return json.dumps(
-                {"kind": "user-invocation-host.v1", "authority_root": str(host), "fault": "none"}
+                {
+                    "kind": "user-invocation-host.v1",
+                    "authority_root": str(host),
+                    "fault": "none",
+                    "frozen_artifact_ref": {"path": ".aa/user-oracle/runtime-lock.json", "digest": "a" * 64},
+                }
             ).encode()
 
     def forbidden(*args, **kwargs):
@@ -334,3 +350,58 @@ def test_generation_adapter_preserves_verified_profile_and_reviewed_references()
     assert projected["plan_ref"] == state["plan_ref"]
     assert projected["plan_digest"] == state["plan_digest"]
     assert "case_plan_context" not in projected
+
+
+def test_attempt_rejects_reviewed_a_with_functional_frozen_b_before_any_post(tmp_path, monkeypatch):
+    import httpx
+    from graph_engine.attempts import AttemptKey
+    from assurance_execution.operations.user_attempt import start_user_attempt
+    from tests.verified_generation_fixture import accepted_verified_execution_input
+
+    project = tmp_path / "project"
+    selected = load("user_oracle_harness").materialize_project(project_dir=project)
+    source = project / "app/controllers/user.py"
+    source.write_bytes(source.read_bytes() + b"\n# reviewed source A differs from frozen B\n")
+    root = accepted_verified_execution_input(
+        project, reviewed_source_path="app/controllers/user.py"
+    ).model_copy(update={"verification": None})
+    host = tmp_path / "host"
+    host.mkdir(mode=0o700)
+
+    class Secrets:
+        def resolve(self, handle):
+            if handle == "sut.authority":
+                return json.dumps(
+                    {
+                        "kind": "user-invocation-host.v1",
+                        "authority_root": str(host),
+                        "fault": "none",
+                        "frozen_artifact_ref": {
+                            "path": ".aa/user-oracle/runtime-lock.json",
+                            "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
+                        },
+                    }
+                ).encode()
+            return b"task10-local-only-password"
+
+    def forbidden_post(*args, **kwargs):
+        pytest.fail("unreviewed runtime reached HTTP POST")
+
+    monkeypatch.setattr(httpx.Client, "post", forbidden_post)
+    with pytest.raises(ValueError, match="NOT_READY: reviewed source"):
+        start_user_attempt(
+            root,
+            source_root=REPO,
+            workspace_root=project,
+            attempt_key=AttemptKey(digest="e" * 64),
+            invocation_id="invocation",
+            task_id="task",
+            graph_instance_id="graph",
+            node_id="execute",
+            authorization_scope_digest="a" * 64,
+            secrets=Secrets(),
+            authority_handle="sut.authority",
+            credential_handle="sut.credential",
+        )
+    assert not list(project.glob(".aa/managed-user/*/runtime/owned-process.json"))
+    assert not list(host.glob("*.json"))

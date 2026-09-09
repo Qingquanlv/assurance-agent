@@ -7,7 +7,9 @@ import json
 import os
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
+from graph_engine.canonical import JSONValue, canonical_digest
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1, CaseExecutionPlanSetV1
 from graph_engine.plugin_api import SecretPort
 from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
 from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
@@ -87,6 +89,67 @@ def _authenticate_managed_sut_seal(
         raise InputError(f"managed SUT receipt seal changed: {label}")
 
 
+def authenticate_reviewed_sut_source(
+    workspace: Path, plan: CaseExecutionPlanV1, prepared: Mapping[str, Any]
+) -> None:
+    """Bind reviewed reference bytes to the fixed harness's frozen and runtime files."""
+    _, review = _receipt_document(workspace, plan.reviewed_case.review_ref, "case review")
+    try:
+        reviewed_paths = review["source_verification"]["reviewed_source_files"]
+        files = prepared["source_files"]
+        mapping = prepared["source_file_mapping"]
+        frozen = Path(prepared["frozen_artifact"])
+        runtime = Path(prepared["sut_dir"])
+        if frozen.name != "user-oracle" or frozen.parent.name != ".aa":
+            raise ValueError("reviewed source artifact path is invalid")
+        _, frozen_lock = _receipt_document(
+            workspace,
+            EvidenceArtifactRefV1(
+                path=(frozen / "runtime-lock.json").relative_to(workspace).as_posix(),
+                digest=str(prepared["frozen_artifact_digest"]).removeprefix("sha256:"),
+            ),
+            "frozen artifact",
+        )
+        if (
+            any(frozen_lock.get(key) != prepared.get(key) for key in ("source_digest", "runtime_digest"))
+            or frozen_lock.get("files") != files
+        ):
+            raise ValueError("frozen artifact manifest disagrees with prepare receipt")
+        if (
+            not isinstance(reviewed_paths, list)
+            or not reviewed_paths
+            or len(set(reviewed_paths)) != len(reviewed_paths)
+        ):
+            raise ValueError("reviewed source list is empty or duplicated")
+        preparation = {ref.path: ref for ref in plan.reviewed_case.preparation_refs}
+        refs = [preparation[relative] for relative in sorted(reviewed_paths)]
+        if (
+            canonical_digest(cast(JSONValue, [ref.model_dump(mode="json") for ref in refs]))
+            != plan.sut_digest
+        ):
+            raise ValueError("reviewed source projection changed")
+        for ref in refs:
+            file_mapping = mapping[ref.path]
+            artifact_relative = file_mapping["frozen_path"]
+            runtime_relative = (workspace / ref.path).relative_to(frozen.parent.parent).as_posix()
+            if (
+                set(file_mapping) != {"frozen_path", "runtime_path"}
+                or file_mapping["runtime_path"] != runtime_relative
+                or artifact_relative != "sut-source/" + runtime_relative
+                or files[artifact_relative] != "sha256:" + ref.digest
+            ):
+                raise ValueError("reviewed source mapping disagrees with frozen artifact")
+            for path in (workspace / ref.path, frozen / artifact_relative, runtime / runtime_relative):
+                relative = path.relative_to(workspace).as_posix()
+                member = _regular_input_file(workspace, relative)
+                if any(parent.is_symlink() for parent in member.parents if parent != workspace):
+                    raise ValueError("reviewed source path contains a symlink")
+                if hashlib.sha256(member.read_bytes()).hexdigest() != ref.digest:
+                    raise ValueError("reviewed source bytes disagree with runtime copy")
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        raise InputError(f"NOT_READY: reviewed source does not match managed SUT: {error}") from error
+
+
 def authenticate_managed_sut_receipts(
     workspace: Path,
     profile: VerifiedExecutionPrepareV1,
@@ -150,6 +213,11 @@ def authenticate_managed_sut_receipts(
         raise InputError("managed SUT receipt identity does not match")
     _authenticate_managed_sut_seal(prepared, label="prepare", ownership_token=ownership_token)
     _authenticate_managed_sut_seal(started, label="start", ownership_token=ownership_token)
+    _, plan_document = _receipt_document(workspace, profile.case_execution_plan_ref, "machine plan")
+    plans = CaseExecutionPlanSetV1.model_validate(plan_document)
+    if len(plans.cases) != 1:
+        raise InputError("NOT_READY: reviewed source requires one machine plan")
+    authenticate_reviewed_sut_source(workspace, plans.cases[0], prepared)
     qualification = prepared.get("runtime_qualification")
     if not isinstance(qualification, dict):
         raise InputError("managed SUT receipt runtime qualification is missing")
@@ -181,7 +249,7 @@ def authenticate_managed_sut_receipts(
     return managed_path, observer_path, identity, authority_digest
 
 
-_MANAGED_HARNESS_SHA256 = "028f820fb8de8c37586d45e7662f8d18a5a6f880d3af40444432bb3b67545a0d"
+_MANAGED_HARNESS_SHA256 = "15ddae370a2474bb0e0a98bbc971c76a1d1ce06ea4ce9f5e2ec5cdcc2814c961"
 
 
 class ManagedUserSutHost:
@@ -235,7 +303,14 @@ class ManagedUserSutHost:
         return document
 
     def prepare(
-        self, *, workspace_root: Path, project_dir: Path, run_root: Path, fault: str = "none"
+        self,
+        *,
+        workspace_root: Path,
+        project_dir: Path,
+        run_root: Path,
+        fault: str = "none",
+        frozen_artifact: Path | None = None,
+        frozen_artifact_digest: str | None = None,
     ) -> dict[str, Any]:
         return self._call(
             "prepare",
@@ -248,7 +323,17 @@ class ManagedUserSutHost:
                 str(run_root),
                 "--fault",
                 fault,
-            ],
+            ]
+            + (
+                []
+                if frozen_artifact is None
+                else [
+                    "--frozen-artifact",
+                    str(frozen_artifact),
+                    "--frozen-artifact-digest",
+                    str(frozen_artifact_digest),
+                ]
+            ),
         )
 
     def start(self, *, workspace_root: Path, prepare_receipt: Path) -> dict[str, Any]:

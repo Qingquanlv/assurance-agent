@@ -77,7 +77,21 @@ def materialize_project(*, project_dir: Path, fault: str = "none") -> dict[str, 
     _copy_members(FIXTURE_ROOT / "sut-source", project_dir, _SOURCE_MEMBERS)
     for name in ("requirements.in", "requirements.lock"):
         shutil.copy2(FIXTURE_ROOT / name, project_dir / name)
-    return {**locked, "fault": fault}
+    frozen = project_dir / ".aa/user-oracle"
+    shutil.copytree(FIXTURE_ROOT, frozen, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    lock_path = frozen / "runtime-lock.json"
+    lock = json.loads(lock_path.read_bytes())
+    lock["fault"] = fault
+    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n")
+    for path in frozen.rglob("*"):
+        if path.is_file():
+            path.chmod(0o444)
+    return {
+        **locked,
+        "fault": fault,
+        "frozen_artifact": str(frozen.resolve()),
+        "frozen_artifact_digest": _sha256(lock_path),
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -152,9 +166,11 @@ def verify_runtime_lock(fixture_root: Path) -> dict[str, Any]:
     for path in sorted(root.rglob("*")):
         if "__pycache__" in path.relative_to(root).parts or path.suffix == ".pyc":
             continue
+        if path.is_symlink():
+            raise ValueError("NOT_READY: User oracle fixture contains a symlink")
         if path == lock_path or path.is_dir():
             continue
-        if path.is_symlink() or not path.is_file():
+        if not path.is_file():
             raise ValueError("NOT_READY: User oracle fixture contains a non-regular member")
         relative = path.relative_to(root).as_posix()
         actual[relative] = _sha256(path)
@@ -165,6 +181,39 @@ def verify_runtime_lock(fixture_root: Path) -> dict[str, Any]:
     if lock.get("source_digest") != source_digest or lock.get("runtime_digest") != runtime_digest:
         raise ValueError("NOT_READY: User oracle aggregate digest does not match")
     return {"files": actual, "source_digest": source_digest, "runtime_digest": runtime_digest}
+
+
+def _source_mapping(workspace: Path, frozen: Path, files: Mapping[str, str]) -> dict[str, dict[str, str]]:
+    reviewed_root = frozen.parent.parent
+    return {
+        (reviewed_root / name.removeprefix("sut-source/")).relative_to(workspace).as_posix(): {
+            "frozen_path": name,
+            "runtime_path": name.removeprefix("sut-source/"),
+        }
+        for name in files
+        if name.startswith("sut-source/")
+    }
+
+
+def _authenticate_frozen_artifact(frozen: Path, digest: str | None, fault: str | None) -> dict[str, Any]:
+    lock_path = frozen / "runtime-lock.json"
+    if frozen != frozen.resolve() or frozen.name != "user-oracle" or frozen.parent.name != ".aa":
+        raise ValueError("NOT_READY: selected frozen artifact path is invalid")
+    if (
+        frozen.is_symlink()
+        or lock_path.is_symlink()
+        or not lock_path.is_file()
+        or _sha256(lock_path) != digest
+    ):
+        raise ValueError("NOT_READY: selected frozen artifact lock changed")
+    if fault not in FAULTS or json.loads(lock_path.read_bytes()).get("fault") != fault:
+        raise ValueError("NOT_READY: selected frozen artifact fault changed")
+    locked = verify_runtime_lock(frozen)
+    for name in ("bootstrap.py", _QUALIFIER):
+        helper = FIXTURE_ROOT / name
+        if helper.is_symlink() or not helper.is_file() or _sha256(helper) != locked["files"].get(name):
+            raise ValueError("NOT_READY: installed lifecycle helper differs from frozen artifact")
+    return locked
 
 
 def _confined(workspace_root: Path, target: Path, label: str) -> Path:
@@ -445,16 +494,28 @@ def prepare(
     run_root: Path,
     offline: bool = False,
     fault: str = "none",
+    frozen_artifact: Path | None = None,
+    frozen_artifact_digest: str | None = None,
 ) -> dict[str, Any]:
-    """Materialize one project and one exclusive managed-SUT runtime from the snapshot."""
-    locked = verify_runtime_lock(FIXTURE_ROOT)
+    """Copy an explicitly frozen artifact into one exclusive managed-SUT runtime."""
     project = _confined(Path(workspace_root), Path(project_dir), "project_dir")
     run = _confined(Path(workspace_root), Path(run_root), "run_root")
     if project == run or project in run.parents or run in project.parents:
         raise ValueError("project_dir and run_root must not overlap")
     if project.exists() or run.exists():
         raise ValueError("project_dir and run_root must be new paths")
-    materialize_project(project_dir=project, fault=fault)
+    if frozen_artifact is None:
+        if frozen_artifact_digest is not None:
+            raise ValueError("NOT_READY: frozen artifact selection is incomplete")
+        selected = materialize_project(project_dir=project, fault=fault)
+        frozen_artifact = Path(selected["frozen_artifact"])
+        frozen_artifact_digest = selected["frozen_artifact_digest"]
+    frozen = _confined(Path(workspace_root), frozen_artifact, "frozen_artifact")
+    locked = _authenticate_frozen_artifact(frozen_artifact, frozen_artifact_digest, fault)
+    if not project.exists():
+        _copy_members(frozen / "sut-source", project, _SOURCE_MEMBERS)
+        for name in ("requirements.in", "requirements.lock"):
+            shutil.copy2(frozen / name, project / name)
     sut = run / "sut"
     _copy_members(project, sut, _RUNTIME_MEMBERS)
     _authenticate_runtime_copy(sut, locked["files"])
@@ -472,6 +533,10 @@ def prepare(
             "schema_version": "1",
             "state": "prepared",
             "fault": fault,
+            "frozen_artifact": str(frozen),
+            "frozen_artifact_digest": frozen_artifact_digest,
+            "source_files": locked["files"],
+            "source_file_mapping": _source_mapping(Path(workspace_root).resolve(), frozen, locked["files"]),
             "workspace_root": str(Path(workspace_root).resolve(strict=True)),
             "workspace_identity": _directory_identity(Path(workspace_root)),
             "project_dir": str(project),
@@ -557,9 +622,15 @@ def _authenticated_prepare(
     project = _confined(workspace, Path(str(prepared.get("project_dir"))), "project_dir")
     if project == run_root or project in run_root.parents or run_root in project.parents:
         raise ValueError("prepare receipt project and run roots overlap")
-    locked = verify_runtime_lock(FIXTURE_ROOT)
+    selected_frozen = Path(str(prepared.get("frozen_artifact")))
+    frozen = _confined(workspace, selected_frozen, "frozen_artifact")
+    locked = _authenticate_frozen_artifact(
+        selected_frozen, prepared.get("frozen_artifact_digest"), prepared.get("fault")
+    )
     if (
-        prepared.get("source_digest") != locked["source_digest"]
+        prepared.get("source_files") != locked["files"]
+        or prepared.get("source_file_mapping") != _source_mapping(workspace, frozen, locked["files"])
+        or prepared.get("source_digest") != locked["source_digest"]
         or prepared.get("runtime_digest") != locked["runtime_digest"]
     ):
         raise ValueError("NOT_READY: prepare receipt runtime identity drifted")
@@ -850,11 +921,16 @@ def stop(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    freeze_parser = commands.add_parser("freeze")
+    freeze_parser.add_argument("--project-dir", type=Path, required=True)
+    freeze_parser.add_argument("--fault", choices=FAULTS, default="none")
     prepare_parser = commands.add_parser("prepare")
     prepare_parser.add_argument("--workspace-root", type=Path, required=True)
     prepare_parser.add_argument("--project-dir", type=Path, required=True)
     prepare_parser.add_argument("--run-root", type=Path, required=True)
     prepare_parser.add_argument("--offline", action="store_true")
+    prepare_parser.add_argument("--frozen-artifact", type=Path)
+    prepare_parser.add_argument("--frozen-artifact-digest")
     prepare_parser.add_argument("--fault", choices=FAULTS, default="none")
     start_parser = commands.add_parser("start")
     start_parser.add_argument("--workspace-root", type=Path, required=True)
@@ -869,13 +945,20 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
-    if arguments.command == "prepare":
+    if arguments.command == "freeze":
+        output = {
+            "schema_version": "1",
+            **materialize_project(project_dir=arguments.project_dir, fault=arguments.fault),
+        }
+    elif arguments.command == "prepare":
         output = prepare(
             workspace_root=arguments.workspace_root,
             project_dir=arguments.project_dir,
             run_root=arguments.run_root,
             offline=arguments.offline,
             fault=arguments.fault,
+            frozen_artifact=arguments.frozen_artifact,
+            frozen_artifact_digest=arguments.frozen_artifact_digest,
         )
     elif arguments.command == "start":
         output = start(

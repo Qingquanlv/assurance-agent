@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any, cast
 
 
-def accepted_verified_execution_input(project: Path, *, change_id: str = "CH-USER-001"):
+def accepted_verified_execution_input(
+    project: Path, *, change_id: str = "CH-USER-001", reviewed_source_path: str = "src/app.py"
+):
     """Install one complete accepted API generation closure for execution tests."""
 
     from assurance_execution.contracts.agent import ExecutionPrepareInputV1, VerifiedExecutionPrepareV1
@@ -127,7 +129,13 @@ def accepted_verified_execution_input(project: Path, *, change_id: str = "CH-USE
         )
         + b"\n",
     )
-    product_source_ref = write("src/app.py", b"def create_user():\n    return None\n")
+    existing_source = project / reviewed_source_path
+    product_source_ref = write(
+        reviewed_source_path,
+        existing_source.read_bytes()
+        if existing_source.is_file()
+        else b"def create_user():\n    return None\n",
+    )
     review_ref = write(
         f"qa/changes/{change_id}/review/case-review.json",
         canonical_json_bytes(
@@ -152,9 +160,12 @@ def accepted_verified_execution_input(project: Path, *, change_id: str = "CH-USE
                     },
                     "source_verification": {
                         "independent": True,
-                        "reviewed_source_files": ["src/app.py"],
+                        "reviewed_source_files": [reviewed_source_path],
                         "verified_claims": [
-                            {"claim": "user creation is implemented", "evidence_files": ["src/app.py"]}
+                            {
+                                "claim": "user creation is implemented",
+                                "evidence_files": [reviewed_source_path],
+                            }
                         ],
                     },
                 },
