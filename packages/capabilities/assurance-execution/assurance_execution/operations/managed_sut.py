@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -89,6 +90,57 @@ def _authenticate_managed_sut_seal(
         raise InputError(f"managed SUT receipt seal changed: {label}")
 
 
+def _authenticate_artifact_tree(
+    workspace: Path, root: Path, expected: Mapping[str, str], *, mutable: frozenset[str] = frozenset()
+) -> None:
+    """Check the sealed file closure, without following links or loading SUT code."""
+    root.relative_to(workspace)
+    if root != root.resolve(strict=True):
+        raise ValueError("artifact root contains a symbolic link")
+    directories = {"."}
+    for relative, digest in expected.items():
+        if not isinstance(digest, str) or not digest.startswith("sha256:"):
+            raise ValueError("artifact file digest is invalid")
+        EvidenceArtifactRefV1(path=relative, digest=digest.removeprefix("sha256:"))
+        directories.update(str(parent) for parent in PurePosixPath(relative).parents)
+    actual: dict[str, str] = {}
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        relative = path.relative_to(root).as_posix()
+        details = path.lstat()
+        if stat.S_ISDIR(details.st_mode):
+            if relative not in directories:
+                raise ValueError(f"artifact contains an undeclared directory: {relative}")
+            pending.extend(path.iterdir())
+        elif not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            raise ValueError(f"artifact member is not a regular single-link file: {relative}")
+        elif relative not in mutable:
+            actual[relative] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise ValueError("artifact file membership or byte digest changed")
+
+
+def _authenticate_artifact_closure(workspace: Path, prepared: Mapping[str, Any]) -> None:
+    files = prepared["source_files"]
+    frozen = Path(prepared["frozen_artifact"])
+    runtime = Path(prepared["sut_dir"])
+    _authenticate_artifact_tree(
+        workspace, frozen, {**files, "runtime-lock.json": prepared["frozen_artifact_digest"]}
+    )
+    runtime_files = {
+        name.removeprefix("sut-source/"): digest
+        for name, digest in files.items()
+        if name.startswith("sut-source/") or name in {"requirements.in", "requirements.lock"}
+    }
+    _authenticate_artifact_tree(
+        workspace,
+        runtime,
+        runtime_files,
+        mutable=frozenset({"db.sqlite3", "db.sqlite3-journal", "db.sqlite3-wal", "db.sqlite3-shm"}),
+    )
+
+
 def authenticate_reviewed_sut_source(
     workspace: Path, plan: CaseExecutionPlanV1, prepared: Mapping[str, Any]
 ) -> None:
@@ -115,6 +167,9 @@ def authenticate_reviewed_sut_source(
             or frozen_lock.get("files") != files
         ):
             raise ValueError("frozen artifact manifest disagrees with prepare receipt")
+        if not isinstance(prepared.get("fault"), str) or frozen_lock.get("fault") != prepared["fault"]:
+            raise ValueError("frozen artifact fault selection disagrees with prepare receipt")
+        _authenticate_artifact_closure(workspace, prepared)
         if (
             not isinstance(reviewed_paths, list)
             or not reviewed_paths

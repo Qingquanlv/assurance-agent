@@ -468,3 +468,41 @@ def test_stopped_managed_sut_is_not_ready(live_sut):
             source_root=host.source_root,
             secret_port=secrets,
         )
+
+
+@pytest.mark.parametrize(
+    "member", [".aa/user-oracle/bootstrap.py", "run/sut/extra.py", "run/sut/app/models/admin.py"]
+)
+def test_execution_admission_rechecks_artifact_after_real_lifecycle(live_sut, member):
+    from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
+    from assurance_execution.operations.managed_sut import authenticate_managed_sut_receipts
+
+    _, secrets, document, _ = live_sut
+    workspace = Path(document["workspace_root"])
+    profile = VerifiedExecutionPrepareV1.model_validate(document["verification"])
+
+    def admit():
+        return authenticate_managed_sut_receipts(
+            workspace,
+            profile,
+            secret_port=secrets,
+            authorization_scope_digest=document["authorization_scope_digest"],
+            activity_receipt_digest=document["activity_receipt_digest"],
+        )
+
+    admit()
+    path = workspace / member
+    original = path.read_bytes() if path.exists() else None
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    if path.exists():
+        path.chmod(0o644)
+    try:
+        path.write_bytes((original or b"") + b"\n# drift after valid lifecycle\n")
+        with pytest.raises(ValueError, match="NOT_READY"):
+            admit()
+    finally:
+        if original is None:
+            path.unlink()
+        else:
+            path.write_bytes(original)
+            path.chmod(mode)

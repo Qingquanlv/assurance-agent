@@ -303,6 +303,7 @@ def _verified_prepare_input(
     prepare_unsigned = {
         "schema_version": "1",
         "state": "prepared",
+        "fault": "none",
         "frozen_artifact": str(project / ".aa/user-oracle"),
         "frozen_artifact_digest": "sha256:" + hashlib.sha256(frozen_lock.read_bytes()).hexdigest(),
         "source_files": source_files,
@@ -1519,3 +1520,68 @@ async def test_verified_prepare_rejects_changed_frozen_artifact_lock(tmp_path: P
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert "frozen artifact" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member", [".aa/user-oracle/bootstrap.py", ".managed/sut/undeclared.py"])
+@pytest.mark.parametrize("recover", [False, True])
+async def test_verified_admission_rechecks_entire_artifact_closure(
+    tmp_path: Path, member: str, recover: bool
+) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    if recover:
+        first = await _execute_verified(tmp_path, payload, attempt_key="d" * 64)
+        assert first.status == "succeeded"
+    changed = tmp_path / member
+    changed.write_bytes(b"# unreviewed artifact change after lifecycle validation\n")
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="d" * 64)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "NOT_READY" in outcome.failure.message
+
+
+def test_artifact_admission_checks_frozen_fault_selection(tmp_path: Path) -> None:
+    from assurance_execution.operations.managed_sut import authenticate_reviewed_sut_source
+
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    profile = payload["verification"]
+    plans = CaseExecutionPlanSetV1.model_validate_json(
+        (tmp_path / profile["case_execution_plan_ref"]["path"]).read_bytes()
+    )
+    prepared = json.loads((tmp_path / profile["managed_sut_prepare_receipt_ref"]["path"]).read_bytes())
+    prepared["fault"] = "wrong-value"
+    with pytest.raises(ValueError, match="NOT_READY.*fault"):
+        authenticate_reviewed_sut_source(tmp_path, plans.cases[0], prepared)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("root", [".aa/user-oracle", ".managed/sut"])
+@pytest.mark.parametrize(
+    "drift", ["symlink", "hardlink", "fifo", "empty-directory", "bytecode", "db-lookalike"]
+)
+async def test_artifact_admission_rejects_unsafe_or_undeclared_members(
+    tmp_path: Path, root: str, drift: str
+) -> None:
+    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
+    directory = tmp_path / root
+    if drift in {"symlink", "hardlink", "fifo"}:
+        member = directory / ("bootstrap.py" if root.startswith(".aa/") else "app/user.py")
+        saved = tmp_path / "saved-member"
+        member.rename(saved)
+        if drift == "symlink":
+            member.symlink_to(saved)
+        elif drift == "hardlink":
+            os.link(saved, member)
+        else:
+            os.mkfifo(member)
+    elif drift == "empty-directory":
+        (directory / "extra").mkdir()
+    elif drift == "bytecode":
+        (directory / "__pycache__").mkdir()
+        (directory / "__pycache__/injected.pyc").write_bytes(b"undeclared code")
+    else:
+        (directory / "db.sqlite3.py").write_bytes(b"# not an allowed SQLite sidecar")
+    outcome = await _execute_verified(tmp_path, payload, attempt_key="e" * 64)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "NOT_READY" in outcome.failure.message
