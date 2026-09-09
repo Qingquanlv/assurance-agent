@@ -143,7 +143,7 @@ def test_opencode_benchmark_is_one_full_locked_item(phase5_manifest):
     assert set(item.routing_assignments) == set(PREPARE_IDS)
     assert item.routing_assignments == item.deployment_binding_routes
     assert all(
-        route.provider_model == "volcengine/glm-5.3-flash" for route in item.routing_assignments.values()
+        route.provider_model == "volcengine/deepseek-v4-flash" for route in item.routing_assignments.values()
     )
     assert all(route.worker_profile == "max" for route in item.routing_assignments.values())
 
