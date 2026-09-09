@@ -421,13 +421,23 @@ def collect_facts(journal: ActionJournal, plan: CaseExecutionPlanV1) -> list[Obs
             values["api.code"] = http["code"]
     if oracle["state"] == "observed":
         values["oracle.executed"] = True
-        values["user.row_count"] = len(oracle["rows"])
-        if len(oracle["rows"]) == 1:
-            values.update({f"user.{key}": value for key, value in oracle["rows"][0].items()})
+        # Without a known HTTP terminal, the retained rowset is diagnostic only.
+        if http["state"] == "observed":
+            values["user.row_count"] = len(oracle["rows"])
+            if len(oracle["rows"]) == 1:
+                values.update({f"user.{key}": value for key, value in oracle["rows"][0].items()})
     return [
         _observation(journal, key, "observed", values[key])
         if key in values
-        else _observation(journal, key, "missing", reason="runtime_fact_unavailable")
+        else _observation(
+            journal,
+            key,
+            "missing",
+            reason="http_terminal_unknown"
+            if http.get("reason") == "http_terminal_unknown"
+            and (key == "action.finished" or key.startswith("user."))
+            else "runtime_fact_unavailable",
+        )
         for key in plan.required
     ]
 
@@ -521,7 +531,7 @@ def _verified_outcome(
         coverage_epoch=manifest.coverage_epoch,
         repair_round=manifest.repair_round,
         plan_digest=manifest.plan_digest,
-        plan_ref=EvidenceArtifactRefV1(path=manifest.plan_ref, digest=manifest.plan_digest),
+        plan_ref=plan.plan_ref,
         case_execution_plan_ref=payload.verification.case_execution_plan_ref,
         case_execution_plan_digest=manifest.case_execution_plan_digest,
         spec_digest=manifest.spec_digest,

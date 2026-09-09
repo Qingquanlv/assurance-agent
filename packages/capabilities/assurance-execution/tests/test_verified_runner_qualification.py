@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 import pytest
-from assurance_execution.contracts.verification import VerificationEvidenceV1
+from assurance_execution.contracts.verification import VerifiedExecutionResultV1
 from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
 from assurance_execution.operations.verified_process import DockerVerificationHost
 from test_verified_execution import handler_case, managed_sut  # pyright: ignore[reportMissingImports] # noqa: F401
@@ -59,6 +59,6 @@ def test_case():
 '''
     request, context, _, _ = handler_case(managed_sut, "oci", source)
     result = asyncio.run(VerifiedExecutionHandler(process_host=qualified_runner).execute(request, context))
-    assert VerificationEvidenceV1.model_validate(result.output).state == "collected"
+    assert VerifiedExecutionResultV1.model_validate(result.output).evidence.state == "collected"
     assert evidence.read_text() == canary
     assert canary not in result.model_dump_json()

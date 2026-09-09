@@ -734,9 +734,17 @@ def test_task_facade_and_verified_attempt_reject_generation_drift_before_side_ef
 
 @pytest.fixture(scope="module")
 def managed_sut(tmp_path_factory):
+    yield from _managed_sut(tmp_path_factory.mktemp("task4-managed"))
+
+
+@pytest.fixture
+def managed_fault_sut(tmp_path_factory, request):
+    yield from _managed_sut(tmp_path_factory.mktemp("task4-fault"), fault=request.param)
+
+
+def _managed_sut(workspace, *, fault="none"):
     from assurance_execution.operations.managed_sut import ManagedUserSutHost
 
-    workspace = tmp_path_factory.mktemp("task4-managed")
     harness = ManagedUserSutHost(
         source_root=REPO,
         secret_port=Secrets(
@@ -748,7 +756,7 @@ def managed_sut(tmp_path_factory):
         ),
     )
     prepared = harness.prepare(
-        workspace_root=workspace, project_dir=workspace / "project", run_root=workspace / "run"
+        workspace_root=workspace, project_dir=workspace / "project", run_root=workspace / "run", fault=fault
     )
     started = harness.start(workspace_root=workspace, prepare_receipt=workspace / "run/harness-prepare.json")
     try:
@@ -773,9 +781,9 @@ def managed_sut(tmp_path_factory):
         _ACTIVITY_OWNERS.clear()
 
 
-def setup_action(tmp_path: Path, managed_sut, suffix: str):
+def setup_action(tmp_path: Path, managed_sut, suffix: str, *, plan=None):
     _, prepared, started, token = managed_sut
-    plan = formal_plan()
+    plan = plan or formal_plan()
     from assurance_execution.operations.verification_manifest import allocate_user_inputs
     from assurance_execution.operations.sqlite_oracle import observe_user
 
@@ -817,7 +825,17 @@ def setup_action(tmp_path: Path, managed_sut, suffix: str):
     return plan, manifest, journal, token
 
 
-def test_real_parent_http_then_new_sqlite_observer(tmp_path, managed_sut):
+def test_real_parent_http_then_new_sqlite_observer(tmp_path, managed_sut, monkeypatch):
+    from assurance_execution.operations import verified_execution
+
+    original_observe = verified_execution.observe_user
+    timeouts = []
+
+    def observe(*args, **kwargs):
+        timeouts.append(kwargs["timeout_s"])
+        return original_observe(*args, **kwargs)
+
+    monkeypatch.setattr(verified_execution, "observe_user", observe)
     plan, manifest, journal, token = setup_action(tmp_path, managed_sut, "created")
     execute_frozen_action(
         plan,
@@ -833,6 +851,8 @@ def test_real_parent_http_then_new_sqlite_observer(tmp_path, managed_sut):
     assert terminal["http"]["code"] == 200
     assert terminal["initial"]["rows"] == []
     assert terminal["oracle"]["rows"] == [manifest.inputs.model_dump(mode="json")]
+    assert len(timeouts) == 2  # One initial read and one bounded post-action read.
+    assert all(0 < timeout <= 2 for timeout in timeouts)
     assert token not in json.dumps(terminal)
     with pytest.raises(ValueError, match="already started"):
         execute_frozen_action(
@@ -1013,11 +1033,19 @@ def handler_case(managed_sut, suffix, source=None, store=None):
     from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
     from graph_engine.canonical import canonical_digest
     from graph_engine.plugin_api import InvocationMetadata, TaskWorkspaceIdentity, TaskContext, TaskRequest
+    from tests.verified_generation_fixture import accepted_verified_execution_input
 
     workspace, prepared, started, token = managed_sut
     project = workspace
     write_root = project
-    plan, manifest, _, _ = setup_action(write_root, managed_sut, suffix)
+    accepted = accepted_verified_execution_input(
+        project, reviewed_source_path="project/app/controllers/user.py"
+    )
+    assert accepted.verification is not None
+    plan = CaseExecutionPlanSetV1.model_validate_json(
+        (project / accepted.verification.case_execution_plan_ref.path).read_bytes()
+    ).cases[0]
+    plan, manifest, _, _ = setup_action(write_root, managed_sut, suffix, plan=plan)
     artifact_root = f"qa/changes/{manifest.change_id}/.staging/execution/{suffix}"
     plan_relative = f"{artifact_root}/case-plan.json"
     manifest_relative = f"{artifact_root}/manifest.json"
@@ -1172,14 +1200,139 @@ def handler_case(managed_sut, suffix, source=None, store=None):
     return request, context, manifest, plan
 
 
+@pytest.mark.parametrize("row_count", [0, 1])
+def test_unknown_http_keeps_user_postconditions_missing(managed_sut, monkeypatch, row_count):
+    from assurance_execution.operations import verified_execution
+
+    request, context, manifest, _ = handler_case(managed_sut, f"unknown_http_{row_count}")
+    assert context.activity is not None
+    original_post = verified_execution._post
+    posts = []
+
+    async def lose_response(plan, manifest, credential):
+        posts.append(manifest.execution_id)
+        if row_count == 0:
+            credential = json.dumps({"token": "invalid", "user_password": "host-password"}).encode()
+        await original_post(plan, manifest, credential)
+        raise httpx.ReadError("response lost after dispatch")
+
+    monkeypatch.setattr(verified_execution, "_post", lose_response)
+    handler = verified_execution.VerifiedExecutionHandler(process_host=RealPipeHost())
+    outcome = asyncio.run(handler.execute(request, context))
+    result = VerifiedExecutionResultV1.model_validate(outcome.output)
+    terminal_path = context.write_root / manifest.evidence_root / "action_terminal.json"
+    retained = terminal_path.read_bytes()
+    terminal = json.loads(retained)["payload"]
+    assert terminal["http"] == {"state": "timeout", "reason": "http_terminal_unknown"}
+    assert len(terminal["oracle"]["rows"]) == row_count
+    observations = {item.obligation_id: item for item in result.evidence.observations}
+    assert observations["oracle.executed"].state == "observed"
+    assert observations["oracle.executed"].actual is True
+    assert observations["user.row_count"].state == "missing"
+    for key, observation in observations.items():
+        if key.startswith("user."):
+            assert observation.state == "missing", key
+            assert observation.actual is None, key
+            assert observation.reason == "http_terminal_unknown", key
+    assert observations["action.finished"].state == "missing"
+    assert observations["action.finished"].reason == "http_terminal_unknown"
+    assert result.completion_status == "incomplete"
+    assert result.evidence.state == "incomplete"
+    for _ in range(2):
+        recovered = asyncio.run(handler.reconcile(request, context, context.activity.snapshot))
+        assert recovered.status == "terminal"
+        assert recovered.outcome == outcome
+        assert terminal_path.read_bytes() == retained
+    assert posts == [manifest.execution_id]
+
+
+def test_unknown_http_two_diagnostic_rows_remain_missing(tmp_path, managed_sut):
+    from assurance_execution.operations.verified_execution import collect_facts
+
+    plan, manifest, journal, _ = setup_action(tmp_path, managed_sut, "unknown_http_two")
+    rows = [manifest.inputs.model_dump(mode="json")] * 2
+    journal.write(
+        "action_terminal",
+        {
+            "initial": {"state": "observed", "rows": []},
+            "http": {"state": "timeout", "reason": "http_terminal_unknown"},
+            "oracle": {"state": "observed", "rows": rows},
+        },
+    )
+    observations = {item.obligation_id: item for item in collect_facts(journal, plan)}
+    assert observations["oracle.executed"].actual is True
+    for key, observation in observations.items():
+        if key == "action.finished" or key.startswith("user."):
+            assert observation.state == "missing", key
+            assert observation.reason == "http_terminal_unknown", key
+    terminal = journal.read("action_terminal")
+    assert terminal is not None and terminal["oracle"]["rows"] == rows
+
+
+@pytest.mark.parametrize(
+    "managed_fault_sut", ["missing-write", "rollback-success", "rollback"], indirect=True
+)
+def test_known_http_terminal_keeps_zero_rows_evaluable(tmp_path, managed_fault_sut, request):
+    from assurance_execution.operations.verified_execution import collect_facts
+
+    fault = request.node.callspec.params["managed_fault_sut"]
+    plan, manifest, journal, token = setup_action(tmp_path, managed_fault_sut, f"known_http_{fault}")
+    execute_frozen_action(
+        plan, manifest, journal, json.dumps({"token": token, "user_password": "host-password"}).encode()
+    )
+    terminal = journal.read("action_terminal")
+    assert terminal is not None
+    assert terminal["http"]["state"] == "observed"
+    assert terminal["http"]["status"] == (500 if fault == "rollback" else 200)
+    if fault != "rollback":
+        assert terminal["http"]["code"] == 200
+    assert terminal["oracle"]["rows"] == []
+    observations = {item.obligation_id: item for item in collect_facts(journal, plan)}
+    assert observations["action.finished"].state == "observed"
+    assert observations["action.finished"].actual is True
+    assert observations["user.row_count"].state == "observed"
+    assert observations["user.row_count"].actual == 0
+    if fault.startswith("rollback"):
+        facts = [
+            json.loads(line)
+            for line in (managed_fault_sut[0] / "run/fault-facts.jsonl").read_text().splitlines()
+        ]
+        assert any(item["event"] == "write_observed" and item["row_count"] == 1 for item in facts)
+        assert any(item["event"] == "rollback_observed" and item["row_count"] == 0 for item in facts)
+
+
+def test_handler_fixture_binds_reviewed_source_to_managed_runtime(managed_sut):
+    _, context, _, plan = handler_case(managed_sut, "fixture-source-closure")
+    prepared = managed_sut[1]
+    review = context.project_root / plan.reviewed_case.review_ref.path
+    assert review.is_file()
+    assert hashlib.sha256(review.read_bytes()).hexdigest() == plan.reviewed_case.review_ref.digest
+    source_paths = json.loads(review.read_bytes())["source_verification"]["reviewed_source_files"]
+    refs = {ref.path: ref for ref in plan.reviewed_case.preparation_refs}
+    for source in source_paths:
+        ref = refs[source]
+        mapping = prepared["source_file_mapping"][source]
+        for path in (
+            context.project_root / source,
+            Path(prepared["frozen_artifact"]) / mapping["frozen_path"],
+            Path(prepared["sut_dir"]) / mapping["runtime_path"],
+        ):
+            assert path.is_file()
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == ref.digest
+
+
 def test_full_parent_handler_real_pipe_http_sqlite_and_recovery(managed_sut):
     from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
 
-    request, context, manifest, _ = handler_case(managed_sut, "handler")
+    request, context, manifest, plan = handler_case(managed_sut, "handler")
+    assert plan.plan_digest != plan.plan_ref.digest
     assert context.activity is not None
     handler = VerifiedExecutionHandler(process_host=RealPipeHost())
     first = asyncio.run(handler.execute(request, context))
-    evidence = VerifiedExecutionResultV1.model_validate(first.output).evidence
+    result = VerifiedExecutionResultV1.model_validate(first.output)
+    evidence = result.evidence
+    authority = json.loads((context.write_root / result.execution_authority_ref.path).read_bytes())
+    assert authority["payload"]["plan_ref"] == plan.plan_ref.model_dump(mode="json")
     assert evidence.state == "collected"
     observations = {item.obligation_id: item.actual for item in evidence.observations}
     assert observations["user.dept_id"] is None
@@ -1190,6 +1343,29 @@ def test_full_parent_handler_real_pipe_http_sqlite_and_recovery(managed_sut):
     for path in (context.write_root / manifest.evidence_root).rglob("*.json"):
         assert "host-password" not in path.read_text()
         assert managed_sut[3] not in path.read_text()
+
+
+def test_parent_handler_rejects_mismatched_manifest_plan_identity(managed_sut):
+    from assurance_execution.operations.verified_execution import (
+        VerifiedExecutionHandler,
+        VerifiedExecutionInputV1,
+    )
+
+    request, context, manifest, _ = handler_case(managed_sut, "mismatched_plan_identity")
+    payload = VerifiedExecutionInputV1.model_validate(request.input)
+    manifest_path = context.project_root / payload.manifest_ref.path
+    manifest_path.write_text(manifest.model_copy(update={"plan_digest": "f" * 64}).model_dump_json())
+    payload = payload.model_copy(
+        update={
+            "manifest_ref": payload.manifest_ref.model_copy(
+                update={"digest": hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
+            )
+        }
+    )
+    request = request.model_copy(update={"input": payload.model_dump(mode="json")})
+    with pytest.raises(ValueError, match="formal plan does not match manifest"):
+        asyncio.run(VerifiedExecutionHandler(process_host=RealPipeHost()).execute(request, context))
+    assert not (context.write_root / manifest.evidence_root / "action_started.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -1522,7 +1698,14 @@ def test_actual_semantic_handler_recovers_without_live_collector(
         assert isinstance(context.secrets, Secrets)
         secrets = context.secrets
         payload = VerifiedExecutionInputV1.model_validate(base.input)
-        plan = formal_plan("api_db_trace.v1")
+        trace_fields = formal_plan("api_db_trace.v1").model_dump(mode="json")
+        plan = type(plan).model_validate(
+            plan.model_dump(mode="json")
+            | {
+                key: trace_fields[key]
+                for key in ("validation_profile", "trace", "completion", "required", "bindings")
+            }
+        )
         plan_bytes = (
             CaseExecutionPlanSetV1(change_id=plan.change_id, cases=(plan,)).model_dump_json().encode()
         )
