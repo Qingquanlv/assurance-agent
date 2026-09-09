@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -309,7 +311,9 @@ class ProductRuntimePorts:
                 activity_factory=activity_factory,
                 invocation_root=workspace.paths.change_root,
             )
-            network = _preflight_selected_root(typed_composition, auth, reachable)
+            network = _preflight_selected_root(
+                typed_composition, auth, reachable, workspace_root=workspace.paths.project_root
+            )
             expected_allow = _requires_opencode(typed_composition, reachable)
             if network.allow_opencode != expected_allow:
                 raise ValueError("network policy does not match selected root")
@@ -587,6 +591,8 @@ def _preflight_selected_root(
     composition: FrozenComposition,
     authorization: InvocationRuntimeAuthorization,
     reachable: Sequence[str],
+    *,
+    workspace_root: Path | None = None,
 ) -> NetworkPolicy:
     semantic = getattr(composition, "semantic_attempt_contracts", {})
     from assurance_product.agent_contracts import all_feature_agent_contracts, all_feature_task_contracts
@@ -610,7 +616,7 @@ def _preflight_selected_root(
         if config.validation_profile is None:
             expanded.update(FACADE_DELEGATES[item] for item in selected_facades)
         else:
-            preflight_verification(config, authorization, config_digest)
+            preflight_verification(config, authorization, config_digest, workspace_root=workspace_root)
     agents = tuple(sorted(expanded & set(all_feature_agent_contracts())))
     policy = NetworkPolicy(allow_opencode=bool(agents))
     if not agents:

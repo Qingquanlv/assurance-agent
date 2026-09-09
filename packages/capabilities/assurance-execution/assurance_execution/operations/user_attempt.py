@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import re
+import stat
+import tempfile
 from pathlib import Path
 
 from assurance_execution.contracts.verification import ManagedSutAuthorityV1
@@ -14,7 +16,11 @@ from dataclasses import dataclass
 import httpx
 from graph_engine.attempts import AttemptKey, BusinessActivation
 from graph_engine.canonical import canonical_digest
-from graph_engine.plugin_api import SecretPort
+from pydantic import JsonValue
+from graph_engine.plugin_api import SecretPort, FrozenModel
+from typing import Literal
+from assurance_execution.operations.host_secrets import read_host_secret_model
+from assurance_execution.operations.managed_sut import _authenticate_artifact_tree
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1, VerifiedExecutionPrepareV1
 from assurance_execution.contracts.verification import FrozenUserInputsV1
 from assurance_execution.operations.agent_skills import _execution_id, authenticate_generation_result
@@ -24,8 +30,55 @@ from assurance_generation.contracts.admission import admit_verified_generation
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 
+SUT_SECRET_HANDLES = ("managed-sut.admin-password", "managed-sut.reset-password", "managed-sut.secret-key")
+
+
+class UserInvocationHost(FrozenModel):
+    kind: Literal["user-invocation-host.v1"]
+    authority_root: str
+    fault: str
+    frozen_artifact_ref: EvidenceArtifactRefV1
+
+
+def authenticate_user_invocation(
+    secrets: SecretPort, authority_handle: str, *, workspace_root: Path, source_root: Path
+) -> UserInvocationHost:
+    seed, _ = read_host_secret_model(
+        secrets, authority_handle, UserInvocationHost, category="User invocation host"
+    )
+    private = _private_root(Path(seed.authority_root))
+    workspace = workspace_root.resolve(strict=True)
+    if private.is_relative_to(workspace) or workspace.is_relative_to(private):
+        raise ValueError("NOT_READY: host authority must remain outside the project")
+    if seed.frozen_artifact_ref.path != ".aa/user-oracle/runtime-lock.json":
+        raise ValueError("NOT_READY: selected frozen artifact path is invalid")
+    frozen = workspace / ".aa/user-oracle"
+    raw = (frozen / "runtime-lock.json").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != seed.frozen_artifact_ref.digest:
+        raise ValueError("NOT_READY: selected frozen artifact lock changed")
+    locked = json.loads(raw)
+    if locked.get("fault") != seed.fault or locked.get("schema_version") != "1":
+        raise ValueError("NOT_READY: selected frozen artifact configuration changed")
+    _authenticate_artifact_tree(
+        workspace,
+        frozen,
+        {
+            **locked["files"],
+            "runtime-lock.json": "sha256:" + seed.frozen_artifact_ref.digest,
+        },
+    )
+    fixture = source_root / "benchmark/assurance-product/fixtures/user-oracle"
+    for name in ("bootstrap.py", "qualify_runtime.py"):
+        path = fixture / name
+        if path.is_symlink() or "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() != locked[
+            "files"
+        ].get(name):
+            raise ValueError("NOT_READY: installed lifecycle helper differs from frozen artifact")
+    return seed
+
+
 def _private_root(root: Path) -> Path:
-    if root.is_symlink() or not root.is_dir():
+    if root != root.resolve(strict=True) or root.is_symlink() or not root.is_dir():
         raise ValueError("NOT_READY: private host authority root is unavailable")
     details = root.stat()
     if details.st_uid != os.getuid() or details.st_mode & 0o077:
@@ -45,7 +98,7 @@ def _authority_path(root: Path, execution_id: str) -> Path:
 def retain_authority(
     root: Path, execution_id: str, authority: ManagedSutAuthorityV1, *, project_root: Path
 ) -> None:
-    private = root.resolve(strict=True)
+    private = _private_root(root)
     if private.is_relative_to(project_root.resolve()) or project_root.resolve().is_relative_to(private):
         raise ValueError("host authority files must remain outside project and candidate roots")
     path = _authority_path(private, execution_id)
@@ -59,18 +112,86 @@ def retain_authority(
         os.close(fd)
 
 
-def read_retained_authority(root: Path, execution_id: str) -> ManagedSutAuthorityV1:
+class RetainedUserAttempt(FrozenModel):
+    authority: ManagedSutAuthorityV1
+    verification: VerifiedExecutionPrepareV1
+    credential: str
+    credential_handle: str
+    action_credential_handle: str
+    input_digest: str
+    prepared_input: dict[str, JsonValue] | None = None
+
+
+def _read_retained(root: Path, execution_id: str) -> bytes:
     path = _authority_path(root, execution_id)
-    details = path.stat()
-    if (
-        path.is_symlink()
-        or not path.is_file()
-        or details.st_nlink != 1
-        or details.st_mode & 0o077
-        or details.st_uid != os.getuid()
-    ):
-        raise ValueError("NOT_READY: retained authority file is invalid")
-    return ManagedSutAuthorityV1.model_validate_json(path.read_bytes())
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        details = os.fstat(fd)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+            or details.st_mode & 0o077
+            or details.st_uid != os.getuid()
+        ):
+            raise ValueError("NOT_READY: retained authority file is invalid")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            return stream.read()
+    finally:
+        os.close(fd)
+
+
+def _read_attempt(root: Path, execution_id: str) -> RetainedUserAttempt:
+    raw = _read_retained(root, execution_id)
+
+    class RetainedSecret:
+        def resolve(self, handle: str) -> bytes:
+            return raw
+
+    record, _ = read_host_secret_model(
+        RetainedSecret(), "retained", RetainedUserAttempt, category="retained User attempt"
+    )
+    return record
+
+
+def read_retained_authority(root: Path, execution_id: str) -> ManagedSutAuthorityV1:
+    raw = _read_retained(root, execution_id)
+    document = json.loads(raw)
+    if isinstance(document, dict) and "authority" in document:
+        return _read_attempt(root, execution_id).authority
+    return ManagedSutAuthorityV1.model_validate(document)
+
+
+def _retain_attempt(
+    root: Path, execution_id: str, record: RetainedUserAttempt, *, update: bool = False
+) -> None:
+    path = _authority_path(root, execution_id)
+    if update:
+        current = _read_attempt(root, execution_id)
+        if (
+            current.prepared_input is not None and current.prepared_input != record.prepared_input
+        ) or current.model_copy(update={"prepared_input": record.prepared_input}) != record:
+            raise ValueError("NOT_READY: retained User attempt identity drifted")
+        fd, temporary = tempfile.mkstemp(dir=root, prefix=".attempt-")
+    else:
+        temporary = str(path)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+    try:
+        os.fchmod(fd, 0o400)
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(record.model_dump_json().encode())
+            stream.flush()
+            os.fsync(fd)
+        if update:
+            os.replace(temporary, path)
+        directory = os.open(root, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        os.close(fd)
+        if update and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def authority_from_handle(raw: bytes, execution_id: str) -> ManagedSutAuthorityV1:
@@ -96,13 +217,15 @@ class UserAttempt:
     host: ManagedUserSutHost
     workspace_root: Path
     execution_id: str
+    private_root: Path
+    record: RetainedUserAttempt
+
+    def retain_prepared(self, payload: dict[str, JsonValue]) -> None:
+        self.record = self.record.model_copy(update={"prepared_input": payload})
+        _retain_attempt(self.private_root, self.execution_id, self.record, update=True)
 
     def stop(self) -> None:
-        self.host.stop(
-            workspace_root=self.workspace_root,
-            receipt_path=self.workspace_root / self.verification.managed_sut_start_receipt_ref.path,
-            instance_id=self.verification.sut_instance_id,
-        )
+        self.host.stop_owned(workspace_root=self.workspace_root, authority=self.authority)
 
 
 def start_user_attempt(
@@ -121,16 +244,6 @@ def start_user_attempt(
     credential_handle: str,
 ) -> UserAttempt:
     """Create an owned SUT only after authenticating this attempt's generated closure."""
-    seed = json.loads(secrets.resolve(authority_handle))
-    if (
-        not isinstance(seed, dict)
-        or set(seed) != {"kind", "authority_root", "fault", "frozen_artifact_ref"}
-        or seed["kind"] != "user-invocation-host.v1"
-    ):
-        raise ValueError("NOT_READY: invocation host selection is invalid")
-    private = _private_root(Path(seed["authority_root"]))
-    if private.is_relative_to(workspace_root.resolve()) or workspace_root.resolve().is_relative_to(private):
-        raise ValueError("NOT_READY: host authority must remain outside the project")
     generation = root.generation_result
     if (
         generation is None
@@ -139,6 +252,10 @@ def start_user_attempt(
     ):
         raise ValueError("NOT_READY: current API DB generation is required")
     authenticate_generation_result(root, workspace_root)
+    seed = authenticate_user_invocation(
+        secrets, authority_handle, workspace_root=workspace_root, source_root=source_root
+    )
+    private = Path(seed.authority_root)
     admission = admit_verified_generation(
         workspace_root,
         workspace_root,
@@ -162,19 +279,30 @@ def start_user_attempt(
     base = workspace_root / ".aa" / "managed-user" / execution_id
     run = base / "runtime"
     host = ManagedUserSutHost(source_root=source_root, secret_port=secrets)
-    frozen_ref = EvidenceArtifactRefV1.model_validate(seed["frozen_artifact_ref"])
+    frozen_ref = EvidenceArtifactRefV1.model_validate(seed.frozen_artifact_ref)
     if frozen_ref.path != ".aa/user-oracle/runtime-lock.json":
         raise ValueError("NOT_READY: selected frozen artifact path is invalid")
     prepared = host.prepare(
         workspace_root=workspace_root,
         project_dir=base / "source",
         run_root=run,
-        fault=str(seed["fault"]),
+        fault=seed.fault,
         frozen_artifact=workspace_root / ".aa/user-oracle",
         frozen_artifact_digest="sha256:" + frozen_ref.digest,
     )
     authenticate_reviewed_sut_source(workspace_root, admission.machine_plans.cases[0], prepared)
-    started = host.start(workspace_root=workspace_root, prepare_receipt=run / "harness-prepare.json")
+    try:
+        started = host.start(workspace_root=workspace_root, prepare_receipt=run / "harness-prepare.json")
+    except BaseException:
+        receipt = run / "owned-process.json"
+        if receipt.is_file():
+            # The fixed stop command authenticates the sealed receipt independently.
+            host.stop(
+                workspace_root=workspace_root,
+                receipt_path=receipt,
+                instance_id=str(json.loads(receipt.read_bytes())["instance_id"]),
+            )
+        raise
     try:
 
         def ref(path: Path) -> EvidenceArtifactRefV1:
@@ -239,7 +367,15 @@ def start_user_attempt(
             managed_sut_start_receipt_ref=start_ref,
             managed_sut_authority_handle=authority_handle,
         )
-        retain_authority(private, execution_id, authority, project_root=workspace_root)
+        record = RetainedUserAttempt(
+            authority=authority,
+            verification=profile,
+            credential=credential.decode(),
+            credential_handle=credential_handle,
+            action_credential_handle=admission.machine_plans.cases[0].action.credential_ref,
+            input_digest=canonical_digest(root.model_dump(mode="json")),
+        )
+        _retain_attempt(private, execution_id, record)
         overlay = AttemptSecrets(
             secrets,
             {
@@ -248,7 +384,7 @@ def start_user_attempt(
                 admission.machine_plans.cases[0].action.credential_ref: credential,
             },
         )
-        return UserAttempt(profile, overlay, authority, host, workspace_root, execution_id)
+        return UserAttempt(profile, overlay, authority, host, workspace_root, execution_id, private, record)
     except BaseException:
         host.stop(
             workspace_root=workspace_root,
@@ -256,3 +392,57 @@ def start_user_attempt(
             instance_id=str(started["instance_id"]),
         )
         raise
+
+
+def recover_user_attempt(
+    root: ExecutionPrepareInputV1,
+    *,
+    workspace_root: Path,
+    source_root: Path,
+    attempt_key: AttemptKey,
+    secrets: SecretPort,
+    authority_handle: str,
+) -> UserAttempt | None:
+    from assurance_generation.contracts.mapping import ClosedMappingV1
+
+    authenticate_generation_result(root, workspace_root)
+    seed, _ = read_host_secret_model(
+        secrets, authority_handle, UserInvocationHost, category="User invocation host"
+    )
+    generation = root.generation_result
+    if generation is None:
+        raise ValueError("NOT_READY: current generation is required")
+    mapping = ClosedMappingV1.model_validate_json((workspace_root / generation.mapping_ref.path).read_bytes())
+    if len(mapping.selected) != 1:
+        raise ValueError("NOT_READY: exactly one current generated case is required")
+    execution_id = _execution_id(attempt_key, mapping.selected[0])
+    private = _private_root(Path(seed.authority_root))
+    workspace = workspace_root.resolve(strict=True)
+    if private.is_relative_to(workspace) or workspace.is_relative_to(private):
+        raise ValueError("NOT_READY: host authority must remain outside the project")
+    path = _authority_path(private, execution_id)
+    if not path.exists() and not path.is_symlink():
+        if (workspace_root / ".aa/managed-user" / execution_id).exists():
+            raise ValueError("NOT_READY: retained attempt authority is unavailable")
+        return None
+    record = _read_attempt(private, execution_id)
+    if record.input_digest != canonical_digest(root.model_dump(mode="json")):
+        raise ValueError("NOT_READY: retained attempt input drifted")
+    overlay = AttemptSecrets(
+        secrets,
+        {
+            authority_handle: record.authority.model_dump_json().encode(),
+            record.credential_handle: record.credential.encode(),
+            record.action_credential_handle: record.credential.encode(),
+        },
+    )
+    return UserAttempt(
+        record.verification,
+        overlay,
+        record.authority,
+        ManagedUserSutHost(source_root=source_root, secret_port=overlay),
+        workspace_root,
+        execution_id,
+        private,
+        record,
+    )

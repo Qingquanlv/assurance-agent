@@ -302,11 +302,20 @@ def test_collector_readiness_requires_current_bound_receipt(collector_receipt, d
             authenticate_collector_readiness(CollectorReadinessReceiptV1.model_validate(document), **expected)
 
 
-def test_product_preflight_with_real_sut_and_authenticated_host_receipts(
+def test_dynamic_host_readiness_with_real_sut_and_authenticated_host_receipts(
     live_sut, collector_receipt, monkeypatch, tmp_path
 ):
-    from assurance_product.verification_execution import VerificationConfiguration, preflight_verification
-    from assurance_execution.operations.verified_process import DockerVerificationHost
+    from assurance_product.verification_execution import VerificationConfiguration, _readiness_binding
+    from assurance_product.runtime_ports import AuthorizedSecretResolver
+    from assurance_execution.operations.readiness import authenticate_host_readiness
+
+    def preflight_verification(config, authorization, config_digest):
+        authenticate_host_readiness(
+            _readiness_binding(config, config_digest),
+            source_root=host.source_root,
+            secret_port=AuthorizedSecretResolver(authorization),
+        )
+
     from graph_engine.attempts.secret_sources import (
         InvocationRuntimeAuthorization,
         SecretSourceBinding,
@@ -343,11 +352,8 @@ def test_product_preflight_with_real_sut_and_authenticated_host_receipts(
     authorization = InvocationRuntimeAuthorization(
         schema_version="1", secret_sources=sources, digest=runtime_authorization_digest(sources)
     )
-    with pytest.raises(ValueError, match="NOT_READY"):
-        preflight_verification(config, authorization, "c" * 64)
-    monkeypatch.setattr(DockerVerificationHost, "preflight", lambda self: {"test_qualified_host": True})
     preflight_verification(config, authorization, "c" * 64)
-    with pytest.raises(ValueError, match="NOT_READY"):
+    with pytest.raises(ValueError, match="selection|invalid"):
         preflight_verification(config, authorization, "f" * 64)
     selected_trace = {
         **selection,
@@ -360,7 +366,7 @@ def test_product_preflight_with_real_sut_and_authenticated_host_receipts(
     trace = trace.model_copy(
         update={"host": trace.host.model_copy(update={"collector_readiness_handle": "sut.collector"})}
     )
-    with pytest.raises(ValueError, match="NOT_READY"):
+    with pytest.raises(ValueError, match="selection|invalid"):
         preflight_verification(trace, authorization, "c" * 64)
     collector["sut_instance_id"] = selected_trace["verification"]["sut_instance_id"]
     monkeypatch.setenv("AA_READINESS_COLLECTOR", json.dumps(collector))
@@ -390,7 +396,9 @@ def test_managed_sut_with_missing_live_marker_is_not_ready(live_sut):
 def test_public_readiness_errors_never_disclose_secret_documents(live_sut, monkeypatch, caplog, boundary):
     import logging
     import traceback
-    from assurance_product.verification_execution import VerificationConfiguration, preflight_verification
+    from assurance_product.verification_execution import VerificationConfiguration, _readiness_binding
+    from assurance_product.runtime_ports import AuthorizedSecretResolver
+    from assurance_execution.operations.readiness import authenticate_host_readiness
     from graph_engine.attempts.secret_sources import (
         InvocationRuntimeAuthorization,
         SecretSourceBinding,
@@ -436,7 +444,11 @@ def test_public_readiness_errors_never_disclose_secret_documents(live_sut, monke
         }
     )
     with pytest.raises(ValueError) as caught:
-        preflight_verification(config, auth, "c" * 64)
+        authenticate_host_readiness(
+            _readiness_binding(config, "c" * 64),
+            source_root=host.source_root,
+            secret_port=AuthorizedSecretResolver(auth),
+        )
     logging.getLogger(__name__).error(
         "preflight failed", exc_info=(type(caught.value), caught.value, caught.value.__traceback__)
     )
@@ -445,7 +457,7 @@ def test_public_readiness_errors_never_disclose_secret_documents(live_sut, monke
     while error is not None:
         rendered += str(error)
         error = error.__cause__ or error.__context__
-    assert "NOT_READY" in rendered
+    assert "invalid" in rendered
     assert canary not in rendered
     assert malformed not in rendered
     assert "input_value" not in rendered
@@ -506,3 +518,111 @@ def test_execution_admission_rechecks_artifact_after_real_lifecycle(live_sut, me
         else:
             path.write_bytes(original)
             path.chmod(mode)
+
+
+def test_root_static_db_preflight_needs_no_instance_or_readiness_selection(tmp_path, monkeypatch):
+    from tests.product.test_user_oracle_full_workflow import load
+    from assurance_product.verification_execution import VerificationConfiguration, preflight_verification
+    from assurance_execution.operations.verified_process import DockerVerificationHost
+    from graph_engine.attempts.secret_sources import (
+        InvocationRuntimeAuthorization,
+        SecretSourceBinding,
+        runtime_authorization_digest,
+    )
+
+    project = tmp_path / "project"
+    selected = load("user_oracle_harness").materialize_project(project_dir=project)
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    qualification = tmp_path / "qualification.json"
+    qualification.write_text("test runner preflight injection")
+    config = VerificationConfiguration.model_validate(
+        {
+            "validation_profile": "api_db.v1",
+            "host": {
+                "runner": {
+                    "source_root": str(Path(__file__).resolve().parents[2]),
+                    "qualification_path": str(qualification),
+                    "qualification_digest": digest(qualification),
+                },
+                "managed_sut_authority_handle": "sut.authority",
+                "credential_handle": "sut.credential",
+            },
+        }
+    )
+    values = {
+        "sut.authority": json.dumps(
+            {
+                "kind": "user-invocation-host.v1",
+                "authority_root": str(private),
+                "fault": "none",
+                "frozen_artifact_ref": {
+                    "path": ".aa/user-oracle/runtime-lock.json",
+                    "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
+                },
+            }
+        ),
+        "sut.credential": "test-only-password",
+        **{
+            handle: "test-only-password"
+            for handle in (
+                "managed-sut.admin-password",
+                "managed-sut.reset-password",
+                "managed-sut.secret-key",
+            )
+        },
+    }
+    sources = tuple(
+        SecretSourceBinding(handle, "environment", f"AA_STATIC_{index}")
+        for index, handle in enumerate(values)
+    )
+    for index, value in enumerate(values.values()):
+        monkeypatch.setenv(f"AA_STATIC_{index}", value)
+    auth = InvocationRuntimeAuthorization(
+        schema_version="1", secret_sources=sources, digest=runtime_authorization_digest(sources)
+    )
+    monkeypatch.setattr(DockerVerificationHost, "preflight", lambda self: {"test_qualified_host": True})
+    preflight_verification(config, auth, "c" * 64, workspace_root=project)
+    assert not (project / ".aa/managed-user").exists()
+    assert list(private.iterdir()) == []
+    import traceback
+
+    monkeypatch.setenv("AA_STATIC_0", json.dumps({"unexpected": "R4_STATIC_SECRET_CANARY"}))
+    with pytest.raises(ValueError) as caught:
+        preflight_verification(config, auth, "c" * 64, workspace_root=project)
+    assert "NOT_READY" in str(caught.value)
+    assert "R4_STATIC_SECRET_CANARY" not in "".join(traceback.format_exception(caught.value))
+    monkeypatch.setenv("AA_STATIC_0", values["sut.authority"])
+    trace = config.model_copy(update={"validation_profile": "api_db_trace.v1"})
+    with pytest.raises(ValueError, match="Collector/OTel"):
+        preflight_verification(trace, auth, "c" * 64, workspace_root=project)
+    trace = trace.model_copy(
+        update={"host": trace.host.model_copy(update={"collector_readiness_handle": "sut.collector"})}
+    )
+    trace_sources = (*sources, SecretSourceBinding("sut.collector", "environment", "AA_STATIC_COLLECTOR"))
+    trace_auth = InvocationRuntimeAuthorization(
+        schema_version="1", secret_sources=trace_sources, digest=runtime_authorization_digest(trace_sources)
+    )
+    monkeypatch.setenv("AA_STATIC_COLLECTOR", json.dumps({"collector_ready": True, "otel_ready": True}))
+    with pytest.raises(ValueError, match="NOT_READY"):
+        preflight_verification(trace, trace_auth, "c" * 64, workspace_root=project)
+    qualification_document: dict[str, object] = {
+        "validation_profile": "api_db_trace.v1",
+        "configuration_digest": "c" * 64,
+    }
+    for member in ("collector_artifact", "collector_config", "otel_dependencies", "otel_qualification"):
+        artifact = tmp_path / member
+        artifact.write_text("test-only artifact digest fixture; no real OTel qualification claim")
+        qualification_document[member] = {"path": str(artifact), "digest": digest(artifact)}
+    monkeypatch.setenv("AA_STATIC_COLLECTOR", json.dumps(qualification_document))
+    preflight_verification(trace, trace_auth, "c" * 64, workspace_root=project)
+    assert not (project / ".aa/managed-user").exists()
+    with pytest.raises(ValueError, match="NOT_READY"):
+        preflight_verification(trace, trace_auth, "f" * 64, workspace_root=project)
+    (tmp_path / "otel_dependencies").write_text("changed")
+    with pytest.raises(ValueError, match="NOT_READY"):
+        preflight_verification(trace, trace_auth, "c" * 64, workspace_root=project)
+    (project / ".aa/user-oracle/bootstrap.py").chmod(0o600)
+    (project / ".aa/user-oracle/bootstrap.py").write_text("tampered")
+    with pytest.raises(ValueError, match="NOT_READY"):
+        preflight_verification(config, auth, "c" * 64, workspace_root=project)

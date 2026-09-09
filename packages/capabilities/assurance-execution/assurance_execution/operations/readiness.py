@@ -13,7 +13,9 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
+from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1, HostReadinessFileV1
+from graph_engine.plugin_api import FrozenModel
+from typing import Literal
 from assurance_execution.contracts.readiness import (
     ManagedSutReadinessSelectionV1,
     VerificationReadinessBindingV1,
@@ -74,24 +76,7 @@ def authenticate_collector_readiness(
         or (now - receipt.checked_at).total_seconds() > 30
     ):
         raise ValueError("Collector readiness is stale or from the future")
-    for reference in (
-        receipt.collector_artifact,
-        receipt.collector_config,
-        receipt.otel_dependencies,
-        receipt.otel_qualification,
-    ):
-        path = Path(reference.path)
-        details = path.stat()
-        if (
-            path.is_symlink()
-            or not path.is_file()
-            or details.st_nlink != 1
-            or details.st_uid != os.getuid()
-            or details.st_mode & 0o022
-        ):
-            raise ValueError("Collector readiness file is not owned by the host")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != reference.digest:
-            raise ValueError("Collector artifact/configuration/OTel digest drifted")
+    _authenticate_collector_files(receipt)
     if process_birth_identity(receipt.collector_pid) != receipt.collector_process_birth_identity:
         raise ValueError("Collector process birth identity drifted")
     endpoint = urlsplit(receipt.collector_endpoint)
@@ -193,3 +178,42 @@ def authenticate_host_readiness(
         if collector_failed:
             raise HostReadinessError("Collector/OTel readiness authentication failed")
     return selection
+
+
+class CollectorQualification(FrozenModel):
+    validation_profile: Literal["api_db_trace.v1"]
+    configuration_digest: str
+    collector_artifact: HostReadinessFileV1
+    collector_config: HostReadinessFileV1
+    otel_dependencies: HostReadinessFileV1
+    otel_qualification: HostReadinessFileV1
+
+
+def _authenticate_collector_files(receipt: CollectorQualification | CollectorReadinessReceiptV1) -> None:
+    for reference in (
+        receipt.collector_artifact,
+        receipt.collector_config,
+        receipt.otel_dependencies,
+        receipt.otel_qualification,
+    ):
+        path = Path(reference.path)
+        details = path.stat()
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or details.st_nlink != 1
+            or details.st_uid != os.getuid()
+            or details.st_mode & 0o022
+        ):
+            raise ValueError("Collector readiness file is not owned by the host")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != reference.digest:
+            raise ValueError("Collector artifact/configuration/OTel digest drifted")
+
+
+def authenticate_collector_artifacts(secret_port: SecretPort, handle: str, configuration_digest: str) -> None:
+    receipt, _ = read_host_secret_model(
+        secret_port, handle, CollectorQualification, category="Collector/OTel qualification"
+    )
+    if receipt.configuration_digest != configuration_digest:
+        raise HostReadinessError("Collector/OTel configuration drifted")
+    _authenticate_collector_files(receipt)

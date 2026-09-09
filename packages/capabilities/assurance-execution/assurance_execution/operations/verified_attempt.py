@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import asyncio
+from dataclasses import replace
+from graph_engine.attempts import AttemptKey
+from graph_engine.canonical import canonical_digest
+from assurance_execution.operations.user_attempt import start_user_attempt, recover_user_attempt, UserAttempt
+from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
+from assurance_execution.operations.managed_sut import authenticate_managed_sut_readiness
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -23,6 +30,10 @@ from assurance_execution.operations.verified_execution import (
     VerifiedExecutionHandler,
     VerifiedExecutionInputV1,
 )
+
+
+class UserAttemptNotStarted(ValueError):
+    """No lifecycle has been allocated for this authenticated attempt."""
 
 
 class VerifiedAttemptHandler:
@@ -97,8 +108,160 @@ class VerifiedAttemptHandler:
             }
         )
 
+    def _owned_request(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        *,
+        recovering: bool = False,
+        allow_start: bool = True,
+        cancelling: bool = False,
+    ) -> tuple[TaskRequest, TaskContext, UserAttempt | None]:
+        binding = request.binding_data
+        host = binding.get("user_host") if isinstance(binding, Mapping) else None
+        if not isinstance(host, Mapping):
+            return self._request(request, context, recovering=recovering), context, None
+        root = ExecutionPrepareInputV1.model_validate(request.input)
+        if root.verification is not None or root.validation_profile not in {"api_db.v1", "api_db_trace.v1"}:
+            raise ValueError("NOT_READY: dynamic verification must be owned by the execution host")
+        if (
+            context.activity is None
+            or context.activity.snapshot.workspace_identity != context.workspace_identity
+            or context.secrets is None
+            or host.get("configuration_digest") != root.verification_config_digest
+        ):
+            raise ValueError("NOT_READY: authorized execution host context is required")
+        assert isinstance(binding, Mapping)
+        runner = binding.get("verification_runner")
+        if not isinstance(runner, Mapping):
+            raise ValueError("NOT_READY: frozen runner qualification is required")
+        source = Path(str(runner["source_root"]))
+        authority_handle, credential_handle = host.get("authority_handle"), host.get("credential_handle")
+        if not isinstance(authority_handle, str) or not isinstance(credential_handle, str):
+            raise ValueError("NOT_READY: required host handles are missing")
+        if (
+            not recovering
+            and not cancelling
+            and hashlib.sha256(Path(str(runner["qualification_path"])).read_bytes()).hexdigest()
+            != runner["qualification_digest"]
+        ):
+            raise ValueError("NOT_READY: runner qualification digest drifted")
+        key = AttemptKey(digest=context.workspace_identity.task_id)
+        owned = recover_user_attempt(
+            root,
+            workspace_root=context.project_root,
+            source_root=source,
+            attempt_key=key,
+            secrets=context.secrets,
+            authority_handle=authority_handle,
+        )
+        if owned is None:
+            if not allow_start and not recovering:
+                raise UserAttemptNotStarted()
+            if recovering:
+                raise ValueError("NOT_READY: dispatched attempt has no retained authority")
+            owned = start_user_attempt(
+                root,
+                source_root=source,
+                workspace_root=context.project_root,
+                attempt_key=key,
+                invocation_id=request.invocation_id,
+                task_id=request.task_id,
+                graph_instance_id=request.graph_instance_id,
+                node_id=request.node_id,
+                authorization_scope_digest=context.workspace_identity.identity_digest,
+                secrets=context.secrets,
+                authority_handle=authority_handle,
+                credential_handle=credential_handle,
+            )
+        expected_activity = canonical_digest(
+            {
+                "attempt_key": key.digest,
+                "invocation_id": request.invocation_id,
+                "task_id": request.task_id,
+                "graph_instance_id": request.graph_instance_id,
+                "node_id": request.node_id,
+                "workspace_identity_digest": context.workspace_identity.identity_digest,
+            }
+        )
+        if (
+            owned.authority.authorization_scope_digest != context.workspace_identity.identity_digest
+            or owned.authority.activity_receipt_digest != expected_activity
+        ):
+            raise ValueError("NOT_READY: retained authority belongs to a different activity")
+        private_context = replace(context, secrets=owned.secrets)
+        try:
+            if cancelling and context.activity.snapshot.state == "prepared":
+                return request, private_context, owned
+            if not recovering:
+                if root.validation_profile == "api_db_trace.v1":
+                    raise ValueError("NOT_READY: attempt-bound Collector/OTel lifecycle is required")
+                authenticate_managed_sut_readiness(
+                    ManagedSutReadinessSelectionV1(
+                        workspace_root=str(context.project_root.resolve()),
+                        verification=owned.verification,
+                        configuration_digest=str(host["configuration_digest"]),
+                        execution_id=owned.execution_id,
+                        authorization_scope_digest=context.workspace_identity.identity_digest,
+                        activity_receipt_digest=owned.authority.activity_receipt_digest,
+                    ),
+                    source_root=source,
+                    secret_port=owned.secrets,
+                )
+            if owned.record.prepared_input is None:
+                if recovering:
+                    raise ValueError("NOT_READY: dispatched attempt has no prepared evidence")
+                prepared = assemble_execution_input(
+                    root.model_copy(update={"verification": owned.verification}).model_dump(mode="json"),
+                    workspace=context.project_root,
+                    write_root=context.write_root,
+                    model=ExecuteInputV1,
+                    request=request,
+                    context=private_context,
+                )
+                if prepared.verification_manifest_ref is None or prepared.execution_id != owned.execution_id:
+                    raise ValueError("NOT_READY: prepared execution identity drifted")
+                payload = VerifiedExecutionInputV1(
+                    manifest_ref=prepared.verification_manifest_ref,
+                    verification=owned.verification,
+                    view=ExecutionView(
+                        batch_id=prepared.batch_id,
+                        root=execution_view_relative(
+                            prepared.change_id, prepared.batch_id, prepared.execution_id
+                        ),
+                        selected_targets=prepared.mapping.selected,
+                        digest=prepared.execution_view_digest,
+                        executed_at=prepared.executed_at,
+                        mode="verified",
+                        execution_id=prepared.execution_id,
+                    ),
+                )
+                owned.retain_prepared(payload.model_dump(mode="json"))
+            return (
+                request.model_copy(
+                    update={
+                        "input": owned.record.prepared_input,
+                        "binding_data": {
+                            "verification_runner": {
+                                key: runner[key] for key in ("source_root", "qualification_path")
+                            }
+                        },
+                    }
+                ),
+                private_context,
+                owned,
+            )
+        except BaseException:
+            owned.stop()
+            raise
+
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await self._delegate.execute(self._request(request, context), context)
+        prepared, private_context, owned = await asyncio.to_thread(self._owned_request, request, context)
+        try:
+            return await self._delegate.execute(prepared, private_context)
+        finally:
+            if owned is not None:
+                await asyncio.to_thread(owned.stop)
 
     async def reconcile(
         self, request: TaskRequest, context: TaskContext, activity: TaskActivitySnapshot
@@ -108,12 +271,24 @@ class VerifiedAttemptHandler:
                 status="indeterminate", reason="unauthenticated activity snapshot"
             )
         try:
-            prepared = self._request(request, context, recovering=activity.state != "prepared")
+            prepared, private_context, owned = await asyncio.to_thread(
+                self._owned_request,
+                request,
+                context,
+                recovering=activity.state != "prepared",
+                allow_start=False,
+            )
+        except UserAttemptNotStarted:
+            return TaskActivityReconcileResult(status="not_dispatched")
         except (ValueError, OSError):
             return TaskActivityReconcileResult(
                 status="indeterminate", reason="frozen execution identity unavailable"
             )
-        return await self._delegate.reconcile(prepared, context, activity)
+        try:
+            return await self._delegate.reconcile(prepared, private_context, activity)
+        finally:
+            if owned is not None and activity.state != "prepared":
+                await asyncio.to_thread(owned.stop)
 
     async def cancel(
         self, request: TaskRequest, context: TaskContext, activity: TaskActivitySnapshot
@@ -123,9 +298,24 @@ class VerifiedAttemptHandler:
                 status="indeterminate", reason="unauthenticated activity snapshot"
             )
         try:
-            prepared = self._request(request, context, recovering=activity.state != "prepared")
+            prepared, private_context, owned = await asyncio.to_thread(
+                self._owned_request,
+                request,
+                context,
+                recovering=activity.state != "prepared",
+                allow_start=False,
+                cancelling=True,
+            )
+        except UserAttemptNotStarted:
+            return TaskActivityCancelResult(status="acknowledged")
         except (ValueError, OSError):
             return TaskActivityCancelResult(
                 status="indeterminate", reason="frozen execution identity unavailable"
             )
-        return await self._delegate.cancel(prepared, context, activity)
+        try:
+            if owned is not None and activity.state == "prepared":
+                return TaskActivityCancelResult(status="acknowledged")
+            return await self._delegate.cancel(prepared, private_context, activity)
+        finally:
+            if owned is not None:
+                await asyncio.to_thread(owned.stop)

@@ -32,7 +32,8 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 from assurance_execution.contracts.workflow import VerifiedBridgeDefectResultV1
 from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
-from assurance_execution.operations.readiness import authenticate_host_readiness, HostReadinessError
+from assurance_execution.operations.readiness import HostReadinessError, authenticate_collector_artifacts
+from assurance_execution.operations.user_attempt import authenticate_user_invocation, SUT_SECRET_HANDLES
 from assurance_execution.operations.host_secrets import HostSecretDocumentError
 from assurance_execution.operations.agent_skills import authenticate_generation_result
 from assurance_execution.operations.common import InputError
@@ -97,6 +98,7 @@ def _preflight_verification(
     config: VerificationConfiguration,
     authorization: InvocationRuntimeAuthorization,
     config_digest: str | None,
+    workspace_root: Path | None,
 ) -> None:
     if config.validation_profile is None:
         return
@@ -105,16 +107,27 @@ def _preflight_verification(
     host = config.host
     if host.runner is None or host.managed_sut_authority_handle is None or host.credential_handle is None:
         raise ValueError("NOT_READY: managed SUT and qualified verification runner are required")
-    binding = _readiness_binding(config, config_digest)
-    handles = (binding.selection_handle, binding.authority_handle, host.credential_handle)
-    if config.validation_profile == "api_db_trace.v1" and binding.collector_handle is not None:
-        handles += (binding.collector_handle,)
+    if config_digest is None or workspace_root is None:
+        raise ValueError("NOT_READY: frozen configuration and workspace are required")
+    handles = (host.managed_sut_authority_handle, host.credential_handle, *SUT_SECRET_HANDLES)
+    if config.validation_profile == "api_db_trace.v1":
+        if host.collector_readiness_handle is None:
+            raise HostReadinessError("Collector/OTel qualification is required")
+        handles += (host.collector_readiness_handle,)
     authorize_binding_secret_handles(handles, authorization)
-    authenticate_host_readiness(
-        binding,
+    resolver = AuthorizedSecretResolver(authorization)
+    authenticate_user_invocation(
+        resolver,
+        host.managed_sut_authority_handle,
+        workspace_root=workspace_root,
         source_root=Path(host.runner.source_root),
-        secret_port=AuthorizedSecretResolver(authorization),
     )
+    for handle in (host.credential_handle, *SUT_SECRET_HANDLES):
+        if not resolver.resolve(handle):
+            raise ValueError("NOT_READY: required credential is unavailable")
+    if config.validation_profile == "api_db_trace.v1":
+        assert host.collector_readiness_handle is not None
+        authenticate_collector_artifacts(resolver, host.collector_readiness_handle, config_digest)
     if (
         hashlib.sha256(Path(host.runner.qualification_path).read_bytes()).hexdigest()
         != host.runner.qualification_digest
@@ -161,12 +174,13 @@ class ProfiledExecutionExecutor:
             if value.verification_config_digest != self.config_digest:
                 raise ValueError("verification configuration digest drifted")
             if (
-                value.verification is None
-                or value.verification.validation_profile != value.validation_profile
+                value.verification is not None
+                and value.verification.validation_profile != value.validation_profile
             ):
                 raise ValueError("NOT_READY: verification inputs do not match the frozen profile")
             if (
-                value.verification.managed_sut_authority_handle
+                value.verification is not None
+                and value.verification.managed_sut_authority_handle
                 != self.config.host.managed_sut_authority_handle
             ):
                 raise ValueError("managed SUT authority handle drifted")
@@ -216,9 +230,12 @@ class ProfiledExecutionExecutor:
             lock_digest=self._lock_digest,
             binding_data={
                 "verification_runner": None if runner is None else runner.model_dump(mode="json"),
-                "readiness": None
-                if self.config.host.managed_sut_readiness_handle is None
-                else _readiness_binding(self.config, self.config_digest).model_dump(mode="json"),
+                "user_host": {
+                    "authority_handle": self.config.host.managed_sut_authority_handle,
+                    "credential_handle": self.config.host.credential_handle,
+                    "configuration_digest": self.config_digest,
+                    "collector_handle": self.config.host.collector_readiness_handle,
+                },
             },
         )
         fields = current_bound_identity(
@@ -253,8 +270,8 @@ class ProfiledExecutionExecutor:
                 sorted(
                     handle
                     for handle in (
+                        *(SUT_SECRET_HANDLES if value.verification is None else ()),
                         self.config.host.managed_sut_authority_handle,
-                        self.config.host.managed_sut_readiness_handle,
                         self.config.host.credential_handle,
                         self.config.host.collector_readiness_handle
                         if self.config.validation_profile == "api_db_trace.v1"
@@ -351,12 +368,14 @@ def preflight_verification(
     config: VerificationConfiguration,
     authorization: InvocationRuntimeAuthorization,
     config_digest: str | None = None,
+    *,
+    workspace_root: Path | None = None,
 ) -> None:
     from graph_engine.errors import GraphEngineError
 
     reason = None
     try:
-        _preflight_verification(config, authorization, config_digest)
+        _preflight_verification(config, authorization, config_digest, workspace_root)
     except (HostSecretDocumentError, HostReadinessError) as error:
         reason = str(error)
     except (ValueError, OSError, GraphEngineError):

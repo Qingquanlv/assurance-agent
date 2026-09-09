@@ -6,6 +6,8 @@ import hmac
 import json
 import os
 import stat
+import signal
+import time
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
@@ -421,6 +423,76 @@ class ManagedUserSutHost:
                 instance_id,
             ],
         )
+
+    def stop_owned(self, *, workspace_root: Path, authority: ManagedSutAuthorityV1) -> None:
+        """Clean the independently retained process even after runtime drift or exit."""
+        from assurance_execution.operations.readiness import process_birth_identity
+
+        run = Path(authority.run_root)
+        run.relative_to(workspace_root.resolve(strict=True))
+        token = managed_sut_ownership_token(run, authority)
+        _, started = _receipt_document(
+            workspace_root,
+            EvidenceArtifactRefV1(
+                path=(run / "owned-process.json").relative_to(workspace_root).as_posix(),
+                digest=authority.start_receipt_digest,
+            ),
+            "owned start",
+        )
+        _authenticate_managed_sut_seal(started, label="owned start", ownership_token=token)
+        if (
+            started.get("run_root") != str(run)
+            or started.get("workspace_root") != str(workspace_root.resolve())
+            or started.get("state") != "started"
+        ):
+            raise ValueError("NOT_READY: retained process ownership drifted")
+        stopped = run / "stopped-process.json"
+        if stopped.exists() or stopped.is_symlink():
+            path = _regular_input_file(workspace_root, stopped.relative_to(workspace_root).as_posix())
+            document = json.loads(path.read_bytes())
+            _authenticate_managed_sut_seal(document, label="owned stop", ownership_token=token)
+            expected = {**started, "state": "stopped", "reason": "owned_sut_stopped"}
+            if {k: v for k, v in document.items() if k != "receipt_digest"} != {
+                k: v for k, v in expected.items() if k != "receipt_digest"
+            }:
+                raise ValueError("NOT_READY: retained cleanup identity drifted")
+            return
+        pid = started.get("pid")
+        if type(pid) is not int or pid <= 1:
+            raise ValueError("NOT_READY: owned process identity is invalid")
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            if process_birth_identity(pid) == started.get("process_birth_identity"):
+                os.kill(pid, signal.SIGTERM)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.05)
+                else:
+                    raise ValueError("NOT_READY: owned process cleanup is unconfirmed")
+            # A different birth identity means this owned process already exited.
+        unsigned = {k: v for k, v in started.items() if k != "receipt_digest"}
+        unsigned.update(state="stopped", reason="owned_sut_stopped")
+        raw = json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+        document = {
+            **unsigned,
+            "receipt_digest": "hmac-sha256:" + hmac.new(token, raw, hashlib.sha256).hexdigest(),
+        }
+        fd = os.open(stopped, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        try:
+            with os.fdopen(fd, "wb", closefd=False) as stream:
+                stream.write(json.dumps(document, sort_keys=True).encode())
+                stream.flush()
+                os.fsync(fd)
+        finally:
+            os.close(fd)
+        (run / f"live-{started['instance_id']}.json").unlink(missing_ok=True)
 
 
 def authenticate_managed_sut_readiness(

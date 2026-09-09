@@ -523,6 +523,27 @@ def _verified_outcome(
     outcome_path = journal.root / "outcome.json"
     if not outcome_path.is_file() or outcome_path.is_symlink() or outcome_path.stat().st_nlink != 1:
         raise ValueError("verified immutable outcome is unavailable")
+    # Publish the already authenticated manifest under the attempt evidence root.
+    # Its preparation reference may name the host's private candidate workspace.
+    manifest_bytes = _read_ref(context.project_root, payload.manifest_ref)
+    public_manifest = journal.root / "verification-manifest.json"
+    if public_manifest.exists():
+        _read_ref(
+            context.write_root,
+            EvidenceArtifactRefV1(
+                path=f"{manifest.evidence_root}/verification-manifest.json",
+                digest=payload.manifest_ref.digest,
+            ),
+        )
+    else:
+        fd = os.open(public_manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+        try:
+            with os.fdopen(fd, "wb", closefd=False) as stream:
+                stream.write(manifest_bytes)
+                stream.flush()
+                os.fsync(fd)
+        finally:
+            os.close(fd)
     authority = VerifiedExecutionAuthorityV1(
         validation_profile=manifest.validation_profile,
         change_id=manifest.change_id,
@@ -539,7 +560,9 @@ def _verified_outcome(
         attempt_key=manifest.attempt_key,
         batch_id=payload.view.batch_id,
         mapping_digest=manifest.mapping_digest,
-        manifest_ref=payload.manifest_ref,
+        manifest_ref=EvidenceArtifactRefV1(
+            path=f"{manifest.evidence_root}/verification-manifest.json", digest=payload.manifest_ref.digest
+        ),
         evidence_ref=EvidenceArtifactRefV1(
             path=f"{manifest.evidence_root}/outcome.json",
             digest=hashlib.sha256(outcome_path.read_bytes()).hexdigest(),

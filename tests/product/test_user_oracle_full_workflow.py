@@ -199,6 +199,7 @@ def test_attempt_authority_files_are_immutable_and_separate(tmp_path):
     assert read_retained_authority(host, b) == second
     with pytest.raises((FileExistsError, ValueError)):
         retain_authority(host, a, second, project_root=project)
+    project.chmod(0o700)
     with pytest.raises(ValueError, match="outside"):
         retain_authority(project, a, first, project_root=project)
 
