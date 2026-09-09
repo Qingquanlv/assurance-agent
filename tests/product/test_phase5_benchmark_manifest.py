@@ -426,6 +426,16 @@ def test_packaged_performance_dept_adapter_materializes_and_cleans_one_valid_cha
     assert not manifest.exists()
 
 
+def test_runner_does_not_crash_when_repo_has_no_grandparent() -> None:
+    spec = importlib.util.spec_from_file_location("phase5_run_item_shallow_root", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    with pytest.raises(SystemExit, match="live SUT is missing"):
+        runner._resolve_sut(Path("/"), "no-such-live-sut")
+
+
 def test_runner_resolves_real_sut_without_copying(tmp_path: Path) -> None:
     spec = importlib.util.spec_from_file_location("phase5_run_item_overlay", RUNNER_PATH)
     assert spec is not None and spec.loader is not None

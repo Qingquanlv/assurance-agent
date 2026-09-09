@@ -209,10 +209,9 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
 
 
 def _resolve_sut(repo: Path, relative: str) -> Path:
-    candidates = (
-        repo / relative,
-        repo.parents[1] / relative,
-    )
+    candidates = [repo / relative]
+    if len(repo.parents) > 1:
+        candidates.append(repo.parents[1] / relative)
     for candidate in candidates:
         if (candidate / "app").is_dir() and (candidate / "web").is_dir():
             return candidate.resolve()
