@@ -4,14 +4,9 @@ from types import MappingProxyType
 from graph_engine.plugin_api import TaskHandler
 
 from assurance_generation.operations.codegen import (
-    FIX_FAMILIES,
     CodegenFinalizeHandler,
-    CodegenFixFinalizeHandler,
-    CodegenFixPrepareHandler,
     CodegenPrepareHandler,
     codegen_finalize_handler,
-    codegen_fix_finalize_handler,
-    codegen_fix_prepare_handler,
     codegen_prepare_handler,
 )
 from assurance_generation.operations.planning import (
@@ -51,9 +46,6 @@ def codegen_handlers() -> Mapping[str, TaskHandler]:
     for family in FAMILIES:
         handlers[f"assurance.generation.{family}.codegen.prepare"] = CodegenPrepareHandler(family)
         handlers[f"assurance.generation.{family}.codegen.finalize"] = CodegenFinalizeHandler(family)
-    for family in FIX_FAMILIES:
-        handlers[f"assurance.generation.{family}.codegen-fix.prepare"] = CodegenFixPrepareHandler(family)
-        handlers[f"assurance.generation.{family}.codegen-fix.finalize"] = CodegenFixFinalizeHandler(family)
     return MappingProxyType(handlers)
 
 
@@ -72,23 +64,18 @@ def generation_handlers() -> Mapping[str, TaskHandler]:
 
 __all__ = [
     "FAMILIES",
-    "FIX_FAMILIES",
     "GENERATION_COMPLETE_ID",
     "GenerationCompleteHandler",
     "GenerationReviewRoundAdvanceHandler",
     "REVIEW_ROUND_ADVANCE_ID",
     "ResolveGenerationInputsHandler",
     "CodegenFinalizeHandler",
-    "CodegenFixFinalizeHandler",
-    "CodegenFixPrepareHandler",
     "CodegenPrepareHandler",
     "PlanFinalizeHandler",
     "PlanPrepareHandler",
     "PlanReviewFinalizeHandler",
     "PlanReviewPrepareHandler",
     "codegen_finalize_handler",
-    "codegen_fix_finalize_handler",
-    "codegen_fix_prepare_handler",
     "codegen_handlers",
     "codegen_prepare_handler",
     "generation_handlers",

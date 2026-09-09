@@ -556,7 +556,11 @@ def test_execution_skills_keep_tool_environments_outside_candidate_and_use_famil
         assert "PYTHONDONTWRITEBYTECODE=1" in normalized
         assert "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id>" in normalized
         assert "-p no:cacheprovider" in normalized
-        assert "uv run --isolated pytest -p no:cacheprovider --rootdir <execution_view_root>" in normalized
+        assert (
+            "uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir <execution_view_root>"
+        ) in normalized
+        assert "tokenized argv array" in normalized
+        assert "Never return the whole Bash tool input as one array element" in normalized
         assert "--output=/tmp/aa-playwright-<batch_id>" in normalized
         assert (
             "uv run --isolated locust --locustfile <execution_view_root>/<mapped-locustfile> --headless"
@@ -566,8 +570,14 @@ def test_execution_skills_keep_tool_environments_outside_candidate_and_use_famil
             "For every family, the command receipt's passed, failed, and skipped counts must each be "
             "at least the corresponding counts in that family's result rows"
         ) in normalized
+        assert ("passed + failed + skipped must equal collected") in normalized
         assert (
-            "A non-zero command exit with no failed test row still requires failed to be at least 1"
+            "For Performance, Locust has no pytest-style collection summary: count the normalized "
+            "mapped result rows"
+        ) in normalized
+        assert (
+            "For a non-zero command exit with no native test report, emit one failed result row for "
+            "every selected mapping in that family"
         ) in normalized
 
 

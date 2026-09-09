@@ -32,6 +32,7 @@ InspectionDisposition = Literal[
     "satisfied",
     "coverage_insufficient",
     "repairable_execution_failure",
+    "analysis_required",
     "needs_human",
     "blocked",
 ]
@@ -89,6 +90,10 @@ class AssessmentInputsV1(FrozenModel):
     metrics_ref: EvidenceArtifactRefV1
     sufficiency_ref: EvidenceArtifactRefV1
     execution_ref: EvidenceArtifactRefV1
+    observations_ref: EvidenceArtifactRefV1
+    issue_evidence_manifest_ref: EvidenceArtifactRefV1
+    owned_evidence_ids: tuple[str, ...]
+    evidence_bundle_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     healing_ref: EvidenceArtifactRefV1 | None = None
     issue_ref: EvidenceArtifactRefV1 | None = None
 
@@ -165,6 +170,7 @@ class FinalizedFactBaselineV1(FrozenModel):
 class FailureClassificationFactsV1(FrozenModel):
     identity_valid: bool
     blocking_failure: bool
+    analysis_required: bool
     needs_human: bool
     repairable_failure: bool
 
@@ -252,7 +258,7 @@ class InspectionOutcomeV1(FrozenModel):
         }:
             raise ValueError("coverage insufficiency requires an insufficient coverage state")
         if (
-            self.disposition in {"repairable_execution_failure", "needs_human"}
+            self.disposition in {"repairable_execution_failure", "analysis_required", "needs_human"}
             and self.coverage_state is not None
         ):
             raise ValueError("execution failure disposition cannot also publish a coverage state")
@@ -284,6 +290,7 @@ class ReportSkillInputV1(QualitySkillInputV1):
     assessment: AssessmentInputsV1
     generation: GenerationCycleResultV1
     fact_baseline_ref: EvidenceArtifactRefV1
+    issue_analysis_ref: EvidenceArtifactRefV1 | None = None
 
     @model_validator(mode="after")
     def _bind_current_inspection_chain(self) -> Self:
@@ -312,6 +319,8 @@ class ReportSkillInputV1(QualitySkillInputV1):
                     self.assessment.metrics_ref,
                     self.assessment.sufficiency_ref,
                     self.assessment.execution_ref,
+                    self.assessment.observations_ref,
+                    self.assessment.issue_evidence_manifest_ref,
                     *(() if self.assessment.healing_ref is None else (self.assessment.healing_ref,)),
                     *(() if self.assessment.issue_ref is None else (self.assessment.issue_ref,)),
                     self.fact_baseline_ref,
@@ -342,13 +351,23 @@ class ReportSkillInputV1(QualitySkillInputV1):
         healing_digest = (
             self.assessment.healing_ref.digest if self.assessment.healing_ref is not None else None
         )
-        issue_digest = self.assessment.issue_ref.digest if self.assessment.issue_ref is not None else None
+        issue_digest = (
+            self.issue_analysis_ref.digest
+            if self.issue_analysis_ref is not None
+            else self.assessment.issue_ref.digest
+            if self.assessment.issue_ref is not None
+            else None
+        )
         if self.healing_digest != healing_digest or self.issue_digest != issue_digest:
             raise ValueError("report optional evidence digests do not match the current assessment")
         if self.purpose == "normal" and self.inspection.disposition != "satisfied":
             raise ValueError("normal report requires a satisfied inspection")
+        if self.purpose == "normal" and self.issue_analysis_ref is not None:
+            raise ValueError("normal report cannot bind diagnostic issue analysis")
         if self.purpose == "diagnostic" and self.inspection.disposition == "satisfied":
             raise ValueError("diagnostic report requires a non-success inspection")
+        if self.purpose == "diagnostic" and self.issue_analysis_ref is None:
+            raise ValueError("diagnostic report requires current issue analysis")
         return self
 
 

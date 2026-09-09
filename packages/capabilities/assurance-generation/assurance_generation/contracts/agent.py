@@ -85,6 +85,7 @@ class PlanInputV1(FrozenModel):
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
     reviewed_cases: dict[str, Any] | None = None
+    reviewed_plan: dict[str, Any] | None = None
     family_constraints: FamilyConstraintsV1 | None = None
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
@@ -125,9 +126,10 @@ class AgentFinalizeInputV1(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     change_id: str | None = Field(default=None, min_length=1)
     capability_leafs: tuple[str, ...]
+    required_capabilities: tuple[str, ...] | None = None
+    reviewed_mapping: dict[str, Any] | None = None
     artifact_paths: tuple[str, ...]
     allowed_paths: tuple[str, ...] = ()
-    baseline_tree_id: str | None = Field(default=None, pattern=_SHA256)
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
@@ -136,6 +138,13 @@ class AgentFinalizeInputV1(FrozenModel):
     @classmethod
     def _capability_leafs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _sorted_unique(value, label="capability leaf")
+
+    @field_validator("required_capabilities")
+    @classmethod
+    def _required_capabilities(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        return _sorted_unique(value, label="required capability")
 
     @field_validator("artifact_paths")
     @classmethod
@@ -165,10 +174,9 @@ class CodegenInputV1(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...] = ()
-    reviewed_plan: dict[str, Any] | None = None
+    reviewed_plan: dict[str, Any]
     reviewed_cases: dict[str, Any] | None = None
     family_constraints: FamilyConstraintsV1 | None = None
-    baseline_tree_id: str | None = Field(default=None, pattern=_SHA256)
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
@@ -185,8 +193,8 @@ class CodegenInputV1(FrozenModel):
 
     @field_validator("reviewed_plan")
     @classmethod
-    def _reviewed_plan(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        if value is not None and not value:
+    def _reviewed_plan(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if not value:
             raise ValueError("reviewed_plan must be a mapping")
         return value
 
@@ -207,41 +215,6 @@ class CodegenInputV1(FrozenModel):
                 self.reviewed_case.plan_ref,
             )
         return self
-
-
-class CodegenFixInputV1(CodegenInputV1):
-    allowed_paths: tuple[str, ...]
-    approved_proposal: dict[str, Any]
-
-    @model_validator(mode="after")
-    def _required_base_fields(self) -> CodegenFixInputV1:
-        required = {
-            "reviewed_plan": self.reviewed_plan,
-            "reviewed_cases": self.reviewed_cases,
-            "family_constraints": self.family_constraints,
-            "baseline_tree_id": self.baseline_tree_id,
-        }
-        missing = sorted(name for name, value in required.items() if value is None)
-        if missing:
-            raise ValueError("codegen-fix is missing required fields: " + ", ".join(missing))
-        return self
-
-    @field_validator("allowed_paths")
-    @classmethod
-    def _allowed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        paths = _canonical_relative_paths(value)
-        if not paths:
-            raise ValueError("allowed_paths must be non-empty")
-        return paths
-
-    @field_validator("approved_proposal")
-    @classmethod
-    def _approved_proposal(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if not value:
-            raise ValueError("approved_proposal must be a mapping")
-        if value.get("status") != "approved":
-            raise ValueError("approved_proposal.status must be approved")
-        return value
 
 
 def under_write_root(path: str, roots: tuple[str, ...]) -> bool:

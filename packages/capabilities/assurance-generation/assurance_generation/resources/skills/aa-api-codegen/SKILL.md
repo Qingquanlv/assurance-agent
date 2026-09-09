@@ -99,6 +99,16 @@ Before writing the manifest:
 Names such as `client` and `admin_token` are not implicit fixtures. Their
 provider must exist in the candidate tree.
 
+Read each fixture's yielded client type and each consumed helper implementation.
+A test being `async def` does not make its fixtures asynchronous. With a
+synchronous `httpx.Client`, use `response = api_client.get(...)` without `await`,
+including inside async tests. Await requests only when the actual client is
+`httpx.AsyncClient` or its source-backed wrapper returns an awaitable.
+`response.json()` is synchronous for both clients. An async cleanup helper may
+still require `await cleanup_dept(...)` in the same test; mark that async test
+for the installed pytest async runner. Decide awaitability per call, not per
+test or from a fixture's name.
+
 ## Runtime Contract Closure
 
 Before writing any HTTP request or the generated-files manifest, inspect the
@@ -110,6 +120,11 @@ the actual router and request-schema source. Build an explicit set of
   update merely from its name. Use the exact registered method and path.
 - Build request bodies from the registered request schema, including field
   types and required fields. Do not infer payload keys from a UI form.
+- Apply those constraints to every request value, including fixture setup and
+  unique-name prefixes. Count the complete runtime value after prefixes,
+  suffixes, and random tokens, and fit every generated value within the
+  source-backed schema constraints unless that specific case is intentionally
+  testing an invalid boundary.
 - Inspect the real response schema or handler. A successful create response
   that contains no identifier must be followed by a supported lookup; never
   assume `data.id` exists.

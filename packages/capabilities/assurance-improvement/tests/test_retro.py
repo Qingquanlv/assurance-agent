@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,7 +21,6 @@ from assurance_improvement.contracts.retro import (
     WorkflowEvidenceSlice,
 )
 from assurance_improvement.operations.agent import (
-    RetroEvalFinalizeHandler,
     RetroEvalPrepareHandler,
     RetroFinalizeHandler,
     RetroIssueFinalizeHandler,
@@ -30,7 +30,10 @@ from assurance_improvement.operations.agent import (
 )
 from assurance_improvement.operations.retro import (
     AssembleRetroContextHandler,
-    ReconcileImprovementsHandler,
+    ReconcileInput,
+    reconcile_improvements,
+    assemble_context,
+    AssembleRetroInput,
     RetroCollectHandler,
 )
 from assurance_improvement.resource_loader import resource_bytes
@@ -44,7 +47,7 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
     improvement_projection,
     json_value,
     retro_result,
-    skill_input,
+    issue_signal,
 )
 
 _RESOURCES = Path(__file__).resolve().parent.parent / "assurance_improvement" / "resources"
@@ -69,11 +72,38 @@ def _resource_files() -> Iterator[Path]:
             yield path
 
 
+def _retro_input(domain=None):
+    if domain is not None:
+        return {"change_id": "CH-DEMO-001", "evidence_slice": _empty_slice(domain)}
+    context = assemble_context(AssembleRetroInput.model_validate(_assemble_payload()))
+    payload = context.model_dump(mode="json")
+    payload["signals"]["issue"] = [issue_signal()]
+    payload["signal_count"] = 1
+    return {"change_id": "CH-DEMO-001", "context": payload}
+
+
+def _finalize_payload(tmp_path, *, source_id="PROB-1", domain=None, result_domain=None):
+    document = dict(retro_result(source_id=source_id, domain=result_domain or domain))
+    if domain is None:
+        document["signals"] = []
+    else:
+        document["candidates"] = []
+    payload = {**_retro_input(domain), "agent_result": fake_agent_result(document)["agent_result"]}
+    from tests.product.test_change_local_output_routing import dual_roots
+
+    _, stage = dual_roots(tmp_path)
+    suffix = f"retro-{domain}-analysis" if domain else "retro"
+    path = stage / f"qa/changes/CH-DEMO-001/retro/{suffix}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document))
+    return payload
+
+
 @pytest.mark.asyncio
 async def test_retro_finalize_rejects_signal_outside_manifest(tmp_path: Path) -> None:
     outcome = await execute_task(
         RetroFinalizeHandler(),
-        fake_agent_result(retro_result(source_id="unknown")),
+        _finalize_payload(tmp_path, source_id="unknown"),
         tmp_path,
     )
     assert outcome.failure is not None
@@ -85,10 +115,10 @@ async def test_retro_finalize_rejects_signal_outside_manifest(tmp_path: Path) ->
 async def test_retro_finalize_accepts_authenticated_source(tmp_path: Path) -> None:
     outcome = await execute_task(
         RetroFinalizeHandler(),
-        fake_agent_result(retro_result(source_id="PROB-1")),
+        _finalize_payload(tmp_path),
         tmp_path,
     )
-    assert outcome.status == "succeeded"
+    assert outcome.status == "succeeded", outcome.failure.message if outcome.failure else None
     document = RetroAnalysisResultV3.model_validate(outcome.output)
     assert document.retro_id == RETRO_ID
     assert document.candidates[0].source_refs.problem_ids == ("PROB-1",)
@@ -96,8 +126,8 @@ async def test_retro_finalize_accepts_authenticated_source(tmp_path: Path) -> No
 
 @pytest.mark.asyncio
 async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
-    first = await execute_task(RetroPrepareHandler(), skill_input(), tmp_path, binding_data=BINDING)
-    second = await execute_task(RetroPrepareHandler(), skill_input(), tmp_path, binding_data=BINDING)
+    first = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
+    second = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
     assert first.status == "succeeded"
     request = AgentRunRequest.model_validate(first.output)
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
@@ -124,7 +154,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
     }
     outcome = await execute_task(
         RetroPrepareHandler(),
-        skill_input(),
+        _retro_input(),
         tmp_path,
         binding_data=cast(JSONValue, binding),
     )
@@ -147,7 +177,12 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
 async def test_each_prepare_locks_skill_persona_and_execution(
     handler: TaskHandler, marker: str, tmp_path: Path
 ) -> None:
-    outcome = await execute_task(handler, skill_input(), tmp_path, binding_data=BINDING)
+    domain = {
+        RetroEvalPrepareHandler: "eval",
+        RetroIssuePrepareHandler: "issue",
+        RetroWorkflowPrepareHandler: "workflow",
+    }.get(type(handler))
+    outcome = await execute_task(handler, _retro_input(domain), tmp_path, binding_data=BINDING)
     assert outcome.status == "succeeded"
     request = AgentRunRequest.model_validate(outcome.output)
     assert marker in (request.instructions[0].text_content or "")
@@ -174,7 +209,7 @@ def test_result_contract_bytes_equal_typed_models() -> None:
 async def test_domain_finalize_rejects_mismatched_domain(tmp_path: Path) -> None:
     outcome = await execute_task(
         RetroIssueFinalizeHandler(),
-        fake_agent_result(retro_result(source_id="PROB-1", domain="eval")),
+        _finalize_payload(tmp_path, domain="issue", result_domain="eval"),
         tmp_path,
     )
     assert outcome.failure is not None
@@ -185,13 +220,13 @@ async def test_domain_finalize_rejects_mismatched_domain(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_domain_finalize_accepts_matching_domain(tmp_path: Path) -> None:
     outcome = await execute_task(
-        RetroEvalFinalizeHandler(),
-        fake_agent_result(retro_result(source_id="PROB-1", domain="eval")),
+        RetroIssueFinalizeHandler(),
+        _finalize_payload(tmp_path, domain="issue"),
         tmp_path,
     )
     assert outcome.status == "succeeded"
     document = RetroAnalysisResultV3.model_validate(outcome.output)
-    assert document.domain == "eval"
+    assert document.domain == "issue"
 
 
 @pytest.mark.asyncio
@@ -378,19 +413,18 @@ async def test_reconcile_persists_knowledge_delta_and_supersedes() -> None:
         knowledge_delta=delta,
         supersedes=predecessor_id,
     )
-    outcome = await execute_task(
-        ReconcileImprovementsHandler(),
-        json_value(
-            {
-                "context": context,
-                "candidates": [candidate],
-                "current": current,
-                "ts": "2026-08-22T00:00:00Z",
-            }
-        ),
+    payload = as_object(
+        reconcile_improvements(
+            ReconcileInput.model_validate(
+                {
+                    "context": context,
+                    "candidates": [candidate],
+                    "current": current,
+                    "ts": "2026-08-22T00:00:00Z",
+                }
+            )
+        )
     )
-    assert outcome.status == "succeeded"
-    payload = as_object(outcome.output)
     improvements = as_object(payload["improvements"])
     new_id = payload["improvement_ids"][0]
     assert as_object(improvements[new_id])["knowledge_delta"]["mode"] == "delta"

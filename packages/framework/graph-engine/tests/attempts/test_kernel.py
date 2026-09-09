@@ -137,6 +137,21 @@ class _NonCanonicalOutputExecutor:
         return ExecutedAttemptResult(output=_NonCanonicalOutput(score=float("nan")))
 
 
+class _RetryableFailureExecutor:
+    def __init__(self) -> None:
+        self.workspace: _RecordingWorkspace | None = None
+        self.calls = 0
+
+    async def execute(self, validated_input: RunInput, scope: AuthorizedAttemptScope) -> PermanentTaskFailure:
+        del validated_input, scope
+        self.calls += 1
+        return PermanentTaskFailure(
+            kind="transient",
+            message="provider TLS failed",
+            retryable=True,
+        )
+
+
 class _CrashWithoutReconcile:
     def __init__(self) -> None:
         self.workspace: _RecordingWorkspace | None = None
@@ -362,6 +377,31 @@ async def test_permanent_validator_terminal_replay_returns_same_failure(tmp_path
             for record in kernel.journal.records(key)
             for event in record.events
         )
+        assert executor.calls == 1
+    finally:
+        store.close()
+
+
+async def test_retryable_terminal_replay_preserves_retry_classification(tmp_path: Path) -> None:
+    kernel, key, resolved, validated, context, executor, _project, store = make_kernel(
+        tmp_path,
+        executor=_RetryableFailureExecutor(),
+    )
+    try:
+        first = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert first == PermanentTaskFailure(
+            kind="transient",
+            message="provider TLS failed",
+            retryable=True,
+        )
+        snapshot = await kernel.journal.load(key)
+        assert snapshot is not None
+        assert snapshot.terminal is not None
+        assert snapshot.terminal.resolution_kind == "retryable"
+
+        replay = await kernel.execute_or_recover(key, resolved, validated, context)
+
+        assert replay == first
         assert executor.calls == 1
     finally:
         store.close()

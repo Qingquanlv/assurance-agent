@@ -36,6 +36,7 @@ TerminalMode = Literal[
     "busy",
     "idle_only",
     "mixed_result_busy",
+    "schema_retry_busy",
     "success",
     "success_busy",
     "open_tools",
@@ -614,6 +615,35 @@ class OpenCodeFakeServer:
                     ],
                 },
             ]
+        if mode == "schema_retry_busy":
+            return [
+                {
+                    "info": {
+                        "id": "msg_schema_invalid_retry",
+                        "role": "assistant",
+                        "time": {"created": 1, "completed": 2},
+                        "finish": "stop",
+                    },
+                    "parts": [
+                        {"type": "step-start"},
+                        {"type": "text", "text": json.dumps({"decision": "pass"})},
+                        {"type": "step-finish", "reason": "stop"},
+                    ],
+                },
+                {
+                    "info": {
+                        "id": "msg_schema_valid_retry",
+                        "role": "assistant",
+                        "time": {"created": 3, "completed": 4},
+                        "finish": "stop",
+                    },
+                    "parts": [
+                        {"type": "step-start"},
+                        {"type": "text", "text": json.dumps(self.structured_result)},
+                        {"type": "step-finish", "reason": "stop"},
+                    ],
+                },
+            ]
         if mode == "error":
             return [
                 {
@@ -666,7 +696,16 @@ class OpenCodeFakeServer:
         if omit:
             return {}
         status_type = (
-            "busy" if mode in {"artifact_array_busy", "busy", "mixed_result_busy", "success_busy"} else "idle"
+            "busy"
+            if mode
+            in {
+                "artifact_array_busy",
+                "busy",
+                "mixed_result_busy",
+                "schema_retry_busy",
+                "success_busy",
+            }
+            else "idle"
         )
         return {session_id: {"type": status_type} for session_id in session_ids}
 

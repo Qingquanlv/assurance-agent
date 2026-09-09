@@ -26,6 +26,7 @@ _InputT_contra = TypeVar("_InputT_contra", bound=BaseModel, contravariant=True)
 
 class AttemptRetryPolicy(FrozenModel):
     max_attempts: int = Field(ge=1)
+    interval_seconds: float = Field(default=0, ge=0, allow_inf_nan=False)
 
 
 class AttemptTimeoutPolicy(FrozenModel):

@@ -7,7 +7,7 @@ from graph_engine.boot.boot import CapabilityBuildContext
 
 
 def build_e2e_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
-    return compile_family_graph(context, "e2e", has_codegen_fix=True)
+    return compile_family_graph(context, "e2e")
 
 
 __all__ = ["build_e2e_graph"]

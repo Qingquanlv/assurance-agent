@@ -49,6 +49,7 @@ from graph_engine.json_schema import validate_json_schema
 from graph_engine.plugin_api import (
     CommitValidator,
     EffectIntent,
+    FailureKind,
     PromotionReceipt,
     ResourceClaims,
     TaskWorkspaceBinding,
@@ -739,7 +740,7 @@ def _terminal_for_resolution(
     if isinstance(resolution, RejectedTaskResult):
         return AttemptTerminated(resolution_kind="rejected", output=output, reason=resolution.reason)
     return AttemptTerminated(
-        resolution_kind="permanent",
+        resolution_kind="retryable" if resolution.retryable else "permanent",
         output=output,
         failure_kind=resolution.kind,
         message=resolution.message,
@@ -763,9 +764,13 @@ def _resolution_from_terminal(
         )
     if terminal.resolution_kind == "rejected":
         return RejectedTaskResult(reason=terminal.reason or "rejected")
-    if terminal.resolution_kind == "permanent":
+    if terminal.resolution_kind in {"permanent", "retryable"}:
         kind = terminal.failure_kind if terminal.failure_kind in _FAILURE_KINDS else "internal"
-        return PermanentTaskFailure(kind=kind, message=terminal.message or "permanent")  # type: ignore[arg-type]
+        return PermanentTaskFailure(
+            kind=cast(FailureKind, kind),
+            message=terminal.message or "permanent",
+            retryable=terminal.resolution_kind == "retryable",
+        )
     raise AttemptIdentityDrift(f"unknown resolution kind {terminal.resolution_kind}")
 
 

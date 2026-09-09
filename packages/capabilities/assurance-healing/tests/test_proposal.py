@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+import hashlib
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -132,9 +133,33 @@ async def test_fix_proposal_prepare_is_deterministic_and_provider_neutral(tmp_pa
     assert persona.media_type == "text/plain"
     assert business.media_type == "application/json"
     encoded = left.canonical_bytes().decode("utf-8").lower()
+    assert "sort_keys=true" in encoded
+    assert "ensure_ascii=false" in encoded
+    assert "allow_nan=false" in encoded
+    assert "exactly one trailing newline" in encoded
     assert "opencode" not in encoded
     assert "cursor" not in encoded
     assert "assurance_agent" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_fix_proposal_authenticates_and_receives_issue_analysis(tmp_path: Path) -> None:
+    relative = "qa/changes/CH-DEMO-001/inspect/issue-analysis.json"
+    data = b'{"reason":"wrong database binding"}'
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_bytes(data)
+    ref = {"path": relative, "digest": hashlib.sha256(data).hexdigest()}
+    request = {**proposal_input(), "issue_analysis_ref": ref}
+    prepared = await execute_task(FixProposalPrepareHandler(), request, tmp_path, binding_data=BINDING)
+    assert prepared.status == "succeeded", prepared.failure
+    instructions = AgentRunRequest.model_validate(prepared.output).instructions
+    content = instructions[-1].json_content
+    assert isinstance(content, Mapping)
+    assert content["issue_analysis_ref"] == ref
+    path.write_bytes(b"{}")
+    changed = await execute_task(FixProposalPrepareHandler(), request, tmp_path, binding_data=BINDING)
+    assert changed.status == "failed"
 
 
 @pytest.mark.asyncio

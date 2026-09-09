@@ -1,6 +1,5 @@
 from assurance_generation.contracts.agent import (
     AgentFinalizeInputV1,
-    CodegenFixInputV1,
     CodegenInputV1,
     PlanInputV1,
 )
@@ -36,7 +35,6 @@ def test_generation_contracts_require_plan_binding() -> None:
         GenerationCycleResultV1,
         PlanInputV1,
         CodegenInputV1,
-        CodegenFixInputV1,
         AgentFinalizeInputV1,
     ):
         assert model.model_fields["plan_digest"].is_required()

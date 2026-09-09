@@ -10,14 +10,15 @@ for `RetroAnalysisResultV3` with `domain=workflow`.
 
 ### required
 
-- locked retro identity
-- authenticated workflow slice digest
-- source evidence ids from the workflow manifest
+- `change_id` and the authenticated `evidence_slice` supplied in the JSON input
+- the slice includes `retro_id`, `domain`, `window`, `entries`, `sources`, integrity, and deterministic signals
+- cite only source evidence IDs present in this slice; empty entries are not permission to invent evidence
 
 ## Outputs
 
 ### required
 
+- `candidates: []`: domain analysis produces signals only
 - structured `RetroAnalysisResultV3` with `domain` `workflow`
 - `analysis_status` `ok` or `failed`
 - signals cite only `workflow_evidence_ids` present in the authenticated sources
@@ -37,4 +38,5 @@ for `RetroAnalysisResultV3` with `domain=workflow`.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
 - Write the typed result to `qa/changes/<change-id>/retro/retro-workflow-analysis.json`.
+- Write and return the same complete `RetroAnalysisResultV3` JSON object. No Markdown fence or prose in the final answer.
 - Return the typed result and stop.

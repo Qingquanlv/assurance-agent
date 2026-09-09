@@ -19,7 +19,7 @@ from assurance_healing.contracts.coverage_repair import CoverageRepairStatus
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _TEST_AUTHOR = "assurance-v1-test-author"
-_RETRY = AttemptRetryPolicy(max_attempts=1)
+_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
@@ -50,7 +50,7 @@ def _job(
             reads=("qa",),
             writes=_paths(*outputs),
         ),
-        retry=_RETRY,
+        retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=_paths(*outputs), finalize=()),
@@ -101,7 +101,7 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
                 reads=("qa",),
                 writes=_APPLICATION_ROOTS,
             ),
-            retry=_RETRY,
+            retry=_AGENT_RETRY,
             timeout=_TIMEOUT,
             validators=(),
             phase_write_claims=AgentPhaseWriteClaims(

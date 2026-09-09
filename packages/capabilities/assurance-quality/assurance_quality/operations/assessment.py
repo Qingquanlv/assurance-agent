@@ -8,14 +8,14 @@ import re
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Any, cast
 
 import yaml
 from pydantic import BaseModel, ValidationError
 
 from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
@@ -49,6 +49,13 @@ from assurance_quality.contracts.goal_policy import (
     SufficiencyPolicyV1,
 )
 from assurance_quality.contracts.metrics import MetricScope, MetricsDocument
+from assurance_quality.contracts.issues import (
+    IssueEvidenceManifest,
+    IssueEvidenceManifestEntry,
+    Observation,
+    ObservationDocument,
+    ObservationSource,
+)
 from assurance_quality.contracts.pr_metrics import (
     AuthMatrixEvidence,
     ConstraintCoverageEvidence,
@@ -70,6 +77,7 @@ from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
 from assurance_quality.operations.common import json_digest
 from assurance_quality.operations.goal_scope import has_layer_evidence, obligation_goal
+from assurance_quality.operations.identity import ObservationIdentityInput, observation_id
 
 
 class AssessmentInputError(ValueError):
@@ -272,8 +280,6 @@ def _reviewed_obligations(
         related_cases: list[str] = []
         for case_id in sorted(set(row.covered_by_cases)):
             case = case_by_id[case_id]
-            if layer in {"api", "e2e"} and case.type.lower() != layer:
-                raise AssessmentInputError(f"reviewed MRC {row.key} requires {layer} Case evidence")
             if goal == "journey_coverage":
                 if case.type != "E2E":
                     continue
@@ -425,6 +431,103 @@ def _write_document(write_root: Path, path: str, value: BaseModel | JSONValue) -
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(data)
     return EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(data).hexdigest())
+
+
+def _issue_observations(
+    *,
+    evidence: ExecutionEvidenceV1,
+    execution_ref: EvidenceArtifactRefV1,
+    metrics: MetricsDocument,
+    metrics_ref: EvidenceArtifactRefV1,
+) -> tuple[Observation, ...]:
+    mapping_by_test = {entry.test: entry for entry in evidence.mapping.mappings}
+    observed_at = evidence.executed_at.isoformat() if evidence.executed_at is not None else "unknown"
+    observations: dict[str, Observation] = {}
+    for index, result in enumerate(evidence.results):
+        if result.status != "failed":
+            continue
+        mapped = mapping_by_test[result.test]
+        signature = result.message or f"{mapped.layer} test failure {result.test}"
+        identity = ObservationIdentityInput(
+            change_id=evidence.change_id,
+            batch_id=evidence.batch_id,
+            kind="test_failure",
+            target=mapped.layer,
+            case_id=result.case_id,
+            source_artifact=execution_ref.path,
+            source_json_pointer=f"/results/{index}",
+            signature=signature,
+        )
+        item = Observation(
+            observation_id=observation_id(identity),
+            change_id=evidence.change_id,
+            batch_id=evidence.batch_id,
+            kind="test_failure",
+            target=cast(Any, mapped.layer),
+            case_id=result.case_id,
+            source=ObservationSource(
+                artifact=execution_ref.path,
+                json_pointer=f"/results/{index}",
+            ),
+            evidence_refs=[execution_ref.path],
+            signature=signature,
+            observed_at=observed_at,
+        )
+        observations[item.observation_id] = item
+
+    adversarial = metrics.metrics["adversarial_clean"]
+    if adversarial.status == "evaluated" and adversarial.holds is False:
+        target = "fuzz" if evidence.selected_targets.fuzz else "coverage"
+        signature = "adversarial open counterexample"
+        identity = ObservationIdentityInput(
+            change_id=evidence.change_id,
+            batch_id=evidence.batch_id,
+            kind="anomaly",
+            target=target,
+            case_id=None,
+            source_artifact=metrics_ref.path,
+            source_json_pointer="/metrics/adversarial_clean",
+            signature=signature,
+        )
+        item = Observation(
+            observation_id=observation_id(identity),
+            change_id=evidence.change_id,
+            batch_id=evidence.batch_id,
+            kind="anomaly",
+            target=target,
+            source=ObservationSource(
+                artifact=metrics_ref.path,
+                json_pointer="/metrics/adversarial_clean",
+            ),
+            evidence_refs=[metrics_ref.path],
+            signature=signature,
+            observed_at=observed_at,
+        )
+        observations[item.observation_id] = item
+    return tuple(observations[key] for key in sorted(observations))
+
+
+def _issue_evidence_manifest(
+    *,
+    change_id: str,
+    batch_id: str,
+    refs: tuple[EvidenceArtifactRefV1, ...],
+) -> IssueEvidenceManifest:
+    refs_by_path = {ref.path: ref for ref in refs}
+    if any(ref.digest != refs_by_path[ref.path].digest for ref in refs):
+        raise AssessmentInputError("conflicting issue evidence digests")
+    entries = [
+        IssueEvidenceManifestEntry(path=path, digest=f"sha256:{refs_by_path[path].digest}")
+        for path in sorted(refs_by_path)
+    ]
+    projection = [entry.model_dump(mode="json") for entry in entries]
+    return IssueEvidenceManifest(
+        schema_version="1.0",
+        change_id=change_id,
+        batch_id=batch_id,
+        digest=f"sha256:{canonical_digest(cast(JSONValue, projection))}",
+        entries=entries,
+    )
 
 
 def materialize_assessment_inputs(
@@ -630,6 +733,48 @@ def materialize_assessment_inputs(
     gaps_ref = _write_document(write_root, f"{base}/coverage-gaps.json", gaps)
     metrics_ref = _write_document(write_root, f"{base}/metrics.json", metrics)
     sufficiency_ref = _write_document(write_root, f"{base}/trace-sufficiency.json", sufficiency)
+    observations = _issue_observations(
+        evidence=evidence,
+        execution_ref=request.execution.evidence_ref,
+        metrics=metrics,
+        metrics_ref=metrics_ref,
+    )
+    observations_ref = _write_document(
+        write_root,
+        f"{base}/observations.json",
+        ObservationDocument(
+            schema_version="1.0",
+            change_id=request.reviewed_case.change_id,
+            batch_id=request.execution.batch_id,
+            observations=list(observations),
+        ),
+    )
+    issue_manifest = _issue_evidence_manifest(
+        change_id=request.reviewed_case.change_id,
+        batch_id=request.execution.batch_id,
+        refs=(
+            request.execution.evidence_ref,
+            observations_ref,
+            trace_ref,
+            gaps_ref,
+            sufficiency_ref,
+            metrics_ref,
+            request.plan_ref,
+            request.generation.mapping_ref,
+            request.reviewed_case.review_ref,
+            *request.reviewed_case.case_refs,
+            *request.reviewed_case.preparation_refs,
+            *request.generation.source_refs,
+            *request.generation.plan_refs,
+            *((request.healing_ref,) if request.healing_ref else ()),
+            *((request.issue_ref,) if request.issue_ref else ()),
+        ),
+    )
+    issue_evidence_manifest_ref = _write_document(
+        write_root,
+        f"{base}/issue-evidence-manifest.json",
+        issue_manifest,
+    )
     return AssessmentInputsV1(
         change_id=request.reviewed_case.change_id,
         coverage_epoch=request.reviewed_case.coverage_epoch,
@@ -643,6 +788,10 @@ def materialize_assessment_inputs(
         metrics_ref=metrics_ref,
         sufficiency_ref=sufficiency_ref,
         execution_ref=request.execution.evidence_ref,
+        observations_ref=observations_ref,
+        issue_evidence_manifest_ref=issue_evidence_manifest_ref,
+        owned_evidence_ids=tuple(item.observation_id for item in observations),
+        evidence_bundle_digest=issue_manifest.digest,
         healing_ref=request.healing_ref,
         issue_ref=request.issue_ref,
     )

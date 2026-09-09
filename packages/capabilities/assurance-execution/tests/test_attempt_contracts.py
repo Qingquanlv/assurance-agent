@@ -35,7 +35,8 @@ def test_execution_owns_two_agent_contracts() -> None:
         assert contract.agent_result_model is ExecutionAgentResultV1
         assert contract.output_model is ExecutionEvidenceV1
         assert contract.validators == ()
-        assert contract.retry.max_attempts == 1
+        assert contract.retry.max_attempts == 10
+        assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
         assert claims.prepare == ("qa/changes/{change_id}/.staging/execution",)

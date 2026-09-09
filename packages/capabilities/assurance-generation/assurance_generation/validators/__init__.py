@@ -1,5 +1,4 @@
 from assurance_generation.validators.generated_files import (
-    CodegenFixCandidateValidator,
     CodegenMappingValidator,
     GeneratedFilesValidator,
 )
@@ -12,7 +11,6 @@ from assurance_generation.validators.plans import (
 
 __all__ = [
     "FAMILIES",
-    "CodegenFixCandidateValidator",
     "CodegenMappingValidator",
     "FamilyPlanValidator",
     "GeneratedFilesValidator",

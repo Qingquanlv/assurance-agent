@@ -391,9 +391,13 @@ def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
         for part in parts:
             if not isinstance(part, Mapping):
                 raise ValueError("terminal part is not an object")
-    if len(result_bearing) != 1:
-        raise ValueError("expected exactly one result-bearing assistant message")
-    return _parse_result_bearing_message(result_bearing[0])
+    if not result_bearing:
+        raise ValueError("expected one result-bearing assistant message")
+    parsed = tuple(_parse_result_bearing_message(message) for message in result_bearing)
+    expected = canonical_json_text(parsed[0])
+    if any(canonical_json_text(candidate) != expected for candidate in parsed[1:]):
+        raise ValueError("multiple distinct result-bearing assistant messages")
+    return parsed[0]
 
 
 def _has_result_bearing_assistant(messages: Sequence[object]) -> bool:
@@ -510,6 +514,7 @@ def _provider_error_message(payload: object) -> str | None:
 
 
 _TRANSIENT_PROVIDER_ERROR_MARKERS = (
+    '"code":"cyber_policy"',
     "certificate verification",
     "certificate verify failed",
     "connection closed",

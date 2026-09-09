@@ -153,6 +153,8 @@ def _validate_plan_review_routing(
         for finding in findings
         if isinstance(finding, dict) and isinstance(finding.get("id"), str)
     }
+    if len(finding_ids) != len(findings):
+        raise ValueError("plan review finding IDs must be unique")
     for index, finding_id in enumerate(auto_fix_plan):
         if not isinstance(finding_id, str) or not finding_id.strip():
             raise ValueError(f"auto_fix_plan[{index}] must be a non-empty finding id")
@@ -166,6 +168,8 @@ def _validate_plan_review_routing(
                 raise ValueError("bounded automatic repair cannot also require human review")
             if not auto_fix_plan:
                 raise ValueError("bounded automatic repair requires a non-empty auto_fix_plan")
+            if len(auto_fix_plan) != len(finding_ids) or set(auto_fix_plan) != finding_ids:
+                raise ValueError("auto_fix_plan must include every finding exactly once")
         elif not human_review_required:
             raise ValueError("non-automatic plan repair must require human review")
     if decision == "needs_human_review":

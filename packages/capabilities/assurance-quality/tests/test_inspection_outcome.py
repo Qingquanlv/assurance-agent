@@ -18,6 +18,7 @@ from assurance_quality.contracts.assessment import (
 )
 from assurance_quality.contracts.agent import InspectionResultV1
 from assurance_quality.contracts.assessment import FailureClassificationFactsV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.graphs.nodes import publish_inspect
 from assurance_quality.graphs.routes import route_coverage
 from assurance_quality.operations.agent_skills import (
@@ -36,7 +37,11 @@ from assurance_quality.operations.inspect import build_failure_classification_fa
 from test_agent_skills import BINDING  # pyright: ignore[reportMissingImports]
 from test_assessment_materialization import (  # pyright: ignore[reportMissingImports]
     BATCH_ID as MATERIALIZED_BATCH_ID,
+    CAPABILITY,
     CHANGE_ID as MATERIALIZED_CHANGE_ID,
+    EVIDENCE_PATH,
+    _case,
+    _write_json,
     _workspace_input,
 )
 from tests.product.test_change_local_output_routing import execute_task
@@ -92,10 +97,56 @@ def _write_stage(stage: Path, relative: str, document: object) -> None:
     path.write_bytes(canonical_json_bytes(cast(JSONValue, document)))
 
 
+async def _finalize_inspection(
+    root: Path,
+    business: AssessmentSkillInputV1,
+    *,
+    status: str,
+    classification_performed: bool = True,
+):
+    baseline_document = {"source": "unavailable", "change_id": MATERIALIZED_CHANGE_ID}
+    baseline_path = f"qa/changes/{MATERIALIZED_CHANGE_ID}/facts/fact-baseline.json"
+    baseline_ref = EvidenceArtifactRefV1.model_validate(_write_json(root, baseline_path, baseline_document))
+    inspect_business = business.model_copy(update={"fact_baseline_ref": baseline_ref})
+    assessment = business.assessment
+    inspection_document = {
+        "schema_version": "1.0",
+        "change_id": MATERIALIZED_CHANGE_ID,
+        "batch_id": MATERIALIZED_BATCH_ID,
+        "inspect_mode": "primary",
+        "classification_performed": classification_performed,
+        "status": status,
+        "execution_digest": assessment.execution_ref.digest,
+        "healing_digest": None,
+        "trace_digest": assessment.trace_ref.digest,
+        "coverage_digest": assessment.gaps_ref.digest,
+        "metrics_digest": assessment.metrics_ref.digest,
+    }
+    stage = root / ".stage"
+    _write_stage(
+        stage,
+        f"qa/changes/{MATERIALIZED_CHANGE_ID}/inspect/inspection.json",
+        inspection_document,
+    )
+    return await execute_task(
+        InspectFinalizeHandler(),
+        cast(
+            JSONValue,
+            {
+                **inspect_business.model_dump(mode="json"),
+                "agent_result": _agent_run(inspection_document),
+            },
+        ),
+        root,
+        write_root=stage,
+    )
+
+
 def test_repairable_failure_precedes_a_coverage_shortfall() -> None:
     facts = FailureClassificationFactsV1(
         identity_valid=True,
         blocking_failure=False,
+        analysis_required=False,
         needs_human=False,
         repairable_failure=True,
     )
@@ -216,6 +267,7 @@ def test_blocking_failure_precedes_repairable_failure() -> None:
     facts = FailureClassificationFactsV1(
         identity_valid=True,
         blocking_failure=True,
+        analysis_required=False,
         needs_human=False,
         repairable_failure=True,
     )
@@ -239,32 +291,99 @@ def test_adversarial_counterexample_is_a_blocking_failure(tmp_path: Path) -> Non
     facts, reasons = build_failure_classification_facts(
         execution,
         metrics,
-        adversarial_required=False,
     )
 
     assert facts.blocking_failure is True
     assert "adversarial.open_counterexample" in reasons
 
 
-def test_required_missing_adversarial_evidence_makes_assessment_incomplete(
+@pytest.mark.parametrize("family", ["api", "e2e", "fuzz", "performance"])
+@pytest.mark.parametrize(
+    "message",
+    [
+        "AssertionError: assert 200 == 422",
+        "AssertionError: Locator expected to have text 'Saved'",
+        "assert 200 == 422",
+        'Error: expect(locator).toBeVisible() failed\nLocator: getByRole("button")\nExpected: visible\nReceived: hidden',
+        "Error: expect(locator).toHaveCount(expected) failed\nExpected: 1\nReceived: 0",
+    ],
+)
+def test_assertion_failure_requires_analysis_not_human_or_coverage_repair(
     tmp_path: Path,
+    family: str,
+    message: str,
 ) -> None:
     business = _assessment_business(tmp_path)
     execution = ExecutionEvidenceV1.model_validate_json(
         (tmp_path / business.assessment.execution_ref.path).read_bytes()
     )
+    execution = execution.model_copy(
+        update={
+            "results": [execution.results[0].model_copy(update={"status": "failed", "message": message})],
+            "mapping": execution.mapping.model_copy(
+                update={
+                    "mappings": [
+                        item.model_copy(update={"layer": family}) for item in execution.mapping.mappings
+                    ]
+                }
+            ),
+        }
+    )
     metrics = MetricsDocument.model_validate_json(
         (tmp_path / business.assessment.metrics_ref.path).read_bytes()
     )
-
-    facts, reasons = build_failure_classification_facts(
-        execution,
-        metrics,
-        adversarial_required=True,
+    facts, reasons = build_failure_classification_facts(execution, metrics)
+    assert facts.needs_human is False
+    assert reasons == ("execution.assertion_failure",)
+    assert (
+        classify_inspection_disposition(facts=facts, coverage_state="repair_required") == "analysis_required"
     )
 
-    assert facts.identity_valid is False
-    assert "adversarial.required_evidence_missing" in reasons
+
+@pytest.mark.parametrize(("identity_valid", "expected"), [(True, "analysis_required"), (False, "blocked")])
+def test_assertion_batch_analysis_precedes_heuristic_blocking_but_not_invalid_identity(
+    identity_valid: bool,
+    expected: str,
+) -> None:
+    facts = FailureClassificationFactsV1(
+        identity_valid=identity_valid,
+        blocking_failure=True,
+        analysis_required=True,
+        needs_human=False,
+        repairable_failure=False,
+    )
+    assert classify_inspection_disposition(facts=facts, coverage_state=None) == expected
+
+
+@pytest.mark.asyncio
+async def test_selected_fuzz_without_campaign_evidence_remains_not_evaluated(
+    tmp_path: Path,
+) -> None:
+    business = _assessment_business(tmp_path)
+    assessment = business.assessment.model_copy(
+        update={"scope": business.assessment.scope.model_copy(update={"selected_families": ("api", "fuzz")})}
+    )
+    business = business.model_copy(update={"assessment": assessment})
+
+    outcome = await _finalize_inspection(tmp_path, business, status="no_failures")
+
+    assert outcome.status == "succeeded", outcome.failure
+    finalized = FinalizedInspectionV1.model_validate(outcome.output)
+    assert finalized.failure_facts.identity_valid is True
+    assert "adversarial.required_evidence_missing" not in finalized.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_no_failure_execution_rejects_analyzed_agent_status(tmp_path: Path) -> None:
+    outcome = await _finalize_inspection(
+        tmp_path,
+        _assessment_business(tmp_path),
+        status="analyzed",
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
 
 
 @pytest.mark.asyncio
@@ -375,3 +494,141 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
     assert finalized.failure_facts.blocking_failure is False
     assert finalized.failure_facts.repairable_failure is False
     assert finalized.reason_codes == ()
+
+
+@pytest.mark.asyncio
+async def test_failing_execution_requires_analyzed_agent_status(
+    tmp_path: Path,
+) -> None:
+    request = _workspace_input(
+        tmp_path,
+        capability_leafs=(CAPABILITY,),
+        minimum_required_coverage={"api": [CAPABILITY]},
+        case_entries=[_case("TC_ITEM_001", CAPABILITY)],
+        matrix_rows=[
+            {
+                "mrc_id": "MRC-API-001",
+                "key": CAPABILITY,
+                "category": "api",
+                "required": True,
+                "layer": "api",
+                "covered_by_cases": ["TC_ITEM_001"],
+                "status": "covered",
+            }
+        ],
+    )
+    evidence_path = tmp_path / EVIDENCE_PATH
+    evidence = json.loads(evidence_path.read_bytes())
+    evidence["status"] = "failed"
+    evidence["results"][0].update(
+        {
+            "status": "failed",
+            "message": "NameError: generated helper is not defined",
+        }
+    )
+    evidence["receipt"]["commands"][0].update({"exit_code": 1, "passed": 0, "failed": 1})
+    evidence_ref = _write_json(tmp_path, EVIDENCE_PATH, evidence)
+    request["execution"]["final_status"] = "FAIL"
+    request["execution"]["evidence_ref"] = evidence_ref
+
+    materialized = MaterializeAssessmentInputV1.model_validate(request)
+    assessment = materialize_assessment_inputs(
+        materialized,
+        project_root=tmp_path,
+        write_root=tmp_path,
+    )
+    business = AssessmentSkillInputV1(
+        change_id=MATERIALIZED_CHANGE_ID,
+        coverage_epoch=materialized.reviewed_case.coverage_epoch,
+        batch_id=MATERIALIZED_BATCH_ID,
+        plan_digest=materialized.plan_digest,
+        plan_ref=materialized.plan_ref,
+        capability_leafs=(CAPABILITY,),
+        artifact_paths=(),
+        assessment=assessment,
+        reviewed_case=materialized.reviewed_case,
+        mapping_ref=materialized.generation.mapping_ref,
+    )
+    baseline_path = f"qa/changes/{MATERIALIZED_CHANGE_ID}/facts/fact-baseline.json"
+    stage = tmp_path / ".stage"
+    baseline_document = {"source": "unavailable", "change_id": MATERIALIZED_CHANGE_ID}
+    _write_stage(stage, baseline_path, baseline_document)
+    baseline_result = await execute_task(
+        FactBaselineFinalizeHandler(),
+        cast(
+            JSONValue,
+            {**business.model_dump(mode="json"), "agent_result": _agent_run(baseline_document)},
+        ),
+        tmp_path,
+        write_root=stage,
+    )
+    assert baseline_result.status == "succeeded", baseline_result.failure
+    finalized_baseline = FinalizedFactBaselineV1.model_validate(baseline_result.output)
+    committed_baseline = tmp_path / baseline_path
+    committed_baseline.parent.mkdir(parents=True, exist_ok=True)
+    committed_baseline.write_bytes((stage / baseline_path).read_bytes())
+
+    inspect_business = business.model_copy(update={"fact_baseline_ref": finalized_baseline.fact_baseline_ref})
+    inspection_document = {
+        "schema_version": "1.0",
+        "change_id": MATERIALIZED_CHANGE_ID,
+        "batch_id": MATERIALIZED_BATCH_ID,
+        "inspect_mode": "primary",
+        "classification_performed": True,
+        "status": "analyzed",
+        "execution_digest": assessment.execution_ref.digest,
+        "healing_digest": None,
+        "trace_digest": assessment.trace_ref.digest,
+        "coverage_digest": assessment.gaps_ref.digest,
+        "metrics_digest": assessment.metrics_ref.digest,
+    }
+    _write_stage(
+        stage,
+        f"qa/changes/{MATERIALIZED_CHANGE_ID}/inspect/inspection.json",
+        inspection_document,
+    )
+
+    outcome = await execute_task(
+        InspectFinalizeHandler(),
+        cast(
+            JSONValue,
+            {
+                **inspect_business.model_dump(mode="json"),
+                "agent_result": _agent_run(inspection_document),
+            },
+        ),
+        tmp_path,
+        write_root=stage,
+    )
+
+    assert outcome.status == "succeeded", outcome.failure
+    finalized = FinalizedInspectionV1.model_validate(outcome.output)
+    assert finalized.failure_facts == FailureClassificationFactsV1(
+        identity_valid=True,
+        blocking_failure=False,
+        analysis_required=False,
+        needs_human=False,
+        repairable_failure=True,
+    )
+
+    inspection_document["status"] = "failed"
+    _write_stage(
+        stage,
+        f"qa/changes/{MATERIALIZED_CHANGE_ID}/inspect/inspection.json",
+        inspection_document,
+    )
+    rejected = await execute_task(
+        InspectFinalizeHandler(),
+        cast(
+            JSONValue,
+            {
+                **inspect_business.model_dump(mode="json"),
+                "agent_result": _agent_run(inspection_document),
+            },
+        ),
+        tmp_path,
+        write_root=stage,
+    )
+    assert rejected.status == "failed"
+    assert rejected.failure is not None
+    assert rejected.failure.kind == "invalid_output"

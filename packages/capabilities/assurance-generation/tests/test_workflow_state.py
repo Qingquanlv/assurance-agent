@@ -10,7 +10,7 @@ from graph_engine.plugin_api import TaskOutcome
 from tests.product.test_change_local_output_routing import execute_task
 
 _FAMILIES = ("api", "e2e", "fuzz", "performance")
-_STAGES = ("plan", "codegen")
+_STAGES = ("plan",)
 _ADVANCE_ID = "assurance.generation.review-round.advance"
 _COMPLETE_ID = "assurance.generation.complete"
 

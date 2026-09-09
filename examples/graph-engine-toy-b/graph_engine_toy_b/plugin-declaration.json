@@ -3,19 +3,19 @@
     "attempt_contracts": [
       {
         "contract_id": "toy.b.child",
-        "digest": "678f54e712959c7638365b768b644e98d4f7f7c2641f780adeb9df6ccf89ffc6"
+        "digest": "e70d23e74c0e4362e2844fcd597342dce6626908969e50b5b0338f6deb286ca3"
       },
       {
         "contract_id": "toy.b.combine",
-        "digest": "e5ca49d4fe4712b50ce5a28c5225757a2ace3a360711d90d85d8f3696af67736"
+        "digest": "6ba9a6236d92c63cfa983979416ba112a464d361508deeb202a3f8a8ccde289c"
       },
       {
         "contract_id": "toy.b.left",
-        "digest": "bfed0d440a2485606a00bf9e41c89e8ec5342030dfcc738e3ec390d75c90f9f2"
+        "digest": "b946530150e941677b937ef8087c5d85439085b576836bfbb658296014ba2d52"
       },
       {
         "contract_id": "toy.b.seed",
-        "digest": "da3a5bb6d2556dced30564496ecdfb487adc8920eea4e9da39232d75dfead5c6"
+        "digest": "33c0e5961da5e88343e549f2ca9ec748f60ef281c3997bb54672c3af5a5f3483"
       }
     ],
     "bindings": [],

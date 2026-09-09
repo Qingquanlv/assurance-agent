@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -157,6 +159,63 @@ def skill_input() -> JSONValue:
     }
 
 
+def authenticated_issue_input(root: Path) -> JSONValue:
+    base = f"qa/changes/{CHANGE_ID}"
+    source_path = f"{base}/execution/api-result.json"
+    observations_path = f"{base}/inspect/epochs/0/batches/{BATCH_ID}/observations.json"
+    manifest_path = f"{base}/inspect/epochs/0/batches/{BATCH_ID}/issue-evidence-manifest.json"
+    source = b"failed execution evidence\n"
+    source_digest = hashlib.sha256(source).hexdigest()
+    entries = [{"path": source_path, "digest": f"sha256:{source_digest}"}]
+    observations = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "observations": [
+            {
+                "observation_id": _OWNED,
+                "change_id": CHANGE_ID,
+                "batch_id": BATCH_ID,
+                "kind": "test_failure",
+                "target": "api",
+                "case_id": "TC-1",
+                "source": {"artifact": source_path, "json_pointer": "/results/0"},
+                "evidence_refs": [source_path],
+                "signature": "request failed",
+                "observed_at": "2026-08-22T00:00:00Z",
+            }
+        ],
+    }
+    entries.append(
+        {
+            "path": observations_path,
+            "digest": f"sha256:{hashlib.sha256(canonical_json_bytes(cast(JSONValue, observations))).hexdigest()}",
+        }
+    )
+    entries.sort(key=lambda entry: entry["path"])
+    bundle_digest = f"sha256:{canonical_digest(cast(JSONValue, entries))}"
+    manifest = {
+        "schema_version": "1.0",
+        "change_id": CHANGE_ID,
+        "batch_id": BATCH_ID,
+        "digest": bundle_digest,
+        "entries": entries,
+    }
+    for relative, data in (
+        (source_path, source),
+        (observations_path, canonical_json_bytes(cast(JSONValue, observations))),
+        (manifest_path, canonical_json_bytes(cast(JSONValue, manifest))),
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return {
+        **cast(dict[str, JSONValue], skill_input()),
+        "artifact_paths": [manifest_path, observations_path, source_path],
+        "evidence_bundle_digest": bundle_digest,
+    }
+
+
 def _resource_files() -> Iterator[Path]:
     for path in sorted(_RESOURCES.rglob("*")):
         if path.is_file() and "__pycache__" not in path.parts:
@@ -175,18 +234,55 @@ async def test_issue_finalize_rejects_candidate_without_owned_evidence(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_issue_finalize_stamps_candidate_digest_for_owned_evidence(tmp_path: Path) -> None:
-    structured = issue_candidate(evidence_ids=[_OWNED])
+@pytest.mark.parametrize("tampered", [False, True])
+@pytest.mark.parametrize("surface_kind", ["module", "endpoint"])
+async def test_issue_finalize_rechecks_owned_evidence_before_stamping_candidate_digest(
+    tmp_path: Path,
+    tampered: bool,
+    surface_kind: str,
+) -> None:
+    locked = as_object(authenticated_issue_input(tmp_path))
+    structured = as_object(issue_candidate(evidence_ids=[_OWNED]))
+    if surface_kind == "endpoint":
+        candidate = as_object(cast(list[JSONValue], structured["candidates"])[0])
+        candidate["affected_surface"] = {"kind": "endpoint", "value": "POST /api/v1/dept/create"}
+    structured["evidence_bundle_digest"] = locked["evidence_bundle_digest"]
+    relative = f"qa/changes/{CHANGE_ID}/inspect/issue-analysis.json"
+    staged = tmp_path / "qa" / "changes" / CHANGE_ID / ".staging" / "attempt-1" / relative
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(canonical_json_bytes(structured))
+    if tampered:
+        (tmp_path / f"qa/changes/{CHANGE_ID}/execution/api-result.json").write_bytes(b"changed after prepare")
     outcome = await execute_task(
         IssueAnalysisFinalizeHandler(),
-        fake_agent_result(structured),
+        fake_agent_result(structured, **locked),
         tmp_path,
     )
+    if tampered:
+        assert outcome.status == "failed"
+        assert outcome.failure is not None
+        assert "digest changed" in outcome.failure.message
+        return
     assert outcome.status == "succeeded"
     payload = as_object(outcome.output)
-    assert payload["status"] == "completed"
+    assert payload["agent_result"] == IssueAnalysisResultV1.model_validate(structured).model_dump(mode="json")
     assert payload["candidate_digest"].startswith("sha256:")
-    assert payload["candidates"][0]["observation_ids"] == [_OWNED]
+    assert payload["issue_analysis_ref"] == {
+        "path": relative,
+        "digest": hashlib.sha256(canonical_json_bytes(structured)).hexdigest(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_completed_analysis_must_account_for_every_owned_observation(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        IssueAnalysisFinalizeHandler(),
+        fake_agent_result(issue_candidate(evidence_ids=[_OWNED]), owned_evidence_ids=[_OWNED, "OBS-second"]),
+        tmp_path,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "every owned observation" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -205,19 +301,20 @@ async def test_issue_finalize_rejects_wrapped_input(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
+    payload = authenticated_issue_input(tmp_path)
     first = await execute_task(
         IssueAnalysisPrepareHandler(),
-        skill_input(),
+        payload,
         tmp_path,
         binding_data=BINDING,
     )
     second = await execute_task(
         IssueAnalysisPrepareHandler(),
-        skill_input(),
+        payload,
         tmp_path,
         binding_data=BINDING,
     )
-    assert first.status == "succeeded"
+    assert first.status == "succeeded", first.failure
     request = AgentRunRequest.model_validate(first.output)
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
     skill, persona, business = request.instructions
@@ -230,6 +327,70 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
     assert "opencode" not in encoded
     assert "cursor" not in encoded
     assert request.execution.provider_model == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_issue_analysis_prepare_rejects_tampered_manifest_evidence(tmp_path: Path) -> None:
+    payload = authenticated_issue_input(tmp_path)
+    (tmp_path / f"qa/changes/{CHANGE_ID}/execution/api-result.json").write_bytes(b"tampered\n")
+
+    outcome = await execute_task(
+        IssueAnalysisPrepareHandler(),
+        payload,
+        tmp_path,
+        binding_data=BINDING,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_issue_analysis_prepare_rejects_unbound_observations(tmp_path: Path) -> None:
+    payload = as_object(authenticated_issue_input(tmp_path))
+    manifest_path = next(
+        path for path in payload["artifact_paths"] if path.endswith("issue-evidence-manifest.json")
+    )
+    manifest = json.loads((tmp_path / manifest_path).read_bytes())
+    manifest["entries"] = [
+        entry for entry in manifest["entries"] if not entry["path"].endswith("observations.json")
+    ]
+    manifest["digest"] = f"sha256:{canonical_digest(manifest['entries'])}"
+    (tmp_path / manifest_path).write_bytes(canonical_json_bytes(manifest))
+    payload["evidence_bundle_digest"] = manifest["digest"]
+    outcome = await execute_task(IssueAnalysisPrepareHandler(), payload, tmp_path, binding_data=BINDING)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "observations" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_issue_analysis_prepare_rejects_foreign_observation_in_bound_document(
+    tmp_path: Path,
+) -> None:
+    payload = as_object(authenticated_issue_input(tmp_path))
+    observations_path = next(path for path in payload["artifact_paths"] if path.endswith("observations.json"))
+    manifest_path = next(
+        path for path in payload["artifact_paths"] if path.endswith("issue-evidence-manifest.json")
+    )
+    observations = json.loads((tmp_path / observations_path).read_bytes())
+    observations["observations"][0]["batch_id"] = "BATCH-FOREIGN"
+    observation_bytes = canonical_json_bytes(observations)
+    (tmp_path / observations_path).write_bytes(observation_bytes)
+    manifest = json.loads((tmp_path / manifest_path).read_bytes())
+    for entry in manifest["entries"]:
+        if entry["path"] == observations_path:
+            entry["digest"] = f"sha256:{hashlib.sha256(observation_bytes).hexdigest()}"
+    manifest["digest"] = f"sha256:{canonical_digest(manifest['entries'])}"
+    (tmp_path / manifest_path).write_bytes(canonical_json_bytes(manifest))
+    payload["evidence_bundle_digest"] = manifest["digest"]
+
+    outcome = await execute_task(IssueAnalysisPrepareHandler(), payload, tmp_path, binding_data=BINDING)
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "another execution batch" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -381,6 +542,23 @@ async def test_issue_analysis_finalize_rejects_forged_problem_id(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["endpoint_without_method", "empty_normalized_symptom"])
+async def test_issue_analysis_finalize_rejects_invalid_fingerprint_without_crashing(
+    tmp_path: Path, invalid: str
+) -> None:
+    structured = as_object(issue_candidate(evidence_ids=[_OWNED]))
+    candidate = as_object(cast(list[JSONValue], structured["candidates"])[0])
+    if invalid == "endpoint_without_method":
+        candidate["affected_surface"] = {"kind": "endpoint", "value": "/api/v1/dept/update"}
+    else:
+        candidate["fingerprint_inputs"] = {"surface": "dept", "symptom": "- / ."}
+    outcome = await execute_task(IssueAnalysisFinalizeHandler(), fake_agent_result(structured), tmp_path)
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+
+
+@pytest.mark.asyncio
 async def test_issue_analysis_finalize_requires_evidence_bundle_lock(tmp_path: Path) -> None:
     outcome = await execute_task(
         IssueAnalysisFinalizeHandler(),
@@ -475,6 +653,17 @@ def test_result_contracts_match_capability_schemas() -> None:
     assert resource_bytes("result-contracts/report.v1.schema.json") == canonical_json_bytes(
         cast(JSONValue, ReportResultV1.model_json_schema())
     )
+
+
+def test_inspect_skill_distinguishes_execution_failure_from_inspection_failure() -> None:
+    skill = " ".join((_RESOURCES / "skills/aa-inspect/SKILL.md").read_text(encoding="utf-8").split())
+
+    assert "Execution test failures do not make the Inspect operation itself failed" in skill
+    assert "When the authenticated execution evidence contains failures" in skill
+    assert '`status="analyzed"` and `classification_performed=true`' in skill
+    assert "When the authenticated execution evidence contains no failures" in skill
+    assert '`status="no_failures"`' in skill
+    assert 'Use `status="failed"` only when the locked evidence cannot be authenticated or analyzed' in skill
 
 
 def test_quality_plugin_has_no_product_hooks_import() -> None:

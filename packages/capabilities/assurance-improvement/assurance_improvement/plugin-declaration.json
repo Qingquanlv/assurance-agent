@@ -3,63 +3,63 @@
     "attempt_contracts": [
       {
         "contract_id": "assurance.improvement.agent.archive.v1",
-        "digest": "d865adb46ded77f3dc669ef9249ce4ecc2803ee793cee8e234618a2ef60b29f8"
+        "digest": "ccae454e08ad1e57ef84714161ae75e310525b08bdc068660765481cdf1e1d36"
       },
       {
         "contract_id": "assurance.improvement.agent.improvement-review.v1",
-        "digest": "0136bae1831cb43332131b38d42587a20be204a7bae884c94ec27afb1025701a"
+        "digest": "acb42bda923673ee9c489cd58c6d15dfe2b2558cf0d07d50dbe2e86874cc9555"
       },
       {
         "contract_id": "assurance.improvement.agent.retro-eval-analysis.v1",
-        "digest": "1b7eb44c2085539b3d7db34aa4a2dd3b2f2d537b6764d15179bb3da2cb018095"
+        "digest": "860bfca706909afd4ee53c57f6d673b8f5de2e3226d4642450c715583e756474"
       },
       {
         "contract_id": "assurance.improvement.agent.retro-issue-analysis.v1",
-        "digest": "444287b564e681fff21502b12e62281710bddd19b315703cc279a9ba519d6621"
+        "digest": "b52282b6f4a595e75c6072fa5bc824bb895bf148053ccf9bb2e076a472585849"
       },
       {
         "contract_id": "assurance.improvement.agent.retro-workflow-analysis.v1",
-        "digest": "97632da7b2d367a6469e347eec978782cff29937c9a616c32a98d6559e2ea955"
+        "digest": "afb9622f860b473a0334752ba9a6e1163b96782bddb8c5da52c9cf21a08b9935"
       },
       {
         "contract_id": "assurance.improvement.agent.retro.v1",
-        "digest": "bd8431ffc53930e8225114c02a8d0fc2413c300c76b943e99187cf4b51ab7a1d"
+        "digest": "35d76dc2518206353059f8937262e897e7fdb3f9c3bbbf4c904e5a03bc38729c"
       },
       {
         "contract_id": "assurance.improvement.retro-build-slices",
-        "digest": "02aad7f830f86133d4d47628e49b2b3f2926ee1e50b3b94763e0470514c42cf1"
+        "digest": "2e52a14f6c99e9b841c451d3748f5fdb684ae9c5a0e98cd5b6470133fd3dea39"
       },
       {
         "contract_id": "assurance.improvement.task.apply-improvement-auto-review",
-        "digest": "c43bf0f402064ff800859c4784787a515bb383a545e438b22aa83a60823074a4"
+        "digest": "c49391127c4f434cce790a73a82f62730093752e992d97f39a0baf8d534569cf"
       },
       {
         "contract_id": "assurance.improvement.task.apply-improvement-review",
-        "digest": "4aae235dbf614ffd9f42cca033c3c00c1ccd64cecdd17b64ec49e31dbdf769cb"
+        "digest": "2158e65211136abd8a83e09d8454885cab12225de897fed4cb86df3555ff06b0"
       },
       {
         "contract_id": "assurance.improvement.task.apply-memory-improvement",
-        "digest": "34bd32c11a2410110d180beeb20e248599a10d810097d13cd65f2f76daab91f4"
+        "digest": "438f35fc8c6f59d583adf1c56f6c1225ff830c3da74fdd5ba0a67f9505a24609"
       },
       {
         "contract_id": "assurance.improvement.task.evaluate-memory-improvement",
-        "digest": "cdea9a42fe4f852cf2b0cd2a5bf23edc6eb5022dc763aad9d1b3f98bcaaf25d5"
+        "digest": "258b556da212c422deb316fb60aec23e4b7f54e82defbd3ae0ec01fb1a633ee3"
       },
       {
         "contract_id": "assurance.improvement.task.export-change-improvement",
-        "digest": "f2df455fee0ce3215bcf58df1102977ae9705c92fcd2acf4bd2efa6e7c125f1c"
+        "digest": "e78c46f7b529e2518c0db8cdfe849cbb3b70c970b929f5d5336602334f52a2d5"
       },
       {
         "contract_id": "assurance.improvement.task.reconcile-improvements",
-        "digest": "2c54f11f8079b67f170a959588b7051ca80e7d371c83233515ceb1801cb4d432"
+        "digest": "c1c81f76bb70c8b0a7351bb90a38c30998b89f145a99a63fa53836441a0041a5"
       },
       {
         "contract_id": "assurance.improvement.task.retro-collect-v3",
-        "digest": "acdcdf12e1bd43afa077f8237a92618ba29df3038c105ffcb9ed538c9d21807d"
+        "digest": "15b96a7780a435e607f58fc36b8f530429fca095f7a6aa41996cfdd680e6dd1f"
       },
       {
         "contract_id": "assurance.improvement.task.rollback-memory-improvement",
-        "digest": "73c7ca2582b9cede6b1702447e910bb6230405b5895b537edd76d5a425860813"
+        "digest": "dd54f8a4c04708968bd42f8b7a26749ee7e5deca11fb245c1bffffbe95074a90"
       }
     ],
     "bindings": [],

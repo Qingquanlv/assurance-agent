@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
@@ -78,7 +78,16 @@ class FixProposalInputV1(FrozenModel):
     mapping_paths: tuple[str, ...]
     require_approval: bool = True
     execution_evidence_digest: HexDigest
+    issue_analysis_ref: EvidenceArtifactRefV1 | None = None
     claimed_capabilities: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _analysis_belongs_to_change(self) -> FixProposalInputV1:
+        if self.issue_analysis_ref is not None and self.issue_analysis_ref.path != (
+            f"qa/changes/{self.change_id}/inspect/issue-analysis.json"
+        ):
+            raise ValueError("issue analysis must belong to the repaired change")
+        return self
 
     @field_validator("capability_leafs")
     @classmethod

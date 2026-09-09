@@ -15,6 +15,7 @@ def coverage_named_matches(state: Mapping[str, object]) -> dict[str, str | None]
         "satisfied",
         "coverage_insufficient",
         "repairable_execution_failure",
+        "analysis_required",
         "needs_human",
         "blocked",
     )

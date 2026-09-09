@@ -3,11 +3,8 @@ from __future__ import annotations
 import pytest
 
 from tests.phase4.path_cases import (
-    FILESYSTEM_CASES,
-    NO_WORKSPACE_OPEN_WHEELS,
     PATH_CASES,
     WHEELS,
-    assert_no_workspace_open_seam,
     assert_no_write_outside_workspace,
     exercise_path_case,
 )
@@ -41,9 +38,5 @@ async def test_path_cases_fail_before_spawn_and_stay_inside_workspace(wheel: str
     assert observed.spawned is False
     assert observed.effect_emitted is False
     assert_no_write_outside_workspace(observed)
-    if case in FILESYSTEM_CASES and wheel in NO_WORKSPACE_OPEN_WHEELS:
-        assert observed.seam == "uncovered"
-        assert_no_workspace_open_seam(wheel)
-        return
     assert observed.rejected is True
     assert observed.seam != "uncovered"

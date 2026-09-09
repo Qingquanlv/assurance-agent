@@ -22,11 +22,11 @@ from assurance_improvement.contracts.retro import (
     IssueEvidenceSlice,
     LoopRoundEvidenceEntry,
     RetroBuildSlicesInputV1,
+    RetroCollectInput,
     RetroIntegrity,
     RetroSourceDescriptor,
     WorkflowEvidenceSlice,
 )
-from assurance_improvement.operations.retro import RetroCollectInput
 from assurance_intake.contracts import EvidenceArtifactRefV1, LoopRoundHistoryV1
 from assurance_intake.contracts.plan import decode_plan
 from assurance_quality.contracts.agent import InspectionResultV1

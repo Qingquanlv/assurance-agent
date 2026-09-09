@@ -47,6 +47,30 @@ def test_nested_opencode_provider_error_message_is_transient() -> None:
     assert provider_error_is_transient({}, messages) is True
 
 
+def test_cyber_policy_rejection_that_invites_rephrasing_is_retryable() -> None:
+    messages = [
+        {
+            "info": {
+                "role": "assistant",
+                "error": {
+                    "name": "ProviderError",
+                    "data": {
+                        "message": (
+                            '{"type":"error","error":{"type":"invalid_request",'
+                            '"code":"cyber_policy","message":"This content was flagged for '
+                            "possible cybersecurity risk. If this seems wrong, try rephrasing "
+                            'your request."}}'
+                        )
+                    },
+                },
+            },
+            "parts": [],
+        }
+    ]
+
+    assert provider_error_is_transient({}, messages) is True
+
+
 def test_complete_result_with_message_error_is_rejected() -> None:
     messages = [
         {
@@ -298,6 +322,19 @@ async def test_busy_schema_invalid_candidate_is_not_aborted() -> None:
 
 async def test_busy_valid_receipt_wins_over_later_invalid_artifact() -> None:
     fixture = _bound_fixture(terminal_mode="mixed_result_busy")
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "terminal"
+        assert result.outcome is not None
+        assert result.outcome.status == "succeeded"
+        assert fixture.fake.abort_calls == 1
+    finally:
+        fixture.close()
+
+
+async def test_busy_session_stops_on_the_unique_schema_valid_json_retry() -> None:
+    fixture = _bound_fixture(terminal_mode="schema_retry_busy")
     try:
         result = await fixture.reconcile()
 

@@ -9,29 +9,34 @@ from pydantic import BaseModel
 from graph_engine.attempts.keys import BusinessActivation
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_improvement.contracts.agent import ImprovementSkillInputV1
+from assurance_improvement.contracts.agent import (
+    ImprovementSkillInputV1,
+    RetroAnalysisInputV1,
+    RetroSynthesisInputV1,
+    RetroAnalysisResultV3,
+)
 from assurance_improvement.contracts.attempts import (
-    RetroCollectInput,
     select_analysis_slice,
     select_evaluate_memory,
-    select_retro_agent,
     select_retro_collect,
-    select_retro_reconcile,
 )
 from assurance_improvement.contracts.delivery import artifact_digest, same_digest
 from assurance_improvement.contracts.improvements import (
     ImprovementLedgerProjection,
     ImprovementProjection,
-    ReconcileResultV1,
 )
 from assurance_improvement.contracts.review import AppliedAutoReviewV1
 from assurance_improvement.contracts.retro import (
     ContextSignalSet,
     DomainAnalysisStatus,
     DomainStatuses,
+    RetroCollectInput,
+    RetroCollectedV1,
     RetroContextV3,
     RetroIntegrity,
     RetroBuildSlicesInputV1,
+    RetroReconcileInputV1,
+    RetroReconcileResultV1,
     RetroSourceManifestV3,
     Signal,
     SignalDocumentV3,
@@ -99,16 +104,27 @@ def _receipt_effect_refs(receipt: object) -> list[dict[str, str]]:
     return refs
 
 
+def _wire_value(value: object) -> object:
+    """Reduce cross-wheel Pydantic values to the graph's JSON wire contract."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    if isinstance(value, Mapping):
+        return {str(key): _wire_value(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_wire_value(item) for item in value]
+    return value
+
+
 def _pick(state: Mapping[str, object], *names: str) -> dict[str, object]:
-    return {name: state[name] for name in names if name in state}
+    return {name: _wire_value(state[name]) for name in names if name in state}
 
 
 def select_skill(state: Mapping[str, object]) -> ImprovementSkillInputV1:
     artifact_paths = state.get("artifact_paths") or state.get("allowed_artifact_paths") or ()
     return ImprovementSkillInputV1.model_validate(
         {
-            **{name: state[name] for name in _SKILL_FIELDS},
-            "artifact_paths": artifact_paths,
+            **_pick(state, *_SKILL_FIELDS),
+            "artifact_paths": _wire_value(artifact_paths),
         }
     )
 
@@ -140,13 +156,13 @@ def publish_build_slices(state: Mapping[str, object], output: object, receipt: o
 
 def publish_collect(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del state, receipt
-    collected = select_retro_collect(_output_payload(output))
-    return collected.model_dump(mode="json")
+    collected = RetroCollectedV1.model_validate(_output_payload(output))
+    return {**collected.model_dump(mode="json", exclude={"generated_at"}), "ts": collected.generated_at}
 
 
 def _select_analysis(
     state: Mapping[str, object], domain: Literal["issue", "workflow", "eval"]
-) -> ImprovementSkillInputV1:
+) -> RetroAnalysisInputV1:
     collected = select_retro_collect(
         _pick(
             state,
@@ -159,19 +175,20 @@ def _select_analysis(
             "coverage_gap_slice",
         )
     )
-    select_analysis_slice(collected, domain=domain)
-    return select_skill(state)
+    return RetroAnalysisInputV1.model_validate(
+        {"change_id": state["change_id"], "evidence_slice": select_analysis_slice(collected, domain=domain)}
+    )
 
 
-def select_eval_analysis(state: Mapping[str, object]) -> ImprovementSkillInputV1:
+def select_eval_analysis(state: Mapping[str, object]) -> RetroAnalysisInputV1:
     return _select_analysis(state, "eval")
 
 
-def select_issue_analysis(state: Mapping[str, object]) -> ImprovementSkillInputV1:
+def select_issue_analysis(state: Mapping[str, object]) -> RetroAnalysisInputV1:
     return _select_analysis(state, "issue")
 
 
-def select_workflow_analysis(state: Mapping[str, object]) -> ImprovementSkillInputV1:
+def select_workflow_analysis(state: Mapping[str, object]) -> RetroAnalysisInputV1:
     return _select_analysis(state, "workflow")
 
 
@@ -315,55 +332,40 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
         ),
         signal_count=sum(len(items) for items in signals.values()),
     )
-    candidates: list[object] = []
-    for payload in (issue_analysis, workflow_analysis, eval_analysis):
-        items = payload.get("candidates") or ()
-        if isinstance(items, list):
-            candidates.extend(items)
-    return {"context": context.model_dump(mode="json"), "candidates": candidates}
+    return {"context": context.model_dump(mode="json"), "candidates": []}
 
 
 def select_reconcile(state: Mapping[str, object]):
-    raw_candidates = state.get("candidates") or ()
-    if not isinstance(raw_candidates, (list, tuple)):
-        raw_candidates = ()
-    return select_retro_reconcile(
-        context=state["context"],
-        candidates=tuple(raw_candidates),
-        current=state["current"],
-        ts=str(state["ts"]),
-    )
+    return RetroReconcileInputV1.model_validate(_pick(state, "change_id", "context", "candidates"))
 
 
 def publish_reconcile(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del state, receipt
-    result = ReconcileResultV1.model_validate(_output_payload(output))
+    output_result = RetroReconcileResultV1.model_validate(_output_payload(output))
+    result = output_result.reconciliation
     ledger = ImprovementLedgerProjection(
         schema_version=result.schema_version,
         last_seq=result.last_seq,
         improvements=result.improvements,
         by_fingerprint=result.by_fingerprint,
     )
-    return {"ledger": ledger.model_dump(mode="json")}
+    return {
+        "ledger": ledger.model_dump(mode="json"),
+        "retro_status": output_result.status.model_dump(mode="json"),
+        "evidence_refs": [ref.model_dump(mode="json") for ref in output_result.artifact_refs],
+    }
 
 
-def select_retro(state: Mapping[str, object]) -> ImprovementSkillInputV1:
-    raw = state.get("ledger")
-    if raw is None:
-        raise ValueError("retro Agent requires the reconciled typed ledger")
-    ledger = ImprovementLedgerProjection.model_validate(raw)
-    select_retro_agent(ledger)
-    return select_skill(state)
+def select_retro(state: Mapping[str, object]) -> RetroSynthesisInputV1:
+    return RetroSynthesisInputV1.model_validate(_pick(state, "change_id", "context"))
 
 
 def publish_retro(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
-    del receipt
-    payload = _output_payload(output)
+    del state, receipt
+    payload = RetroAnalysisResultV3.model_validate(_output_payload(output))
     return {
-        "change_id": state.get("change_id"),
-        "retro_id": payload.get("retro_id", state.get("retro_id")),
-        "lifecycle_state": state.get("lifecycle_state"),
-        "evidence_refs": state.get("evidence_refs") or [],
+        "candidates": [item.model_dump(mode="json") for item in payload.candidates],
+        "analysis_status": payload.analysis_status,
     }
 
 

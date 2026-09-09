@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -13,7 +13,14 @@ from graph_engine.plugin_api import FrozenModel
 from assurance_quality.contracts.report import QualityReport
 
 from assurance_improvement.contracts.improvements import ImprovementCandidateV3, ImprovementProjection
-from assurance_improvement.contracts.retro import RetroSourceManifestV3, Signal
+from assurance_improvement.contracts.retro import (
+    EvalEvidenceSlice,
+    IssueEvidenceSlice,
+    RetroContextV3,
+    RetroSourceManifestV3,
+    Signal,
+    WorkflowEvidenceSlice,
+)
 from assurance_improvement.contracts.review import AutoReviewFinding, ImprovementReviewSubject
 
 _SHA256 = r"^[0-9a-f]{64}$"
@@ -47,6 +54,27 @@ class AgentBindingDataV1(FrozenModel):
     execution: FrozenExecutionSelection
     request_policy_digest: str = Field(pattern=_SHA256)
     request_config_digest: str = Field(pattern=_SHA256)
+
+
+class RetroAnalysisInputV1(FrozenModel):
+    change_id: str = Field(min_length=1)
+    evidence_slice: Annotated[
+        IssueEvidenceSlice | WorkflowEvidenceSlice | EvalEvidenceSlice,
+        Field(discriminator="domain"),
+    ]
+
+
+class RetroSynthesisInputV1(FrozenModel):
+    change_id: str = Field(min_length=1)
+    context: RetroContextV3
+
+
+class RetroAnalysisFinalizeInputV1(RetroAnalysisInputV1):
+    agent_result: AgentRunResult
+
+
+class RetroSynthesisFinalizeInputV1(RetroSynthesisInputV1):
+    agent_result: AgentRunResult
 
 
 class ImprovementSkillInputV1(FrozenModel):

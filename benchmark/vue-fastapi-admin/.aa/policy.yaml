@@ -1,0 +1,12 @@
+schema_version: "1"
+test_family_policy:
+  required: [api]
+  allowed: [api, e2e, fuzz, performance]
+coverage_floor_by_tier:
+  low: 0.7
+  medium: 0.8
+  high: 0.9
+  critical: 1.0
+evidence_sufficiency:
+  recency_hours: 24
+  require_current_batch: true

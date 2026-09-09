@@ -11,7 +11,7 @@ class RunInput(BaseModel):
     change_id: str
 
 
-def test_attempt_key_is_stable_across_technical_retry_and_replay() -> None:
+def test_attempt_key_is_stable_across_replay() -> None:
     key = derive_attempt_key(
         invocation_id="inv-1",
         graph_revision="a" * 64,
@@ -31,6 +31,38 @@ def test_attempt_key_is_stable_across_technical_retry_and_replay() -> None:
         validated_input=RunInput(change_id="chg-1"),
     )
     assert key == replayed
+
+
+def test_each_technical_attempt_gets_an_isolated_attempt_key() -> None:
+    shared = {
+        "invocation_id": "inv-1",
+        "graph_revision": "a" * 64,
+        "public_entrypoint": "execute",
+        "semantic_node_id": "execution.run",
+        "business_activation": BusinessActivation.for_round(2),
+        "contract_id": "assurance.execution.agent.run.v1",
+        "validated_input": RunInput(change_id="chg-1"),
+    }
+    first = derive_attempt_key(**shared, technical_attempt=1)
+    replayed = derive_attempt_key(**shared, technical_attempt=1)
+    second = derive_attempt_key(**shared, technical_attempt=2)
+    assert first == replayed
+    assert second != first
+
+
+@pytest.mark.parametrize("technical_attempt", [0, -1])
+def test_technical_attempt_must_be_positive(technical_attempt: int) -> None:
+    with pytest.raises(ValueError, match="technical_attempt must be positive"):
+        derive_attempt_key(
+            invocation_id="inv-1",
+            graph_revision="a" * 64,
+            public_entrypoint="execute",
+            semantic_node_id="execution.run",
+            business_activation=BusinessActivation.one_shot(),
+            contract_id="assurance.execution.agent.run.v1",
+            validated_input=RunInput(change_id="chg-1"),
+            technical_attempt=technical_attempt,
+        )
 
 
 def test_new_business_round_changes_attempt_key() -> None:
@@ -76,6 +108,7 @@ def test_canonical_input_digest_is_part_of_the_attempt_key() -> None:
             "semantic_node_id": "execution.run",
             "business_activation": {"kind": "root", "value": "1"},
             "contract_id": "assurance.execution.agent.run.v1",
+            "technical_attempt": 1,
             "task_input_digest": canonical_digest(RunInput(change_id="chg-1").model_dump(mode="json")),
         }
     )

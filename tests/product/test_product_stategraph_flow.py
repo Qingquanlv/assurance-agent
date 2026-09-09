@@ -51,6 +51,7 @@ from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOu
 from assurance_quality.graphs.factory import QualityGraphs
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.boot.boot import EngineGraphBuildContext
+from graph_engine.canonical import canonical_digest
 from graph_engine.stategraph.routing import AmbiguousRouteMatch, select_exclusive_route
 
 from tests.architecture.exclusive_route_inventory import ExclusiveRouteRow, EXCLUSIVE_ROUTE_INVENTORY
@@ -162,6 +163,16 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
 def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, object]:
     execution = ExecutionCycleResultV1.model_validate(_execution(epoch)["execution_result"])
     gaps = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/gaps.json")
+    observations = _ref(
+        f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json"
+    )
+    issue_manifest = _ref(
+        f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/batches/"
+        f"{execution.batch_id}/issue-evidence-manifest.json"
+    )
+    trace = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/trace.json")
+    metrics = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/metrics.json")
+    sufficiency = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/trace-sufficiency.json")
     coverage_state = {
         "satisfied": "satisfied",
         "coverage_insufficient": "repair_required",
@@ -182,6 +193,46 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
     )
     return {
         "inspection_outcome": outcome.model_dump(mode="json"),
+        "assessment_inputs": {
+            "change_id": "CH-DEMO-001",
+            "coverage_epoch": epoch,
+            "batch_id": execution.batch_id,
+            "plan_digest": _PLAN_DIGEST,
+            "plan_ref": _plan_ref().model_dump(mode="json"),
+            "scope": {
+                "change_id": "CH-DEMO-001",
+                "coverage_epoch": epoch,
+                "required_case_ids": ["TC-DEMO-001"],
+                "selected_families": ["api"],
+                "applicable_goals": ["constraint_coverage"],
+                "applicability_refs": [_reviewed(epoch).review_ref.model_dump(mode="json")],
+                "risk_tier": "high",
+                "policy_digest": _SHA,
+            },
+            "policy": {
+                "coverage_floor_by_tier": {
+                    "low": 0.7,
+                    "medium": 0.8,
+                    "high": 0.9,
+                    "critical": 1.0,
+                }
+            },
+            "trace_ref": trace.model_dump(mode="json"),
+            "gaps_ref": gaps.model_dump(mode="json"),
+            "metrics_ref": metrics.model_dump(mode="json"),
+            "sufficiency_ref": sufficiency.model_dump(mode="json"),
+            "execution_ref": execution.evidence_ref.model_dump(mode="json"),
+            "observations_ref": observations.model_dump(mode="json"),
+            "issue_evidence_manifest_ref": issue_manifest.model_dump(mode="json"),
+            "owned_evidence_ids": ["OBS-DEMO-001"],
+            "evidence_bundle_digest": f"sha256:{_SHA}",
+            "healing_ref": None,
+            "issue_ref": None,
+        },
+        "owned_evidence_ids": ["OBS-DEMO-001"],
+        "evidence_bundle_digest": f"sha256:{_SHA}",
+        "observations_ref": observations.model_dump(mode="json"),
+        "issue_evidence_manifest_ref": issue_manifest.model_dump(mode="json"),
         "coverage_state": coverage_state or "",
         "status": "passed",
     }
@@ -206,6 +257,55 @@ def _report(epoch: int = 0) -> dict[str, object]:
         "report_refs": [ref.model_dump(mode="json")],
         "report_receipt": receipt.model_dump(mode="json"),
         "status": "reported",
+    }
+
+
+def _diagnostic_report(epoch: int = 0) -> dict[str, object]:
+    ref = _ref(f"qa/changes/CH-DEMO-001/report/epochs/{epoch}/report.json")
+    receipt = _receipt(f"diagnostic-report-{epoch}")
+    return {
+        "report_outcome": {},
+        "report_refs": [ref.model_dump(mode="json")],
+        "report_receipt": receipt.model_dump(mode="json"),
+        "report_purpose": "diagnostic",
+        "status": "diagnostic",
+    }
+
+
+def _analysis_result(classification: str) -> dict[str, object]:
+    inspection = cast(dict, _inspection()["inspection_outcome"])
+    ref = {"path": "qa/changes/CH-DEMO-001/inspect/issue-analysis.json", "digest": "a" * 64}
+    return {
+        "issue_analysis": {
+            "agent_result": {
+                "schema_version": "1.0",
+                "change_id": "CH-DEMO-001",
+                "batch_id": inspection["batch_id"],
+                "evidence_bundle_digest": f"sha256:{'a' * 64}",
+                "status": "completed",
+                "candidate_count": 1,
+                "candidates": [
+                    {
+                        "candidate_id": "CAND-1",
+                        "observation_ids": ["OBS-DEMO-001"],
+                        "proposed": {
+                            "title": "Failure",
+                            "classification": classification,
+                            "severity": "high",
+                            "root_cause_hypothesis": "Compare the assertion to the frozen contract",
+                        },
+                        "affected_surface": {"kind": "test", "value": "tests/a.py"},
+                        "fingerprint_inputs": {"surface": "tests/a.py", "symptom": "assertion failed"},
+                        "possible_problem_ids": [],
+                        "confidence": 0.9,
+                        "recommended_action": "investigate",
+                    }
+                ],
+            },
+            "candidate_digest": f"sha256:{'a' * 64}",
+            "issue_analysis_ref": ref,
+        },
+        "evidence_refs": [ref],
     }
 
 
@@ -300,7 +400,7 @@ def _flow_features(
     retro: Mapping[str, object] | None = None,
     apply: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    del issue_analyze, repair_coverage
+    del repair_coverage
     features = _stub_features()
     features["assurance.intake"] = IntakeGraphs(
         prepare=_echo(
@@ -330,7 +430,7 @@ def _flow_features(
     features["assurance.quality"] = QualityGraphs(
         assess=_graph(assess or _inspection()),
         issue_review=_echo({"classification": "test", "fix_eligible": True}),
-        issue_analyze=_echo({"classification": "test", "fix_eligible": True}),
+        issue_analyze=_echo(issue_analyze or {"classification": "test", "fix_eligible": True}),
         issue_reconcile=_echo({"classification": "test", "fix_eligible": True}),
         report=_graph(report or _report()),
     )
@@ -451,6 +551,10 @@ def test_quality_adapter_uses_committed_time_for_hashed_execution_batch() -> Non
     adapted = adapt_quality_assess(cast(Any, state))
     assert adapted["batch_id"] == "d" * 64
     assert adapted["execution_at"] == execution.executed_at.isoformat()
+    assert adapted["activation"] == {
+        "kind": "trigger",
+        "value": f"inspect.0.{canonical_digest('d' * 64)[:16]}.0",
+    }
 
 
 def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
@@ -606,7 +710,7 @@ def test_product_exclusive_routes_have_fixed_evidence_driven_targets() -> None:
         "coverage_insufficient": "coverage-insufficient",
         "repairable_execution_failure": "fix-proposal",
         "needs_human": "needs-human",
-        "blocked": "blocked",
+        "blocked": "diagnostic",
     }.items():
         assert route_quality(_inspection(disposition=disposition)) == target
     assert route_applied_repair(_applied()) == "rerun"

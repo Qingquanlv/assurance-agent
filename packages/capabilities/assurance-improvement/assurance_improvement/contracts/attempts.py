@@ -31,6 +31,8 @@ from assurance_improvement.contracts.agent import (
     ImprovementReviewResultV1,
     ImprovementSkillInputV1,
     RetroAnalysisResultV3,
+    RetroAnalysisInputV1,
+    RetroSynthesisInputV1,
 )
 from assurance_improvement.contracts.delivery import (
     ChangeExportReceipt,
@@ -41,7 +43,6 @@ from assurance_improvement.contracts.delivery import (
 from assurance_improvement.contracts.improvements import (
     ImprovementLedgerProjection,
     ImprovementProjection,
-    ReconcileResultV1,
 )
 from assurance_improvement.contracts.review import AppliedAutoReviewV1
 from assurance_improvement.operations.delivery import (
@@ -52,7 +53,6 @@ from assurance_improvement.operations.delivery import (
 )
 from assurance_improvement.operations.retro import (
     ReconcileInput,
-    RetroCollectInput,
     analysis_slice,
     assert_collect_identity,
 )
@@ -61,13 +61,18 @@ from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     IssueEvidenceSlice,
     RetroBuildSlicesInputV1,
+    RetroCollectInput,
+    RetroCollectedV1,
+    RetroReconcileInputV1,
+    RetroReconcileResultV1,
     WorkflowEvidenceSlice,
 )
 
 _ARCHIVER = "assurance-v1-archiver"
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REVIEWER = "assurance-v1-reviewer"
-_RETRY = AttemptRetryPolicy(max_attempts=1)
+_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
+_TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
@@ -89,7 +94,13 @@ def _job(
         finalize_handler_id=f"assurance.improvement.{base}.finalize",
         skill_id=skill_id,
         agent_profile=agent_profile,
-        input_model=ImprovementSkillInputV1,
+        input_model=(
+            RetroSynthesisInputV1
+            if base == "retro"
+            else RetroAnalysisInputV1
+            if base.startswith("retro-")
+            else ImprovementSkillInputV1
+        ),
         agent_result_model=result_model,
         output_model=result_model,
         resources=ResourceClaimTemplate(
@@ -97,7 +108,7 @@ def _job(
             reads=("qa",),
             writes=_paths(*outputs),
         ),
-        retry=_RETRY,
+        retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=_paths(*outputs), finalize=()),
@@ -117,7 +128,7 @@ def _task(
         input_model=input_model,
         output_model=output_model,
         resources=ResourceClaims(),
-        retry=_RETRY,
+        retry=_TASK_RETRY,
         timeout=_TIMEOUT,
         validators=(),
     )
@@ -174,7 +185,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
             input_model=RetroBuildSlicesInputV1,
             output_model=RetroCollectInput,
             resources=ResourceClaims(reads=("issues", "qa")),
-            retry=_RETRY,
+            retry=_TASK_RETRY,
             timeout=_TIMEOUT,
             validators=(),
         ),
@@ -203,15 +214,37 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
             ExportChangeInput,
             ChangeExportReceipt,
         ),
-        "assurance.improvement.reconcile-improvements": _task(
-            "assurance.improvement.reconcile-improvements",
-            ReconcileInput,
-            ReconcileResultV1,
+        "assurance.improvement.reconcile-improvements": TaskAttemptContract(
+            contract_id="assurance.improvement.task.reconcile-improvements",
+            owner_id="assurance.improvement",
+            handler_id="assurance.improvement.reconcile-improvements",
+            input_model=RetroReconcileInputV1,
+            output_model=RetroReconcileResultV1,
+            resources=ResourceClaimTemplate(
+                parameters={"change_id": "/change_id"},
+                reads=("qa/improvements/ledger.json",),
+                writes=tuple(
+                    sorted(
+                        (
+                            "qa/improvements/ledger.json",
+                            *_paths(
+                                "retro/context.json",
+                                "retro/candidates.json",
+                                "retro/reconciliation.json",
+                                "retro/status.json",
+                            ),
+                        )
+                    )
+                ),
+            ),
+            retry=_TASK_RETRY,
+            timeout=_TIMEOUT,
+            validators=(),
         ),
         "assurance.improvement.retro-collect-v3": _task(
             "assurance.improvement.retro-collect-v3",
             RetroCollectInput,
-            RetroCollectInput,
+            RetroCollectedV1,
         ),
         "assurance.improvement.rollback-memory-improvement": _task(
             "assurance.improvement.rollback-memory-improvement",

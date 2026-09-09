@@ -15,6 +15,12 @@ A glob result of `No files found` is not evidence that product source is absent;
 ignored source files remain exact-readable. Use path-scoped grep only after the
 exact reads, and never replace source-backed plan facts with guesses from naming.
 
+Before any glob or directory discovery, convert every declared Python symbol
+for setup, cleanup, authentication, and shared support into its exact module
+path and read that path directly. The write whitelist does not limit imports or
+reads: an existing helper outside `allowed_outputs` remains reusable and must
+not be copied or inlined into the mapped target.
+
 Never read `.env`, `*.env`, or credential-bearing benchmark environment files.
 Use environment variable names and non-secret defaults only; implement the approved
 configuration contract without inspecting credential values.
@@ -69,6 +75,29 @@ Do not modify product source.
 The graph owns phase state. Do not write an orchestration state file.
 
 Framework is Locust. Keep Case ID → symbol → target file traceability exact.
+Use Locust's real task API: `@task` marks the method. Never pass `name=` to the
+`@task` decorator; put the stable statistics label on
+`self.client.get(..., name=...)` (or the corresponding request method) instead.
+When reading the resulting entry, use
+`environment.stats.get(stable_name, method)`: the statistics name is the first
+argument and the HTTP method is the second. Reversing them silently selects an
+empty entry even though the named requests ran.
+Import the generated Locust module in the configured runtime before returning
+so decorator and class-definition errors fail during codegen rather than the
+later execution Attempt.
+
+Resolve every approved setup, cleanup, authentication, or other support
+capability symbol against the exact repository path before implementing it. If
+the symbol resolves, import and call that exact symbol instead of reimplementing
+it inside the Locust file. `create-if-missing` is permission to create an absent
+helper, not evidence that it is absent. Only create or inline a replacement
+after an exact read proves the declared module or symbol is absent and the
+runtime write whitelist authorizes its target.
+
+For authenticated scenarios, controlled execution does not promise inherited
+token environment variables. When the plan declares an authentication helper,
+call the declared authentication capability with the runtime HTTP client and
+use its returned headers. Do not replace that call with a direct token lookup.
 
 ## Frozen Inputs and Completion Check
 
@@ -85,7 +114,7 @@ Every closed-mapping target must appear in `files` as a `test_entry` with the
 exact mapped Case IDs. Reopen every target before returning and verify that the
 mapped symbol exists in that file. Do not list plan, case, or review inputs in
 `files`.
-There is no performance codegen-fix handler in this phase.
+
 
 ## Mapping Rules
 
@@ -93,6 +122,9 @@ There is no performance codegen-fix handler in this phase.
   and `required_capabilities` in the generated-files manifest. The manifest
   `mapping` and `required_capabilities` must exactly match the final structured
   result.
+- The final structured result and generated-files manifest must each be exactly
+  equal the reviewed plan's `required_capabilities`; never drop authentication,
+  setup, or cleanup leaves merely because their helpers were reused unchanged.
 
 - Consume Task Mapping as a strict one-row-per-Case-ID relation. Do not
   reinterpret setup, cleanup, seed helpers, factories, or adapters as additional
@@ -129,5 +161,5 @@ validators before starting Locust. Do not use `example.test` as a valid email
 unless the product is proven to accept it; prefer a proven value or
 `example.com`.
 
-Capability keys must be exact typed leaves. Every mapped function is named
-`test_<case_id_lowercase>__<desc>`.
+Capability keys must be exact typed leaves. The closed Task Mapping owns the
+mapped Locust class and method name; preserve it exactly.

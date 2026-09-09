@@ -4,11 +4,9 @@ SEMANTIC_AGENT_CONTRACT_IDS: frozenset[str] = frozenset(
     {
         "assurance.execution.agent.execute.v1",
         "assurance.execution.agent.run.v1",
-        "assurance.generation.agent.api.codegen-fix.v1",
         "assurance.generation.agent.api.codegen.v1",
         "assurance.generation.agent.api.plan-review.v1",
         "assurance.generation.agent.api.plan.v1",
-        "assurance.generation.agent.e2e.codegen-fix.v1",
         "assurance.generation.agent.e2e.codegen.v1",
         "assurance.generation.agent.e2e.plan-review.v1",
         "assurance.generation.agent.e2e.plan.v1",

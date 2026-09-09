@@ -253,11 +253,9 @@ SKILL_OWNERS: dict[str, tuple[str, ...]] = {
         "aa-api-plan",
         "aa-api-plan-reviewer",
         "aa-api-codegen",
-        "aa-api-codegen-fixer",
         "aa-e2e-plan",
         "aa-e2e-plan-reviewer",
         "aa-e2e-codegen",
-        "aa-e2e-codegen-fixer",
         "aa-fuzz-plan",
         "aa-fuzz-plan-reviewer",
         "aa-fuzz-codegen",
@@ -286,6 +284,8 @@ SKILL_OWNERS: dict[str, tuple[str, ...]] = {
 }
 
 SKILL_DISPOSITIONS: dict[str, Disposition] = {
+    "aa-api-codegen-fixer": "delete_phase6",
+    "aa-e2e-codegen-fixer": "delete_phase6",
     "aa-workflow": "replace_phase5",
     "writing-skills": "retain_harness",
 }
@@ -312,7 +312,6 @@ PERSONA_NEW_IDS: dict[str, str] = {
 
 VALIDATOR_NEW_IDS: dict[str, str] = {
     "generated_files_candidate/v1": "assurance.generation.validator.generated-files.v1",
-    "codegen_fix_candidate/v1": "assurance.generation.validator.codegen-fix-candidate.v1",
     "plan_mechanical_candidate/v1": "assurance.generation.validator.plan-mechanical.v1",
     "archive_integrity/v1": "assurance.improvement.validator.archive-integrity.v1",
     "problem_apply_candidate/v1": "assurance.quality.validator.problem-apply.v1",

@@ -10,14 +10,15 @@ for `RetroAnalysisResultV3` with `domain=issue`.
 
 ### required
 
-- locked retro identity
-- authenticated issue slice digest
-- source evidence ids from the issue manifest
+- `change_id` and the authenticated `evidence_slice` supplied in the JSON input
+- the slice includes `retro_id`, `domain`, `window`, `entries`, `sources`, integrity, and deterministic signals
+- cite only source evidence IDs present in this slice; empty entries are not permission to invent evidence
 
 ## Outputs
 
 ### required
 
+- `candidates: []`: domain analysis produces signals only
 - structured `RetroAnalysisResultV3` with `domain` `issue`
 - `analysis_status` `ok` or `failed`
 - signals cite only `problem_ids`, `occurrence_ids`, or `issue_event_ids` present
@@ -36,4 +37,5 @@ for `RetroAnalysisResultV3` with `domain=issue`.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
 - Write the typed result to `qa/changes/<change-id>/retro/retro-issue-analysis.json`.
+- Write and return the same complete `RetroAnalysisResultV3` JSON object. No Markdown fence or prose in the final answer.
 - Return the typed result and stop.

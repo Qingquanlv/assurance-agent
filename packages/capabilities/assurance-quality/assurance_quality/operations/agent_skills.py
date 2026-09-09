@@ -24,6 +24,7 @@ from assurance_quality.contracts.agent import (
     AgentBindingDataV1,
     AgentFinalizeInputV1,
     FactBaselineResultV1,
+    FinalizedIssueAnalysisV1,
     InspectionResultV1,
     IssueAnalysisResultV1,
     IssueTriageResultV1,
@@ -43,7 +44,11 @@ from assurance_quality.contracts.assessment import (
 )
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
-from assurance_quality.contracts.issues import IssueCandidateDocument
+from assurance_quality.contracts.issues import (
+    IssueCandidateDocument,
+    IssueEvidenceManifest,
+    ObservationDocument,
+)
 from assurance_quality.operations.common import (
     InputError,
     OutputError,
@@ -246,9 +251,70 @@ def _authenticate_report_input(business: ReportSkillInputV1, root: Path) -> None
     )
     for ref in refs:
         _authenticate_ref(root, ref)
+    if business.issue_analysis_ref is not None:
+        _authenticate_ref(root, business.issue_analysis_ref)
     policy = _canonical_file(root, ".aa/policy.yaml").read_bytes()
     if hashlib.sha256(policy).hexdigest() != business.assessment.scope.policy_digest:
         raise OutputError("product policy digest changed after inspection")
+
+
+def _authenticate_issue_analysis_input(business: QualitySkillInputV1, root: Path) -> None:
+    expected_prefix = f"qa/changes/{business.change_id}/inspect/"
+
+    def unique_path(name: str) -> str:
+        matches = [
+            path
+            for path in business.artifact_paths
+            if path.startswith(expected_prefix) and PurePosixPath(path).name == name
+        ]
+        if len(matches) != 1:
+            raise OutputError(f"issue analysis requires exactly one current {name}")
+        return matches[0]
+
+    observations_path = unique_path("observations.json")
+    manifest_path = unique_path("issue-evidence-manifest.json")
+    try:
+        observations = ObservationDocument.model_validate_json(
+            _canonical_file(root, observations_path).read_bytes()
+        )
+        manifest = IssueEvidenceManifest.model_validate_json(
+            _canonical_file(root, manifest_path).read_bytes()
+        )
+    except ValidationError as error:
+        raise OutputError(str(error)) from error
+    identity = (business.change_id, business.batch_id)
+    if identity != (observations.change_id, observations.batch_id) or identity != (
+        manifest.change_id,
+        manifest.batch_id,
+    ):
+        raise OutputError("issue analysis evidence belongs to another execution batch")
+    entries = [entry.model_dump(mode="json") for entry in manifest.entries]
+    expected_bundle = f"sha256:{canonical_digest(cast(JSONValue, entries))}"
+    if manifest.digest != expected_bundle or business.evidence_bundle_digest != expected_bundle:
+        raise OutputError("issue analysis evidence bundle digest changed")
+    observation_ids = tuple(sorted(item.observation_id for item in observations.observations))
+    if len(observation_ids) != len(set(observation_ids)):
+        raise OutputError("issue analysis observations must have unique ids")
+    if observation_ids != business.owned_evidence_ids:
+        raise OutputError("issue analysis owned evidence does not match observations")
+    manifest_paths = {entry.path for entry in manifest.entries}
+    if observations_path not in manifest_paths:
+        raise OutputError("issue analysis observations must be bound by the evidence manifest")
+    if len(manifest_paths) != len(manifest.entries):
+        raise OutputError("issue analysis evidence manifest paths must be unique")
+    if manifest_paths != set(business.artifact_paths) - {manifest_path}:
+        raise OutputError("issue analysis artifacts must match the authenticated manifest")
+    for observation in observations.observations:
+        if (observation.change_id, observation.batch_id) != identity:
+            raise OutputError("issue analysis observation belongs to another execution batch")
+        if observation.source.artifact not in manifest_paths:
+            raise OutputError("issue analysis observation source is not authenticated")
+        if not set(observation.evidence_refs).issubset(manifest_paths):
+            raise OutputError("issue analysis observation evidence is not authenticated")
+    for entry in manifest.entries:
+        actual = hashlib.sha256(_canonical_file(root, entry.path).read_bytes()).hexdigest()
+        if entry.digest != f"sha256:{actual}":
+            raise OutputError(f"issue analysis evidence digest changed: {entry.path}")
 
 
 def _load_json_ref(root: Path, ref: object, model: type[Any]) -> Any:
@@ -332,10 +398,18 @@ class InspectPrepareHandler:
 class IssueAnalysisPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(
-                ISSUE_ANALYSIS_SKILL, EXPLORER_PERSONA, ISSUE_ANALYSIS_RESULT_ID, request, context
+            business = validate_input(QualitySkillInputV1, request.input)
+            _authenticate_issue_analysis_input(business, context.project_root)
+            binding = validate_binding(request.binding_data)
+            return prepare_outcome(
+                skill_path=ISSUE_ANALYSIS_SKILL,
+                persona_path=EXPLORER_PERSONA,
+                business=business,
+                binding=binding,
+                result_schema_id=ISSUE_ANALYSIS_RESULT_ID,
+                context=context,
             )
-        except InputError as error:
+        except (InputError, OutputError) as error:
             return failed_input(error)
 
 
@@ -458,18 +532,15 @@ class InspectFinalizeHandler:
             failure_facts, reason_codes = build_failure_classification_facts(
                 execution,
                 metrics,
-                adversarial_required="fuzz" in business.assessment.scope.selected_families,
             )
             has_failures = any(item.status == "failed" for item in execution.results)
-            if has_failures and not document.classification_performed:
-                raise OutputError("inspection did not classify the authenticated execution failures")
-            if document.status == "no_failures" and has_failures:
-                raise OutputError("inspection claims no failures for a failing execution")
-            if document.status == "failed":
-                failure_facts = failure_facts.model_copy(
-                    update={"identity_valid": False, "needs_human": True}
+            if not document.classification_performed:
+                raise OutputError("inspection did not complete authenticated classification")
+            expected_status = "analyzed" if has_failures else "no_failures"
+            if document.status != expected_status:
+                raise OutputError(
+                    f"inspection status must be {expected_status} for the authenticated execution"
                 )
-                reason_codes = tuple(sorted({*reason_codes, "inspection.analysis_failed"}))
             finalized = FinalizedInspectionV1(
                 agent_result=document,
                 assessment=business.assessment,
@@ -492,7 +563,6 @@ class IssueAnalysisFinalizeHandler:
     input_model = AgentFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
             try:
@@ -506,17 +576,22 @@ class IssueAnalysisFinalizeHandler:
             if document.evidence_bundle_digest != payload.evidence_bundle_digest:
                 raise OutputError("issue analysis evidence bundle is not authenticated")
             owned = frozenset(payload.owned_evidence_ids)
+            try:
+                document.require_complete_coverage(owned)
+            except ValueError as error:
+                raise OutputError(str(error)) from error
             for candidate in document.candidates:
-                for observation_id in candidate.observation_ids:
-                    if observation_id not in owned:
-                        raise OutputError(f"issue candidate cites unowned evidence: {observation_id}")
-                fingerprint = problem_fingerprint(
-                    affected_surface=candidate.affected_surface,
-                    fingerprint_inputs=candidate.fingerprint_inputs,
-                )
+                try:
+                    fingerprint = problem_fingerprint(
+                        affected_surface=candidate.affected_surface,
+                        fingerprint_inputs=candidate.fingerprint_inputs,
+                    )
+                except ValueError as error:
+                    raise OutputError(f"issue candidate {candidate.candidate_id}: {error}") from error
                 expected_id = problem_id(fingerprint)
                 if candidate.possible_problem_ids and expected_id not in candidate.possible_problem_ids:
                     raise OutputError(f"issue candidate possible_problem_ids does not contain {expected_id}")
+            _authenticate_issue_analysis_input(payload, context.project_root)
             candidates_doc = IssueCandidateDocument(
                 schema_version="1.0",
                 change_id=document.change_id,
@@ -524,10 +599,21 @@ class IssueAnalysisFinalizeHandler:
                 evidence_bundle_digest=document.evidence_bundle_digest,
                 candidates=list(document.candidates),
             )
-            output = document.model_dump(mode="json")
-            if document.status == "completed":
-                output["candidate_digest"] = candidate_document_digest(candidates_doc)
-            return TaskOutcome.succeeded(cast(JSONValue, output))
+            relative = f"qa/changes/{document.change_id}/inspect/issue-analysis.json"
+            _, issue_analysis_ref = _staged_agent_document(
+                context=context,
+                relative=relative,
+                result=document,
+                model=IssueAnalysisResultV1,
+            )
+            finalized = FinalizedIssueAnalysisV1(
+                agent_result=document,
+                candidate_digest=(
+                    candidate_document_digest(candidates_doc) if document.status == "completed" else None
+                ),
+                issue_analysis_ref=issue_analysis_ref,
+            )
+            return TaskOutcome.succeeded(cast(JSONValue, finalized.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
         except OutputError as error:

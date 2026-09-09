@@ -29,6 +29,14 @@ inspect handler; this skill verifies closure and does not invent categories.
 ## Rules
 
 - Do not classify failures yourself. The deterministic inspect handler is the classifier.
+- Execution test failures do not make the Inspect operation itself failed.
+  When the authenticated execution evidence contains failures and the locked
+  evidence and all projection digests can be analyzed, return
+  `status="analyzed"` and `classification_performed=true`; the deterministic
+  handler will classify those failures.
+- When the authenticated execution evidence contains no failures, return
+  `status="no_failures"` and `classification_performed=true`.
+- Use `status="failed"` only when the locked evidence cannot be authenticated or analyzed.
 - Do not fabricate a quality gate or rewrite `final_status`.
 - Do not emit `coverage_state`, `disposition`, `route`, or another workflow action.
 - Inspect labels such as `known_product_issue` and `coverage_gap` are classification

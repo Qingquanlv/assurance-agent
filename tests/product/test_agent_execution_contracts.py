@@ -23,11 +23,9 @@ EXPECTED_AGENT_PROFILES = {
     "assurance.intake.agent.case-review.v1": "assurance-v1-reviewer",
     "assurance.intake.agent.explore.v1": "assurance-v1-explorer",
     "assurance.intake.agent.intake.v1": "assurance-v1-doc-author",
-    "assurance.generation.agent.api.codegen-fix.v1": "assurance-v1-test-author",
     "assurance.generation.agent.api.codegen.v1": "assurance-v1-test-author",
     "assurance.generation.agent.api.plan-review.v1": "assurance-v1-reviewer",
     "assurance.generation.agent.api.plan.v1": "assurance-v1-doc-author",
-    "assurance.generation.agent.e2e.codegen-fix.v1": "assurance-v1-test-author",
     "assurance.generation.agent.e2e.codegen.v1": "assurance-v1-test-author",
     "assurance.generation.agent.e2e.plan-review.v1": "assurance-v1-reviewer",
     "assurance.generation.agent.e2e.plan.v1": "assurance-v1-doc-author",
@@ -122,7 +120,7 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
     pytest_command = (
         "PYTHONDONTWRITEBYTECODE=1 "
         "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
-        f"uv run --isolated pytest -p no:cacheprovider --rootdir {execution_view} *"
+        f"uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir {execution_view} *"
     )
     assert executor["permission"]["bash"][pytest_command] == "allow"
     assert (
@@ -297,6 +295,82 @@ try {
         assert "not allowed" in denied.stderr or "path escapes" in denied.stderr
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_opencode_boundary_allows_the_canonical_locust_command(tmp_path: Path) -> None:
+    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
+
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, plugin = install_opencode_agents(project)
+    write_root = "qa/changes/CH-1/.staging/task-1/attempt-1"
+    execution_view = f"{write_root}/qa/changes/CH-1/.staging/execution/batch-1"
+    locustfile = project / execution_view / "tests/perf/locustfile_dept.py"
+    locustfile.parent.mkdir(parents=True)
+    locustfile.write_text("# bounded input\n", encoding="utf-8")
+    title = workspace_binding_title(
+        session_id="ses-test",
+        agent_profile="assurance-v1-executor",
+        project_root=project,
+        write_root=write_root,
+        allowed_outputs=(),
+        task_id="task-1",
+        attempt=1,
+        attempt_id="attempt-1",
+        read_roots=(execution_view,),
+    )
+    driver = r"""
+import { pathToFileURL } from "node:url";
+const pluginPath = process.argv[1];
+const payload = JSON.parse(process.argv[2]);
+const { default: createPlugin } = await import(pathToFileURL(pluginPath).href);
+const hooks = await createPlugin({
+  client: { session: { get: async () => ({ data: payload.session }) } },
+});
+try {
+  await hooks["tool.execute.before"](
+    { tool: "bash", sessionID: payload.session.id, callID: "call-test" },
+    { args: { command: payload.command } },
+  );
+  process.stdout.write("ALLOW\n");
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 23;
+}
+"""
+    command = (
+        "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile "
+        f"{execution_view}/tests/perf/locustfile_dept.py "
+        "--headless --users 10 --spawn-rate 2 --run-time 60s"
+    )
+
+    completed = subprocess.run(
+        [
+            shutil.which("node") or "node",
+            "--input-type=module",
+            "-e",
+            driver,
+            str(plugin),
+            json.dumps(
+                {
+                    "session": {
+                        "id": "ses-test",
+                        "directory": str(project.resolve()),
+                        "agent": "assurance-v1-executor",
+                        "title": title,
+                    },
+                    "command": command,
+                }
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "ALLOW\n"
+
+
 def test_opencode_agent_installation_rejects_conflicting_project_profile(tmp_path) -> None:
     from assurance_product.opencode_agents import install_opencode_agents
 
@@ -316,8 +390,8 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     from assurance_product.models import all_binding_ids
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
-    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 34
-    assert len(all_feature_agent_contracts()) == 34
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 32
+    assert len(all_feature_agent_contracts()) == 32
     assert set(all_feature_agent_contracts()) == set(all_binding_ids())
     assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
@@ -396,12 +470,10 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         body = contract_id.removeprefix("assurance.").removesuffix(".v1")
         feature, _, rest = body.partition(".agent.")
         family, _, job = rest.rpartition(".")
-        if feature == "generation" and job in {"codegen", "codegen-fix"}:
+        if feature == "generation" and job == "codegen":
             extra = (*extra, f"qa/changes/{change_id}/generated/{family}/files")
         if feature == "generation" and job == "plan-review":
             extra = (*extra, f"qa/changes/{change_id}/plan/{family}/reviews")
-        if feature == "generation" and job == "codegen-fix":
-            extra = (*extra, f"qa/changes/{change_id}/codegen/{family}/fixes")
         if contract_id == "assurance.healing.agent.apply-test-repair.v1":
             extra = (*extra, f"qa/changes/{change_id}/healing/epochs")
         if feature == "execution":

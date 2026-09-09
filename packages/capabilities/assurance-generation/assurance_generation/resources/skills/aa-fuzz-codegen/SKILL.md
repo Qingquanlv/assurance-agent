@@ -64,7 +64,25 @@ Do not modify product source.
 The graph owns phase state. Do not write an orchestration state file.
 
 Framework is schemathesis / Hypothesis. Keep Case ID → symbol → target file
-traceability exact. There is no fuzz codegen-fix handler in this phase.
+traceability exact.
+
+Use the installed Schemathesis v4 API exactly: construct an in-memory schema as
+`schemathesis.openapi.from_dict(document)`. Never pass `base_url` to
+`schemathesis.openapi.from_dict`; when a generated Schemathesis case performs
+the request, pass `base_url` to `case.call` or `case.call_and_validate` instead.
+Schemathesis `case.call(..., session=...)` accepts only a `requests.Session`;
+never pass an `httpx.Client` as the Schemathesis `session`. When the inherited
+runtime client is HTTPX, omit `session` from `case.call` so Schemathesis uses
+its own transport, and keep the inherited HTTPX client for lifecycle discovery
+and cleanup. When that generated request is authenticated, pass the
+authenticated headers or cookies explicitly to `case.call`; Schemathesis's own
+transport does not inherit authentication state from the HTTPX lifecycle client.
+If the generated test uses Schemathesis only to select or inspect an operation,
+no base URL is needed on the schema object.
+For a hand-authored payload, construct an explicit case with
+`operation.Case(...)`; `operation.make_case(...)` does not exist in
+Schemathesis v4. When generation should come from the operation schema, use
+`operation.as_strategy()` and draw or parameterize the resulting Case objects.
 
 ## Frozen Inputs and Completion Check
 
@@ -109,6 +127,19 @@ When Hypothesis tests also accept pytest fixtures, bind generated values by name
 (`@given(field=...)`), never positionally. Subtract those named `@given(...)`
 parameters from the function signature and resolve every remaining parameter to
 a fixture. `client` and `admin_token` are not implicit.
+
+Never pass a function-scoped fixture to an `@given` test. Do not suppress
+`HealthCheck.function_scoped_fixture`: doing so would reuse one mutable fixture
+across examples instead of resetting it. Reuse only immutable, longer-lived
+infrastructure fixtures such as an HTTP client or credential, and perform
+mutable setup and cleanup inside each generated example (or through ordinary
+helpers called by the test) so every example owns its state lifecycle.
+
+Before defining any fixture in a mapped test module, exact-read every ancestor
+`conftest.py` from the mapped file's directory to the test root. Never shadow an
+existing fixture in the mapped test module. Use the discovered fixture directly
+and reuse its response-envelope handling instead of duplicating login or token
+extraction code.
 
 When `QA_FUZZ_SCHEMA_MODE=uri` or `FUZZ_SCHEMA_MODE=uri`, acquire the OpenAPI
 document from the live product with the configured HTTP client. In this mode

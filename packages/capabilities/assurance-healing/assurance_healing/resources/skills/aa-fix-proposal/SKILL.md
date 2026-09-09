@@ -39,3 +39,19 @@ fix proposal. Schema truth is `assurance_healing.contracts` for `FixProposalResu
   approved receipt.
 - Write the typed result to `qa/changes/<change-id>/healing/fix-proposal.json`.
 - Return the typed result and stop.
+
+## File byte contract
+
+The proposal reference authenticates canonical JSON bytes. Include all fields
+and defaults from the result schema, including empty arrays. Keep each
+`files_to_modify` array sorted and duplicate-free. Serialize the complete result
+as UTF-8 with sorted object keys, compact separators, literal Unicode, and
+exactly one trailing newline. Use the standard serializer, not handwritten JSON:
+
+```python
+data = (json.dumps(result, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+output_path.write_bytes(data)
+```
+
+Reopen that exact allowed output and return the same JSON object.

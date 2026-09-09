@@ -1,4 +1,4 @@
-"""Generated-file, mapping, and codegen-fix candidate validators."""
+"""Generated-file and mapping validators."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
 
 from pydantic import ValidationError
 
@@ -45,7 +44,6 @@ ALL_TEST_ROOTS: tuple[str, ...] = (
     "tests/perf/",
     "tests/testdata/",
 )
-FIX_TEST_ROOTS: tuple[str, ...] = ("tests/api/", "tests/e2e/", "tests/testdata/")
 MAPPING_WRITE_ROOTS: tuple[str, ...] = ("qa/changes/", *ALL_TEST_ROOTS)
 _OUTSIDE_REASON = "generation candidate may write only declared test paths"
 _UNMAPPED_REASON = "generated test file is absent from the closed mapping: {path}"
@@ -54,9 +52,6 @@ _MISSING_REASON = "codegen mapping is missing: {path}"
 _EXTRA_REASON = "codegen mapping has an extra file: {path}"
 _DUPLICATE_REASON = "codegen mapping has duplicate case IDs"
 _DIGEST_REASON = "generated-file digest does not match workspace bytes: {path}"
-_UNAPPROVED_REASON = "codegen fix proposal is not approved"
-_BASELINE_REASON = "codegen fix baseline tree does not match the approved proposal"
-_ALLOWED_REASON = "codegen fix write is not in the allowed file set: {path}"
 
 
 def _canonical_relative(path: str) -> bool:
@@ -338,60 +333,10 @@ class CodegenMappingValidator:
         return _mapping_closure(staged, mapping, self._file_bytes) or ValidationResult(accepted=True)
 
 
-class CodegenFixCandidateValidator:
-    def __init__(
-        self,
-        *,
-        family: str | None = None,
-        baseline_tree_id: str | None = None,
-        allowed_paths: tuple[str, ...] | None = None,
-        mapping: CodegenMapping | None = None,
-        approved_proposal: Mapping[str, Any] | None = None,
-        file_bytes: Mapping[str, bytes] | None = None,
-        write_roots: tuple[str, ...] = FIX_TEST_ROOTS,
-    ) -> None:
-        self._family: Family | None = closed_family(family) if family is not None else None
-        self._baseline_tree_id = baseline_tree_id
-        self._allowed_paths = tuple(sorted(set(allowed_paths or ())))
-        self._mapping = mapping
-        self._approved_proposal = dict(approved_proposal or {})
-        self._file_bytes = dict(file_bytes or {})
-        self._write_roots = write_roots
-
-    def validate(self, staged: PathWriteSet, context: ValidationContext) -> ValidationResult:
-        del context
-        listed = tuple(item.path for item in staged.files)
-        for path in listed:
-            target = logical_generated_target(path)
-            if not _accepts_generated_write(path, self._write_roots, self._family):
-                return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
-            if self._allowed_paths and path not in self._allowed_paths and target not in self._allowed_paths:
-                return ValidationResult(accepted=False, reason=_ALLOWED_REASON.format(path=path))
-        if self._approved_proposal and self._approved_proposal.get("status") != "approved":
-            return ValidationResult(accepted=False, reason=_UNAPPROVED_REASON)
-        if (
-            self._baseline_tree_id is not None
-            and getattr(staged, "baseline_tree_id", None) != self._baseline_tree_id
-        ):
-            return ValidationResult(accepted=False, reason=_BASELINE_REASON)
-        mapping = self._mapping or _load_mapping(self._file_bytes)
-        if mapping is not None:
-            if self._family is not None and mapping.layer != self._family:
-                return ValidationResult(
-                    accepted=False,
-                    reason=f"mapping layer {mapping.layer!r} does not match {self._family}",
-                )
-            closed = _mapping_closure(staged, mapping, self._file_bytes)
-            if closed is not None:
-                return closed
-        return ValidationResult(accepted=True)
-
-
 __all__ = [
     "ALL_TEST_ROOTS",
     "FAMILIES",
     "FAMILY_TEST_ROOTS",
-    "CodegenFixCandidateValidator",
     "CodegenMappingValidator",
     "GeneratedFilesValidator",
 ]

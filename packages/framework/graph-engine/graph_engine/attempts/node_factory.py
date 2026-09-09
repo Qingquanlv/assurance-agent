@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -95,40 +96,54 @@ class AttemptNodeFactory:
         business = _resolve_activation(activation, state)
         selected_state = omit_checkpoint_bridge_fields(state) if isinstance(state, Mapping) else state
         validated = _validate_input(select, selected_state, task)
-        key = derive_attempt_key(
-            invocation_id=invocation_id,
-            graph_revision=revision,
-            public_entrypoint=entrypoint,
-            semantic_node_id=semantic_node_id,
-            business_activation=business,
-            contract_id=task.contract_id,
-            validated_input=validated,
-        )
-        snapshot = await self._journal.load(key)
-        issued = _active_issued(snapshot)
-        for item in issued:
-            self.trace.append(f"interrupt:generation={item.generation}:ordinal={item.ordinal}")
-            interrupt(_interrupt_payload(key, item))
-        if issued:
-            self.trace.append("kernel:recover")
-        context = AttemptExecutionContext(
-            invocation_id=invocation_id,
-            public_entrypoint=entrypoint,
-            semantic_node_id=semantic_node_id,
-            attempt_key=key,
-            fencing_token=fencing_token,
-        )
         if kernel is None:
             raise TypeError("attempt kernel is required")
-        resolution = await kernel.execute_or_recover(key, contract, validated, context)
-        if isinstance(resolution, (PendingTaskResult, IndeterminateTaskResult)):
-            await self._issue_interrupt(
-                key,
-                context=context,
-                issued=issued,
-                resolution=resolution,
+        completions: list[tuple[AttemptKey, ActiveSystemInterrupt]] = []
+        for technical_attempt in range(1, task.retry.max_attempts + 1):
+            key = derive_attempt_key(
+                invocation_id=invocation_id,
+                graph_revision=revision,
+                public_entrypoint=entrypoint,
+                semantic_node_id=semantic_node_id,
+                business_activation=business,
+                contract_id=task.contract_id,
+                validated_input=validated,
+                technical_attempt=technical_attempt,
             )
-        return _map_resolution(resolution, state, publish, key, issued)
+            snapshot = await self._journal.load(key)
+            issued = _active_issued(snapshot)
+            for item in issued:
+                self.trace.append(f"interrupt:generation={item.generation}:ordinal={item.ordinal}")
+                interrupt(_interrupt_payload(key, item))
+            if issued:
+                self.trace.append("kernel:recover")
+            context = AttemptExecutionContext(
+                invocation_id=invocation_id,
+                public_entrypoint=entrypoint,
+                semantic_node_id=semantic_node_id,
+                attempt_key=key,
+                fencing_token=fencing_token,
+            )
+            resolution = await kernel.execute_or_recover(key, contract, validated, context)
+            completions.extend((key, item) for item in issued)
+            if isinstance(resolution, (PendingTaskResult, IndeterminateTaskResult)):
+                await self._issue_interrupt(
+                    key,
+                    context=context,
+                    issued=issued,
+                    resolution=resolution,
+                )
+            if (
+                isinstance(resolution, PermanentTaskFailure)
+                and resolution.retryable
+                and technical_attempt < task.retry.max_attempts
+            ):
+                self.trace.append(f"retry:{technical_attempt + 1}/{task.retry.max_attempts}")
+                if task.retry.interval_seconds:
+                    await asyncio.sleep(task.retry.interval_seconds)
+                continue
+            return _map_resolution(resolution, state, publish, tuple(completions))
+        raise AssertionError("attempt retry loop exhausted without a resolution")
 
     async def _issue_interrupt(
         self,
@@ -253,6 +268,13 @@ def _validate_input(select: object, state: object, contract: TaskAttemptContract
     raw = select(state)
     if isinstance(raw, BaseModel) and isinstance(raw, contract.input_model):
         return raw
+    # Graph bundles can be loaded from independently installed wheels.  A
+    # Pydantic model then has a different Python class identity even when its
+    # JSON contract is identical to the contract owner's model.  Attempt
+    # boundaries are value boundaries, so validate the canonical payload rather
+    # than leaking that implementation identity across the wheel seam.
+    if isinstance(raw, BaseModel):
+        raw = raw.model_dump(mode="json")
     return contract.input_model.model_validate(raw)
 
 
@@ -304,8 +326,7 @@ def _map_resolution(
     resolution: object,
     state: object,
     publish: object,
-    key: AttemptKey,
-    issued: tuple[ActiveSystemInterrupt, ...],
+    completions: tuple[tuple[AttemptKey, ActiveSystemInterrupt], ...],
 ) -> dict[str, object]:
     if isinstance(resolution, CommittedTaskResult):
         if not callable(publish):
@@ -314,7 +335,7 @@ def _map_resolution(
         if not isinstance(published, Mapping):
             raise TypeError("publish must return a mapping")
         update = {str(name): value for name, value in published.items()}
-        return _with_completion(update, key, issued)
+        return _with_completion(update, completions)
     if isinstance(resolution, RejectedTaskResult):
         return _with_completion(
             {
@@ -324,8 +345,7 @@ def _map_resolution(
                     "writes_promoted": False,
                 }
             },
-            key,
-            issued,
+            completions,
         )
     if isinstance(resolution, PermanentTaskFailure):
         return _with_completion(
@@ -337,8 +357,7 @@ def _map_resolution(
                     "writes_promoted": False,
                 }
             },
-            key,
-            issued,
+            completions,
         )
     if isinstance(resolution, CommittedEffectFailure):
         return _with_completion(
@@ -350,18 +369,16 @@ def _map_resolution(
                     "promotion_receipt": resolution.promotion_receipt,
                 }
             },
-            key,
-            issued,
+            completions,
         )
     raise TypeError(f"unsupported attempt resolution: {type(resolution)!r}")
 
 
 def _with_completion(
     update: dict[str, object],
-    key: AttemptKey,
-    issued: tuple[ActiveSystemInterrupt, ...],
+    completions: tuple[tuple[AttemptKey, ActiveSystemInterrupt], ...],
 ) -> dict[str, object]:
-    if not issued:
+    if not completions:
         return update
     existing = update.get(CHECKPOINT_MARKERS_STATE_KEY)
     update[CHECKPOINT_MARKERS_STATE_KEY] = replace_checkpoint_marker_batch(
@@ -374,7 +391,7 @@ def _with_completion(
                 ordinal=item.ordinal,
                 envelope_digest=item.envelope_digest,
             )
-            for item in issued
+            for key, item in completions
         ],
     )
     return update

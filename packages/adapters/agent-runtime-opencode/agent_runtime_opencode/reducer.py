@@ -15,6 +15,7 @@ from graph_engine.plugin_api import TaskOutcome, TaskRequest
 from agent_runtime_opencode.discovery import ADAPTER_VERSION
 from agent_runtime_opencode.observation import (
     ProviderTerminal,
+    _has_open_tool_work,
     _terminal_error_kind,
     parse_closed_terminal_result,
     provider_error_is_transient,
@@ -40,6 +41,7 @@ def reduce_terminal(
     request: TaskRequest,
     diff: object | None,
     canaries: Sequence[str | bytes] = (),
+    selected_result: Mapping[str, object] | None = None,
 ) -> TaskOutcome:
     if kind == "running":
         raise ValueError("running provider state is not terminal")
@@ -69,6 +71,7 @@ def reduce_terminal(
         request=request,
         diff=diff,
         canaries=canaries,
+        selected_result=selected_result,
     )
 
 
@@ -79,9 +82,12 @@ def _reduce_success(
     request: TaskRequest,
     diff: object | None,
     canaries: Sequence[str | bytes],
+    selected_result: Mapping[str, object] | None,
 ) -> TaskOutcome:
     try:
-        structured = parse_closed_terminal_result(messages)
+        structured = (
+            dict(selected_result) if selected_result is not None else parse_closed_terminal_result(messages)
+        )
         validated = _validate_result_candidate(
             structured,
             agent_run=agent_run,
@@ -140,6 +146,34 @@ def result_candidate_satisfies_contract(
     except (TypeError, ValueError):
         return False
     return True
+
+
+def select_unique_contract_valid_result(
+    messages: Sequence[object],
+    *,
+    agent_run: AgentRunRequest,
+    request: TaskRequest,
+    canaries: Sequence[str | bytes],
+) -> dict[str, object] | None:
+    """Select the one schema-valid closed JSON retry while OpenCode is still busy."""
+    if _has_open_tool_work(messages):
+        return None
+    candidates: dict[str, dict[str, object]] = {}
+    for message in messages:
+        try:
+            candidate = parse_closed_terminal_result((message,))
+            validated = _validate_result_candidate(
+                candidate,
+                agent_run=agent_run,
+                request=request,
+                canaries=canaries,
+            )
+        except (TypeError, ValueError):
+            continue
+        candidates.setdefault(canonical_digest(validated), candidate)
+        if len(candidates) > 1:
+            return None
+    return next(iter(candidates.values()), None)
 
 
 def _provider_and_model(agent_run: AgentRunRequest) -> tuple[str, str]:

@@ -3,15 +3,15 @@
     "attempt_contracts": [
       {
         "contract_id": "assurance.healing.agent.apply-test-repair.v1",
-        "digest": "56f6ac6b25c3dfb898c3d278bf99e7284c5ecce70265cad83ab00ef09a922386"
+        "digest": "90391021c459b629ebf46daca7f86f3c83050a9dea9e9a3227311a970a86d2b3"
       },
       {
         "contract_id": "assurance.healing.agent.coverage-repair.v1",
-        "digest": "3248a9c70157f418556ad67ba664ffaaf62eaa16388b305a4c4c0a2313063f68"
+        "digest": "7b0d0a6f0c9e8cdbf9fe3e907b62c1d8e2aa8d4df7a41f0d9d542501dddebfff"
       },
       {
         "contract_id": "assurance.healing.agent.fix-proposal.v1",
-        "digest": "d6f0a0ae00c20749b747b2bcaed620cb22debb762059210f466f817a18e9071b"
+        "digest": "f7a17eae59980af0836884a862ae6868d3566a8c203ee86d1e24ebb0643f2b17"
       }
     ],
     "bindings": [],

@@ -44,7 +44,6 @@ def test_loop_round_is_a_discriminated_workflow_evidence_entry() -> None:
     ("loop_kind", "family", "valid"),
     [
         ("plan_review", "api", True),
-        ("codegen_fix", "e2e", True),
         ("case_review", None, True),
         ("coverage", None, True),
         ("implementation_repair", None, True),

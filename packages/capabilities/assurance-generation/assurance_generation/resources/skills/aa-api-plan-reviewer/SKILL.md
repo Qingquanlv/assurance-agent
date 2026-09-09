@@ -23,11 +23,57 @@ array. Put repair detail in the matching finding's `message` and `locator`, and
 in `next_action`. Use `"auto_fix_plan": []` for `pass` and
 `needs_human_review`.
 
+For `needs_fix`, `auto_fix_plan` must contain exactly the set of finding IDs
+present in this response: no missing IDs and no extra IDs. Remove IDs for
+findings that were resolved in an earlier round. Immediately before returning,
+compare the two sets and correct the response if they differ.
+
 Do not stop the review after finding the first defect. Before choosing a
 decision, complete one exhaustive pass across every required plan artifact,
 every mapping row, and every source-backed runtime boundary used by the plan.
 Return all independently observable defects in the same review document so a
 single bounded planner re-entry can repair the whole package.
+
+Before the first decision in every round, close this runtime inventory for the
+whole package, not only for the section most recently edited:
+
+- Exact-read `.aa/data-knowledge.yaml`, resolve each consumed dotted Python
+  symbol to its `.py` module, and read that module before classifying the symbol
+  as present, absent, reusable, or create-if-missing.
+- For every mapped pytest target and fixture parameter, read every ancestor
+  `conftest.py` from the target directory through the test root. Verify the
+  fixture's real name and the value-to-header or value-to-request handoff; do
+  not infer a wrapper fixture from the capability name.
+- Read implementations of every mapped helper and account for their required
+  environment variables, credentials, and database or session paths in the run
+  guidance. A helper that opens persistence directly is not executable from a
+  base URL alone.
+- For every concrete runtime-support path or dotted Python symbol named by a
+  plan, call the native read tool on that exact path before any glob or grep.
+  Gitignored files remain exact-readable. If that exact read was not attempted,
+  do not emit an absence finding from glob or grep output.
+- Reconcile those facts across every plan artifact and summary before emitting
+  findings. A repaired artifact does not narrow the next review: repeat this
+  complete checklist on every retry and report newly observable defects in the
+  same round as any remaining repair defects.
+
+## Prepared source observations
+
+The JSON instruction includes `planning_facts`: bounded static observations with
+file digests, exact symbol names/signature shapes, fixture names, and environment
+variable names. Use the indexed paths for direct reads instead of rediscovering
+them. `unknown` and `uninspected_paths` never prove absence; imports, plugins,
+dynamic registrations and transitive environment dependencies may be unresolved.
+Environment names expose no values and do not establish availability or necessity.
+Check original source for behavior, auth semantics and oracle claims. Keep owner
+requirements and frozen assertion intent distinct from observed implementation;
+a source defect must not weaken the expected test behavior.
+
+For each defect, inspect its references across the complete package and emit a
+separate locator for every affected artifact/section in this review. Include every
+bounded finding in `auto_fix_plan`. Independently verify source-backed claims;
+the facts digest binds observations, not semantic truth. Re-review repaired output
+before passing; the desired repair count never changes the acceptance criteria.
 
 ## Inputs
 

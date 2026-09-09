@@ -12,6 +12,8 @@ from assurance_improvement.contracts.agent import (
     ImprovementReviewResultV1,
     ImprovementSkillInputV1,
     RetroAnalysisResultV3,
+    RetroAnalysisInputV1,
+    RetroSynthesisInputV1,
 )
 from assurance_improvement.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
@@ -24,7 +26,7 @@ from assurance_improvement.contracts.delivery import (
     MemoryEvalReceipt,
     MemoryRollbackReceipt,
 )
-from assurance_improvement.contracts.improvements import ImprovementProjection, ReconcileResultV1
+from assurance_improvement.contracts.improvements import ImprovementProjection
 from assurance_improvement.contracts.retro import RetroBuildSlicesInputV1
 from assurance_improvement.contracts.review import AppliedAutoReviewV1
 from assurance_improvement.operations.delivery import (
@@ -33,7 +35,12 @@ from assurance_improvement.operations.delivery import (
     ExportChangeInput,
     RollbackMemoryInput,
 )
-from assurance_improvement.operations.retro import ReconcileInput, RetroCollectInput
+from assurance_improvement.contracts.retro import (
+    RetroReconcileInputV1,
+    RetroReconcileResultV1,
+    RetroCollectedV1,
+    RetroCollectInput,
+)
 from assurance_improvement.operations.review import ApplyAutoReviewInput, ApplyReviewInput
 from assurance_improvement.plugin import ImprovementPlugin
 
@@ -82,11 +89,18 @@ def test_improvement_owns_six_agent_contracts() -> None:
         assert contract.finalize_handler_id == f"assurance.improvement.{base}.finalize"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == profile
-        assert contract.input_model is ImprovementSkillInputV1
+        assert contract.input_model is (
+            RetroSynthesisInputV1
+            if base == "retro"
+            else RetroAnalysisInputV1
+            if base.startswith("retro-")
+            else ImprovementSkillInputV1
+        )
         assert contract.agent_result_model is result_model
         assert contract.output_model is result_model
         assert contract.validators == ()
-        assert contract.retry.max_attempts == 1
+        assert contract.retry.max_attempts == 10
+        assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
         assert set(claims.runtime) == set(contract.resources.writes)
@@ -95,8 +109,8 @@ def test_improvement_owns_six_agent_contracts() -> None:
 def test_nine_effectful_improvement_ids_are_task_contracts() -> None:
     expected_models = {
         "assurance.improvement.retro-build-slices": (RetroBuildSlicesInputV1, RetroCollectInput),
-        "assurance.improvement.retro-collect-v3": (RetroCollectInput, RetroCollectInput),
-        "assurance.improvement.reconcile-improvements": (ReconcileInput, ReconcileResultV1),
+        "assurance.improvement.retro-collect-v3": (RetroCollectInput, RetroCollectedV1),
+        "assurance.improvement.reconcile-improvements": (RetroReconcileInputV1, RetroReconcileResultV1),
         "assurance.improvement.evaluate-memory-improvement": (EvaluateMemoryInput, MemoryEvalReceipt),
         "assurance.improvement.export-change-improvement": (ExportChangeInput, ChangeExportReceipt),
         "assurance.improvement.apply-improvement-auto-review": (
