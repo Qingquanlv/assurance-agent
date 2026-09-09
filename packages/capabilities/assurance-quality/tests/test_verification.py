@@ -7,12 +7,6 @@ import json
 
 import pytest
 
-from assurance_execution.contracts.verification import (
-    ObservationV1,
-    VerificationEvidenceV1,
-    VerifiedProcessLimitsV1,
-)
-from assurance_execution.operations.verified_execution import ActionJournal
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1, CaseExecutionPlanV1
 from assurance_quality.contracts.verification import VerificationVerdictV1
 from assurance_quality.operations.verification import evaluate_verification
@@ -22,12 +16,8 @@ from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
 from assurance_quality.operations.assessment import AssessmentInputError, materialize_assessment_inputs
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.verified_generation_fixture import accepted_verified_execution_input
-from graph_engine.attempts import AttemptKey, BusinessActivation
-from graph_engine.plugin_api import TaskOutcome
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.attempts import AttemptKey
 from assurance_execution.contracts.verification import (
-    VerificationManifestV1,
-    VerifiedExecutionAuthorityV1,
     VerifiedExecutionResultV1,
 )
 from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
@@ -36,7 +26,7 @@ from assurance_generation.contracts.admission import diagnose_verified_bridge_de
 from graph_engine.attempts.resolutions import ReceiptRef
 from typing import cast
 
-EXECUTION_ID = "12345678-1234-4123-8123-123456789abc"
+from tests.verified_assessment_fixture import EXECUTION_ID, _actuals, _evidence, _materialization_request
 
 
 def _plan(root: Path, *, trace: bool = False):
@@ -105,75 +95,6 @@ def _plan(root: Path, *, trace: bool = False):
         )
         plan = CaseExecutionPlanV1.model_validate(document)
     return plan
-
-
-def _actuals(plan) -> dict[str, object]:
-    values = {
-        "initial.user_absent": 0,
-        "action.finished": True,
-        "oracle.executed": True,
-        "api.http_status": 200,
-        "api.code": 200,
-        "user.row_count": 1,
-        "user.username": plan.inputs["username"],
-        "user.email": plan.inputs["email"],
-        "user.is_active": plan.inputs["is_active"],
-        "user.is_superuser": plan.inputs["is_superuser"],
-        "user.dept_id": plan.inputs["dept_id"],
-        "trace.http": True,
-        "trace.user_write": True,
-        "trace.user_completed": True,
-        "trace.drained": True,
-    }
-    return {key: values[key] for key in plan.required}
-
-
-def _evidence(plan, *, actuals=None, states=None, host="complete", collector="not_required"):
-    actuals = _actuals(plan) if actuals is None else actuals
-    states = states or {}
-    observations = []
-    for obligation in plan.required:
-        state = states.get(obligation, "observed")
-        observations.append(
-            ObservationV1.model_validate(
-                {
-                    "execution_id": EXECUTION_ID,
-                    "obligation_id": obligation,
-                    "state": state,
-                    "actual": actuals.get(obligation),
-                    "evidence_ref": (
-                        {"path": f"qa/changes/{plan.change_id}/execution/fact.json", "digest": "a" * 64}
-                        if state == "observed"
-                        else None
-                    ),
-                    "reason": None if state == "observed" else "not_available",
-                }
-            )
-        )
-    return VerificationEvidenceV1.model_validate(
-        {
-            "execution_id": EXECUTION_ID,
-            "manifest_digest": "b" * 64,
-            "receipt_ref": {
-                "path": f"qa/changes/{plan.change_id}/execution/process.json",
-                "digest": "c" * 64,
-            },
-            "observations": tuple(observations),
-            "host_completion": {
-                "state": host,
-                "reason": None if host in {"complete", "not_required"} else "host_failed",
-            },
-            "collector_completion": {
-                "state": collector,
-                "reason": None if collector in {"complete", "not_required"} else "collector_failed",
-            },
-            "state": (
-                "collected"
-                if host in {"complete", "not_required"} and collector in {"complete", "not_required"}
-                else "incomplete"
-            ),
-        }
-    )
 
 
 def test_all_required_facts_are_evaluated_and_pass(tmp_path: Path) -> None:
@@ -499,277 +420,6 @@ def test_authenticated_generated_bridge_defect_is_the_only_repairable_incomplete
     )
 
 
-def _write(root: Path, relative: str, payload: bytes):
-    from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-
-    path = root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
-    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(payload).hexdigest())
-
-
-def _materialization_request(
-    tmp_path: Path, *, authenticated: bool
-) -> tuple[MaterializeAssessmentInputV1, object | None, str | None]:
-    prepared = accepted_verified_execution_input(tmp_path)
-    generation = prepared.generation_result
-    assert generation is not None and generation.case_execution_plan_ref is not None
-    plan = CaseExecutionPlanSetV1.model_validate_json(
-        (tmp_path / generation.case_execution_plan_ref.path).read_bytes()
-    ).cases[0]
-    execution_id = EXECUTION_ID
-    run_root = tmp_path / "run"
-    run_root.mkdir()
-    sqlite = tmp_path / "verified.sqlite3"
-    identity = sqlite.stat()
-    manifest = VerificationManifestV1.model_validate(
-        {
-            "execution_id": execution_id,
-            "change_id": plan.change_id,
-            "case_id": plan.case_id,
-            "nodeid": "tests/api/test_user_create.py::test_tc_user_create_001__create",
-            "invocation_id": "invocation",
-            "task_id": "task",
-            "graph_instance_id": "graph",
-            "attempt_key": AttemptKey(digest="4" * 64),
-            "business_activation": BusinessActivation.for_trigger("coverage.2.execute"),
-            "coverage_epoch": plan.coverage_epoch,
-            "repair_round": 0,
-            "authorization_scope_digest": "5" * 64,
-            "activity_receipt_digest": "6" * 64,
-            "plan_ref": plan.plan_ref.path,
-            "plan_digest": plan.plan_digest,
-            "case_execution_plan_ref": generation.case_execution_plan_ref.path,
-            "case_execution_plan_digest": generation.case_execution_plan_ref.digest,
-            "spec_digest": plan.spec_digest,
-            "mapping_digest": generation.mapping_ref.digest,
-            "sut_digest": plan.sut_digest,
-            "technical_config_digest": plan.technical_config_digest,
-            "validation_profile": plan.validation_profile,
-            "sut": {
-                "instance_id": "sut",
-                "base_url": "http://127.0.0.1:1234",
-                "sqlite_path": str(sqlite),
-            },
-            "sqlite": {"path": str(sqlite), "device": identity.st_dev, "inode": identity.st_ino},
-            "inputs": plan.inputs,
-            "evidence_root": f"qa/changes/{plan.change_id}/execution/{execution_id}",
-        }
-    )
-    manifest_ref = _write(
-        tmp_path,
-        f"qa/changes/{plan.change_id}/execution/{execution_id}/manifest.json",
-        canonical_json_bytes(cast(JSONValue, manifest.model_dump(mode="json"))),
-    )
-    authority = None
-    authority_handle = None
-    journal: ActionJournal | None = None
-    if authenticated:
-        from assurance_execution.contracts.verification import (
-            ManagedSutAuthorityV1,
-            VerifiedProcessReceiptV1,
-        )
-
-        token = bytes(range(32))
-        token_path = run_root / ".ownership-token"
-        token_path.write_bytes(token)
-        token_path.chmod(0o600)
-        token_stat = token_path.stat()
-        authority_document = ManagedSutAuthorityV1.model_validate(
-            {
-                "run_root": str(run_root),
-                "ownership_token": {
-                    "path": str(token_path),
-                    "device": token_stat.st_dev,
-                    "inode": token_stat.st_ino,
-                    "digest": f"sha256:{hashlib.sha256(token).hexdigest()}",
-                },
-                "prepare_receipt_digest": "7" * 64,
-                "start_receipt_digest": "8" * 64,
-                "authorization_scope_digest": manifest.authorization_scope_digest,
-                "activity_receipt_digest": manifest.activity_receipt_digest,
-            }
-        )
-
-        class _Secrets:
-            def resolve(self, handle: str) -> bytes:
-                assert handle == "sut.authority"
-                return canonical_json_bytes(cast(JSONValue, authority_document.model_dump(mode="json")))
-
-        authority = _Secrets()
-        authority_handle = "sut.authority"
-        journal = ActionJournal(tmp_path / manifest.evidence_root, manifest, token)
-        journal.write("action_started", {"execution_id": execution_id, "state": "started"})
-        database_identity = {
-            "path": str(sqlite),
-            "device": identity.st_dev,
-            "inode": identity.st_ino,
-        }
-        database_metadata = {"size": identity.st_size, "mtime_ns": identity.st_mtime_ns}
-        journal.write(
-            "action_terminal",
-            {
-                "initial": {
-                    "state": "observed",
-                    "rows": [],
-                    "reason": None,
-                    "database_identity": database_identity,
-                    "database_metadata": database_metadata,
-                },
-                "http": {"state": "observed", "status": 200, "code": 200},
-                "oracle": {
-                    "state": "observed",
-                    "rows": [
-                        {
-                            "username": plan.inputs["username"],
-                            "email": plan.inputs["email"],
-                            "is_active": plan.inputs["is_active"],
-                            "is_superuser": plan.inputs["is_superuser"],
-                            "dept_id": plan.inputs["dept_id"],
-                        }
-                    ],
-                    "reason": None,
-                    "database_identity": database_identity,
-                    "database_metadata": database_metadata,
-                },
-            },
-        )
-        journal.write(
-            "process_terminal",
-            VerifiedProcessReceiptV1(
-                command=("pytest",),
-                limits=VerifiedProcessLimitsV1(),
-                exit_code=0,
-                report={},
-                reason=None,
-                request_count=1,
-                stderr="",
-                cleanup_confirmed=True,
-            ).model_dump(mode="json"),
-        )
-        action_ref = next(
-            EvidenceArtifactRefV1(
-                path=f"{manifest.evidence_root}/{name}.json",
-                digest=hashlib.sha256((journal.root / f"{name}.json").read_bytes()).hexdigest(),
-            )
-            for name in ("action_terminal",)
-        )
-        process_ref = EvidenceArtifactRefV1(
-            path=f"{manifest.evidence_root}/process_terminal.json",
-            digest=hashlib.sha256((journal.root / "process_terminal.json").read_bytes()).hexdigest(),
-        )
-        raw_refs = tuple(
-            sorted(
-                (
-                    EvidenceArtifactRefV1(
-                        path=f"{manifest.evidence_root}/{name}.json",
-                        digest=hashlib.sha256((journal.root / f"{name}.json").read_bytes()).hexdigest(),
-                    )
-                    for name in ("action_started", "action_terminal", "process_terminal")
-                ),
-                key=lambda item: (item.path, item.digest),
-            )
-        )
-    else:
-        process_ref = _write(
-            tmp_path,
-            f"qa/changes/{plan.change_id}/execution/{execution_id}/process_terminal.json",
-            b"process\n",
-        )
-        action_ref = process_ref
-        raw_refs = (process_ref,)
-    evidence = _evidence(plan).model_copy(
-        update={
-            "manifest_digest": manifest_ref.digest,
-            "receipt_ref": process_ref,
-            "observations": tuple(
-                item.model_copy(update={"evidence_ref": action_ref}) for item in _evidence(plan).observations
-            ),
-        }
-    )
-    outcome = TaskOutcome.succeeded(evidence.model_dump(mode="json"))
-    if authenticated:
-        assert journal is not None
-        journal.write("outcome", outcome.model_dump(mode="json"))
-        outcome_ref = EvidenceArtifactRefV1(
-            path=f"{manifest.evidence_root}/outcome.json",
-            digest=hashlib.sha256((journal.root / "outcome.json").read_bytes()).hexdigest(),
-        )
-    else:
-        outcome_ref = _write(
-            tmp_path,
-            f"qa/changes/{plan.change_id}/execution/{execution_id}/outcome.json",
-            canonical_json_bytes(cast(JSONValue, outcome.model_dump(mode="json"))),
-        )
-    authority_result = VerifiedExecutionAuthorityV1(
-        validation_profile=plan.validation_profile,
-        change_id=plan.change_id,
-        case_id=plan.case_id,
-        reviewed_case=plan.reviewed_case,
-        coverage_epoch=plan.coverage_epoch,
-        repair_round=0,
-        plan_digest=plan.plan_digest,
-        plan_ref=plan.plan_ref,
-        case_execution_plan_ref=generation.case_execution_plan_ref,
-        case_execution_plan_digest=generation.case_execution_plan_ref.digest,
-        spec_digest=plan.spec_digest,
-        execution_id=execution_id,
-        attempt_key=manifest.attempt_key,
-        batch_id="verified-batch",
-        mapping_digest=generation.mapping_ref.digest,
-        manifest_ref=manifest_ref,
-        evidence_ref=outcome_ref,
-        raw_evidence_refs=raw_refs,
-        executed_at=datetime(2026, 9, 6, tzinfo=UTC),
-        completion_status="collected",
-        evidence=evidence,
-    )
-    if authenticated:
-        assert journal is not None
-        journal.write("execution_terminal", authority_result.model_dump(mode="json"))
-        execution_authority_ref = EvidenceArtifactRefV1(
-            path=f"{manifest.evidence_root}/execution_terminal.json",
-            digest=hashlib.sha256((journal.root / "execution_terminal.json").read_bytes()).hexdigest(),
-        )
-    else:
-        execution_authority_ref = _write(
-            tmp_path,
-            f"{manifest.evidence_root}/execution_terminal.json",
-            b"authority\n",
-        )
-    verified = VerifiedExecutionResultV1(
-        **authority_result.model_dump(mode="python"),
-        execution_authority_ref=execution_authority_ref,
-    )
-    encoded = (json.dumps(verified.model_dump(mode="json"), indent=2) + "\n").encode()
-    index_ref = _write(tmp_path, f"qa/changes/{plan.change_id}/execution/execute-result.json", encoded)
-    cycle = VerifiedExecutionCycleResultV1.model_validate(
-        {
-            **verified.model_dump(mode="json", exclude={"evidence"}),
-            "mapping_ref": generation.mapping_ref.model_dump(mode="json"),
-            "execution_index_ref": index_ref.model_dump(mode="json"),
-            "source_refs": [item.model_dump(mode="json") for item in generation.source_refs],
-            "receipt": {"receipt_id": "kernel", "receipt_digest": "9" * 64},
-        }
-    )
-    request = MaterializeAssessmentInputV1(
-        plan_digest=plan.plan_digest,
-        plan_ref=plan.plan_ref,
-        reviewed_case=plan.reviewed_case,
-        generation=generation,
-        execution=cycle,
-        policy_resource_id="assurance.product.configuration.product-policy",
-        policy_sha256=prepared.plan_ref.digest,  # replaced below from the frozen plan
-        execution_at=cycle.executed_at,
-    )
-    from assurance_intake.contracts.plan import decode_plan
-
-    root_plan = decode_plan((tmp_path / prepared.plan_ref.path).read_bytes(), prepared.plan_ref)
-    request = request.model_copy(update={"policy_sha256": root_plan.policy_digest})
-
-    return request, authority, authority_handle
-
-
 def test_self_consistent_public_execution_without_host_journal_cannot_pass(tmp_path: Path) -> None:
     request, _, _ = _materialization_request(tmp_path, authenticated=False)
 
@@ -793,6 +443,64 @@ def test_authenticated_host_journal_is_replayed_before_business_pass(tmp_path: P
         (tmp_path / assessment.verification_ref.path).read_bytes()
     )
     assert verdict.verdict == "PASSED"
+
+
+@pytest.mark.parametrize(
+    ("http_unknown", "row_count", "http_status", "wrong_email", "process_reason", "expected"),
+    [
+        (True, 0, 200, False, None, "INCOMPLETE"),
+        (True, 1, 200, False, None, "INCOMPLETE"),
+        (False, 0, 200, False, None, "FAILED"),
+        (False, 0, 500, False, None, "FAILED"),
+        (False, 1, 200, True, None, "FAILED"),
+        (False, 1, 200, True, "telemetry_unavailable", "FAILED"),
+    ],
+)
+def test_authenticated_materializer_preserves_terminal_dependencies(
+    tmp_path: Path,
+    http_unknown: bool,
+    row_count: int,
+    http_status: int,
+    wrong_email: bool,
+    process_reason: str | None,
+    expected: str,
+) -> None:
+    request, authority, handle = _materialization_request(
+        tmp_path,
+        authenticated=True,
+        http_unknown=http_unknown,
+        row_count=row_count,
+        http_status=http_status,
+        wrong_email=wrong_email,
+        process_reason=process_reason,
+    )
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    assert assessment.verification_ref is not None
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == expected
+    assert verdict.by_id("oracle.executed").evidence_status == "observed"
+    if http_unknown:
+        for obligation in verdict.obligations:
+            if obligation.obligation_id == "action.finished" or obligation.obligation_id.startswith("user."):
+                assert obligation.evidence_status == "missing"
+                assert obligation.business_status == "not_evaluated"
+                assert obligation.reason == "http_terminal_unknown"
+    if process_reason:
+        assert "verification.runner_incomplete" in verdict.reason_codes
+        assert verdict.by_id("user.email").business_status == "violated"
+    if not http_unknown and row_count == 0:
+        assert verdict.by_id("user.row_count").business_status == "violated"
+        assert verdict.by_id("user.email").evidence_status == "missing"
+        assert verdict.by_id("user.email").business_status == "not_evaluated"
+        assert "verification.required_evidence_missing" in verdict.reason_codes
 
 
 def test_authenticated_journal_rejects_forged_index_batch_and_arbitrary_receipt(

@@ -18,6 +18,7 @@ from pydantic import BaseModel, ValidationError
 from graph_engine.attempts.context import AuthorizedAttemptScope
 from graph_engine.attempts.contracts import ExecutedAttemptResult
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import SecretPort, TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
@@ -684,21 +685,27 @@ def _journal_observations(
                 values["api.code"] = http["code"]
         if oracle["state"] == "observed":
             rows = cast(list[dict[str, object]], oracle["rows"])
-            values.update({"oracle.executed": True, "user.row_count": len(rows)})
-            if len(rows) == 1:
-                values.update({f"user.{key}": value for key, value in rows[0].items()})
+            values["oracle.executed"] = True
+            # Unknown HTTP termination leaves the rowset diagnostic only.
+            if http["state"] == "observed":
+                values["user.row_count"] = len(rows)
+                if len(rows) == 1:
+                    values.update({f"user.{key}": value for key, value in rows[0].items()})
     return tuple(
         ObservationV1(
             execution_id=execution_id,
             obligation_id=obligation,
             state="observed" if obligation in values else "missing",
             actual=values.get(obligation),
-            evidence_ref=action_ref if obligation in values else None,
+            evidence_ref=action_ref,
             reason=(
                 None
                 if obligation in values
                 else "action_terminal_unknown"
                 if action is None
+                else "http_terminal_unknown"
+                if action["http"].get("reason") == "http_terminal_unknown"
+                and (obligation == "action.finished" or obligation.startswith("user."))
                 else "runtime_fact_unavailable"
             ),
         )
@@ -1184,10 +1191,19 @@ def materialize_assessment_inputs(
         raise AssessmentInputError(f"invalid frozen assurance plan: {error}") from error
     if plan.plan_digest != request.plan_digest:
         raise AssessmentInputError("assessment plan digest does not match frozen plan")
+    # The exact missing bridge is authenticated by re-diagnosis below, not by
+    # pretending its frozen source reference still resolves to evidence bytes.
+    missing_bridge_ref = (
+        request.execution.defect.bridge_ref
+        if isinstance(request.execution, VerifiedIncompleteExecutionV1)
+        and request.execution.defect.defect_kind == "missing_bridge"
+        else None
+    )
+    source_refs = tuple(ref for ref in request.generation.source_refs if ref != missing_bridge_ref)
     for ref in (
         *request.reviewed_case.preparation_refs,
         request.reviewed_case.review_ref,
-        *request.generation.source_refs,
+        *source_refs,
         *request.generation.plan_refs,
     ):
         _read_ref(project_root, ref)
@@ -1452,7 +1468,7 @@ def materialize_assessment_inputs(
             request.reviewed_case.review_ref,
             *request.reviewed_case.case_refs,
             *request.reviewed_case.preparation_refs,
-            *request.generation.source_refs,
+            *source_refs,
             *request.generation.plan_refs,
             *((request.healing_ref,) if request.healing_ref else ()),
             *((request.issue_ref,) if request.issue_ref else ()),
@@ -1506,9 +1522,16 @@ class MaterializeAssessmentHandler:
         try:
             validated = MaterializeAssessmentInputV1.model_validate(request.input)
             authority_handle = None
-            if isinstance(validated.execution, VerifiedExecutionCycleResultV1):
+            if isinstance(
+                validated.execution, (VerifiedExecutionCycleResultV1, VerifiedIncompleteExecutionV1)
+            ):
+                profile = (
+                    validated.execution.validation_profile
+                    if isinstance(validated.execution, VerifiedExecutionCycleResultV1)
+                    else validated.execution.defect.validation_profile
+                )
                 binding = _exact_keys(
-                    request.binding_data,
+                    thaw_json(request.binding_data),
                     {
                         "managed_sut_authority_handle",
                         "verification_config_digest",
@@ -1519,7 +1542,7 @@ class MaterializeAssessmentHandler:
                 if (
                     type(binding["managed_sut_authority_handle"]) is not str
                     or type(binding["verification_config_digest"]) is not str
-                    or binding["validation_profile"] != validated.execution.validation_profile
+                    or binding["validation_profile"] != profile
                 ):
                     raise AssessmentInputError("verified assessment binding does not match execution")
                 authority_handle = cast(str, binding["managed_sut_authority_handle"])

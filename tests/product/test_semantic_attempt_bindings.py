@@ -185,6 +185,8 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
         assert type(resolved[contract_id].executor).__name__ == (
             "ProfiledExecutionExecutor"
             if contract_id in {"assurance.execution.task.execute.v1", "assurance.execution.task.run.v1"}
+            else "ProfiledAssessmentExecutor"
+            if contract_id == "assurance.quality.materialize-assessment-inputs"
             else "DeterministicTaskExecutor"
         )
 

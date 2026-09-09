@@ -444,3 +444,380 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
     gate = _execution_gate_from_snapshot(SimpleNamespace(values=result))
     assert gate is not None
     assert gate.execution_digest == execution["execution_digest"]
+
+
+@pytest.fixture(scope="module")
+def assessment_composition(installed_sources, tmp_path_factory):
+    tmp_path = tmp_path_factory.mktemp("assessment-composition")
+    import sys
+    import yaml
+    from assurance_product.binding_builder import build_deployment_wheel
+    from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
+    from graph_engine.composition import WheelPluginSource
+    from tests.product.composition_harness import _extract_wheel
+
+    document = yaml.safe_load(Path("tests/product/fixtures/deployment/opencode.yaml").read_text())
+    document["validation_profile"] = "api_db.v1"
+    document["verification_host"] = {"managed_sut_authority_handle": "sut.authority"}
+    manifest = tmp_path / "deployment.yaml"
+    manifest.write_text(yaml.safe_dump(document))
+    wheel = build_deployment_wheel(manifest, tmp_path / "wheel")
+    extracted = _extract_wheel(wheel.wheel, tmp_path / "installed")
+    try:
+        yield resolve_assurance_composition(
+            AssuranceCompositionRequest(
+                product_entrypoint="assurance-opencode",
+                deployment_source=WheelPluginSource(
+                    distribution=wheel.distribution,
+                    entrypoint_name="deployment",
+                    declaration_path=wheel.declaration_path,
+                ),
+                configuration_tree=installed_sources.configuration_tree,
+            )
+        )
+    finally:
+        sys.path.remove(str(extracted))
+        for name in tuple(sys.modules):
+            if name == wheel.import_package or name.startswith(wheel.import_package + "."):
+                sys.modules.pop(name, None)
+
+
+def _bridge_assessment_request(project):
+    from assurance_execution.contracts.workflow import VerifiedIncompleteExecutionV1
+    from assurance_generation.contracts.admission import diagnose_verified_bridge_defect
+    from assurance_intake.contracts.plan import decode_plan
+    from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
+
+    prepared = accepted_verified_execution_input(project)
+    generation = prepared.generation_result
+    assert generation is not None
+    bridge = next(ref for ref in generation.source_refs if "/generated/api/files/" in ref.path)
+    (project / bridge.path).unlink()
+    defect = diagnose_verified_bridge_defect(
+        project,
+        generation=generation,
+        validation_profile="api_db.v1",
+        selected_test_families=prepared.selected_test_families,
+        capability_leafs=prepared.capability_leafs,
+        attempt_key=AttemptKey(digest="4" * 64),
+    )
+    execution = VerifiedIncompleteExecutionV1(
+        defect=defect,
+        batch_id=defect.attempt_key.digest,
+        executed_at=datetime(2026, 9, 6, tzinfo=UTC),
+        receipt=ReceiptRef(receipt_id="kernel", receipt_digest="9" * 64),
+    )
+    plan = decode_plan((project / prepared.plan_ref.path).read_bytes(), prepared.plan_ref)
+    return MaterializeAssessmentInputV1(
+        plan_digest=plan.plan_digest,
+        plan_ref=prepared.plan_ref,
+        reviewed_case=generation.reviewed_case,
+        generation=generation,
+        execution=execution,
+        policy_resource_id="assurance.product.configuration.product-policy",
+        policy_sha256=plan.policy_digest,
+        execution_at=execution.executed_at,
+    )
+
+
+async def _installed_assessment(project, request, composition, authority, monkeypatch):
+    import asyncio
+    from graph_engine.attempts import AttemptExecutionContext, AuthorizedAttemptScope
+    from graph_engine.attempts.activity import journal_backed_activity_factory
+    from graph_engine.attempts.events import AttemptOpened, ResourcesAuthorized, ActivityPrepared
+    from graph_engine.attempts.workspace import TaskWorkspaceStore
+    from graph_engine.attempts.production_host import create_production_task_execution_host
+    from graph_engine.attempts.host_receipts import TerminalReceiptStore
+    from graph_engine.attempts.secret_sources import (
+        InvocationRuntimeAuthorization,
+        SecretSourceBinding,
+        runtime_authorization_digest,
+    )
+    from graph_engine.canonical import canonical_digest
+    from graph_engine.persistence.attempt_journal import MemoryAttemptJournal
+
+    resolved = composition.semantic_attempt_contracts["assurance.quality.materialize-assessment-inputs"]
+    handler_id = resolved.contract.handler_id
+    key = AttemptKey(digest="a" * 64)
+    store = TaskWorkspaceStore(project, project / ".attempts", project / ".receipts")
+    workspace = store.begin(
+        task_id=key.digest, attempt=1, output_paths=(f"qa/changes/{request.reviewed_case.change_id}/inspect",)
+    )
+    scope = AuthorizedAttemptScope(
+        execution=AttemptExecutionContext(
+            invocation_id="inv",
+            public_entrypoint="execute",
+            semantic_node_id="quality.materialize-assessment-inputs",
+            attempt_key=key,
+            fencing_token=1,
+            authorization_id="d" * 64,
+        ),
+        workspace=workspace,
+    )
+    journal = MemoryAttemptJournal()
+    await journal.append(
+        key,
+        (
+            AttemptOpened(
+                contract_digest="e" * 64,
+                input_digest=canonical_digest(request.model_dump(mode="json")),
+                graph_revision="f" * 64,
+                invocation_id="inv",
+                public_entrypoint="execute",
+                semantic_node_id="quality.materialize-assessment-inputs",
+            ),
+            ResourcesAuthorized(authorization_id="d" * 64),
+            ActivityPrepared(activity_id=key.digest),
+        ),
+        expected_revision=0,
+        fencing_token=1,
+    )
+    monkeypatch.setenv(
+        "AA_ASSESSMENT_AUTHORITY",
+        authority.resolve("sut.authority").decode() if authority else "unused-bridge-authority",
+    )
+    sources = (SecretSourceBinding("sut.authority", "environment", "AA_ASSESSMENT_AUTHORITY"),)
+    auth = InvocationRuntimeAuthorization(
+        schema_version="1", secret_sources=sources, digest=runtime_authorization_digest(sources)
+    )
+
+    async def fence():
+        pass
+
+    activity_factory = journal_backed_activity_factory(
+        journal=journal,
+        attempt_key=key,
+        owner_loop=asyncio.get_running_loop(),
+        assert_live_fence=fence,
+    )
+    host = create_production_task_execution_host(
+        authorization=auth,
+        handlers={handler_id: composition.registries.capabilities.task_handlers[handler_id]},
+        store=store,
+        receipts=TerminalReceiptStore.create(project / ".host-receipts"),
+        activity_factory=cast(Any, activity_factory),
+        invocation_root=project,
+    )
+    executor = resolved.executor.with_host(
+        host, graph_revision="f" * 64, product_lock_digest=composition.lock.digest
+    )
+    try:
+        result = await executor.execute(request, scope)
+        if hasattr(result, "output"):
+            sealed = store.seal(workspace.identity)
+            store.promote(workspace.identity, sealed)
+        return result
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("scenario", ["bridge", "http_unknown", "environment", "wrong_business"])
+def test_installed_assessment_reaches_inspect_with_verified_incomplete(
+    tmp_path,
+    assessment_composition,
+    monkeypatch,
+    scenario,
+):
+    import asyncio
+    from assurance_quality.contracts.verification import VerificationVerdictV1
+    from tests.verified_assessment_fixture import _materialization_request
+
+    project = tmp_path / "project"
+    project.mkdir()
+    if scenario == "bridge":
+        request = _bridge_assessment_request(project)
+        authority = None
+    else:
+        request, authority, _ = _materialization_request(
+            project,
+            authenticated=True,
+            http_unknown=scenario == "http_unknown",
+            wrong_email=scenario == "wrong_business",
+            process_reason="telemetry_unavailable" if scenario in {"environment", "wrong_business"} else None,
+        )
+    result = asyncio.run(
+        _installed_assessment(project, request, assessment_composition, authority, monkeypatch)
+    )
+    assert hasattr(result, "output"), result
+    assessment = result.output
+    verdict = VerificationVerdictV1.model_validate_json(
+        (project / assessment.verification_ref.path).read_bytes()
+    )
+    expected = (
+        "repairable_execution_failure"
+        if scenario == "bridge"
+        else "needs_human"
+        if scenario == "wrong_business"
+        else "blocked"
+    )
+    inspection = _publish_verified_inspection(project, request, assessment, verdict)
+    assert cast(dict, inspection["inspection_outcome"])["disposition"] == expected
+    assert verdict.verdict == ("FAILED" if scenario == "wrong_business" else "INCOMPLETE")
+    if scenario == "bridge":
+        from assurance_execution.contracts.workflow import VerifiedIncompleteExecutionV1
+
+        assert isinstance(request.execution, VerifiedIncompleteExecutionV1)
+        assert request.execution.defect.defect_kind == "missing_bridge"
+        assert assessment.incomplete_execution == request.execution
+        assert assessment.execution_ref is None
+        assert verdict.execution_id is None
+        assert verdict.executed == 0
+        assert not list((project / "qa").rglob("manifest.json"))
+        import json
+
+        evidence_manifest = json.loads((project / assessment.issue_evidence_manifest_ref.path).read_bytes())
+        assert request.execution.defect.bridge_ref.path not in {
+            entry["path"] for entry in evidence_manifest["entries"]
+        }
+
+
+@pytest.mark.parametrize("kind", ["cycle", "defect"])
+def test_installed_legacy_assessment_rejects_verified_inputs(tmp_path, opencode_composition, kind):
+    import asyncio
+    from tests.verified_assessment_fixture import _materialization_request
+
+    project = tmp_path / "project"
+    project.mkdir()
+    request = (
+        _bridge_assessment_request(project)
+        if kind == "defect"
+        else _materialization_request(project, authenticated=True)[0]
+    )
+    executor = opencode_composition.semantic_attempt_contracts[
+        "assurance.quality.materialize-assessment-inputs"
+    ].executor
+    with pytest.raises(ValueError, match="legacy assessment cannot accept"):
+        asyncio.run(executor.execute(request, None))
+
+
+@pytest.mark.parametrize("kind", ["cycle", "defect"])
+def test_installed_assessment_rejects_wrong_profile(tmp_path, assessment_composition, kind):
+    import asyncio
+    from tests.verified_assessment_fixture import _materialization_request
+
+    project = tmp_path / "project"
+    project.mkdir()
+    request = (
+        _bridge_assessment_request(project)
+        if kind == "defect"
+        else _materialization_request(project, authenticated=True)[0]
+    )
+    execution = request.execution
+    if kind == "cycle":
+        execution = execution.model_copy(update={"validation_profile": "api_db_trace.v1"})
+    else:
+        from assurance_execution.contracts.workflow import VerifiedIncompleteExecutionV1
+
+        assert isinstance(execution, VerifiedIncompleteExecutionV1)
+        execution = execution.model_copy(
+            update={"defect": execution.defect.model_copy(update={"validation_profile": "api_db_trace.v1"})}
+        )
+    request = request.model_copy(update={"execution": execution})
+    executor = assessment_composition.semantic_attempt_contracts[
+        "assurance.quality.materialize-assessment-inputs"
+    ].executor
+    with pytest.raises(ValueError, match="validation profile"):
+        asyncio.run(executor.execute(request, None))
+
+
+@pytest.mark.parametrize("tamper", ["stale_attempt", "forged_journal", "forged_defect"])
+def test_installed_assessment_rejects_unauthenticated_execution(
+    tmp_path, assessment_composition, monkeypatch, tamper
+):
+    import asyncio
+    import json
+    from graph_engine.attempts import PermanentTaskFailure
+    from tests.verified_assessment_fixture import _materialization_request
+
+    project = tmp_path / "project"
+    project.mkdir()
+    if tamper == "forged_defect":
+        request = _bridge_assessment_request(project)
+        from assurance_execution.contracts.workflow import VerifiedIncompleteExecutionV1
+
+        execution = request.execution
+        assert isinstance(execution, VerifiedIncompleteExecutionV1)
+        execution = execution.model_copy(
+            update={"defect": execution.defect.model_copy(update={"bridge_symbol": "test_forged"})}
+        )
+        request = request.model_copy(update={"execution": execution})
+        authority = None
+    else:
+        request, authority, _ = _materialization_request(project, authenticated=True)
+        if tamper == "stale_attempt":
+            request = request.model_copy(
+                update={
+                    "execution": request.execution.model_copy(
+                        update={"attempt_key": AttemptKey(digest="0" * 64)}
+                    )
+                }
+            )
+        else:
+            from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
+
+            assert isinstance(request.execution, VerifiedExecutionCycleResultV1)
+            ref = next(
+                ref
+                for ref in request.execution.raw_evidence_refs
+                if ref.path.endswith("action_terminal.json")
+            )
+            path = project / ref.path
+            data = json.loads(path.read_text())
+            data["payload"]["http"]["status"] = 201
+            path.chmod(0o600)
+            path.write_text(json.dumps(data))
+    result = asyncio.run(
+        _installed_assessment(project, request, assessment_composition, authority, monkeypatch)
+    )
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_input"
+    assert not (project / f"qa/changes/{request.reviewed_case.change_id}/inspect/verification.json").exists()
+
+
+def _publish_verified_inspection(project, request, assessment, verdict):
+    from assurance_quality.contracts.agent import InspectionResultV1
+    from assurance_quality.contracts.assessment import FinalizedInspectionV1
+    from assurance_quality.contracts.metrics import MetricsDocument
+    from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
+    from assurance_quality.graphs.nodes import publish_inspect
+    from assurance_quality.operations.verification import verification_failure_facts
+    from tests.verified_assessment_fixture import _write
+
+    fact_ref = _write(project, f"qa/changes/{assessment.change_id}/inspect/fact-baseline.json", b"{}\n")
+    finalized = FinalizedInspectionV1(
+        agent_result=InspectionResultV1(
+            schema_version="1.0",
+            change_id=assessment.change_id,
+            batch_id=assessment.batch_id,
+            inspect_mode="primary",
+            classification_performed=True,
+            status="analyzed",
+            execution_digest=assessment.execution_digest,
+            healing_digest=None,
+            trace_digest=assessment.trace_ref.digest,
+            coverage_digest=assessment.gaps_ref.digest,
+            metrics_digest=assessment.metrics_ref.digest,
+        ),
+        assessment=assessment,
+        reviewed_case=request.reviewed_case,
+        mapping_ref=request.generation.mapping_ref,
+        metrics=MetricsDocument.model_validate_json((project / assessment.metrics_ref.path).read_bytes()),
+        sufficiency=TraceSufficiencyFacts.model_validate_json(
+            (project / assessment.sufficiency_ref.path).read_bytes()
+        ),
+        failure_facts=verification_failure_facts(verdict),
+        fact_baseline_ref=fact_ref,
+        reason_codes=verdict.reason_codes,
+        verification=verdict,
+    )
+    state = {
+        "change_id": assessment.change_id,
+        "coverage_epoch": assessment.coverage_epoch,
+        "batch_id": assessment.batch_id,
+        "policy_sha256": request.policy_sha256,
+        "assessment_inputs": assessment.model_dump(mode="json"),
+        "reviewed_case": request.reviewed_case.model_dump(mode="json"),
+        "generation_result": request.generation.model_dump(mode="json"),
+        "fact_baseline_ref": fact_ref.model_dump(mode="json"),
+    }
+    return publish_inspect(state, finalized, ReceiptRef(receipt_id="inspect", receipt_digest="7" * 64))

@@ -1030,3 +1030,51 @@ async def test_optional_healing_and_issue_evidence_are_digest_authenticated(tmp_
     assert result.failure is not None
     assert result.failure.kind == "invalid_input"
     assert "digest changed" in result.failure.message
+
+
+@pytest.mark.asyncio
+async def test_legacy_profile_keeps_original_assessment_executor(tmp_path: Path) -> None:
+    from assurance_product.models import VerificationHostConfigV1
+    from assurance_product.runtime_bindings import DeterministicTaskExecutor
+    from assurance_product.verification_execution import VerificationConfiguration
+    from assurance_product.verification_quality import ProfiledAssessmentExecutor
+    from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
+    from graph_engine.attempts import AttemptExecutionContext, AttemptKey, AuthorizedAttemptScope
+    from graph_engine.attempts.workspace import TaskWorkspaceStore
+
+    request = MaterializeAssessmentInputV1.model_validate(_workspace_input(tmp_path))
+    handler = MaterializeAssessmentHandler()
+    legacy = DeterministicTaskExecutor(
+        "assurance.quality.materialize-assessment-inputs", handler, AssessmentInputsV1
+    )
+    executor = ProfiledAssessmentExecutor(
+        config=VerificationConfiguration(validation_profile=None, host=VerificationHostConfigV1()),
+        config_digest="a" * 64,
+        legacy=legacy,
+        handler_id=legacy.handler_id,
+        handler=handler,
+        callable_path="assurance_quality.operations.assessment:MaterializeAssessmentHandler.execute",
+    ).with_host(object(), graph_revision="b" * 64, product_lock_digest="c" * 64)
+    store = TaskWorkspaceStore(tmp_path, tmp_path / ".attempts", tmp_path / ".receipts")
+    try:
+        workspace = store.begin(
+            task_id="legacy-assessment", attempt=1, output_paths=(f"qa/changes/{CHANGE_ID}/inspect",)
+        )
+        result = await executor.execute(
+            request,
+            AuthorizedAttemptScope(
+                execution=AttemptExecutionContext(
+                    invocation_id="legacy",
+                    public_entrypoint="execute",
+                    semantic_node_id="quality.materialize-assessment-inputs",
+                    attempt_key=AttemptKey(digest="d" * 64),
+                    fencing_token=1,
+                ),
+                workspace=workspace,
+            ),
+        )
+        assert result.output.change_id == CHANGE_ID
+        assert result.output.verification_ref is None
+        assert legacy.dispatch_count == 1
+    finally:
+        store.close()

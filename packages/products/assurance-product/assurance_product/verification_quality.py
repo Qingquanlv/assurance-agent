@@ -8,7 +8,10 @@ from typing import Any, cast
 from graph_engine.attempts import AuthorizedAttemptScope, ExecutedAttemptResult
 from graph_engine.canonical import JSONValue
 
-from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
+from assurance_execution.contracts.workflow import (
+    VerifiedExecutionCycleResultV1,
+    VerifiedIncompleteExecutionV1,
+)
 from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
 from assurance_product.verification_execution import VerificationConfiguration
 
@@ -53,7 +56,7 @@ class ProfiledAssessmentExecutor:
         self, host: object, *, graph_revision: str, product_lock_digest: str
     ) -> ProfiledAssessmentExecutor:
         bound = copy(self)
-        if bound._legacy is not None:
+        if bound._legacy is not None and hasattr(bound._legacy, "with_host"):
             bound._legacy = bound._legacy.with_host(
                 host, graph_revision=graph_revision, product_lock_digest=product_lock_digest
             )
@@ -69,15 +72,22 @@ class ProfiledAssessmentExecutor:
         scope: AuthorizedAttemptScope,
     ) -> ExecutedAttemptResult[AssessmentInputsV1] | Any:
         if self.config.validation_profile is None:
-            if isinstance(validated_input.execution, VerifiedExecutionCycleResultV1):
+            if isinstance(
+                validated_input.execution, (VerifiedExecutionCycleResultV1, VerifiedIncompleteExecutionV1)
+            ):
                 raise ValueError("legacy assessment cannot accept a verified execution")
             if self._legacy is None:
                 raise ValueError("legacy assessment executor is unavailable")
             return await self._legacy.execute(validated_input, scope)
-        if (
-            not isinstance(validated_input.execution, VerifiedExecutionCycleResultV1)
-            or validated_input.execution.validation_profile != self.config.validation_profile
-        ):
+        execution = validated_input.execution
+        profile = (
+            execution.validation_profile
+            if isinstance(execution, VerifiedExecutionCycleResultV1)
+            else execution.defect.validation_profile
+            if isinstance(execution, VerifiedIncompleteExecutionV1)
+            else None
+        )
+        if profile != self.config.validation_profile:
             raise ValueError("assessment validation profile disagrees with frozen product configuration")
         if self.config.host.managed_sut_authority_handle is None:
             raise ValueError("verified assessment requires a managed SUT authority handle")
