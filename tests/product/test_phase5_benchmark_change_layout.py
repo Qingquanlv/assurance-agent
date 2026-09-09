@@ -665,6 +665,15 @@ def test_sut_python_environment_uses_an_isolated_frozen_uv_sync(
         "--no-install-project",
     ]
     assert calls[1][1]["VIRTUAL_ENV"] == str(runtime_root / "venv")
+    assert calls[2][0] == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        str(python),
+        "pytest",
+    ]
+    assert calls[2][2] == "managed SUT test-runtime pytest"
 
 
 def test_managed_process_uses_a_new_session_and_refuses_group_identity_drift(

@@ -647,6 +647,13 @@ def _prepare_sut_python(
     python = venv / "bin" / "python"
     if not python.is_file():
         raise SystemExit("managed SUT environment is missing Python")
+    _run_checked(
+        ["uv", "pip", "install", "--python", str(python), "pytest"],
+        cwd=project_dir,
+        env=env,
+        timeout=180,
+        label="managed SUT test-runtime pytest",
+    )
     return python
 
 
