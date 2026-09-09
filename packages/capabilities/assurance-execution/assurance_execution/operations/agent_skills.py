@@ -287,7 +287,7 @@ def authenticate_generation_result(root: ExecutionPrepareInputV1, workspace: Pat
         return
     profile = root.verification
     machine_ref = generation.case_execution_plan_ref
-    if profile is None or profile.validation_profile != root.validation_profile or machine_ref is None:
+    if (profile is not None and profile.validation_profile != root.validation_profile) or machine_ref is None:
         raise InputError("verified execution profile is incomplete")
     try:
         admission = admit_verified_generation(
@@ -314,7 +314,7 @@ def authenticate_generation_result(root: ExecutionPrepareInputV1, workspace: Pat
     mapping_path = _regular_input_file(workspace, generation.mapping_ref.path)
     if (
         generation.reviewed_case != admission.reviewed_case
-        or generation.case_execution_plan_ref != profile.case_execution_plan_ref
+        or (profile is not None and generation.case_execution_plan_ref != profile.case_execution_plan_ref)
         or generation.case_execution_plan_digest != machine_ref.digest
         or generation.source_refs != admission.source_refs
         or generation.plan_refs != admission.plan_refs
@@ -323,6 +323,8 @@ def authenticate_generation_result(root: ExecutionPrepareInputV1, workspace: Pat
         or mapping_path.read_bytes() != expected_mapping_bytes
     ):
         raise InputError("accepted generation result differs from semantic admission")
+    if profile is None:
+        return
     mapped_case = next(
         (item.case_id for item in admission.closed_mapping.mappings if item.test == profile.nodeid), None
     )

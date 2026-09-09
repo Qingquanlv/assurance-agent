@@ -181,7 +181,7 @@ def authenticate_managed_sut_receipts(
     return managed_path, observer_path, identity, authority_digest
 
 
-_MANAGED_HARNESS_SHA256 = "2920cb2fe03b78be9240edc4e0a014a984849e30dd6c50da8c6756bbb0b8dee8"
+_MANAGED_HARNESS_SHA256 = "e92d2168f270d6e4f0d851961dd630f8ef4a212e2313d6485de1a1532769a465"
 
 
 class ManagedUserSutHost:
@@ -234,7 +234,9 @@ class ManagedUserSutHost:
             raise ValueError("NOT_READY: invalid managed SUT lifecycle receipt")
         return document
 
-    def prepare(self, *, workspace_root: Path, project_dir: Path, run_root: Path) -> dict[str, Any]:
+    def prepare(
+        self, *, workspace_root: Path, project_dir: Path, run_root: Path, fault: str = "none"
+    ) -> dict[str, Any]:
         return self._call(
             "prepare",
             [
@@ -244,6 +246,8 @@ class ManagedUserSutHost:
                 str(project_dir),
                 "--run-root",
                 str(run_root),
+                "--fault",
+                fault,
             ],
         )
 

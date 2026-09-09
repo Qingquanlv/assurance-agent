@@ -30,6 +30,47 @@ _PROCESS_RECEIPT = "owned-process.json"
 _QUALIFIER = "qualify_runtime.py"
 _OWNERSHIP_TOKEN = ".ownership-token"
 _MAX_READY_TIMEOUT_S = 30.0
+FAULTS = (
+    "none",
+    "missing-binding",
+    "no-bridge",
+    "skip-oracle",
+    "wrong-value",
+    "rollback",
+    "rollback-success",
+    "db-unavailable",
+    "wrong-environment",
+    "unknown-http",
+    "forged-evidence",
+    "downgrade",
+    "missing-write",
+)
+
+
+def verify_original_source(source_root: Path) -> dict[str, str]:
+    lock = json.loads((FIXTURE_ROOT / "original-source-lock.json").read_bytes())
+    actual = {}
+    for member in ("app", "migrations", "run.py"):
+        root = source_root / member
+        for path in sorted(root.rglob("*") if root.is_dir() else [root]):
+            if "__pycache__" in path.parts or path.suffix == ".pyc" or path.is_dir():
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("NOT_READY: original SUT source is missing or drifted")
+            actual[path.relative_to(source_root).as_posix()] = _sha256(path)
+    if actual != lock["files"]:
+        raise ValueError("NOT_READY: original SUT source bytes drifted")
+    return actual
+
+
+def materialize_project(*, project_dir: Path, fault: str = "none") -> dict[str, Any]:
+    if fault not in FAULTS:
+        raise ValueError("unknown User oracle fault")
+    locked = verify_runtime_lock(FIXTURE_ROOT)
+    _copy_members(FIXTURE_ROOT / "sut-source", project_dir, _SOURCE_MEMBERS)
+    for name in ("requirements.in", "requirements.lock"):
+        shutil.copy2(FIXTURE_ROOT / name, project_dir / name)
+    return {**locked, "fault": fault}
 
 
 def _sha256(path: Path) -> str:
@@ -396,6 +437,7 @@ def prepare(
     project_dir: Path,
     run_root: Path,
     offline: bool = False,
+    fault: str = "none",
 ) -> dict[str, Any]:
     """Materialize one project and one exclusive managed-SUT runtime from the snapshot."""
     locked = verify_runtime_lock(FIXTURE_ROOT)
@@ -405,10 +447,7 @@ def prepare(
         raise ValueError("project_dir and run_root must not overlap")
     if project.exists() or run.exists():
         raise ValueError("project_dir and run_root must be new paths")
-    source = FIXTURE_ROOT / "sut-source"
-    _copy_members(source, project, _SOURCE_MEMBERS)
-    for name in ("requirements.in", "requirements.lock"):
-        shutil.copy2(FIXTURE_ROOT / name, project / name)
+    materialize_project(project_dir=project, fault=fault)
     sut = run / "sut"
     _copy_members(project, sut, _RUNTIME_MEMBERS)
     _authenticate_runtime_copy(sut, locked["files"])
@@ -425,6 +464,7 @@ def prepare(
         {
             "schema_version": "1",
             "state": "prepared",
+            "fault": fault,
             "workspace_root": str(Path(workspace_root).resolve(strict=True)),
             "workspace_identity": _directory_identity(Path(workspace_root)),
             "project_dir": str(project),
@@ -554,6 +594,8 @@ def start(
         runtime_secrets=True,
         ownership_token=ownership_token,
     )
+    environment["AA_SUT_FAULT"] = str(prepared.get("fault", "none"))
+    environment["AA_SUT_FAULT_FACTS"] = str(run_root / "fault-facts.jsonl")
     subprocess.run(  # noqa: S603
         [
             str(python),
@@ -794,7 +836,7 @@ def stop(
         ownership_token,
     )
     marker_path.unlink(missing_ok=True)
-    _write_json(run_root, process_receipt_path, stopped)
+    _write_json(run_root, run_root / "stopped-process.json", stopped)
     return stopped
 
 
@@ -806,6 +848,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare_parser.add_argument("--project-dir", type=Path, required=True)
     prepare_parser.add_argument("--run-root", type=Path, required=True)
     prepare_parser.add_argument("--offline", action="store_true")
+    prepare_parser.add_argument("--fault", choices=FAULTS, default="none")
     start_parser = commands.add_parser("start")
     start_parser.add_argument("--workspace-root", type=Path, required=True)
     start_parser.add_argument("--prepare-receipt", type=Path, required=True)
@@ -825,6 +868,7 @@ def main(argv: list[str] | None = None) -> int:
             project_dir=arguments.project_dir,
             run_root=arguments.run_root,
             offline=arguments.offline,
+            fault=arguments.fault,
         )
     elif arguments.command == "start":
         output = start(

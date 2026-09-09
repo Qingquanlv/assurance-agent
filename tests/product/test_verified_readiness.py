@@ -84,7 +84,7 @@ def live_sut(tmp_path_factory):
     try:
         yield host, secrets, selection, started
     finally:
-        if json.loads((workspace / "run/owned-process.json").read_bytes())["state"] == "started":
+        if not (workspace / "run/stopped-process.json").exists():
             host.stop(
                 workspace_root=workspace,
                 receipt_path=workspace / "run/owned-process.json",

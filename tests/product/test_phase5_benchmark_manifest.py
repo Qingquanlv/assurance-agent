@@ -26,7 +26,6 @@ DEPT_REQUIREMENT_PATH = (
 )
 DATA_KNOWLEDGE_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "data-knowledge.yaml"
 POLICY_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "policy.yaml"
-DEPT_SCHEMA_PATH = REPO / "benchmark" / "vue-fastapi-admin" / "app" / "schemas" / "depts.py"
 TEST_RUNTIME_SEED_ROOT = (
     REPO / "benchmark" / "assurance-product" / "fixtures" / "vue-fastapi-admin-tests-runtime-v1"
 )
@@ -215,7 +214,12 @@ def test_full_benchmark_requirement_is_api_only() -> None:
 
 
 def test_dept_create_rejects_names_longer_than_the_database_column() -> None:
-    spec = importlib.util.spec_from_file_location("phase5_dept_schema", DEPT_SCHEMA_PATH)
+    runner_spec = importlib.util.spec_from_file_location("phase5_run_item_schema", RUNNER_PATH)
+    assert runner_spec is not None and runner_spec.loader is not None
+    runner = importlib.util.module_from_spec(runner_spec)
+    runner_spec.loader.exec_module(runner)
+    source = runner._resolve_sut(REPO, "benchmark/vue-fastapi-admin")
+    spec = importlib.util.spec_from_file_location("phase5_dept_schema", source / "app/schemas/depts.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

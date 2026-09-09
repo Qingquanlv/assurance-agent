@@ -40,6 +40,8 @@ def _write_live_marker(path: Path, payload: dict[str, object]) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_data()
+    from app.benchmark_faults import install
+    install()
     marker = Path(os.environ["AA_SUT_LIVE_MARKER"])
     identity = {
         "instance_id": os.environ["AA_SUT_INSTANCE_ID"],
