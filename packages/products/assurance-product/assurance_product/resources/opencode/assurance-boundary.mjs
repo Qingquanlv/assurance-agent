@@ -25,6 +25,7 @@ const EXECUTION_VIEW_RELATIVE = /^qa\/changes\/[^/]+\/\.staging\/execution\/[^/]
 const HYPOTHESIS_CACHE = /^\/tmp\/aa-hypothesis-[A-Za-z0-9._-]+$/;
 const SHELL_UNSAFE = /[;\n\r`<>]|&&|\|\||(?<!\$)\||\$\(|<\(|>\(/;
 const EXECUTION_VIEW_PATTERN = String.raw`(?:[A-Za-z0-9._-]+/)*qa/changes/[A-Za-z0-9._-]+/\.staging/execution/[A-Za-z0-9._-]+`;
+const EXECUTION_VIEW_FILE_PATTERN = String.raw`${EXECUTION_VIEW_PATTERN}/[A-Za-z0-9._/-]+`;
 const HYPOTHESIS_PATTERN = String.raw`/tmp/aa-hypothesis-[A-Za-z0-9._-]+`;
 const PLAYWRIGHT_OUTPUT = /^\/tmp\/aa-playwright-[A-Za-z0-9._-]+$/;
 const EXECUTOR_GRAMMARS = [
@@ -34,10 +35,10 @@ const EXECUTOR_GRAMMARS = [
   new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} run test(?:\s+\S+)*$`),
   new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} test(?:\s+\S+)*$`),
   new RegExp(
-    String.raw`^PYTHONDONTWRITEBYTECODE=1 HYPOTHESIS_STORAGE_DIRECTORY=${HYPOTHESIS_PATTERN} uv run --isolated pytest -p no:cacheprovider --rootdir ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`,
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 HYPOTHESIS_STORAGE_DIRECTORY=${HYPOTHESIS_PATTERN} uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`,
   ),
   new RegExp(
-    String.raw`^PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`,
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile ${EXECUTION_VIEW_FILE_PATTERN}(?:\s+\S+)*$`,
   ),
 ];
 const PATCH_HEADERS = /^(Add File|Update File|Delete File|Move to): /;

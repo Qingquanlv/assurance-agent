@@ -22,6 +22,8 @@ Schema truth is `assurance_quality.contracts` for `IssueAnalysisResultV1`.
 - each candidate cites at least one owned `observation_id`
 - `classification` and `severity` are proposals, not canonical state
 - `fingerprint_inputs` use stable surface and symptom tokens
+- For `affected_surface.kind=endpoint`, `value` must contain the evidence-backed HTTP method and path, such as `POST /api/v1/dept/create`, never a bare path. Do not guess a missing method; use an evidence-backed module surface when no endpoint identity is established.
+- Fingerprint surface, symptom, and qualifiers must contain meaningful tokens, not only whitespace or separators (`-`, `.`, `/`).
 - `possible_problem_ids` contains only real Problem ids, or is empty
 
 ## Rules

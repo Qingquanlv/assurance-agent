@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -120,6 +122,23 @@ def test_ordered_validator_ids_change_the_digest() -> None:
         executor=_NamedExecutor("a"),
     )
     assert first.contract_digest != second.contract_digest
+
+
+def test_retry_interval_changes_the_authenticated_contract_digest() -> None:
+    contract = _contract()
+    immediate = replace(contract, retry=AttemptRetryPolicy(max_attempts=10, interval_seconds=0))
+    delayed = replace(contract, retry=AttemptRetryPolicy(max_attempts=10, interval_seconds=10))
+    executor = _NamedExecutor("a")
+    assert (
+        resolve_contract(immediate, executor=executor).contract_digest
+        != resolve_contract(delayed, executor=executor).contract_digest
+    )
+
+
+@pytest.mark.parametrize("interval", [-1, float("inf"), float("nan")])
+def test_retry_interval_rejects_negative_or_nonfinite_values(interval: float) -> None:
+    with pytest.raises(ValidationError, match="interval_seconds"):
+        AttemptRetryPolicy(max_attempts=10, interval_seconds=interval)
 
 
 def test_execution_context_is_frozen() -> None:

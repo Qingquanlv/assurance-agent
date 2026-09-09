@@ -29,8 +29,8 @@ from assurance_generation.operations.planning import (
     prepare_plan_outcome,
     persist_loop_round_history,
     resolve_family,
-    split_finalize_input,
     validate_plan_input,
+    validate_reviewed_plan,
 )
 
 _REVIEW_SKILL_FILES: dict[Family, str] = {
@@ -53,6 +53,9 @@ class PlanReviewPrepareHandler:
                 family=family,
                 workspace=context.project_root,
             )
+            if business.reviewed_plan is None:
+                raise InputError("reviewed_plan is required for plan review")
+            validate_reviewed_plan(business, family, cases)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
             review_inputs = plan_review_input_paths(
                 context.project_root,
@@ -85,8 +88,7 @@ class PlanReviewFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             family = resolve_family(self._family, request)
-            stripped, used, budget = split_finalize_input(request.input)
-            payload = AgentFinalizeInputV1.model_validate(stripped)
+            payload = AgentFinalizeInputV1.model_validate(request.input)
             try:
                 document = PlanReviewAuthoring.model_validate(
                     thaw_json(payload.agent_result.result_payload),

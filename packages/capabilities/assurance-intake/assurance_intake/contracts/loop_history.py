@@ -15,7 +15,6 @@ LoopKind = Literal[
     "coverage",
     "case_review",
     "plan_review",
-    "codegen_fix",
     "implementation_repair",
 ]
 LoopFamily = Literal["api", "e2e", "fuzz", "performance"]
@@ -35,7 +34,7 @@ class LoopRoundHistoryV1(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_identity(self) -> Self:
-        family_loop = self.loop_kind in {"plan_review", "codegen_fix"}
+        family_loop = self.loop_kind == "plan_review"
         if family_loop != (self.family is not None):
             raise ValueError("family is required only for family-specific generation loops")
         ordered = tuple(sorted(self.source_refs, key=lambda item: (item.path, item.digest)))

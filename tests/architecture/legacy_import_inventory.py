@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -10,6 +11,15 @@ PLAN_RELATIVE = Path("docs/superpowers/plans/2026-08-31-langgraph-product-cutove
 
 SCAN_ROOTS = ("packages", "tests", "examples", "benchmark", "scripts")
 SCAN_SUFFIXES = frozenset({".py", ".sh"})
+GENERATED_BENCHMARK_ROOTS = frozenset(
+    {
+        "benchmark/assurance-product/results",
+        "benchmark/agent-runtime-phase3/results",
+        "benchmark/vue-fastapi-admin/eval/out",
+        "benchmark/vue-fastapi-admin/.aa/cache",
+    }
+)
+NON_SOURCE_DIRECTORIES = frozenset({"__pycache__", ".venv", "venv", "node_modules", ".runtime", ".staging"})
 
 FORBIDDEN_SYMBOLS = frozenset(
     {
@@ -183,12 +193,18 @@ def _iter_python_files(root: Path) -> Iterator[Path]:
         base = root / name
         if not base.exists():
             continue
-        for path in base.rglob("*"):
-            if not path.is_file() or path.suffix not in SCAN_SUFFIXES:
-                continue
-            if "__pycache__" in path.parts:
-                continue
-            yield path
+        for directory, children, files in os.walk(base):
+            current = Path(directory)
+            children[:] = sorted(
+                child
+                for child in children
+                if child not in NON_SOURCE_DIRECTORIES
+                and (current / child).relative_to(root).as_posix() not in GENERATED_BENCHMARK_ROOTS
+            )
+            for filename in sorted(files):
+                path = current / filename
+                if path.is_file() and path.suffix in SCAN_SUFFIXES:
+                    yield path
 
 
 def _embedded_python_from_shell(text: str) -> tuple[str, ...]:

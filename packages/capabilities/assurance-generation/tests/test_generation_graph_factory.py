@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -11,9 +11,9 @@ from pydantic import ValidationError
 
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, TASK_ATTEMPT_CONTRACTS
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
-from assurance_generation.graphs.nodes import activation_codegen, select_codegen_fix, terminal_done
+from assurance_generation.graphs.nodes import activation_codegen, terminal_done
 from graph_engine.attempts.contracts import TaskAttemptContract
-from graph_engine.attempts.resolutions import ReceiptRef
+from graph_engine.attempts.resolutions import PermanentTaskFailure, ReceiptRef
 from graph_engine.testing import GraphHarness, committed
 
 _SHA = "a" * 64
@@ -102,23 +102,6 @@ def family_graph_input(family: str, *, selected: bool = True) -> dict[str, objec
     }
 
 
-def _codegen_fix_published(family: str) -> dict[str, object]:
-    roots = {
-        "api": "tests/api/",
-        "e2e": "tests/e2e/",
-        "fuzz": "tests/fuzz/",
-        "performance": "tests/perf/",
-    }
-    root = roots[family]
-    return {
-        "reviewed_plan": {"status": "reviewed", "source": "graph"},
-        "reviewed_cases": {"status": "reviewed", "source": "graph"},
-        "family_constraints": {"write_roots": [root], "operations": ["read"], "risks": ["low"]},
-        "baseline_tree_id": "b" * 64,
-        "approved_proposal": {"status": "approved", "source": "graph"},
-    }
-
-
 def _receipt() -> ReceiptRef:
     return ReceiptRef(receipt_id=_RECEIPT_ID, receipt_digest=_SHA)
 
@@ -150,18 +133,8 @@ def _review_output(
     return payload
 
 
-def _codegen_output(*, verdict: str = "accepted") -> dict[str, object]:
-    if verdict == "needs_fix":
-        return {
-            "schema_version": "2",
-            "verdict": "needs_fix",
-            "repair": {"allowed_paths": ["tests/api/test_users.py"], "summary": "repair"},
-        }
-    return {"schema_version": "2", "verdict": verdict}
-
-
-def _fuzz_codegen_output() -> dict[str, object]:
-    return {"schema_version": "1", "needs_fix": False}
+def _codegen_output() -> dict[str, object]:
+    return {"schema_version": "1"}
 
 
 def _node_names(graph: object) -> set[str]:
@@ -216,8 +189,8 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
-    assert len(recording_context.bound_contract_ids) == 16
-    assert len(unique) == 16
+    assert len(recording_context.bound_contract_ids) == 14
+    assert len(unique) == 14
     assert set(unique) == {
         *(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()),
         *(contract.contract_id for contract in TASK_ATTEMPT_CONTRACTS.values()),
@@ -287,54 +260,6 @@ def test_codegen_activation_changes_when_same_case_path_has_new_bytes() -> None:
     assert activation_codegen(state) != activation_codegen({**state, "reviewed_case": changed})
 
 
-def test_select_codegen_fix_fails_closed_without_published_fields() -> None:
-    with pytest.raises((ValidationError, ValueError, KeyError, TypeError)):
-        select_codegen_fix(
-            {
-                "change_id": "CH-DEMO-001",
-                "plan_digest": _SHA,
-                "plan_ref": {
-                    "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
-                    "digest": _SHA,
-                },
-                "capability_leafs": ["entities.item.create"],
-                "allowed_artifact_paths": ["qa/changes"],
-                "family": "api",
-            }
-        )
-
-
-def test_select_codegen_fix_reads_only_graph_published_state() -> None:
-    selected = select_codegen_fix(
-        {
-            "change_id": "CH-DEMO-001",
-            "plan_digest": _SHA,
-            "plan_ref": {
-                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
-                "digest": _SHA,
-            },
-            "capability_leafs": ["entities.item.create"],
-            "allowed_artifact_paths": ["qa/changes"],
-            "reviewed_plan": {"status": "reviewed", "source": "graph"},
-            "reviewed_cases": {"status": "reviewed", "source": "graph"},
-            "family_constraints": {
-                "write_roots": ["tests/api/"],
-                "operations": ["read"],
-                "risks": ["low"],
-            },
-            "baseline_tree_id": "b" * 64,
-            "repair_allowed_paths": ["tests/api/test_items.py"],
-            "approved_proposal": {"status": "approved", "source": "graph"},
-        }
-    )
-    dumped = selected.model_dump(mode="json")
-    assert dumped["allowed_paths"] == ["tests/api/test_items.py"]
-    assert dumped["baseline_tree_id"] == "b" * 64
-    assert dumped["reviewed_plan"] == {"status": "reviewed", "source": "graph"}
-    assert "test_users.py" not in str(dumped)
-    assert dumped["baseline_tree_id"] != "a" * 64
-
-
 def test_target_graphs_contain_no_phase_nodes(recording_context) -> None:
     bundle = build_generation_graphs(recording_context)
     names = set()
@@ -346,27 +271,19 @@ def test_target_graphs_contain_no_phase_nodes(recording_context) -> None:
         assert "capability_slot" not in source
 
 
-def test_api_e2e_have_codegen_fix_and_fuzz_performance_do_not(recording_context) -> None:
-    bundle = build_generation_graphs(recording_context)
-    assert "codegen-fix" in _node_names(bundle.api)
-    assert "codegen-round-advance" in _node_names(bundle.api)
-    assert "codegen-fix" in _node_names(bundle.e2e)
-    assert "codegen-round-advance" in _node_names(bundle.e2e)
-    assert "codegen-fix" not in _node_names(bundle.fuzz)
-    assert "codegen-round-advance" not in _node_names(bundle.fuzz)
-    assert "codegen-fix" not in _node_names(bundle.performance)
-    assert "codegen-round-advance" not in _node_names(bundle.performance)
-
-
 def test_pure_nodes_match_existing_handlers_for_valid_and_invalid_inputs() -> None:
-    from pydantic import ValidationError
 
     from assurance_generation.contracts.decisions import advance_review_round, complete_generation
     from assurance_generation.graphs.nodes import advance_review_round_node, complete_generation_node
 
     complete_state = {
         "family_results": [
-            {"family": family, "receipt_id": f"r-{family}", "selected": family in {"api", "fuzz"}}
+            {
+                "family": family,
+                "receipt_id": f"r-{family}",
+                "selected": family in {"api", "fuzz"},
+                "status": "passed" if family in {"api", "fuzz"} else "skipped",
+            }
             for family in _FAMILIES
         ],
         "selected_test_families": ["api", "fuzz"],
@@ -424,48 +341,65 @@ async def test_selected_family_runs_plan_review_codegen_without_phase_nodes() ->
     assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") == "pass"
 
 
-@pytest.mark.parametrize("family", ("fuzz", "performance"))
-async def test_no_fix_family_completes_codegen_without_fixer(family: str) -> None:
+async def test_selected_family_plan_failure_stops_before_plan_review() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.generation", contracts=generation_contracts())
     bundle = build_generation_graphs(context)
     receipt = _receipt()
-    graph = bundle.fuzz if family == "fuzz" else bundle.performance
     result = await harness.run(
-        graph,
-        input=family_graph_input(family),
+        bundle.e2e,
+        input=family_graph_input("e2e"),
         script={
-            _semantic(family, "plan"): [committed(_plan_output(), receipt)],
-            _semantic(family, "plan-review"): [committed(_review_output(), receipt)],
-            _semantic(family, "codegen"): [committed(_fuzz_codegen_output(), receipt)],
+            _semantic("e2e", "plan"): [PermanentTaskFailure(kind="transient", message="provider TLS failed")],
+            _semantic("e2e", "plan-review"): [committed(_review_output(), receipt)],
+            _semantic("e2e", "codegen"): [committed(_codegen_output(), receipt)],
         },
     )
-    assert _semantic(family, "codegen-fix") not in [call.semantic_node_id for call in result.semantic_calls]
-    assert result.terminal is not None
+
+    assert [call.semantic_node_id for call in result.semantic_calls] == [_semantic("e2e", "plan")]
+    terminal = result.terminal
+    assert isinstance(terminal, Mapping)
+    assert terminal["status"] == "failed"
+    family_results = terminal["family_results"]
+    assert isinstance(family_results, list)
+    assert family_results[0]["family"] == "e2e"
+    assert family_results[0]["status"] == "failed"
 
 
-@pytest.mark.parametrize("family", ("api", "e2e"))
-async def test_codegen_fix_loop_reaches_fixer(family: str) -> None:
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_authenticated_codegen_finishes_without_a_repair_verdict(family: Any, tmp_path: Path) -> None:
+    from test_generation_cycle import cycle_fixture  # pyright: ignore[reportMissingImports]
+
+    payload, script = await cycle_fixture(tmp_path, (family,))
+    generated = payload.families[0]
+    output = {
+        "schema_version": "1",
+        "change_id": payload.change_id,
+        "layer": family,
+        "files": [item.model_dump(mode="json") for item in generated.files],
+        "mapping": generated.mapping.model_dump(mode="json"),
+        "required_capabilities": list(payload.capability_leafs),
+    }
+    script[_semantic(family, "codegen")] = [committed(output, generated.receipt)]
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.generation", contracts=generation_contracts())
-    bundle = build_generation_graphs(context)
-    receipt = _receipt()
-    graph = bundle.api if family == "api" else bundle.e2e
-    result = await harness.run(
-        graph,
-        input={**family_graph_input(family), **_codegen_fix_published(family)},
-        script={
-            _semantic(family, "plan"): [committed(_plan_output(), receipt)],
-            _semantic(family, "plan-review"): [committed(_review_output(), receipt)],
-            _semantic(family, "codegen"): [committed(_codegen_output(verdict="needs_fix"), receipt)],
-            _semantic(family, "codegen-fix"): [committed(_codegen_output(), receipt)],
-        },
-    )
-    assert [call.semantic_node_id for call in result.semantic_calls][-2:] == [
+    graph = getattr(build_generation_graphs(context), family)
+    result = await harness.run(graph, input=family_graph_input(family), script=script)
+
+    assert isinstance(result.terminal, Mapping)
+    assert result.terminal["status"] == "passed"
+    lanes = result.terminal["family_results"]
+    assert isinstance(lanes, list)
+    lane = lanes[0]
+    assert isinstance(lane, Mapping)
+    generated_output = lane["generated"]
+    assert isinstance(generated_output, Mapping)
+    assert generated_output["files"] == output["files"]
+    assert [call.semantic_node_id for call in result.semantic_calls] == [
+        _semantic(family, "plan"),
+        _semantic(family, "plan-review"),
         _semantic(family, "codegen"),
-        _semantic(family, "codegen-fix"),
     ]
-    assert result.terminal is not None
 
 
 async def test_root_done_does_not_overwrite_skipped_api_result(tmp_path: Path) -> None:
@@ -505,3 +439,41 @@ async def test_root_done_does_not_overwrite_skipped_api_result(tmp_path: Path) -
     assert by_family["e2e"]["status"] == "passed"
     assert by_family["fuzz"]["status"] == "skipped"
     assert by_family["performance"]["status"] == "skipped"
+
+
+@pytest.mark.parametrize("family", _FAMILIES)
+async def test_root_fails_closed_without_publishing_when_selected_family_attempt_fails(
+    family: Any,
+    tmp_path: Path,
+) -> None:
+    from test_generation_cycle import cycle_fixture  # pyright: ignore[reportMissingImports]
+
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.generation", contracts=generation_contracts())
+    bundle = build_generation_graphs(context)
+    payload, script = await cycle_fixture(tmp_path, (family,))
+    script[_semantic(family, "codegen")] = [
+        PermanentTaskFailure(kind="invalid_output", message="generated target is missing")
+    ]
+
+    result = await harness.run(
+        bundle.generation,
+        input={
+            **generation_graph_input(selected=(family,)),
+            "plan_digest": payload.plan_digest,
+            "plan_ref": payload.plan_ref.model_dump(mode="json"),
+            "reviewed_case": payload.reviewed_case.model_dump(mode="json"),
+        },
+        script=script,
+    )
+
+    terminal = result.terminal
+    assert isinstance(terminal, Mapping)
+    assert terminal["status"] == "failed"
+    assert "generation.publish-cycle" not in [call.semantic_node_id for call in result.semantic_calls]
+    families = terminal["family_results"]
+    assert isinstance(families, list)
+    failed = next(item for item in families if isinstance(item, Mapping) and item.get("family") == family)
+    assert failed["selected"] is True
+    assert failed["status"] == "failed"
+    assert "generated" not in failed

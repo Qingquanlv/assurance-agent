@@ -10,9 +10,9 @@ Map validated retro signals to concrete process Improvements. Schema truth is
 
 ### required
 
-- locked retro identity and authenticated `RetroSourceManifestV3`
-- canonical context digest
-- locked signal ids present in the assembled context
+- `change_id` and the full locked `context` supplied in the JSON input
+- use `context.retro_id`, `context.source_manifest`, integrity, and `context.signals`
+- candidate source refs must also be supported by the signals that candidate cites
 
 ## Outputs
 
@@ -32,12 +32,14 @@ Map validated retro signals to concrete process Improvements. Schema truth is
   - `domain_knowledge` → `knowledge_delta`
 - `domain_knowledge` is allowed only when context integrity is complete and must
   cite a Problem plus a valid L2 delta.
-- Write a draft candidate document: `schema_version`, `retro_id`, and `candidates`.
-  Never write `context_sha256` or calculate a digest.
+- Write the complete `RetroAnalysisResultV3` object: `schema_version`, `retro_id`, `domain: null`,
+  `analysis_status`, `failure_reason`, `signals: []`, and `candidates`.
+- Synthesis does not create additional signals. Never write `context_sha256` or calculate a digest.
 - Zero candidates is valid only when there are no actionable signals.
 - Never add Problem lifecycle fields such as classification, severity, status,
   version, root cause, resolution, or disposition.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
 - Write the typed result to `qa/changes/<change-id>/retro/retro.json`.
+- Write and return the same complete JSON object. No Markdown fence or prose in the final answer.
 - Return the typed result and stop.

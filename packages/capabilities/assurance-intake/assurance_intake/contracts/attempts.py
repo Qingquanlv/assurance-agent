@@ -24,7 +24,8 @@ from assurance_intake.contracts.plan import LoadPlanInputV1, ResolvePlanInputV1,
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _EXPLORER = "assurance-v1-explorer"
 _REVIEWER = "assurance-v1-reviewer"
-_RETRY = AttemptRetryPolicy(max_attempts=1)
+_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
+_TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
@@ -62,7 +63,7 @@ def _job(
             reads=("qa",),
             writes=writes,
         ),
-        retry=_RETRY,
+        retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
@@ -158,7 +159,7 @@ _RESOLVE_PLAN = TaskAttemptContract(
         reads=(".aa", "qa/changes/{change_id}/explore"),
         writes=("qa/changes/{change_id}/plan",),
     ),
-    retry=_RETRY,
+    retry=_TASK_RETRY,
     timeout=_TIMEOUT,
     validators=(),
 )
@@ -172,7 +173,7 @@ _LOAD_PLAN = TaskAttemptContract(
         parameters={"change_id": "/change_id"},
         reads=(".aa", "qa/changes/{change_id}"),
     ),
-    retry=_RETRY,
+    retry=_TASK_RETRY,
     timeout=_TIMEOUT,
     validators=(),
 )

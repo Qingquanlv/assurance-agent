@@ -106,6 +106,27 @@ stable observed placeholder, label, role, or test id. Update an existing mapped
 test instead of marking it `reused` when any locator disagrees with the current
 product markup.
 
+Before accepting a locator, prove it is strict-mode unique in the state where
+it is used. In particular, scope form-validation assertions to the current
+visible form or dialog. Never use an unscoped page-wide text locator when the
+same text can label inputs, serve as placeholder text, or appear in another
+form item.
+
+When a component library supplies localized default action labels, do not guess
+the visible or accessible name from the action's meaning. Read the component's
+configured locale and resolve the active locale's exact default text, or inspect
+the rendered DOM, before using an exact text or role locator.
+
+Do not infer an ARIA role from the component name: a source-level number, select,
+or dialog component is not proof of its rendered role. When an optional control
+already satisfies the case through its initialized default, omit that redundant
+interaction unless a verified rendered locator is available.
+
+For Playwright URL assertions, a Python string is an exact expected URL, not a
+regular expression. When the assertion intentionally describes a URL pattern,
+pass a compiled `re.Pattern` (for example `re.compile(r".*/system/dept$")`) to
+`expect(page).to_have_url(...)`; otherwise assert the exact resolved URL.
+
 For synchronous pytest-playwright tests, do not call `asyncio.run()` in a test,
 fixture, setup, cleanup, or adapter bridge. Playwright owns an event loop in the
 test thread. Use a synchronous HTTP adapter, or an existing project helper that

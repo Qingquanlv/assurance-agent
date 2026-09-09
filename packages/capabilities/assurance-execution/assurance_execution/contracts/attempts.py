@@ -13,7 +13,7 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 
 _EXECUTOR = "assurance-v1-executor"
-_RETRY = AttemptRetryPolicy(max_attempts=1)
+_AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
@@ -45,7 +45,7 @@ def _job(
             reads=("qa",),
             writes=attempt_writes,
         ),
-        retry=_RETRY,
+        retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(

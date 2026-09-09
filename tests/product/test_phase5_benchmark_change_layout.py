@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from assurance_product.opencode_agents import _opencode_config
 
 from tests.product.test_phase5_benchmark_manifest import (
     FULL_WORKFLOW_REQUIRED_STEPS,
+    REPO,
     RUNNER_PATH,
     TEST_RUNTIME_SEED_ROOT,
 )
@@ -50,7 +52,66 @@ def _make_sut(root: Path) -> Path:
         "schema_version: '1'\ncapabilities:\n  domain_factories: {}\n  adapters:\n    api: {}\n",
         encoding="utf-8",
     )
+    (sut / ".aa" / "policy.yaml").write_text(
+        "schema_version: '1'\n"
+        "test_family_policy:\n"
+        "  required: [api]\n"
+        "  allowed: [api, e2e, fuzz, performance]\n"
+        "coverage_floor_by_tier:\n"
+        "  low: 0.7\n"
+        "  medium: 0.8\n"
+        "  high: 0.9\n"
+        "  critical: 1.0\n"
+        "evidence_sufficiency:\n"
+        "  recency_hours: 24\n"
+        "  require_current_batch: true\n",
+        encoding="utf-8",
+    )
     return sut
+
+
+def test_project_config_tree_uses_exact_live_sut_policy(tmp_path: Path) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    config_tree = tmp_path / "config-tree"
+    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
+
+    runner._prepare_project_config_tree(config_tree, sut)
+
+    source_policy = (sut / ".aa" / "policy.yaml").read_bytes()
+    assert (config_tree / ".aa" / "policy.yaml").read_bytes() == source_policy
+    envelope = yaml.safe_load((config_tree / ".aa" / "config.yaml").read_text(encoding="utf-8"))
+    assert envelope["product_policy"] == yaml.safe_load(source_policy)
+
+
+def test_project_config_tree_materializes_exact_live_sut_catalog(tmp_path: Path) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    config_tree = tmp_path / "config-tree"
+    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
+
+    runner._prepare_project_config_tree(config_tree, sut)
+
+    source_catalog = (sut / ".aa" / "capability-catalog.json").read_bytes()
+    assert source_catalog == (config_tree / ".aa" / "capability-catalog.json").read_bytes()
+    envelope = yaml.safe_load((config_tree / ".aa" / "config.yaml").read_text(encoding="utf-8"))
+    assert envelope["capability_catalog"] == json.loads(source_catalog)
+
+
+def test_project_config_tree_uses_exact_live_sut_knowledge_bytes(tmp_path: Path) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    (sut / ".aa" / "data-knowledge.yaml").write_text(
+        'schema_version: "1"\ncapabilities: {domain_factories: {}, adapters: {api: {}}}\n# keep-bytes\n',
+        encoding="utf-8",
+    )
+    config_tree = tmp_path / "config-tree"
+    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
+
+    source_knowledge = (sut / ".aa" / "data-knowledge.yaml").read_bytes()
+    runner._prepare_project_config_tree(config_tree, sut)
+
+    assert (config_tree / ".aa" / "data-knowledge.yaml").read_bytes() == source_knowledge
 
 
 def _required_node_states() -> list[dict[str, str]]:
@@ -84,7 +145,7 @@ def _achieved_status(*, change_id: str) -> dict[str, Any]:
         "status": "completed",
         "lock_digest": "a" * 64,
         "entrypoint": "full",
-        "selected_test_families": ["api", "e2e", "fuzz", "performance"],
+        "selected_test_families": ["api"],
         "coverage_progress": None,
         "terminal_reason": None,
         "graph_hierarchy": graphs,
@@ -282,7 +343,7 @@ def test_runtime_seed_materializes_support_without_touching_existing_case_tests(
     )
 
     assert receipt["schema_version"] == "vue-fastapi-admin-tests-runtime/v1"
-    assert receipt["manifest_digest"] == "84c183243ff672bac7eb6e48d0ef4c847fc4332f4d0cdc272bb4e8053f845743"
+    assert receipt["manifest_digest"] == "0b06f859331fc617db6e8a257f5860e3d070eebfc03c8348bcb16142907c889c"
     assert (sut / ORIGINAL_TEST).read_bytes() == ORIGINAL_BYTES
     assert (sut / "tests" / "config.py").is_file()
     assert (sut / "tests" / "testdata" / "domain" / "dept.py").is_file()
@@ -357,6 +418,76 @@ def test_runtime_seed_rejects_symlinked_parents_and_hardlinked_targets_before_wr
     assert not (hardlinked_sut / "tests" / "e2e" / "conftest.py").exists()
 
 
+def test_limited_role_provisioning_creates_an_unprivileged_role_and_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _load_runner()
+    requests: list[tuple[str, str, str, object]] = []
+
+    def request_json(backend_url, path, *, method, token, payload=None):
+        requests.append((backend_url, path, method, payload))
+        assert token == "admin-token"
+        if path.startswith("/api/v1/role/list?"):
+            return {"code": 200, "data": [{"id": 7, "name": "aa-limited"}]}
+        return {"code": 200, "data": None}
+
+    logins: list[tuple[str, str, str]] = []
+
+    def acquire_token(backend_url: str, *, username: str, password: str) -> str:
+        logins.append((backend_url, username, password))
+        return "limited-token"
+
+    monkeypatch.setattr(runner, "_request_sut_json", request_json)
+    monkeypatch.setattr(runner, "_acquire_token", acquire_token)
+    monkeypatch.setattr(runner.secrets, "token_urlsafe", lambda _length: "ephemeral-password")
+
+    token, username, password = runner._provision_limited_role_identity(
+        "http://127.0.0.1:9999",
+        admin_token="admin-token",
+    )
+
+    assert (token, username, password) == (
+        "limited-token",
+        "aa_limited",
+        "ephemeral-password",
+    )
+    assert requests == [
+        (
+            "http://127.0.0.1:9999",
+            "/api/v1/role/create",
+            "POST",
+            {"name": "aa-limited", "desc": "Assurance benchmark restricted role"},
+        ),
+        (
+            "http://127.0.0.1:9999",
+            "/api/v1/role/list?page=1&page_size=100&role_name=aa-limited",
+            "GET",
+            None,
+        ),
+        (
+            "http://127.0.0.1:9999",
+            "/api/v1/role/authorized",
+            "POST",
+            {"id": 7, "menu_ids": [], "api_infos": []},
+        ),
+        (
+            "http://127.0.0.1:9999",
+            "/api/v1/user/create",
+            "POST",
+            {
+                "email": "aa_limited@example.com",
+                "username": "aa_limited",
+                "password": "ephemeral-password",
+                "is_active": True,
+                "is_superuser": False,
+                "role_ids": [7],
+                "dept_id": 0,
+            },
+        ),
+    ]
+    assert logins == [("http://127.0.0.1:9999", "aa_limited", "ephemeral-password")]
+
+
 def test_managed_sut_is_ready_before_yield_and_cleans_both_groups_on_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -376,6 +507,7 @@ def test_managed_sut_is_ready_before_yield_and_cleans_both_groups_on_error(
         "backend": False,
         "backend_ready": False,
         "login": False,
+        "limited_identity": False,
         "frontend": False,
         "frontend_ready": False,
     }
@@ -401,8 +533,11 @@ def test_managed_sut_is_ready_before_yield_and_cleans_both_groups_on_error(
             assert state["ports"]
             state["backend"] = True
         else:
-            assert state["login"]
+            assert state["limited_identity"]
             assert env["E2E_API_TOKEN"] == "runtime-token"
+            assert env["API_LIMITED_ROLE_USER_TOKEN"] == "limited-token"
+            assert env["QA_LIMITED_USERNAME"] == "aa_limited"
+            assert env["QA_LIMITED_PASSWORD"] == "ephemeral-password"
             state["frontend"] = True
         return Process(label, 100 + len(stopped))
 
@@ -421,9 +556,16 @@ def test_managed_sut_is_ready_before_yield_and_cleans_both_groups_on_error(
         state["login"] = True
         return "runtime-token"
 
+    def provision(*_args, admin_token: str, **_kwargs) -> tuple[str, str, str]:
+        assert state["login"]
+        assert admin_token == "runtime-token"
+        state["limited_identity"] = True
+        return "limited-token", "aa_limited", "ephemeral-password"
+
     monkeypatch.setattr(runner, "_spawn_managed_process", spawn)
     monkeypatch.setattr(runner, "_wait_http_ready", ready)
-    monkeypatch.setattr(runner, "_acquire_admin_token", login)
+    monkeypatch.setattr(runner, "_acquire_token", login)
+    monkeypatch.setattr(runner, "_provision_limited_role_identity", provision)
     monkeypatch.setattr(
         runner,
         "_stop_managed_process",
@@ -444,6 +586,9 @@ def test_managed_sut_is_ready_before_yield_and_cleans_both_groups_on_error(
             assert runtime.env["NO_PROXY"] == "127.0.0.1,localhost"
             assert runtime.env["no_proxy"] == "127.0.0.1,localhost"
             assert runtime.env["QA_SQLITE_FILE"] == str(runtime.sqlite_file)
+            assert runtime.env["API_LIMITED_ROLE_USER_TOKEN"] == "limited-token"
+            assert runtime.env["QA_LIMITED_USERNAME"] == "aa_limited"
+            assert runtime.env["QA_LIMITED_PASSWORD"] == "ephemeral-password"
             assert runtime.sqlite_file.parent.joinpath("app", "__init__.py").is_file()
             assert runtime.sqlite_file.parent.joinpath("migrations", "seed.py").is_file()
             raise RuntimeError("benchmark body failed")
@@ -620,9 +765,18 @@ def test_runtime_environment_contract_is_exact_and_binds_the_run_scoped_database
         "no_proxy": "127.0.0.1,localhost",
     }
 
-    assert runner._runtime_environment_errors(required, output=output) == []
-    required["BASE_URL"] = "http://127.0.0.1:8000"
-    assert runner._runtime_environment_errors(required, output=output) == [
+    assert runner._required_runtime_environment(output) == required
+    opencode_environment = runner._required_opencode_environment(output)
+    assert opencode_environment["XDG_CONFIG_HOME"] == str(output.parent / ".opencode-config" / output.name)
+    assert not Path(opencode_environment["XDG_CONFIG_HOME"]).is_relative_to(output)
+    assert "XDG_DATA_HOME" not in opencode_environment
+    assert "AA_ADMIN_PASSWORD" not in opencode_environment
+    assert "QA_ADMIN_PASSWORD" not in opencode_environment
+    assert "AA_ADMIN_USERNAME" not in opencode_environment
+    assert "QA_ADMIN_USERNAME" not in opencode_environment
+    assert runner._runtime_environment_errors(opencode_environment, output=output) == []
+    opencode_environment["BASE_URL"] = "http://127.0.0.1:8000"
+    assert runner._runtime_environment_errors(opencode_environment, output=output) == [
         "OpenCode server environment BASE_URL must equal 'http://127.0.0.1:9999'"
     ]
 

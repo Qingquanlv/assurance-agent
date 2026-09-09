@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
@@ -150,6 +150,33 @@ class IssueAnalysisResultV1(FrozenModel):
     def _count_matches(self) -> IssueAnalysisResultV1:
         if self.candidate_count != len(self.candidates):
             raise ValueError("candidate_count must equal the number of candidates")
+        ids = [candidate.candidate_id for candidate in self.candidates]
+        if len(ids) != len(set(ids)):
+            raise ValueError("issue candidate ids must be unique")
+        return self
+
+    def require_complete_coverage(self, owned: set[str] | frozenset[str]) -> None:
+        covered = {identifier for candidate in self.candidates for identifier in candidate.observation_ids}
+        if not covered <= owned:
+            raise ValueError("issue candidate cites unowned evidence")
+        if self.status == "completed" and (not owned or covered != owned):
+            raise ValueError("completed issue analysis must cover every owned observation")
+
+
+class FinalizedIssueAnalysisV1(FrozenModel):
+    agent_result: IssueAnalysisResultV1
+    candidate_digest: str | None = Field(default=None, pattern=_DIGEST_REF)
+    issue_analysis_ref: EvidenceArtifactRefV1
+
+    @model_validator(mode="after")
+    def _closed_result(self) -> Self:
+        expected = f"qa/changes/{self.agent_result.change_id}/inspect/issue-analysis.json"
+        if self.issue_analysis_ref.path != expected:
+            raise ValueError("issue analysis ref must use the current change path")
+        if self.agent_result.status == "completed" and self.candidate_digest is None:
+            raise ValueError("completed issue analysis requires candidate_digest")
+        if self.agent_result.status != "completed" and self.candidate_digest is not None:
+            raise ValueError("non-completed issue analysis cannot publish candidate_digest")
         return self
 
 
@@ -185,6 +212,7 @@ __all__ = [
     "AgentBindingDataV1",
     "AgentFinalizeInputV1",
     "FactBaselineResultV1",
+    "FinalizedIssueAnalysisV1",
     "InspectionResultV1",
     "IssueAnalysisResultV1",
     "IssueTriageResultV1",

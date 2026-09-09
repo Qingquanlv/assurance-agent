@@ -20,6 +20,7 @@ from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskR
 from assurance_generation.contracts.agent import (
     AgentBindingDataV1,
     AgentFinalizeInputV1,
+    CodegenInputV1,
     FamilyConstraintsV1,
     PlanInputV1,
     under_write_root,
@@ -27,13 +28,16 @@ from assurance_generation.contracts.agent import (
 from assurance_generation.contracts.codegen import CodegenMapping, family_allows_target
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
+from assurance_generation.contracts.reviews import PlanReviewAuthoring
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import (
     CaseYamlAuthoring,
     EvidenceArtifactRefV1,
     build_loop_round_history,
 )
+from assurance_intake.contracts.planning_facts import build_planning_facts
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
+from assurance_generation.operations.plan_consistency import check_plan_consistency
 
 Family = LayerName
 FAMILIES: tuple[Family, ...] = LAYER_NAMES
@@ -224,41 +228,6 @@ def failed_output(message: str) -> TaskOutcome:
     return TaskOutcome.failed("invalid_output", message, retryable=True)
 
 
-def split_finalize_input(raw: object) -> tuple[dict[str, object], int | None, int | None]:
-    if not isinstance(raw, dict):
-        return {}, None, None
-    validated = raw.get("validated_input")
-    if isinstance(validated, dict):
-        finalize_fields = {
-            "change_id",
-            "capability_leafs",
-            "artifact_paths",
-            "allowed_paths",
-            "baseline_tree_id",
-            "coverage_epoch",
-            "local_round",
-            "reviewed_case",
-        }
-        payload = {
-            **{key: value for key, value in validated.items() if key in finalize_fields},
-            "agent_result": raw.get("agent_result"),
-        }
-    else:
-        payload = dict(raw)
-    used = raw.get("rounds_used", payload.get("local_round"))
-    budget = raw.get("rounds_budget")
-    payload = {
-        key: value
-        for key, value in payload.items()
-        if key not in {"rounds_used", "rounds_budget", "prepared", "validated_input"}
-    }
-    return (
-        payload,
-        used if isinstance(used, int) and used >= 0 else None,
-        budget if isinstance(budget, int) and budget >= 1 else None,
-    )
-
-
 def evidence_ref(workspace: Path, relative: str) -> EvidenceArtifactRefV1:
     data = _regular_input_file(
         workspace,
@@ -274,7 +243,7 @@ def persist_loop_round_history(
     relative: str,
     change_id: str,
     coverage_epoch: int,
-    loop_kind: Literal["plan_review", "codegen_fix"],
+    loop_kind: Literal["plan_review"],
     family: Family,
     round_index: int,
     outcome: str,
@@ -302,13 +271,29 @@ def persist_loop_round_history(
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
 
 
-def round_counters(raw: object) -> tuple[int | None, int | None]:
-    _payload, used, budget = split_finalize_input(raw)
-    return used, budget
-
-
 def leafs_of(values: tuple[str, ...]) -> frozenset[str]:
     return frozenset(values)
+
+
+def validate_reviewed_plan(
+    business: PlanInputV1 | CodegenInputV1, family: Family, cases: CaseYamlAuthoring
+) -> PlanResultV1:
+    try:
+        plan = PlanResultV1.model_validate(
+            business.reviewed_plan,
+            context={"capability_leafs": leafs_of(business.capability_leafs)},
+        )
+        if plan.family != family:
+            raise ValueError(f"reviewed plan family {plan.family!r} does not match {family}")
+        if plan.change_id != business.change_id:
+            raise ValueError(
+                f"reviewed plan change_id {plan.change_id!r} does not match business change_id "
+                f"{business.change_id!r}"
+            )
+        plan.require_case_scope(cases)
+    except ValueError as error:
+        raise InputError(str(error)) from error
+    return plan
 
 
 def _change_root(workspace: Path, change_id: str) -> Path:
@@ -434,6 +419,41 @@ def plan_review_input_paths(
     return tuple(sorted(relative_paths))
 
 
+def plan_repair_review(
+    workspace: Path,
+    *,
+    business: PlanInputV1,
+    family: Family,
+) -> dict[str, object] | None:
+    """Load the current review for a graph-authorized automatic or human-requested retry."""
+    if business.local_round == 0:
+        return None
+    relative = f"qa/changes/{business.change_id}/review/{family}-plan-review.json"
+    path = _regular_input_file(
+        workspace,
+        workspace.joinpath(*PurePosixPath(relative).parts),
+        label="plan repair review",
+    )
+    try:
+        data = path.read_bytes()
+        raw = json.loads(data)
+        review = PlanReviewAuthoring.model_validate(
+            raw,
+            context={"capability_leafs": leafs_of(business.capability_leafs)},
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
+        raise InputError(f"plan repair review is invalid: {relative}: {error}") from error
+    if review.change_id != business.change_id:
+        raise InputError("plan repair review change_id does not match the locked change_id")
+    if review.review_type != f"{family}-plan":
+        raise InputError(f"plan repair review_type does not match {family}-plan")
+    return {
+        "review_path": relative,
+        "review_digest": hashlib.sha256(data).hexdigest(),
+        "plan_repair_review": review.model_dump(mode="json"),
+    }
+
+
 def constraints_for_cases(*, family: Family, change_id: str, cases: CaseYamlAuthoring) -> FamilyConstraintsV1:
     entries = tuple((*cases.added, *cases.modified))
     return FamilyConstraintsV1(
@@ -509,21 +529,53 @@ def prepare_plan_outcome(
     allowed_outputs: tuple[str, ...],
     close_result_capabilities: bool = False,
     review_input_paths: tuple[str, ...] = (),
+    repair_review: Mapping[str, object] | None = None,
 ) -> TaskOutcome:
-    del family
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
+    targets: tuple[str, ...] = ()
+    mapping_path = f"qa/changes/{business.change_id}/plans/{family}-codegen-mapping.json"
+    try:
+        mapping = CodegenMapping.model_validate_json(
+            _workspace_file(context.project_root, mapping_path).read_bytes()
+        )
+        targets = tuple(entry.target_file for entry in mapping.entries)
+    except (OSError, ValidationError):
+        # Initial planning has no mapping. An invalid mapping is rejected by
+        # finalize; an index miss is never evidence that its targets are absent.
+        pass
+    except OutputError as error:
+        raise InputError(f"invalid planning index input: {error}") from error
+    facts = build_planning_facts(
+        context.project_root,
+        change_id=business.change_id,
+        capability_leafs=business.capability_leafs,
+        families=(family,),
+        target_files=targets,
+    )
     instructions = (
         InstructionPart.text("text/plain", resource_text(skill_path)),
         InstructionPart.text("text/plain", resource_text(persona_path)),
         InstructionPart.from_json(cases.model_dump(mode="json")),
-        InstructionPart.from_json(business.family_constraints.model_dump(mode="json")),
+        InstructionPart.from_json(
+            {
+                **business.family_constraints.model_dump(mode="json"),
+                "planning_facts": facts,
+            }
+        ),
     )
     if review_input_paths:
         instructions = (
             *instructions,
             InstructionPart.from_json({"review_input_paths": list(review_input_paths)}),
         )
+    if business.reviewed_plan is not None:
+        instructions = (
+            *instructions,
+            InstructionPart.from_json({"reviewed_plan": business.reviewed_plan}),
+        )
+    if repair_review is not None:
+        instructions = (*instructions, InstructionPart.from_json(dict(repair_review)))
     agent_request = AgentRunRequest(
         instructions=instructions,
         result_contract=result_contract(
@@ -568,29 +620,40 @@ def _authenticate_files(
     workspace: Path,
     declared: tuple[str, ...],
     locked: tuple[str, ...],
-) -> None:
+    *,
+    fallback_workspace: Path | None = None,
+) -> dict[str, bytes]:
+    images: dict[str, bytes] = {}
     for relative in declared:
         if not under_write_root(relative, locked):
             raise OutputError(f"undeclared output file: {relative}")
         path = _workspace_file(workspace, relative)
         if not path.is_file() or path.is_symlink():
-            raise OutputError(f"declared output file is missing: {relative}")
+            if fallback_workspace is None:
+                raise OutputError(f"declared output file is missing: {relative}")
+            path = _workspace_file(fallback_workspace, relative)
+            if not path.is_file() or path.is_symlink():
+                raise OutputError(f"declared output file is missing: {relative}")
+        try:
+            images[relative] = path.read_bytes()
+        except OSError as error:
+            raise OutputError(f"declared output file is unreadable: {relative}: {error}") from error
+    return images
 
 
 def _authenticate_codegen_mapping(
-    workspace: Path,
     *,
     document: PlanResultV1,
     family: Family,
-) -> None:
+    images: Mapping[str, bytes],
+) -> CodegenMapping:
     relative = f"qa/changes/{document.change_id}/plans/{family}-codegen-mapping.json"
-    path = _workspace_file(workspace, relative)
-    if not path.is_file() or path.is_symlink():
-        raise OutputError(f"closed codegen mapping is missing: {relative}")
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(images[relative])
         mapping = CodegenMapping.model_validate(raw)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
+    except KeyError as error:
+        raise OutputError(f"closed codegen mapping is missing: {relative}") from error
+    except (UnicodeError, json.JSONDecodeError, ValidationError) as error:
         raise OutputError(f"closed codegen mapping is invalid: {relative}: {error}") from error
     if mapping.layer != family:
         raise OutputError(f"closed mapping layer {mapping.layer!r} does not match {family}")
@@ -603,6 +666,7 @@ def _authenticate_codegen_mapping(
     for entry in mapping.entries:
         if not family_allows_target(family, entry.target_file):
             raise OutputError(f"closed mapping target is outside {family} family policy: {entry.target_file}")
+    return mapping
 
 
 class PlanPrepareHandler:
@@ -617,7 +681,17 @@ class PlanPrepareHandler:
                 family=family,
                 workspace=context.project_root,
             )
+            if business.local_round > 0:
+                try:
+                    validate_reviewed_plan(business, family, cases)
+                except InputError as error:
+                    raise InputError(f"previous plan is invalid for retry: {error}") from error
             binding = AgentBindingDataV1.model_validate(request.binding_data)
+            repair_review = plan_repair_review(
+                context.project_root,
+                business=business,
+                family=family,
+            )
             return prepare_plan_outcome(
                 family=family,
                 skill_path=_SKILL_FILES[family],
@@ -629,6 +703,7 @@ class PlanPrepareHandler:
                 context=context,
                 allowed_outputs=plan_outputs(business.change_id, family),
                 close_result_capabilities=True,
+                repair_review=repair_review,
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
@@ -643,8 +718,7 @@ class PlanFinalizeHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             family = resolve_family(self._family, request)
-            stripped, _used, _budget = split_finalize_input(request.input)
-            payload = AgentFinalizeInputV1.model_validate(stripped)
+            payload = AgentFinalizeInputV1.model_validate(request.input)
             try:
                 document = PlanResultV1.model_validate(
                     _structured(payload),
@@ -654,16 +728,53 @@ class PlanFinalizeHandler:
                 raise OutputError(str(error)) from error
             if document.family != family:
                 raise OutputError(f"plan family {document.family!r} does not match {family}")
-            if payload.artifact_paths:
-                _authenticate_files(context.write_root, document.output_files, payload.artifact_paths)
-            _authenticate_codegen_mapping(context.write_root, document=document, family=family)
-            dumped = document.model_dump(mode="json")
-            used, budget = round_counters(request.input)
-            if used is not None:
-                dumped["rounds_used"] = used
-            if budget is not None:
-                dumped["rounds_budget"] = budget
-            return TaskOutcome.succeeded(cast(JSONValue, dumped))
+            if payload.change_id is not None and document.change_id != payload.change_id:
+                raise OutputError("plan change_id does not match locked change_id")
+            if tuple(sorted(document.output_files)) != plan_outputs(document.change_id, family):
+                raise OutputError("output_files must declare the complete family plan package")
+            if payload.reviewed_case is not None:
+                try:
+                    reviewed = authenticate_reviewed_case(
+                        payload.reviewed_case,
+                        context.project_root,
+                        change_id=document.change_id,
+                        coverage_epoch=payload.coverage_epoch,
+                    )
+                except ValueError as error:
+                    raise InputError(str(error)) from error
+                cases = load_family_cases(
+                    context.project_root,
+                    change_id=document.change_id,
+                    family=family,
+                    capability_leafs=payload.capability_leafs,
+                    case_paths=tuple(item.path for item in reviewed.case_refs),
+                )
+                try:
+                    document.require_case_scope(cases)
+                except ValueError as error:
+                    raise OutputError(str(error)) from error
+            images = _authenticate_files(
+                context.write_root,
+                document.output_files,
+                payload.artifact_paths,
+                fallback_workspace=context.project_root if payload.local_round > 0 else None,
+            )
+            mapping = _authenticate_codegen_mapping(
+                document=document,
+                family=family,
+                images=images,
+            )
+            facts = build_planning_facts(
+                context.project_root,
+                change_id=document.change_id,
+                capability_leafs=payload.capability_leafs,
+                families=(family,),
+                target_files=tuple(entry.target_file for entry in mapping.entries),
+            )
+            contradictions = check_plan_consistency(images, mapping=mapping, facts=facts)
+            if contradictions:
+                raise OutputError("; ".join(contradictions))
+            return TaskOutcome.succeeded(cast(JSONValue, document.model_dump(mode="json")))
         except (InputError, ValidationError) as error:
             return failed_input(error)
         except OutputError as error:
@@ -702,7 +813,6 @@ __all__ = [
     "request_family",
     "resolve_family",
     "result_contract",
-    "round_counters",
-    "split_finalize_input",
     "validate_plan_input",
+    "validate_reviewed_plan",
 ]

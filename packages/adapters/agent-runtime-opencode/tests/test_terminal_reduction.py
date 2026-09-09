@@ -165,6 +165,31 @@ def test_closed_terminal_accepts_one_json_text_step_pair_and_optional_patch() ->
     assert parse_closed_terminal_result(messages) == {"ok": True}
 
 
+def test_repeated_identical_closed_results_are_one_logical_terminal_result() -> None:
+    first = _closed_assistant({"ok": True})
+    second = _closed_assistant({"ok": True})
+    second[0]["info"]["id"] = "asst-2"  # type: ignore[index]
+    messages = first + second
+
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+    assert (
+        classify_provider_state(
+            session_id="ses_busy",
+            status_map={"ses_busy": {"type": "busy"}},
+            session={"id": "ses_busy"},
+            messages=messages,
+        )
+        == "succeeded"
+    )
+
+
+def test_closed_terminal_rejects_distinct_result_messages() -> None:
+    messages = _closed_assistant({"ok": True}) + _closed_assistant({"ok": False})
+
+    with pytest.raises(ValueError, match="distinct result-bearing"):
+        parse_closed_terminal_result(messages)
+
+
 @pytest.mark.parametrize(
     "messages",
     [
@@ -200,7 +225,6 @@ def test_closed_terminal_accepts_one_json_text_step_pair_and_optional_patch() ->
                 "parts": [{"type": "text", "text": 'Done. {"ok": true}'}],
             }
         ],
-        _closed_assistant({"ok": True}) + _closed_assistant({"ok": True}),
     ],
 )
 def test_closed_terminal_rejects_ambiguous_or_unsafe_parts(messages: list[dict[str, object]]) -> None:

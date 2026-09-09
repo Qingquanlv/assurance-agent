@@ -9,7 +9,12 @@ import yaml
 
 from agent_runtime_contracts import AgentRunRequest
 from graph_engine.canonical import canonical_json_bytes
-from tests.product.test_change_local_output_routing import dual_roots, execute_task
+from tests.product.test_change_local_output_routing import (
+    dual_roots,
+    execute_task,
+    task_context,
+    task_request,
+)
 
 from assurance_generation.operations.planning import planning_handler
 from assurance_generation.resource_loader import resource_text
@@ -22,6 +27,7 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     family_plan_files,
     fake_agent_result,
     plan_input,
+    review_result,
     reviewed_cases,
     valid_plan_result,
 )
@@ -98,6 +104,8 @@ async def test_plan_prepare_instruction_order_is_skill_persona_cases_constraints
     assert persona.media_type == "text/plain"
     assert reviewed.media_type == "application/json"
     assert constraints.media_type == "application/json"
+    facts = cast(dict[str, object], constraints.json_content)["planning_facts"]
+    assert cast(dict[str, object], facts)["capability_leafs"] == VALID_LEAFS
     assert f"{family} plan" in (skill.text_content or "").lower()
     assert "test-author persona" in (persona.text_content or "").lower()
     cases = cast(dict[str, object], reviewed.json_content)
@@ -133,6 +141,106 @@ async def test_plan_prepare_instruction_order_is_skill_persona_cases_constraints
     assert performance_capability["enum"] == VALID_LEAFS
 
 
+@pytest.mark.asyncio
+async def test_plan_retry_injects_authenticated_current_review(tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, "api")
+    relative = "qa/changes/CH-DEMO-001/review/api-plan-review.json"
+    review_path = tmp_path / relative
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review = review_result("api")
+    review.update(
+        {
+            "decision": "needs_fix",
+            "findings": [
+                {
+                    "id": "API-PLAN-001",
+                    "severity": "blocking",
+                    "category": "runtime_contract",
+                    "message": "Use admin_token and construct the token header locally.",
+                    "locator": {
+                        "artifact": "qa/changes/CH-DEMO-001/plans/api-plan.md",
+                        "case_id": "TC_API_001",
+                        "key": "Auth Strategy",
+                    },
+                }
+            ],
+            "auto_fix_plan": ["API-PLAN-001"],
+            "next_action": "repair the locked finding",
+            "auto_fix_allowed": True,
+            "codegen_readiness": "not_ready",
+        }
+    )
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+
+    prepared = await execute_task(
+        planning_handler("api", "prepare"),
+        {**plan_input("api"), "local_round": 1, "reviewed_plan": valid_plan_result("api")},
+        tmp_path,
+        binding_data=BINDING,
+    )
+
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert len(request.instructions) == 6
+    repair = cast(dict[str, object], request.instructions[5].json_content)
+    assert repair["review_path"] == relative
+    assert isinstance(repair["review_digest"], str) and len(repair["review_digest"]) == 64
+    locked = cast(dict[str, object], repair["plan_repair_review"])
+    assert locked["change_id"] == "CH-DEMO-001"
+    assert locked["decision"] == "needs_fix"
+    assert locked["auto_fix_plan"] == ("API-PLAN-001",)
+
+
+@pytest.mark.asyncio
+async def test_plan_retry_fails_closed_without_current_review(tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, "api")
+
+    prepared = await execute_task(
+        planning_handler("api", "prepare"),
+        {**plan_input("api"), "local_round": 1, "reviewed_plan": valid_plan_result("api")},
+        tmp_path,
+        binding_data=BINDING,
+    )
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert "plan repair review is not a regular single-link file" in prepared.failure.message
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("defect", ("missing", "malformed", "change", "family", "case_scope"))
+@pytest.mark.asyncio
+async def test_plan_retry_rejects_invalid_previous_plan_before_dispatch(
+    family: str, defect: str, tmp_path: Path
+) -> None:
+    review_path = tmp_path / f"qa/changes/CH-DEMO-001/review/{family}-plan-review.json"
+    review_path.parent.mkdir(parents=True)
+    review_path.write_text(json.dumps(review_result(family)), encoding="utf-8")
+    previous = valid_plan_result(family)
+    if defect == "change":
+        previous["change_id"] = "CH-OTHER"
+    elif defect == "family":
+        previous = valid_plan_result("api" if family != "api" else "e2e")
+    elif defect == "case_scope":
+        previous["case_ids"] = ["TC_OTHER_001"]
+        previous["coverage"][0]["case_id"] = "TC_OTHER_001"
+    elif defect == "malformed":
+        previous.clear()
+        previous["status"] = "reviewed"
+    prepared = await execute_task(
+        planning_handler(family, "prepare"),
+        {**plan_input(family), "local_round": 1, "reviewed_plan": None if defect == "missing" else previous},
+        tmp_path,
+        binding_data=BINDING,
+    )
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert not prepared.failure.retryable
+    assert "previous plan" in prepared.failure.message
+
+
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_plan_prepare_hydrates_family_input_from_reviewed_workspace_cases(
@@ -164,12 +272,40 @@ async def test_plan_prepare_hydrates_family_input_from_reviewed_workspace_cases(
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
+async def test_plan_finalize_classifies_unreadable_output(
+    family: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, stage = dual_roots(tmp_path)
+    files = _write_plan_package(stage, family)
+    unreadable = stage / f"qa/changes/CH-DEMO-001/plans/{family}-plan.md"
+    read_bytes = Path.read_bytes
+
+    def read(path: Path) -> bytes:
+        if path == unreadable:
+            raise PermissionError("output is unreadable")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    outcome = await planning_handler(family, "finalize").execute(
+        task_request(fake_agent_result(valid_plan_result(family), artifact_paths=list(files))),
+        task_context(project, stage),
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "declared output file is unreadable" in outcome.failure.message
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
 async def test_plan_finalize_accepts_typed_family_plan(family: str, tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     files = _write_plan_package(write_root, family)
+    finalize_input = fake_agent_result(valid_plan_result(family), artifact_paths=list(files))
+    finalize_input["local_round"] = 1
     executed = await execute_task(
         planning_handler(family, "finalize"),
-        fake_agent_result(valid_plan_result(family), artifact_paths=list(files)),
+        finalize_input,
         project,
         write_root=write_root,
     )
@@ -177,6 +313,48 @@ async def test_plan_finalize_accepts_typed_family_plan(family: str, tmp_path: Pa
     output = cast(dict[str, object], executed.output)
     assert output["family"] == family
     assert output["case_ids"] == [f"TC_{family.upper()}_001"]
+    assert "rounds_used" not in output
+    assert "rounds_budget" not in output
+
+
+@pytest.mark.asyncio
+async def test_plan_retry_reads_unchanged_outputs_from_committed_baseline(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    files = _write_plan_package(project, "api")
+    changed = write_root / "qa/changes/CH-DEMO-001/plans/m3-review-summary.md"
+    changed.parent.mkdir(parents=True, exist_ok=True)
+    changed.write_text("review feedback applied\n", encoding="utf-8")
+    finalize_input = fake_agent_result(valid_plan_result("api"), artifact_paths=list(files))
+    finalize_input["local_round"] = 1
+
+    executed = await execute_task(
+        planning_handler("api", "finalize"),
+        finalize_input,
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "succeeded"
+    assert changed.is_file()
+    assert not (write_root / "qa/changes/CH-DEMO-001/plans/api-codegen-mapping.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_initial_plan_does_not_fall_back_to_committed_outputs(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    files = _write_plan_package(project, "api")
+
+    executed = await execute_task(
+        planning_handler("api", "finalize"),
+        fake_agent_result(valid_plan_result("api"), artifact_paths=list(files)),
+        project,
+        write_root=write_root,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "declared output file is missing" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -237,6 +415,61 @@ async def test_performance_plan_finalize_rejects_unknown_scenario_capability(
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
     assert "unknown capability leaf" in executed.failure.message
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_plan_finalize_rejects_incomplete_output_package(family: str, tmp_path: Path) -> None:
+    files = _write_plan_package(tmp_path, family)
+    payload = valid_plan_result(family)
+    payload["output_files"] = [path for path in files if not path.endswith(f"/{family}-plan.md")]
+    outcome = await execute_task(
+        planning_handler(family, "finalize"),
+        fake_agent_result(payload, artifact_paths=list(files)),
+        tmp_path,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "complete family plan package" in outcome.failure.message
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_plan_finalize_cannot_skip_file_authentication_without_artifact_roots(
+    family: str, tmp_path: Path
+) -> None:
+    _, stage = dual_roots(tmp_path)
+    _write_plan_package(stage, family)
+    (stage / f"qa/changes/CH-DEMO-001/plans/{family}-plan.md").unlink()
+    outcome = await execute_task(
+        planning_handler(family, "finalize"),
+        fake_agent_result(valid_plan_result(family)),
+        tmp_path,
+        write_root=stage,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "undeclared output file" in outcome.failure.message
+
+
+@pytest.mark.parametrize(
+    "field,value", [("p95_ms", -1), ("p95_ms", 0), ("error_rate_max", -0.1), ("error_rate_max", 1.1)]
+)
+@pytest.mark.asyncio
+async def test_performance_plan_rejects_impossible_thresholds(
+    field: str, value: float, tmp_path: Path
+) -> None:
+    files = _write_plan_package(tmp_path, "performance")
+    payload = valid_plan_result("performance")
+    payload["performance_scenarios"][0][field] = value
+    outcome = await execute_task(
+        planning_handler("performance", "finalize"),
+        fake_agent_result(payload, artifact_paths=list(files)),
+        tmp_path,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert field in outcome.failure.message
 
 
 @pytest.mark.asyncio

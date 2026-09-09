@@ -192,6 +192,16 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                         "path": "qa/changes/CH-DEMO-001/execution/result.json",
                         "digest": _HEX,
                     },
+                    "observations_ref": {
+                        "path": "qa/changes/CH-DEMO-001/inspect/observations.json",
+                        "digest": _HEX,
+                    },
+                    "issue_evidence_manifest_ref": {
+                        "path": "qa/changes/CH-DEMO-001/inspect/issue-evidence-manifest.json",
+                        "digest": _HEX,
+                    },
+                    "owned_evidence_ids": [],
+                    "evidence_bundle_digest": f"sha256:{_HEX}",
                 },
                 "reviewed_case": {
                     "change_id": "CH-DEMO-001",
@@ -219,34 +229,37 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
             }
         )
     if wheel == "improvement":
-        base.pop("capability_leafs", None)
-        base.pop("plan_digest", None)
-        base.pop("plan_ref", None)
-        base.update(
-            {
-                "change_id": "CH-DEMO-001",
+        base = {
+            "change_id": "CH-DEMO-001",
+            "context": {
+                "schema_version": "3",
                 "retro_id": "RET-1",
-                "owned_evidence_ids": ["PROB-1"],
+                "generated_at": "2026-09-09T00:00:00Z",
+                "window": {
+                    "selection": {
+                        "mode": "change_ids",
+                        "requested_change_ids": ["CH-DEMO-001"],
+                    },
+                    "change_ids": ["CH-DEMO-001"],
+                },
                 "source_manifest": {
-                    "issue_slice_sha256": "a",
-                    "workflow_slice_sha256": "b",
-                    "eval_slice_sha256": "c",
+                    "issue_slice_sha256": _HEX,
+                    "workflow_slice_sha256": _HEX,
+                    "eval_slice_sha256": _HEX,
                     "issue_sources": [],
                     "workflow_sources": [],
                     "eval_sources": [],
                 },
-                "context_digest": _HEX,
-                "quality_report_digest": _HEX,
-                "metrics_digest": _HEX,
-                "issue_digest": _HEX,
-                "subject_digest": _HEX,
-                "expected_improvement_version": 1,
-                "improvement_id": "IMP-1",
-                "invocation_id": "inv-1",
-                "archive_digest": _HEX,
-                "locked_signal_ids": [],
-            }
-        )
+                "integrity": {"status": "complete", "reasons": []},
+                "domain_status": {
+                    "issue": {"status": "ok"},
+                    "workflow": {"status": "ok"},
+                    "eval": {"status": "ok"},
+                },
+                "signals": {"issue": [], "workflow": [], "eval": []},
+                "signal_count": 0,
+            },
+        }
     if cut == "prepare-complete":
         return cast(JSONValue, base)
     if cut == "dispatch-unknown":

@@ -30,10 +30,13 @@ _DISPOSITIONS: tuple[InspectionDisposition, ...] = (
     "satisfied",
     "coverage_insufficient",
     "repairable_execution_failure",
+    "analysis_required",
     "needs_human",
     "blocked",
 )
-_COVERAGE_PATHS: dict[Hashable, str] = {name: name for name in (*_DISPOSITIONS, "failed")}
+_COVERAGE_PATHS: dict[Hashable, str] = {
+    name: END if name == "analysis_required" else name for name in (*_DISPOSITIONS, "failed")
+}
 _ATTEMPT_PATHS: dict[Hashable, str] = {"ready": "quality.fact-baseline", "failed": "failed"}
 
 
@@ -79,6 +82,8 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
         ),
     )
     for name in _COVERAGE_PATHS:
+        if name == "analysis_required":
+            continue
         builder.add_node(str(name), cast(Callable[..., Any], terminal_done))
         builder.add_edge(str(name), END)
     builder.add_edge(START, "quality.materialize-assessment-inputs")

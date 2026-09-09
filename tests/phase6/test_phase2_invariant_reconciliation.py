@@ -15,8 +15,8 @@ _CURRENT_BEHAVIORAL_NODES = {
         "test_kernel_does_not_import_legacy_effect_executor"
     ),
     "retry_exhaustion": (
-        "packages/framework/graph-engine/tests/attempts/test_keys.py::"
-        "test_attempt_key_is_stable_across_technical_retry_and_replay"
+        "packages/framework/graph-engine/tests/attempts/test_node_factory.py::"
+        "test_ten_attempts_wait_ten_seconds_only_between_retryable_failures[False]"
     ),
     "composition_source_authentication": (
         "packages/framework/graph-engine/tests/composition/test_wheel_sources.py::"

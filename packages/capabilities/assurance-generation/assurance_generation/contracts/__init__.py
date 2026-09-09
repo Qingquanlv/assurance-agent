@@ -3,14 +3,11 @@ from __future__ import annotations
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, attempt_contract_refs
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
-    CodegenFixCandidateV1,
     CodegenGeneratedFileAuthoring,
     CodegenGeneratedFilesAuthoring,
     CodegenMapping,
     CodegenMappingEntry,
     CodegenResultV1,
-    CodegenResultV2,
-    CodegenRepairPayloadV2,
 )
 from assurance_generation.contracts.discovery import CampaignResult, CampaignSpec, Counterexample
 from assurance_generation.contracts.families import (
@@ -56,14 +53,11 @@ __all__ = [
     "CaseType",
     "CheckEvidence",
     "CodegenAuthoringV1",
-    "CodegenFixCandidateV1",
     "CodegenGeneratedFileAuthoring",
     "CodegenGeneratedFilesAuthoring",
     "CodegenMapping",
     "CodegenMappingEntry",
-    "CodegenRepairPayloadV2",
     "CodegenResultV1",
-    "CodegenResultV2",
     "Counterexample",
     "E2eGeneratedFilesV1",
     "Finding",

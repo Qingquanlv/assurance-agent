@@ -128,6 +128,35 @@ def _install(project: Path) -> Path:
     return plugin
 
 
+@pytest.mark.parametrize(
+    "name", ["retro", "retro-eval-analysis", "retro-issue-analysis", "retro-workflow-analysis"]
+)
+def test_retro_contract_output_passes_both_profile_and_session_boundaries(tmp_path: Path, name: str) -> None:
+    from fnmatch import fnmatchcase
+    from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS
+    from assurance_product.opencode_agents import _opencode_config
+
+    contract = AGENT_JOB_CONTRACTS[name]
+    logical = contract.resources.writes[0].format(change_id="CH-1")
+    profile = json.loads(_opencode_config())["agent"][contract.agent_profile]
+    action = "deny"
+    for pattern, rule in profile["permission"]["edit"].items():
+        if fnmatchcase(logical, pattern):
+            action = rule
+    assert action == "allow"
+    plugin = _install(tmp_path)
+    title = _binding_title(tmp_path, allowed_outputs=(logical,))
+    allowed = _allowed(
+        _run(
+            plugin,
+            session=_session(tmp_path, title),
+            tool="write",
+            args={"filePath": logical, "content": "{}"},
+        )
+    )
+    assert allowed["filePath"] == str(_staged(tmp_path, logical))
+
+
 def _task_context(project: Path) -> TaskContext:
     write_root = project / _WRITE_ROOT
     write_root.mkdir(parents=True, exist_ok=True)
@@ -584,7 +613,7 @@ def test_binding_session_and_digest_must_match(tmp_path: Path) -> None:
 _EXECUTOR_VIEW_COMMAND = (
     "PYTHONDONTWRITEBYTECODE=1 "
     "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-1 "
-    "uv run --isolated pytest -p no:cacheprovider --rootdir "
+    "uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir "
     f"{_EXECUTION_VIEW} {_EXECUTION_VIEW}/tests/api/test_generated.py::test_ok"
 )
 _PLAYWRIGHT_VIEW_COMMAND = f"npx playwright test --config={_EXECUTION_VIEW}"

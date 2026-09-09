@@ -119,11 +119,9 @@ SKILL_OWNERS: dict[str, tuple[str, ...]] = {
         "aa-api-plan",
         "aa-api-plan-reviewer",
         "aa-api-codegen",
-        "aa-api-codegen-fixer",
         "aa-e2e-plan",
         "aa-e2e-plan-reviewer",
         "aa-e2e-codegen",
-        "aa-e2e-codegen-fixer",
         "aa-fuzz-plan",
         "aa-fuzz-plan-reviewer",
         "aa-fuzz-codegen",
@@ -173,7 +171,6 @@ PERSONA_NEW_IDS = {
 
 VALIDATOR_NEW_IDS = {
     "generated_files_candidate/v1": "assurance.generation.validator.generated-files.v1",
-    "codegen_fix_candidate/v1": "assurance.generation.validator.codegen-fix-candidate.v1",
     "plan_mechanical_candidate/v1": "assurance.generation.validator.plan-mechanical.v1",
     "archive_integrity/v1": "assurance.improvement.validator.archive-integrity.v1",
     "problem_apply_candidate/v1": "assurance.quality.validator.problem-apply.v1",
@@ -195,10 +192,6 @@ VALIDATOR_VERIFICATION: dict[str, str] = {
     "generated_files_candidate/v1": (
         "packages/features/assurance-generation/tests/test_generated_files_validator.py"
         "::test_plugin_contributed_codegen_validators_allowlist_registered_paths"
-    ),
-    "codegen_fix_candidate/v1": (
-        "packages/features/assurance-generation/tests/test_generated_files_validator.py"
-        "::test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set"
     ),
     "plan_mechanical_candidate/v1": (
         "packages/features/assurance-generation/tests/test_plan_validator.py"

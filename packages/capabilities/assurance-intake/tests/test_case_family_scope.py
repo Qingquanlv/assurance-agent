@@ -36,8 +36,12 @@ def _write_outputs(
     *,
     e2e_required: bool | None,
     matrix_e2e_required: bool = True,
+    include_e2e_matrix: bool = True,
+    include_e2e_metadata: bool = True,
+    case_status: Literal["active", "draft"] = "active",
 ) -> tuple[str, ...]:
     authored = yaml.safe_load(_FIXTURE.read_text(encoding="utf-8"))
+    authored["added"][0]["status"] = case_status
     rows = [
         {
             "mrc_id": "MRC-API-001",
@@ -55,17 +59,17 @@ def _write_outputs(
         e2e["risk"]["level"] = "low"
         e2e["automation"].update({"required": e2e_required, "framework": "pytest-playwright"})
         authored["added"].append(e2e)
-        rows.append(
-            {
+        if include_e2e_matrix:
+            e2e_row = {
                 "mrc_id": "MRC-E2E-001",
                 "key": "manage_menu",
                 "required": matrix_e2e_required,
                 "covered_by_cases": ["TC_MENU_002"],
                 "status": "covered",
-                "category": "e2e",
-                "layer": "e2e",
             }
-        )
+            if include_e2e_metadata:
+                e2e_row.update({"category": "e2e", "layer": "e2e"})
+            rows.append(e2e_row)
     documents = {
         f"{_ROOT}/.qa.yaml": "approval:\n  mode: autonomous\n",
         f"{_ROOT}/proposal.md": "# Menu coverage\n",
@@ -95,12 +99,13 @@ async def _finalize(
     outputs: tuple[str, ...],
     *,
     coverage_epoch: int = 0,
+    validation_attempt: int | None = None,
     input_refs: list[dict[str, str]] | None = None,
 ) -> TaskOutcome:
     if phase == "design":
         structured: dict[str, Any] = {"output_files": list(outputs)}
         artifacts = outputs
-        selected = ["api"]
+        selected = list(plan.selected_test_families)
         handler = CaseDesignFinalizeHandler()
     else:
         structured = {
@@ -159,6 +164,8 @@ async def _finalize(
         ),
         "case_refs": [ref for ref in input_refs or [] if ref["path"] == _CASE],
     }
+    if validation_attempt is not None:
+        request["validation_attempt"] = validation_attempt
     executed = await execute_task(
         handler,
         cast(JSONValue, request),
@@ -246,6 +253,111 @@ async def test_finalize_allows_optional_case_outside_frozen_scope(
     assert outcome.status == "succeeded", outcome.failure
     assert isinstance(outcome.output, dict)
     assert outcome.output["validation_status" if phase == "design" else "decision"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_case_design_requests_repair_before_quality_when_e2e_case_has_no_journey_row(
+    tmp_path: Path,
+) -> None:
+    project, stage = dual_roots(tmp_path)
+    plan, plan_ref = install_plan(
+        project,
+        _CHANGE,
+        capability_leafs=_LEAFS,
+        journeys=("manage_menu",),
+        candidates=("api", "e2e"),
+        proposed=("api", "e2e"),
+    )
+    outputs = _write_outputs(
+        stage,
+        e2e_required=True,
+        include_e2e_matrix=False,
+    )
+
+    outcome = await _finalize(
+        "design",
+        project,
+        stage,
+        plan,
+        plan_ref,
+        outputs,
+        validation_attempt=0,
+    )
+
+    assert outcome.status == "succeeded", outcome.failure
+    assert isinstance(outcome.output, dict)
+    assert outcome.output["validation_status"] == "needs_fix"
+    error = outcome.output["validation_error"]
+    assert isinstance(error, str)
+    assert "TC_MENU_002" in error
+    assert "manage_menu" in error
+
+
+@pytest.mark.asyncio
+async def test_case_design_infers_e2e_mapping_from_authenticated_journey_key(
+    tmp_path: Path,
+) -> None:
+    project, stage = dual_roots(tmp_path)
+    plan, plan_ref = install_plan(
+        project,
+        _CHANGE,
+        capability_leafs=_LEAFS,
+        journeys=("manage_menu",),
+        candidates=("api", "e2e"),
+        proposed=("api", "e2e"),
+    )
+    outputs = _write_outputs(
+        stage,
+        e2e_required=True,
+        include_e2e_metadata=False,
+    )
+
+    outcome = await _finalize("design", project, stage, plan, plan_ref, outputs)
+
+    assert outcome.status == "succeeded", outcome.failure
+    assert isinstance(outcome.output, dict)
+    assert outcome.output["validation_status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_case_design_reports_family_and_journey_errors_in_one_repair_attempt(
+    tmp_path: Path,
+) -> None:
+    project, stage = dual_roots(tmp_path)
+    plan, plan_ref = install_plan(
+        project,
+        _CHANGE,
+        capability_leafs=_LEAFS,
+        journeys=("manage_menu",),
+        candidates=("api", "e2e"),
+        proposed=("api", "e2e"),
+    )
+    outputs = _write_outputs(
+        stage,
+        e2e_required=True,
+        include_e2e_matrix=False,
+        case_status="draft",
+    )
+
+    outcome = await _finalize(
+        "design",
+        project,
+        stage,
+        plan,
+        plan_ref,
+        outputs,
+        validation_attempt=0,
+    )
+
+    assert outcome.status == "succeeded", outcome.failure
+    assert isinstance(outcome.output, dict)
+    assert outcome.output["validation_status"] == "needs_fix"
+    error = outcome.output["validation_error"]
+    assert isinstance(error, str)
+    assert "missing required automated cases" in error
+    assert "api, e2e" in error
+    assert "TC_MENU_002" in error
+    assert "manage_menu" in error
 
 
 @pytest.mark.asyncio

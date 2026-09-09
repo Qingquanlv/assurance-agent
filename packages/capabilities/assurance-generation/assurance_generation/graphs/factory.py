@@ -18,8 +18,9 @@ from assurance_generation.graphs.nodes import (
     select_generation_inputs,
     select_generation_cycle,
     publish_generation_cycle,
+    route_generation_completion,
 )
-from assurance_generation.graphs.routes import route_families
+from assurance_generation.graphs.routes import route_attempt_result, route_families
 from assurance_generation.graphs.state import GenerationState
 from graph_engine.boot.boot import CapabilityBuildContext
 
@@ -77,24 +78,32 @@ def _build_root_graph(
     )
     builder.add_node("done", cast(Callable[..., Any], generation_done))
     builder.add_edge(START, "generation.resolve-inputs")
-    builder.add_edge("generation.resolve-inputs", "fanout")
+    builder.add_conditional_edges(
+        "generation.resolve-inputs",
+        cast(Callable[..., Any], route_attempt_result),
+        {"committed": "fanout", "failed": "done"},
+    )
     builder.add_conditional_edges("fanout", cast(Callable[..., Any], route_families))
     builder.add_edge("api", "join-selected")
     builder.add_edge("e2e", "join-selected")
     builder.add_edge("fuzz", "join-selected")
     builder.add_edge("performance", "join-selected")
     builder.add_edge("join-selected", "complete")
-    builder.add_edge("complete", "generation.publish-cycle")
+    builder.add_conditional_edges(
+        "complete",
+        cast(Callable[..., Any], route_generation_completion),
+        {"publish": "generation.publish-cycle", "failed": "done"},
+    )
     builder.add_edge("generation.publish-cycle", "done")
     builder.add_edge("done", END)
     return context.compile_subgraph(builder)
 
 
 def build_generation_graphs(context: CapabilityBuildContext) -> GenerationGraphs:
-    api, api_lane = compile_family_pair(context, "api", has_codegen_fix=True)
-    e2e, e2e_lane = compile_family_pair(context, "e2e", has_codegen_fix=True)
-    fuzz, fuzz_lane = compile_family_pair(context, "fuzz", has_codegen_fix=False)
-    performance, performance_lane = compile_family_pair(context, "performance", has_codegen_fix=False)
+    api, api_lane = compile_family_pair(context, "api")
+    e2e, e2e_lane = compile_family_pair(context, "e2e")
+    fuzz, fuzz_lane = compile_family_pair(context, "fuzz")
+    performance, performance_lane = compile_family_pair(context, "performance")
     return GenerationGraphs(
         generation=_build_root_graph(
             context,

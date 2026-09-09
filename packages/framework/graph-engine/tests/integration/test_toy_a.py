@@ -115,7 +115,7 @@ async def test_toy_a_retries_a_transient_first_greet_attempt(
         workspace=workspace,
         contract_resolver=resolver,
     )
-    first = await run_factory_product(
+    result = await run_factory_product(
         artifact,
         kernel=kernel,
         workspace=workspace,
@@ -124,20 +124,9 @@ async def test_toy_a_retries_a_transient_first_greet_attempt(
         graph_input={"name": "Ada"},
         lease_root=tmp_path / "leases-1",
     )
-    assert first.status == "completed", first
-    first_values = await invocation_values(artifact, "toy-a-retry-1", "hello")
-    assert first_values.get("attempt_failure") is not None
-    second = await run_factory_product(
-        artifact,
-        kernel=kernel,
-        workspace=workspace,
-        entrypoint="hello",
-        invocation_id="toy-a-retry-2",
-        graph_input={"name": "Ada"},
-        lease_root=tmp_path / "leases-2",
-    )
-    values = await invocation_values(artifact, "toy-a-retry-2", "hello")
-    assert second.status == "completed", second
+    values = await invocation_values(artifact, "toy-a-retry-1", "hello")
+    assert result.status == "completed", result
     assert values.get("message") == "hello Ada"
+    assert values.get("attempt_failure") is None
     assert executor.executions == 2
     assert (project_root / "greeting.txt").read_bytes() == b"hello Ada\n"

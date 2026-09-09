@@ -10,7 +10,6 @@ from graph_engine.plugin_api import ValidationResult
 from assurance_generation.contracts import CodegenMapping
 from assurance_generation.plugin import GenerationPlugin
 from assurance_generation.validators.generated_files import (
-    CodegenFixCandidateValidator,
     CodegenMappingValidator,
     GeneratedFilesValidator,
 )
@@ -187,66 +186,15 @@ def test_mapping_validator_rejects_missing_extra_stale_and_duplicate() -> None:
         CodegenMapping.model_validate(raw)
 
 
-def test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set() -> None:
-    path = family_test_file("api")
-    mapping = CodegenMapping.model_validate(mapping_document("api", target_file=path))
-    context = validation_context()
-    staged = staged_generated_file("api", path)
-    accepted = CodegenFixCandidateValidator(
-        family="api",
-        baseline_tree_id="0" * 64,
-        allowed_paths=(path,),
-        mapping=mapping,
-        approved_proposal={"status": "approved", "files_to_modify": [path]},
-    ).validate(candidate_with(staged), context)
-    assert accepted == ValidationResult(accepted=True)
-    sut_write = CodegenFixCandidateValidator(
-        family="api",
-        baseline_tree_id="0" * 64,
-        allowed_paths=(path,),
-        mapping=mapping,
-        approved_proposal={"status": "approved"},
-    ).validate(candidate_with(path), context)
-    assert sut_write.accepted is False
-    outside = CodegenFixCandidateValidator(
-        family="api",
-        baseline_tree_id="0" * 64,
-        allowed_paths=(path,),
-        mapping=mapping,
-        approved_proposal={"status": "approved"},
-    ).validate(candidate_with(staged_generated_file("e2e")), context)
-    assert outside.accepted is False
-    unapproved = CodegenFixCandidateValidator(
-        family="api",
-        baseline_tree_id="0" * 64,
-        allowed_paths=(path,),
-        mapping=mapping,
-        approved_proposal={"status": "draft"},
-    ).validate(candidate_with(staged), context)
-    assert unapproved.accepted is False
-    drifted = CodegenFixCandidateValidator(
-        family="api",
-        baseline_tree_id="1" * 64,
-        allowed_paths=(path,),
-        mapping=mapping,
-        approved_proposal={"status": "approved"},
-    ).validate(candidate_with(staged), context)
-    assert drifted.accepted is False
-
-
 def test_plugin_contributed_codegen_validators_allowlist_registered_paths() -> None:
     contribution = GenerationPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     generated = contribution.commit_validators["assurance.generation.validator.generated-files.v1"]
     mapping = contribution.commit_validators["assurance.generation.validator.codegen-mapping.v1"]
-    fix = contribution.commit_validators["assurance.generation.validator.codegen-fix-candidate.v1"]
     context = validation_context()
     allowed = candidate_with(staged_generated_file("api"))
     assert generated.validate(allowed, context) == ValidationResult(accepted=True)
     assert mapping.validate(allowed, context) == ValidationResult(accepted=True)
-    assert fix.validate(allowed, context) == ValidationResult(accepted=True)
     assert generated.validate(candidate_with("tests/api/test_users.py"), context).accepted is False
     assert mapping.validate(candidate_with("tests/api/test_users.py"), context).accepted is False
-    assert fix.validate(candidate_with("tests/api/test_users.py"), context).accepted is False
     assert generated.validate(candidate_with("src/app.py"), context).accepted is False
     assert mapping.validate(candidate_with("../secret.py"), context).accepted is False
-    assert fix.validate(candidate_with("src/app.py"), context).accepted is False

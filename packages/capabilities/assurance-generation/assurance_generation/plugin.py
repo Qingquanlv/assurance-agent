@@ -16,7 +16,6 @@ from assurance_generation.contracts.attempts import attempt_contract_refs
 from assurance_generation.operations import generation_handlers
 from assurance_generation.resource_loader import resource_bytes
 from assurance_generation.validators import (
-    CodegenFixCandidateValidator,
     CodegenMappingValidator,
     FamilyPlanValidator,
     GeneratedFilesValidator,
@@ -38,15 +37,12 @@ GENERATION_DEPENDENCIES: tuple[PluginDependency, ...] = (PluginDependency("assur
 GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.persona.reviewer.v1": "personas/reviewer.md",
     "assurance.generation.persona.test-author.v1": "personas/test-author.md",
-    "assurance.generation.result.codegen-fix.v1": "result-contracts/codegen-fix.v1.schema.json",
     "assurance.generation.result.codegen.v1": "result-contracts/codegen.v1.schema.json",
     "assurance.generation.result.plan-review.v1": "result-contracts/plan-review.v1.schema.json",
     "assurance.generation.result.plan.v1": "result-contracts/plan.v1.schema.json",
-    "assurance.generation.skill.aa-api-codegen-fixer.v1": "skills/aa-api-codegen-fixer/SKILL.md",
     "assurance.generation.skill.aa-api-codegen.v1": "skills/aa-api-codegen/SKILL.md",
     "assurance.generation.skill.aa-api-plan-reviewer.v1": "skills/aa-api-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-api-plan.v1": "skills/aa-api-plan/SKILL.md",
-    "assurance.generation.skill.aa-e2e-codegen-fixer.v1": "skills/aa-e2e-codegen-fixer/SKILL.md",
     "assurance.generation.skill.aa-e2e-codegen.v1": "skills/aa-e2e-codegen/SKILL.md",
     "assurance.generation.skill.aa-e2e-plan-reviewer.v1": "skills/aa-e2e-plan-reviewer/SKILL.md",
     "assurance.generation.skill.aa-e2e-plan.v1": "skills/aa-e2e-plan/SKILL.md",
@@ -78,7 +74,6 @@ _VALIDATORS = {
     "assurance.generation.validator.plan-mechanical.v1": PlanMechanicalValidator(),
     "assurance.generation.validator.generated-files.v1": GeneratedFilesValidator(require_mapping=False),
     "assurance.generation.validator.codegen-mapping.v1": CodegenMappingValidator(),
-    "assurance.generation.validator.codegen-fix-candidate.v1": CodegenFixCandidateValidator(),
 }
 
 

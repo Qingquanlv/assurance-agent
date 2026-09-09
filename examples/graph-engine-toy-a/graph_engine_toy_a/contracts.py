@@ -59,7 +59,11 @@ class GreetExecutor:
     ) -> ExecutedAttemptResult[GreetOutput] | PermanentTaskFailure:
         self.executions += 1
         if self._fail_first and self.executions == 1:
-            return PermanentTaskFailure(kind="transient", message="retry the toy greeting")
+            return PermanentTaskFailure(
+                kind="transient",
+                message="retry the toy greeting",
+                retryable=True,
+            )
         binding = await self._workspace.open_or_create(
             _attempt_key(scope),
             GREET_CONTRACT.resources,

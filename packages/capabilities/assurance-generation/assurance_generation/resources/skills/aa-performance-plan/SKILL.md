@@ -18,6 +18,31 @@ exact needed leaf is not in the enum, describe the gap in the plan/review
 readiness; do not emit a virtual key. Before returning, reject your own result
 unless every capability value is byte-for-byte present in the enum.
 
+Resolve declared support symbols by exact module-path reads before describing
+their implementation status. A helper outside the codegen write whitelist can
+still be imported and reused. If that exact helper already implements the
+reviewed lifecycle, the plan must not instruct codegen to update it; only the
+mapped writable test target is generated. Prefer a declared callable
+performance authentication adapter over an ambient token environment variable.
+
+## Prepared source observations
+
+The JSON instruction includes `planning_facts`: bounded static observations with
+file digests, exact symbol names/signature shapes, fixture names, and environment
+variable names. Use the indexed paths for direct reads instead of rediscovering
+them. `unknown` and `uninspected_paths` never prove absence; imports, plugins,
+dynamic registrations and transitive environment dependencies may be unresolved.
+Environment names expose no values and do not establish availability or necessity.
+Check original source for behavior, auth semantics and oracle claims. Keep owner
+requirements and frozen assertion intent distinct from observed implementation;
+a source defect must not weaken the expected test behavior.
+
+Use exact indexed identifiers when applicable. Before returning, reconcile the
+closed mapping with every displayed Test Function Mapping, validate table capability
+keys, and distinguish an existing helper amendment from create-if-missing. On repair,
+check the whole package for consistency while editing only authorized locators;
+if another required edit is outside them, report the scope gap without broadening it.
+
 ## Inputs
 
 Read `proposal.md` first. When its `Product Source Verification` section lists
@@ -77,11 +102,16 @@ file.
 
 ## Domain Notes
 
-When `review/performance-plan-review.json` exists with `decision: needs_fix`,
-apply only the findings named in `auto_fix_plan` and only the artifact sections
-identified by their locators. Reinspect the cited source before editing, keep
+On planner re-entry, the final JSON instruction's `plan_repair_review` is the
+authoritative current review. Do not glob for or read any other plan-review
+file; apply only the findings named in `auto_fix_plan` and only the artifact
+sections identified by their locators. Reinspect the cited source before editing, keep
 unrelated plan decisions unchanged, and return the complete updated plan
 package for another review round.
+
+On every return, `output_files` is the complete plan-package manifest. List all
+required output paths above, including required files that were unchanged in
+this repair. Do not return only the files edited in the current repair.
 
 Task Mapping uses `Case ID | Task Method | Target File`.
 

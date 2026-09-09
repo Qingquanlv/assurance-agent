@@ -2666,13 +2666,6 @@ items:
   status: verified
   verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
-  legacy_id: aa-api-codegen-fixer
-  disposition: migrate
-  owner: assurance.generation
-  new_id: assurance.generation.skill.aa-api-codegen-fixer.v1
-  status: verified
-  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
-- kind: skill
   legacy_id: aa-api-plan
   disposition: migrate
   owner: assurance.generation
@@ -2728,13 +2721,6 @@ items:
   new_id: assurance.generation.skill.aa-e2e-codegen.v1
   status: verified
   verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
-- kind: skill
-  legacy_id: aa-e2e-codegen-fixer
-  disposition: migrate
-  owner: assurance.generation
-  new_id: assurance.generation.skill.aa-e2e-codegen-fixer.v1
-  status: verified
-  verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_fix_prepare_includes_allowed_paths
 - kind: skill
   legacy_id: aa-e2e-plan
   disposition: migrate
@@ -2897,6 +2883,20 @@ items:
   status: verified
   verification: packages/features/assurance-execution/tests/test_agent_skills.py::test_run_finalize_rejects_result_outside_mapping
 - kind: skill
+  legacy_id: aa-api-codegen-fixer
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: verified
+  verification: packages/capabilities/assurance-generation/tests/test_resources.py::test_removed_codegen_fix_resources_are_unloadable
+- kind: skill
+  legacy_id: aa-e2e-codegen-fixer
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: verified
+  verification: packages/capabilities/assurance-generation/tests/test_resources.py::test_removed_codegen_fix_resources_are_unloadable
+- kind: skill
   legacy_id: aa-workflow
   disposition: replace_phase5
   owner: null
@@ -2966,13 +2966,6 @@ items:
   new_id: assurance.improvement.validator.archive-integrity.v1
   status: verified
   verification: packages/features/assurance-improvement/tests/test_delivery.py::test_archive_integrity_requires_all_four_authenticated_inputs
-- kind: validator
-  legacy_id: codegen_fix_candidate/v1
-  disposition: migrate
-  owner: assurance.generation
-  new_id: assurance.generation.validator.codegen-fix-candidate.v1
-  status: verified
-  verification: packages/features/assurance-generation/tests/test_generated_files_validator.py::test_fix_candidate_validator_authenticates_proposal_baseline_and_allowed_set
 - kind: validator
   legacy_id: cross_artifact_invariants/v1
   disposition: migrate

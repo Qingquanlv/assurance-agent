@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
 from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
@@ -30,6 +30,7 @@ from assurance_improvement.graphs.nodes import (
 )
 from assurance_improvement.graphs.routes import route_committed
 from assurance_improvement.graphs.state import ImprovementState
+from assurance_improvement.contracts.retro import RetroContextV3
 
 _COLLECT_ID = "assurance.improvement.task.retro-collect-v3"
 _BUILD_SLICES_ID = "assurance.improvement.retro-build-slices"
@@ -43,7 +44,18 @@ _AFTER_COLLECT: dict[Hashable, str] = {"done": "improvement.retro-eval-analysis"
 _AFTER_EVAL: dict[Hashable, str] = {"done": "improvement.retro-issue-analysis", "failed": "failed"}
 _AFTER_ISSUE: dict[Hashable, str] = {"done": "improvement.retro-workflow-analysis", "failed": "failed"}
 _AFTER_WORKFLOW: dict[Hashable, str] = {"done": "assemble", "failed": "failed"}
-_AFTER_RECONCILE: dict[Hashable, str] = {"done": "improvement.retro", "failed": "failed"}
+_AFTER_RETRO: dict[Hashable, str] = {"done": "improvement.retro-reconcile", "failed": "failed"}
+
+
+def _route_synthesis(state: ImprovementState) -> str:
+    if state.get("analysis_status") != "ok":
+        return "failed"
+    return route_committed(state)
+
+
+def _route_assembled(state: Mapping[str, object]) -> str:
+    context = RetroContextV3.model_validate(state["context"])
+    return "synthesize" if context.signal_count else "empty"
 
 
 def _attempt(
@@ -161,12 +173,16 @@ def build_retro_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
         cast(Callable[..., Any], route_committed),
         _AFTER_WORKFLOW,
     )
-    builder.add_edge("assemble", "improvement.retro-reconcile")
     builder.add_conditional_edges(
-        "improvement.retro-reconcile", cast(Callable[..., Any], route_committed), _AFTER_RECONCILE
+        "assemble",
+        _route_assembled,
+        {"synthesize": "improvement.retro", "empty": "improvement.retro-reconcile"},
     )
     builder.add_conditional_edges(
-        "improvement.retro", cast(Callable[..., Any], route_committed), _COMMITTED_PATHS
+        "improvement.retro-reconcile", cast(Callable[..., Any], route_committed), _COMMITTED_PATHS
+    )
+    builder.add_conditional_edges(
+        "improvement.retro", cast(Callable[..., Any], _route_synthesis), _AFTER_RETRO
     )
     builder.add_edge("done", END)
     builder.add_edge("failed", END)

@@ -419,10 +419,10 @@ def check_compile_ok(
     tasks = all_feature_task_contracts()
     if len(PRODUCT_ENTRYPOINTS) != 14:
         raise SystemExit(f"14 roots expected, found {len(PRODUCT_ENTRYPOINTS)}")
-    if len(contracts) != 34:
-        raise SystemExit(f"34 Agent contracts expected, found {len(contracts)}")
-    if len(contracts) + len(tasks) != 48:
-        raise SystemExit(f"48 Attempt contracts expected, found {len(contracts) + len(tasks)}")
+    if len(contracts) != 32:
+        raise SystemExit(f"32 Agent contracts expected, found {len(contracts)}")
+    if len(contracts) + len(tasks) != 46:
+        raise SystemExit(f"46 Attempt contracts expected, found {len(contracts) + len(tasks)}")
     if not callable(runtime_bindings_from_composition):
         raise SystemExit("runtime_bindings_from_composition is missing")
     if not callable(raw_agent_runtime_binding_rows):
@@ -447,11 +447,11 @@ def check_compile_ok(
         )
     )
     rows = raw_agent_runtime_binding_rows(composition)
-    if len(rows) != 34:
-        raise SystemExit(f"34 runtime binding rows expected, found {len(rows)}")
+    if len(rows) != 32:
+        raise SystemExit(f"32 runtime binding rows expected, found {len(rows)}")
     authenticated = authenticate_raw_agent_runtime_bindings(rows, contracts, adapter="opencode")
-    if len(authenticated) != 34:
-        raise SystemExit(f"34 authenticated bindings expected, found {len(authenticated)}")
+    if len(authenticated) != 32:
+        raise SystemExit(f"32 authenticated bindings expected, found {len(authenticated)}")
     binding_source = Path(sys.modules["assurance_product.runtime_bindings"].__file__ or "").read_text(
         encoding="utf-8"
     )
@@ -857,7 +857,7 @@ add_authenticated_extra_binding extra-binding \
   "$opencode_binding_distribution" "$opencode_binding_declaration"
 expect_compile_fail extra-binding assurance-opencode \
   "$opencode_binding_distribution" "$opencode_binding_declaration" \
-  "exact 34 semantic contracts"
+  "exact semantic contract catalog"
 
 install_env source-drift "${product_wheel}[opencode]"
 inspect_prefix source-drift \

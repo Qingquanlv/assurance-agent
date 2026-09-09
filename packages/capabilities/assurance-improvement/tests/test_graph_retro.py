@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast, Any
 
 import pytest
 from pydantic import ValidationError
@@ -158,8 +158,10 @@ def analysis_agent_output(domain: Literal["issue", "workflow", "eval"]) -> dict[
         "analysis_status": "ok",
         "failure_reason": None,
         "analyzer": f"aa-retro-{domain}-analysis",
-        "signals": [],
-        "candidates": [candidate_payload()] if domain == "issue" else [],
+        "signals": [_task_failure_signal(signal_id="SIG-1", node_id="quality.inspect")]
+        if domain == "issue"
+        else [],
+        "candidates": [],
     }
 
 
@@ -202,7 +204,11 @@ def reconciled_ledger() -> dict[str, object]:
 
 def reconcile_result() -> dict[str, object]:
     ledger = reconciled_ledger()
-    return {**ledger, "improvement_ids": [IMPROVEMENT_ID], "events": []}
+    return {
+        "reconciliation": {**ledger, "improvement_ids": [IMPROVEMENT_ID], "events": []},
+        "status": {"retro_id": RETRO_ID, "result": "completed", "improvement_ids": [IMPROVEMENT_ID]},
+        "artifact_refs": [],
+    }
 
 
 def test_reconcile_output_retains_events_and_publishes_only_typed_ledger() -> None:
@@ -211,13 +217,13 @@ def test_reconcile_output_retains_events_and_publishes_only_typed_ledger() -> No
 
     contract = TASK_ATTEMPT_CONTRACTS["assurance.improvement.reconcile-improvements"]
     payload = {
-        **reconcile_result(),
+        **cast(dict[str, Any], reconcile_result()["reconciliation"]),
         "events": [{"type": "improvement_proposed", "improvement_id": IMPROVEMENT_ID, "seq": 1}],
     }
-    result = contract.output_model.model_validate(payload)
-    assert result.model_dump(mode="json")["events"] == payload["events"]
+    result = contract.output_model.model_validate({**reconcile_result(), "reconciliation": payload})
+    assert result.reconciliation.model_dump(mode="json")["events"] == payload["events"]
     ledger = ImprovementLedgerProjection.model_validate(reconciled_ledger())
-    assert publish_reconcile({}, result, _receipt()) == {"ledger": ledger.model_dump(mode="json")}
+    assert publish_reconcile({}, result, _receipt())["ledger"] == ledger.model_dump(mode="json")
     with pytest.raises(ValidationError):
         contract.output_model.model_validate(reconciled_ledger())
 
@@ -300,17 +306,17 @@ def test_reconcile_and_retro_agent_receive_typed_values() -> None:
         ts=_TS,
     )
     assert selected.context.retro_id == expected.context.retro_id
-    assert selected.ts == expected.ts
+    assert selected.context.generated_at == expected.ts
     ledger = ImprovementLedgerProjection.model_validate(reconciled_ledger())
     received = select_retro_agent(ledger)
     assert received == ledger
     retro_state = {**state, "ledger": ledger.model_dump(mode="json")}
     skill = select_retro(retro_state)
     assert skill.change_id == "CH-DEMO-001"
-    assert skill.retro_id == RETRO_ID
+    assert skill.context.retro_id == RETRO_ID
 
 
-async def test_retro_traces_collect_three_analyses_reconcile_then_agent() -> None:
+async def test_retro_traces_collect_three_analyses_synthesis_then_reconcile() -> None:
     harness = GraphHarness()
     context = harness.recording_context(
         owner_id="assurance.improvement",
@@ -323,7 +329,9 @@ async def test_retro_traces_collect_three_analyses_reconcile_then_agent() -> Non
         input=retro_graph_input(),
         script={
             "improvement.retro-build-slices": [committed(complete_collect_payload(), receipt)],
-            "improvement.retro-collect": [committed(complete_collect_payload(), receipt)],
+            "improvement.retro-collect": [
+                committed({**complete_collect_payload(), "generated_at": _TS}, receipt)
+            ],
             "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
@@ -338,11 +346,11 @@ async def test_retro_traces_collect_three_analyses_reconcile_then_agent() -> Non
         "improvement.retro-issue-analysis",
         "improvement.retro-workflow-analysis",
     }
-    assert calls[5] == "improvement.retro-reconcile"
-    assert calls[6] == "improvement.retro"
+    assert calls[5] == "improvement.retro"
+    assert calls[6] == "improvement.retro-reconcile"
     assert [call.contract_id for call in result.semantic_calls][1] == TASK_COLLECT_ID
-    assert [call.contract_id for call in result.semantic_calls][5] == TASK_RECONCILE_ID
-    assert [call.contract_id for call in result.semantic_calls][6] == _RETRO_ID
+    assert [call.contract_id for call in result.semantic_calls][6] == TASK_RECONCILE_ID
+    assert [call.contract_id for call in result.semantic_calls][5] == _RETRO_ID
     analysis_ids = [call.contract_id for call in result.semantic_calls[2:5]]
     assert set(analysis_ids) == {_RETRO_EVAL_ID, _RETRO_ISSUE_ID, _RETRO_WORKFLOW_ID}
     collect_selected = result.select_values[1]
@@ -351,11 +359,12 @@ async def test_retro_traces_collect_three_analyses_reconcile_then_agent() -> Non
     assert "issue_slice" in collect_selected
     assert "workflow_slice" in collect_selected
     assert "eval_slice" in collect_selected
-    reconcile_selected = result.select_values[5]
+    reconcile_selected = result.select_values[6]
     assert isinstance(reconcile_selected, dict)
     assert reconcile_selected["context"]["retro_id"] == RETRO_ID
     assert "candidates" in reconcile_selected
-    assert "current" in reconcile_selected
+    assert "current" not in reconcile_selected
+    assert [item["candidate_id"] for item in reconcile_selected["candidates"]] == ["C-1"]
     terminal = result.terminal
     assert terminal is not None
     assert isinstance(terminal, dict)
@@ -382,7 +391,9 @@ async def test_archive_remains_an_independent_graph() -> None:
         input=retro_graph_input(),
         script={
             "improvement.retro-build-slices": [committed(complete_collect_payload(), _receipt())],
-            "improvement.retro-collect": [committed(complete_collect_payload(), _receipt())],
+            "improvement.retro-collect": [
+                committed({**complete_collect_payload(), "generated_at": _TS}, _receipt())
+            ],
             "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), _receipt())],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), _receipt())],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), _receipt())],
@@ -394,6 +405,39 @@ async def test_archive_remains_an_independent_graph() -> None:
     assert all(call.semantic_node_id != "improvement.archive" for call in retro.semantic_calls)
     assert archive.terminal is not None
     assert retro.terminal is not None
+
+
+async def test_failed_synthesis_does_not_reconcile_when_signals_exist() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.improvement", contracts=improvement_contracts())
+    result = await harness.run(
+        build_improvement_graphs(context).retro,
+        input=retro_graph_input(),
+        script={
+            "improvement.retro-build-slices": [committed(complete_collect_payload(), _receipt())],
+            "improvement.retro-collect": [
+                committed({**complete_collect_payload(), "generated_at": _TS}, _receipt())
+            ],
+            "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), _receipt())],
+            "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), _receipt())],
+            "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), _receipt())],
+            "improvement.retro": [
+                committed(
+                    {
+                        "retro_id": RETRO_ID,
+                        "analysis_status": "failed",
+                        "failure_reason": "cannot synthesize",
+                        "signals": [],
+                        "candidates": [],
+                    },
+                    _receipt(),
+                )
+            ],
+        },
+    )
+    assert result.semantic_calls[-1].semantic_node_id == "improvement.retro"
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == "failed"
 
 
 def _forged_caller_context() -> dict[str, object]:
@@ -424,7 +468,7 @@ def test_assemble_builds_repaired_context_from_collect_and_named_analyses() -> N
     assert context.source_manifest.issue_slice_sha256 == artifact_digest(issue)
     assert context.source_manifest.workflow_slice_sha256 == artifact_digest(workflow)
     assert context.source_manifest.eval_slice_sha256 == artifact_digest(evaluation)
-    assert assembled["candidates"] == [candidate_payload()]
+    assert assembled["candidates"] == []
 
 
 async def test_reconcile_receives_assembled_context_not_caller_supplied() -> None:
@@ -440,7 +484,9 @@ async def test_reconcile_receives_assembled_context_not_caller_supplied() -> Non
         input=retro_graph_input(context=_forged_caller_context()),
         script={
             "improvement.retro-build-slices": [committed(complete_collect_payload(), receipt)],
-            "improvement.retro-collect": [committed(complete_collect_payload(), receipt)],
+            "improvement.retro-collect": [
+                committed({**complete_collect_payload(), "generated_at": _TS}, receipt)
+            ],
             "improvement.retro-eval-analysis": [committed(analysis_agent_output("eval"), receipt)],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],
@@ -448,7 +494,7 @@ async def test_reconcile_receives_assembled_context_not_caller_supplied() -> Non
             "improvement.retro": [committed(retro_agent_output(), receipt)],
         },
     )
-    reconcile_selected = result.select_values[5]
+    reconcile_selected = result.select_values[6]
     assert isinstance(reconcile_selected, dict)
     assert reconcile_selected["context"]["retro_id"] == RETRO_ID
     assert reconcile_selected["context"]["retro_id"] != "FORGED-CALLER-CONTEXT"
@@ -523,7 +569,9 @@ async def test_rejected_analysis_fail_closes_without_later_agents() -> None:
         input=retro_graph_input(),
         script={
             "improvement.retro-build-slices": [committed(complete_collect_payload(), receipt)],
-            "improvement.retro-collect": [committed(complete_collect_payload(), receipt)],
+            "improvement.retro-collect": [
+                committed({**complete_collect_payload(), "generated_at": _TS}, receipt)
+            ],
             "improvement.retro-eval-analysis": [RejectedTaskResult(reason="eval analysis rejected")],
             "improvement.retro-issue-analysis": [committed(analysis_agent_output("issue"), receipt)],
             "improvement.retro-workflow-analysis": [committed(analysis_agent_output("workflow"), receipt)],

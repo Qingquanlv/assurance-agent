@@ -10,7 +10,7 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import AttemptContractRef, TaskContext
 
 from agent_runtime_contracts import AgentExecutionContract
-from assurance_generation.contracts.agent import CodegenFixInputV1, CodegenInputV1, PlanInputV1
+from assurance_generation.contracts.agent import CodegenInputV1, PlanInputV1
 from assurance_generation.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
     TASK_ATTEMPT_CONTRACTS,
@@ -18,9 +18,7 @@ from assurance_generation.contracts.attempts import (
 )
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
-    CodegenFixCandidateV1,
     CodegenResultV1,
-    CodegenResultV2,
 )
 from assurance_generation.contracts.decisions import (
     GenerationCompletionOutput,
@@ -49,18 +47,14 @@ def test_generation_round_history_routes_include_epoch_and_local_round() -> None
     plan_pattern = (
         "qa/changes/{change_id}/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
     )
-    fix_pattern = (
-        "qa/changes/{change_id}/codegen/api/fixes/epochs/{coverage_epoch}/rounds/{review_round}.json"
-    )
     assert plan_pattern in OUTPUT_ROUTE_TEMPLATES["api.plan-review"]
-    assert fix_pattern in OUTPUT_ROUTE_TEMPLATES["api.codegen-fix"]
     assert plan_pattern.format(change_id="CH-1", coverage_epoch=0, review_round=0) != plan_pattern.format(
         change_id="CH-1", coverage_epoch=1, review_round=0
     )
 
 
-def test_generation_owns_fourteen_agent_contracts_and_two_tasks() -> None:
-    assert len(AGENT_JOB_CONTRACTS) == 14
+def test_generation_owns_twelve_agent_contracts_and_two_tasks() -> None:
+    assert len(AGENT_JOB_CONTRACTS) == 12
     assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-inputs", "publish-cycle")
     resolver = TASK_ATTEMPT_CONTRACTS["resolve-inputs"]
     assert resolver.contract_id == "assurance.generation.resolve-inputs"
@@ -70,7 +64,8 @@ def test_generation_owns_fourteen_agent_contracts_and_two_tasks() -> None:
         assert isinstance(contract, AgentExecutionContract)
         assert contract.owner_id == "assurance.generation"
         assert contract.validators == ()
-        assert contract.retry.max_attempts == 1
+        assert contract.retry.max_attempts == 10
+        assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
         assert set(claims.prepare) | set(claims.runtime) | set(claims.finalize) <= set(
@@ -80,11 +75,9 @@ def test_generation_owns_fourteen_agent_contracts_and_two_tasks() -> None:
 
 def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:
     expected_bases = (
-        "api.codegen-fix",
         "api.codegen",
         "api.plan-review",
         "api.plan",
-        "e2e.codegen-fix",
         "e2e.codegen",
         "e2e.plan-review",
         "e2e.plan",
@@ -116,17 +109,11 @@ def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:
         elif stage == "codegen":
             assert contract.input_model is CodegenInputV1
             assert contract.agent_result_model is CodegenAuthoringV1
-            expected_output = CodegenResultV2 if family in {"api", "e2e"} else CodegenResultV1
-            assert contract.output_model is expected_output
+            assert contract.output_model is CodegenResultV1
             assert contract.agent_profile == _CODEGEN_PROFILE
             assert contract.skill_id == f"aa-{family}-codegen"
         else:
-            assert stage == "codegen-fix"
-            assert contract.input_model is CodegenFixInputV1
-            assert contract.agent_result_model is CodegenAuthoringV1
-            assert contract.output_model is CodegenFixCandidateV1
-            assert contract.agent_profile == _CODEGEN_PROFILE
-            assert contract.skill_id == f"aa-{family}-codegen-fixer"
+            pytest.fail(f"unexpected generation stage: {stage}")
 
 
 def test_generation_plugin_projects_authenticated_attempt_contracts() -> None:
@@ -134,7 +121,7 @@ def test_generation_plugin_projects_authenticated_attempt_contracts() -> None:
     contribution = GenerationPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     assert refs == contribution.attempt_contracts == GenerationPlugin.descriptor().attempt_contracts
     assert all(isinstance(item, AttemptContractRef) for item in refs)
-    assert len(contribution.commit_validators) == 8
+    assert len(contribution.commit_validators) == 7
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
 
 
@@ -175,7 +162,7 @@ def test_complete_generation_rejects_invalid_inputs(payload: dict[str, object]) 
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
-@pytest.mark.parametrize("stage", ("plan", "codegen"))
+@pytest.mark.parametrize("stage", ("plan",))
 async def test_advance_generation_review_round_matches_legacy_handler(family: str, stage: str) -> None:
     payload = {"family": family, "stage": stage, "rounds_used": 0, "rounds_budget": 2}
     spy = MagicMock(spec=TaskContext)

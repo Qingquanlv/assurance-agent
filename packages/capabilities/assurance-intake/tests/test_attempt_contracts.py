@@ -49,7 +49,7 @@ from tests.product.test_change_local_output_routing import execute_task
 
 EXPECTED_AGENT_COUNTS = {
     "assurance.intake": 4,
-    "assurance.generation": 14,
+    "assurance.generation": 12,
     "assurance.execution": 2,
     "assurance.quality": 5,
     "assurance.healing": 3,
@@ -58,7 +58,7 @@ EXPECTED_AGENT_COUNTS = {
 
 EXPECTED_VALIDATOR_COUNTS = {
     "assurance.intake": 2,
-    "assurance.generation": 8,
+    "assurance.generation": 7,
     "assurance.execution": 2,
     "assurance.quality": 6,
     "assurance.healing": 3,
@@ -97,7 +97,7 @@ def test_feature_agent_counts_are_frozen() -> None:
     for owner, expected in EXPECTED_AGENT_COUNTS.items():
         assert len(catalogs[owner]) == expected
         assert all(contract.owner_id == owner for contract in catalogs[owner].values())
-    assert sum(EXPECTED_AGENT_COUNTS.values()) == 34
+    assert sum(EXPECTED_AGENT_COUNTS.values()) == 32
 
 
 def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> None:
@@ -148,7 +148,8 @@ def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> Non
         assert contract.agent_result_model is result_model
         assert contract.output_model is output_model
         assert contract.validators == ()
-        assert contract.retry.max_attempts == 1
+        assert contract.retry.max_attempts == 10
+        assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
         assert not hasattr(contract, "requires_provider_schema")
         claims = contract.phase_write_claims
@@ -209,8 +210,8 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert isinstance(contract, TaskAttemptContract)
         assert contract.validators == ()
         effectful += 1
-    assert registered == 25
-    assert effectful == 43
+    assert registered == 24
+    assert effectful == 41
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 
@@ -223,7 +224,7 @@ def test_semantic_agent_contracts_are_thirty_four() -> None:
         HEALING_AGENT_JOBS,
         IMPROVEMENT_AGENT_JOBS,
     )
-    assert sum(len(catalog) for catalog in catalogs) == 34
+    assert sum(len(catalog) for catalog in catalogs) == 32
 
 
 def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:

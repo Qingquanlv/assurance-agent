@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -16,7 +17,6 @@ from assurance_improvement.contracts.improvements import (
     ImprovementProjection,
     ImprovementSourceRefs,
     ImprovementState,
-    ReconcileResultV1,
 )
 from assurance_improvement.contracts.knowledge import to_persisted_data_knowledge_proposal
 from assurance_improvement.contracts.retro import (
@@ -28,11 +28,13 @@ from assurance_improvement.contracts.retro import (
     EvalEvidenceSlice,
     ImprovementCandidateDocumentV3,
     IssueEvidenceSlice,
+    RetroCollectInput,
     RetroContextV3,
     RetroIntegrity,
     RetroInvocationResult,
     RetroPipelineFailure,
     RetroPipelineFailureDocument,
+    RetroReconcileInputV1,
     RetroRunStatus,
     RetroSourceManifestV3,
     RetroWindow,
@@ -48,18 +50,6 @@ from assurance_improvement.operations.keys import (
 )
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
-
-
-class RetroCollectInput(BaseModel):
-    model_config = _FROZEN
-
-    retro_id: str = Field(min_length=1)
-    window: RetroWindow
-    issue_slice: IssueEvidenceSlice
-    workflow_slice: WorkflowEvidenceSlice
-    eval_slice: EvalEvidenceSlice
-    discovery_slice: DiscoveryEvidenceSlice | None = None
-    coverage_gap_slice: CoverageGapEvidenceSlice | None = None
 
 
 class AssembleRetroInput(BaseModel):
@@ -422,6 +412,41 @@ def reconcile_improvements(payload: ReconcileInput) -> dict[str, object]:
     }
 
 
+def validate_candidates(
+    context: RetroContextV3, candidates: tuple[ImprovementCandidateV3, ...]
+) -> ImprovementCandidateDocumentV3:
+    # The graph and the validator may arrive from independently installed
+    # wheels.  Reconstruct the manifest at this contract boundary so the
+    # document validator never relies on Python class identity across wheels.
+    manifest = RetroSourceManifestV3.model_validate(context.source_manifest.model_dump(mode="json"))
+    document = ImprovementCandidateDocumentV3.model_validate(
+        {
+            "retro_id": context.retro_id,
+            "context_sha256": artifact_digest(context),
+            "candidates": [item.model_dump(mode="json") for item in candidates],
+        },
+        context={"retro_manifest": manifest},
+    )
+    signals = {
+        signal.signal_id: signal
+        for domain in type(context.signals).model_fields
+        for signal in getattr(context.signals, domain)
+    }
+    if len({item.candidate_id for item in candidates}) != len(candidates):
+        raise InputError("candidate ids must be unique")
+    for candidate in candidates:
+        if any(signal_id not in signals for signal_id in candidate.signal_ids):
+            raise InputError("candidate cites a signal outside the locked context")
+        supported = {
+            ref for signal_id in candidate.signal_ids for ref in signals[signal_id].source_refs.all_ids()
+        }
+        if not set(candidate.source_refs.all_ids()).issubset(supported):
+            raise InputError("candidate sources must be supported by its cited signals")
+        if candidate.kind is ImprovementKind.DOMAIN_KNOWLEDGE and not context.allows_domain_knowledge:
+            raise InputError("domain_knowledge requires complete retro integrity")
+    return document
+
+
 class RetroCollectHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         del context
@@ -431,6 +456,7 @@ class RetroCollectHandler:
             return succeeded(
                 {
                     "retro_id": payload.retro_id,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
                     "window": payload.window.model_dump(mode="json"),
                     "issue_slice": payload.issue_slice.model_dump(mode="json"),
                     "workflow_slice": payload.workflow_slice.model_dump(mode="json"),
@@ -556,12 +582,13 @@ class MaterializeEmptyRetroAnalysisHandler:
 
 class ReconcileImprovementsHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        del context
+        from assurance_improvement.operations.retro_persistence import stage_reconciliation
+
         try:
-            payload = validate_input(ReconcileInput, request.input)
-            result = ReconcileResultV1.model_validate(reconcile_improvements(payload))
+            payload = validate_input(RetroReconcileInputV1, request.input)
+            result = stage_reconciliation(payload, context)
             return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
-        except InputError as error:
+        except (InputError, ValidationError, OSError, ValueError) as error:
             return failed_input(error)
 
 

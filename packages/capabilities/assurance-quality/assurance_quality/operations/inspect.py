@@ -61,6 +61,7 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
             "not found.*order|factory|invalid data|missing.*field|required.*field"
         ),
         "assertion": (
+            r"(?:^|\n)\s*(?:E\s+)?assert\s+|\bexpect\s*\(|"
             "assertionerror|assert.*expected|expected.*received|to equal|to be|tobecalled|tohavetext|"
             "tohavevalue|statuscode.*expected|response.*expected"
         ),
@@ -86,7 +87,6 @@ _DEFAULT_RULES: tuple[dict[str, Any], ...] = (
     {"category": "environment_failure", "match": "environment"},
     {"category": "locator_failure", "target": ("e2e",), "match": "locator"},
     {"category": "wait_strategy_failure", "target": ("e2e",), "match": "wait_strategy"},
-    {"category": "assertion_failure", "match": "assertion"},
     {"category": "test_data_failure", "match": "test_data"},
     {"category": "business_logic_failure", "match": "business_logic"},
     {"category": "test_code_error", "match": "test_code"},
@@ -263,7 +263,12 @@ def _matches(match: Any, text: str) -> bool:
 
 def classify_failure(*, message: str, target: str, log_excerpt: str = "") -> Classification:
     text = f"{message} {log_excerpt}".lower()
-    pipeline = _FUZZ_RULES if target == "fuzz" else _DEFAULT_RULES
+    # An assertion reports a mismatch, not ownership of its cause. Family-specific
+    # keywords (for example a Playwright locator) must not authorize a repair.
+    pipeline = (
+        {"category": "assertion_failure", "match": "assertion"},
+        *(_FUZZ_RULES if target == "fuzz" else _DEFAULT_RULES),
+    )
     category = _FALLBACK["fuzz" if target == "fuzz" else "default"]
     for rule in pipeline:
         allowed_targets = rule.get("target")
@@ -323,12 +328,11 @@ _REPAIRABLE_FAILURE_CATEGORIES = frozenset(
 def build_failure_classification_facts(
     execution: ExecutionEvidenceV1,
     metrics: MetricsDocument,
-    *,
-    adversarial_required: bool,
 ) -> tuple[FailureClassificationFactsV1, tuple[str, ...]]:
     """Reduce authenticated evidence to facts without choosing a workflow route."""
 
     blocking = False
+    analysis_required = False
     needs_human = False
     repairable = False
     reason_codes: set[str] = set()
@@ -340,24 +344,23 @@ def build_failure_classification_facts(
         reason_codes.add(f"execution.{category}")
         if category in _BLOCKING_FAILURE_CATEGORIES:
             blocking = True
+        elif category == "assertion_failure":
+            analysis_required = True
         elif category in _REPAIRABLE_FAILURE_CATEGORIES:
             repairable = True
         else:
             needs_human = True
 
     adversarial = metrics.metrics["adversarial_clean"]
-    identity_valid = True
     if adversarial.status == "evaluated" and adversarial.holds is False:
         blocking = True
         reason_codes.add("adversarial.open_counterexample")
-    elif adversarial_required and adversarial.status != "evaluated":
-        identity_valid = False
-        reason_codes.add("adversarial.required_evidence_missing")
 
     return (
         FailureClassificationFactsV1(
-            identity_valid=identity_valid,
+            identity_valid=True,
             blocking_failure=blocking,
+            analysis_required=analysis_required,
             needs_human=needs_human,
             repairable_failure=repairable,
         ),

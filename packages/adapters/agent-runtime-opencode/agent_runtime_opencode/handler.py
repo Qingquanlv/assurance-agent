@@ -50,7 +50,11 @@ from agent_runtime_opencode.protocol import (
     canonical_json_text,
     resolve_advertised_profile,
 )
-from agent_runtime_opencode.reducer import reduce_terminal, result_candidate_satisfies_contract
+from agent_runtime_opencode.reducer import (
+    reduce_terminal,
+    result_candidate_satisfies_contract,
+    select_unique_contract_valid_result,
+)
 from agent_runtime_opencode.workspace_binding import reject_isolated_root_discovery, workspace_binding_title
 
 
@@ -651,13 +655,24 @@ class OpenCodeHandler:
             messages=messages,
         )
         dumped = thaw_json(reference.model_dump(mode="json"))
+        status_record = status_map.get(session_id) if isinstance(status_map, dict) else None
+        busy = isinstance(status_record, dict) and status_record.get("type") == "busy"
+        selected_result = None
+        if busy:
+            selected_result = select_unique_contract_valid_result(
+                messages,
+                agent_run=agent_run,
+                request=request,
+                canaries=canaries,
+            )
+            if selected_result is not None:
+                kind = "succeeded"
         if kind == "running":
             return TaskActivityReconcileResult(status="running", reference=dumped)
         if kind == "succeeded":
-            status_record = status_map.get(session_id) if isinstance(status_map, dict) else None
-            if isinstance(status_record, dict) and status_record.get("type") == "busy":
+            if busy:
                 try:
-                    candidate = parse_closed_terminal_result(messages)
+                    candidate = selected_result or parse_closed_terminal_result(messages)
                 except ValueError:
                     return TaskActivityReconcileResult(status="running", reference=dumped)
                 if not result_candidate_satisfies_contract(
@@ -697,6 +712,7 @@ class OpenCodeHandler:
                 request=request,
                 diff=diff,
                 canaries=canaries,
+                selected_result=selected_result,
             ),
         )
 
