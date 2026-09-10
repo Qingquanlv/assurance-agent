@@ -88,10 +88,28 @@ def test_restatement_body_restates_the_contract_without_the_skill_instructions()
 
     assert body["messageID"] == "msg_restate"
     assert agent_run.result_contract.schema_digest in text
-    assert "do not rewrite any file" in text
+    assert "do not call tools again" not in text
+    assert "already complete and verified" not in text
+    assert "write" in text.casefold()
     for instruction in agent_run.instructions:
         if instruction.text_content is not None:
             assert instruction.text_content not in text
+
+
+def test_restatement_does_not_forbid_writes_the_session_never_made() -> None:
+    """A session that only read files can still idle with progress text.
+
+    The corrective turn exists to recover a lone JSON object. It must not tell
+    the model that required outputs are already on disk when that is the thing
+    the finalize handler is about to look for.
+    """
+    text = restatement_admission_body(agent_run_request(), "msg_restate")["parts"][0]["text"]
+    assert isinstance(text, str)
+    assert "already complete and verified" not in text
+    assert "do not call tools again" not in text
+    assert "do not rewrite any file" not in text
+    assert "required" in text.casefold()
+    assert "write" in text.casefold()
 
 
 def _restatement_posts(fixture: object, expected: dict[str, object]) -> int:

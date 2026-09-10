@@ -130,7 +130,9 @@ def restatement_admission_body(agent_run: AgentRunRequest, message_id: str) -> d
     """Build the single corrective turn admitted when a closed session carries no lone JSON object.
 
     The body deliberately omits the skill instructions: the contract only loses adherence once
-    the surrounding session grows long, so restating it alone is what restores salience.
+    the surrounding session grows long, so restating it alone is what restores salience. It
+    must not claim required writes already happened; an idle session can still be missing
+    those files.
     """
     schema_document = resolve_result_schema(
         agent_run.result_contract.schema_digest,
@@ -142,11 +144,13 @@ def restatement_admission_body(agent_run: AgentRunRequest, message_id: str) -> d
             text=(
                 "# Final response rejected\n\n"
                 "Your last response was not exactly one JSON object, so it could not be "
-                "accepted. Every required tool call and file write from this task is already "
-                "complete and verified: do not call tools again, do not rewrite any file, and "
-                "do not redo any work.\n\n"
-                "Reply now with the result object and nothing else. The first character of your "
-                "reply must be `{` and the last character must be `}`. No preamble, no "
+                "accepted. This runtime contract governs only the final assistant text. It "
+                "does not replace required tool calls or file writes.\n\n"
+                "If a required output file is not already written and read back, write it now "
+                "with the native write tool and read it back. Do not skip those side effects. "
+                "Do not rewrite a file that is already complete.\n\n"
+                "Then reply with the result object and nothing else. The first character of "
+                "your reply must be `{` and the last character must be `}`. No preamble, no "
                 "completion summary, no Markdown fence, no trailing text.\n\n"
                 f"delivery_mode: {agent_run.result_contract.delivery_mode}\n"
                 f"schema_id: {agent_run.result_contract.schema_id}\n"
