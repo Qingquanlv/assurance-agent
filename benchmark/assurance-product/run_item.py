@@ -378,7 +378,7 @@ def _collector_qualification_secret(*, repo: Path, output: Path, host: Mapping[s
         "configuration_digest": _verification_config_digest(validation_profile="api_db_trace.v1", host=host),
         "collector_artifact": _owned_readiness_file(root / "collector-artifact", b"managed-collector\n"),
         "collector_config": _owned_readiness_file(
-            root / "collector.yaml", (fixture / "collector.yaml").read_bytes()
+            root / "otel-file.txt", b"AA_SUT_OTEL_FILE=otel/observed.otlp.jsonl\n"
         ),
         "otel_dependencies": _owned_readiness_file(
             root / "otel-dependencies.lock", (fixture / "requirements.lock").read_bytes()
@@ -475,7 +475,6 @@ for _runtime_fault, _runtime_verdict in {
     "drop-write-span": "INCOMPLETE",
     "broken-context": "INCOMPLETE",
     "stale-trace": "INCOMPLETE",
-    "drain-timeout": "INCOMPLETE",
 }.items():
     _FAULT_EXPECTATIONS[_runtime_fault] = {
         "verdict": _runtime_verdict,

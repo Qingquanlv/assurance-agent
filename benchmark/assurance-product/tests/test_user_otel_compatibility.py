@@ -5,9 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import signal
 import sqlite3
-import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -86,28 +84,22 @@ def test_verify_otel_compatibility_command_is_declared() -> None:
     assert "verify-otel-compatibility" in names
 
 
-def test_runtime_lock_records_real_collector_and_hashed_otel_deps() -> None:
+def test_runtime_lock_records_hashed_otel_deps_without_collector() -> None:
     harness = _load_harness()
     locked = harness.verify_runtime_lock(FIXTURE)
-    assert (FIXTURE / "collector.yaml").is_file()
-    assert "collector.yaml" in locked["files"]
+    assert "collector.yaml" not in locked["files"]
+    assert not (FIXTURE / "collector.yaml").exists()
+    lock = json.loads((FIXTURE / "runtime-lock.json").read_text())
+    assert "collector" not in lock
     requirements = (FIXTURE / "requirements.in").read_text()
     assert "opentelemetry-sdk" in requirements
     assert "opentelemetry-instrumentation-fastapi" in requirements
     assert "opentelemetry-instrumentation-tortoiseorm" in requirements
-    assert "opentelemetry-exporter-otlp-proto-http" in requirements
     lock_text = (FIXTURE / "requirements.lock").read_text()
     assert "--hash=sha256:" in lock_text
     assert "opentelemetry-sdk" in lock_text
-    collector = json.loads((FIXTURE / "runtime-lock.json").read_text())["collector"]
-    assert collector["distribution"] == "otelcol-contrib"
-    assert collector["version"] != "latest"
-    assert str(collector["artifact_digest"]).startswith("sha256:")
-    assert "placeholder" not in str(collector).lower()
-    assert collector["export_protocol"] == "http/protobuf"
-    assert collector["sampler"] == "always_on"
-    assert collector["health_extension"] == "health_check"
-    assert collector["capture_parameters"] is False
+    assert "otelcol" not in lock_text.lower()
+    assert "github.com/open-telemetry/opentelemetry-collector-releases" not in json.dumps(lock)
 
 
 def test_api_db_v1_start_does_not_launch_collector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,6 +119,8 @@ def test_api_db_v1_start_does_not_launch_collector(tmp_path: Path, monkeypatch: 
     try:
         assert "collector" not in started
         assert not (Path(prepared["run_root"]) / "otel").exists()
+        assert os.environ.get("AA_SUT_OTEL_FILE") in {None, ""}
+        assert os.environ.get("AA_SUT_OTEL_ENDPOINT") in {None, ""}
         assert os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") in {None, ""}
     finally:
         harness.stop(
@@ -166,7 +160,9 @@ def test_real_user_save_emits_fastapi_server_and_sqlite_client_spans(
         assert rows == [("otel_user",)]
         flush = harness.flush_otel(run_root=Path(prepared["run_root"]))
         assert flush["state"] == "flushed"
-        records = harness.load_otlp_file(Path(started["collector"]["otlp_path"]))
+        otlp_path = Path(started["otel"]["otlp_path"])
+        assert otlp_path.name in {"observed.otlp.jsonl", "traces.jsonl"}
+        records = harness.load_otlp_file(otlp_path)
         spans = harness.flatten_spans(records)
         assert any(
             span["kind"] == "SERVER"
@@ -198,7 +194,7 @@ def test_real_user_save_emits_fastapi_server_and_sqlite_client_spans(
         completed = [span for span in spans if span["name"] == "user.create.completed"]
         assert len(completed) == 1
         assert completed[0]["attributes"]["user.username"] == "otel_user"
-        raw = Path(started["collector"]["otlp_path"]).read_text(encoding="utf-8")
+        raw = otlp_path.read_text(encoding="utf-8")
         receipt = json.dumps(started)
         assert CANARY_PASSWORD not in raw
         assert CANARY_PASSWORD not in receipt
@@ -237,7 +233,7 @@ def test_transaction_variant_emits_real_sqlite_client_spans(
         created = _create_user(started["base_url"], token, "tx_user")
         assert created.get("code") == 200
         harness.flush_otel(run_root=Path(prepared["run_root"]))
-        spans = harness.flatten_spans(harness.load_otlp_file(Path(started["collector"]["otlp_path"])))
+        spans = harness.flatten_spans(harness.load_otlp_file(Path(started["otel"]["otlp_path"])))
         client = [
             span
             for span in spans
@@ -254,266 +250,84 @@ def test_transaction_variant_emits_real_sqlite_client_spans(
         )
 
 
-def test_collector_start_failure_does_not_execute_business_post(
+def test_injected_traceparent_file_contains_that_trace_server_and_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from assurance_execution.operations.telemetry import driver_trace_headers
+
     harness = _load_harness()
     workspace = tmp_path / "worktree"
     workspace.mkdir()
     prepared = harness.prepare(
         workspace_root=workspace,
         project_dir=workspace / "project",
-        run_root=workspace / "runs" / "fail-collector",
+        run_root=workspace / "runs" / "inject",
     )
     _set_runtime_secrets(monkeypatch)
-    posts: list[str] = []
-    original_urlopen = urlopen
-
-    def counting_urlopen(request, *args, **kwargs):
-        url = request.full_url if hasattr(request, "full_url") else str(request)
-        if "/users/create" in url or "/access_token" in url:
-            posts.append(url)
-        return original_urlopen(request, *args, **kwargs)
-
-    monkeypatch.setattr(harness, "ensure_collector_artifact", lambda: Path("/missing/otelcol-contrib"))
-    with pytest.raises(ValueError, match="Collector"):
-        harness.start(
-            workspace_root=workspace,
-            prepare_receipt=Path(prepared["run_root"]) / "harness-prepare.json",
-            validation_profile="api_db_trace.v1",
-            execution_id=str(uuid.uuid4()),
-        )
-    assert posts == []
-    assert not (Path(prepared["run_root"]) / "owned-process.json").exists()
-
-
-def test_collector_stopped_when_sut_start_fails_after_collector(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    prepared = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project",
-        run_root=workspace / "runs" / "fail-sut-after-collector",
-    )
-    run = Path(prepared["run_root"])
-    _set_runtime_secrets(monkeypatch)
-    (run / "managed-sut.log").write_text("occupied\n", encoding="utf-8")
-    collector_pid: int | None = None
-    try:
-        with pytest.raises(ValueError, match="already exists"):
-            harness.start(
-                workspace_root=workspace,
-                prepare_receipt=run / "harness-prepare.json",
-                validation_profile="api_db_trace.v1",
-                execution_id=str(uuid.uuid4()),
-            )
-        receipt_path = run / "otel" / "collector-process.json"
-        assert receipt_path.is_file()
-        collector_pid = int(json.loads(receipt_path.read_text(encoding="utf-8"))["pid"])
-        with pytest.raises(ProcessLookupError):
-            os.kill(collector_pid, 0)
-        assert not (run / "owned-process.json").exists()
-    finally:
-        if collector_pid is not None:
-            try:
-                os.kill(collector_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-
-def test_incomplete_drain_keeps_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    prepared = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project",
-        run_root=workspace / "runs" / "drain",
-    )
-    _set_runtime_secrets(monkeypatch)
+    execution_id = str(uuid.uuid4())
     started = harness.start(
         workspace_root=workspace,
         prepare_receipt=Path(prepared["run_root"]) / "harness-prepare.json",
         validation_profile="api_db_trace.v1",
-        execution_id=str(uuid.uuid4()),
+        execution_id=execution_id,
     )
-    run = Path(prepared["run_root"])
     try:
+        headers = driver_trace_headers(execution_id)
+        assert "traceparent" in headers
+        trace_id = headers["traceparent"].split("-")[1]
         token = _login(started["base_url"], "runtime-only")
-        _create_user(started["base_url"], token, "drain_user")
-        os.kill(started["pid"], 9)
-        time.sleep(0.2)
-        stopped = harness.stop_collector(run_root=run, drain_timeout_s=0.0)
-        assert stopped["drain_state"] == "incomplete"
-        assert (run / "otel" / "diagnostics.json").is_file()
-        assert Path(started["collector"]["otlp_path"]).exists()
-        assert (run / "otel" / "collector.log").exists()
-    finally:
-        try:
-            harness.stop(
-                workspace_root=workspace,
-                receipt_path=run / "owned-process.json",
-                instance_id=started["instance_id"],
-            )
-        except ValueError:
-            pass
-
-
-def test_attempt_owned_stop_retains_incomplete_drain_diagnostics(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from types import SimpleNamespace
-
-    from assurance_execution.operations.user_attempt import start_user_attempt
-    from tests.product.test_verified_readiness import Secrets
-    from tests.verified_generation_fixture import accepted_verified_execution_input
-
-    project = tmp_path / "project"
-    harness = _load_harness()
-    selected = harness.materialize_project(project_dir=project)
-    root = accepted_verified_execution_input(
-        project,
-        reviewed_source_path="app/controllers/user.py",
-        validation_profile="api_db_trace.v1",
-    ).model_copy(update={"verification": None})
-    private = tmp_path / "private"
-    private.mkdir(mode=0o700)
-    secrets = Secrets(
-        {
-            "sut.authority": json.dumps(
-                {
-                    "kind": "user-invocation-host.v1",
-                    "authority_root": str(private),
-                    "fault": "none",
-                    "frozen_artifact_ref": {
-                        "path": ".aa/user-oracle/runtime-lock.json",
-                        "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
-                    },
-                }
-            ).encode(),
-            **{
-                handle: b"R4-private-password"
-                for handle in (
-                    "sut.credential",
-                    "managed-sut.admin-password",
-                    "managed-sut.reset-password",
-                    "managed-sut.secret-key",
-                )
-            },
+        payload = {
+            "email": "inject_user@example.com",
+            "username": "inject_user",
+            "password": CANARY_PASSWORD,
+            "is_active": True,
+            "is_superuser": False,
+            "dept_id": None,
+            "role_ids": [],
         }
-    )
-    attempt = start_user_attempt(
-        root,
-        source_root=REPO,
-        workspace_root=project,
-        attempt_key=SimpleNamespace(digest="a" * 64),
-        invocation_id="inv",
-        task_id="a" * 64,
-        graph_instance_id="graph",
-        node_id="execution.execute",
-        authorization_scope_digest="b" * 64,
-        secrets=secrets,
-        authority_handle="sut.authority",
-        credential_handle="sut.credential",
-    )
-    run = Path(attempt.authority.run_root)
-    collector = attempt.collector
-    assert collector is not None
-    os.kill(int(collector["pid"]), signal.SIGKILL)
-    time.sleep(0.1)
-    attempt.stop()
-    diagnostics_path = run / "otel" / "diagnostics.json"
-    assert diagnostics_path.is_file()
-    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
-    assert diagnostics["schema_version"] == "1"
-    assert diagnostics["drain_state"] == "incomplete"
-    assert diagnostics["otlp_path"]
-    assert diagnostics["log_path"]
-    assert Path(str(diagnostics["otlp_path"])).exists()
-    assert Path(str(diagnostics["log_path"])).exists()
-
-
-def test_same_attempt_recover_does_not_rebuild_collector(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from types import SimpleNamespace
-
-    from assurance_execution.operations.user_attempt import recover_user_attempt, start_user_attempt
-    from tests.verified_generation_fixture import accepted_verified_execution_input
-    from tests.product.test_verified_readiness import Secrets
-
-    project = tmp_path / "project"
-    harness = _load_harness()
-    selected = harness.materialize_project(project_dir=project)
-    root = accepted_verified_execution_input(
-        project,
-        reviewed_source_path="app/controllers/user.py",
-        validation_profile="api_db_trace.v1",
-    ).model_copy(update={"verification": None})
-    private = tmp_path / "private"
-    private.mkdir(mode=0o700)
-    secrets = Secrets(
-        {
-            "sut.authority": json.dumps(
-                {
-                    "kind": "user-invocation-host.v1",
-                    "authority_root": str(private),
-                    "fault": "none",
-                    "frozen_artifact_ref": {
-                        "path": ".aa/user-oracle/runtime-lock.json",
-                        "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
-                    },
-                }
-            ).encode(),
-            **{
-                handle: b"R4-private-password"
-                for handle in (
-                    "sut.credential",
-                    "managed-sut.admin-password",
-                    "managed-sut.reset-password",
-                    "managed-sut.secret-key",
-                )
+        request = Request(
+            f"{started['base_url']}/api/v1/user/create",
+            data=json.dumps(payload).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "token": token,
+                "traceparent": headers["traceparent"],
+                "aa-execution-id": execution_id,
             },
-        }
-    )
-    kwargs = dict(
-        source_root=REPO,
-        workspace_root=project,
-        attempt_key=SimpleNamespace(digest="a" * 64),
-        invocation_id="inv",
-        task_id="a" * 64,
-        graph_instance_id="graph",
-        node_id="execution.execute",
-        authorization_scope_digest="b" * 64,
-        secrets=secrets,
-        authority_handle="sut.authority",
-        credential_handle="sut.credential",
-    )
-    first = start_user_attempt(root, **kwargs)
-    try:
-        recovered = recover_user_attempt(
-            root,
-            workspace_root=project,
-            source_root=REPO,
-            attempt_key=SimpleNamespace(digest="a" * 64),
-            secrets=secrets,
-            authority_handle="sut.authority",
+            method="POST",
         )
-        assert recovered is not None
-        assert recovered.verification.sut_instance_id == first.verification.sut_instance_id
-        assert recovered.collector["otlp_path"] == first.collector["otlp_path"]
-        assert recovered.collector["endpoint"] == first.collector["endpoint"]
-        assert recovered.collector["pid"] == first.collector["pid"]
+        with urlopen(request, timeout=5) as response:  # noqa: S310
+            created = json.loads(response.read().decode())
+        assert created.get("code") == 200
+        harness.flush_otel(run_root=Path(prepared["run_root"]))
+        records = harness.load_otlp_file(Path(started["otel"]["otlp_path"]))
+        pulled = [span for span in harness.flatten_spans(records) if span.get("trace_id") == trace_id]
+        assert any(
+            span["kind"] == "SERVER"
+            and (
+                "/api/v1/user/create" in str(span.get("name", ""))
+                or any("/api/v1/user/create" in str(value) for value in span["attributes"].values())
+            )
+            for span in pulled
+        )
+        write = [
+            span
+            for span in pulled
+            if span["kind"] == "CLIENT"
+            and span["instrumentation"] == "opentelemetry.instrumentation.tortoiseorm"
+            and span["normalized"]["table"] == "user"
+            and span["normalized"]["operation"] == "INSERT"
+        ]
+        assert write, pulled
     finally:
-        first.stop()
+        harness.stop(
+            workspace_root=workspace,
+            receipt_path=Path(prepared["run_root"]) / "owned-process.json",
+            instance_id=started["instance_id"],
+        )
 
 
-def test_new_attempt_uses_new_files_and_dynamic_endpoints(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_new_attempt_uses_separate_otel_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _load_harness()
     workspace = tmp_path / "worktree"
     workspace.mkdir()
@@ -541,13 +355,11 @@ def test_new_attempt_uses_new_files_and_dynamic_endpoints(
         execution_id=str(uuid.uuid4()),
     )
     try:
-        assert first["collector"]["otlp_path"] != second["collector"]["otlp_path"]
-        assert first["collector"]["otlp_endpoint"] != second["collector"]["otlp_endpoint"]
-        assert first["collector"]["health_endpoint"] != second["collector"]["health_endpoint"]
+        assert first["otel"]["otlp_path"] != second["otel"]["otlp_path"]
         assert first["base_url"] != second["base_url"]
-        locked = json.loads((FIXTURE / "runtime-lock.json").read_text())["collector"]
-        assert first["collector"]["sampler"] == locked["sampler"]
-        assert second["collector"]["export_protocol"] == locked["export_protocol"]
+        assert "collector" not in first
+        assert "collector" not in second
+        assert not (Path(first_prep["run_root"]) / "otel" / "collector-process.json").exists()
     finally:
         harness.stop(
             workspace_root=workspace,
@@ -627,46 +439,3 @@ def test_unknown_semconv_fails_on_live_processor_export_path() -> None:
         )
     finally:
         provider.shutdown()
-
-
-def test_collector_health_body_matches_probe_contract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from assurance_execution.operations.readiness import authenticate_collector_readiness
-    from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
-
-    harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    prepared = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project",
-        run_root=workspace / "runs" / "health",
-    )
-    _set_runtime_secrets(monkeypatch)
-    execution_id = "00000000-0000-4000-8000-000000000099"
-    started = harness.start(
-        workspace_root=workspace,
-        prepare_receipt=Path(prepared["run_root"]) / "harness-prepare.json",
-        validation_profile="api_db_trace.v1",
-        execution_id=execution_id,
-    )
-    try:
-        receipt = CollectorReadinessReceiptV1.model_validate(started["collector"]["readiness"])
-        authenticate_collector_readiness(
-            receipt,
-            sut_instance_id=started["instance_id"],
-            execution_id=execution_id,
-            configuration_digest=receipt.configuration_digest,
-            authorization_scope_digest=receipt.authorization_scope_digest,
-            activity_receipt_digest=receipt.activity_receipt_digest,
-        )
-        with urlopen(receipt.collector_endpoint, timeout=2) as response:  # noqa: S310
-            body = json.loads(response.read().decode())
-        assert body == {"probe_nonce": receipt.probe_nonce, "execution_id": execution_id}
-    finally:
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=Path(prepared["run_root"]) / "owned-process.json",
-            instance_id=started["instance_id"],
-        )

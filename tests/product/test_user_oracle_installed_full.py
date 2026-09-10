@@ -1015,7 +1015,6 @@ def _drive_trace_full(tmp_path, installed_sources, monkeypatch, *, fault: str, c
         ("drop-write-span", "CH-USER-DROP-WRITE"),
         ("broken-context", "CH-USER-BROKEN-CONTEXT"),
         ("stale-trace", "CH-USER-STALE-TRACE"),
-        ("drain-timeout", "CH-USER-DRAIN-TIMEOUT"),
         ("early-completed", "CH-USER-EARLY-COMPLETED"),
         ("refactor", "CH-USER-REFACTOR"),
     ),

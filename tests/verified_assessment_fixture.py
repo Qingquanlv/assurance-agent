@@ -402,14 +402,8 @@ def _materialization_request(
             elif producer_seal:
                 otel = run_root / "otel"
                 otel.mkdir(parents=True, exist_ok=True)
-                (otel / "traces.jsonl").write_bytes(raw)
+                (otel / "observed.otlp.jsonl").write_bytes(raw)
                 (otel / "flush-receipt.json").write_text(json.dumps({"state": "flushed"}), encoding="utf-8")
-                finished = __import__("subprocess").Popen(["true"])
-                finished.wait()
-                (otel / "collector-process.json").write_text(
-                    json.dumps({"pid": finished.pid, "otlp_endpoint": "http://127.0.0.1:1"}),
-                    encoding="utf-8",
-                )
                 _complete_trace_evidence(journal, plan, manifest, run_root)
             elif truncated_otlp:
                 raw = raw[:-12]
@@ -442,7 +436,6 @@ def _materialization_request(
                     sut_instance_id="sut",
                     driver_flush={"state": "complete"},
                     sut_flush={"state": "complete"},
-                    collector_drain={"state": "complete"},
                 )
         action_ref = next(
             EvidenceArtifactRefV1(

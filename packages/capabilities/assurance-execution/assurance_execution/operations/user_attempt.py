@@ -389,34 +389,11 @@ def start_user_attempt(
         collector_receipt = None
         collector_export = None
         if root.validation_profile == "api_db_trace.v1":
-            from datetime import datetime, timedelta, timezone
-
-            from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
-
-            public = started.get("collector")
-            if not isinstance(public, dict) or not isinstance(public.get("readiness"), dict):
-                raise ValueError("NOT_READY: attempt-bound Collector/OTel lifecycle is required")
-            now = datetime.now(timezone.utc)
-            receipt = CollectorReadinessReceiptV1.model_validate(
-                {
-                    **public["readiness"],
-                    "sut_instance_id": str(started["instance_id"]),
-                    "execution_id": execution_id,
-                    "configuration_digest": root.verification_config_digest,
-                    "authorization_scope_digest": authorization_scope_digest,
-                    "activity_receipt_digest": activity_digest,
-                    "issued_at": now,
-                    "checked_at": now,
-                    "expires_at": now + timedelta(seconds=60),
-                }
-            )
-            collector_handle = "sut.collector"
-            collector_receipt = receipt.model_dump(mode="json")
+            public = started.get("otel")
+            if not isinstance(public, dict) or not public.get("otlp_path"):
+                raise ValueError("NOT_READY: attempt-bound OTel file export is required")
             collector_export = {
-                "pid": public["pid"],
-                "endpoint": public["health_endpoint"],
                 "otlp_path": public["otlp_path"],
-                "otlp_endpoint": public["otlp_endpoint"],
             }
         record = RetainedUserAttempt(
             authority=authority,

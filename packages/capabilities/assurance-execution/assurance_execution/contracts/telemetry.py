@@ -392,7 +392,8 @@ def check_trace_requirements(
         completion.state == "complete"
         and completion.execution_id == manifest.execution_id
         and completion.sut_instance_id == manifest.sut.instance_id
-        and completion.collector_drain.state == "complete"
+        and completion.driver_flush.state == "complete"
+        and completion.sut_flush.state == "complete"
         and completion.archive.state == "complete"
         and completion.archive.size > 0
     )

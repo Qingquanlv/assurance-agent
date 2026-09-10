@@ -26,9 +26,9 @@ from assurance_execution.operations.sqlite_oracle import _failed, observe_user
 from assurance_execution.operations.record_publication import _publish_exclusive, publish_record
 from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_execution.operations.telemetry import (
-    collector_otlp_endpoint,
     flush_driver_provider,
     load_otlp_records,
+    observed_otlp_path,
     seal_incomplete_telemetry,
     seal_telemetry_artifacts,
     start_driver_client_span,
@@ -249,7 +249,7 @@ def execute_frozen_action(
     journal: ActionJournal,
     credential: bytes,
     control: ActionControl | None = None,
-    otlp_endpoint: str | None = None,
+    otlp_file: Path | None = None,
 ) -> None:
     """Execute once; no terminal record after a crash ever authorizes another POST."""
     credential_document = _credentials(credential)
@@ -278,9 +278,17 @@ def execute_frozen_action(
         driver_span, extra_headers = start_driver_client_span(
             manifest.execution_id,
             manifest.sut.base_url + plan.action.path,
-            otlp_endpoint=otlp_endpoint,
+            otlp_file=otlp_file,
             sut_instance_id=manifest.sut.instance_id,
         )
+        traceparent = extra_headers.get("traceparent", "")
+        parts = traceparent.split("-")
+        if otlp_file is not None and len(parts) >= 2 and parts[1]:
+            marker = Path(otlp_file).parent / "request-trace.json"
+            marker.write_text(
+                json.dumps({"execution_id": manifest.execution_id, "trace_id": parts[1]}) + "\n",
+                encoding="utf-8",
+            )
     try:
         try:
             control.require(12)  # Do not dispatch if HTTP and observer bounds cannot fit.
@@ -545,12 +553,44 @@ def _collector_completion(journal: ActionJournal, plan: CaseExecutionPlanV1) -> 
         return EvidenceCompletionV1(state="error", reason="telemetry_completion_missing")
     if completion.state == "complete":
         return EvidenceCompletionV1(state="complete")
-    if completion.collector_drain.state == "timeout":
-        return EvidenceCompletionV1(state="timeout", reason=completion.collector_drain.reason)
     return EvidenceCompletionV1(
         state="error",
-        reason=completion.collector_drain.reason or completion.archive.reason or "collector_incomplete",
+        reason=completion.archive.reason or "telemetry_incomplete",
     )
+
+
+def _request_trace_id(run_root: Path, execution_id: str, explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    marker = Path(run_root) / "otel" / "request-trace.json"
+    if marker.is_file():
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = {}
+        if isinstance(payload, dict) and payload.get("execution_id") == execution_id:
+            value = payload.get("trace_id")
+            if isinstance(value, str) and value:
+                return value
+    source = observed_otlp_path(run_root)
+    if not source.is_file():
+        return None
+    try:
+        spans = load_otlp_records(source, execution_id)
+    except ValueError:
+        return None
+    driver = next(
+        (
+            span
+            for span in spans
+            if span.get("instrumentation") == "assurance.execution.http-driver" and span.get("trace_id")
+        ),
+        None,
+    )
+    if driver is not None:
+        return str(driver["trace_id"])
+    ids = {str(span.get("trace_id") or "") for span in spans if span.get("trace_id")}
+    return next(iter(ids)) if len(ids) == 1 else None
 
 
 def _complete_trace_evidence(
@@ -558,50 +598,36 @@ def _complete_trace_evidence(
     plan: CaseExecutionPlanV1,
     manifest: VerificationManifestV1,
     run_root: Path,
+    trace_id: str | None = None,
 ) -> None:
     if plan.validation_profile != "api_db_trace.v1":
         return
     if (journal.root / TELEMETRY_COMPLETION_NAME).is_file():
         return
-    from assurance_execution.operations.telemetry import drain_owned_collector, flush_sut_provider
+    from assurance_execution.operations.telemetry import flush_sut_provider
 
     driver = flush_driver_provider()
     sut = flush_sut_provider(manifest.sut.base_url, run_root)
-    prepare_fault = "none"
-    prepare_path = Path(run_root) / "harness-prepare.json"
-    if prepare_path.is_file():
-        try:
-            prepared = json.loads(prepare_path.read_bytes())
-        except (OSError, ValueError):
-            prepared = {}
-        if isinstance(prepared, dict) and isinstance(prepared.get("fault"), str):
-            prepare_fault = prepared["fault"]
-    drain = drain_owned_collector(run_root, timeout_s=0.0 if prepare_fault == "drain-timeout" else 5.0)
-    if prepare_fault == "drain-timeout":
-        drain = {"state": "timeout", "reason": str(drain.get("reason") or "drain_timeout")}
+    source = observed_otlp_path(run_root)
+    request_trace = _request_trace_id(run_root, manifest.execution_id, trace_id)
+    if not source.is_file():
         seal_incomplete_telemetry(
             evidence_root=journal.root,
             execution_id=manifest.execution_id,
             sut_instance_id=manifest.sut.instance_id,
             driver_flush=driver,
             sut_flush=sut,
-            collector_drain=drain,
-            reason=str(drain["reason"]),
+            reason="otel_export_missing",
         )
         return
-    source = run_root / "otel" / "traces.jsonl"
-    if not source.is_file():
-        reason = "collector_export_missing"
-        if drain.get("state") == "timeout":
-            reason = str(drain.get("reason") or "drain_timeout")
+    if not request_trace:
         seal_incomplete_telemetry(
             evidence_root=journal.root,
             execution_id=manifest.execution_id,
             sut_instance_id=manifest.sut.instance_id,
             driver_flush=driver,
             sut_flush=sut,
-            collector_drain=drain,
-            reason=reason,
+            reason="request_trace_id_missing",
         )
         return
     try:
@@ -612,7 +638,7 @@ def _complete_trace_evidence(
             sut_instance_id=manifest.sut.instance_id,
             driver_flush=driver,
             sut_flush=sut,
-            collector_drain=drain,
+            trace_id=request_trace,
         )
     except ValueError:
         seal_incomplete_telemetry(
@@ -621,7 +647,6 @@ def _complete_trace_evidence(
             sut_instance_id=manifest.sut.instance_id,
             driver_flush=driver,
             sut_flush=sut,
-            collector_drain=drain,
             reason="otlp_truncated",
         )
 
@@ -844,7 +869,7 @@ class VerifiedExecutionHandler:
                 journal,
                 credential,
                 control,
-                collector_otlp_endpoint(Path(authority.run_root))
+                observed_otlp_path(Path(authority.run_root))
                 if plan.validation_profile == "api_db_trace.v1"
                 else None,
             ),

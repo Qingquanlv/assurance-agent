@@ -41,6 +41,7 @@ def _write_live_marker(path: Path, payload: dict[str, object]) -> None:
 async def lifespan(app: FastAPI):
     await init_data()
     from app.benchmark_faults import install
+
     install()
     marker = Path(os.environ["AA_SUT_LIVE_MARKER"])
     identity = {
@@ -58,7 +59,7 @@ async def lifespan(app: FastAPI):
         },
     )
     yield
-    if os.environ.get("AA_SUT_OTEL_ENDPOINT"):
+    if os.environ.get("AA_SUT_OTEL_FILE"):
         import bootstrap
 
         bootstrap.flush_and_shutdown()
@@ -80,7 +81,7 @@ def create_app() -> FastAPI:
 
 
 _otel_provider = None
-if os.environ.get("AA_SUT_OTEL_ENDPOINT"):
+if os.environ.get("AA_SUT_OTEL_FILE"):
     import bootstrap
 
     _otel_provider = bootstrap.install_otel()

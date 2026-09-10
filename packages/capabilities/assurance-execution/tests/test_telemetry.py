@@ -289,11 +289,12 @@ def test_load_otlp_records_returns_deduped_execution_spans(tmp_path: Path) -> No
     raw = correlated_otlp()
     path = tmp_path / "telemetry.otlp.jsonl"
     path.write_bytes(raw + raw)
-    records = load_otlp_records(path, EXECUTION_ID)
+    records = load_otlp_records(path, EXECUTION_ID, trace_id=TRACE_ID)
     ids = {(item["trace_id"], item["span_id"]) for item in records}
     assert (TRACE_ID, DRIVER) in ids
     assert (TRACE_ID, WRITE) in ids
     assert len(ids) == len(records)
+    assert all(item["trace_id"] == TRACE_ID for item in records)
 
 
 def test_load_otlp_records_rejects_conflicting_duplicate_span(tmp_path: Path) -> None:
@@ -324,7 +325,7 @@ def test_seal_writes_otlp_and_completion_only_after_export(tmp_path: Path) -> No
         sut_instance_id="sut",
         driver_flush={"state": "complete"},
         sut_flush={"state": "complete"},
-        collector_drain={"state": "complete"},
+        trace_id=TRACE_ID,
     )
     otlp = evidence / "telemetry.otlp.jsonl"
     completion = evidence / "telemetry-completion.json"
@@ -337,8 +338,9 @@ def test_seal_writes_otlp_and_completion_only_after_export(tmp_path: Path) -> No
     assert sealed["otlp_path"].endswith("telemetry.otlp.jsonl")
 
 
-def test_seal_does_not_mark_complete_when_drain_times_out(tmp_path: Path) -> None:
-    source = tmp_path / "traces.jsonl"
+def test_seal_is_complete_when_flush_and_file_are_readable(tmp_path: Path) -> None:
+    source = tmp_path / "otel" / "observed.otlp.jsonl"
+    source.parent.mkdir()
     source.write_bytes(correlated_otlp())
     evidence = tmp_path / "evidence"
     seal_telemetry_artifacts(
@@ -348,14 +350,15 @@ def test_seal_does_not_mark_complete_when_drain_times_out(tmp_path: Path) -> Non
         sut_instance_id="sut",
         driver_flush={"state": "complete"},
         sut_flush={"state": "complete"},
-        collector_drain={"state": "timeout", "reason": "drain_timeout"},
+        trace_id=TRACE_ID,
     )
     document = TelemetryCompletionV1.model_validate_json(
         (evidence / "telemetry-completion.json").read_bytes()
     )
-    assert document.state == "incomplete"
-    assert document.collector_drain.state == "timeout"
-    assert document.collector_drain.reason == "drain_timeout"
+    assert document.state == "complete"
+    sealed = parse_otlp_records((evidence / "telemetry.otlp.jsonl").read_bytes())
+    assert all(item["trace_id"] == TRACE_ID for item in sealed)
+    assert any(item["span_id"] == WRITE for item in sealed)
 
 
 def test_driver_injects_w3c_context_and_execution_id() -> None:
@@ -402,107 +405,52 @@ def test_oracle_observer_span_cannot_satisfy_user_write(tmp_path: Path) -> None:
     assert observations["trace.user_write"].state == "missing"
 
 
-def _load_user_oracle_harness():
-    import importlib.util
-
-    path = Path(__file__).resolve().parents[4] / "benchmark" / "assurance-product" / "user_oracle_harness.py"
-    spec = importlib.util.spec_from_file_location("user_oracle_harness", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_driver_client_span_is_sealed_from_attempt_collector(tmp_path: Path) -> None:
+def test_driver_injects_traceparent_and_file_keeps_that_trace_chain(tmp_path: Path) -> None:
     from assurance_execution.operations.telemetry import (
-        collector_otlp_endpoint,
-        drain_owned_collector,
         flush_driver_provider,
         load_otlp_records,
+        observed_otlp_path,
         start_driver_client_span,
     )
 
     _reset_otel_provider()
-    harness = _load_user_oracle_harness()
     run_root = tmp_path / "run"
-    run_root.mkdir()
-    receipt = harness.start_collector(run_root=run_root, execution_id=EXECUTION_ID)
-    try:
-        endpoint = collector_otlp_endpoint(run_root)
-        assert endpoint == receipt["otlp_endpoint"]
-        span, headers = start_driver_client_span(
-            EXECUTION_ID,
-            "http://127.0.0.1:1234/api/v1/user/create",
-            otlp_endpoint=endpoint,
-            sut_instance_id="sut",
-        )
-        assert "traceparent" in headers
-        span.end()
-        driver_flush = flush_driver_provider()
-        harness.flush_otel(run_root=run_root)
-        drain = drain_owned_collector(run_root)
-        evidence = tmp_path / "evidence"
-        seal_telemetry_artifacts(
-            evidence_root=evidence,
-            source_otlp=Path(receipt["otlp_path"]),
-            execution_id=EXECUTION_ID,
-            sut_instance_id="sut",
-            driver_flush=driver_flush,
-            sut_flush={"state": "complete"},
-            collector_drain=drain,
-        )
-        sealed = evidence / "telemetry.otlp.jsonl"
-        records = load_otlp_records(sealed, EXECUTION_ID)
-        driver = next(
-            item
-            for item in records
-            if item.get("kind") == "CLIENT"
-            and item.get("instrumentation") == "assurance.execution.http-driver"
-            and item.get("name") == "POST /api/v1/user/create"
-        )
-        server_raw = (
-            json.dumps(
-                _record(
-                    [
-                        (
-                            "opentelemetry.instrumentation.fastapi",
-                            [
-                                _span(
-                                    span_id=SERVER,
-                                    parent=str(driver["span_id"]),
-                                    name="POST /api/v1/user/create",
-                                    kind="SERVER",
-                                    trace_id=str(driver["trace_id"]),
-                                    attrs={**_identity(), "http.route": "/api/v1/user/create"},
-                                )
-                            ],
-                        )
-                    ]
-                )
-            )
-            + "\n"
-        ).encode()
-        plan, prepared = _trace_plan(tmp_path)
-        manifest = _manifest(tmp_path, plan, prepared)
-        completion = TelemetryCompletionV1.model_validate_json(
-            (evidence / "telemetry-completion.json").read_bytes()
-        )
-        observations = {
-            item.obligation_id: item
-            for item in check_trace_requirements(
-                plan,
-                manifest,
-                (*records, *parse_otlp_records(server_raw)),
-                completion,
-            )
-        }
-        assert observations["trace.http"].state == "observed"
-    finally:
-        if (run_root / "otel" / "collector-process.json").is_file():
-            try:
-                harness.stop_collector(run_root=run_root)
-            except Exception:
-                drain_owned_collector(run_root)
+    otel = run_root / "otel"
+    otel.mkdir(parents=True)
+    otlp_path = observed_otlp_path(run_root)
+    span, headers = start_driver_client_span(
+        EXECUTION_ID,
+        "http://127.0.0.1:1234/api/v1/user/create",
+        otlp_file=otlp_path,
+        sut_instance_id="sut",
+    )
+    assert "traceparent" in headers
+    injected = headers["traceparent"].split("-")[1]
+    other = correlated_otlp()
+    other_text = other.decode().replace(TRACE_ID, "b" * 32)
+    otlp_path.write_text(other_text, encoding="utf-8")
+    span.end()
+    driver_flush = flush_driver_provider()
+    evidence = tmp_path / "evidence"
+    seal_telemetry_artifacts(
+        evidence_root=evidence,
+        source_otlp=otlp_path,
+        execution_id=EXECUTION_ID,
+        sut_instance_id="sut",
+        driver_flush=driver_flush,
+        sut_flush={"state": "complete"},
+        trace_id=injected,
+    )
+    records = load_otlp_records(evidence / "telemetry.otlp.jsonl", EXECUTION_ID, trace_id=injected)
+    driver = next(
+        item
+        for item in records
+        if item.get("kind") == "CLIENT"
+        and item.get("instrumentation") == "assurance.execution.http-driver"
+        and item.get("name") == "POST /api/v1/user/create"
+    )
+    assert driver["trace_id"] == injected
+    assert all(item["trace_id"] == injected for item in records)
 
 
 def test_journal_refs_include_sealed_telemetry(tmp_path: Path) -> None:
@@ -521,7 +469,7 @@ def test_journal_refs_include_sealed_telemetry(tmp_path: Path) -> None:
         sut_instance_id="sut",
         driver_flush={"state": "complete"},
         sut_flush={"state": "complete"},
-        collector_drain={"state": "complete"},
+        trace_id=TRACE_ID,
     )
     journal = ActionJournal(evidence, manifest, bytes(range(32)))
     journal.write("action_started", {"execution_id": EXECUTION_ID, "state": "started"})
@@ -540,7 +488,7 @@ def _reset_otel_provider() -> None:
 
     trace_api._TRACER_PROVIDER = None
     trace_api._TRACER_PROVIDER_SET_ONCE = Once()
-    telemetry_ops._DRIVER_EXPORT_ENDPOINT = None
+    telemetry_ops._DRIVER_EXPORT_FILE = None
 
 
 def _user_sqlite(path: Path) -> None:
@@ -649,7 +597,7 @@ def test_client_span_ends_after_post_action_oracle(tmp_path: Path, monkeypatch) 
     assert sequence.index("http") < sequence.index("span_end")
 
 
-def test_missing_collector_file_seals_incomplete_completion(tmp_path: Path) -> None:
+def test_missing_otel_file_seals_incomplete_completion(tmp_path: Path) -> None:
     from assurance_execution.operations.verified_execution import ActionJournal, _complete_trace_evidence
 
     plan, prepared = _trace_plan(tmp_path)
@@ -675,15 +623,9 @@ def test_complete_trace_evidence_embeds_stages_without_extra_json(tmp_path: Path
     run_root = tmp_path / "run"
     otel = run_root / "otel"
     otel.mkdir(parents=True)
-    (otel / "traces.jsonl").write_bytes(correlated_otlp())
+    (otel / "observed.otlp.jsonl").write_bytes(correlated_otlp())
     (otel / "flush-receipt.json").write_text(json.dumps({"state": "flushed"}), encoding="utf-8")
-    finished = __import__("subprocess").Popen(["true"])
-    finished.wait()
-    (otel / "collector-process.json").write_text(
-        json.dumps({"pid": finished.pid, "otlp_endpoint": "http://127.0.0.1:1"}),
-        encoding="utf-8",
-    )
-    _complete_trace_evidence(journal, plan, manifest, run_root)
+    _complete_trace_evidence(journal, plan, manifest, run_root, trace_id=TRACE_ID)
     document = TelemetryCompletionV1.model_validate_json(
         (journal.root / "telemetry-completion.json").read_bytes()
     )
@@ -693,42 +635,31 @@ def test_complete_trace_evidence_embeds_stages_without_extra_json(tmp_path: Path
     assert extra == set()
     assert document.driver_flush.state == "complete"
     assert document.sut_flush.state == "complete"
-    assert document.collector_drain.state == "complete"
+    assert document.state == "complete"
     assert document.driver_flush.receipt_ref is None
     assert document.sut_flush.receipt_ref is None
-    assert document.collector_drain.receipt_ref is None
     assert document.archive.path == "telemetry.otlp.jsonl"
     assert document.archive.digest
 
 
-def test_drain_timeout_fault_stays_incomplete_when_collector_already_exited(tmp_path: Path) -> None:
-    from assurance_execution.operations.verified_execution import ActionJournal, _complete_trace_evidence
+def test_missing_request_trace_id_is_incomplete(tmp_path: Path) -> None:
+    from assurance_execution.operations.telemetry import load_otlp_records
 
+    path = tmp_path / "observed.otlp.jsonl"
+    path.write_bytes(correlated_otlp())
+    records = load_otlp_records(path, EXECUTION_ID, trace_id="c" * 32)
+    assert records == ()
     plan, prepared = _trace_plan(tmp_path)
     manifest = _manifest(tmp_path, plan, prepared)
-    journal = ActionJournal(tmp_path / manifest.evidence_root, manifest, bytes(range(32)))
-    run_root = tmp_path / "run"
-    otel = run_root / "otel"
-    otel.mkdir(parents=True)
-    (otel / "traces.jsonl").write_bytes(correlated_otlp())
-    (otel / "flush-receipt.json").write_text(json.dumps({"state": "flushed"}), encoding="utf-8")
-    finished = __import__("subprocess").Popen(["true"])
-    finished.wait()
-    (otel / "collector-process.json").write_text(
-        json.dumps({"pid": finished.pid, "otlp_endpoint": "http://127.0.0.1:1"}),
-        encoding="utf-8",
+    digest = hashlib.sha256(b"").hexdigest()
+    completion = TelemetryCompletionV1.model_validate(
+        complete_telemetry(digest=digest, size=0, drain="complete")
     )
-    (run_root / "harness-prepare.json").write_text(
-        json.dumps({"fault": "drain-timeout"}),
-        encoding="utf-8",
-    )
-    _complete_trace_evidence(journal, plan, manifest, run_root)
-    document = TelemetryCompletionV1.model_validate_json(
-        (journal.root / "telemetry-completion.json").read_bytes()
-    )
-    assert document.state == "incomplete"
-    assert document.collector_drain.state == "timeout"
-    assert document.state != "complete"
+    observations = {
+        item.obligation_id: item for item in check_trace_requirements(plan, manifest, records, completion)
+    }
+    assert observations["trace.http"].state == "missing"
+    assert observations["trace.user_write"].state == "missing"
 
 
 def test_truncated_otlp_is_incomplete_on_producer(tmp_path: Path) -> None:

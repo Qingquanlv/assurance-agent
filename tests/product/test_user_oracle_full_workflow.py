@@ -29,7 +29,6 @@ FAULTS = (
     "drop-write-span",
     "broken-context",
     "stale-trace",
-    "drain-timeout",
     "early-completed",
     "refactor",
 )
@@ -38,7 +37,6 @@ TRACE_FAULT_MATRIX = (
     ("drop-write-span", "INCOMPLETE", "quality.report", True),
     ("broken-context", "INCOMPLETE", "quality.report", True),
     ("stale-trace", "INCOMPLETE", "quality.report", True),
-    ("drain-timeout", "INCOMPLETE", "quality.report", True),
     ("early-completed", "FAILED", "quality.inspect", True),
     ("refactor", "PASSED", "quality.report", True),
 )

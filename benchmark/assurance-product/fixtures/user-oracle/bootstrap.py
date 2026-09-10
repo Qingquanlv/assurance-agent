@@ -182,13 +182,108 @@ class _NormalizeAndScrubProcessor:
         return True
 
 
+def _otlp_span_kind(kind: object) -> int:
+    value = int(kind.value) if hasattr(kind, "value") else int(kind)  # type: ignore[arg-type]
+    if 0 <= value <= 4:
+        return value + 1
+    return value
+
+
+class OTLPFileExporter:
+    """Write one ExportTraceServiceRequest-shaped JSON line per completed span."""
+
+    def __init__(self, output_path: str) -> None:
+        self._jsonl_path = Path(output_path)
+        self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def export(self, spans) -> object:  # noqa: ANN001
+        from opentelemetry.sdk.trace.export import SpanExportResult
+
+        lines = []
+        for span in spans:
+            record = self._span_to_otlp(span)
+            if record:
+                lines.append(json.dumps(record, ensure_ascii=False))
+        if lines:
+            with open(self._jsonl_path, "a", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30_000) -> bool:  # noqa: ARG002
+        return True
+
+    def _span_to_otlp(self, span) -> dict[str, Any] | None:  # noqa: ANN001
+        ctx = span.get_span_context()
+        if not ctx or not ctx.is_valid:
+            return None
+        parent_span_id = format(span.parent.span_id, "016x") if span.parent else ""
+        scope_name = ""
+        if getattr(span, "instrumentation_scope", None):
+            scope_name = span.instrumentation_scope.name or ""
+        span_record: dict[str, Any] = {
+            "traceId": format(ctx.trace_id, "032x"),
+            "spanId": format(ctx.span_id, "016x"),
+            "name": span.name,
+            "kind": _otlp_span_kind(span.kind),
+            "startTimeUnixNano": str(span.start_time or 0),
+            "endTimeUnixNano": str(span.end_time or 0),
+            "attributes": self._encode_attrs(dict(span.attributes or {})),
+            "status": {"code": int(span.status.status_code.value) if span.status else 0},
+        }
+        if parent_span_id:
+            span_record["parentSpanId"] = parent_span_id
+        resource_attrs = []
+        resource = getattr(span, "resource", None)
+        attributes = getattr(resource, "attributes", None) if resource is not None else None
+        if attributes:
+            resource_attrs = self._encode_attrs(dict(attributes))
+        if not resource_attrs:
+            resource_attrs = self._encode_attrs(
+                {
+                    "service.name": "user-oracle-sut",
+                    "service.instance.id": os.environ.get("AA_SUT_INSTANCE_ID", "unknown"),
+                }
+            )
+        return {
+            "resourceSpans": [
+                {
+                    "resource": {"attributes": resource_attrs},
+                    "scopeSpans": [{"scope": {"name": scope_name}, "spans": [span_record]}],
+                }
+            ]
+        }
+
+    @staticmethod
+    def _encode_attrs(attrs: dict[str, Any]) -> list[dict[str, Any]]:
+        encoded: list[dict[str, Any]] = []
+        for key, value in attrs.items():
+            if isinstance(value, bool):
+                encoded.append({"key": key, "value": {"boolValue": value}})
+            elif isinstance(value, int):
+                encoded.append({"key": key, "value": {"intValue": str(value)}})
+            elif isinstance(value, float):
+                encoded.append({"key": key, "value": {"doubleValue": value}})
+            elif isinstance(value, (list, tuple)):
+                encoded.append(
+                    {
+                        "key": key,
+                        "value": {"arrayValue": {"values": [{"stringValue": str(item)} for item in value]}},
+                    }
+                )
+            else:
+                encoded.append({"key": key, "value": {"stringValue": str(value)}})
+        return encoded
+
+
 def install_otel():
-    """Install the attempt-bound provider from controlled environment only."""
-    endpoint = os.environ.get("AA_SUT_OTEL_ENDPOINT")
-    if not endpoint:
+    """Install official instrumentors and a Demoso-style in-process file exporter."""
+    output = os.environ.get("AA_SUT_OTEL_FILE")
+    if not output:
         return None
     from opentelemetry import trace
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -201,9 +296,6 @@ def install_otel():
         sampler = ParentBased(ALWAYS_OFF)
     else:
         raise ValueError(f"unsupported OTel sampler: {sampler_name}")
-    protocol = os.environ.get("AA_SUT_OTEL_PROTOCOL", "http/protobuf")
-    if protocol != "http/protobuf":
-        raise ValueError(f"unsupported OTel export protocol: {protocol}")
     provider = TracerProvider(
         sampler=sampler,
         resource=Resource.create(
@@ -213,10 +305,7 @@ def install_otel():
             }
         ),
     )
-    traces = endpoint.rstrip("/") + "/v1/traces"
-    provider.add_span_processor(
-        _NormalizeAndScrubProcessor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=traces)))
-    )
+    provider.add_span_processor(_NormalizeAndScrubProcessor(SimpleSpanProcessor(OTLPFileExporter(output))))
     trace.set_tracer_provider(provider)
     return provider
 
