@@ -701,6 +701,36 @@ def test_complete_trace_evidence_embeds_stages_without_extra_json(tmp_path: Path
     assert document.archive.digest
 
 
+def test_drain_timeout_fault_stays_incomplete_when_collector_already_exited(tmp_path: Path) -> None:
+    from assurance_execution.operations.verified_execution import ActionJournal, _complete_trace_evidence
+
+    plan, prepared = _trace_plan(tmp_path)
+    manifest = _manifest(tmp_path, plan, prepared)
+    journal = ActionJournal(tmp_path / manifest.evidence_root, manifest, bytes(range(32)))
+    run_root = tmp_path / "run"
+    otel = run_root / "otel"
+    otel.mkdir(parents=True)
+    (otel / "traces.jsonl").write_bytes(correlated_otlp())
+    (otel / "flush-receipt.json").write_text(json.dumps({"state": "flushed"}), encoding="utf-8")
+    finished = __import__("subprocess").Popen(["true"])
+    finished.wait()
+    (otel / "collector-process.json").write_text(
+        json.dumps({"pid": finished.pid, "otlp_endpoint": "http://127.0.0.1:1"}),
+        encoding="utf-8",
+    )
+    (run_root / "harness-prepare.json").write_text(
+        json.dumps({"fault": "drain-timeout"}),
+        encoding="utf-8",
+    )
+    _complete_trace_evidence(journal, plan, manifest, run_root)
+    document = TelemetryCompletionV1.model_validate_json(
+        (journal.root / "telemetry-completion.json").read_bytes()
+    )
+    assert document.state == "incomplete"
+    assert document.collector_drain.state == "timeout"
+    assert document.state != "complete"
+
+
 def test_truncated_otlp_is_incomplete_on_producer(tmp_path: Path) -> None:
     from assurance_execution.operations.verified_execution import ActionJournal, collect_facts
 

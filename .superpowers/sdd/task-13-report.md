@@ -199,3 +199,47 @@ $ uv run pytest \
 
 Warnings were pre-existing Pydantic `Field(example=...)` deprecations in
 `benchmark/vue-fastapi-admin/app/schemas/depts.py`.
+
+## Review-findings fix (2026-09-10, after b144591e)
+
+Did not amend `b144591e`. Did not invent live OpenCode / Agent outcomes.
+
+Important 1: `test_trace_full_matrix_stops_at_product_boundary` now drives
+`broken-context`, `stale-trace`, and `drain-timeout` through `_drive_trace_full`
+with the same `_fault_result_errors` / no-healing / product-boundary checks.
+
+Important 2: bound `drain-timeout` forces `collector_drain.state=timeout` and
+`seal_incomplete_telemetry`, so a collector that already exited cannot race
+to `state=complete`. Covered by
+`test_drain_timeout_fault_stays_incomplete_when_collector_already_exited`.
+
+```text
+$ UV_OFFLINE=true uv run --no-sync pytest \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_drain_timeout_fault_stays_incomplete_when_collector_already_exited \
+    -q --tb=short
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___ test_drain_timeout_fault_stays_incomplete_when_collector_already_exited ____
+packages/capabilities/assurance-execution/tests/test_telemetry.py:729: in test_drain_timeout_fault_stays_incomplete_when_collector_already_exited
+    assert document.state == "incomplete"
+E   AssertionError: assert 'complete' == 'incomplete'
+1 failed in 1.13s
+```
+
+```text
+$ UV_OFFLINE=true uv run --no-sync pytest \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_drain_timeout_fault_stays_incomplete_when_collector_already_exited \
+    -q --tb=short
+.                                                                        [100%]
+1 passed in 1.09s
+```
+
+```text
+$ UV_OFFLINE=true uv run --no-sync pytest \
+  tests/product/test_user_oracle_installed_full.py::test_trace_full_matrix_stops_at_product_boundary \
+  tests/product/test_user_oracle_installed_full.py::test_installed_refactor_reaches_quality_report_and_achieved \
+  packages/capabilities/assurance-execution/tests/test_telemetry.py \
+  -q
+.........................                                                [100%]
+25 passed in 462.06s (0:07:42)
+```

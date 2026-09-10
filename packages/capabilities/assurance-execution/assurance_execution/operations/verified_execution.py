@@ -571,6 +571,18 @@ def _complete_trace_evidence(
         if isinstance(prepared, dict) and isinstance(prepared.get("fault"), str):
             prepare_fault = prepared["fault"]
     drain = drain_owned_collector(run_root, timeout_s=0.0 if prepare_fault == "drain-timeout" else 5.0)
+    if prepare_fault == "drain-timeout":
+        drain = {"state": "timeout", "reason": str(drain.get("reason") or "drain_timeout")}
+        seal_incomplete_telemetry(
+            evidence_root=journal.root,
+            execution_id=manifest.execution_id,
+            sut_instance_id=manifest.sut.instance_id,
+            driver_flush=driver,
+            sut_flush=sut,
+            collector_drain=drain,
+            reason=str(drain["reason"]),
+        )
+        return
     source = run_root / "otel" / "traces.jsonl"
     if not source.is_file():
         reason = "collector_export_missing"
