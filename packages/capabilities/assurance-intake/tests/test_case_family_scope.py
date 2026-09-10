@@ -139,6 +139,9 @@ async def _finalize(
         review_path.parent.mkdir(parents=True, exist_ok=True)
         review_path.write_text(json.dumps(structured), encoding="utf-8")
         (stage / artifacts[0]).write_text("# Review\n", encoding="utf-8")
+        product_source = project / "src/menu.py"
+        product_source.parent.mkdir(parents=True, exist_ok=True)
+        product_source.write_text("def create_menu():\n    return None\n", encoding="utf-8")
         selected = []
         handler = CaseReviewFinalizeHandler()
     result = AgentRunResult(

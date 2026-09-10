@@ -955,13 +955,17 @@ def test_expected_verified_fault_is_a_successful_benchmark_without_export(
 ) -> None:
     runner = _load_runner()
     change_id = "CH-USER-FAULT"
+    verification_payload = json.dumps({"verdict": "FAILED"}).encode()
+    verification_path = tmp_path / "qa/changes/CH-USER-FAULT/inspect/verification.json"
+    verification_path.parent.mkdir(parents=True, exist_ok=True)
+    verification_path.write_bytes(verification_payload)
     terminal = _achieved_status(change_id=change_id)
     terminal.update(
         {
             "invocation_id": change_id,
-            "status": "completed",
+            "status": "failed",
             "terminal_reason": "not_achieved:verification_failed",
-            "change": {"change_id": change_id, "state": "stopped"},
+            "change": {"change_id": change_id, "state": "failed"},
             "execution_gate": {
                 "validation_profile": "api_db.v1",
                 "batch_id": "batch-user-fault",
@@ -974,7 +978,10 @@ def test_expected_verified_fault_is_a_successful_benchmark_without_export(
         "inspection": {
             "batch_id": "batch-user-fault",
             "verification_status": "FAILED",
-            "verification_ref": {"path": "verification.json", "digest": "e" * 64},
+            "verification_ref": {
+                "path": "qa/changes/CH-USER-FAULT/inspect/verification.json",
+                "digest": hashlib.sha256(verification_payload).hexdigest(),
+            },
         },
         "report": {},
     }

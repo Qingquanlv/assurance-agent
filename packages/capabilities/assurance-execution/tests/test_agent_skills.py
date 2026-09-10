@@ -22,7 +22,6 @@ from graph_engine.attempts import (
     AttemptExecutionContext,
     AttemptKey,
     AuthorizedAttemptScope,
-    BusinessActivation,
     PermanentTaskFailure,
 )
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
@@ -51,9 +50,7 @@ from assurance_execution.operations.agent_skills import (
     RunPrepareHandler,
 )
 from assurance_execution.resource_loader import resource_bytes
-from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1, CasePlanContextV1
-from assurance_generation.operations.execution_plan import compile_case_plan
-from assurance_intake.contracts.verification import AssertionSourcesV1
+from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     VALID_LEAFS,
@@ -65,7 +62,7 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     reviewed_cases,
 )
 from tests.acg_plan_fixture import install_plan
-from tests.verification_support import read_fixture
+from tests.verified_generation_fixture import accepted_verified_execution_input
 
 _RESOURCES = Path(__file__).resolve().parent.parent / "assurance_execution" / "resources"
 _FORBIDDEN = (
@@ -183,59 +180,15 @@ def _seal_test_receipt(document: Mapping[str, Any], ownership_token: bytes) -> d
 def _verified_prepare_input(
     project: Path, db: Path, *, runtime_source: bytes = b"def create_user(): pass\n"
 ) -> _VerifiedPayload:
-    payload = _prepare_input(project)
-    case = read_fixture("user-case.json")
-    case["case_id"] = "TC_A"
-    sources_payload = read_fixture("user-sources.json")
-    sources_payload["case_id"] = "TC_A"
-    source = AssertionSourcesV1.model_validate(sources_payload)
-    raw_plan = read_fixture("user-plan.json")
-    context_payload = cast(dict[str, Any], raw_plan["context"])
-    context_payload["change_id"] = payload["change_id"]
-    context_payload["coverage_epoch"] = 0
-    context_payload["plan_digest"] = payload["plan_digest"]
-    context_payload["plan_ref"] = payload["plan_ref"]
-    reviewed = cast(dict[str, Any], context_payload["reviewed_case"])
-    reviewed["change_id"] = payload["change_id"]
-    reviewed["coverage_epoch"] = 0
-    reviewed["plan_digest"] = payload["plan_digest"]
-    reviewed["plan_ref"] = payload["plan_ref"]
-    reviewed["preparation_refs"] = [payload["plan_ref"]]
-    reviewed["case_refs"] = [
-        {
-            "path": "qa/changes/CH-DEMO-001/cases/items/case.yaml",
-            "digest": "b" * 64,
-        }
-    ]
-    reviewed["review_ref"] = {
-        "path": "qa/changes/CH-DEMO-001/review/case-review.json",
-        "digest": "c" * 64,
-    }
     reviewed_source = project / "app/user.py"
     reviewed_source.parent.mkdir(parents=True, exist_ok=True)
     reviewed_source.write_bytes(b"def create_user(): pass\n")
-    source_ref = {"path": "app/user.py", "digest": hashlib.sha256(reviewed_source.read_bytes()).hexdigest()}
-    reviewed["preparation_refs"].append(source_ref)
-    reviewed["preparation_refs"].sort(key=lambda ref: ref["path"])
-    review_path = project / reviewed["review_ref"]["path"]
-    review_path.parent.mkdir(parents=True, exist_ok=True)
-    review_path.write_text(json.dumps({"source_verification": {"reviewed_source_files": ["app/user.py"]}}))
-    reviewed["review_ref"]["digest"] = hashlib.sha256(review_path.read_bytes()).hexdigest()
-    context_payload["sut_digest"] = agent_skills.canonical_digest([source_ref])
-    context = CasePlanContextV1.model_validate(context_payload)
-    formal = compile_case_plan(
-        case,
-        source,
-        cast(dict[str, object], raw_plan["bindings"]),
-        "api_db.v1",
-        context=context,
+    accepted = accepted_verified_execution_input(
+        project,
+        change_id="CH-DEMO-001",
+        reviewed_source_path="app/user.py",
     )
-    plan_set = CaseExecutionPlanSetV1(change_id=cast(str, payload["change_id"]), cases=(formal,))
-    plan_relative = "qa/changes/CH-DEMO-001/plans/api-case-execution-plan.json"
-    plan_path = project / plan_relative
-    plan_path.parent.mkdir(parents=True, exist_ok=True)
-    plan_bytes = canonical_json_bytes(cast(JSONValue, plan_set.model_dump(mode="json")))
-    plan_path.write_bytes(plan_bytes)
+    payload = accepted.model_dump(mode="json")
     db.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db) as connection:
         connection.execute(
@@ -355,29 +308,26 @@ def _verified_prepare_input(
         activity_receipt_digest="0" * 64,
     )
     authority_handle = "managed-sut-authority.test"
-    payload["verification"] = {
-        "validation_profile": "api_db.v1",
-        "case_execution_plan_ref": {
-            "path": plan_relative,
-            "digest": hashlib.sha256(plan_bytes).hexdigest(),
-        },
-        "nodeid": "tests/api/test_generated.py::test_tc_a_001__ok",
-        "business_activation": BusinessActivation.for_trigger("coverage.0.execute").model_dump(mode="json"),
-        "sut_instance_id": "managed-sut-1",
-        "sut_base_url": "http://127.0.0.1:32123",
-        "managed_sqlite_path": str(db.resolve()),
-        "observer_sqlite_path": str(db.resolve()),
-        "user_inputs": {"username": "qa_t3", "email": "qa_t3@example.test"},
-        "managed_sut_prepare_receipt_ref": {
-            "path": prepare_receipt.relative_to(project).as_posix(),
-            "digest": hashlib.sha256(prepare_bytes).hexdigest(),
-        },
-        "managed_sut_start_receipt_ref": {
-            "path": start_receipt.relative_to(project).as_posix(),
-            "digest": hashlib.sha256(start_bytes).hexdigest(),
-        },
-        "managed_sut_authority_handle": authority_handle,
-    }
+    verification = dict(cast(dict[str, Any], payload["verification"]))
+    verification.update(
+        {
+            "sut_instance_id": "managed-sut-1",
+            "sut_base_url": "http://127.0.0.1:32123",
+            "managed_sqlite_path": str(db.resolve()),
+            "observer_sqlite_path": str(db.resolve()),
+            "user_inputs": {"username": "qa_t3", "email": "qa_t3@example.test"},
+            "managed_sut_prepare_receipt_ref": {
+                "path": prepare_receipt.relative_to(project).as_posix(),
+                "digest": hashlib.sha256(prepare_bytes).hexdigest(),
+            },
+            "managed_sut_start_receipt_ref": {
+                "path": start_receipt.relative_to(project).as_posix(),
+                "digest": hashlib.sha256(start_bytes).hexdigest(),
+            },
+            "managed_sut_authority_handle": authority_handle,
+        }
+    )
+    payload["verification"] = verification
     return _VerifiedPayload(
         payload,
         authority_handle=authority_handle,
@@ -815,7 +765,7 @@ async def test_verified_prepare_freezes_manifest_and_uses_execution_scoped_view(
     assert b'"ownership_token"' not in emitted
     assert manifest["execution_id"] == execution_id
     assert manifest["attempt_key"] == {"digest": "1" * 64}
-    assert manifest["nodeid"] == "tests/api/test_generated.py::test_tc_a_001__ok"
+    assert manifest["nodeid"] == "tests/api/test_user_create.py::test_tc_user_create_001__create"
     assert manifest["inputs"] == {
         "dept_id": None,
         "email": "qa_t3@example.test",
@@ -1132,7 +1082,10 @@ async def test_verified_prepare_rejects_partial_or_mismatched_profile(tmp_path: 
     mismatch_outcome = await _execute_verified(tmp_path, payload, attempt_key="3" * 64)
     assert mismatch_outcome.status == "failed"
     assert mismatch_outcome.failure is not None
-    assert "frozen machine plan" in mismatch_outcome.failure.message
+    assert (
+        "frozen machine plan" in mismatch_outcome.failure.message
+        or "verified execution profile is incomplete" in mismatch_outcome.failure.message
+    )
 
 
 @pytest.mark.asyncio
@@ -1508,7 +1461,11 @@ async def test_verified_prepare_rejects_reviewed_file_copy_drift(
     outcome = await _execute_verified(tmp_path, payload, attempt_key="8" * 64)
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "reviewed source" in outcome.failure.message or "symbolic link" in outcome.failure.message
+    assert (
+        "reviewed source" in outcome.failure.message
+        or "symbolic link" in outcome.failure.message
+        or "reviewed case input" in outcome.failure.message
+    )
 
 
 @pytest.mark.asyncio

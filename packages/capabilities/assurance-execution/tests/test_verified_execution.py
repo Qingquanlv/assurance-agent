@@ -1301,11 +1301,11 @@ def test_unknown_http_keeps_user_postconditions_missing(managed_sut, monkeypatch
     original_post = verified_execution._post
     posts = []
 
-    async def lose_response(plan, manifest, credential):
+    async def lose_response(plan, manifest, credential, extra_headers=None):
         posts.append(manifest.execution_id)
         if row_count == 0:
             credential = json.dumps({"token": "invalid", "user_password": "host-password"}).encode()
-        await original_post(plan, manifest, credential)
+        await original_post(plan, manifest, credential, extra_headers)
         raise httpx.ReadError("response lost after dispatch")
 
     monkeypatch.setattr(verified_execution, "_post", lose_response)

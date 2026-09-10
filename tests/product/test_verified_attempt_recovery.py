@@ -571,9 +571,7 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
                 await executor.execute(value, scope)
             (project / ".test-crash-cut").unlink()
             if cut.startswith("manifest_"):
-                manifests = list(
-                    workspace.write_root.glob("qa/changes/c/execution/*/manifest.json")
-                )
+                manifests = list(workspace.write_root.glob("qa/changes/c/execution/*/manifest.json"))
                 if cut == "manifest_before_publish":
                     assert manifests == []
                 else:
@@ -618,9 +616,9 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
         import sqlite3
 
         with sqlite3.connect(runs[0] / "runtime/sut/db.sqlite3") as database:
-            assert database.execute(
-                "select count(*) from user where username = 'oracle_user'"
-            ).fetchone()[0] == (0 if cut == "dispatch_started" else 1)
+            assert database.execute("select count(*) from user where username = 'oracle_user'").fetchone()[
+                0
+            ] == (0 if cut == "dispatch_started" else 1)
         if cut in {"sealed", "promoted"}:
             staged = store.seal(workspace.identity)
             if cut == "promoted":
