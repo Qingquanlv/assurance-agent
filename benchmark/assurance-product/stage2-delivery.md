@@ -26,7 +26,7 @@ Matrix stop stages and expected verdicts (bound before full start):
 | --- | --- | --- |
 | no-bridge | generation admission | NOT_READY (not runtime A03) |
 | no-action / skip-oracle / unknown-http | quality.report | INCOMPLETE |
-| drop-business-span / drop-write-span / broken-context / stale-trace / drain-timeout | quality.report | INCOMPLETE |
+| drop-business-span / drop-write-span / broken-context / stale-trace | quality.report | INCOMPLETE |
 | wrong-value / rollback / rollback-success / missing-write | quality.report | FAILED |
 | early-completed | quality.inspect then needs_human (FAILED does not open report) | FAILED |
 | business violation plus missing telemetry | quality.report | FAILED + missing telemetry detail; required set not reduced |

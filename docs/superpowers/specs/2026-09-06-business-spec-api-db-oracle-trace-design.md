@@ -184,7 +184,7 @@ HTTP 超时且执行是否完成未知时，不把当时查不到行直接解释
 
 ### 9.1 接入方式
 
-按 benchmark 的实际技术栈接入 OTel Python SDK、FastAPI instrumentation、官方 `opentelemetry-instrumentation-tortoiseorm` 与 OTLP HTTP exporter。官方 Tortoise 插桩覆盖 SQLite backend 的异步 execute 方法，在调用方上下文创建 CLIENT span 并等待真实数据库调用返回；它符合当前 Tortoise → aiosqlite 路径，优先复用，不另建通用驱动插件。
+按 benchmark 的实际技术栈接入 OTel Python SDK、FastAPI instrumentation、官方 `opentelemetry-instrumentation-tortoiseorm`。导出走 Demoso 模型：SUT 进程内 file exporter 写 JSONL（`observed.otlp.jsonl` / 封存名 `telemetry.otlp.jsonl`），不经上游 Collector。官方 Tortoise 插桩覆盖 SQLite backend 的异步 execute 方法，在调用方上下文创建 CLIENT span 并等待真实数据库调用返回；它符合当前 Tortoise → aiosqlite 路径，优先复用，不另建通用驱动插件。
 
 不能只安装 `opentelemetry-instrumentation-sqlite3` 就声明链路接通：当前 aiosqlite 使用工作线程及连接快捷执行方法，须避免上下文丢失和未经过被包装 cursor 的旁路。实施前锁定兼容版本，以当前 Tortoise 0.23.0 / aiosqlite 0.20.0 的真实 User.save 验证父链、成功/异常及事务变体。库的支持声明不能代替此兼容验收。
 
@@ -203,9 +203,9 @@ flowchart LR
 
 图中 oracle 是独立状态读取，不属于待验证的 SUT 写入链路。即使 observer 自身也被插桩，其 service/scope 和角色须标为 oracle；它的 SELECT span 不能满足 SUT 用户持久化义务。
 
-第一版采用运行期独占的上游 OpenTelemetry Collector，接收 OTLP HTTP 并通过 file exporter 保存原始 OTLP JSONL。执行模块读取并归一化；不自建 APM 查询服务，不以 debug 日志文本作为 Trace 数据接口。
+第一版采用 Demoso 采集：SUT 进程内 file exporter 追加原始 OTLP JSONL。执行模块按本次 `trace_id`（W3C `traceparent`）过滤后归一化；不自建 APM 查询服务，不以 debug 日志文本作为 Trace 数据接口，不启动独占 Collector。
 
-该 exporter 当前为 alpha，因此 SDK/instrumentation/Collector 必须锁定具体版本及 Collector 制品摘要，以样本兼容测试验证 JSONL 解析；运行时版本不支持则预检失败，不静默跳过。file exporter 的原始格式不是本产品的业务契约，产品只公开自己的版本化归一模型。每次尝试使用新文件，不复用旧内容。
+SDK/instrumentation 锁定具体版本；运行时版本不支持则预检失败，不静默跳过。file exporter 的原始格式不是本产品的业务契约，产品只公开自己的版本化归一模型。按 `trace_id` 拉取本次链路，不把文件里其他请求的 span 算进本次判定。独占 SUT/SQLite 不是 Trace 完整性条件。
 
 ### 9.2 业务检查点与 DB 调用约束
 
@@ -229,7 +229,7 @@ Tortoise 插桩不自动保证所有事务 commit/rollback 或被子类覆写的
 
 测试流量配置全量采样，仍需检测导出/读取错误。原始证据指上述受控出口允许导出的 OTLP，保留可用的 resource attributes、spans、events、links 与丢弃计数；第一版仅断言本同步流程的必要关系，未实现的消息 links 裁判不得宣称支持。
 
-API 终态、DB 观察与 telemetry drain 是不同检查点。第一版在动作终态结束 HTTP driver 的 client span；随后在同一完成预算内排空 driver 所属 TracerProvider，并通过 managed SUT 的受控关闭生命周期排空 SUT 的 TracerProvider，两侧都执行适用的 flush/shutdown。两侧完成或得到明确失败/超时后，才有序停止 Collector 并封存文件。执行模块分别记录 driver、SUT、Collector 的完成/失败 receipt；任一必需排空步骤失败不得宣称证据完整。仅等待固定 sleep 或只看“最近无新 span”不能代替该过程。
+API 终态、DB 观察与 telemetry flush 是不同检查点。第一版在动作终态结束 HTTP driver 的 client span；随后 flush driver 与 SUT 的 TracerProvider，再按 `trace_id` 从 JSONL 拉取本次链路。不停止 Collector（没有 Collector）。缺文件、缺本次 `trace_id`、截断或 flush 失败不得宣称证据完整。仅等待固定 sleep 不能代替 flush。
 
 封存前归一化必须排除旧尝试/其他动作的证据。缺少 server、业务检查点或 SUT 数据库调用的必需关联、字段丢失、文件截断或 drain 超时均不得补成完整。晚到证据不能直接覆盖已封存结果；重算必须显式产生同一原始材料集合对应的新评价记录，或启动新尝试。
 

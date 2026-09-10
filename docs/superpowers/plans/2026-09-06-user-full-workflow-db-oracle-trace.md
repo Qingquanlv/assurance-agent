@@ -6,11 +6,13 @@
 
 **Architecture:** 基于当前 Python StateGraph 与 semantic attempt kernel，复用 intake/generation/execution/quality/healing/product 主流程。保留 `execution.execute` / `execution.run` 两个业务节点，改接 execution 所有的稳定 TaskAttemptContract；product 仅装配闭集 profile executor，legacy 委托既有 raw Agent executor，新 profile 委托可恢复的权威执行后端。业务预期归 intake，机器计划归 generation，事实归 execution，业务判定归 quality；沿既有 application 终态认证与 export 扩展门禁。不新增 Agent、产品顶层节点或第二套图引擎。
 
-**Tech Stack:** Python 3.11、uv workspace、Pydantic v2、pytest、SQLite、HTTPX；benchmark 的 FastAPI 0.111.0 / Tortoise ORM 0.23.0 / aiosqlite 0.20.0；OTel Python/FastAPI/Tortoise instrumentation、OTLP HTTP、上游 Collector file exporter。受控 pytest 使用当前已安装 Python 环境中的固定 subprocess 命令与标准输入/输出桥接，SUT/DB 观察仍由宿主执行器管理。Docker/OCI 仅保留为显式运行的可选安全增强实验。
+**Tech Stack:** Python 3.11、uv workspace、Pydantic v2、pytest、SQLite、HTTPX；benchmark 的 FastAPI 0.111.0 / Tortoise ORM 0.23.0 / aiosqlite 0.20.0；OTel Python/FastAPI/Tortoise instrumentation。Trace 按 Demoso：SUT 进程内 `OTLPFileExporter` 写 JSONL，driver 注入 W3C `traceparent`，事后按 `trace_id` 拉取链路。不使用上游 Collector，不把独占 SUT/SQLite 当作 Trace 门禁。Docker/OCI 仅保留为显式运行的可选安全增强实验。
 
 **Spec:** [User 全流程验证规格](../specs/2026-09-06-business-spec-api-db-oracle-trace-design.md)
 
 **2026-09-09 经用户确认的规格边界修订：** 本计划取代 spec §7.1 中“无法提供进程/写集隔离时新 profile 为 NOT_READY”的强沙箱要求。当前信任范围限定为受控本地 benchmark：固定 subprocess 不接收凭据、数据库/证据路径或父级写集，且其任何自报事实都不具备权威性；但不阻止同一 OS 用户下的恶意代码主动探测文件。OCI 强隔离仅作可选实验。spec 的其他业务真实性、证据认证和 A01–A26 要求保持不变。
+
+**2026-09-10 经用户确认：Trace 改走 Demoso 模型，并收缩本 PR。** 参考 `/Users/lvqingquan/Demiso/demoso` 的 `ast_trace.otel_bridge`：给 FastAPI+Tortoise SUT 加官方插桩，进程内写 `observed.otlp.jsonl`（封存名仍可用 `telemetry.otlp.jsonl`），HTTP driver 只注入 `traceparent`，quality/execution 按 `trace_id` 过滤该次链路。删除独占 otelcol-contrib、Collector health_check/drain、每 Attempt 动态 OTLP 端点，以及把独占 SUT/SQLite 写成 Trace 完整性条件的逻辑。`api_db.v1` 业务判定仍用独立 SELECT oracle（可连本次测试进程的同一个库文件）；测试为了可重复仍可起临时 uvicorn，但这不是产品隔离保证。Collector 专属故障（`drain-timeout`）从闭集移除；缺链路/缺 write span 仍为 INCOMPLETE。业务 expected 仍来自已认可需求，不来自 span 属性。
 
 **实施基线与本次 Review：** 最初实施基线为 `1b4187660e273183a9aab71f63fd8ee70d4dddcc`，源 Plan 来自主工作区 `d7e6591a`。2026-09-09 已执行 `git fetch origin main`，固定审查远程 main 为 `99316670ef008d4551926ec76765f0182e5e806b`，当前 HEAD 为 `a025831990fb776187fe03670e2118c9b50e385e`；merge-base 等于该 main。审查命令为 `git diff 99316670...a0258319`，同时审查尚未完成的 T10–T13。本文只更新 `codex/user-full-workflow-db-oracle-trace` worktree 内的实施指引；不合并代码、不修改原工作区文档。
 
