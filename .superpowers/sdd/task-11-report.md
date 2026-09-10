@@ -159,3 +159,63 @@ Harness / runner byte pin after format: `8f337f1feaf2045d226bbc8ad084d35de4fdacc
 | opentelemetry-instrumentation-fastapi | **0.53b1** | official `instrument_app`; SERVER span for `/api/v1/user/create` |
 | opentelemetry-instrumentation-tortoiseorm | **0.53b1** | official `instrument(..., capture_parameters=False)`; CLIENT span for `user`/`INSERT` |
 | FastAPI / tortoise-orm / aiosqlite | 0.111.0 / 0.23.0 / 0.20.0 | unchanged pins; live create + sqlite row |
+
+## Review-finding fixes
+
+Fixed the three Important findings from `task-11-findings.md` on a new commit (did not amend `f503267c`). T12/T13 were not started.
+
+### What changed
+
+1. **Unknown / mixed semconv fails closed on the live processor path.** `_NormalizeAndScrubProcessor` no longer writes `aa.db.semconv=unknown` and no longer exports that span as success. It scrubs, then re-raises so the downstream exporter is not called. `install_otel` wraps the OTLP exporter inside the processor.
+2. **Collector is stopped if SUT bootstrap/Popen fails after Collector start.** `start()` now treats Collector start as committed and stops the Collector on any later `_require_new_output` / bootstrap / `Popen` / readiness failure. Collector-start failure still does not execute a business POST.
+3. **Attempt-owned stop retains drain diagnostics.** `ManagedUserSutHost.stop_owned` / `UserAttempt.stop` now writes the same `otel/diagnostics.json` contract as harness `stop_collector` (`schema_version`, `drain_state`, `otlp_path`, `log_path`, `pid`) when Collector drain is incomplete.
+
+Harness pin after format: `c4a73adf57b9aaf5809c5f5eb6c94a604658a326c585f3728b5b722ac6621998`.
+
+### TDD evidence
+
+RED (covering tests against `f503267c` behavior):
+
+```text
+uv run pytest \
+  benchmark/assurance-product/tests/test_user_otel_compatibility.py::test_unknown_semconv_fails_on_live_processor_export_path \
+  benchmark/assurance-product/tests/test_user_otel_compatibility.py::test_collector_stopped_when_sut_start_fails_after_collector \
+  benchmark/assurance-product/tests/test_user_otel_compatibility.py::test_attempt_owned_stop_retains_incomplete_drain_diagnostics \
+  -q --tb=short
+FFF
+FAILED ... test_unknown_semconv_fails_on_live_processor_export_path
+  assert not True  # exported aa.db.semconv=unknown
+FAILED ... test_collector_stopped_when_sut_start_fails_after_collector
+  Failed: DID NOT RAISE ProcessLookupError  # Collector pid still alive
+FAILED ... test_attempt_owned_stop_retains_incomplete_drain_diagnostics
+  AssertionError: diagnostics.json missing after UserAttempt.stop
+3 failed in 14.78s
+```
+
+GREEN (after the fixes):
+
+```text
+uv run pytest \
+  benchmark/assurance-product/tests/test_user_otel_compatibility.py::test_unknown_semconv_fails_on_live_processor_export_path \
+  benchmark/assurance-product/tests/test_user_otel_compatibility.py::test_collector_stopped_when_sut_start_fails_after_collector \
+  benchmark/assurance-product/tests/test_user_otel_compatibility.py::test_attempt_owned_stop_retains_incomplete_drain_diagnostics \
+  -q --tb=short
+...                                                                      [100%]
+3 passed in 19.86s
+```
+
+### Named suite re-run (commands + output)
+
+```text
+uv run pytest benchmark/assurance-product/tests/test_user_otel_compatibility.py \
+  tests/product/test_behavioral_projection.py::test_harness_modules_do_not_import_runtime_packages -q
+...............                                                          [100%]
+15 passed in 84.27s (0:01:24)
+```
+
+```text
+uv run python benchmark/assurance-product/user_oracle_harness.py verify-otel-compatibility
+..............                                                           [100%]
+14 passed in 84.95s (0:01:24)
+{"command": "verify-otel-compatibility", "runtime_digest": "sha256:106e0a71f3556f286ef239a1e33c48fce04d357aa963cf25c405e819756378f4", "schema_version": "1", "source_digest": "sha256:84c5905d0df6d45e2ce8a5a4f50a36b877e00d8f5e2c38f19fd12b47307b9558", "state": "verified"}
+```

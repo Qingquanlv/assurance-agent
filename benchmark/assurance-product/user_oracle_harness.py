@@ -932,6 +932,10 @@ def stop_collector(*, run_root: Path, drain_timeout_s: float = 5.0) -> dict[str,
             drain_state = "incomplete"
     except ProcessLookupError:
         drain_state = "incomplete"
+    try:
+        os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
     diagnostics = {
         "schema_version": "1",
         "drain_state": drain_state,
@@ -1114,70 +1118,71 @@ def start(
         ):
             raise ValueError("Collector start requires a fixed execution identity")
         collector_receipt = start_collector(run_root=run_root, execution_id=execution_id, python=python)
-    instance_id = str(uuid.uuid4())
-    live_marker = run_root / f"live-{instance_id}.json"
-    process_log = run_root / "managed-sut.log"
-    _require_new_output(run_root, live_marker)
-    _require_new_output(run_root, process_log)
-    environment = _controlled_environment(
-        python=python,
-        run_root=run_root,
-        sqlite_path=db_file,
-        instance_id=instance_id,
-        live_marker=live_marker,
-        runtime_secrets=True,
-        ownership_token=ownership_token,
-    )
-    environment["AA_SUT_FAULT"] = str(prepared.get("fault", "none"))
-    environment["AA_SUT_FAULT_FACTS"] = str(run_root / "fault-facts.jsonl")
-    if collector_receipt is not None:
-        environment["AA_SUT_OTEL_ENDPOINT"] = str(collector_receipt["otlp_endpoint"])
-        environment["AA_SUT_OTEL_PROTOCOL"] = str(collector_receipt["export_protocol"])
-        environment["AA_SUT_OTEL_SAMPLER"] = str(collector_receipt["sampler"])
-        environment["AA_SUT_OTEL_FLUSH_RECEIPT"] = str(run_root / "otel" / "flush-receipt.json")
-        environment["OTEL_EXPORTER_OTLP_ENDPOINT"] = str(collector_receipt["otlp_endpoint"])
-        environment["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
-    subprocess.run(  # noqa: S603
-        [
-            str(python),
-            str(FIXTURE_ROOT / "bootstrap.py"),
-            str(db_file),
-            "--password-env",
-            "AA_SUT_ADMIN_PASSWORD",
-        ],
-        cwd=sut_dir,
-        check=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        env=environment,
-    )
-    listener, port = reserve_loopback_socket()
-    command = [
-        str(python),
-        "-B",
-        "-m",
-        "uvicorn",
-        "app:app",
-        "--fd",
-        str(listener.fileno()),
-        "--no-access-log",
-    ]
-    log_descriptor = _open_new_output(run_root, process_log, mode=0o600)
-    with os.fdopen(log_descriptor, "ab") as stderr:
-        process = subprocess.Popen(  # noqa: S603
-            command,
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        instance_id = str(uuid.uuid4())
+        live_marker = run_root / f"live-{instance_id}.json"
+        process_log = run_root / "managed-sut.log"
+        _require_new_output(run_root, live_marker)
+        _require_new_output(run_root, process_log)
+        environment = _controlled_environment(
+            python=python,
+            run_root=run_root,
+            sqlite_path=db_file,
+            instance_id=instance_id,
+            live_marker=live_marker,
+            runtime_secrets=True,
+            ownership_token=ownership_token,
+        )
+        environment["AA_SUT_FAULT"] = str(prepared.get("fault", "none"))
+        environment["AA_SUT_FAULT_FACTS"] = str(run_root / "fault-facts.jsonl")
+        if collector_receipt is not None:
+            environment["AA_SUT_OTEL_ENDPOINT"] = str(collector_receipt["otlp_endpoint"])
+            environment["AA_SUT_OTEL_PROTOCOL"] = str(collector_receipt["export_protocol"])
+            environment["AA_SUT_OTEL_SAMPLER"] = str(collector_receipt["sampler"])
+            environment["AA_SUT_OTEL_FLUSH_RECEIPT"] = str(run_root / "otel" / "flush-receipt.json")
+            environment["OTEL_EXPORTER_OTLP_ENDPOINT"] = str(collector_receipt["otlp_endpoint"])
+            environment["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
+        subprocess.run(  # noqa: S603
+            [
+                str(python),
+                str(FIXTURE_ROOT / "bootstrap.py"),
+                str(db_file),
+                "--password-env",
+                "AA_SUT_ADMIN_PASSWORD",
+            ],
             cwd=sut_dir,
+            check=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=stderr,
+            stderr=subprocess.PIPE,
             env=environment,
-            pass_fds=(listener.fileno(),),
         )
-    listener.close()
-    base_url = f"http://127.0.0.1:{port}"
-    deadline = time.monotonic() + ready_timeout_s
-    try:
+        listener, port = reserve_loopback_socket()
+        command = [
+            str(python),
+            "-B",
+            "-m",
+            "uvicorn",
+            "app:app",
+            "--fd",
+            str(listener.fileno()),
+            "--no-access-log",
+        ]
+        log_descriptor = _open_new_output(run_root, process_log, mode=0o600)
+        with os.fdopen(log_descriptor, "ab") as stderr:
+            process = subprocess.Popen(  # noqa: S603
+                command,
+                cwd=sut_dir,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                env=environment,
+                pass_fds=(listener.fileno(),),
+            )
+        listener.close()
+        base_url = f"http://127.0.0.1:{port}"
+        deadline = time.monotonic() + ready_timeout_s
         while time.monotonic() < deadline:
             if process.poll() is not None:
                 raise ValueError("managed SUT exited before readiness")
@@ -1234,8 +1239,9 @@ def start(
         receipt = _seal(payload, ownership_token)
         _write_json(run_root, run_root / _PROCESS_RECEIPT, receipt)
     except BaseException:
-        process.terminate()
-        process.wait(timeout=5)
+        if process is not None:
+            process.terminate()
+            process.wait(timeout=5)
         if collector_receipt is not None:
             stop_collector(run_root=run_root, drain_timeout_s=2.0)
         raise

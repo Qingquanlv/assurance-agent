@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import signal
 import sqlite3
 import time
 import uuid
@@ -286,6 +287,43 @@ def test_collector_start_failure_does_not_execute_business_post(
     assert not (Path(prepared["run_root"]) / "owned-process.json").exists()
 
 
+def test_collector_stopped_when_sut_start_fails_after_collector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _load_harness()
+    workspace = tmp_path / "worktree"
+    workspace.mkdir()
+    prepared = harness.prepare(
+        workspace_root=workspace,
+        project_dir=workspace / "project",
+        run_root=workspace / "runs" / "fail-sut-after-collector",
+    )
+    run = Path(prepared["run_root"])
+    _set_runtime_secrets(monkeypatch)
+    (run / "managed-sut.log").write_text("occupied\n", encoding="utf-8")
+    collector_pid: int | None = None
+    try:
+        with pytest.raises(ValueError, match="already exists"):
+            harness.start(
+                workspace_root=workspace,
+                prepare_receipt=run / "harness-prepare.json",
+                validation_profile="api_db_trace.v1",
+                execution_id=str(uuid.uuid4()),
+            )
+        receipt_path = run / "otel" / "collector-process.json"
+        assert receipt_path.is_file()
+        collector_pid = int(json.loads(receipt_path.read_text(encoding="utf-8"))["pid"])
+        with pytest.raises(ProcessLookupError):
+            os.kill(collector_pid, 0)
+        assert not (run / "owned-process.json").exists()
+    finally:
+        if collector_pid is not None:
+            try:
+                os.kill(collector_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
 def test_incomplete_drain_keeps_diagnostics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _load_harness()
     workspace = tmp_path / "worktree"
@@ -322,6 +360,80 @@ def test_incomplete_drain_keeps_diagnostics(tmp_path: Path, monkeypatch: pytest.
             )
         except ValueError:
             pass
+
+
+def test_attempt_owned_stop_retains_incomplete_drain_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from assurance_execution.operations.user_attempt import start_user_attempt
+    from tests.product.test_verified_readiness import Secrets
+    from tests.verified_generation_fixture import accepted_verified_execution_input
+
+    project = tmp_path / "project"
+    harness = _load_harness()
+    selected = harness.materialize_project(project_dir=project)
+    root = accepted_verified_execution_input(
+        project,
+        reviewed_source_path="app/controllers/user.py",
+        validation_profile="api_db_trace.v1",
+    ).model_copy(update={"verification": None})
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    secrets = Secrets(
+        {
+            "sut.authority": json.dumps(
+                {
+                    "kind": "user-invocation-host.v1",
+                    "authority_root": str(private),
+                    "fault": "none",
+                    "frozen_artifact_ref": {
+                        "path": ".aa/user-oracle/runtime-lock.json",
+                        "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
+                    },
+                }
+            ).encode(),
+            **{
+                handle: b"R4-private-password"
+                for handle in (
+                    "sut.credential",
+                    "managed-sut.admin-password",
+                    "managed-sut.reset-password",
+                    "managed-sut.secret-key",
+                )
+            },
+        }
+    )
+    attempt = start_user_attempt(
+        root,
+        source_root=REPO,
+        workspace_root=project,
+        attempt_key=SimpleNamespace(digest="a" * 64),
+        invocation_id="inv",
+        task_id="a" * 64,
+        graph_instance_id="graph",
+        node_id="execution.execute",
+        authorization_scope_digest="b" * 64,
+        secrets=secrets,
+        authority_handle="sut.authority",
+        credential_handle="sut.credential",
+    )
+    run = Path(attempt.authority.run_root)
+    collector = attempt.collector
+    assert collector is not None
+    os.kill(int(collector["pid"]), signal.SIGKILL)
+    time.sleep(0.1)
+    attempt.stop()
+    diagnostics_path = run / "otel" / "diagnostics.json"
+    assert diagnostics_path.is_file()
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics["schema_version"] == "1"
+    assert diagnostics["drain_state"] == "incomplete"
+    assert diagnostics["otlp_path"]
+    assert diagnostics["log_path"]
+    assert Path(str(diagnostics["otlp_path"])).exists()
+    assert Path(str(diagnostics["log_path"])).exists()
 
 
 def test_same_attempt_recover_does_not_rebuild_collector(
@@ -458,6 +570,33 @@ def test_unknown_semconv_fails_preflight() -> None:
                 "instrumentation": "opentelemetry.instrumentation.tortoiseorm",
             }
         )
+
+
+def test_unknown_semconv_fails_on_live_processor_export_path() -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    bootstrap = _load(FIXTURE / "bootstrap.py", "user_oracle_bootstrap")
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(bootstrap._NormalizeAndScrubProcessor())
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("opentelemetry.instrumentation.tortoiseorm")
+    try:
+        with pytest.raises(ValueError, match="semconv"):
+            with tracer.start_as_current_span("INSERT") as span:
+                span.set_attribute("db.system", "sqlite")
+                span.set_attribute("db.system.name", "sqlite")
+        exported = exporter.get_finished_spans()
+        assert not any((item.attributes or {}).get("aa.db.semconv") == "unknown" for item in exported)
+        assert not any(
+            item.instrumentation_scope is not None
+            and item.instrumentation_scope.name == "opentelemetry.instrumentation.tortoiseorm"
+            for item in exported
+        )
+    finally:
+        provider.shutdown()
 
 
 def test_collector_health_body_matches_probe_contract(

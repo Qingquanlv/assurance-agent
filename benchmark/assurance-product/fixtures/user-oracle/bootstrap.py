@@ -116,21 +116,27 @@ def normalize_db_attributes(attributes: dict[str, Any]) -> dict[str, str]:
 
 
 class _NormalizeAndScrubProcessor:
+    def __init__(self, downstream=None) -> None:  # noqa: ANN001
+        self._downstream = downstream
+
     def on_start(self, span, parent_context=None) -> None:  # noqa: ANN001
         return None
 
     def on_end(self, span) -> None:  # noqa: ANN001
         attributes = getattr(span, "_attributes", None)
         if attributes is None:
+            if self._downstream is not None:
+                self._downstream.on_end(span)
             return
         scope = getattr(span, "instrumentation_scope", None)
         name = getattr(scope, "name", "") if scope is not None else ""
         current = dict(attributes)
+        failed: ValueError | None = None
         if name == "opentelemetry.instrumentation.tortoiseorm":
             try:
                 normalized = normalize_db_attributes(current)
-            except ValueError:
-                attributes["aa.db.semconv"] = "unknown"
+            except ValueError as error:
+                failed = error
             else:
                 attributes["aa.db.table"] = normalized["table"]
                 attributes["aa.db.operation"] = normalized["operation"]
@@ -138,11 +144,18 @@ class _NormalizeAndScrubProcessor:
         for key in list(attributes):
             if _SENSITIVE.match(str(key)) and not str(key).startswith("aa.db."):
                 del attributes[key]
+        if failed is not None:
+            raise failed
+        if self._downstream is not None:
+            self._downstream.on_end(span)
 
     def shutdown(self) -> None:
-        return None
+        if self._downstream is not None:
+            self._downstream.shutdown()
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:  # noqa: ARG002
+        if self._downstream is not None:
+            return bool(self._downstream.force_flush(timeout_millis))
         return True
 
 
@@ -178,8 +191,9 @@ def install_otel():
         ),
     )
     traces = endpoint.rstrip("/") + "/v1/traces"
-    provider.add_span_processor(_NormalizeAndScrubProcessor())
-    provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=traces)))
+    provider.add_span_processor(
+        _NormalizeAndScrubProcessor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=traces)))
+    )
     trace.set_tracer_provider(provider)
     return provider
 

@@ -307,7 +307,7 @@ def authenticate_managed_sut_receipts(
     return managed_path, observer_path, identity, authority_digest
 
 
-_MANAGED_HARNESS_SHA256 = "8f337f1feaf2045d226bbc8ad084d35de4fdaccaf966926476f090a839149be3"
+_MANAGED_HARNESS_SHA256 = "c4a73adf57b9aaf5809c5f5eb6c94a604658a326c585f3728b5b722ac6621998"
 
 
 class ManagedUserSutHost:
@@ -499,21 +499,65 @@ class ManagedUserSutHost:
         (run / f"live-{started['instance_id']}.json").unlink(missing_ok=True)
         collector = started.get("collector")
         if isinstance(collector, dict) and isinstance(collector.get("pid"), int):
-            from assurance_execution.operations.readiness import process_birth_identity
+            self._stop_owned_collector(run, collector)
 
-            collector_pid = collector["pid"]
+    def _stop_owned_collector(self, run: Path, collector: Mapping[str, Any]) -> None:
+        """SIGTERM the owned Collector and keep the same drain diagnostics contract."""
+        from assurance_execution.operations.readiness import process_birth_identity
+
+        collector_pid = collector["pid"]
+        otlp_path = collector.get("otlp_path")
+        log_path = collector.get("log_path")
+        birth = collector.get("process_birth_identity")
+        recorded_path = run / "otel" / "collector-process.json"
+        if recorded_path.is_file() and not recorded_path.is_symlink():
             try:
-                if process_birth_identity(collector_pid) == collector.get("process_birth_identity"):
-                    os.kill(collector_pid, signal.SIGTERM)
-                    deadline = time.monotonic() + 5
-                    while time.monotonic() < deadline:
-                        try:
-                            os.kill(collector_pid, 0)
-                        except ProcessLookupError:
-                            break
-                        time.sleep(0.05)
-            except (ValueError, ProcessLookupError, OSError):
-                pass
+                recorded = json.loads(recorded_path.read_bytes())
+            except (OSError, json.JSONDecodeError):
+                recorded = {}
+            if isinstance(recorded, dict):
+                otlp_path = recorded.get("otlp_path", otlp_path)
+                log_path = recorded.get("log_path", log_path)
+                if isinstance(recorded.get("pid"), int):
+                    collector_pid = recorded["pid"]
+                if recorded.get("process_birth_identity"):
+                    birth = recorded.get("process_birth_identity")
+        drain_state = "complete"
+        try:
+            if process_birth_identity(collector_pid) == birth:
+                os.kill(collector_pid, signal.SIGTERM)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if process_birth_identity(collector_pid) is None:
+                        break
+                    time.sleep(0.05)
+                else:
+                    drain_state = "incomplete"
+                    try:
+                        os.kill(collector_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            else:
+                drain_state = "incomplete"
+        except (ValueError, ProcessLookupError, OSError):
+            drain_state = "incomplete"
+        try:
+            os.waitpid(collector_pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        diagnostics = {
+            "schema_version": "1",
+            "drain_state": drain_state,
+            "otlp_path": otlp_path,
+            "log_path": log_path,
+            "pid": collector_pid,
+        }
+        diagnostics_path = run / "otel" / "diagnostics.json"
+        if not diagnostics_path.exists():
+            publish_record(
+                diagnostics_path,
+                (json.dumps(diagnostics, indent=2, sort_keys=True) + "\n").encode(),
+            )
 
 
 def authenticate_managed_sut_readiness(
