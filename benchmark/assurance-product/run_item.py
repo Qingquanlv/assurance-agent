@@ -181,7 +181,7 @@ def _manifest_item(document: Mapping[str, Any], item_id: str, adapter: str) -> d
         raise SystemExit("routing_assignments must equal deployment_binding_routes")
     models = {assignment.get("provider_model") for assignment in routes.values()}
     workers = {assignment.get("worker_profile") for assignment in routes.values()}
-    if models != {"volcengine/deepseek-v4-flash"}:
+    if models != {"volcengine/glm-5.3-flash"}:
         raise SystemExit(f"OpenCode model mismatch: {sorted(models)}")
     if workers != {"max"}:
         raise SystemExit(f"OpenCode worker mismatch: {sorted(workers)}")
@@ -1356,7 +1356,7 @@ def _write_evidence_markdown(path: Path, payload: Mapping[str, Any]) -> None:
         "",
         "## Routing",
         "",
-        "Every prepare ID is locked to `volcengine/deepseek-v4-flash` / `max`.",
+        "Every prepare ID is locked to `volcengine/glm-5.3-flash` / `max`.",
         "",
         "## Status",
         "",
