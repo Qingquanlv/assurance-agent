@@ -380,6 +380,83 @@ process.stdout.write(JSON.stringify(report));
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_opencode_boundary_accepts_a_staged_path_the_agent_repeats_back(tmp_path: Path) -> None:
+    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
+
+    project = tmp_path / "project"
+    write_root = "qa/changes/CH-1/.staging/task-1/attempt-1"
+    logical = "qa/changes/CH-1/plans/api-plan.md"
+    staged = project / write_root / logical
+    staged.parent.mkdir(parents=True)
+    staged.write_text("staged\n", encoding="utf-8")
+    _config, plugin = install_opencode_agents(project)
+    title = workspace_binding_title(
+        session_id="ses-test",
+        agent_profile="assurance-v1-doc-author",
+        project_root=project,
+        write_root=write_root,
+        allowed_outputs=(logical,),
+        task_id="task-1",
+        attempt=1,
+        attempt_id="attempt-1",
+    )
+    driver = r"""
+import { pathToFileURL } from "node:url";
+const pluginPath = process.argv[1];
+const payload = JSON.parse(process.argv[2]);
+const { default: createPlugin } = await import(pathToFileURL(pluginPath).href);
+const hooks = await createPlugin({
+  client: { session: { get: async () => ({ data: payload.session }) } },
+});
+const report = {};
+for (const [name, requested] of [["logical", payload.logical], ["staged", payload.staged]]) {
+  for (const tool of ["edit", "write"]) {
+    const input = { tool, sessionID: payload.session.id, callID: "call-test" };
+    const before = { args: { filePath: requested } };
+    try {
+      await hooks["tool.execute.before"](input, before);
+      report[`${name}.${tool}`] = { touched: before.args.filePath };
+    } catch (error) {
+      report[`${name}.${tool}`] = { error: String(error && error.message) };
+    }
+  }
+}
+process.stdout.write(JSON.stringify(report));
+"""
+    completed = subprocess.run(
+        [
+            shutil.which("node") or "node",
+            "--input-type=module",
+            "-e",
+            driver,
+            str(plugin),
+            json.dumps(
+                {
+                    "session": {
+                        "id": "ses-test",
+                        "directory": str(project.resolve()),
+                        "agent": "assurance-v1-doc-author",
+                        "title": title,
+                    },
+                    "logical": str(project.resolve() / logical),
+                    "staged": str(staged.resolve()),
+                }
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    reported = json.loads(completed.stdout)
+
+    # Repeating a staged path back has to land on the same file the logical path does.
+    for tool in ("edit", "write"):
+        assert reported[f"staged.{tool}"] == reported[f"logical.{tool}"], tool
+        assert reported[f"staged.{tool}"]["touched"] == str(staged.resolve()), tool
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 def test_opencode_boundary_allows_the_canonical_locust_command(tmp_path: Path) -> None:
     from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
 

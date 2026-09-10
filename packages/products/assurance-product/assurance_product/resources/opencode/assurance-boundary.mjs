@@ -185,8 +185,19 @@ const lexicalLogical = (root, candidate) => {
   return { absolute, logical: relative.split(path.sep).join("/") };
 };
 
+// A tool reports the staged physical path it touched, and an agent that repeats that path
+// back means the very same logical output. Resolve the round trip instead of reading it as
+// an escape. An output the binding already names wins, so a write root that legitimately
+// contains its own allowed outputs, as the executor's does, keeps addressing them directly.
+const unstage = (binding, touched) => {
+  if (binding.allowed_outputs.includes(touched)) return touched;
+  const prefix = `${binding.write_root}/`;
+  return touched.startsWith(prefix) ? touched.slice(prefix.length) : touched;
+};
+
 const assertWritable = (binding, root, candidate) => {
-  const { absolute, logical } = lexicalLogical(root, candidate);
+  const { absolute, logical: touched } = lexicalLogical(root, candidate);
+  const logical = unstage(binding, touched);
   const leaf = logical.split("/").at(-1);
   if (logical === "tests" || logical.startsWith("tests/")) {
     throw new Error("Assurance write boundary: path is not allowed");
