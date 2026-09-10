@@ -17,7 +17,11 @@ def accepted_verified_execution_input(
     from assurance_execution.contracts.agent import ExecutionPrepareInputV1, VerifiedExecutionPrepareV1
     from assurance_execution.contracts.verification import FrozenUserInputsV1
     from assurance_generation.contracts.codegen import CodegenMapping
-    from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1, CasePlanContextV1
+    from assurance_generation.contracts.execution_plan import (
+        CaseExecutionPlanSetV1,
+        CasePlanContextV1,
+        ValidationProfile,
+    )
     from assurance_generation.contracts.mapping import ClosedMappingEntryV1, ClosedMappingV1
     from assurance_generation.contracts.workflow import GenerationCycleResultV1
     from assurance_generation.operations.execution_plan import compile_case_plan
@@ -332,8 +336,9 @@ def accepted_verified_execution_input(
     )
     database = project / "verified.sqlite3"
     database.touch()
+    profile = cast(ValidationProfile, validation_profile)
     verification = VerifiedExecutionPrepareV1(
-        validation_profile=validation_profile,
+        validation_profile=profile,
         case_execution_plan_ref=machine_ref,
         nodeid=f"{target}::{symbol}",
         business_activation=BusinessActivation.for_trigger("coverage.2.execute"),
@@ -351,7 +356,7 @@ def accepted_verified_execution_input(
         managed_sut_authority_handle="sut.authority",
     )
     return ExecutionPrepareInputV1(
-        validation_profile=validation_profile,
+        validation_profile=profile,
         verification_config_digest="c" * 64,
         change_id=change_id,
         plan_digest=resolved.plan_digest,

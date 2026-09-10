@@ -2756,7 +2756,7 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
         "path": "src/app.py",
         "digest": hashlib.sha256(source_path.read_bytes()).hexdigest(),
     }
-    assert source_ref in reviewed["preparation_refs"]
+    assert source_ref in cast(list[object], reviewed["preparation_refs"])
     manifest = write_root / "qa/changes/CH-DEMO-001/cases/reviewed-case.json"
     assert json.loads(manifest.read_bytes()) == reviewed
 

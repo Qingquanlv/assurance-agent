@@ -716,7 +716,9 @@ def test_installed_assessment_rejects_missing_or_rewritten_trace(
     project.mkdir()
     request, authority, _ = _materialization_request(project, authenticated=True, trace=True)
     otlp = next(
-        ref for ref in request.execution.raw_evidence_refs if ref.path.endswith("telemetry.otlp.jsonl")
+        ref
+        for ref in cast(VerifiedExecutionCycleResultV1, request.execution).raw_evidence_refs
+        if ref.path.endswith("telemetry.otlp.jsonl")
     )
     path = project / otlp.path
     path.chmod(0o600)

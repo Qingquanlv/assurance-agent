@@ -790,7 +790,7 @@ def _replay_trace_observations(
             raise AssessmentInputError("verified trace raw closure is missing sealed telemetry")
         otlp = b""
     try:
-        spans = parse_otlp_records(otlp)
+        spans = parse_otlp_records(bytes(otlp))
         trace = check_trace_requirements(plan, manifest, spans, completion)
     except ValueError as error:
         if "conflict" in str(error).lower():

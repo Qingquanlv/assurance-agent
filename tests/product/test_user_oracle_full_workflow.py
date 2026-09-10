@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -395,8 +396,9 @@ def test_prepare_adapter_locks_assertion_sources_for_verified_profile():
         candidate_test_families=["api"],
     )
     prepared = adapt_prepare(state)  # pyright: ignore[reportArgumentType]
+    prepared_feature = cast(dict[str, object], prepared["feature_input"])
     assert prepared["assertion_source_paths"] == [source_path]
-    assert prepared["feature_input"]["assertion_source_paths"] == [source_path]
+    assert prepared_feature["assertion_source_paths"] == [source_path]
 
     state.update(
         {
@@ -406,8 +408,9 @@ def test_prepare_adapter_locks_assertion_sources_for_verified_profile():
         }
     )
     cased = adapt_case(state)  # pyright: ignore[reportArgumentType]
+    cased_feature = cast(dict[str, object], cased["feature_input"])
     assert cased["assertion_source_paths"] == [source_path]
-    assert cased["feature_input"]["assertion_source_paths"] == [source_path]
+    assert cased_feature["assertion_source_paths"] == [source_path]
     from typing import get_type_hints
 
     from assurance_product.graphs.state import ProductState
@@ -424,8 +427,9 @@ def test_prepare_adapter_omits_assertion_sources_for_legacy_profile():
         candidate_test_families=["api"],
     )
     prepared = adapt_prepare(state)  # pyright: ignore[reportArgumentType]
+    prepared_feature = cast(dict[str, object], prepared["feature_input"])
     assert "assertion_source_paths" not in prepared
-    assert "assertion_source_paths" not in prepared["feature_input"]
+    assert "assertion_source_paths" not in prepared_feature
 
 
 def test_verified_manifest_item_is_api_only_and_product_input_uses_candidates():

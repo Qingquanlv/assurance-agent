@@ -197,7 +197,8 @@ def test_publish_case_review_uses_finalized_reviewed_case() -> None:
         },
         ReceiptRef(receipt_id="r1", receipt_digest="e" * 64),
     )
-    assert published["reviewed_case"]["preparation_refs"] == finalized["preparation_refs"]
+    reviewed_case = cast(dict[str, object], published["reviewed_case"])
+    assert reviewed_case["preparation_refs"] == finalized["preparation_refs"]
 
 
 def test_publish_case_review_ignores_agent_authored_rounds() -> None:

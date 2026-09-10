@@ -12,7 +12,7 @@ from assurance_quality.contracts.verification import VerificationVerdictV1
 from assurance_quality.operations.verification import evaluate_verification
 from assurance_quality.operations.verification import verification_failure_facts
 from assurance_quality.contracts.decisions import classify_inspection_disposition
-from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
 from assurance_quality.operations.assessment import AssessmentInputError, materialize_assessment_inputs
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from tests.verified_generation_fixture import accepted_verified_execution_input
@@ -27,6 +27,16 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from typing import cast
 
 from tests.verified_assessment_fixture import EXECUTION_ID, _actuals, _evidence, _materialization_request
+
+
+def _verification_path(assessment: AssessmentInputsV1) -> str:
+    ref = assessment.verification_ref
+    assert ref is not None
+    return ref.path
+
+
+def _verified_cycle(request: MaterializeAssessmentInputV1) -> VerifiedExecutionCycleResultV1:
+    return cast(VerifiedExecutionCycleResultV1, request.execution)
 
 
 def _plan(root: Path, *, trace: bool = False):
@@ -392,7 +402,7 @@ def test_authenticated_generated_bridge_defect_is_the_only_repairable_incomplete
     assert assessment.incomplete_execution == cycle
     assert assessment.verification_ref is not None
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "INCOMPLETE"
     assert (verdict.required, verdict.executed, verdict.evaluated, verdict.satisfied) == (
@@ -470,7 +480,7 @@ def test_rollback_and_early_completed_is_failed_via_assessment(tmp_path: Path) -
         authority_handle=handle,
     )
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "FAILED"
     assert verdict.by_id("user.row_count").business_status == "violated"
@@ -493,7 +503,7 @@ def test_business_error_and_missing_telemetry_is_failed_with_missing_evidence(tm
         authority_handle=handle,
     )
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "FAILED"
     assert verdict.by_id("user.email").business_status == "violated"
@@ -515,7 +525,7 @@ def test_helper_insert_rebound_still_passed_via_assessment(tmp_path: Path) -> No
         authority_handle=handle,
     )
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "PASSED"
     assert verdict.by_id("trace.user_write").business_status == "satisfied"
@@ -536,7 +546,7 @@ def test_truncated_otlp_is_incomplete_on_assessment(tmp_path: Path) -> None:
         authority_handle=handle,
     )
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "INCOMPLETE"
     for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
@@ -551,7 +561,7 @@ def test_producer_sealed_legal_trace_passes_authenticated_assessment(tmp_path: P
         trace=True,
         producer_seal=True,
     )
-    journal_root = (tmp_path / request.execution.manifest_ref.path).parent
+    journal_root = (tmp_path / _verified_cycle(request).manifest_ref.path).parent
     extra = {
         path.name
         for path in journal_root.glob("*.json")
@@ -576,7 +586,7 @@ def test_producer_sealed_legal_trace_passes_authenticated_assessment(tmp_path: P
         authority_handle=handle,
     )
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "PASSED"
     completion = json.loads((journal_root / "telemetry-completion.json").read_bytes())
@@ -590,7 +600,7 @@ def test_producer_sealed_legal_trace_passes_authenticated_assessment(tmp_path: P
             assert "/" in receipt["path"]
             assert any(
                 ref.path == receipt["path"] and ref.digest == receipt["digest"]
-                for ref in request.execution.raw_evidence_refs
+                for ref in _verified_cycle(request).raw_evidence_refs
             )
 
 
@@ -601,7 +611,7 @@ def test_missing_collector_export_is_authenticated_incomplete(tmp_path: Path) ->
         trace=True,
         missing_export=True,
     )
-    names = {Path(ref.path).name for ref in request.execution.raw_evidence_refs}
+    names = {Path(ref.path).name for ref in _verified_cycle(request).raw_evidence_refs}
     assert "telemetry-completion.json" in names
     assert "telemetry.otlp.jsonl" not in names
     assessment = materialize_assessment_inputs(
@@ -612,7 +622,7 @@ def test_missing_collector_export_is_authenticated_incomplete(tmp_path: Path) ->
         authority_handle=handle,
     )
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "INCOMPLETE"
     for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
@@ -629,7 +639,7 @@ def test_authenticated_trace_materializer_replays_sealed_otlp(tmp_path: Path) ->
         authority_handle=handle,
     )
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "PASSED"
     assert verdict.by_id("trace.user_write").business_status == "satisfied"
@@ -665,7 +675,7 @@ def test_authenticated_host_journal_is_replayed_before_business_pass(tmp_path: P
 
     assert assessment.verification_ref is not None
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "PASSED"
 
@@ -708,7 +718,7 @@ def test_authenticated_materializer_preserves_terminal_dependencies(
     )
     assert assessment.verification_ref is not None
     verdict = VerificationVerdictV1.model_validate_json(
-        (tmp_path / assessment.verification_ref.path).read_bytes()
+        (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == expected
     assert verdict.by_id("oracle.executed").evidence_status == "observed"
