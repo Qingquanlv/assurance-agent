@@ -43,6 +43,20 @@ def test_encoded_canary_forms_are_detected() -> None:
     assert "[redacted]" in redacted
 
 
+def test_a_described_comparison_is_not_read_as_a_credential_assignment() -> None:
+    described = "TC_DEPT_007 sends an invalid header, so the guard sees token=='dev' and rejects it."
+    assert redact_text(described, canaries=(_SECRET_TEXT,)) == described
+
+    for leaked in (
+        f"OPENCODE_API_KEY={_SECRET_TEXT}",
+        f"password={_SECRET_TEXT}",
+        f"AA_ADMIN_PASSWORD = {_SECRET_TEXT}",
+    ):
+        redacted = redact_text(leaked, canaries=("unrelated-canary",))
+        assert _SECRET_TEXT not in redacted, leaked
+        assert "[redacted]" in redacted, leaked
+
+
 def _durable_blobs(fixture: object, outcome: object) -> tuple[tuple[str, ...], Path]:
     port = fixture.port  # type: ignore[attr-defined]
     context = fixture.context  # type: ignore[attr-defined]

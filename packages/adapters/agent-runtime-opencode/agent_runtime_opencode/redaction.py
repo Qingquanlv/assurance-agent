@@ -18,7 +18,10 @@ _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9-]+"),
     re.compile(r"(?i)api[_-]?key\s*[=:]\s*\S+"),
     re.compile(r"(?i)https?://[^/\s:@]+:[^/\s:@]+@"),
-    re.compile(r"(?i)[A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*\s*=\s*\S+"),
+    # The trailing `(?!=)` keeps a comparison out of the assignment shape. An assurance
+    # product describes the auth tests it writes, so prose like `token=='dev'` names a
+    # literal the test sends, not a credential the run holds.
+    re.compile(r"(?i)[A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*\s*=(?!=)\s*\S+"),
 )
 _DEFAULT_LIMIT = 240
 
