@@ -454,6 +454,96 @@ def test_rollback_with_early_completed_span_is_failed(tmp_path: Path) -> None:
     assert verdict.by_id("trace.user_completed").evidence_status == "observed"
 
 
+def test_rollback_and_early_completed_is_failed_via_assessment(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(
+        tmp_path,
+        authenticated=True,
+        trace=True,
+        row_count=0,
+        early_completed=True,
+    )
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "FAILED"
+    assert verdict.by_id("user.row_count").business_status == "violated"
+    assert verdict.by_id("trace.user_completed").evidence_status == "observed"
+
+
+def test_business_error_and_missing_telemetry_is_failed_with_missing_evidence(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(
+        tmp_path,
+        authenticated=True,
+        trace=True,
+        wrong_email=True,
+        drop_write_span=True,
+    )
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "FAILED"
+    assert verdict.by_id("user.email").business_status == "violated"
+    assert verdict.by_id("trace.user_write").evidence_status == "missing"
+
+
+def test_helper_insert_rebound_still_passed_via_assessment(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(
+        tmp_path,
+        authenticated=True,
+        trace=True,
+        helper=True,
+    )
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "PASSED"
+    assert verdict.by_id("trace.user_write").business_status == "satisfied"
+
+
+def test_truncated_otlp_is_incomplete_on_assessment(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(
+        tmp_path,
+        authenticated=True,
+        trace=True,
+        truncated_otlp=True,
+    )
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "INCOMPLETE"
+    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
+        assert verdict.by_id(obligation).evidence_status == "missing"
+        assert verdict.by_id(obligation).reason == "otlp_truncated"
+
+
 def test_authenticated_trace_materializer_replays_sealed_otlp(tmp_path: Path) -> None:
     request, authority, handle = _materialization_request(tmp_path, authenticated=True, trace=True)
     assessment = materialize_assessment_inputs(

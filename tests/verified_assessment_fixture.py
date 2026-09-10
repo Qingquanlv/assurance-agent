@@ -98,7 +98,14 @@ def _write(root: Path, relative: str, payload: bytes):
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(payload).hexdigest())
 
 
-def _otlp_bytes(execution_id: str, username: str, *, write: bool = True, completed: bool = True) -> bytes:
+def _otlp_bytes(
+    execution_id: str,
+    username: str,
+    *,
+    write: bool = True,
+    completed: bool = True,
+    helper: bool = False,
+) -> bytes:
     def attr(key: str, value: object) -> dict[str, object]:
         return {"key": key, "value": {"stringValue": str(value)}}
 
@@ -141,6 +148,15 @@ def _otlp_bytes(execution_id: str, username: str, *, write: bool = True, complet
             ],
         ),
     ]
+    parent = "c" * 16
+    if helper:
+        groups.append(
+            (
+                "app.users.helpers",
+                [span("f" * 16, "persist_user", 1, parent, identity)],
+            )
+        )
+        parent = "f" * 16
     if write:
         groups.append(
             (
@@ -150,7 +166,7 @@ def _otlp_bytes(execution_id: str, username: str, *, write: bool = True, complet
                         "d" * 16,
                         "user INSERT",
                         3,
-                        "c" * 16,
+                        parent,
                         {
                             **identity,
                             "aa.db.table": "user",
@@ -208,6 +224,8 @@ def _materialization_request(
     trace: bool = False,
     drop_write_span: bool = False,
     early_completed: bool = False,
+    helper: bool = False,
+    truncated_otlp: bool = False,
 ) -> tuple[MaterializeAssessmentInputV1, object | None, str | None]:
     from assurance_execution.contracts.verification import (
         VerifiedProcessLimitsV1,
@@ -374,18 +392,41 @@ def _materialization_request(
                 str(plan.inputs["username"]),
                 write=not drop_write_span,
                 completed=True,
+                helper=helper,
             )
-            source = tmp_path / "sealed-traces.jsonl"
-            source.write_bytes(raw)
-            seal_telemetry_artifacts(
-                evidence_root=journal.root,
-                source_otlp=source,
-                execution_id=execution_id,
-                sut_instance_id="sut",
-                driver_flush={"state": "complete"},
-                sut_flush={"state": "complete"},
-                collector_drain=({"state": "complete"} if not early_completed else {"state": "complete"}),
-            )
+            if truncated_otlp:
+                raw = raw[:-12]
+                (journal.root / "telemetry.otlp.jsonl").write_bytes(raw)
+                completion = {
+                    "schema_version": "1",
+                    "execution_id": execution_id,
+                    "sut_instance_id": "sut",
+                    "driver_flush": {"state": "complete"},
+                    "sut_flush": {"state": "complete"},
+                    "collector_drain": {"state": "complete"},
+                    "archive": {
+                        "state": "complete",
+                        "path": "telemetry.otlp.jsonl",
+                        "digest": hashlib.sha256(raw).hexdigest(),
+                        "size": len(raw),
+                    },
+                    "state": "complete",
+                }
+                (journal.root / "telemetry-completion.json").write_bytes(
+                    (json.dumps(completion, indent=2, sort_keys=True) + "\n").encode()
+                )
+            else:
+                source = tmp_path / "sealed-traces.jsonl"
+                source.write_bytes(raw)
+                seal_telemetry_artifacts(
+                    evidence_root=journal.root,
+                    source_otlp=source,
+                    execution_id=execution_id,
+                    sut_instance_id="sut",
+                    driver_flush={"state": "complete"},
+                    sut_flush={"state": "complete"},
+                    collector_drain={"state": "complete"},
+                )
         action_ref = next(
             EvidenceArtifactRefV1(
                 path=f"{manifest.evidence_root}/{name}.json",

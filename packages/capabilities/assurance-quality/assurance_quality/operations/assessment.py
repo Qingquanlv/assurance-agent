@@ -35,6 +35,7 @@ from assurance_execution.contracts.telemetry import (
     TelemetryCompletionV1,
     check_trace_requirements,
     parse_otlp_records,
+    truncated_trace_observations,
 )
 from assurance_execution.contracts.verification import (
     EvidenceCompletionV1,
@@ -791,14 +792,8 @@ def _replay_trace_observations(
         if "conflict" in str(error).lower():
             raise AssessmentInputError("verified telemetry contains conflicting spans") from error
         merged = {item.obligation_id: item for item in replayed}
-        for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
-            if obligation in plan.required:
-                merged[obligation] = ObservationV1(
-                    execution_id=cycle.execution_id,
-                    obligation_id=obligation,
-                    state="missing",
-                    reason="otlp_truncated",
-                )
+        for item in truncated_trace_observations(plan, cycle.execution_id):
+            merged[item.obligation_id] = item
         return tuple(merged[key] for key in plan.required)
     merged = {item.obligation_id: item for item in replayed}
     for item in trace:

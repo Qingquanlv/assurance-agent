@@ -191,3 +191,78 @@ Contracts: 13 kept, 0 broken.
 ```
 
 `uv run ruff check` on the three Python files: all checks passed. `ruff format` reformatted `telemetry.py`.
+
+---
+
+## Review-fix commit — Critical and Important findings
+
+**Did not start T13.** Did not fake live Agent full runs. Did not amend `3a90048e` or `86c7a781`.
+
+### Fixes
+
+1. **Critical 1 — live driver CLIENT spans satisfy the matcher.** Driver provider now stamps `service.instance.id` from the SUT instance. `_bound_spans` also keeps `assurance.execution.http-driver` spans that match `execution_id`, so a live sealed CLIENT span is not dropped. Covering test exports a real driver span through the Collector, then runs `check_trace_requirements` against that span plus a SERVER child (presence-only is no longer the gate).
+2. **Critical 2 — oracle does not steal the process-global provider.** `_oracle_select` uses a local `TracerProvider(service.name=oracle)` and never calls `set_tracer_provider`. Driver remains `assurance.execution.http-driver` / `assurance-execution-driver`. Covered through real `execute_frozen_action` order (oracle SELECT before HTTP).
+3. **Important 3 — completion order.** `execute_frozen_action` owns the CLIENT span: HTTP terminal → post-action oracle → `span.end()` → later flush/drain/seal.
+4. **Important 4 — missing Collector file seals INCOMPLETE.** `_complete_trace_evidence` writes `telemetry-completion.json` with archive/export reason when `otel/traces.jsonl` is absent.
+5. **Important 5 — truncated OTLP is INCOMPLETE on both sides.** Shared `truncated_trace_observations` emits `otlp_truncated` for producer `collect_facts` and assessment replay.
+6. **Important 6 — named combination tests** now go through matcher + authenticated assessment (not evaluator fiction):
+   - persist-without-write → INCOMPLETE (kept; also installed assessment path)
+   - rollback + early `user.create.completed` → FAILED
+   - business error and missing write span → FAILED + missing evidence
+   - helper INSERT rebound via matcher+assessment → PASSED. **This is not a T13 live new-artifact refactor.**
+7. **Important 7 — stage receipt_refs.** Driver flush, SUT flush, and Collector drain write controlled receipt files beside the completion and retain `receipt_ref` in `telemetry-completion.json`. Archive keeps path/digest/size.
+8. **Important 8 — narrowed `_oracle_select` catch.** Setup uses `ImportError` / `AttributeError` only. Query errors propagate. No bare `except Exception`. Global provider is not mutated.
+
+### TDD
+
+1. **Red:** new covering tests failed for the named bugs (`service.name=oracle`; `span_end` before post-action oracle; missing completion file; `receipt_ref is None`; `runtime_fact_unavailable` vs `otlp_truncated`; `except Exception` present; live `sut_instance_id` TypeError then matcher).
+2. **Green:** after the producer/matcher/oracle fixes, the same tests passed. Named suite 121 passed.
+
+### Commands + output
+
+```text
+$ uv run pytest \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_execute_frozen_action_keeps_driver_distinct_from_oracle \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_client_span_ends_after_post_action_oracle \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_missing_collector_file_seals_incomplete_completion \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_complete_trace_evidence_retains_stage_receipt_refs \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_truncated_otlp_is_incomplete_on_producer \
+    packages/capabilities/assurance-execution/tests/test_telemetry.py::test_oracle_select_does_not_steal_global_provider_on_setup_failure \
+    packages/capabilities/assurance-quality/tests/test_verification.py::test_rollback_and_early_completed_is_failed_via_assessment \
+    packages/capabilities/assurance-quality/tests/test_verification.py::test_business_error_and_missing_telemetry_is_failed_with_missing_evidence \
+    packages/capabilities/assurance-quality/tests/test_verification.py::test_helper_insert_rebound_still_passed_via_assessment \
+    packages/capabilities/assurance-quality/tests/test_verification.py::test_truncated_otlp_is_incomplete_on_assessment \
+    -q --tb=line
+# RED
+FFFFFF...F
+7 failed, 3 passed in 0.92s
+# (oracle provider steal; span ended before post-action oracle; no incomplete
+#  completion; no receipt_refs; runtime_fact_unavailable; except Exception;
+#  assessment observation mismatch on truncated OTLP)
+```
+
+```text
+$ uv run pytest packages/capabilities/assurance-execution/tests/test_telemetry.py::test_driver_client_span_is_sealed_from_attempt_collector -q --tb=short
+# RED
+TypeError: start_driver_client_span() got an unexpected keyword argument 'sut_instance_id'
+```
+
+```text
+$ uv run pytest packages/capabilities/assurance-execution/tests/test_telemetry.py \
+  packages/capabilities/assurance-quality/tests/test_trace_verification.py \
+  packages/capabilities/assurance-quality/tests/test_verification.py \
+  tests/product/test_execution_quality_flow.py \
+  tests/product/test_verified_delivery.py -q
+uv run lint-imports
+```
+
+```text
+........................................................................ [ 59%]
+.................................................                        [100%]
+121 passed in 63.64s (0:01:03)
+
+Contracts: 13 kept, 0 broken.
+```
+
+`uv run ruff check` on the touched Python files: all checks passed.
+

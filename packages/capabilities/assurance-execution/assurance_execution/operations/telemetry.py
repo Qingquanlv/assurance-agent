@@ -52,14 +52,30 @@ def collector_otlp_endpoint(run_root: Path) -> str | None:
 _DRIVER_EXPORT_ENDPOINT: str | None = None
 
 
-def _ensure_driver_provider(otlp_endpoint: str | None = None) -> None:
+def _stage_with_receipt(receipt_dir: Path | None, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if receipt_dir is None:
+        return payload
+    body = {key: value for key, value in payload.items() if key != "receipt_ref"}
+    data = (json.dumps(body, indent=2, sort_keys=True) + "\n").encode()
+    receipt_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    publish_record(receipt_dir / name, data)
+    return {
+        **payload,
+        "receipt_ref": {"path": name, "digest": hashlib.sha256(data).hexdigest()},
+    }
+
+
+def _ensure_driver_provider(otlp_endpoint: str | None = None, sut_instance_id: str | None = None) -> None:
     global _DRIVER_EXPORT_ENDPOINT
     current = trace.get_tracer_provider()
     if not hasattr(current, "add_span_processor"):
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
 
-        current = TracerProvider(resource=Resource.create({"service.name": "assurance-execution-driver"}))
+        attributes = {"service.name": "assurance-execution-driver"}
+        if sut_instance_id:
+            attributes["service.instance.id"] = sut_instance_id
+        current = TracerProvider(resource=Resource.create(attributes))
         trace.set_tracer_provider(current)
         _DRIVER_EXPORT_ENDPOINT = None
     if not otlp_endpoint or otlp_endpoint == _DRIVER_EXPORT_ENDPOINT:
@@ -72,10 +88,12 @@ def _ensure_driver_provider(otlp_endpoint: str | None = None) -> None:
     _DRIVER_EXPORT_ENDPOINT = otlp_endpoint
 
 
-def driver_trace_headers(execution_id: str, *, otlp_endpoint: str | None = None) -> dict[str, str]:
+def driver_trace_headers(
+    execution_id: str, *, otlp_endpoint: str | None = None, sut_instance_id: str | None = None
+) -> dict[str, str]:
     """Create a parent CLIENT span and inject W3C context plus the execution identity."""
 
-    _ensure_driver_provider(otlp_endpoint)
+    _ensure_driver_provider(otlp_endpoint, sut_instance_id)
     tracer = trace.get_tracer("assurance.execution.http-driver")
     span = tracer.start_span("POST /api/v1/user/create", kind=SpanKind.CLIENT)
     span.set_attribute("aa.execution_id", execution_id)
@@ -86,10 +104,16 @@ def driver_trace_headers(execution_id: str, *, otlp_endpoint: str | None = None)
     return headers
 
 
-def start_driver_client_span(execution_id: str, url: str, *, otlp_endpoint: str | None = None):
+def start_driver_client_span(
+    execution_id: str,
+    url: str,
+    *,
+    otlp_endpoint: str | None = None,
+    sut_instance_id: str | None = None,
+):
     """Open the parent HTTP CLIENT span for one frozen action."""
 
-    _ensure_driver_provider(otlp_endpoint)
+    _ensure_driver_provider(otlp_endpoint, sut_instance_id)
     tracer = trace.get_tracer("assurance.execution.http-driver")
     span = tracer.start_span("POST /api/v1/user/create", kind=SpanKind.CLIENT)
     span.set_attribute("aa.execution_id", execution_id)
@@ -101,7 +125,7 @@ def start_driver_client_span(execution_id: str, url: str, *, otlp_endpoint: str 
     return span, headers
 
 
-def flush_driver_provider() -> dict[str, str]:
+def flush_driver_provider(receipt_dir: Path | None = None) -> dict[str, Any]:
     provider = trace.get_tracer_provider()
     flushed = True
     if hasattr(provider, "force_flush"):
@@ -111,13 +135,15 @@ def flush_driver_provider() -> dict[str, str]:
             provider.shutdown()
         except Exception:  # noqa: BLE001
             flushed = False
-    return {
+    payload: dict[str, Any] = {
         "state": "complete" if flushed else "incomplete",
         **({} if flushed else {"reason": "driver_flush_failed"}),
     }
+    return _stage_with_receipt(receipt_dir, "driver-flush.json", payload)
 
 
-def flush_sut_provider(base_url: str, run_root: Path) -> dict[str, str]:
+def flush_sut_provider(base_url: str, run_root: Path, receipt_dir: Path | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"state": "incomplete", "reason": "sut_flush_failed"}
     try:
         import httpx
 
@@ -126,33 +152,39 @@ def flush_sut_provider(base_url: str, run_root: Path) -> dict[str, str]:
             if response.status_code == 200:
                 body = response.json()
                 if body.get("state") in {"flushed", "complete"}:
-                    return {"state": "complete"}
+                    payload = {"state": "complete"}
     except Exception:
         pass
-    receipt = Path(run_root) / "otel" / "flush-receipt.json"
-    if receipt.is_file():
-        try:
-            body = json.loads(receipt.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            body = {}
-        if body.get("state") == "flushed":
-            return {"state": "complete"}
-    return {"state": "incomplete", "reason": "sut_flush_failed"}
+    if payload.get("state") != "complete":
+        receipt = Path(run_root) / "otel" / "flush-receipt.json"
+        if receipt.is_file():
+            try:
+                body = json.loads(receipt.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                body = {}
+            if body.get("state") == "flushed":
+                payload = {"state": "complete"}
+    return _stage_with_receipt(receipt_dir, "sut-flush.json", payload)
 
 
-def drain_owned_collector(run_root: Path, timeout_s: float = 5.0) -> dict[str, str]:
+def drain_owned_collector(
+    run_root: Path, timeout_s: float = 5.0, receipt_dir: Path | None = None
+) -> dict[str, Any]:
     import os
     import signal
     import time
 
+    payload: dict[str, Any]
     receipt_path = Path(run_root) / "otel" / "collector-process.json"
     if not receipt_path.is_file():
-        return {"state": "incomplete", "reason": "collector_receipt_missing"}
+        payload = {"state": "incomplete", "reason": "collector_receipt_missing"}
+        return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         pid = int(receipt["pid"])
     except (OSError, KeyError, TypeError, ValueError):
-        return {"state": "incomplete", "reason": "collector_receipt_invalid"}
+        payload = {"state": "incomplete", "reason": "collector_receipt_invalid"}
+        return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
     try:
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + timeout_s
@@ -160,14 +192,16 @@ def drain_owned_collector(run_root: Path, timeout_s: float = 5.0) -> dict[str, s
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                return {"state": "complete"}
+                payload = {"state": "complete"}
+                return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
             time.sleep(0.05)
         os.kill(pid, signal.SIGKILL)
-        return {"state": "timeout", "reason": "drain_timeout"}
+        payload = {"state": "timeout", "reason": "drain_timeout"}
     except ProcessLookupError:
-        return {"state": "complete"}
+        payload = {"state": "complete"}
     except OSError:
-        return {"state": "incomplete", "reason": "collector_drain_failed"}
+        payload = {"state": "incomplete", "reason": "collector_drain_failed"}
+    return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
 
 
 def seal_telemetry_artifacts(
@@ -231,6 +265,46 @@ def seal_telemetry_artifacts(
     }
 
 
+def seal_incomplete_telemetry(
+    *,
+    evidence_root: Path,
+    execution_id: str,
+    sut_instance_id: str,
+    driver_flush: dict[str, Any],
+    sut_flush: dict[str, Any],
+    collector_drain: dict[str, Any],
+    reason: str,
+) -> dict[str, str]:
+    """Write a staged incomplete completion when export or drain cannot produce OTLP."""
+
+    evidence_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    digest = hashlib.sha256(b"").hexdigest()
+    document = TelemetryCompletionV1.model_validate(
+        {
+            "schema_version": "1",
+            "execution_id": execution_id,
+            "sut_instance_id": sut_instance_id,
+            "driver_flush": driver_flush,
+            "sut_flush": sut_flush,
+            "collector_drain": collector_drain,
+            "archive": {
+                "state": "incomplete",
+                "reason": reason,
+                "path": TELEMETRY_OTLP_NAME,
+                "digest": digest,
+                "size": 0,
+            },
+            "state": "incomplete",
+        }
+    )
+    completion_path = evidence_root / TELEMETRY_COMPLETION_NAME
+    publish_record(
+        completion_path,
+        (json.dumps(document.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode(),
+    )
+    return {"completion_path": str(completion_path), "digest": digest}
+
+
 __all__ = [
     "collector_otlp_endpoint",
     "drain_owned_collector",
@@ -238,6 +312,7 @@ __all__ = [
     "flush_driver_provider",
     "flush_sut_provider",
     "load_otlp_records",
+    "seal_incomplete_telemetry",
     "seal_telemetry_artifacts",
     "start_driver_client_span",
 ]

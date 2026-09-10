@@ -19,6 +19,7 @@ from assurance_execution.contracts.telemetry import (
     TELEMETRY_OTLP_NAME,
     TelemetryCompletionV1,
     check_trace_requirements,
+    truncated_trace_observations,
 )
 from assurance_execution.contracts.verification import VerificationManifestV1
 from assurance_execution.operations.sqlite_oracle import _failed, observe_user
@@ -28,6 +29,7 @@ from assurance_execution.operations.telemetry import (
     collector_otlp_endpoint,
     flush_driver_provider,
     load_otlp_records,
+    seal_incomplete_telemetry,
     seal_telemetry_artifacts,
     start_driver_client_span,
 )
@@ -166,21 +168,13 @@ async def _post(
     plan: CaseExecutionPlanV1,
     manifest: VerificationManifestV1,
     credential: bytes,
-    otlp_endpoint: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     url = manifest.sut.base_url + plan.action.path
     headers = {"token": _credentials(credential)["token"]}
-    driver_span = None
-    if manifest.validation_profile == "api_db_trace.v1":
-        driver_span, injected = start_driver_client_span(
-            manifest.execution_id, url, otlp_endpoint=otlp_endpoint
-        )
-        headers.update(injected)
-    try:
-        return await _post_once(plan, manifest, credential, url, headers)
-    finally:
-        if driver_span is not None:
-            driver_span.end()
+    if extra_headers:
+        headers.update(extra_headers)
+    return await _post_once(plan, manifest, credential, url, headers)
 
 
 async def _post_once(
@@ -228,14 +222,14 @@ async def _supervised_post(
     manifest: VerificationManifestV1,
     credential: bytes,
     control: ActionControl,
-    otlp_endpoint: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     async def watch() -> None:
         while not control.stopped:
             await asyncio.sleep(0.01)
         raise TimeoutError("action_cancelled_or_expired")
 
-    request = asyncio.create_task(_post(plan, manifest, credential, otlp_endpoint))
+    request = asyncio.create_task(_post(plan, manifest, credential, extra_headers))
     cancellation = asyncio.create_task(watch())
     try:
         async with asyncio.timeout(min(10.0, control.remaining)):
@@ -278,20 +272,35 @@ def execute_frozen_action(
         return
     if credential_document.get("benchmark_fault") == "no-action":
         return
+    driver_span = None
+    extra_headers: dict[str, str] | None = None
+    if manifest.validation_profile == "api_db_trace.v1":
+        driver_span, extra_headers = start_driver_client_span(
+            manifest.execution_id,
+            manifest.sut.base_url + plan.action.path,
+            otlp_endpoint=otlp_endpoint,
+            sut_instance_id=manifest.sut.instance_id,
+        )
     try:
-        control.require(12)  # Do not dispatch if HTTP and observer bounds cannot fit.
-        http = asyncio.run(_supervised_post(plan, manifest, credential, control, otlp_endpoint))
-    except (httpx.HTTPError, TimeoutError):
-        http = {"state": "timeout", "reason": "http_terminal_unknown"}
-    # A fresh independent read-only connection observes committed post-action state.
-    if credential_document.get("benchmark_fault") == "skip-oracle":
-        oracle = {"state": "skipped", "reason": "benchmark_skip_oracle", "rows": []}
-    elif credential_document.get("benchmark_fault") == "db-unavailable":
-        oracle = _failed("error", "database_unavailable")
-    elif control.stopped:
-        oracle = {"state": "skipped", "reason": "action_budget_cancelled_or_expired", "rows": []}
-    else:
-        oracle = observe_user(*args, timeout_s=min(2.0, control.remaining), expected_identity=manifest.sqlite)
+        try:
+            control.require(12)  # Do not dispatch if HTTP and observer bounds cannot fit.
+            http = asyncio.run(_supervised_post(plan, manifest, credential, control, extra_headers))
+        except (httpx.HTTPError, TimeoutError):
+            http = {"state": "timeout", "reason": "http_terminal_unknown"}
+        # A fresh independent read-only connection observes committed post-action state.
+        if credential_document.get("benchmark_fault") == "skip-oracle":
+            oracle = {"state": "skipped", "reason": "benchmark_skip_oracle", "rows": []}
+        elif credential_document.get("benchmark_fault") == "db-unavailable":
+            oracle = _failed("error", "database_unavailable")
+        elif control.stopped:
+            oracle = {"state": "skipped", "reason": "action_budget_cancelled_or_expired", "rows": []}
+        else:
+            oracle = observe_user(
+                *args, timeout_s=min(2.0, control.remaining), expected_identity=manifest.sqlite
+            )
+    finally:
+        if driver_span is not None:
+            driver_span.end()
     journal.write("action_terminal", {"initial": initial, "http": http, "oracle": oracle})
 
 
@@ -487,8 +496,13 @@ def _merge_trace_observations(
         spans = load_otlp_records(otlp, journal.manifest.execution_id)
         completion = TelemetryCompletionV1.model_validate_json(completion_path.read_bytes())
         replayed = check_trace_requirements(plan, journal.manifest, spans, completion)
-    except ValueError:
-        return observations
+    except ValueError as error:
+        if "conflict" in str(error).lower():
+            raise
+        merged = {item.obligation_id: item for item in observations}
+        for item in truncated_trace_observations(plan, journal.manifest.execution_id):
+            merged[item.obligation_id] = item
+        return [merged[key] for key in plan.required]
     merged = {item.obligation_id: item for item in observations}
     for item in replayed:
         merged[item.obligation_id] = item
@@ -536,27 +550,48 @@ def _complete_trace_evidence(
 ) -> None:
     if plan.validation_profile != "api_db_trace.v1":
         return
-    if (journal.root / TELEMETRY_OTLP_NAME).is_file() and (
-        journal.root / TELEMETRY_COMPLETION_NAME
-    ).is_file():
+    if (journal.root / TELEMETRY_COMPLETION_NAME).is_file():
         return
     from assurance_execution.operations.telemetry import drain_owned_collector, flush_sut_provider
 
-    driver = flush_driver_provider()
-    sut = flush_sut_provider(manifest.sut.base_url, run_root)
-    drain = drain_owned_collector(run_root)
+    driver = flush_driver_provider(receipt_dir=journal.root)
+    sut = flush_sut_provider(manifest.sut.base_url, run_root, receipt_dir=journal.root)
+    drain = drain_owned_collector(run_root, receipt_dir=journal.root)
     source = run_root / "otel" / "traces.jsonl"
     if not source.is_file():
+        reason = "collector_export_missing"
+        if drain.get("state") == "timeout":
+            reason = str(drain.get("reason") or "drain_timeout")
+        seal_incomplete_telemetry(
+            evidence_root=journal.root,
+            execution_id=manifest.execution_id,
+            sut_instance_id=manifest.sut.instance_id,
+            driver_flush=driver,
+            sut_flush=sut,
+            collector_drain=drain,
+            reason=reason,
+        )
         return
-    seal_telemetry_artifacts(
-        evidence_root=journal.root,
-        source_otlp=source,
-        execution_id=manifest.execution_id,
-        sut_instance_id=manifest.sut.instance_id,
-        driver_flush=driver,
-        sut_flush=sut,
-        collector_drain=drain,
-    )
+    try:
+        seal_telemetry_artifacts(
+            evidence_root=journal.root,
+            source_otlp=source,
+            execution_id=manifest.execution_id,
+            sut_instance_id=manifest.sut.instance_id,
+            driver_flush=driver,
+            sut_flush=sut,
+            collector_drain=drain,
+        )
+    except ValueError:
+        seal_incomplete_telemetry(
+            evidence_root=journal.root,
+            execution_id=manifest.execution_id,
+            sut_instance_id=manifest.sut.instance_id,
+            driver_flush=driver,
+            sut_flush=sut,
+            collector_drain=drain,
+            reason="otlp_truncated",
+        )
 
 
 def _outcome(journal: ActionJournal, plan: CaseExecutionPlanV1, reason: str | None = None) -> TaskOutcome:

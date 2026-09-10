@@ -256,7 +256,10 @@ def _bound_spans(
         span
         for span in spans
         if span.get("execution_id") == manifest.execution_id
-        and span.get("service_instance_id") == manifest.sut.instance_id
+        and (
+            span.get("service_instance_id") == manifest.sut.instance_id
+            or span.get("instrumentation") == "assurance.execution.http-driver"
+        )
     )
 
 
@@ -291,6 +294,24 @@ def _observation(
         actual=actual if state == "observed" else None,
         evidence_ref=evidence_ref if state == "observed" else None,
         reason=None if state == "observed" else reason,
+    )
+
+
+def truncated_trace_observations(
+    plan: CaseExecutionPlanV1,
+    execution_id: str,
+) -> tuple[ObservationV1, ...]:
+    """Same missing-trace shape used by the producer and authenticated assessment replay."""
+
+    return tuple(
+        ObservationV1(
+            execution_id=execution_id,
+            obligation_id=obligation,
+            state="missing",
+            reason="otlp_truncated",
+        )
+        for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained")
+        if obligation in plan.required
     )
 
 
@@ -397,4 +418,5 @@ __all__ = [
     "apply_sut_request_identity",
     "check_trace_requirements",
     "parse_otlp_records",
+    "truncated_trace_observations",
 ]
