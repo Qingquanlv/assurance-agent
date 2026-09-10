@@ -119,9 +119,7 @@ class RetainedUserAttempt(FrozenModel):
     action_credential_handle: str
     input_digest: str
     prepared_input: dict[str, JsonValue] | None = None
-    collector_handle: str | None = None
-    collector_receipt: dict[str, JsonValue] | None = None
-    collector_export: dict[str, JsonValue] | None = None
+    telemetry_export: dict[str, JsonValue] | None = None
 
 
 def _read_retained(root: Path, execution_id: str) -> bytes:
@@ -226,10 +224,10 @@ class UserAttempt:
         _retain_attempt(self.private_root, self.execution_id, self.record, update=True)
 
     @property
-    def collector(self) -> dict[str, JsonValue] | None:
-        if self.record.collector_export is None:
+    def telemetry(self) -> dict[str, JsonValue] | None:
+        if self.record.telemetry_export is None:
             return None
-        return dict(self.record.collector_export)
+        return dict(self.record.telemetry_export)
 
     def stop(self) -> None:
         return
@@ -329,11 +327,11 @@ def start_user_attempt(
         user_inputs=user_inputs,
         managed_sut_authority_handle=authority_handle,
     )
-    collector_export = None
+    telemetry_export = None
     if root.validation_profile == "api_db_trace.v1":
         if not seed.otel_file:
             raise ValueError("NOT_READY: attempt-bound OTel file export is required")
-        collector_export = {"otlp_path": seed.otel_file}
+        telemetry_export = {"otlp_path": seed.otel_file}
     authority = UserAttemptAuthorityV1(
         authorization_scope_digest=authorization_scope_digest,
         activity_receipt_digest=activity_digest,
@@ -350,7 +348,7 @@ def start_user_attempt(
         credential_handle=credential_handle,
         action_credential_handle=admission.machine_plans.cases[0].action.credential_ref,
         input_digest=canonical_digest(root.model_dump(mode="json")),
-        collector_export=collector_export,
+        telemetry_export=telemetry_export,
     )
     _retain_attempt(private, execution_id, record)
     overlay = AttemptSecrets(

@@ -331,8 +331,8 @@ def _configure_user_host(
             "managed_sut_authority_handle": "sut.authority",
             "managed_sut_readiness_handle": None,
             "credential_handle": "sut.credential",
-            "collector_readiness_handle": (
-                "sut.collector" if item.get("validation_profile") == "api_db_trace.v1" else None
+            "telemetry_readiness_handle": (
+                "sut.telemetry" if item.get("validation_profile") == "api_db_trace.v1" else None
             ),
         }
     ).model_dump(mode="json")
@@ -344,7 +344,7 @@ def _configure_user_host(
         "managed-sut.secret-key": secret_key.encode(),
     }
     if item.get("validation_profile") == "api_db_trace.v1":
-        values["sut.collector"] = _collector_qualification_secret(
+        values["sut.telemetry"] = _telemetry_qualification_secret(
             repo=repo, output=output, host=item["verification_host"]
         )
     host_args: list[str] = []
@@ -386,14 +386,14 @@ def _verification_config_digest(*, validation_profile: str, host: Mapping[str, A
     ).hexdigest()
 
 
-def _collector_qualification_secret(*, repo: Path, output: Path, host: Mapping[str, Any]) -> bytes:
-    root = output / "collector-host"
+def _telemetry_qualification_secret(*, repo: Path, output: Path, host: Mapping[str, Any]) -> bytes:
+    root = output / "telemetry-host"
     fixture = repo / "benchmark" / "assurance-product" / "fixtures" / "user-oracle"
     document = {
         "validation_profile": "api_db_trace.v1",
         "configuration_digest": _verification_config_digest(validation_profile="api_db_trace.v1", host=host),
-        "collector_artifact": _owned_readiness_file(root / "collector-artifact", b"managed-collector\n"),
-        "collector_config": _owned_readiness_file(
+        "otel_artifact": _owned_readiness_file(root / "otel-artifact", b"otel-file-runtime\n"),
+        "otel_config": _owned_readiness_file(
             root / "otel-file.txt", b"AA_SUT_OTEL_FILE=otel/observed.otlp.jsonl\n"
         ),
         "otel_dependencies": _owned_readiness_file(
@@ -402,7 +402,7 @@ def _collector_qualification_secret(*, repo: Path, output: Path, host: Mapping[s
         "otel_qualification": _owned_readiness_file(
             root / "otel-receipt.json",
             json.dumps(
-                {"schema_version": "1", "kind": "managed-collector-preflight"}, sort_keys=True
+                {"schema_version": "1", "kind": "otel-file-preflight"}, sort_keys=True
             ).encode()
             + b"\n",
         ),
@@ -1789,7 +1789,7 @@ def _write_deployment_manifest(
                 "managed-sut.admin-password",
                 "managed-sut.reset-password",
                 "managed-sut.secret-key",
-                *(("sut.collector",) if item.get("validation_profile") == "api_db_trace.v1" else ()),
+                *(("sut.telemetry",) if item.get("validation_profile") == "api_db_trace.v1" else ()),
             }
         )
     path.parent.mkdir(parents=True, exist_ok=True)

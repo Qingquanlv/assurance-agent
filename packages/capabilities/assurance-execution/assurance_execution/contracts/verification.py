@@ -205,7 +205,7 @@ class VerificationEvidenceV1(FrozenModel):
     receipt_ref: EvidenceArtifactRefV1
     observations: tuple[ObservationV1, ...]
     host_completion: EvidenceCompletionV1
-    collector_completion: EvidenceCompletionV1
+    telemetry_completion: EvidenceCompletionV1
     state: Literal["collected", "incomplete"]
 
     @model_validator(mode="after")
@@ -215,9 +215,9 @@ class VerificationEvidenceV1(FrozenModel):
             raise ValueError("evidence contains duplicate obligation observations")
         if any(item.execution_id != self.execution_id for item in self.observations):
             raise ValueError("observation execution identity does not match evidence")
-        completions = {self.host_completion.state, self.collector_completion.state}
+        completions = {self.host_completion.state, self.telemetry_completion.state}
         if self.state == "collected" and not completions <= {"complete", "not_required"}:
-            raise ValueError("collected evidence requires completed host and collector lifecycles")
+            raise ValueError("collected evidence requires completed host and telemetry lifecycles")
         return self
 
 

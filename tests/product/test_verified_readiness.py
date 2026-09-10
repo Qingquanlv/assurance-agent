@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -17,10 +14,6 @@ class Secrets:
 
     def resolve(self, handle):
         return self.values[handle]
-
-
-def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 @pytest.fixture(scope="module")
@@ -118,94 +111,7 @@ def test_managed_readiness_rejects_wrong_selection(live_sut, field, value):
         )
 
 
-def test_trace_boolean_is_not_a_readiness_receipt():
-    from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
+def test_exclusive_collector_receipt_is_removed():
+    import assurance_execution.contracts.readiness as readiness
 
-    with pytest.raises(ValueError):
-        CollectorReadinessReceiptV1.model_validate({"collector_ready": True, "otel_ready": True})
-
-
-def collector_listener(tmp_path):
-    import subprocess
-    import sys
-    import time
-    from assurance_execution.operations.readiness import process_birth_identity
-
-    body = json.dumps(
-        {"probe_nonce": "7" * 64, "execution_id": "00000000-0000-4000-8000-000000000001"}
-    ).encode()
-    response_file = tmp_path / "response.json"
-    response_file.write_bytes(body)
-    script = tmp_path / "listener.py"
-    script.write_text(
-        "from http.server import HTTPServer, BaseHTTPRequestHandler\nfrom pathlib import Path\nclass Handler(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write("
-        + "Path("
-        + repr(str(response_file))
-        + ").read_bytes()"
-        + ")\n def log_message(self, *args): pass\ns = HTTPServer(('127.0.0.1', 0), Handler)\nPath("
-        + repr(str(tmp_path / "port"))
-        + ").write_text(str(s.server_port))\ns.serve_forever()\n"
-    )
-    process = subprocess.Popen([sys.executable, "-B", str(script)])
-    try:
-        deadline = time.monotonic() + 5
-        while not (tmp_path / "port").exists():
-            if time.monotonic() > deadline:
-                raise RuntimeError("test listener failed to start")
-            time.sleep(0.01)
-        config = tmp_path / "collector-config.yaml"
-        config.write_text("test-listener-only: true\n")
-        dependency = tmp_path / "otel-dependencies.lock"
-        dependency.write_text("test listener; does not establish OTel compatibility\n")
-        qualification = tmp_path / "otel-qualification.json"
-        qualification.write_text("test-only authenticated receipt fixture\n")
-        now = datetime.now(timezone.utc)
-        receipt = {
-            "schema_version": "1",
-            "validation_profile": "api_db_trace.v1",
-            "sut_instance_id": "sut",
-            "execution_id": "00000000-0000-4000-8000-000000000001",
-            "configuration_digest": "c" * 64,
-            "authorization_scope_digest": "a" * 64,
-            "activity_receipt_digest": "b" * 64,
-            "collector_endpoint": "http://127.0.0.1:" + (tmp_path / "port").read_text() + "/ready",
-            "collector_pid": process.pid,
-            "collector_process_birth_identity": process_birth_identity(process.pid),
-            "collector_artifact": {"path": str(script), "digest": digest(script)},
-            "collector_config": {"path": str(config), "digest": digest(config)},
-            "otel_dependencies": {"path": str(dependency), "digest": digest(dependency)},
-            "otel_qualification": {"path": str(qualification), "digest": digest(qualification)},
-            "issued_at": now.isoformat(),
-            "checked_at": now.isoformat(),
-            "expires_at": (now + timedelta(seconds=30)).isoformat(),
-            "probe_nonce": "7" * 64,
-            "endpoint_response_digest": hashlib.sha256(body).hexdigest(),
-        }
-        yield receipt, process
-    finally:
-        if process.poll() is None:
-            process.terminate()
-        process.wait(timeout=5)
-
-
-@pytest.fixture
-def collector_receipt(tmp_path):
-    yield from collector_listener(tmp_path)
-
-
-def test_collector_readiness_requires_current_bound_receipt(collector_receipt):
-    from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
-    from assurance_execution.operations.readiness import authenticate_collector_readiness
-
-    document, _ = collector_receipt
-    expected = {
-        key: document[key]
-        for key in (
-            "sut_instance_id",
-            "execution_id",
-            "configuration_digest",
-            "authorization_scope_digest",
-            "activity_receipt_digest",
-        )
-    }
-    authenticate_collector_readiness(CollectorReadinessReceiptV1.model_validate(document), **expected)
+    assert not hasattr(readiness, "CollectorReadinessReceiptV1")

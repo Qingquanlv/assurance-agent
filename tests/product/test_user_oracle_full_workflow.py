@@ -459,7 +459,7 @@ def test_user_configuration_and_host_binding_are_fixed_without_oci(tmp_path):
             "managed_sut_authority_handle": "sut.authority",
             "managed_sut_readiness_handle": None,
             "credential_handle": "sut.credential",
-            "collector_readiness_handle": None,
+            "telemetry_readiness_handle": None,
         }
         assert "runner" not in item["verification_host"]
         deployment = tmp_path / "deployment.json"
@@ -687,7 +687,7 @@ def test_trace_item_writes_only_api_db_trace_policy(tmp_path):
     }
 
 
-def test_trace_host_binds_collector_handle_without_oci(tmp_path):
+def test_trace_host_binds_telemetry_handle_without_oci(tmp_path):
     runner = load("run_item")
     project = tmp_path / "project"
     runner._prepare_user_project(
@@ -704,21 +704,21 @@ def test_trace_host_binds_collector_handle_without_oci(tmp_path):
     output.mkdir()
     runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault="none")
     try:
-        assert item["verification_host"]["collector_readiness_handle"] == "sut.collector"
+        assert item["verification_host"]["telemetry_readiness_handle"] == "sut.telemetry"
         assert "runner" not in item["verification_host"]
-        collector_args = [
+        telemetry_args = [
             item["host_secret_args"][index + 1]
             for index, flag in enumerate(item["host_secret_args"])
-            if flag == "--secret" and item["host_secret_args"][index + 1].startswith("sut.collector=")
+            if flag == "--secret" and item["host_secret_args"][index + 1].startswith("sut.telemetry=")
         ]
-        assert collector_args
-        collector_path = Path(collector_args[0].split("=", 1)[1].removeprefix("file:"))
+        assert telemetry_args
+        telemetry_path = Path(telemetry_args[0].split("=", 1)[1].removeprefix("file:"))
         from assurance_execution.operations.readiness import (
-            CollectorQualification,
-            authenticate_collector_artifacts,
+            TelemetryQualification,
+            authenticate_telemetry_artifacts,
         )
 
-        qualification = CollectorQualification.model_validate_json(collector_path.read_bytes())
+        qualification = TelemetryQualification.model_validate_json(telemetry_path.read_bytes())
         assert qualification.validation_profile == "api_db_trace.v1"
         assert qualification.configuration_digest == runner._verification_config_digest(
             validation_profile="api_db_trace.v1", host=item["verification_host"]
@@ -726,16 +726,16 @@ def test_trace_host_binds_collector_handle_without_oci(tmp_path):
 
         class _Secrets:
             def resolve(self, handle):
-                assert handle == "sut.collector"
-                return collector_path.read_bytes()
+                assert handle == "sut.telemetry"
+                return telemetry_path.read_bytes()
 
-        authenticate_collector_artifacts(_Secrets(), "sut.collector", qualification.configuration_digest)
+        authenticate_telemetry_artifacts(_Secrets(), "sut.telemetry", qualification.configuration_digest)
         deployment = tmp_path / "deployment.json"
         runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
         document = json.loads(deployment.read_text(encoding="utf-8"))
         assert document["validation_profile"] == "api_db_trace.v1"
-        assert document["verification_host"]["collector_readiness_handle"] == "sut.collector"
-        assert "sut.collector" in document["secret_handles"]
+        assert document["verification_host"]["telemetry_readiness_handle"] == "sut.telemetry"
+        assert "sut.telemetry" in document["secret_handles"]
         assert "qualification" not in json.dumps(document)
     finally:
         pid = item.get("served_pid")

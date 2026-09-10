@@ -250,7 +250,7 @@ def _judge(root: Path, raw: bytes, *, drain: str = "complete"):
             "sut_instance_id": "sut",
             "driver_flush": {"state": "complete"},
             "sut_flush": {"state": "complete"},
-            "collector_drain": {
+            "file_export": {
                 "state": drain,
                 "reason": None if drain == "complete" else "drain_timeout",
             },
@@ -273,7 +273,7 @@ def test_correlated_helper_chain_observes_all_trace_obligations(tmp_path: Path) 
     assert observed["trace.http"].state == "observed"
     assert observed["trace.user_write"].state == "observed"
     assert observed["trace.user_completed"].state == "observed"
-    assert observed["trace.drained"].state == "observed"
+    assert observed["trace.exported"].state == "observed"
     assert observed["trace.user_write"].actual is True
 
 
@@ -365,7 +365,7 @@ def test_quality_evaluator_uses_replayed_trace_facts_not_a_second_matcher(tmp_pa
             "sut_instance_id": "sut",
             "driver_flush": {"state": "complete"},
             "sut_flush": {"state": "complete"},
-            "collector_drain": {"state": "complete"},
+            "file_export": {"state": "complete"},
             "archive": {
                 "state": "complete",
                 "path": "telemetry.otlp.jsonl",
@@ -391,13 +391,13 @@ def test_quality_evaluator_uses_replayed_trace_facts_not_a_second_matcher(tmp_pa
         "trace.http": True,
         "trace.user_write": True,
         "trace.user_completed": True,
-        "trace.drained": True,
+        "trace.exported": True,
     }
     states = {item.obligation_id: item.state for item in replayed if item.obligation_id.startswith("trace.")}
     for item in replayed:
         if item.state == "observed":
             actuals[item.obligation_id] = item.actual
-    evidence = _evidence(plan, actuals=actuals, states=states, collector="complete")
+    evidence = _evidence(plan, actuals=actuals, states=states, telemetry="complete")
     verdict = evaluate_verification(plan, evidence, completion_status="collected")
     assert verdict.verdict == "INCOMPLETE"
     assert verdict.by_id("trace.user_write").evidence_status == "missing"

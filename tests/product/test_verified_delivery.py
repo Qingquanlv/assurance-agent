@@ -157,7 +157,7 @@ def _verified_terminal(
             "receipt_ref": process_ref.model_dump(mode="json"),
             "observations": observations,
             "host_completion": {"state": "complete"},
-            "collector_completion": {"state": "not_required"},
+            "telemetry_completion": {"state": "not_required"},
             "state": "collected",
         }
     )

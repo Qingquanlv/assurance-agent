@@ -58,7 +58,7 @@ def _verified_dispatch_result(
             "receipt_ref": process_ref.model_dump(mode="json"),
             "observations": [],
             "host_completion": {"state": "error", "reason": "bridge_not_called"},
-            "collector_completion": {"state": "not_required"},
+            "telemetry_completion": {"state": "not_required"},
             "state": completion_status,
         }
     )
@@ -696,7 +696,7 @@ def test_task_facade_and_verified_attempt_reject_generation_drift_before_side_ef
             "readiness": {
                 "selection_handle": "sut.selection",
                 "authority_handle": "sut.authority",
-                "collector_handle": None,
+                "telemetry_handle": None,
                 "configuration_digest": "c" * 64,
                 "validation_profile": "api_db.v1",
             },

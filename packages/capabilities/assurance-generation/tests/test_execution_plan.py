@@ -16,6 +16,7 @@ from assurance_generation.contracts.execution_plan import (
     CaseExecutionPlanSetV1,
     CaseExecutionPlanV1,
     CasePlanContextV1,
+    TraceRequirementsV1,
     USER_SQLITE_BINDING_ID,
     required_obligations,
     validate_case_plan_sources,
@@ -329,6 +330,13 @@ def test_dangling_expected_reference_is_rejected() -> None:
         CaseExecutionPlanV1.model_validate(payload)
 
 
+def test_trace_requirements_name_export_not_drain() -> None:
+    assert "export_obligation" in TraceRequirementsV1.model_fields
+    assert "drain_obligation" not in TraceRequirementsV1.model_fields
+    assert "trace.exported" in TRACE_OBLIGATIONS
+    assert "trace.drained" not in TRACE_OBLIGATIONS
+
+
 def test_trace_requirements_cannot_conflict_with_profile() -> None:
     case, sources, bindings, context = _fixture()
     plan = compile_case_plan(case, sources, bindings, "api_db.v1", context=context)
@@ -340,7 +348,7 @@ def test_trace_requirements_cannot_conflict_with_profile() -> None:
         "checkpoint_obligation": "trace.user_completed",
         "checkpoint_id": "user.create.completed",
         "checkpoint_version": "1",
-        "drain_obligation": "trace.drained",
+        "export_obligation": "trace.exported",
         "require_same_action_and_sut": True,
     }
 

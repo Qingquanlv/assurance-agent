@@ -717,7 +717,7 @@ def _journal_observations(
     )
 
 
-def _expected_collector_completion(
+def _expected_telemetry_completion(
     plan: CaseExecutionPlanV1, payloads: dict[str, object]
 ) -> EvidenceCompletionV1:
     if plan.validation_profile == "api_db.v1":
@@ -733,11 +733,11 @@ def _expected_collector_completion(
         raise AssessmentInputError("verified telemetry completion is invalid") from error
     if completion.state == "complete":
         return EvidenceCompletionV1(state="complete")
-    if completion.collector_drain.state == "timeout":
-        return EvidenceCompletionV1(state="timeout", reason=completion.collector_drain.reason)
+    if completion.file_export.state == "timeout":
+        return EvidenceCompletionV1(state="timeout", reason=completion.file_export.reason)
     return EvidenceCompletionV1(
         state="error",
-        reason=completion.collector_drain.reason or completion.archive.reason or "collector_incomplete",
+        reason=completion.file_export.reason or completion.archive.reason or "telemetry_incomplete",
     )
 
 
@@ -989,12 +989,12 @@ def _verified_materials(
             if host_reason
             else EvidenceCompletionV1(state="complete")
         )
-        expected_collector = _expected_collector_completion(machine_plan, payloads)
-        collector_incomplete = expected_collector.state not in {"complete", "not_required"}
+        expected_telemetry = _expected_telemetry_completion(machine_plan, payloads)
+        telemetry_incomplete = expected_telemetry.state not in {"complete", "not_required"}
         if (
             evidence.host_completion != expected_host
-            or evidence.collector_completion != expected_collector
-            or evidence.state != ("incomplete" if host_reason or collector_incomplete else "collected")
+            or evidence.telemetry_completion != expected_telemetry
+            or evidence.state != ("incomplete" if host_reason or telemetry_incomplete else "collected")
         ):
             raise AssessmentInputError("verified host completion differs from authenticated history")
         expected_cycle = {

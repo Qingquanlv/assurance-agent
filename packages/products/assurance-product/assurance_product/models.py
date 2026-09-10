@@ -196,7 +196,7 @@ class VerificationHostConfigV1(FrozenModel):
     managed_sut_readiness_handle: str | None = None
     managed_sut_authority_handle: str | None = None
     credential_handle: str | None = None
-    collector_readiness_handle: str | None = None
+    telemetry_readiness_handle: str | None = None
 
 
 class DeploymentBindingsV1(FrozenModel):

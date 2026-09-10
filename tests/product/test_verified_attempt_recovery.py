@@ -46,7 +46,7 @@ class VerifiedHostProbe:
             receipt_ref=receipt_ref,
             observations=(),
             host_completion=EvidenceCompletionV1(state="error", reason="test_probe"),
-            collector_completion=EvidenceCompletionV1(state="not_required"),
+            telemetry_completion=EvidenceCompletionV1(state="not_required"),
             state="incomplete",
         )
         reviewed = ReviewedCaseV1(

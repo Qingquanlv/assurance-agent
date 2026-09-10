@@ -33,7 +33,7 @@ def _expected(plan: CaseExecutionPlanV1, obligation_id: str) -> tuple[Literal["b
         "trace.http": True,
         "trace.user_write": True,
         "trace.user_completed": True,
-        "trace.drained": True,
+        "trace.exported": True,
     }
     return "completion", runtime[obligation_id]
 
@@ -128,14 +128,14 @@ def evaluate_verification(
                 ),
             )
         )
-    collector_ok = evidence.collector_completion.state == "complete" or (
-        plan.validation_profile == "api_db.v1" and evidence.collector_completion.state == "not_required"
+    telemetry_ok = evidence.telemetry_completion.state == "complete" or (
+        plan.validation_profile == "api_db.v1" and evidence.telemetry_completion.state == "not_required"
     )
     runner_ok = (
         completion_status == "collected"
         and evidence.state == "collected"
         and evidence.host_completion.state == "complete"
-        and collector_ok
+        and telemetry_ok
     )
     verdict = reduce_verdict(
         violated=business_violated,

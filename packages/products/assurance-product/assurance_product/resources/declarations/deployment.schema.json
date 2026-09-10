@@ -67,7 +67,7 @@
           "default": null,
           "title": "Credential Handle"
         },
-        "collector_readiness_handle": {
+        "telemetry_readiness_handle": {
           "anyOf": [
             {
               "type": "string"
@@ -77,7 +77,7 @@
             }
           ],
           "default": null,
-          "title": "Collector Readiness Handle"
+          "title": "Telemetry Readiness Handle"
         }
       },
       "title": "VerificationHostConfigV1",

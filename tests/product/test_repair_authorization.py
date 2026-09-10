@@ -541,7 +541,7 @@ def _successful_rerun(
             "receipt_ref": process_ref.model_dump(mode="json"),
             "observations": [],
             "host_completion": {"state": "complete"},
-            "collector_completion": {"state": "not_required"},
+            "telemetry_completion": {"state": "not_required"},
             "state": "collected",
         }
     )

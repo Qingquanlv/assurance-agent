@@ -192,14 +192,14 @@ def test_authenticated_host_prerequisites_are_profile_specific(tmp_path, monkeyp
     monkeypatch.setenv("AA_TEST_PREFLIGHT_AUTHORITY", json.dumps(authority))
     monkeypatch.setenv("AA_TEST_PREFLIGHT_CREDENTIAL", json.dumps({"token": "test", "user_password": "test"}))
     monkeypatch.setenv(
-        "AA_TEST_PREFLIGHT_COLLECTOR", json.dumps({"collector_ready": True, "otel_ready": True})
+        "AA_TEST_PREFLIGHT_TELEMETRY", json.dumps({"telemetry_ready": True, "otel_ready": True})
     )
     sources = tuple(
         SecretSourceBinding(handle, "environment", locator)
         for handle, locator in (
             ("sut.authority", "AA_TEST_PREFLIGHT_AUTHORITY"),
             ("sut.credential", "AA_TEST_PREFLIGHT_CREDENTIAL"),
-            ("sut.collector", "AA_TEST_PREFLIGHT_COLLECTOR"),
+            ("sut.telemetry", "AA_TEST_PREFLIGHT_TELEMETRY"),
         )
     )
     authorization = InvocationRuntimeAuthorization(
@@ -225,7 +225,7 @@ def test_authenticated_host_prerequisites_are_profile_specific(tmp_path, monkeyp
         with pytest.raises(ValueError, match="NOT_READY"):
             preflight_verification(config, authorization)
         config = config.model_copy(
-            update={"host": config.host.model_copy(update={"collector_readiness_handle": "sut.collector"})}
+            update={"host": config.host.model_copy(update={"telemetry_readiness_handle": "sut.telemetry"})}
         )
     # An authority token in an empty run directory cannot establish readiness.
     with pytest.raises(ValueError, match="NOT_READY"):

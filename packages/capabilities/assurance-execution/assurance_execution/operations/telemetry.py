@@ -54,13 +54,6 @@ def observed_otlp_path(run_root: Path) -> Path:
     return observed
 
 
-def collector_otlp_endpoint(run_root: Path) -> str | None:
-    """Compatibility shim: Collector HTTP is no longer a Trace requirement."""
-
-    del run_root
-    return None
-
-
 _DRIVER_EXPORT_FILE: str | None = None
 
 
@@ -336,7 +329,7 @@ def seal_telemetry_artifacts(
             "sut_instance_id": sut_instance_id,
             "driver_flush": driver_flush,
             "sut_flush": sut_flush,
-            "collector_drain": {"state": "complete"}
+            "file_export": {"state": "complete"}
             if complete
             else {"state": "incomplete", "reason": archive_reason},
             "archive": {
@@ -381,7 +374,7 @@ def seal_incomplete_telemetry(
             "sut_instance_id": sut_instance_id,
             "driver_flush": driver_flush,
             "sut_flush": sut_flush,
-            "collector_drain": {"state": "incomplete", "reason": reason},
+            "file_export": {"state": "incomplete", "reason": reason},
             "archive": {
                 "state": "incomplete",
                 "reason": reason,
@@ -401,7 +394,6 @@ def seal_incomplete_telemetry(
 
 
 __all__ = [
-    "collector_otlp_endpoint",
     "driver_trace_headers",
     "flush_driver_provider",
     "flush_sut_provider",

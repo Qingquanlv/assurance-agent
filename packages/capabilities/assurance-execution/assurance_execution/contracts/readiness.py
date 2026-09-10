@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Self
+from typing import Literal
 
-from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic import Field, field_validator
 from graph_engine.plugin_api import FrozenModel
 from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
 
@@ -42,43 +42,6 @@ class HostReadinessFileV1(FrozenModel):
 class VerificationReadinessBindingV1(FrozenModel):
     selection_handle: str = Field(min_length=1)
     authority_handle: str = Field(min_length=1)
-    collector_handle: str | None = None
+    telemetry_handle: str | None = None
     configuration_digest: str = Field(pattern=_SHA)
     validation_profile: Literal["api_db.v1", "api_db_trace.v1"]
-
-
-class CollectorReadinessReceiptV1(FrozenModel):
-    """T11 must produce this receipt through an authorized host secret handle.
-
-    The endpoint must answer the nonce/execution probe and the host must retain
-    the exact artifact, configuration, dependency and qualification documents.
-    Mere endpoint liveness does not assert OTel compatibility.
-    """
-
-    schema_version: Literal["1"]
-    validation_profile: Literal["api_db_trace.v1"]
-    sut_instance_id: str = Field(min_length=1)
-    execution_id: str = Field(pattern=_UUID)
-    configuration_digest: str = Field(pattern=_SHA)
-    authorization_scope_digest: str = Field(pattern=_SHA)
-    activity_receipt_digest: str = Field(pattern=_SHA)
-    collector_endpoint: str
-    collector_pid: int = Field(gt=1, strict=True)
-    collector_process_birth_identity: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
-    collector_artifact: HostReadinessFileV1
-    collector_config: HostReadinessFileV1
-    otel_dependencies: HostReadinessFileV1
-    otel_qualification: HostReadinessFileV1
-    issued_at: AwareDatetime
-    checked_at: AwareDatetime
-    expires_at: AwareDatetime
-    probe_nonce: str = Field(pattern=_SHA)
-    endpoint_response_digest: str = Field(pattern=_SHA)
-
-    @model_validator(mode="after")
-    def _bounded_validity(self) -> Self:
-        if not self.issued_at <= self.checked_at < self.expires_at:
-            raise ValueError("Collector readiness times are not ordered")
-        if (self.expires_at - self.issued_at).total_seconds() > 60:
-            raise ValueError("Collector readiness lifetime exceeds 60 seconds")
-        return self

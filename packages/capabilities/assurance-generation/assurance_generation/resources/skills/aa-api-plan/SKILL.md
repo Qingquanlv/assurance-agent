@@ -107,7 +107,7 @@ comparators, `required`, counts, readiness, pass/fail, or completion claims in
 this file. Map every reviewed assertion ID plus `initial.user_absent`,
 `action.finished`, and `oracle.executed`; when the frozen profile requires
 Trace, also map `trace.http`, `trace.user_write`, `trace.user_completed`, and
-`trace.drained`.
+`trace.exported`.
 
 The host finalizer exclusively writes
 `qa/changes/<change-id>/plans/api-case-execution-plan.json`. Do not write or

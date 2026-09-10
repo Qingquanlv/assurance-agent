@@ -534,14 +534,14 @@ def _read_telemetry_completion(journal: ActionJournal) -> TelemetryCompletionV1 
         return None
 
 
-def _collector_ready(journal: ActionJournal, plan: CaseExecutionPlanV1) -> bool:
+def _telemetry_ready(journal: ActionJournal, plan: CaseExecutionPlanV1) -> bool:
     if plan.validation_profile == "api_db.v1":
         return True
     completion = _read_telemetry_completion(journal)
     return completion is not None and completion.state == "complete"
 
 
-def _collector_completion(journal: ActionJournal, plan: CaseExecutionPlanV1) -> EvidenceCompletionV1:
+def _telemetry_completion(journal: ActionJournal, plan: CaseExecutionPlanV1) -> EvidenceCompletionV1:
     if plan.validation_profile == "api_db.v1":
         return EvidenceCompletionV1(state="not_required")
     completion = _read_telemetry_completion(journal)
@@ -689,8 +689,8 @@ def _outcome(journal: ActionJournal, plan: CaseExecutionPlanV1, reason: str | No
         host_completion=EvidenceCompletionV1(state="error", reason=host_reason)
         if host_reason
         else EvidenceCompletionV1(state="complete"),
-        collector_completion=_collector_completion(journal, plan),
-        state="incomplete" if host_reason or not _collector_ready(journal, plan) else "collected",
+        telemetry_completion=_telemetry_completion(journal, plan),
+        state="incomplete" if host_reason or not _telemetry_ready(journal, plan) else "collected",
     )
     outcome = TaskOutcome.succeeded(evidence.model_dump(mode="json"))
     journal.write("outcome", outcome.model_dump(mode="json"))

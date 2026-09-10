@@ -107,7 +107,7 @@ _RUNTIME_KINDS = {
     "trace.http": "trace_http",
     "trace.user_write": "trace_user_write",
     "trace.user_completed": "trace_checkpoint",
-    "trace.drained": "trace_drain",
+    "trace.exported": "trace_export",
 }
 
 
@@ -181,7 +181,7 @@ def compile_case_plan(
             checkpoint_obligation="trace.user_completed",
             checkpoint_id="user.create.completed",
             checkpoint_version="1",
-            drain_obligation="trace.drained",
+            export_obligation="trace.exported",
             require_same_action_and_sut=True,
         )
         if validation_profile == "api_db_trace.v1"

@@ -25,11 +25,11 @@ UserField = InputKey
 HTTP_ACTION_BINDING_ID = "assurance.execution.http.user-create.v1"
 USER_SQLITE_BINDING_ID = "assurance.execution.sqlite.user.v1"
 TRACE_USER_WRITE_BINDING_ID = "assurance.execution.trace.sqlite-user-write.v1"
-TRACE_DRAIN_BINDING_ID = "assurance.execution.trace.drain.v1"
+TRACE_EXPORT_BINDING_ID = "assurance.execution.trace.export.v1"
 BINDING_VERSION = "1"
 
 BASE_RUNTIME_OBLIGATIONS = frozenset({"initial.user_absent", "action.finished", "oracle.executed"})
-TRACE_OBLIGATIONS = frozenset({"trace.http", "trace.user_write", "trace.user_completed", "trace.drained"})
+TRACE_OBLIGATIONS = frozenset({"trace.http", "trace.user_write", "trace.user_completed", "trace.exported"})
 USER_INPUT_KEYS = frozenset({"username", "email", "is_active", "is_superuser", "dept_id"})
 USER_ASSERTION_SHAPES: dict[str, tuple[str, str, str | None]] = {
     "api.code": ("create.response.business_code", "eq", None),
@@ -167,9 +167,9 @@ class TraceCheckpointBindingV1(FrozenModel):
     checkpoint_version: Literal["1"]
 
 
-class TraceDrainBindingV1(FrozenModel):
-    kind: Literal["trace_drain"]
-    binding_id: Literal["assurance.execution.trace.drain.v1"]
+class TraceExportBindingV1(FrozenModel):
+    kind: Literal["trace_export"]
+    binding_id: Literal["assurance.execution.trace.export.v1"]
     binding_version: Literal["1"]
 
 
@@ -184,7 +184,7 @@ ActualBindingV1 = Annotated[
     | TraceHttpBindingV1
     | TraceUserWriteBindingV1
     | TraceCheckpointBindingV1
-    | TraceDrainBindingV1,
+    | TraceExportBindingV1,
     Field(discriminator="kind"),
 ]
 ACTUAL_BINDING_ADAPTER = TypeAdapter(ActualBindingV1)
@@ -277,7 +277,7 @@ class TraceRequirementsV1(FrozenModel):
     checkpoint_obligation: Literal["trace.user_completed"]
     checkpoint_id: Literal["user.create.completed"]
     checkpoint_version: Literal["1"]
-    drain_obligation: Literal["trace.drained"]
+    export_obligation: Literal["trace.exported"]
     require_same_action_and_sut: Literal[True]
 
 
@@ -406,7 +406,7 @@ class CaseExecutionPlanV1(FrozenModel):
                 "api.http_status": "http_status",
                 "initial.user_absent": "sqlite_user_absence",
                 "oracle.executed": "sqlite_user_observation",
-                "trace.drained": "trace_drain",
+                "trace.exported": "trace_export",
                 "trace.http": "trace_http",
                 "trace.user_completed": "trace_checkpoint",
                 "trace.user_write": "trace_user_write",

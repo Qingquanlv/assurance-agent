@@ -34,12 +34,12 @@ def _actuals(plan) -> dict[str, object]:
         "trace.http": True,
         "trace.user_write": True,
         "trace.user_completed": True,
-        "trace.drained": True,
+        "trace.exported": True,
     }
     return {key: values[key] for key in plan.required}
 
 
-def _evidence(plan, *, actuals=None, states=None, host="complete", collector="not_required"):
+def _evidence(plan, *, actuals=None, states=None, host="complete", telemetry="not_required"):
     from assurance_execution.contracts.verification import ObservationV1, VerificationEvidenceV1
 
     actuals = _actuals(plan) if actuals is None else actuals
@@ -76,13 +76,13 @@ def _evidence(plan, *, actuals=None, states=None, host="complete", collector="no
                 "state": host,
                 "reason": None if host in {"complete", "not_required"} else "host_failed",
             },
-            "collector_completion": {
-                "state": collector,
-                "reason": None if collector in {"complete", "not_required"} else "collector_failed",
+            "telemetry_completion": {
+                "state": telemetry,
+                "reason": None if telemetry in {"complete", "not_required"} else "telemetry_failed",
             },
             "state": (
                 "collected"
-                if host in {"complete", "not_required"} and collector in {"complete", "not_required"}
+                if host in {"complete", "not_required"} and telemetry in {"complete", "not_required"}
                 else "incomplete"
             ),
         }
@@ -393,9 +393,10 @@ def _materialization_request(
             elif producer_seal:
                 otel = run_root / "otel"
                 otel.mkdir(parents=True, exist_ok=True)
-                (otel / "observed.otlp.jsonl").write_bytes(raw)
+                otlp_file = otel / "observed.otlp.jsonl"
+                otlp_file.write_bytes(raw)
                 (otel / "flush-receipt.json").write_text(json.dumps({"state": "flushed"}), encoding="utf-8")
-                _complete_trace_evidence(journal, plan, manifest, run_root)
+                _complete_trace_evidence(journal, plan, manifest, str(otlp_file))
             elif truncated_otlp:
                 raw = raw[:-12]
                 (journal.root / "telemetry.otlp.jsonl").write_bytes(raw)
@@ -405,7 +406,7 @@ def _materialization_request(
                     "sut_instance_id": "sut",
                     "driver_flush": {"state": "complete"},
                     "sut_flush": {"state": "complete"},
-                    "collector_drain": {"state": "complete"},
+                    "file_export": {"state": "complete"},
                     "archive": {
                         "state": "complete",
                         "path": "telemetry.otlp.jsonl",
@@ -480,10 +481,10 @@ def _materialization_request(
         reason = process_reason or (
             "required_facts_missing" if any(item.state != "observed" for item in observations) else None
         )
-        from assurance_execution.operations.verified_execution import _collector_completion
+        from assurance_execution.operations.verified_execution import _telemetry_completion
 
-        collector = _collector_completion(journal, plan)
-        incomplete = bool(reason) or collector.state not in {"complete", "not_required"}
+        telemetry = _telemetry_completion(journal, plan)
+        incomplete = bool(reason) or telemetry.state not in {"complete", "not_required"}
         evidence = evidence.model_copy(
             update={
                 "observations": observations,
@@ -492,7 +493,7 @@ def _materialization_request(
                     if reason
                     else EvidenceCompletionV1(state="complete")
                 ),
-                "collector_completion": collector,
+                "telemetry_completion": telemetry,
                 "state": "incomplete" if incomplete else "collected",
             }
         )

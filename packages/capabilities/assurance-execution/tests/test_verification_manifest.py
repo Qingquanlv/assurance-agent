@@ -238,6 +238,11 @@ def test_input_allocation_stops_after_three_collisions() -> None:
     assert len(seen) == 3
 
 
+def test_evidence_names_telemetry_completion_not_collector() -> None:
+    assert "telemetry_completion" in VerificationEvidenceV1.model_fields
+    assert "collector_completion" not in VerificationEvidenceV1.model_fields
+
+
 def test_observation_and_evidence_reject_expected_passed_and_duplicate_obligations() -> None:
     observation = ObservationV1(
         execution_id="01234567-89ab-4def-8123-456789abcdef",
@@ -255,7 +260,7 @@ def test_observation_and_evidence_reject_expected_passed_and_duplicate_obligatio
             receipt_ref=EvidenceArtifactRefV1(path="evidence/receipt.json", digest=SHA),
             observations=(observation, observation),
             host_completion=EvidenceCompletionV1(state="complete"),
-            collector_completion=EvidenceCompletionV1(state="not_required"),
+            telemetry_completion=EvidenceCompletionV1(state="not_required"),
             state="collected",
         )
     stale = observation.model_copy(update={"execution_id": "11234567-89ab-4def-8123-456789abcdef"})
@@ -266,7 +271,7 @@ def test_observation_and_evidence_reject_expected_passed_and_duplicate_obligatio
             receipt_ref=EvidenceArtifactRefV1(path="evidence/receipt.json", digest=SHA),
             observations=(stale,),
             host_completion=EvidenceCompletionV1(state="complete"),
-            collector_completion=EvidenceCompletionV1(state="not_required"),
+            telemetry_completion=EvidenceCompletionV1(state="not_required"),
             state="collected",
         )
 

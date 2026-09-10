@@ -119,9 +119,9 @@
       "checkpoint_id": "user.create.completed",
       "checkpoint_version": "1"
     },
-    "trace.drained": {
-      "kind": "trace_drain",
-      "binding_id": "assurance.execution.trace.drain.v1",
+    "trace.exported": {
+      "kind": "trace_export",
+      "binding_id": "assurance.execution.trace.export.v1",
       "binding_version": "1"
     }
   }

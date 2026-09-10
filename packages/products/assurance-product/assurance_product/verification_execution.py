@@ -32,7 +32,7 @@ from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.verification import ExecutionDispatchResultV1
 from assurance_execution.contracts.workflow import VerifiedBridgeDefectResultV1
 from assurance_execution.contracts.readiness import VerificationReadinessBindingV1
-from assurance_execution.operations.readiness import HostReadinessError, authenticate_collector_artifacts
+from assurance_execution.operations.readiness import HostReadinessError, authenticate_telemetry_artifacts
 from assurance_execution.operations.user_attempt import authenticate_user_invocation, SUT_SECRET_HANDLES
 from assurance_execution.operations.host_secrets import HostSecretDocumentError
 from assurance_execution.operations.agent_skills import authenticate_generation_result
@@ -87,7 +87,7 @@ def _readiness_binding(
     return VerificationReadinessBindingV1(
         selection_handle=host.managed_sut_readiness_handle,
         authority_handle=host.managed_sut_authority_handle,
-        collector_handle=host.collector_readiness_handle,
+        telemetry_handle=host.telemetry_readiness_handle,
         configuration_digest=config_digest,
         validation_profile=config.validation_profile,
     )
@@ -114,9 +114,9 @@ def _preflight_verification(
         raise ValueError("NOT_READY: frozen configuration and workspace are required")
     handles = (host.managed_sut_authority_handle, host.credential_handle, *SUT_SECRET_HANDLES)
     if config.validation_profile == "api_db_trace.v1":
-        if host.collector_readiness_handle is None:
-            raise HostReadinessError("Collector/OTel qualification is required")
-        handles += (host.collector_readiness_handle,)
+        if host.telemetry_readiness_handle is None:
+            raise HostReadinessError("Telemetry qualification is required")
+        handles += (host.telemetry_readiness_handle,)
     authorize_binding_secret_handles(handles, authorization)
     resolver = AuthorizedSecretResolver(authorization)
     authenticate_user_invocation(
@@ -129,8 +129,8 @@ def _preflight_verification(
         if not resolver.resolve(handle):
             raise ValueError("NOT_READY: required credential is unavailable")
     if config.validation_profile == "api_db_trace.v1":
-        assert host.collector_readiness_handle is not None
-        authenticate_collector_artifacts(resolver, host.collector_readiness_handle, config_digest)
+        assert host.telemetry_readiness_handle is not None
+        authenticate_telemetry_artifacts(resolver, host.telemetry_readiness_handle, config_digest)
 
 
 class ProfiledExecutionExecutor:
@@ -228,7 +228,7 @@ class ProfiledExecutionExecutor:
                     "authority_handle": self.config.host.managed_sut_authority_handle,
                     "credential_handle": self.config.host.credential_handle,
                     "configuration_digest": self.config_digest,
-                    "collector_handle": self.config.host.collector_readiness_handle,
+                    "telemetry_handle": self.config.host.telemetry_readiness_handle,
                 },
             },
         )
@@ -267,7 +267,7 @@ class ProfiledExecutionExecutor:
                         *(SUT_SECRET_HANDLES if value.verification is None else ()),
                         self.config.host.managed_sut_authority_handle,
                         self.config.host.credential_handle,
-                        self.config.host.collector_readiness_handle
+                        self.config.host.telemetry_readiness_handle
                         if self.config.validation_profile == "api_db_trace.v1"
                         else None,
                     )

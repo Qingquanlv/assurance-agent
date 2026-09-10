@@ -58,7 +58,7 @@ class TelemetryCompletionV1(FrozenModel):
     sut_instance_id: str
     driver_flush: StageCompletionV1
     sut_flush: StageCompletionV1
-    collector_drain: StageCompletionV1
+    file_export: StageCompletionV1
     archive: TelemetryArchiveV1
     state: Literal["complete", "incomplete"]
 
@@ -67,11 +67,11 @@ class TelemetryCompletionV1(FrozenModel):
         stages_ok = (
             self.driver_flush.state == "complete"
             and self.sut_flush.state == "complete"
-            and self.collector_drain.state == "complete"
+            and self.file_export.state == "complete"
             and self.archive.state == "complete"
         )
         if self.state == "complete" and not stages_ok:
-            raise ValueError("complete telemetry requires every staged flush, drain, and archive")
+            raise ValueError("complete telemetry requires every staged flush, file export, and archive")
         if self.state == "incomplete" and stages_ok:
             raise ValueError("incomplete telemetry cannot report every stage complete")
         return self
@@ -319,7 +319,7 @@ def truncated_trace_observations(
             state="missing",
             reason="otlp_truncated",
         )
-        for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained")
+        for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.exported")
         if obligation in plan.required
     )
 
@@ -388,12 +388,13 @@ def check_trace_requirements(
         ),
         None,
     )
-    drained = (
+    exported = (
         completion.state == "complete"
         and completion.execution_id == manifest.execution_id
         and completion.sut_instance_id == manifest.sut.instance_id
         and completion.driver_flush.state == "complete"
         and completion.sut_flush.state == "complete"
+        and completion.file_export.state == "complete"
         and completion.archive.state == "complete"
         and completion.archive.size > 0
     )
@@ -401,7 +402,7 @@ def check_trace_requirements(
         ("trace.http", server is not None, "trace_http_missing"),
         ("trace.user_write", write is not None, "trace_user_write_missing"),
         ("trace.user_completed", completed is not None, "trace_user_completed_missing"),
-        ("trace.drained", drained, "trace_drain_incomplete"),
+        ("trace.exported", exported, "trace_export_incomplete"),
     )
     required = set(plan.required)
     return tuple(

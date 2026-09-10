@@ -1,22 +1,15 @@
-"""Read-only host checks for a selected, short-lived Collector receipt."""
+"""Read-only host checks for a selected SUT and telemetry qualification."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import subprocess
-import time
-from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 
-import httpx
-
-from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1, HostReadinessFileV1
 from graph_engine.plugin_api import FrozenModel
 from typing import Literal
 from assurance_execution.contracts.readiness import (
+    HostReadinessFileV1,
     ManagedSutReadinessSelectionV1,
     VerificationReadinessBindingV1,
 )
@@ -26,93 +19,6 @@ from assurance_execution.operations.host_secrets import read_host_secret_model, 
 
 class HostReadinessError(ValueError):
     """Fixed, public-safe readiness failure category."""
-
-
-def process_birth_identity(pid: int) -> str:
-    try:
-        completed = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "lstart=", "-o", "command="],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ValueError("Collector process identity is unavailable") from error
-    observed = completed.stdout.strip()
-    if completed.returncode != 0 or not observed:
-        raise ValueError("Collector process is not alive")
-    return "sha256:" + hashlib.sha256(observed.encode()).hexdigest()
-
-
-def authenticate_collector_readiness(
-    receipt: CollectorReadinessReceiptV1,
-    *,
-    sut_instance_id: str,
-    execution_id: str,
-    configuration_digest: str,
-    authorization_scope_digest: str,
-    activity_receipt_digest: str,
-) -> None:
-    expected = (
-        sut_instance_id,
-        execution_id,
-        configuration_digest,
-        authorization_scope_digest,
-        activity_receipt_digest,
-    )
-    actual = (
-        receipt.sut_instance_id,
-        receipt.execution_id,
-        receipt.configuration_digest,
-        receipt.authorization_scope_digest,
-        receipt.activity_receipt_digest,
-    )
-    if actual != expected:
-        raise ValueError("Collector readiness selection or authorization drifted")
-    now = datetime.now(timezone.utc)
-    if (
-        not receipt.issued_at <= receipt.checked_at <= now < receipt.expires_at
-        or (now - receipt.checked_at).total_seconds() > 30
-    ):
-        raise ValueError("Collector readiness is stale or from the future")
-    _authenticate_collector_files(receipt)
-    if process_birth_identity(receipt.collector_pid) != receipt.collector_process_birth_identity:
-        raise ValueError("Collector process birth identity drifted")
-    endpoint = urlsplit(receipt.collector_endpoint)
-    if (
-        endpoint.scheme != "http"
-        or endpoint.hostname != "127.0.0.1"
-        or endpoint.port is None
-        or endpoint.username is not None
-        or endpoint.password is not None
-        or endpoint.query
-        or endpoint.fragment
-    ):
-        raise ValueError("Collector readiness endpoint must be a fixed loopback HTTP URL")
-    try:
-        deadline = time.monotonic() + 2
-        with httpx.Client(trust_env=False, follow_redirects=False, timeout=2) as client:
-            with client.stream("GET", receipt.collector_endpoint) as response:
-                if response.status_code != 200:
-                    raise ValueError("Collector readiness endpoint is unavailable")
-                content = bytearray()
-                for part in response.iter_bytes():
-                    content.extend(part)
-                    if len(content) > 4096 or time.monotonic() > deadline:
-                        raise ValueError("Collector readiness response is oversized")
-        if hashlib.sha256(content).hexdigest() != receipt.endpoint_response_digest or json.loads(content) != {
-            "probe_nonce": receipt.probe_nonce,
-            "execution_id": receipt.execution_id,
-        }:
-            raise ValueError("Collector readiness endpoint identity drifted")
-    except (httpx.HTTPError, OSError, json.JSONDecodeError) as error:
-        raise ValueError("Collector readiness endpoint is unavailable") from error
-    if (
-        process_birth_identity(receipt.collector_pid) != receipt.collector_process_birth_identity
-        or datetime.now(timezone.utc) >= receipt.expires_at
-    ):
-        raise ValueError("Collector readiness expired during the check")
 
 
 def authenticate_host_selection(
@@ -158,19 +64,19 @@ def authenticate_host_readiness(
     return selection
 
 
-class CollectorQualification(FrozenModel):
+class TelemetryQualification(FrozenModel):
     validation_profile: Literal["api_db_trace.v1"]
     configuration_digest: str
-    collector_artifact: HostReadinessFileV1
-    collector_config: HostReadinessFileV1
+    otel_artifact: HostReadinessFileV1
+    otel_config: HostReadinessFileV1
     otel_dependencies: HostReadinessFileV1
     otel_qualification: HostReadinessFileV1
 
 
-def _authenticate_collector_files(receipt: CollectorQualification | CollectorReadinessReceiptV1) -> None:
+def _authenticate_telemetry_files(receipt: TelemetryQualification) -> None:
     for reference in (
-        receipt.collector_artifact,
-        receipt.collector_config,
+        receipt.otel_artifact,
+        receipt.otel_config,
         receipt.otel_dependencies,
         receipt.otel_qualification,
     ):
@@ -183,15 +89,15 @@ def _authenticate_collector_files(receipt: CollectorQualification | CollectorRea
             or details.st_uid != os.getuid()
             or details.st_mode & 0o022
         ):
-            raise ValueError("Collector readiness file is not owned by the host")
+            raise ValueError("Telemetry readiness file is not owned by the host")
         if hashlib.sha256(path.read_bytes()).hexdigest() != reference.digest:
-            raise ValueError("Collector artifact/configuration/OTel digest drifted")
+            raise ValueError("Telemetry artifact/configuration/OTel digest drifted")
 
 
-def authenticate_collector_artifacts(secret_port: SecretPort, handle: str, configuration_digest: str) -> None:
+def authenticate_telemetry_artifacts(secret_port: SecretPort, handle: str, configuration_digest: str) -> None:
     receipt, _ = read_host_secret_model(
-        secret_port, handle, CollectorQualification, category="Collector/OTel qualification"
+        secret_port, handle, TelemetryQualification, category="Telemetry qualification"
     )
     if receipt.configuration_digest != configuration_digest:
-        raise HostReadinessError("Collector/OTel configuration drifted")
-    _authenticate_collector_files(receipt)
+        raise HostReadinessError("Telemetry configuration drifted")
+    _authenticate_telemetry_files(receipt)

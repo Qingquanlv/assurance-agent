@@ -212,6 +212,11 @@ def oracle_select_otlp(*, execution_id: str = EXECUTION_ID) -> bytes:
     ).encode()
 
 
+def test_telemetry_completion_names_file_export_not_collector_drain() -> None:
+    assert "file_export" in TelemetryCompletionV1.model_fields
+    assert "collector_drain" not in TelemetryCompletionV1.model_fields
+
+
 def complete_telemetry(*, digest: str, size: int, drain: str = "complete", reason: str | None = None) -> dict:
     failed = drain != "complete"
     return {
@@ -220,7 +225,7 @@ def complete_telemetry(*, digest: str, size: int, drain: str = "complete", reaso
         "sut_instance_id": "sut",
         "driver_flush": {"state": "complete"},
         "sut_flush": {"state": "complete"},
-        "collector_drain": {
+        "file_export": {
             "state": drain,
             "reason": reason if failed else None,
         },
@@ -690,7 +695,7 @@ def test_truncated_otlp_is_incomplete_on_producer(tmp_path: Path) -> None:
         ).encode()
     )
     facts = {item.obligation_id: item for item in collect_facts(journal, plan)}
-    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
+    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.exported"):
         assert facts[obligation].state == "missing"
         assert facts[obligation].reason == "otlp_truncated"
 

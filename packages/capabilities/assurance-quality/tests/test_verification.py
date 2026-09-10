@@ -46,7 +46,7 @@ def _plan(root: Path, *, trace: bool = False):
     if trace:
         required = tuple(
             sorted(
-                (*plan.required, "trace.drained", "trace.http", "trace.user_completed", "trace.user_write")
+                (*plan.required, "trace.exported", "trace.http", "trace.user_completed", "trace.user_write")
             )
         )
         document = plan.model_dump(mode="json")
@@ -60,7 +60,7 @@ def _plan(root: Path, *, trace: bool = False):
                     "checkpoint_obligation": "trace.user_completed",
                     "checkpoint_id": "user.create.completed",
                     "checkpoint_version": "1",
-                    "drain_obligation": "trace.drained",
+                    "export_obligation": "trace.exported",
                     "require_same_action_and_sut": True,
                 },
                 "required": required,
@@ -90,10 +90,10 @@ def _plan(root: Path, *, trace: bool = False):
                                 },
                             },
                             {
-                                "obligation_id": "trace.drained",
+                                "obligation_id": "trace.exported",
                                 "actual": {
-                                    "kind": "trace_drain",
-                                    "binding_id": "assurance.execution.trace.drain.v1",
+                                    "kind": "trace_export",
+                                    "binding_id": "assurance.execution.trace.export.v1",
                                     "binding_version": "1",
                                 },
                             },
@@ -178,17 +178,17 @@ def test_host_completion_cannot_be_waived_as_not_required(tmp_path: Path) -> Non
     assert verdict.reason_codes == ("verification.runner_incomplete",)
 
 
-def test_trace_profile_requires_collector_completion(tmp_path: Path) -> None:
+def test_trace_profile_requires_telemetry_completion(tmp_path: Path) -> None:
     plan = _plan(tmp_path, trace=True)
 
     incomplete = evaluate_verification(
         plan,
-        _evidence(plan, collector="not_required"),
+        _evidence(plan, telemetry="not_required"),
         completion_status="collected",
     )
     passed = evaluate_verification(
         plan,
-        _evidence(plan, collector="complete"),
+        _evidence(plan, telemetry="complete"),
         completion_status="collected",
     )
 
@@ -219,7 +219,7 @@ def test_business_violation_dominates_missing_telemetry(tmp_path: Path) -> None:
             plan,
             actuals=actuals,
             states={"trace.user_completed": "missing"},
-            collector="error",
+            telemetry="error",
         ),
         completion_status="incomplete",
     )
@@ -441,7 +441,7 @@ def test_persisted_user_without_write_span_is_incomplete(tmp_path: Path) -> None
     plan = _plan(tmp_path, trace=True)
     verdict = evaluate_verification(
         plan,
-        _evidence(plan, states={"trace.user_write": "missing"}, collector="complete"),
+        _evidence(plan, states={"trace.user_write": "missing"}, telemetry="complete"),
         completion_status="collected",
     )
     assert verdict.verdict == "INCOMPLETE"
@@ -456,7 +456,7 @@ def test_rollback_with_early_completed_span_is_failed(tmp_path: Path) -> None:
     states = {key: "missing" for key in plan.required if key.startswith("user.") and key != "user.row_count"}
     verdict = evaluate_verification(
         plan,
-        _evidence(plan, actuals=actuals, states=states, collector="complete"),
+        _evidence(plan, actuals=actuals, states=states, telemetry="complete"),
         completion_status="collected",
     )
     assert verdict.verdict == "FAILED"
@@ -549,7 +549,7 @@ def test_truncated_otlp_is_incomplete_on_assessment(tmp_path: Path) -> None:
         (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "INCOMPLETE"
-    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
+    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.exported"):
         assert verdict.by_id(obligation).evidence_status == "missing"
         assert verdict.by_id(obligation).reason == "otlp_truncated"
 
@@ -592,9 +592,9 @@ def test_producer_sealed_legal_trace_passes_authenticated_assessment(tmp_path: P
     completion = json.loads((journal_root / "telemetry-completion.json").read_bytes())
     assert completion["driver_flush"]["state"] == "complete"
     assert completion["sut_flush"]["state"] == "complete"
-    assert completion["collector_drain"]["state"] == "complete"
+    assert completion["file_export"]["state"] == "complete"
     assert completion["archive"]["state"] == "complete"
-    for stage in ("driver_flush", "sut_flush", "collector_drain"):
+    for stage in ("driver_flush", "sut_flush", "file_export"):
         receipt = completion[stage].get("receipt_ref")
         if receipt is not None:
             assert "/" in receipt["path"]
@@ -604,7 +604,7 @@ def test_producer_sealed_legal_trace_passes_authenticated_assessment(tmp_path: P
             )
 
 
-def test_missing_collector_export_is_authenticated_incomplete(tmp_path: Path) -> None:
+def test_missing_telemetry_export_is_authenticated_incomplete(tmp_path: Path) -> None:
     request, authority, handle = _materialization_request(
         tmp_path,
         authenticated=True,
@@ -625,7 +625,7 @@ def test_missing_collector_export_is_authenticated_incomplete(tmp_path: Path) ->
         (tmp_path / _verification_path(assessment)).read_bytes()
     )
     assert verdict.verdict == "INCOMPLETE"
-    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
+    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.exported"):
         assert verdict.by_id(obligation).evidence_status == "missing"
 
 
