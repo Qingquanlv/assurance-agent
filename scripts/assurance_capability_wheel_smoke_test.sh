@@ -221,9 +221,14 @@ def check_archives(source_root: Path, dist_root: Path) -> None:
             with zipfile.ZipFile(wheel) as archive:
                 metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
                 message = BytesParser().parsebytes(archive.read(metadata_name))
+            def requirement_name(value: str) -> str:
+                token = value.split(";", 1)[0].strip()
+                for separator in ("[", " ", "(", "<", ">", "=", "!"):
+                    token = token.split(separator, 1)[0]
+                return canonicalize_name(token)
+
             requirements = tuple(
-                canonicalize_name(value.split(";", 1)[0].split(" ", 1)[0])
-                for value in (message.get_all("Requires-Dist") or ())
+                requirement_name(value) for value in (message.get_all("Requires-Dist") or ())
             )
             required = {
                 "httpx",
