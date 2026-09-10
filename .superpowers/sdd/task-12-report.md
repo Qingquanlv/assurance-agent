@@ -1,85 +1,193 @@
-# Task 12 Report — Audit Pending V4/V5 Assurance Paths and Block Unbound Commit Safety
+# Task 12 Report — Trace 关联、完成与缺失判定
 
-## Status: DONE
+## Status: DONE_WITH_CONCERNS
 
-**Plan:** `docs/superpowers/plans/2026-08-01-four-layer-assurance-verification.md` Task 12  
-**Worktree tip at start:** `c1964de` (Task 11 approved; Task 12 started)  
-Edit + test only (no git add/commit). Cursor-loop helpers left alone.
+**Plan task:** Trace 关联、完成与缺失判定  
+**Worktree:** `/Users/lvqingquan/agent/assurance-agent/.worktrees/user-full-workflow-db-oracle-trace`  
+**Branch:** `codex/user-full-workflow-db-oracle-trace`  
+**Commit:** `86c7a781` `feat(quality): require correlated and complete User traces`  
+**Did not start T13.** Did not fake live Agent full runs. Did not invent a second evidence store.
 
 ## What Was Implemented
 
-### `assurance_agent/workflow/graph/resume_compatibility.py` (new)
-- `TopologyCompatibilityReceiptV1` — StrictWireModel binding root, pinned digests, discovered-role digest, staged v6 topology object/digest, audit result, reachable-set digest, source sequence.
-- Append-only event helper `receipt_to_event` / `event_to_receipt` for `topology_safety_compatibility_recorded`.
-- `ResumeCompatibilityDecision` with stable reasons:
-  - `legacy_commit_safety_semantics_unbound`
-  - `legacy_topology_audit_unsafe`
-  - `legacy_topology_profile_unreconstructable`
-  - `topology_compatibility_receipt_corrupt`
-- Audit trigger uses Task 9 discovered reachable assurance-codegen roles (and private-test contract writes), never frozen v4/v5 display status.
-- Safe topology appends/reuses one bound receipt; bypass / unreconstructable v4 profile cannot.
-- Topology receipt authorizes report/terminal-only remaining work only; pending codegen/fixer/effect/validator recovery returns `legacy_commit_safety_semantics_unbound`.
-- Non-assurance v4/v5 roots with no assurance-codegen remaining work continue without a receipt.
+Sealed T11 Collector output into the existing journal / `EvidenceArtifactRef` / kernel receipt path, then judged correlated and complete User traces on both the producer and authenticated assessment replay.
 
-### Event / fold / projection
-- New `TopologySafetyCompatibilityRecordedEvent` in `graph_events.py` (exact duplicate fold idempotent; identity/payload drift = ledger corruption).
-- `GraphProjection.topology_compatibility_receipt_id` folded in `checkpoint.py`.
-- `replay_binding` validates receipts on v4/v5 bind (foreign root / digest drift → `topology_compatibility_receipt_corrupt`).
+### Shared contracts (`assurance_execution.contracts.telemetry`)
 
-### Runtime barrier
-- `_reach_recovery_barrier` evaluates compatibility **before** definition-dependent recovery/dispatch.
-- Stages current v6 topology-semantics bytes for the audit receipt without rewriting the legacy root binding.
-- Raises typed `ResumeCompatibilityBarrier(GraphRuntimeError)` carrying `decision` (no exception-text parsing).
+- `parse_otlp_records(raw)` flattens OTLP JSON/JSONL, de-dupes `(trace_id, span_id)`, rejects conflicting duplicates and truncated export.
+- `check_trace_requirements(plan, manifest, spans, completion)` is the single matcher used by producer and quality replay.
+- Matching rules:
+  - HTTP: FastAPI SERVER `/api/v1/user/create`, descendant of driver CLIENT `assurance.execution.http-driver`.
+  - Write: Tortoise CLIENT, `aa.db.table == user`, `aa.db.operation == INSERT`, status UNSET or OK, descendant of SERVER (helpers allowed; no fixed direct parent).
+  - Completed: name `user.create.completed`, `user.username == plan.inputs["username"]`, descendant of SERVER.
+  - Drain: completion `state == complete` plus drain/archive complete.
+  - Same `aa.execution_id` and `service.instance.id == manifest.sut.instance_id`.
+  - Oracle exclusion is exact: `aa.role == oracle` OR instrumentation `assurance.execution.oracle` OR `service.name == "oracle"` (not a substring; `user-oracle-sut` is not excluded).
+- `TelemetryCompletionV1` / `StageCompletionV1` / `TelemetryArchiveV1` keep driver flush, SUT flush, Collector drain, and archive state/reason in one sealed document.
+- `apply_sut_request_identity` copies only `aa-execution-id` → `aa.execution_id`.
+- Names: `telemetry.otlp.jsonl`, `telemetry-completion.json`.
 
-### Driver status
-- `DriverState.resume_compatibility_reason`
-- `resume_compatibility_reason_from_error` / `project_resume_compatibility` surface the typed decision.
+### Producer (`assurance_execution.operations.telemetry` + `verified_execution`)
 
-## Verify (Step 6)
+- `load_otlp_records(path, execution_id)` bounded 12MB regular-file read, then parse + filter.
+- Parent HTTP CLIENT span + W3C inject + `aa-execution-id` on `api_db_trace.v1` posts.
+- After host run / before terminal outcome: flush driver, flush SUT (`POST /internal/otel/flush`, no provider shutdown), drain owned Collector, copy Collector `otel/traces.jsonl` to evidence-root `telemetry.otlp.jsonl`, then write `telemetry-completion.json`. Complete is written only after every stage succeeds.
+- `_journal_refs` includes both sealed files. `collector_completion` is `not_required` for `api_db.v1`.
+- Oracle SELECT spans are marked `aa.role=oracle`, scope `assurance.execution.oracle`, service `oracle`.
+
+### Assessment replay (`assurance_quality.operations.assessment`)
+
+- Authenticates OTLP and completion by digest into the existing raw-evidence closed set.
+- Replays via **contracts only** (`parse_otlp_records` + `check_trace_requirements`). No `assurance_execution.operations` import. No second matcher.
+- Keeps the four action/process journal authentications.
+- Rejects extra `.jsonl` except `telemetry.otlp.jsonl`; allows `telemetry-completion.json`.
+- `api_db.v1` must not carry sealed telemetry.
+- Conflict → `AssessmentInputError`; truncate → missing `otlp_truncated` observations.
+- Tampered sealed OTLP cannot reuse an old PASSED publish.
+
+### Fixture / SUT hook
+
+- FastAPI `server_request_hook` copies only `aa-execution-id`.
+- Added `POST /internal/otel/flush` (force_flush, no shutdown).
+- Recomputed `runtime-lock.json` `files.bootstrap.py` and `runtime_digest`. `source_digest` unchanged (`sut-source/` only).
+
+## Tests + Results
+
+Named command:
 
 ```text
-uv run pytest -q \
-  tests/unit/workflow/graph/test_resume_compatibility.py \
-  tests/unit/workflow/graph/test_replay_binding.py \
-  tests/integration/test_graph_runtime_faults.py
-→ 104 passed
-
-uv run ruff check assurance_agent/workflow/graph/resume_compatibility.py \
-  assurance_agent/workflow/graph/runtime.py \
-  assurance_agent/workflow/driver/driver_state.py \
-  tests/unit/workflow/graph/test_resume_compatibility.py
-→ All checks passed
-
-uv run pyright → 0 errors
-uv run lint-imports → 6 kept, 0 broken
+uv run pytest packages/capabilities/assurance-execution/tests/test_telemetry.py \
+  packages/capabilities/assurance-quality/tests/test_trace_verification.py \
+  packages/capabilities/assurance-quality/tests/test_verification.py \
+  tests/product/test_execution_quality_flow.py \
+  tests/product/test_verified_delivery.py -q
+uv run lint-imports
+uv run python benchmark/assurance-product/user_oracle_harness.py verify-otel-compatibility
 ```
 
-## Files ready to stage (integrator owns commit)
+| Gate | Result |
+| --- | --- |
+| Named pytest | **110 passed** |
+| `uv run lint-imports` | **13 kept, 0 broken** |
+| T11 `verify-otel-compatibility` | **14 passed**; runtime_digest `sha256:e0478bbe3fa8d6cbceb2a38ebdd812b4f2efd0551b07cc6509793fcc2e2b579c`; source_digest unchanged |
 
-**Created**
-- `assurance_agent/workflow/graph/resume_compatibility.py`
-- `tests/unit/workflow/graph/test_resume_compatibility.py`
-- `.superpowers/sdd/task-12-report.md` (this report; replaces stale Trace-V2 Task 12 report)
+Coverage in the named tests:
+
+- Real OTLP-shaped fixtures: missing HTTP, missing write, stale `execution_id`, wrong instance, broken parent chain, oracle SELECT only, role/audit table write, helper parent chain, equivalent INSERT + UNSET.
+- Seal writes `telemetry.otlp.jsonl` + `telemetry-completion.json`; drain timeout stays incomplete.
+- Persist-without-write → INCOMPLETE; rollback + completed → FAILED; business error + missing telemetry → FAILED + missing evidence.
+- Authenticated materializer admits sealed traces; tampered OTLP / rewritten digest fails closed.
+- Installed `materialize-assessment-inputs` path admits a legal sealed User trace and rejects missing/rewritten traces.
+- Export rejects tampered sealed traces.
+
+`test_trace_verification.py` is synthetic parse/match only and is not counted as T13 live admission.
+
+## TDD Evidence
+
+1. **Red:** first named-test run failed with `ModuleNotFoundError: assurance_execution.contracts.telemetry` before the contract module existed.
+2. **Green:** after matcher + seal + assessment wiring, named pytest reached 110 passed. A first installed-assessment pass failed because `assessment_composition` was still frozen on `api_db.v1`; `trace_assessment_composition` (`api_db_trace.v1`) fixed that without changing `api_db.v1`.
+3. **Oracle false-negative:** an early matcher treated `service.name` containing `"oracle"` as oracle (`user-oracle-sut`). Fixed to exact `== "oracle"`.
+4. Implementation was not written before the failing import; no live Agent full run was invented to go green.
+
+## Files Changed
+
+**New**
+
+- `packages/capabilities/assurance-execution/assurance_execution/contracts/telemetry.py`
+- `packages/capabilities/assurance-execution/assurance_execution/operations/telemetry.py`
+- `packages/capabilities/assurance-execution/assurance_execution/resources/schemas/telemetry-completion.v1.schema.json`
+- `packages/capabilities/assurance-execution/tests/test_telemetry.py`
+- `packages/capabilities/assurance-quality/tests/test_trace_verification.py`
 
 **Modified**
-- `assurance_agent/workflow/core/graph_events.py`
-- `assurance_agent/workflow/graph/models.py`
-- `assurance_agent/workflow/graph/checkpoint.py`
-- `assurance_agent/workflow/graph/replay_binding.py`
-- `assurance_agent/workflow/graph/runtime.py`
-- `assurance_agent/workflow/driver/driver_state.py`
-- `tests/unit/workflow/graph/test_replay_binding.py`
-- `tests/integration/test_graph_runtime_faults.py`
 
-**Do not stage**
-- `benchmark/.../cursor-loop-helpers.sh`
-- `tests/unit/benchmark/test_cursor_loop_helpers.py`
-- Unrelated Task 14 WIP (`assurance_personas.py`, `opencode_adapter.py`, `test_opencode_adapter.py`) if present
+- `packages/capabilities/assurance-execution/assurance_execution/contracts/__init__.py`
+- `packages/capabilities/assurance-execution/assurance_execution/operations/verified_execution.py`
+- `packages/capabilities/assurance-execution/assurance_execution/operations/sqlite_oracle.py`
+- `packages/capabilities/assurance-execution/assurance_execution/plugin.py`
+- `packages/capabilities/assurance-execution/assurance_execution/plugin-declaration.json`
+- `packages/capabilities/assurance-quality/assurance_quality/operations/assessment.py`
+- `packages/capabilities/assurance-quality/tests/test_verification.py`
+- `tests/verified_assessment_fixture.py`
+- `tests/product/test_execution_quality_flow.py`
+- `tests/product/test_verified_delivery.py`
+- `benchmark/assurance-product/fixtures/user-oracle/bootstrap.py`
+- `benchmark/assurance-product/fixtures/user-oracle/runtime-lock.json`
 
-Suggested commit message: `feat(graph): audit legacy assurance resume safety`
+Quality `operations/verification.py` was not rewritten: the evaluator already consumes replayed `ObservationV1` values. The new quality test asserts it does not re-implement the matcher. `contracts/{verification,workflow,attempts}.py` already carried `collector_completion` from T11.
 
-## Notes
+## Self-Review
 
-- A topology receipt is necessary for audited pending assurance paths but never sufficient for commit-safety-bearing work.
-- No old root event rewrite/backfill; v6 roots skip the legacy audit path.
-- Operator exit remains Task 13 (`supersede`); this task only produces the typed block reason.
+- Quality imports execution **contracts** only; `lint-imports` kept the layer rule.
+- `api_db.v1` stays `not_required` and is rejected if sealed telemetry appears.
+- Journal kinds (action/process/cleanup) are still authenticated; telemetry is an addition, not a replacement.
+- Complete is not written before export; drain timeout seals `incomplete`.
+- Duplicate span identity de-dupes; conflicting content is reject.
+- Oracle observer cannot satisfy `trace.user_write`.
+- Installed assessment, not only synthetic fixtures, is the admission door.
+- No second evidence store. No T13 live run. No amend of prior commits.
+
+## Concerns
+
+1. ~~**Host driver span is not exported to the locked Collector.**~~ Fixed in the follow-up commit below. `api_db_trace.v1` now attaches an OTLP HTTP exporter to the Attempt Collector endpoint recorded in `collector-process.json` / `collector_export.otlp_endpoint`. A real Collector test seals that CLIENT span into `telemetry.otlp.jsonl`. `api_db.v1` still does not start or require Collector/OTel.
+2. If Collector `otel/traces.jsonl` is missing after flush/drain, `_complete_trace_evidence` returns without writing an incomplete completion document. Assessment then fail-closes on missing sealed telemetry. That is conservative, but T13 should confirm the live drain path always leaves a file or an explicit incomplete receipt.
+3. `flush_driver_provider` shuts down the process-global tracer provider. Safe for a single-shot verified attempt; do not reuse that process for a later traced action without re-installing the provider.
+
+These are follow-through items for T13 live, not gaps in the named T12 gates.
+
+---
+
+## Pre-review correctness fix — host driver CLIENT span export
+
+**Did not start T13.** Did not fake live Agent full runs. Did not amend `86c7a781`.
+
+### Change
+
+- `_ensure_driver_provider(otlp_endpoint=)` attaches `OTLPSpanExporter` + `SimpleSpanProcessor` to `{endpoint}/v1/traces` (same shape as the SUT).
+- `collector_otlp_endpoint(run_root)` reads the T11 Attempt Collector endpoint from `otel/collector-process.json`.
+- `execute_frozen_action` / `_post` pass that endpoint on `api_db_trace.v1` only.
+- Covering test starts a real locked Collector, exports a driver CLIENT span, flushes, drains, seals, and asserts `assurance.execution.http-driver` is in `telemetry.otlp.jsonl`.
+
+### TDD
+
+1. **Red:** `test_driver_client_span_is_sealed_from_attempt_collector` first failed with `ImportError: cannot import name 'collector_otlp_endpoint'`.
+2. **Red (behavior):** after adding the lookup API without an exporter, the same test failed with `ValueError: OTel flush did not produce an OTLP file` (17.57s) — the driver span never reached the Collector.
+3. **Green:** after attaching the OTLP exporter and threading the Attempt endpoint, the covering test passed (7.56s). Named suite then reached 111 passed.
+
+### Commands + output
+
+```text
+$ uv run pytest packages/capabilities/assurance-execution/tests/test_telemetry.py::test_driver_client_span_is_sealed_from_attempt_collector -q
+# RED (API missing)
+F
+ImportError: cannot import name 'collector_otlp_endpoint' from 'assurance_execution.operations.telemetry'
+1 failed in 0.99s
+
+# RED (exporter missing)
+F
+ValueError: OTel flush did not produce an OTLP file
+1 failed in 17.57s
+
+# GREEN
+.
+1 passed in 7.56s
+```
+
+```text
+$ uv run pytest packages/capabilities/assurance-execution/tests/test_telemetry.py \
+  packages/capabilities/assurance-quality/tests/test_trace_verification.py \
+  packages/capabilities/assurance-quality/tests/test_verification.py \
+  tests/product/test_execution_quality_flow.py \
+  tests/product/test_verified_delivery.py -q
+uv run lint-imports
+```
+
+```text
+........................................................................ [ 64%]
+.......................................                                  [100%]
+111 passed in 61.84s (0:01:01)
+
+Contracts: 13 kept, 0 broken.
+```
+
+`uv run ruff check` on the three Python files: all checks passed. `ruff format` reformatted `telemetry.py`.

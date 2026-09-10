@@ -401,6 +401,69 @@ def test_oracle_observer_span_cannot_satisfy_user_write(tmp_path: Path) -> None:
     assert observations["trace.user_write"].state == "missing"
 
 
+def _load_user_oracle_harness():
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[4] / "benchmark" / "assurance-product" / "user_oracle_harness.py"
+    spec = importlib.util.spec_from_file_location("user_oracle_harness", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_driver_client_span_is_sealed_from_attempt_collector(tmp_path: Path) -> None:
+    from assurance_execution.operations.telemetry import (
+        collector_otlp_endpoint,
+        drain_owned_collector,
+        flush_driver_provider,
+        load_otlp_records,
+        start_driver_client_span,
+    )
+
+    harness = _load_user_oracle_harness()
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    receipt = harness.start_collector(run_root=run_root, execution_id=EXECUTION_ID)
+    try:
+        endpoint = collector_otlp_endpoint(run_root)
+        assert endpoint == receipt["otlp_endpoint"]
+        span, headers = start_driver_client_span(
+            EXECUTION_ID,
+            "http://127.0.0.1:1234/api/v1/user/create",
+            otlp_endpoint=endpoint,
+        )
+        assert "traceparent" in headers
+        span.end()
+        driver_flush = flush_driver_provider()
+        harness.flush_otel(run_root=run_root)
+        drain = drain_owned_collector(run_root)
+        evidence = tmp_path / "evidence"
+        seal_telemetry_artifacts(
+            evidence_root=evidence,
+            source_otlp=Path(receipt["otlp_path"]),
+            execution_id=EXECUTION_ID,
+            sut_instance_id="sut",
+            driver_flush=driver_flush,
+            sut_flush={"state": "complete"},
+            collector_drain=drain,
+        )
+        sealed = evidence / "telemetry.otlp.jsonl"
+        records = load_otlp_records(sealed, EXECUTION_ID)
+        assert any(
+            item.get("kind") == "CLIENT"
+            and item.get("instrumentation") == "assurance.execution.http-driver"
+            and item.get("name") == "POST /api/v1/user/create"
+            for item in records
+        ), records
+    finally:
+        if (run_root / "otel" / "collector-process.json").is_file():
+            try:
+                harness.stop_collector(run_root=run_root)
+            except Exception:
+                drain_owned_collector(run_root)
+
+
 def test_journal_refs_include_sealed_telemetry(tmp_path: Path) -> None:
     from assurance_execution.operations.verified_execution import ActionJournal, _journal_refs
 

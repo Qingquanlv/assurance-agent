@@ -25,6 +25,7 @@ from assurance_execution.operations.sqlite_oracle import _failed, observe_user
 from assurance_execution.operations.record_publication import _publish_exclusive, publish_record
 from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_execution.operations.telemetry import (
+    collector_otlp_endpoint,
     flush_driver_provider,
     load_otlp_records,
     seal_telemetry_artifacts,
@@ -162,13 +163,18 @@ class ActionJournal:
 
 
 async def _post(
-    plan: CaseExecutionPlanV1, manifest: VerificationManifestV1, credential: bytes
+    plan: CaseExecutionPlanV1,
+    manifest: VerificationManifestV1,
+    credential: bytes,
+    otlp_endpoint: str | None = None,
 ) -> dict[str, Any]:
     url = manifest.sut.base_url + plan.action.path
     headers = {"token": _credentials(credential)["token"]}
     driver_span = None
     if manifest.validation_profile == "api_db_trace.v1":
-        driver_span, injected = start_driver_client_span(manifest.execution_id, url)
+        driver_span, injected = start_driver_client_span(
+            manifest.execution_id, url, otlp_endpoint=otlp_endpoint
+        )
         headers.update(injected)
     try:
         return await _post_once(plan, manifest, credential, url, headers)
@@ -218,14 +224,18 @@ async def _post_once(
 
 
 async def _supervised_post(
-    plan: CaseExecutionPlanV1, manifest: VerificationManifestV1, credential: bytes, control: ActionControl
+    plan: CaseExecutionPlanV1,
+    manifest: VerificationManifestV1,
+    credential: bytes,
+    control: ActionControl,
+    otlp_endpoint: str | None = None,
 ) -> dict[str, Any]:
     async def watch() -> None:
         while not control.stopped:
             await asyncio.sleep(0.01)
         raise TimeoutError("action_cancelled_or_expired")
 
-    request = asyncio.create_task(_post(plan, manifest, credential))
+    request = asyncio.create_task(_post(plan, manifest, credential, otlp_endpoint))
     cancellation = asyncio.create_task(watch())
     try:
         async with asyncio.timeout(min(10.0, control.remaining)):
@@ -245,6 +255,7 @@ def execute_frozen_action(
     journal: ActionJournal,
     credential: bytes,
     control: ActionControl | None = None,
+    otlp_endpoint: str | None = None,
 ) -> None:
     """Execute once; no terminal record after a crash ever authorizes another POST."""
     credential_document = _credentials(credential)
@@ -269,7 +280,7 @@ def execute_frozen_action(
         return
     try:
         control.require(12)  # Do not dispatch if HTTP and observer bounds cannot fit.
-        http = asyncio.run(_supervised_post(plan, manifest, credential, control))
+        http = asyncio.run(_supervised_post(plan, manifest, credential, control, otlp_endpoint))
     except (httpx.HTTPError, TimeoutError):
         http = {"state": "timeout", "reason": "http_terminal_unknown"}
     # A fresh independent read-only connection observes committed post-action state.
@@ -760,7 +771,16 @@ class VerifiedExecutionHandler:
             nodeid=manifest.nodeid,
             case_id=manifest.case_id,
             container_name=name,
-            execute=lambda _, control: execute_frozen_action(plan, manifest, journal, credential, control),
+            execute=lambda _, control: execute_frozen_action(
+                plan,
+                manifest,
+                journal,
+                credential,
+                control,
+                collector_otlp_endpoint(Path(authority.run_root))
+                if plan.validation_profile == "api_db_trace.v1"
+                else None,
+            ),
             cancel_requested=context.cancel_requested,
         )
         journal.write("process_terminal", receipt.model_dump(mode="json"))

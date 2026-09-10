@@ -33,21 +33,49 @@ def load_otlp_records(path: Path, execution_id: str) -> tuple[dict[str, Any], ..
     return tuple(span for span in spans if span.get("execution_id") == execution_id)
 
 
-def _ensure_driver_provider() -> None:
+def collector_otlp_endpoint(run_root: Path) -> str | None:
+    """Return the Attempt Collector OTLP HTTP endpoint recorded on the host."""
+
+    receipt_path = Path(run_root) / "otel" / "collector-process.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        return None
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    endpoint = receipt.get("otlp_endpoint")
+    return str(endpoint) if isinstance(endpoint, str) and endpoint else None
+
+
+_DRIVER_EXPORT_ENDPOINT: str | None = None
+
+
+def _ensure_driver_provider(otlp_endpoint: str | None = None) -> None:
+    global _DRIVER_EXPORT_ENDPOINT
     current = trace.get_tracer_provider()
     if not hasattr(current, "add_span_processor"):
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
 
-        trace.set_tracer_provider(
-            TracerProvider(resource=Resource.create({"service.name": "assurance-execution-driver"}))
-        )
+        current = TracerProvider(resource=Resource.create({"service.name": "assurance-execution-driver"}))
+        trace.set_tracer_provider(current)
+        _DRIVER_EXPORT_ENDPOINT = None
+    if not otlp_endpoint or otlp_endpoint == _DRIVER_EXPORT_ENDPOINT:
+        return
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    traces = otlp_endpoint.rstrip("/") + "/v1/traces"
+    current.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=traces)))
+    _DRIVER_EXPORT_ENDPOINT = otlp_endpoint
 
 
-def driver_trace_headers(execution_id: str) -> dict[str, str]:
+def driver_trace_headers(execution_id: str, *, otlp_endpoint: str | None = None) -> dict[str, str]:
     """Create a parent CLIENT span and inject W3C context plus the execution identity."""
 
-    _ensure_driver_provider()
+    _ensure_driver_provider(otlp_endpoint)
     tracer = trace.get_tracer("assurance.execution.http-driver")
     span = tracer.start_span("POST /api/v1/user/create", kind=SpanKind.CLIENT)
     span.set_attribute("aa.execution_id", execution_id)
@@ -58,10 +86,10 @@ def driver_trace_headers(execution_id: str) -> dict[str, str]:
     return headers
 
 
-def start_driver_client_span(execution_id: str, url: str):
+def start_driver_client_span(execution_id: str, url: str, *, otlp_endpoint: str | None = None):
     """Open the parent HTTP CLIENT span for one frozen action."""
 
-    _ensure_driver_provider()
+    _ensure_driver_provider(otlp_endpoint)
     tracer = trace.get_tracer("assurance.execution.http-driver")
     span = tracer.start_span("POST /api/v1/user/create", kind=SpanKind.CLIENT)
     span.set_attribute("aa.execution_id", execution_id)
@@ -204,6 +232,7 @@ def seal_telemetry_artifacts(
 
 
 __all__ = [
+    "collector_otlp_endpoint",
     "drain_owned_collector",
     "driver_trace_headers",
     "flush_driver_provider",
