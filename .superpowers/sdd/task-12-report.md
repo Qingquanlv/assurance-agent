@@ -266,3 +266,53 @@ Contracts: 13 kept, 0 broken.
 
 `uv run ruff check` on the touched Python files: all checks passed.
 
+---
+
+## Review-fix commit — extra journal JSON and authenticated missing-export
+
+**Did not start T13.** Did not fake live Agent full runs. Did not amend `d2d580bf`.
+
+### Fixes
+
+1. **Critical — stage receipts are not extra journal JSON.** `_complete_trace_evidence` no longer writes `driver-flush.json`, `sut-flush.json`, or `collector-drain.json`. Flush/drain/archive live only in sealed `telemetry-completion.json`. The extra-file write path (`_stage_with_receipt`) was removed. Covering test seals a producer-equivalent legal live trace **and** runs authenticated `materialize_assessment_inputs` → PASSED.
+2. **Important — missing Collector export is authenticated INCOMPLETE.** Incomplete completion without OTLP is no longer fail-close. Producer `collect_facts` and assessment replay both call `check_trace_requirements` with empty spans. Covering test runs `materialize_assessment_inputs` on a missing-export seal → INCOMPLETE.
+3. **Important — receipt_ref authenticity.** No extra receipt files remain. Stage `receipt_ref` is unset; if a future receipt_ref is present, the covering test requires an evidence-root-relative path bound into `raw_evidence_refs`.
+
+### TDD
+
+1. **Red:** `test_producer_sealed_legal_trace_passes_authenticated_assessment` failed on extra `driver-flush.json` / `sut-flush.json` / `collector-drain.json`. `test_missing_collector_export_is_authenticated_incomplete` raised `AssessmentInputError: verified journal contains an uncommitted JSON record`.
+2. **Green:** after embedding stages in completion and replaying missing export as empty spans, both tests passed. Named suite 123 passed.
+
+### Commands + output
+
+```text
+$ uv run pytest \
+    packages/capabilities/assurance-quality/tests/test_verification.py::test_producer_sealed_legal_trace_passes_authenticated_assessment \
+    packages/capabilities/assurance-quality/tests/test_verification.py::test_missing_collector_export_is_authenticated_incomplete \
+    -q --tb=short
+# RED
+FF
+AssertionError: extra items {'sut-flush.json', 'driver-flush.json', 'collector-drain.json'}
+AssessmentInputError: verified journal contains an uncommitted JSON record
+2 failed in 0.87s
+```
+
+```text
+$ uv run pytest packages/capabilities/assurance-execution/tests/test_telemetry.py \
+  packages/capabilities/assurance-quality/tests/test_trace_verification.py \
+  packages/capabilities/assurance-quality/tests/test_verification.py \
+  tests/product/test_execution_quality_flow.py \
+  tests/product/test_verified_delivery.py -q
+uv run lint-imports
+```
+
+```text
+........................................................................ [ 58%]
+...................................................                      [100%]
+123 passed in 62.67s (0:01:02)
+
+Contracts: 13 kept, 0 broken.
+```
+
+`uv run ruff check` on the touched Python files: all checks passed. `ruff format` reformatted `test_telemetry.py` and `verified_assessment_fixture.py`.
+

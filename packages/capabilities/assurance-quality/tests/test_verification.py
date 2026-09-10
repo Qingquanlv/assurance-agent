@@ -544,6 +544,81 @@ def test_truncated_otlp_is_incomplete_on_assessment(tmp_path: Path) -> None:
         assert verdict.by_id(obligation).reason == "otlp_truncated"
 
 
+def test_producer_sealed_legal_trace_passes_authenticated_assessment(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(
+        tmp_path,
+        authenticated=True,
+        trace=True,
+        producer_seal=True,
+    )
+    journal_root = (tmp_path / request.execution.manifest_ref.path).parent
+    extra = {
+        path.name
+        for path in journal_root.glob("*.json")
+        if path.name
+        not in {
+            "action_started.json",
+            "action_terminal.json",
+            "process_terminal.json",
+            "cleanup_terminal.json",
+            "execution_terminal.json",
+            "manifest.json",
+            "outcome.json",
+            "telemetry-completion.json",
+        }
+    }
+    assert extra == set()
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "PASSED"
+    completion = json.loads((journal_root / "telemetry-completion.json").read_bytes())
+    assert completion["driver_flush"]["state"] == "complete"
+    assert completion["sut_flush"]["state"] == "complete"
+    assert completion["collector_drain"]["state"] == "complete"
+    assert completion["archive"]["state"] == "complete"
+    for stage in ("driver_flush", "sut_flush", "collector_drain"):
+        receipt = completion[stage].get("receipt_ref")
+        if receipt is not None:
+            assert "/" in receipt["path"]
+            assert any(
+                ref.path == receipt["path"] and ref.digest == receipt["digest"]
+                for ref in request.execution.raw_evidence_refs
+            )
+
+
+def test_missing_collector_export_is_authenticated_incomplete(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(
+        tmp_path,
+        authenticated=True,
+        trace=True,
+        missing_export=True,
+    )
+    names = {Path(ref.path).name for ref in request.execution.raw_evidence_refs}
+    assert "telemetry-completion.json" in names
+    assert "telemetry.otlp.jsonl" not in names
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "INCOMPLETE"
+    for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
+        assert verdict.by_id(obligation).evidence_status == "missing"
+
+
 def test_authenticated_trace_materializer_replays_sealed_otlp(tmp_path: Path) -> None:
     request, authority, handle = _materialization_request(tmp_path, authenticated=True, trace=True)
     assessment = materialize_assessment_inputs(

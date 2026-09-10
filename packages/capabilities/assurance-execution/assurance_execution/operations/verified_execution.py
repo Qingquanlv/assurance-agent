@@ -490,11 +490,16 @@ def _merge_trace_observations(
         return observations
     otlp = journal.root / TELEMETRY_OTLP_NAME
     completion_path = journal.root / TELEMETRY_COMPLETION_NAME
-    if not otlp.is_file() or not completion_path.is_file():
+    if not completion_path.is_file():
         return observations
     try:
-        spans = load_otlp_records(otlp, journal.manifest.execution_id)
         completion = TelemetryCompletionV1.model_validate_json(completion_path.read_bytes())
+        if otlp.is_file():
+            spans = load_otlp_records(otlp, journal.manifest.execution_id)
+        elif completion.state == "incomplete":
+            spans = ()
+        else:
+            return observations
         replayed = check_trace_requirements(plan, journal.manifest, spans, completion)
     except ValueError as error:
         if "conflict" in str(error).lower():
@@ -554,9 +559,9 @@ def _complete_trace_evidence(
         return
     from assurance_execution.operations.telemetry import drain_owned_collector, flush_sut_provider
 
-    driver = flush_driver_provider(receipt_dir=journal.root)
-    sut = flush_sut_provider(manifest.sut.base_url, run_root, receipt_dir=journal.root)
-    drain = drain_owned_collector(run_root, receipt_dir=journal.root)
+    driver = flush_driver_provider()
+    sut = flush_sut_provider(manifest.sut.base_url, run_root)
+    drain = drain_owned_collector(run_root)
     source = run_root / "otel" / "traces.jsonl"
     if not source.is_file():
         reason = "collector_export_missing"

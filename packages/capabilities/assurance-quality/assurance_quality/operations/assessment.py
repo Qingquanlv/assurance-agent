@@ -771,11 +771,10 @@ def _replay_trace_observations(
         if TELEMETRY_OTLP_NAME in names or TELEMETRY_COMPLETION_NAME in names:
             raise AssessmentInputError("api_db.v1 execution must not carry sealed telemetry")
         return replayed
-    if TELEMETRY_OTLP_NAME not in names or TELEMETRY_COMPLETION_NAME not in names:
+    if TELEMETRY_COMPLETION_NAME not in names:
         raise AssessmentInputError("verified trace raw closure is missing sealed telemetry")
-    otlp = payloads.get(TELEMETRY_OTLP_NAME)
     raw_completion = payloads.get(TELEMETRY_COMPLETION_NAME)
-    if not isinstance(otlp, (bytes, bytearray)) or not isinstance(raw_completion, (bytes, bytearray)):
+    if not isinstance(raw_completion, (bytes, bytearray)):
         raise AssessmentInputError("verified trace raw closure is missing sealed telemetry")
     try:
         completion = TelemetryCompletionV1.model_validate_json(raw_completion)
@@ -785,6 +784,11 @@ def _replay_trace_observations(
         raise AssessmentInputError("verified telemetry belongs to a different execution")
     if completion.sut_instance_id != manifest.sut.instance_id:
         raise AssessmentInputError("verified telemetry belongs to a different instance")
+    otlp = payloads.get(TELEMETRY_OTLP_NAME)
+    if TELEMETRY_OTLP_NAME not in names or not isinstance(otlp, (bytes, bytearray)):
+        if completion.state == "complete":
+            raise AssessmentInputError("verified trace raw closure is missing sealed telemetry")
+        otlp = b""
     try:
         spans = parse_otlp_records(otlp)
         trace = check_trace_requirements(plan, manifest, spans, completion)

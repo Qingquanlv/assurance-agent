@@ -666,7 +666,7 @@ def test_missing_collector_file_seals_incomplete_completion(tmp_path: Path) -> N
     assert document.archive.reason is not None
 
 
-def test_complete_trace_evidence_retains_stage_receipt_refs(tmp_path: Path) -> None:
+def test_complete_trace_evidence_embeds_stages_without_extra_json(tmp_path: Path) -> None:
     from assurance_execution.operations.verified_execution import ActionJournal, _complete_trace_evidence
 
     plan, prepared = _trace_plan(tmp_path)
@@ -687,9 +687,16 @@ def test_complete_trace_evidence_retains_stage_receipt_refs(tmp_path: Path) -> N
     document = TelemetryCompletionV1.model_validate_json(
         (journal.root / "telemetry-completion.json").read_bytes()
     )
-    assert document.driver_flush.receipt_ref is not None
-    assert document.sut_flush.receipt_ref is not None
-    assert document.collector_drain.receipt_ref is not None
+    extra = {
+        path.name for path in journal.root.glob("*.json") if path.name not in {"telemetry-completion.json"}
+    }
+    assert extra == set()
+    assert document.driver_flush.state == "complete"
+    assert document.sut_flush.state == "complete"
+    assert document.collector_drain.state == "complete"
+    assert document.driver_flush.receipt_ref is None
+    assert document.sut_flush.receipt_ref is None
+    assert document.collector_drain.receipt_ref is None
     assert document.archive.path == "telemetry.otlp.jsonl"
     assert document.archive.digest
 

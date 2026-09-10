@@ -52,19 +52,6 @@ def collector_otlp_endpoint(run_root: Path) -> str | None:
 _DRIVER_EXPORT_ENDPOINT: str | None = None
 
 
-def _stage_with_receipt(receipt_dir: Path | None, name: str, payload: dict[str, Any]) -> dict[str, Any]:
-    if receipt_dir is None:
-        return payload
-    body = {key: value for key, value in payload.items() if key != "receipt_ref"}
-    data = (json.dumps(body, indent=2, sort_keys=True) + "\n").encode()
-    receipt_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    publish_record(receipt_dir / name, data)
-    return {
-        **payload,
-        "receipt_ref": {"path": name, "digest": hashlib.sha256(data).hexdigest()},
-    }
-
-
 def _ensure_driver_provider(otlp_endpoint: str | None = None, sut_instance_id: str | None = None) -> None:
     global _DRIVER_EXPORT_ENDPOINT
     current = trace.get_tracer_provider()
@@ -125,7 +112,7 @@ def start_driver_client_span(
     return span, headers
 
 
-def flush_driver_provider(receipt_dir: Path | None = None) -> dict[str, Any]:
+def flush_driver_provider() -> dict[str, Any]:
     provider = trace.get_tracer_provider()
     flushed = True
     if hasattr(provider, "force_flush"):
@@ -135,14 +122,13 @@ def flush_driver_provider(receipt_dir: Path | None = None) -> dict[str, Any]:
             provider.shutdown()
         except Exception:  # noqa: BLE001
             flushed = False
-    payload: dict[str, Any] = {
+    return {
         "state": "complete" if flushed else "incomplete",
         **({} if flushed else {"reason": "driver_flush_failed"}),
     }
-    return _stage_with_receipt(receipt_dir, "driver-flush.json", payload)
 
 
-def flush_sut_provider(base_url: str, run_root: Path, receipt_dir: Path | None = None) -> dict[str, Any]:
+def flush_sut_provider(base_url: str, run_root: Path) -> dict[str, Any]:
     payload: dict[str, Any] = {"state": "incomplete", "reason": "sut_flush_failed"}
     try:
         import httpx
@@ -164,12 +150,10 @@ def flush_sut_provider(base_url: str, run_root: Path, receipt_dir: Path | None =
                 body = {}
             if body.get("state") == "flushed":
                 payload = {"state": "complete"}
-    return _stage_with_receipt(receipt_dir, "sut-flush.json", payload)
+    return payload
 
 
-def drain_owned_collector(
-    run_root: Path, timeout_s: float = 5.0, receipt_dir: Path | None = None
-) -> dict[str, Any]:
+def drain_owned_collector(run_root: Path, timeout_s: float = 5.0) -> dict[str, Any]:
     import os
     import signal
     import time
@@ -177,14 +161,12 @@ def drain_owned_collector(
     payload: dict[str, Any]
     receipt_path = Path(run_root) / "otel" / "collector-process.json"
     if not receipt_path.is_file():
-        payload = {"state": "incomplete", "reason": "collector_receipt_missing"}
-        return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
+        return {"state": "incomplete", "reason": "collector_receipt_missing"}
     try:
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         pid = int(receipt["pid"])
     except (OSError, KeyError, TypeError, ValueError):
-        payload = {"state": "incomplete", "reason": "collector_receipt_invalid"}
-        return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
+        return {"state": "incomplete", "reason": "collector_receipt_invalid"}
     try:
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + timeout_s
@@ -192,8 +174,7 @@ def drain_owned_collector(
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                payload = {"state": "complete"}
-                return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
+                return {"state": "complete"}
             time.sleep(0.05)
         os.kill(pid, signal.SIGKILL)
         payload = {"state": "timeout", "reason": "drain_timeout"}
@@ -201,7 +182,7 @@ def drain_owned_collector(
         payload = {"state": "complete"}
     except OSError:
         payload = {"state": "incomplete", "reason": "collector_drain_failed"}
-    return _stage_with_receipt(receipt_dir, "collector-drain.json", payload)
+    return payload
 
 
 def seal_telemetry_artifacts(

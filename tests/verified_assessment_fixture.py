@@ -226,6 +226,8 @@ def _materialization_request(
     early_completed: bool = False,
     helper: bool = False,
     truncated_otlp: bool = False,
+    producer_seal: bool = False,
+    missing_export: bool = False,
 ) -> tuple[MaterializeAssessmentInputV1, object | None, str | None]:
     from assurance_execution.contracts.verification import (
         VerifiedProcessLimitsV1,
@@ -386,6 +388,7 @@ def _materialization_request(
         )
         if trace:
             from assurance_execution.operations.telemetry import seal_telemetry_artifacts
+            from assurance_execution.operations.verified_execution import _complete_trace_evidence
 
             raw = _otlp_bytes(
                 execution_id,
@@ -394,7 +397,21 @@ def _materialization_request(
                 completed=True,
                 helper=helper,
             )
-            if truncated_otlp:
+            if missing_export:
+                _complete_trace_evidence(journal, plan, manifest, run_root)
+            elif producer_seal:
+                otel = run_root / "otel"
+                otel.mkdir(parents=True, exist_ok=True)
+                (otel / "traces.jsonl").write_bytes(raw)
+                (otel / "flush-receipt.json").write_text(json.dumps({"state": "flushed"}), encoding="utf-8")
+                finished = __import__("subprocess").Popen(["true"])
+                finished.wait()
+                (otel / "collector-process.json").write_text(
+                    json.dumps({"pid": finished.pid, "otlp_endpoint": "http://127.0.0.1:1"}),
+                    encoding="utf-8",
+                )
+                _complete_trace_evidence(journal, plan, manifest, run_root)
+            elif truncated_otlp:
                 raw = raw[:-12]
                 (journal.root / "telemetry.otlp.jsonl").write_bytes(raw)
                 completion = {
@@ -440,7 +457,9 @@ def _materialization_request(
         )
         names = ["action_started.json", "action_terminal.json", "process_terminal.json"]
         if trace:
-            names.extend(["telemetry-completion.json", "telemetry.otlp.jsonl"])
+            names.append("telemetry-completion.json")
+            if (journal.root / "telemetry.otlp.jsonl").is_file():
+                names.append("telemetry.otlp.jsonl")
         raw_refs = tuple(
             sorted(
                 (
@@ -477,9 +496,9 @@ def _materialization_request(
         reason = process_reason or (
             "required_facts_missing" if any(item.state != "observed" for item in observations) else None
         )
-        collector = (
-            EvidenceCompletionV1(state="complete") if trace else EvidenceCompletionV1(state="not_required")
-        )
+        from assurance_execution.operations.verified_execution import _collector_completion
+
+        collector = _collector_completion(journal, plan)
         incomplete = bool(reason) or collector.state not in {"complete", "not_required"}
         evidence = evidence.model_copy(
             update={
