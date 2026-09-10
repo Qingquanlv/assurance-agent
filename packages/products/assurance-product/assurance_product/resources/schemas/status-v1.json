@@ -559,12 +559,18 @@
           "$ref": "#/$defs/InspectionOutcomeV1"
         },
         "report": {
-          "$ref": "#/$defs/ReportOutcomeV1"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportOutcomeV1"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
-        "inspection",
-        "report"
+        "inspection"
       ],
       "title": "QualityGateRefV1",
       "type": "object"

@@ -228,6 +228,8 @@ def authenticate_verified_delivery(
         ):
             raise ValueError("verified delivery profile was removed from the execution gate")
         return None
+    if quality_gate.report is None:
+        raise ValueError("verified delivery quality report is missing")
     verified = _read_current_execution(project, change_id, execution_gate, quality_gate)
     _authenticate_manifest(project, invocation_id, verified)
     _authenticate_execution_refs(project, verified)

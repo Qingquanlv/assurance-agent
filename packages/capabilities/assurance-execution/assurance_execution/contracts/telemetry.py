@@ -116,15 +116,24 @@ def _normalize_span(
         for item in span.get("attributes") or ()
         if isinstance(item, Mapping) and "key" in item
     }
-    status = span.get("status") if isinstance(span.get("status"), Mapping) else {}
+    raw_status = span.get("status")
+    status = raw_status if isinstance(raw_status, Mapping) else {}
     kind = span.get("kind")
+    if isinstance(kind, int):
+        kind_name = _KIND_NAMES.get(kind, "")
+    elif isinstance(kind, str):
+        kind_name = kind
+    else:
+        kind_name = ""
+    status_code = status.get("code") if isinstance(status, Mapping) else None
+    status_name = _STATUS_NAMES.get(status_code, "UNSET") if isinstance(status_code, int) else "UNSET"
     return {
         "trace_id": str(span.get("traceId") or ""),
         "span_id": str(span.get("spanId") or ""),
         "parent_span_id": str(span.get("parentSpanId") or ""),
         "name": str(span.get("name") or ""),
-        "kind": _KIND_NAMES.get(kind, kind if isinstance(kind, str) else ""),
-        "status": _STATUS_NAMES.get(status.get("code"), "UNSET") if isinstance(status, Mapping) else "UNSET",
+        "kind": kind_name,
+        "status": status_name,
         "instrumentation": instrumentation,
         "service_name": service_name,
         "service_instance_id": service_instance_id,

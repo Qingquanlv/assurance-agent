@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from graph_engine.canonical import JSONValue
 from tests.product.cli_support import SECRET_ENV
 from tests.product.test_user_oracle_full_workflow import BENCHMARK, REPO, load
 
@@ -147,9 +150,10 @@ def _agent_success(payload: object):
     from agent_runtime_contracts.schema import canonical_digest
     from graph_engine.plugin_api import TaskOutcome
 
+    typed = cast(JSONValue, payload)
     result = AgentRunResult(
-        result_payload=payload,
-        result_digest=canonical_digest(payload),
+        result_payload=typed,
+        result_digest=canonical_digest(typed),
         evidence_digest=canonical_digest({"adapter": "scripted"}),
         adapter_id="opencode",
         adapter_version="0.1.0",
@@ -328,7 +332,10 @@ def _scripted_opencode_execute(request, context, *, fault: str = "none"):
         sources = read_fixture("user-sources.json")
         sources["revision"] = "1"
         sources["spec_digest"] = plan["requirement_digest"]
-        sources["sources"][0]["content_ref"] = {
+        listed = sources.get("sources")
+        if not isinstance(listed, list) or not listed or not isinstance(listed[0], dict):
+            raise AssertionError("user-sources fixture is missing its first source")
+        listed[0]["content_ref"] = {
             "path": requirement_path,
             "digest": requirement_digest,
         }
@@ -684,9 +691,24 @@ def _scripted_opencode_execute(request, context, *, fault: str = "none"):
     raise AssertionError(f"unhandled scripted schema: {schema_id} allowed={allowed}")
 
 
+@dataclass
 class _InstalledFullRun:
-    def __init__(self, **values):
-        self.__dict__.update(values)
+    project: Path
+    item: dict[str, Any]
+    composition: Any
+    workspace: Any
+    authorization: Any
+    application: Any
+    paths: dict[str, Path]
+    requests: list[Any]
+    result: Any
+    mapped: Any
+    code: Any
+    run_error: BaseException | None
+    status: Any
+    status_error: BaseException | None
+    change_id: str
+    fault: str
 
 
 def _drive_installed_user_full(
@@ -819,21 +841,6 @@ def _assessment_failure_messages(project: Path) -> list[str]:
             elif isinstance(current, list):
                 stack.extend(current)
     return sorted(set(messages))
-
-
-def _inspect_verdict(project: Path, change_id: str) -> str | None:
-    root = project / "qa" / "changes" / change_id
-    if not root.is_dir():
-        return None
-    for path in sorted(root.rglob("verification.json")):
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        verdict = payload.get("verdict") if isinstance(payload, dict) else None
-        if verdict in {"PASSED", "FAILED", "INCOMPLETE"}:
-            return str(verdict)
-    return None
 
 
 def _quality_debug(project: Path, change_id: str) -> str:
@@ -1018,12 +1025,11 @@ def test_trace_full_matrix_stops_at_product_boundary(
 ):
     driven = _drive_trace_full(tmp_path, installed_sources, monkeypatch, fault=fault, change_id=change_id)
     status = _status_payload(driven)
-    inspect_verdict = _inspect_verdict(driven.project, change_id)
-    if inspect_verdict and status.get("quality_gate") is None:
-        status = {**status, "verification_status": inspect_verdict}
     detail = _run_detail(driven, status)
     runner = load("run_item")
-    errors = runner._fault_result_errors(fault=fault, item=driven.item, status=status, change_id=change_id)
+    errors = runner._fault_result_errors(
+        fault=fault, item=driven.item, status=status, change_id=change_id, project=driven.project
+    )
     assert errors == [], f"{errors} {detail}"
     assert driven.item["validation_profile"] == "api_db_trace.v1"
     assert _process_receipts(driven.project), f"{fault} did not reach real subprocess execution: {detail}"
@@ -1035,9 +1041,7 @@ def test_trace_full_matrix_stops_at_product_boundary(
         assert (driven.project / "app/controllers/user_persist.py").is_file()
 
 
-def test_installed_refactor_reaches_quality_report_and_achieved(
-    tmp_path, installed_sources, monkeypatch
-):
+def test_installed_refactor_reaches_quality_report_and_achieved(tmp_path, installed_sources, monkeypatch):
     change_id = "CH-USER-REFACTOR-ACHIEVED"
     driven = _drive_trace_full(
         tmp_path, installed_sources, monkeypatch, fault="refactor", change_id=change_id
@@ -1046,7 +1050,11 @@ def test_installed_refactor_reaches_quality_report_and_achieved(
     detail = _run_detail(driven, status)
     runner = load("run_item")
     errors = runner._fault_result_errors(
-        fault="refactor", item=driven.item, status=status, change_id=change_id
+        fault="refactor",
+        item=driven.item,
+        status=status,
+        change_id=change_id,
+        project=driven.project,
     )
     assert errors == [], f"{errors} {detail}"
     assert status["change"]["state"] == "achieved", detail

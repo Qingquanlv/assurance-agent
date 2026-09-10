@@ -697,10 +697,12 @@ class ExecutionGateRefV1(FrozenModel):
 
 class QualityGateRefV1(FrozenModel):
     inspection: InspectionOutcomeV1
-    report: ReportOutcomeV1
+    report: ReportOutcomeV1 | None = None
 
     @model_validator(mode="after")
     def _same_inspection(self) -> QualityGateRefV1:
+        if self.report is None:
+            return self
         if (
             self.inspection.change_id,
             self.inspection.coverage_epoch,

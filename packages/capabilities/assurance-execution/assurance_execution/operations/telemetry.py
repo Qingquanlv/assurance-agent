@@ -55,7 +55,8 @@ _DRIVER_EXPORT_ENDPOINT: str | None = None
 def _ensure_driver_provider(otlp_endpoint: str | None = None, sut_instance_id: str | None = None) -> None:
     global _DRIVER_EXPORT_ENDPOINT
     current = trace.get_tracer_provider()
-    if not hasattr(current, "add_span_processor"):
+    add_span_processor = getattr(current, "add_span_processor", None)
+    if not callable(add_span_processor):
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
 
@@ -64,6 +65,7 @@ def _ensure_driver_provider(otlp_endpoint: str | None = None, sut_instance_id: s
             attributes["service.instance.id"] = sut_instance_id
         current = TracerProvider(resource=Resource.create(attributes))
         trace.set_tracer_provider(current)
+        add_span_processor = current.add_span_processor
         _DRIVER_EXPORT_ENDPOINT = None
     if not otlp_endpoint or otlp_endpoint == _DRIVER_EXPORT_ENDPOINT:
         return
@@ -71,7 +73,7 @@ def _ensure_driver_provider(otlp_endpoint: str | None = None, sut_instance_id: s
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
     traces = otlp_endpoint.rstrip("/") + "/v1/traces"
-    current.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=traces)))
+    add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=traces)))
     _DRIVER_EXPORT_ENDPOINT = otlp_endpoint
 
 
@@ -115,11 +117,13 @@ def start_driver_client_span(
 def flush_driver_provider() -> dict[str, Any]:
     provider = trace.get_tracer_provider()
     flushed = True
-    if hasattr(provider, "force_flush"):
-        flushed = bool(provider.force_flush(timeout_millis=5000))
-    if hasattr(provider, "shutdown"):
+    force_flush = getattr(provider, "force_flush", None)
+    if callable(force_flush):
+        flushed = bool(force_flush(timeout_millis=5000))
+    shutdown = getattr(provider, "shutdown", None)
+    if callable(shutdown):
         try:
-            provider.shutdown()
+            shutdown()
         except Exception:  # noqa: BLE001
             flushed = False
     return {

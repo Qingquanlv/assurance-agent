@@ -811,6 +811,92 @@ def test_db_unavailable_requires_runtime_verification_material():
     )
 
 
+def test_verification_verdict_ignores_top_level_status():
+    runner = load("run_item")
+    status = {
+        "change": {"state": "failed"},
+        "execution_gate": {
+            "validation_profile": "api_db_trace.v1",
+            "execution_receipt_id": "execution-receipt",
+            "execution_receipt_digest": "a" * 64,
+            "batch_id": "batch-current",
+        },
+        "quality_gate": None,
+        "verification_status": "PASSED",
+    }
+    assert runner._verification_verdict(status) is None
+
+
+def test_verification_verdict_reads_quality_gate_artifact(tmp_path):
+    import hashlib
+
+    runner = load("run_item")
+    stray = tmp_path / "qa/changes/CH-USER/verification.json"
+    stray.parent.mkdir(parents=True)
+    stray.write_text(json.dumps({"verdict": "PASSED"}), encoding="utf-8")
+    artifact = tmp_path / "qa/changes/CH-USER/inspect/verification.json"
+    artifact.parent.mkdir(parents=True)
+    payload = json.dumps({"verdict": "INCOMPLETE"}).encode()
+    artifact.write_bytes(payload)
+    status = {
+        "change": {"state": "failed"},
+        "execution_gate": {"batch_id": "batch-current"},
+        "quality_gate": {
+            "inspection": {
+                "verification_status": "PASSED",
+                "verification_ref": {
+                    "path": "qa/changes/CH-USER/inspect/verification.json",
+                    "digest": hashlib.sha256(payload).hexdigest(),
+                },
+            }
+        },
+        "verification_status": "PASSED",
+    }
+    assert runner._verification_verdict(status, project=tmp_path) == "INCOMPLETE"
+
+
+def test_runtime_fault_fails_without_quality_gate():
+    runner = load("run_item")
+    change_id = "CH-USER-EARLY-COMPLETED"
+    item = runner._manifest_item(
+        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+        "opencode-user-api-db-trace",
+        "opencode",
+    )
+    required = tuple(item["required_steps"])
+    prefix = required[: required.index("quality.inspect") + 1]
+    status = {
+        "invocation_id": change_id,
+        "status": "failed",
+        "terminal_reason": "needs_human",
+        "selected_test_families": list(item["selected_test_families"]),
+        "change": {"change_id": change_id, "state": "failed"},
+        "graph_hierarchy": [{"graph_instance_id": f"g-{step}", "graph_id": step} for step in prefix],
+        "node_states": [
+            {
+                "graph_instance_id": f"g-{step}",
+                "node_id": f"{step}/finalize",
+                "state": "succeeded",
+            }
+            for step in prefix
+        ],
+        "execution_gate": {
+            "validation_profile": item["validation_profile"],
+            "execution_receipt_id": "execution-receipt",
+            "execution_receipt_digest": "a" * 64,
+            "batch_id": "batch-current",
+        },
+        "quality_gate": None,
+        "verification_status": "FAILED",
+        "publication": {"status": "not_ready"},
+    }
+    errors = runner._fault_result_errors(
+        fault="early-completed", item=item, status=status, change_id=change_id
+    )
+    assert errors
+    assert any("quality verification material" in error for error in errors)
+
+
 def test_attempt_rejects_reviewed_a_with_functional_frozen_b_before_any_post(tmp_path, monkeypatch):
     import httpx
     from graph_engine.attempts import AttemptKey

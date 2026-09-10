@@ -338,7 +338,13 @@ def _read_ref(root: Path, ref: EvidenceArtifactRefV1) -> bytes:
 
 def _authenticate(
     request: TaskRequest, context: TaskContext
-) -> tuple[VerifiedExecutionInputV1, VerificationManifestV1, CaseExecutionPlanV1, ActionJournal]:
+) -> tuple[
+    VerifiedExecutionInputV1,
+    VerificationManifestV1,
+    CaseExecutionPlanV1,
+    ActionJournal,
+    ManagedSutAuthorityV1,
+]:
     payload = VerifiedExecutionInputV1.model_validate(request.input)
     manifest = VerificationManifestV1.model_validate_json(
         _read_ref(context.project_root, payload.manifest_ref)

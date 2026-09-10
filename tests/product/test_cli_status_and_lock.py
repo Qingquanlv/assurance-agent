@@ -29,8 +29,10 @@ def test_status_schema_is_closed_status_v1() -> None:
     ]
     quality_gate = schema["$defs"]["QualityGateRefV1"]
     assert quality_gate["properties"]["inspection"] == {"$ref": "#/$defs/InspectionOutcomeV1"}
-    assert quality_gate["properties"]["report"] == {"$ref": "#/$defs/ReportOutcomeV1"}
-    assert set(quality_gate["required"]) == {"inspection", "report"}
+    assert quality_gate["properties"]["report"] == {
+        "anyOf": [{"$ref": "#/$defs/ReportOutcomeV1"}, {"type": "null"}]
+    }
+    assert set(quality_gate["required"]) == {"inspection"}
 
 
 def test_render_status_projects_started_invocation(cli_runner, installed_sources, tmp_path, monkeypatch):

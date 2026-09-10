@@ -517,14 +517,19 @@ _FAULT_EXPECTATIONS["refactor"] = {
 
 
 def _fault_result_errors(
-    *, fault: str, item: Mapping[str, Any], status: Mapping[str, Any], change_id: str
+    *,
+    fault: str,
+    item: Mapping[str, Any],
+    status: Mapping[str, Any],
+    change_id: str,
+    project: Path | None = None,
 ) -> list[str]:
     expectation = _FAULT_EXPECTATIONS.get(fault)
     if expectation is None:
         return [f"fault {fault!r} has no benchmark expectation"]
     publication = status.get("publication")
     published = isinstance(publication, Mapping) and publication.get("status") == "published"
-    verdict = _verification_verdict(status)
+    verdict = _verification_verdict(status, project=project)
     errors = _fault_outcome_errors(
         fault=fault,
         verdict=verdict,
@@ -573,12 +578,13 @@ def _fault_result_errors(
         ):
             errors.append("runtime fault is missing its current verified execution gate")
         inspection = quality_gate.get("inspection") if isinstance(quality_gate, Mapping) else None
-        if prefix_end == "quality.inspect":
+        if not isinstance(inspection, Mapping) or not isinstance(inspection.get("verification_ref"), Mapping):
+            errors.append("runtime fault is missing its current quality verification material")
+        elif prefix_end == "quality.inspect":
             if "quality.inspect" not in succeeded:
                 errors.append("runtime fault is missing its current quality verification material")
-        elif not isinstance(inspection, Mapping) or (
+        elif (
             inspection.get("verification_status") != verdict
-            or not isinstance(inspection.get("verification_ref"), Mapping)
             or not inspection.get("batch_id")
             or not isinstance(execution_gate, Mapping)
             or inspection.get("batch_id") != execution_gate.get("batch_id")
@@ -589,17 +595,41 @@ def _fault_result_errors(
     return errors
 
 
-def _verification_verdict(status: Mapping[str, Any]) -> str | None:
+def _verification_artifact_verdict(project: Path, verification_ref: Mapping[str, Any]) -> str | None:
+    path = verification_ref.get("path")
+    digest = verification_ref.get("digest")
+    if not isinstance(path, str) or not isinstance(digest, str) or not path or not digest:
+        return None
+    artifact = project / path
+    if artifact.is_symlink() or not artifact.is_file() or artifact.stat().st_nlink != 1:
+        return None
+    data = artifact.read_bytes()
+    if hashlib.sha256(data).hexdigest() != digest:
+        return None
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    verdict = payload.get("verdict")
+    if verdict in {"PASSED", "FAILED", "INCOMPLETE"}:
+        return str(verdict)
+    return None
+
+
+def _verification_verdict(status: Mapping[str, Any], *, project: Path | None = None) -> str | None:
     quality_gate = status.get("quality_gate")
     if isinstance(quality_gate, Mapping):
         inspection = quality_gate.get("inspection")
         if isinstance(inspection, Mapping):
-            verdict = inspection.get("verification_status")
-            if verdict in {"PASSED", "FAILED", "INCOMPLETE"}:
-                return str(verdict)
-    fallback = status.get("verification_status")
-    if fallback in {"PASSED", "FAILED", "INCOMPLETE"}:
-        return str(fallback)
+            ref = inspection.get("verification_ref")
+            if isinstance(ref, Mapping):
+                if project is not None:
+                    return _verification_artifact_verdict(project, ref)
+                verdict = inspection.get("verification_status")
+                if verdict in {"PASSED", "FAILED", "INCOMPLETE"}:
+                    return str(verdict)
     if not _change_is_achieved(status) and status.get("execution_gate") is None:
         return "NOT_READY"
     return None
@@ -2072,12 +2102,13 @@ def _drive_started_change(
     fault = str(item.get("fault") or "none")
     expectation = _FAULT_EXPECTATIONS.get(fault)
     if fault != "none":
-        verdict = _verification_verdict(last_status)
+        verdict = _verification_verdict(last_status, project=project_dir)
         errors = _fault_result_errors(
             fault=fault,
             item=item,
             status=last_status,
             change_id=change_id,
+            project=project_dir,
         )
         evidence["validation"] = {
             **evidence["validation"],

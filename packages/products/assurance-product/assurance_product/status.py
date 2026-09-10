@@ -668,7 +668,11 @@ def _diagnostic_report_outcome(values: Mapping[str, object]) -> Mapping[str, obj
     from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
     from graph_engine.attempts.resolutions import ReceiptRef
 
-    if not values.get("inspection_outcome") or not values.get("report_refs") or not values.get("report_receipt"):
+    if (
+        not values.get("inspection_outcome")
+        or not values.get("report_refs")
+        or not values.get("report_receipt")
+    ):
         return None
     refs = values["report_refs"]
     if not isinstance(refs, (list, tuple)):
@@ -696,13 +700,17 @@ def _quality_gate_from_snapshot(
     values = getattr(snapshot, "values", None)
     if not isinstance(values, Mapping):
         return None
-    report = values.get("report_outcome") or _diagnostic_report_outcome(values)
-    if not report:
+    inspection = values.get("inspection_outcome")
+    if not isinstance(inspection, Mapping) or not inspection:
         return None
+    raw_report = values.get("report_outcome")
+    report = raw_report if isinstance(raw_report, Mapping) and raw_report else None
+    report = report or _diagnostic_report_outcome(values)
     try:
-        gate = QualityGateRefV1.model_validate(
-            {"inspection": values.get("inspection_outcome"), "report": report}
-        )
+        payload: dict[str, object] = {"inspection": inspection}
+        if report:
+            payload["report"] = report
+        gate = QualityGateRefV1.model_validate(payload)
     except ValueError as error:
         raise ValueError("terminal quality checkpoint is invalid") from error
     if gate.inspection.change_id != change_id:
@@ -845,6 +853,8 @@ def _require_quality_gate(
 ) -> QualityGateRefV1:
     reference = _quality_gate_from_invocation(invocation)
     inspection = reference.inspection
+    if reference.report is None:
+        raise ValueError("quality gate failed")
     if inspection.change_id != change_id or inspection.batch_id != execution_gate.batch_id:
         raise ValueError("quality inspection identity drifted")
     if inspection.disposition != "satisfied" or inspection.coverage_state != "satisfied":

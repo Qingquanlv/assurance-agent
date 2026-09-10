@@ -78,7 +78,38 @@ def test_render_status_projects_quality_gate_from_diagnostic_report(tmp_path: Pa
     )
     assert status.quality_gate is not None
     assert status.quality_gate.inspection.model_dump(mode="json") == gate["inspection"]
+    assert status.quality_gate.report is not None
     assert status.quality_gate.report.model_dump(mode="json") == gate["report"]
+
+
+def test_render_status_projects_inspection_when_report_is_absent(tmp_path: Path) -> None:
+    from assurance_product.status import render_status_from_langgraph
+
+    project = _ready_change(tmp_path)
+    gate, _ = _install_quality(project)
+    snapshot = SimpleNamespace(
+        next=(),
+        interrupts=(),
+        values={
+            "terminal": {"status": "failed", "reason": "needs_human"},
+            "batch_id": gate["inspection"]["batch_id"],
+            "coverage_epoch": 0,
+            "inspection_outcome": gate["inspection"],
+            "report_outcome": {},
+        },
+    )
+    status = render_status_from_langgraph(
+        invocation_id="inv-inspect-only-001",
+        lock_digest="a" * 64,
+        root_input_digest="a" * 64,
+        entrypoint="full",
+        change_id=CHANGE_ID,
+        status="failed",
+        snapshot=snapshot,
+    )
+    assert status.quality_gate is not None
+    assert status.quality_gate.inspection.model_dump(mode="json") == gate["inspection"]
+    assert status.quality_gate.report is None
 
 
 def test_finalize_achieved_accepts_the_bound_quality_outcomes(tmp_path: Path) -> None:
