@@ -324,7 +324,7 @@ def publish_inspect(
         )
     disposition = classify_inspection_disposition(facts=facts, coverage_state=coverage_state)
     reason_codes = set(finalized.reason_codes)
-    if coverage_state is not None:
+    if coverage_state is not None and finalized.verification is None:
         reason_codes.add(f"coverage.{coverage_state}")
     assessment_refs = tuple(
         sorted(

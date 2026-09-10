@@ -9,8 +9,8 @@ T1–T12 remain as committed. This task added `opencode-user-api-db-trace` /
 CI/smoke comments, README live commands, and a three-class delivery record.
 Live Agent full (Class 3) was not run: `http://127.0.0.1:4096` was down
 (connection refused) on 2026-09-10 and was rechecked before delivery.
-Installed `refactor` now gets verification **PASSED** but does not yet reach
-`quality.report` / achieved because inspect coverage stays `repair_required`.
+Installed `refactor` now reaches `quality.report`, achieved, and export on
+the installed product path. Live Agent full (Class 3) remains BLOCKED.
 
 ## What was implemented
 
@@ -77,22 +77,33 @@ Recorded in `benchmark/assurance-product/stage2-delivery.md`. Missing class
 
 ### Class 1 — Deterministic unit / installed product graph
 
-**Partial.**
+**Installed `refactor` certified through report / achieved / export.**
 
-- Unit/manifest/processor: 78 passed
-  (`test_user_oracle_full_workflow`, phase5/phase6 manifest,
-  `validate_live_run`, child-span identity).
-- Earlier this session: installed `drop-business-span`, `drop-write-span`,
-  and `early-completed` reached their expected product boundaries.
-- Installed `refactor`: verification PASSED; graph then looped
-  case-design → inspect (`coverage_state=repair_required`,
-  `coverage_rounds=2`) and stopped without `quality.report` / achieved.
-  Snapshots and source checks were not relaxed.
+- Unit/manifest/processor re-run this fix: 74 passed
+  (`test_user_oracle_full_workflow`, phase5 manifest, `validate_live_run`,
+  child-span identity, verified reason-code unit).
+- Installed matrix + achieved covering test: 5 passed
+  (`drop-business-span`, `drop-write-span`, `early-completed`, `refactor`
+  boundary, plus `test_installed_refactor_reaches_quality_report_and_achieved`).
+- Snapshots and source checks were not relaxed. Coverage was not treated
+  as success while `repair_required`. No coverage-floor policy was invented.
 
-T10 leftover (blocks achieved only): deterministic installed happy path has
-not been certified through coverage-satisfied → report → achieved. Stage-1
-`test_installed_full_assembles_empty_change_through_codegen` runs the full
-graph but only asserts assembly through codegen.
+Pre-review gap (fixed, TDD):
+
+1. Scripted case-design matrix used free-form key `user.create` while the
+   frozen User API-only MRC / case.trace is `entities.user`. Assessment
+   left `entities.user` `missing`, set `sufficiency.sufficient=false`, and
+   classified `coverage.repair_required`. Numeric goals stayed skipped
+   (`constraint_coverage` / `auth_matrix_coverage` / `journey_coverage`).
+   Existing contract already allows a covered free-form API obligation to
+   satisfy without those goals.
+2. After coverage became `satisfied`, `publish_inspect` appended
+   `coverage.satisfied` onto verified `reason_codes`. Report prepare
+   requires those codes to equal the verification verdict (`[]` for
+   PASSED) and failed `quality.report` with `invalid_input`.
+
+Green: matrix key `entities.user`; keep verified reason codes exact;
+installed test asserts achieved and a real export receipt.
 
 ### Class 2 — Real OTel compatibility experiment
 
@@ -140,16 +151,32 @@ No Docker/OCI added to ordinary CI.
 - Host secrets are not placed on the wheel handle union.
 - Child-span identity is required by the existing assessment contract; the
   SUT processor now matches the synthetic OTLP fixtures.
-- Remaining achieved gap is coverage sufficiency after a PASSED
-  verification, not missing traces. Do not treat installed `*full*`
-  filenames as Class 3.
+- Installed `refactor` now reaches report / achieved / export without
+  relaxing snapshots or inventing a journey/e2e coverage floor.
+- Do not treat installed `*full*` filenames as Class 3.
 - Did not amend earlier commits. Did not invent live outcomes.
 
 ## Concerns
 
-1. Installed `refactor` verification PASSED but did not reach achieved /
-   export (`coverage.repair_required`).
-2. Class 3 live Agent matrix blocked (4096 down).
-3. Named `ruff format --check` and `pyright` fail on pre-existing files.
-4. Full `pytest` and wheel smoke were not finished before the first
-   delivery commit; smoke must use archived HEAD.
+1. Class 3 live Agent matrix blocked (4096 down).
+2. Named `ruff format --check` and `pyright` fail on pre-existing files.
+3. Full `pytest` and wheel smoke were not re-run in this correctness fix.
+
+## Pre-review correctness re-run (2026-09-10)
+
+```text
+$ UV_OFFLINE=true uv run --no-sync pytest \
+    tests/product/test_user_oracle_full_workflow.py \
+    tests/product/test_phase5_benchmark_manifest.py \
+    benchmark/assurance-product/tests/validate_live_run.py \
+    benchmark/assurance-product/tests/test_user_otel_compatibility.py::test_processor_stamps_request_execution_id_on_child_spans \
+    packages/capabilities/assurance-quality/tests/test_inspection_outcome.py::test_publish_inspect_keeps_verified_reason_codes_when_coverage_is_satisfied \
+    -q --tb=line
+74 passed, 2 warnings in 33.14s
+
+$ UV_OFFLINE=true uv run --no-sync pytest \
+    tests/product/test_user_oracle_installed_full.py::test_trace_full_matrix_stops_at_product_boundary \
+    tests/product/test_user_oracle_installed_full.py::test_installed_refactor_reaches_quality_report_and_achieved \
+    -q --tb=line
+5 passed in 280.93s (0:04:40)
+```

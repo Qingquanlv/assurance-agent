@@ -342,8 +342,8 @@ def _scripted_opencode_execute(request, context, *, fault: str = "none"):
             f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json": json.dumps(
                 [
                     {
-                        "mrc_id": "MRC-USER-CREATE",
-                        "key": "user.create",
+                        "mrc_id": "MRC-API-001",
+                        "key": "entities.user",
                         "required": True,
                         "covered_by_cases": ["TC_USER_CREATE_001"],
                         "status": "covered",
@@ -1030,3 +1030,26 @@ def test_trace_full_matrix_stops_at_product_boundary(
         )
     else:
         assert (driven.project / "app/controllers/user_persist.py").is_file()
+
+
+def test_installed_refactor_reaches_quality_report_and_achieved(
+    tmp_path, installed_sources, monkeypatch
+):
+    change_id = "CH-USER-REFACTOR-ACHIEVED"
+    driven = _drive_trace_full(
+        tmp_path, installed_sources, monkeypatch, fault="refactor", change_id=change_id
+    )
+    status = _status_payload(driven)
+    detail = _run_detail(driven, status)
+    runner = load("run_item")
+    errors = runner._fault_result_errors(
+        fault="refactor", item=driven.item, status=status, change_id=change_id
+    )
+    assert errors == [], f"{errors} {detail}"
+    assert status["change"]["state"] == "achieved", detail
+    assert "quality.report" in runner._status_steps(status), detail
+    assert driven.run_error is None, detail
+    receipt = driven.application.export(project_dir=driven.project, change_id=change_id)
+    assert receipt["change_id"] == change_id
+    assert receipt["manifest_digest"]
+    assert (driven.project / "qa" / "changes" / change_id / "publish-receipt.json").is_file()

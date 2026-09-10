@@ -12,14 +12,13 @@ observer, comparator, and business assertion IDs.
 
 ## Class 1 — Deterministic unit and installed product graph
 
-**Status: partial.** Deterministic unit/manifest/processor tests passed in
-this worktree. Installed INCOMPLETE/FAILED faults previously reached their
-product boundaries. Installed `refactor` now produces verification
-**PASSED** (after stamping `aa.execution_id` onto child spans) but the
-product graph did not reach `quality.report` / achieved: inspect set
-`coverage_state=repair_required` and exhausted two coverage rounds. That
-gap is recorded here; snapshots were not relaxed. Ordinary CI remains
-uv-workspace only.
+**Status: installed `refactor` reaches report / achieved / export.**
+Deterministic unit/manifest/processor tests passed in this worktree.
+Installed INCOMPLETE/FAILED faults reach their product boundaries.
+Installed `refactor` verification is PASSED and the graph now continues
+through `quality.report` to achieved; export is allowed. Snapshots were
+not relaxed. Ordinary CI remains uv-workspace only. Class 3 is still
+未验收.
 
 Matrix stop stages and expected verdicts (bound before full start):
 

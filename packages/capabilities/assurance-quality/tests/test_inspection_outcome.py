@@ -172,6 +172,50 @@ def test_publish_inspect_derives_satisfied_without_an_agent_coverage_state() -> 
     assert route_coverage(published) == "satisfied"
 
 
+def test_publish_inspect_keeps_verified_reason_codes_when_coverage_is_satisfied() -> None:
+    state = _publish_state()
+    output = _inspect_output()
+    verification_ref = {
+        "path": "qa/changes/CH-DEMO-001/inspect/epochs/2/batches/20260822T000000Z/verification.json",
+        "digest": "a" * 64,
+    }
+    cast(dict[str, object], state["assessment_inputs"])["verification_ref"] = verification_ref
+    cast(dict[str, object], output["assessment"])["verification_ref"] = verification_ref
+    output["verification"] = {
+        "schema_version": "1",
+        "validation_profile": "api_db.v1",
+        "execution_id": "12345678-1234-4123-8123-123456789abc",
+        "case_id": "TC_USER_CREATE_001",
+        "verdict": "PASSED",
+        "required": 1,
+        "executed": 1,
+        "evaluated": 1,
+        "satisfied": 1,
+        "obligations": [
+            {
+                "obligation_id": "user.row_count",
+                "kind": "business",
+                "evidence_status": "observed",
+                "business_status": "satisfied",
+                "expected": 1,
+                "actual": 1,
+            }
+        ],
+        "reason_codes": [],
+    }
+    output["reason_codes"] = []
+
+    published = publish_inspect(state, output, _receipt())
+
+    outcome = published["inspection_outcome"]
+    assert isinstance(outcome, dict)
+    assert outcome["coverage_state"] == "satisfied"
+    assert outcome["disposition"] == "satisfied"
+    assert outcome["verification_status"] == "PASSED"
+    assert outcome["reason_codes"] == []
+    assert route_coverage(published) == "satisfied"
+
+
 @pytest.mark.parametrize(
     ("verdict", "reason_codes", "failure_facts", "expected"),
     (
