@@ -120,6 +120,9 @@ class RetainedUserAttempt(FrozenModel):
     action_credential_handle: str
     input_digest: str
     prepared_input: dict[str, JsonValue] | None = None
+    collector_handle: str | None = None
+    collector_receipt: dict[str, JsonValue] | None = None
+    collector_export: dict[str, JsonValue] | None = None
 
 
 def _read_retained(root: Path, execution_id: str) -> bytes:
@@ -224,6 +227,12 @@ class UserAttempt:
         self.record = self.record.model_copy(update={"prepared_input": payload})
         _retain_attempt(self.private_root, self.execution_id, self.record, update=True)
 
+    @property
+    def collector(self) -> dict[str, JsonValue] | None:
+        if self.record.collector_export is None:
+            return None
+        return dict(self.record.collector_export)
+
     def stop(self) -> None:
         self.host.stop_owned(workspace_root=self.workspace_root, authority=self.authority)
 
@@ -248,7 +257,7 @@ def start_user_attempt(
     if (
         generation is None
         or generation.case_execution_plan_ref is None
-        or root.validation_profile != "api_db.v1"
+        or root.validation_profile not in {"api_db.v1", "api_db_trace.v1"}
     ):
         raise ValueError("NOT_READY: current API DB generation is required")
     authenticate_generation_result(root, workspace_root)
@@ -292,7 +301,12 @@ def start_user_attempt(
     )
     authenticate_reviewed_sut_source(workspace_root, admission.machine_plans.cases[0], prepared)
     try:
-        started = host.start(workspace_root=workspace_root, prepare_receipt=run / "harness-prepare.json")
+        started = host.start(
+            workspace_root=workspace_root,
+            prepare_receipt=run / "harness-prepare.json",
+            validation_profile=root.validation_profile,
+            execution_id=execution_id if root.validation_profile == "api_db_trace.v1" else None,
+        )
     except BaseException:
         receipt = run / "owned-process.json"
         if receipt.is_file():
@@ -371,6 +385,39 @@ def start_user_attempt(
             managed_sut_start_receipt_ref=start_ref,
             managed_sut_authority_handle=authority_handle,
         )
+        collector_handle = None
+        collector_receipt = None
+        collector_export = None
+        if root.validation_profile == "api_db_trace.v1":
+            from datetime import datetime, timedelta, timezone
+
+            from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
+
+            public = started.get("collector")
+            if not isinstance(public, dict) or not isinstance(public.get("readiness"), dict):
+                raise ValueError("NOT_READY: attempt-bound Collector/OTel lifecycle is required")
+            now = datetime.now(timezone.utc)
+            receipt = CollectorReadinessReceiptV1.model_validate(
+                {
+                    **public["readiness"],
+                    "sut_instance_id": str(started["instance_id"]),
+                    "execution_id": execution_id,
+                    "configuration_digest": root.verification_config_digest,
+                    "authorization_scope_digest": authorization_scope_digest,
+                    "activity_receipt_digest": activity_digest,
+                    "issued_at": now,
+                    "checked_at": now,
+                    "expires_at": now + timedelta(seconds=60),
+                }
+            )
+            collector_handle = "sut.collector"
+            collector_receipt = receipt.model_dump(mode="json")
+            collector_export = {
+                "pid": public["pid"],
+                "endpoint": public["health_endpoint"],
+                "otlp_path": public["otlp_path"],
+                "otlp_endpoint": public["otlp_endpoint"],
+            }
         record = RetainedUserAttempt(
             authority=authority,
             verification=profile,
@@ -378,16 +425,19 @@ def start_user_attempt(
             credential_handle=credential_handle,
             action_credential_handle=admission.machine_plans.cases[0].action.credential_ref,
             input_digest=canonical_digest(root.model_dump(mode="json")),
+            collector_handle=collector_handle,
+            collector_receipt=collector_receipt,
+            collector_export=collector_export,
         )
         _retain_attempt(private, execution_id, record)
-        overlay = AttemptSecrets(
-            secrets,
-            {
-                authority_handle: authority.model_dump_json().encode(),
-                credential_handle: credential,
-                admission.machine_plans.cases[0].action.credential_ref: credential,
-            },
-        )
+        overlay_values = {
+            authority_handle: authority.model_dump_json().encode(),
+            credential_handle: credential,
+            admission.machine_plans.cases[0].action.credential_ref: credential,
+        }
+        if collector_handle is not None and collector_receipt is not None:
+            overlay_values[collector_handle] = json.dumps(collector_receipt).encode()
+        overlay = AttemptSecrets(secrets, overlay_values)
         return UserAttempt(profile, overlay, authority, host, workspace_root, execution_id, private, record)
     except BaseException:
         host.stop(
@@ -432,14 +482,14 @@ def recover_user_attempt(
     record = _read_attempt(private, execution_id)
     if record.input_digest != canonical_digest(root.model_dump(mode="json")):
         raise ValueError("NOT_READY: retained attempt input drifted")
-    overlay = AttemptSecrets(
-        secrets,
-        {
-            authority_handle: record.authority.model_dump_json().encode(),
-            record.credential_handle: record.credential.encode(),
-            record.action_credential_handle: record.credential.encode(),
-        },
-    )
+    overlay_values = {
+        authority_handle: record.authority.model_dump_json().encode(),
+        record.credential_handle: record.credential.encode(),
+        record.action_credential_handle: record.credential.encode(),
+    }
+    if record.collector_handle is not None and record.collector_receipt is not None:
+        overlay_values[record.collector_handle] = json.dumps(record.collector_receipt).encode()
+    overlay = AttemptSecrets(secrets, overlay_values)
     return UserAttempt(
         record.verification,
         overlay,

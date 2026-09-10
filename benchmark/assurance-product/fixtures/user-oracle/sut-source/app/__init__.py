@@ -58,6 +58,10 @@ async def lifespan(app: FastAPI):
         },
     )
     yield
+    if os.environ.get("AA_SUT_OTEL_ENDPOINT"):
+        import bootstrap
+
+        bootstrap.flush_and_shutdown()
     await Tortoise.close_connections()
 
 
@@ -75,4 +79,14 @@ def create_app() -> FastAPI:
     return app
 
 
+_otel_provider = None
+if os.environ.get("AA_SUT_OTEL_ENDPOINT"):
+    import bootstrap
+
+    _otel_provider = bootstrap.install_otel()
+
 app = create_app()
+if _otel_provider is not None:
+    import bootstrap
+
+    bootstrap.instrument_sut(app, _otel_provider)

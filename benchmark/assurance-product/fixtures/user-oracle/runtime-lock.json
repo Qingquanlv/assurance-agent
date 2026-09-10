@@ -1,15 +1,35 @@
 {
+  "collector": {
+    "artifact_digest": "sha256:6fe3531656660a8f145872cc1502371cb20e6d7da70fdc9a64bf6ebdaba20403",
+    "artifacts": {
+      "darwin_arm64": {
+        "digest": "sha256:bd5c2acb501d525da72a55136894a619e3539026640368ff8249d5829cd51f21",
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.129.1/otelcol-contrib_0.129.1_darwin_arm64.tar.gz"
+      },
+      "linux_amd64": {
+        "digest": "sha256:6fe3531656660a8f145872cc1502371cb20e6d7da70fdc9a64bf6ebdaba20403",
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.129.1/otelcol-contrib_0.129.1_linux_amd64.tar.gz"
+      }
+    },
+    "capture_parameters": false,
+    "distribution": "otelcol-contrib",
+    "export_protocol": "http/protobuf",
+    "health_extension": "health_check",
+    "sampler": "always_on",
+    "version": "0.129.1"
+  },
   "files": {
-    "bootstrap.py": "sha256:9fbb93b36780a3434edeae9b9e543f602d53ff2a8e217e68718311c24e687e11",
+    "bootstrap.py": "sha256:9c4909c5dc3804181a21aedfad864c006e4b3744556a857959b53826d9c751d4",
+    "collector.yaml": "sha256:6d1bc4dcc7ba4f5b1645b226f7789689ec6f2aecb8354f8f33143e116001241a",
     "original-source-lock.json": "sha256:d78dffcdcbdb940977f8a2f95d48408c543ca4f9323b63080adce6533afc7eda",
     "qualify_runtime.py": "sha256:c79d7f765f10f20c61b15c34cebdff5b82de52670c505ffe83c62ae490447e6c",
-    "requirements.in": "sha256:e17eddeb2c9287b97ff96706f6d86b92544614513003036941c3568bf4e541e4",
-    "requirements.lock": "sha256:eaef97429f3ec14a2aa52bece450f7d6db48ce9e0f8022c0fd88158900b88d8f",
-    "runner-lock.json": "sha256:2ae507786f5c002954261e24ac5b9d1a347cd2ab23955139c3f6a6601bbc2584",
+    "requirements.in": "sha256:cca8644399381b3197ff6fe68a3c2844e3e248fa1820798cce5db0456dac9411",
+    "requirements.lock": "sha256:97ba5696e57185308589c6501aa85a11fe28c3ab6d99e9dae979a007c9a0abe9",
+    "runner-lock.json": "sha256:739898b5a314cc96fc5022320dd638882520fe7c52e0619a1aba4685b1d74edb",
     "runner.Dockerfile": "sha256:b4bc65e1ffb55f6e4ad4e631860b85bac2c2df2c5679c1a5dd4aa9d5850ce9c6",
     "sut-source/LICENSE": "sha256:039a35a9044e5abb50f7ae240eefb2bfa4ea7aee5de59b67d993194314194cfb",
     "sut-source/PROVENANCE.md": "sha256:3bdf4eb0e22cbb0074f004f39bbe03cc1b7fb77b934470578d5fb9ddba5f917a",
-    "sut-source/app/__init__.py": "sha256:cacb29180e04aced5402ff4ec7d2cd02bed49e0f1e9ee85db3b38418fe5f9e64",
+    "sut-source/app/__init__.py": "sha256:bc2b6af583ae633a2204077b7e627154830a191c47f5bc39a4940cd7dda667c8",
     "sut-source/app/api/__init__.py": "sha256:4d83a327d5666d14fe150cab336e692391c980f1aeeeaf3f337266e3137e7d8e",
     "sut-source/app/api/v1/__init__.py": "sha256:3a7ec462e1e7a21b3fce3d782369528f80abddf702adf4f02de76349a3fad66e",
     "sut-source/app/api/v1/apis/__init__.py": "sha256:3da9e731afcabd88a3b07c96f697e8052f5d2bf1521a2ef938d7938e67023630",
@@ -25,7 +45,7 @@
     "sut-source/app/api/v1/roles/__init__.py": "sha256:b66dd916912ff485e86c628f19926e3e0bd70cd922f0b25589be2fc714b26e9b",
     "sut-source/app/api/v1/roles/roles.py": "sha256:02f8b4c0ac3846c984d08bbd627860c687fbaf73e3daa314fab44f79adc36ebd",
     "sut-source/app/api/v1/users/__init__.py": "sha256:e19470cbdc1088f76784008178bf4c61d4f0a0302394518e4824dd01c6c9cf14",
-    "sut-source/app/api/v1/users/users.py": "sha256:9f09416390ff5a36ae8a5afaadab7f771455e470e90aeb20be25c2071ce26d83",
+    "sut-source/app/api/v1/users/users.py": "sha256:22bf71235e86cba586642b2b4d2df7868d8604cc17eb27d27bbe7e61cb467523",
     "sut-source/app/benchmark_faults.py": "sha256:902232f9bed027c2cee2e345b9c0188f955a49011f58bf9a58eaa9c83ae7bfff",
     "sut-source/app/controllers/__init__.py": "sha256:0ebbeef6c900c2705f887d0124437e96b9a8f1e20beb555994568c701a085e8b",
     "sut-source/app/controllers/api.py": "sha256:2945d1c34c73edb08d1f9b15fec124880e6eb0ac6b4d701a55ec42fa182682fd",
@@ -61,7 +81,7 @@
     "sut-source/migrations/models/0_20260721171822_init.py": "sha256:f82edb0659574631dfdc2020dee7690df275355c495459ce4ce662f765ad8810",
     "sut-source/run.py": "sha256:f14a471ba7782cababe5bc7cf57fe4a726c5ba4f8cedb09f3333d644753b59bb"
   },
-  "runtime_digest": "sha256:b908352d74bb7aa7712f2e9c3af5a10ff3b00ee258da14dcdfeb306a0359d2fc",
+  "runtime_digest": "sha256:77f8a9dffc5a9ef375a782e1e09278e2aac454b673b5e550c07324f2625cef0f",
   "schema_version": "1",
-  "source_digest": "sha256:035402f22a02250df28f1d447ebcdd36d764444f89657e3408524ac9a3694d4d"
+  "source_digest": "sha256:84c5905d0df6d45e2ce8a5a4f50a36b877e00d8f5e2c38f19fd12b47307b9558"
 }

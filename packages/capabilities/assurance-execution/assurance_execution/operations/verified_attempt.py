@@ -175,7 +175,19 @@ class VerifiedAttemptHandler:
                 return request, private_context, owned
             if not recovering:
                 if root.validation_profile == "api_db_trace.v1":
-                    raise ValueError("NOT_READY: attempt-bound Collector/OTel lifecycle is required")
+                    from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
+                    from assurance_execution.operations.readiness import authenticate_collector_readiness
+
+                    if owned.record.collector_receipt is None:
+                        raise ValueError("NOT_READY: attempt-bound Collector/OTel lifecycle is required")
+                    authenticate_collector_readiness(
+                        CollectorReadinessReceiptV1.model_validate(owned.record.collector_receipt),
+                        sut_instance_id=owned.verification.sut_instance_id,
+                        execution_id=owned.execution_id,
+                        configuration_digest=str(host["configuration_digest"]),
+                        authorization_scope_digest=context.workspace_identity.identity_digest,
+                        activity_receipt_digest=owned.authority.activity_receipt_digest,
+                    )
                 authenticate_managed_sut_readiness(
                     ManagedSutReadinessSelectionV1(
                         workspace_root=str(context.project_root.resolve()),

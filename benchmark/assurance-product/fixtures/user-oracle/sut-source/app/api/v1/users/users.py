@@ -55,6 +55,10 @@ async def create_user(
         return Fail(code=400, msg="The user with this email already exists in the system.")
     new_user = await user_controller.create_user(obj_in=user_in)
     await user_controller.update_roles(new_user, user_in.role_ids)
+    from opentelemetry import trace
+
+    with trace.get_tracer("user.oracle").start_as_current_span("user.create.completed") as span:
+        span.set_attribute("user.username", new_user.username)
     return Success(msg="Created Successfully")
 
 

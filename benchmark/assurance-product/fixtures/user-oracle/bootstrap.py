@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 import ast
+import json
+import os
+import re
+import sqlite3
 from pathlib import Path
+from typing import Any
 
 
 _DISABLED_PASSWORD = "!managed-runtime-secret-required!"
@@ -72,6 +76,139 @@ def install_runtime_password(db_file: Path, password: str) -> None:
         )
         if updated.rowcount != 1:
             raise RuntimeError("managed disabled administrator identity does not match")
+
+
+_OLD_SYSTEM = ("db.system", "db.statement", "db.operation", "db.sql.table", "db.name")
+_NEW_SYSTEM = ("db.system.name", "db.query.text", "db.operation.name", "db.collection.name", "db.namespace")
+_SQL_TABLE = re.compile(
+    r"""(?ix)^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM|SELECT\b.+?\bFROM)\s+[`"'[]?([A-Za-z_][\w]*)"""
+)
+_SQL_OPERATION = re.compile(r"(?i)^\s*(INSERT|UPDATE|DELETE|SELECT|CREATE|ALTER|DROP)\b")
+_SENSITIVE = re.compile(r"(?i).*(password|passwd|secret|authorization|token|statement|query\.text).*")
+
+
+def normalize_db_attributes(attributes: dict[str, Any]) -> dict[str, str]:
+    """Map official Tortoise old/new semconv onto a fixed table/operation pair."""
+    keys = set(attributes)
+    old = any(key in keys for key in _OLD_SYSTEM)
+    new = any(key in keys for key in _NEW_SYSTEM)
+    if old and not new:
+        semconv = "1.11.0"
+        statement = str(attributes.get("db.statement") or "")
+        table = str(attributes.get("db.sql.table") or "")
+        operation = str(attributes.get("db.operation") or "")
+    elif new and not old:
+        semconv = "1.24.0"
+        statement = str(attributes.get("db.query.text") or "")
+        table = str(attributes.get("db.collection.name") or "")
+        operation = str(attributes.get("db.operation.name") or "")
+    else:
+        raise ValueError("unknown db semconv")
+    if not table:
+        matched = _SQL_TABLE.search(statement)
+        table = matched.group(1) if matched else ""
+    if not operation:
+        matched = _SQL_OPERATION.search(statement)
+        operation = matched.group(1).upper() if matched else ""
+    if not table or not operation:
+        raise ValueError("unknown db semconv")
+    return {"table": table, "operation": operation.upper(), "semconv": semconv}
+
+
+class _NormalizeAndScrubProcessor:
+    def on_start(self, span, parent_context=None) -> None:  # noqa: ANN001
+        return None
+
+    def on_end(self, span) -> None:  # noqa: ANN001
+        attributes = getattr(span, "_attributes", None)
+        if attributes is None:
+            return
+        scope = getattr(span, "instrumentation_scope", None)
+        name = getattr(scope, "name", "") if scope is not None else ""
+        current = dict(attributes)
+        if name == "opentelemetry.instrumentation.tortoiseorm":
+            try:
+                normalized = normalize_db_attributes(current)
+            except ValueError:
+                attributes["aa.db.semconv"] = "unknown"
+            else:
+                attributes["aa.db.table"] = normalized["table"]
+                attributes["aa.db.operation"] = normalized["operation"]
+                attributes["aa.db.semconv"] = normalized["semconv"]
+        for key in list(attributes):
+            if _SENSITIVE.match(str(key)) and not str(key).startswith("aa.db."):
+                del attributes[key]
+
+    def shutdown(self) -> None:
+        return None
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:  # noqa: ARG002
+        return True
+
+
+def install_otel():
+    """Install the attempt-bound provider from controlled environment only."""
+    endpoint = os.environ.get("AA_SUT_OTEL_ENDPOINT")
+    if not endpoint:
+        return None
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.sampling import ALWAYS_ON, ALWAYS_OFF, ParentBased
+
+    sampler_name = os.environ.get("AA_SUT_OTEL_SAMPLER", "always_on")
+    if sampler_name == "always_on":
+        sampler = ParentBased(ALWAYS_ON)
+    elif sampler_name == "always_off":
+        sampler = ParentBased(ALWAYS_OFF)
+    else:
+        raise ValueError(f"unsupported OTel sampler: {sampler_name}")
+    protocol = os.environ.get("AA_SUT_OTEL_PROTOCOL", "http/protobuf")
+    if protocol != "http/protobuf":
+        raise ValueError(f"unsupported OTel export protocol: {protocol}")
+    provider = TracerProvider(
+        sampler=sampler,
+        resource=Resource.create(
+            {
+                "service.name": "user-oracle-sut",
+                "service.instance.id": os.environ.get("AA_SUT_INSTANCE_ID", "unknown"),
+            }
+        ),
+    )
+    traces = endpoint.rstrip("/") + "/v1/traces"
+    provider.add_span_processor(_NormalizeAndScrubProcessor())
+    provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint=traces)))
+    trace.set_tracer_provider(provider)
+    return provider
+
+
+def instrument_sut(app, provider) -> None:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.instrumentation.tortoiseorm import TortoiseORMInstrumentor
+
+    TortoiseORMInstrumentor().instrument(tracer_provider=provider, capture_parameters=False)
+    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+
+
+def flush_and_shutdown() -> dict[str, str]:
+    from opentelemetry import trace
+
+    provider = trace.get_tracer_provider()
+    flushed = True
+    if hasattr(provider, "force_flush"):
+        flushed = bool(provider.force_flush(timeout_millis=5000))
+    if hasattr(provider, "shutdown"):
+        provider.shutdown()
+    receipt = {
+        "state": "flushed" if flushed else "incomplete",
+        "schema_version": "1",
+    }
+    path = os.environ.get("AA_SUT_OTEL_FLUSH_RECEIPT")
+    if path:
+        Path(path).write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+    return receipt
 
 
 if __name__ == "__main__":

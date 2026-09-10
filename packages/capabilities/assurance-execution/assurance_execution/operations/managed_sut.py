@@ -307,7 +307,7 @@ def authenticate_managed_sut_receipts(
     return managed_path, observer_path, identity, authority_digest
 
 
-_MANAGED_HARNESS_SHA256 = "53a8f954526e455ffd332c164f1cdbae59fb9a13949c453a0d894d02e94a5f2e"
+_MANAGED_HARNESS_SHA256 = "8f337f1feaf2045d226bbc8ad084d35de4fdaccaf966926476f090a839149be3"
 
 
 class ManagedUserSutHost:
@@ -350,7 +350,7 @@ class ManagedUserSutHost:
             cwd=self.source_root,
             env=environment,
             capture_output=True,
-            timeout=120,
+            timeout=180,
             check=False,
         )
         if result.returncode != 0 or len(result.stdout) > 256 * 1024 or len(result.stderr) > 8 * 1024 * 1024:
@@ -394,10 +394,20 @@ class ManagedUserSutHost:
             ),
         )
 
-    def start(self, *, workspace_root: Path, prepare_receipt: Path) -> dict[str, Any]:
-        return self._call(
-            "start", ["--workspace-root", str(workspace_root), "--prepare-receipt", str(prepare_receipt)]
-        )
+    def start(
+        self,
+        *,
+        workspace_root: Path,
+        prepare_receipt: Path,
+        validation_profile: str = "api_db.v1",
+        execution_id: str | None = None,
+    ) -> dict[str, Any]:
+        arguments = ["--workspace-root", str(workspace_root), "--prepare-receipt", str(prepare_receipt)]
+        if validation_profile == "api_db_trace.v1":
+            if not execution_id:
+                raise ValueError("NOT_READY: trace start requires an execution identity")
+            arguments.extend(["--validation-profile", validation_profile, "--execution-id", execution_id])
+        return self._call("start", arguments)
 
     def preflight(self, *, workspace_root: Path, receipt_path: Path, instance_id: str) -> dict[str, Any]:
         return self._call(
@@ -487,6 +497,23 @@ class ManagedUserSutHost:
         }
         publish_record(stopped, json.dumps(document, sort_keys=True).encode())
         (run / f"live-{started['instance_id']}.json").unlink(missing_ok=True)
+        collector = started.get("collector")
+        if isinstance(collector, dict) and isinstance(collector.get("pid"), int):
+            from assurance_execution.operations.readiness import process_birth_identity
+
+            collector_pid = collector["pid"]
+            try:
+                if process_birth_identity(collector_pid) == collector.get("process_birth_identity"):
+                    os.kill(collector_pid, signal.SIGTERM)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        try:
+                            os.kill(collector_pid, 0)
+                        except ProcessLookupError:
+                            break
+                        time.sleep(0.05)
+            except (ValueError, ProcessLookupError, OSError):
+                pass
 
 
 def authenticate_managed_sut_readiness(

@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -319,6 +320,7 @@ def _controlled_environment(
     }
     if ownership_token is not None:
         environment["AA_SUT_OWNERSHIP_TOKEN"] = ownership_token.hex()
+    environment["PYTHONPATH"] = str(FIXTURE_ROOT)
     return environment
 
 
@@ -559,6 +561,14 @@ def prepare(
     return receipt
 
 
+def _reserve_reusable_loopback() -> tuple[socket.socket, int]:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    return listener, int(listener.getsockname()[1])
+
+
 def reserve_loopback_socket() -> tuple[socket.socket, int]:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
@@ -648,17 +658,462 @@ def _authenticated_prepare(
     return prepared, run_root, sut_dir, db_file, python, ownership_token
 
 
+def _collector_lock() -> dict[str, Any]:
+    lock = json.loads((FIXTURE_ROOT / "runtime-lock.json").read_text(encoding="utf-8"))
+    collector = lock.get("collector")
+    if not isinstance(collector, dict) or collector.get("version") in {None, "latest"}:
+        raise ValueError("NOT_READY: Collector lock is missing or unpinned")
+    return collector
+
+
+def _collector_platform() -> str:
+    import platform
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "darwin" and machine in {"arm64", "aarch64"}:
+        return "darwin_arm64"
+    if system == "linux" and machine in {"x86_64", "amd64"}:
+        return "linux_amd64"
+    raise ValueError(f"Collector has no locked artifact for {system}/{machine}")
+
+
+def ensure_collector_artifact() -> Path:
+    """Download the pinned contrib archive, verify digest, and return the binary."""
+    collector = _collector_lock()
+    platform_key = _collector_platform()
+    artifacts = collector.get("artifacts")
+    if not isinstance(artifacts, dict) or platform_key not in artifacts:
+        raise ValueError("Collector artifact is not locked for this platform")
+    declared = artifacts[platform_key]
+    cache = Path.home() / ".cache" / "assurance-agent" / "otelcol-contrib" / f"v{collector['version']}"
+    cache.mkdir(parents=True, exist_ok=True)
+    archive = cache / Path(str(declared["url"])).name
+    if not archive.is_file():
+        from urllib.request import urlretrieve
+
+        urlretrieve(str(declared["url"]), archive)  # noqa: S310
+    digest = _sha256(archive)
+    if digest != declared["digest"]:
+        raise ValueError("Collector artifact digest does not match the runtime lock")
+    extracted = cache / platform_key
+    binary = extracted / "otelcol-contrib"
+    if not binary.is_file():
+        extracted.mkdir(exist_ok=True)
+        subprocess.run(  # noqa: S603
+            ["tar", "-xzf", str(archive), "-C", str(extracted)],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    if binary.is_symlink() or not binary.is_file():
+        raise ValueError("Collector binary is missing from the locked artifact")
+    return binary
+
+
+def _write_collector_config(
+    *,
+    run_root: Path,
+    otlp_endpoint: str,
+    health_endpoint: str,
+    health_body: str,
+    otlp_path: Path,
+) -> Path:
+    import yaml
+
+    template = yaml.safe_load((FIXTURE_ROOT / "collector.yaml").read_text(encoding="utf-8"))
+    template["receivers"]["otlp"]["protocols"]["http"]["endpoint"] = otlp_endpoint.removeprefix("http://")
+    template["extensions"]["health_check"]["endpoint"] = health_endpoint.removeprefix("http://").rstrip("/")
+    template["extensions"]["health_check"]["response_body"]["healthy"] = health_body
+    template["exporters"]["file"]["path"] = str(otlp_path)
+    telemetry = template.setdefault("service", {}).setdefault("telemetry", {})
+    telemetry.setdefault("metrics", {})["level"] = "none"
+    telemetry.setdefault("logs", {})["level"] = "error"
+    config_path = run_root / "otel" / "collector.yaml"
+    encoded = yaml.safe_dump(template, sort_keys=False).encode("utf-8")
+    descriptor = _open_new_output(run_root, config_path, mode=0o400)
+    try:
+        view = memoryview(encoded)
+        while view:
+            view = view[os.write(descriptor, view) :]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return config_path
+
+
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _wait_health(url: str, expected: dict[str, str], timeout_s: float = 10.0) -> bytes:
+    deadline = time.monotonic() + timeout_s
+    last: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(url, timeout=0.5) as response:  # noqa: S310
+                body = response.read()
+            if json.loads(body) == expected:
+                return body
+        except (URLError, TimeoutError, json.JSONDecodeError) as error:
+            last = error
+        time.sleep(0.05)
+    raise ValueError("Collector health_check did not return the attempt-fixed body") from last
+
+
+def start_collector(
+    *,
+    run_root: Path,
+    execution_id: str,
+    python: Path | None = None,
+) -> dict[str, Any]:
+    collector = _collector_lock()
+    try:
+        binary = ensure_collector_artifact()
+    except (OSError, ValueError, KeyError) as error:
+        raise ValueError(f"Collector artifact is unavailable: {error}") from error
+    otel = Path(run_root) / "otel"
+    otel.mkdir(exist_ok=True)
+    probe_nonce = hashlib.sha256(os.urandom(32)).hexdigest()
+    health_listener, health_port = _reserve_reusable_loopback()
+    otlp_listener, otlp_port = _reserve_reusable_loopback()
+    health_endpoint = f"http://127.0.0.1:{health_port}/"
+    otlp_endpoint = f"http://127.0.0.1:{otlp_port}"
+    health_listener.close()
+    otlp_listener.close()
+    health_body = json.dumps(
+        {"probe_nonce": probe_nonce, "execution_id": execution_id},
+        separators=(",", ":"),
+    )
+    otlp_path = otel / "traces.jsonl"
+    log_path = otel / "collector.log"
+    _require_new_output(run_root, otlp_path)
+    _require_new_output(run_root, log_path)
+    config_path = _write_collector_config(
+        run_root=run_root,
+        otlp_endpoint=otlp_endpoint,
+        health_endpoint=health_endpoint,
+        health_body=health_body,
+        otlp_path=otlp_path,
+    )
+    qualification_path = otel / "qualification.json"
+    qualification = {
+        "schema_version": "1",
+        "distribution": collector["distribution"],
+        "version": collector["version"],
+        "sampler": collector["sampler"],
+        "export_protocol": collector["export_protocol"],
+        "health_extension": collector["health_extension"],
+        "capture_parameters": collector["capture_parameters"],
+        "instrumentors": [
+            "opentelemetry.instrumentation.fastapi",
+            "opentelemetry.instrumentation.tortoiseorm",
+        ],
+    }
+    if python is not None:
+        completed = subprocess.run(  # noqa: S603
+            [
+                str(python),
+                "-c",
+                "from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor\n"
+                "from opentelemetry.instrumentation.tortoiseorm import TortoiseORMInstrumentor\n"
+                "from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter\n"
+                "print('ok')",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={"PATH": str(Path(python).parent), "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        if completed.returncode != 0 or completed.stdout.strip() != "ok":
+            raise ValueError("Collector OTel qualification failed in the locked SUT runtime")
+        qualification["locked_python"] = str(python)
+    _write_json(run_root, qualification_path, qualification)
+    log_descriptor = _open_new_output(run_root, log_path, mode=0o600)
+    try:
+        with os.fdopen(log_descriptor, "ab") as stderr:
+            process = subprocess.Popen(  # noqa: S603
+                [str(binary), "--config", str(config_path)],
+                cwd=str(otel),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                env={
+                    "HOME": str(Path(run_root) / "runtime-home"),
+                    "LANG": "C.UTF-8",
+                    "LC_ALL": "C.UTF-8",
+                    "PATH": str(binary.parent),
+                    "TZ": "UTC",
+                },
+            )
+    except OSError as error:
+        raise ValueError(f"Collector failed to start: {error}") from error
+    try:
+        if process.poll() is not None:
+            raise ValueError(
+                "Collector exited before health_check: "
+                + Path(log_path).read_text(encoding="utf-8", errors="replace")[-4000:]
+            )
+        health_bytes = _wait_health(
+            health_endpoint, {"probe_nonce": probe_nonce, "execution_id": execution_id}
+        )
+    except BaseException:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")[-4000:]
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        raise ValueError(f"Collector failed to become ready: {log_text}") from None
+    birth = _process_birth_identity(process.pid)
+    if birth is None:
+        process.terminate()
+        raise ValueError("Collector process birth identity is unavailable")
+    receipt = {
+        "schema_version": "1",
+        "state": "started",
+        "pid": process.pid,
+        "process_birth_identity": birth,
+        "probe_nonce": probe_nonce,
+        "execution_id": execution_id,
+        "health_endpoint": health_endpoint,
+        "otlp_endpoint": otlp_endpoint,
+        "otlp_path": str(otlp_path.resolve()),
+        "log_path": str(log_path.resolve()),
+        "artifact_path": str(binary.resolve(strict=True)),
+        "qualification_path": str(qualification_path.resolve()),
+        "dependencies_path": str((FIXTURE_ROOT / "requirements.lock").resolve(strict=True)),
+        "config_path": str(config_path.resolve()),
+        "sampler": collector["sampler"],
+        "export_protocol": collector["export_protocol"],
+        "health_extension": collector["health_extension"],
+        "capture_parameters": collector["capture_parameters"],
+        "endpoint_response_digest": hashlib.sha256(health_bytes).hexdigest(),
+        "configuration_digest": _file_digest(config_path),
+    }
+    _write_json(run_root, otel / "collector-process.json", receipt)
+    return receipt
+
+
+def recover_trace_session(*, run_root: Path) -> dict[str, Any]:
+    """Reuse the already-started Collector; never rebuild a new instance."""
+    path = Path(run_root) / "otel" / "collector-process.json"
+    receipt = _read_json(path)
+    if receipt.get("state") != "started":
+        raise ValueError("Collector session is not started")
+    if _process_birth_identity(int(receipt["pid"])) != receipt.get("process_birth_identity"):
+        raise ValueError("Collector process is not the owned instance")
+    return receipt
+
+
+def stop_collector(*, run_root: Path, drain_timeout_s: float = 5.0) -> dict[str, Any]:
+    path = Path(run_root) / "otel" / "collector-process.json"
+    if not path.is_file():
+        raise ValueError("Collector process receipt is missing")
+    receipt = _read_json(path)
+    pid = receipt.get("pid")
+    if not isinstance(pid, int):
+        raise ValueError("Collector process identity is invalid")
+    drain_state = "complete"
+    try:
+        if _process_birth_identity(pid) == receipt.get("process_birth_identity"):
+            os.kill(pid, signal.SIGTERM)
+            deadline = time.monotonic() + drain_timeout_s
+            while time.monotonic() < deadline:
+                if _process_birth_identity(pid) is None:
+                    break
+                time.sleep(0.05)
+            else:
+                drain_state = "incomplete"
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        else:
+            drain_state = "incomplete"
+    except ProcessLookupError:
+        drain_state = "incomplete"
+    diagnostics = {
+        "schema_version": "1",
+        "drain_state": drain_state,
+        "otlp_path": receipt.get("otlp_path"),
+        "log_path": receipt.get("log_path"),
+        "pid": pid,
+    }
+    diagnostics_path = Path(run_root) / "otel" / "diagnostics.json"
+    if not diagnostics_path.exists():
+        _write_json(run_root, diagnostics_path, diagnostics)
+    stopped = {**receipt, "state": "stopped", "drain_state": drain_state}
+    _write_json(run_root, Path(run_root) / "otel" / "collector-stopped.json", stopped)
+    return stopped
+
+
+def flush_otel(*, run_root: Path) -> dict[str, Any]:
+    otlp = Path(run_root) / "otel" / "traces.jsonl"
+    deadline = time.monotonic() + 8
+    last_size = -1
+    stable = 0
+    while time.monotonic() < deadline:
+        if otlp.is_file() and otlp.stat().st_size > 0:
+            size = otlp.stat().st_size
+            try:
+                load_otlp_file(otlp)
+            except json.JSONDecodeError:
+                last_size = size
+                time.sleep(0.1)
+                continue
+            if size == last_size:
+                stable += 1
+                if stable >= 2:
+                    return {"state": "flushed", "otlp_path": str(otlp)}
+            else:
+                stable = 0
+                last_size = size
+        time.sleep(0.1)
+    raise ValueError("OTel flush did not produce an OTLP file")
+
+
+def load_otlp_file(path: Path) -> list[dict[str, Any]]:
+    raw = Path(path).read_text(encoding="utf-8").strip()
+    if not raw:
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        loaded = json.loads(raw)
+        records.append(loaded if isinstance(loaded, dict) else {"value": loaded})
+        return records
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    index = 0
+    while index < len(raw):
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        if index >= len(raw):
+            break
+        value, index = decoder.raw_decode(raw, index)
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
+def flatten_spans(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    kind_names = {1: "INTERNAL", 2: "SERVER", 3: "CLIENT", 4: "PRODUCER", 5: "CONSUMER"}
+    spans: list[dict[str, Any]] = []
+    for record in records:
+        for resource in record.get("resourceSpans", [record] if "scopeSpans" in record else []):
+            for scope in resource.get("scopeSpans", []):
+                instrumentation = str((scope.get("scope") or {}).get("name") or "")
+                for span in scope.get("spans", []):
+                    attributes = {
+                        item["key"]: next(iter(item.get("value", {}).values()), None)
+                        for item in span.get("attributes", [])
+                    }
+                    normalized = {
+                        "table": attributes.get("aa.db.table"),
+                        "operation": attributes.get("aa.db.operation"),
+                    }
+                    spans.append(
+                        {
+                            "name": span.get("name"),
+                            "kind": kind_names.get(span.get("kind"), span.get("kind")),
+                            "instrumentation": instrumentation,
+                            "attributes": attributes,
+                            "normalized": normalized,
+                            "semconv": attributes.get("aa.db.semconv"),
+                        }
+                    )
+    return spans
+
+
+def normalize_db_span(span: Mapping[str, Any]) -> dict[str, str]:
+    if str(FIXTURE_ROOT) not in sys.path:
+        sys.path.insert(0, str(FIXTURE_ROOT))
+    from bootstrap import normalize_db_attributes
+
+    return normalize_db_attributes(dict(span.get("attributes") or {}))
+
+
+def _collector_public_receipt(
+    collector: Mapping[str, Any], *, sut_instance_id: str, execution_id: str
+) -> dict[str, Any]:
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    readiness = {
+        "schema_version": "1",
+        "validation_profile": "api_db_trace.v1",
+        "sut_instance_id": sut_instance_id,
+        "execution_id": execution_id,
+        "configuration_digest": collector["configuration_digest"],
+        "authorization_scope_digest": hashlib.sha256(execution_id.encode()).hexdigest(),
+        "activity_receipt_digest": hashlib.sha256(f"{execution_id}:{sut_instance_id}".encode()).hexdigest(),
+        "collector_endpoint": collector["health_endpoint"],
+        "collector_pid": collector["pid"],
+        "collector_process_birth_identity": collector["process_birth_identity"],
+        "collector_artifact": {
+            "path": collector["artifact_path"],
+            "digest": _file_digest(Path(collector["artifact_path"])),
+        },
+        "collector_config": {
+            "path": collector["config_path"],
+            "digest": _file_digest(Path(collector["config_path"])),
+        },
+        "otel_dependencies": {
+            "path": collector["dependencies_path"],
+            "digest": _file_digest(Path(collector["dependencies_path"])),
+        },
+        "otel_qualification": {
+            "path": collector["qualification_path"],
+            "digest": _file_digest(Path(collector["qualification_path"])),
+        },
+        "issued_at": now.isoformat(),
+        "checked_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=60)).isoformat(),
+        "probe_nonce": collector["probe_nonce"],
+        "endpoint_response_digest": collector["endpoint_response_digest"],
+    }
+    return {
+        "pid": collector["pid"],
+        "endpoint": collector["health_endpoint"],
+        "health_endpoint": collector["health_endpoint"],
+        "otlp_endpoint": collector["otlp_endpoint"],
+        "otlp_path": collector["otlp_path"],
+        "sampler": collector["sampler"],
+        "export_protocol": collector["export_protocol"],
+        "health_extension": collector["health_extension"],
+        "capture_parameters": collector["capture_parameters"],
+        "process_birth_identity": collector["process_birth_identity"],
+        "readiness": readiness,
+    }
+
+
 def start(
     *,
     workspace_root: Path,
     prepare_receipt: Path,
     ready_timeout_s: float = 10.0,
+    validation_profile: str = "api_db.v1",
+    execution_id: str | None = None,
 ) -> dict[str, Any]:
     if isinstance(ready_timeout_s, bool) or not 0 < ready_timeout_s <= _MAX_READY_TIMEOUT_S:
         raise ValueError("ready timeout must be greater than zero and at most 30 seconds")
     prepared, run_root, sut_dir, db_file, python, ownership_token = _authenticated_prepare(
         Path(workspace_root), Path(prepare_receipt)
     )
+    if validation_profile not in {"api_db.v1", "api_db_trace.v1"}:
+        raise ValueError("NOT_READY: current API DB generation is required")
+    collector_receipt: dict[str, Any] | None = None
+    if validation_profile == "api_db_trace.v1":
+        if (
+            not isinstance(execution_id, str)
+            or re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                execution_id,
+            )
+            is None
+        ):
+            raise ValueError("Collector start requires a fixed execution identity")
+        collector_receipt = start_collector(run_root=run_root, execution_id=execution_id, python=python)
     instance_id = str(uuid.uuid4())
     live_marker = run_root / f"live-{instance_id}.json"
     process_log = run_root / "managed-sut.log"
@@ -675,6 +1130,13 @@ def start(
     )
     environment["AA_SUT_FAULT"] = str(prepared.get("fault", "none"))
     environment["AA_SUT_FAULT_FACTS"] = str(run_root / "fault-facts.jsonl")
+    if collector_receipt is not None:
+        environment["AA_SUT_OTEL_ENDPOINT"] = str(collector_receipt["otlp_endpoint"])
+        environment["AA_SUT_OTEL_PROTOCOL"] = str(collector_receipt["export_protocol"])
+        environment["AA_SUT_OTEL_SAMPLER"] = str(collector_receipt["sampler"])
+        environment["AA_SUT_OTEL_FLUSH_RECEIPT"] = str(run_root / "otel" / "flush-receipt.json")
+        environment["OTEL_EXPORTER_OTLP_ENDPOINT"] = str(collector_receipt["otlp_endpoint"])
+        environment["OTEL_EXPORTER_OTLP_PROTOCOL"] = "http/protobuf"
     subprocess.run(  # noqa: S603
         [
             str(python),
@@ -739,39 +1201,43 @@ def start(
         birth_identity = _process_birth_identity(process.pid)
         if birth_identity is None:
             raise ValueError("managed SUT process birth identity is unavailable")
-        receipt = _seal(
-            {
-                "schema_version": "1",
-                "state": "started",
-                "workspace_root": str(Path(workspace_root).resolve(strict=True)),
-                "run_root": str(run_root),
-                "sut_dir": str(sut_dir),
-                "prepare_receipt": str(Path(prepare_receipt).resolve(strict=True)),
-                "prepare_receipt_digest": prepared["receipt_digest"],
-                "prepare_receipt_sha256": hashlib.sha256(
-                    Path(prepare_receipt).resolve(strict=True).read_bytes()
-                ).hexdigest(),
-                "instance_id": instance_id,
-                "pid": process.pid,
-                "process_command": command,
-                "process_fingerprint": _command_fingerprint(command),
-                "process_birth_identity": birth_identity,
-                "live_marker": str(live_marker),
-                "live_marker_digest": _sha256(live_marker),
-                "base_url": base_url,
-                "sqlite_path": str(db_file),
-                "sqlite_identity": _sqlite_identity(db_file),
-                "stderr_path": str(process_log.resolve()),
-                "source_digest": prepared["source_digest"],
-                "runtime_digest": prepared["runtime_digest"],
-                "reason": "owned_sut_started",
-            },
-            ownership_token,
-        )
+        payload: dict[str, Any] = {
+            "schema_version": "1",
+            "state": "started",
+            "workspace_root": str(Path(workspace_root).resolve(strict=True)),
+            "run_root": str(run_root),
+            "sut_dir": str(sut_dir),
+            "prepare_receipt": str(Path(prepare_receipt).resolve(strict=True)),
+            "prepare_receipt_digest": prepared["receipt_digest"],
+            "prepare_receipt_sha256": hashlib.sha256(
+                Path(prepare_receipt).resolve(strict=True).read_bytes()
+            ).hexdigest(),
+            "instance_id": instance_id,
+            "pid": process.pid,
+            "process_command": command,
+            "process_fingerprint": _command_fingerprint(command),
+            "process_birth_identity": birth_identity,
+            "live_marker": str(live_marker),
+            "live_marker_digest": _sha256(live_marker),
+            "base_url": base_url,
+            "sqlite_path": str(db_file),
+            "sqlite_identity": _sqlite_identity(db_file),
+            "stderr_path": str(process_log.resolve()),
+            "source_digest": prepared["source_digest"],
+            "runtime_digest": prepared["runtime_digest"],
+            "reason": "owned_sut_started",
+        }
+        if collector_receipt is not None:
+            payload["collector"] = _collector_public_receipt(
+                collector_receipt, sut_instance_id=instance_id, execution_id=str(execution_id)
+            )
+        receipt = _seal(payload, ownership_token)
         _write_json(run_root, run_root / _PROCESS_RECEIPT, receipt)
     except BaseException:
         process.terminate()
         process.wait(timeout=5)
+        if collector_receipt is not None:
+            stop_collector(run_root=run_root, drain_timeout_s=2.0)
         raise
     return receipt
 
@@ -915,6 +1381,11 @@ def stop(
         ownership_token,
     )
     marker_path.unlink(missing_ok=True)
+    if isinstance(receipt.get("collector"), dict):
+        try:
+            stop_collector(run_root=run_root, drain_timeout_s=5.0)
+        except ValueError:
+            pass
     _write_json(run_root, run_root / "stopped-process.json", stopped)
     return stopped
 
@@ -936,12 +1407,39 @@ def _parser() -> argparse.ArgumentParser:
     start_parser = commands.add_parser("start")
     start_parser.add_argument("--workspace-root", type=Path, required=True)
     start_parser.add_argument("--prepare-receipt", type=Path, required=True)
+    start_parser.add_argument("--validation-profile", default="api_db.v1")
+    start_parser.add_argument("--execution-id")
+    commands.add_parser("verify-otel-compatibility")
     for name in ("stop", "preflight"):
         process_parser = commands.add_parser(name)
         process_parser.add_argument("--workspace-root", type=Path, required=True)
         process_parser.add_argument("--receipt", type=Path, required=True)
         process_parser.add_argument("--instance-id", required=True)
     return parser
+
+
+def verify_otel_compatibility() -> dict[str, Any]:
+    """Run the locked-SUT compatibility suite; do not fake spans from the root venv."""
+    ensure_collector_artifact()
+    locked = verify_runtime_lock(FIXTURE_ROOT)
+    if "collector.yaml" not in locked["files"]:
+        raise ValueError("Collector configuration is not in the runtime lock")
+    test_file = Path(__file__).resolve().with_name("tests") / "test_user_otel_compatibility.py"
+    repo = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "pytest", str(test_file), "-q", "--tb=short"],
+        cwd=str(repo),
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ValueError("OTel compatibility tests failed against the locked User SUT")
+    return {
+        "schema_version": "1",
+        "state": "verified",
+        "command": "verify-otel-compatibility",
+        "source_digest": locked["source_digest"],
+        "runtime_digest": locked["runtime_digest"],
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -965,7 +1463,11 @@ def main(argv: list[str] | None = None) -> int:
         output = start(
             workspace_root=arguments.workspace_root,
             prepare_receipt=arguments.prepare_receipt,
+            validation_profile=arguments.validation_profile,
+            execution_id=arguments.execution_id,
         )
+    elif arguments.command == "verify-otel-compatibility":
+        output = verify_otel_compatibility()
     else:
         operation = preflight if arguments.command == "preflight" else stop
         output = operation(

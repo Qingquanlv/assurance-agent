@@ -6,7 +6,11 @@ from typing import Any, cast
 
 
 def accepted_verified_execution_input(
-    project: Path, *, change_id: str = "CH-USER-001", reviewed_source_path: str = "src/app.py"
+    project: Path,
+    *,
+    change_id: str = "CH-USER-001",
+    reviewed_source_path: str = "src/app.py",
+    validation_profile: str = "api_db.v1",
 ):
     """Install one complete accepted API generation closure for execution tests."""
 
@@ -36,7 +40,7 @@ def accepted_verified_execution_input(
         change_id,
         capability_leafs=("entities.item.create",),
         verification_policy={
-            "validation_profile": "api_db.v1",
+            "validation_profile": validation_profile,
             "resource_id": "assurance.product.configuration.verification-policy",
             "digest": "f" * 64,
         },
@@ -244,7 +248,7 @@ def accepted_verified_execution_input(
         machine_case,
         AssertionSourcesV1.model_validate(source_document),
         cast(dict[str, object], raw_plan["bindings"]),
-        "api_db.v1",
+        validation_profile,
         context=context,
     )
     machine_bytes = (
@@ -272,7 +276,7 @@ def accepted_verified_execution_input(
             "schema_version": "1",
             "layer": "api",
             "entries": [{"case_id": plan.case_id, "symbol": symbol, "target_file": target}],
-            "validation_profile": "api_db.v1",
+            "validation_profile": validation_profile,
             "coverage_epoch": 2,
             "plan_digest": resolved.plan_digest,
             "plan_ref": plan_ref.model_dump(mode="json"),
@@ -329,7 +333,7 @@ def accepted_verified_execution_input(
     database = project / "verified.sqlite3"
     database.touch()
     verification = VerifiedExecutionPrepareV1(
-        validation_profile="api_db.v1",
+        validation_profile=validation_profile,
         case_execution_plan_ref=machine_ref,
         nodeid=f"{target}::{symbol}",
         business_activation=BusinessActivation.for_trigger("coverage.2.execute"),
@@ -347,7 +351,7 @@ def accepted_verified_execution_input(
         managed_sut_authority_handle="sut.authority",
     )
     return ExecutionPrepareInputV1(
-        validation_profile="api_db.v1",
+        validation_profile=validation_profile,
         verification_config_digest="c" * 64,
         change_id=change_id,
         plan_digest=resolved.plan_digest,
