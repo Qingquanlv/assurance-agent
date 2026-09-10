@@ -55,13 +55,9 @@ def test_fault_cli_is_closed_and_frozen_before_prepare(tmp_path):
     for fault in FAULTS:
         args = harness._parser().parse_args(
             [
-                "prepare",
-                "--workspace-root",
-                str(tmp_path),
+                "freeze",
                 "--project-dir",
                 str(tmp_path / "project"),
-                "--run-root",
-                str(tmp_path / "run"),
                 "--fault",
                 fault,
             ]
@@ -70,13 +66,9 @@ def test_fault_cli_is_closed_and_frozen_before_prepare(tmp_path):
     with pytest.raises(SystemExit):
         harness._parser().parse_args(
             [
-                "prepare",
-                "--workspace-root",
-                str(tmp_path),
+                "freeze",
                 "--project-dir",
                 str(tmp_path / "project"),
-                "--run-root",
-                str(tmp_path / "run"),
                 "--fault",
                 "random",
             ]
