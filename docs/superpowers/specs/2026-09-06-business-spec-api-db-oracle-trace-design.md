@@ -48,21 +48,15 @@
 
 ### 2.1 遥测能力：对图侵入最小
 
-阶段二的目标是把「要不要 Trace」和「用哪种链路材料」分开。图只认前者；后者是已安装实现，由 ProductLock / GraphRevision 认证，不出现在 YAML 走法里。
+阶段二的目标是把「要不要 Trace」和「用哪种已安装实现」分开。`validation_profile` 只表达前者；后者写在部署/装配（装了哪个 wheel、digest 是什么），由 ProductLock / GraphRevision 认证，不出现在 YAML 走法里，也不变成 `api_db_otel.v1` / `api_db_cat.v1`。
 
-**图不变。** full 仍是既有 `validate → prepare → case → execute-tail → achieved | 再覆盖`；`execute-tail` 内仍是既有 execute → quality →（必要时）heal。禁止为 flush、封存、OTel、CAT 增加节点或边，禁止按 profile 编译两张不同拓扑的图。compile 认证 telemetry 插件已安装发生在组产品、锁依赖时；未通过则 `NOT_READY`，图不开始走。
+**图不变。** full 仍是既有 `validate → prepare → case → execute-tail → achieved | 再覆盖`；`execute-tail` 内仍是既有 execute → quality →（必要时）heal。禁止为 flush、封存、OTel、CAT 增加节点或边，禁止按厂商编译两张不同拓扑的图。compile 认证已安装实现发生在组产品、锁依赖时；没装或 digest 对不上则 `NOT_READY`，图不开始走，也不得静默降成 `api_db.v1`。
 
-**一种 profile，多种已安装实现。** `api_db_trace.v1` 表示「本计划的 Trace 义务 required」。第一版实现是 OTLP JSONL（Demoso：进程内 file exporter，driver 注入关联上下文，事后按本次链路身份拉取）。后续 CAT 或其他 APM 是另一个已安装实现（独立 wheel 或同一插件的另一 provider），换的是装配与材料格式，不是图、不是 quality 文案、不是新的 validation_profile。没装或 digest 漂移：`NOT_READY`，不得静默当成 `api_db.v1`。
+**一种 profile，多种已安装实现。** `api_db_trace.v1` 表示「本计划的 Trace 义务 required」。本 PR 的第一种实现是 OTLP JSONL（Demoso：进程内 file exporter，driver 注入关联上下文，事后按本次链路身份拉取）。CAT 或其他 APM 是以后另一个已安装实现，换的是装配与材料格式，不是图、不是 quality 文案、不是新的 validation_profile。
 
-**端口按材料说话，不按厂商说话。** execute / quality / 图状态机不得把 `otlp`、`traceparent`、`cat` 写成节点契约或路由条件。厂商词只留在 telemetry 实现与 SUT adapter 内部。端口只有三句：
+**端口认证据、验义务；不预埋第二种协议。** execute / quality / 图状态机不得把厂商词写成节点契约或路由条件。本 PR 抽出 `assurance.telemetry` 端口：Execute 注入关联上下文并在动作结束后 flush、收封存引用；实现交出 completion + 原始材料 + digest；Quality 只读封存字节 + 冻结 Trace 义务，重算齐 / 不齐。quality 不 import execution 的 operations，也不 import 厂商 exporter。现在不必设计 CAT 报文、CAT completion schema 或 CAT profile；只要求以后能换已安装实现。
 
-1. **Execute → Telemetry：** 本次 `execution_id` / SUT 实例 / 材料路径；注入本次 Attempt 的关联上下文；动作与独立 SELECT 结束后，flush 并交出封存引用。
-2. **Telemetry → 密封字节：** 权威输出是 completion 记录 + 原始材料文件 + digest。谁都可以读文件，谁都不能改义务。
-3. **Quality → Telemetry 契约：** 打开上述材料，加上计划里冻结的 Trace 义务，重算齐 / 不齐。quality 不 import execution 的 operations，也不 import 任一厂商 exporter。
-
-Execution 仍拥有 Attempt、HTTP、SQLite oracle 与 journal；只把遥测封存引用记进 journal。Generation 只声明义务，不读 case 去猜链路。SUT 插桩（FastAPI/Tortoise 装 SDK，或未来的 CAT agent）留在 benchmark fixture / adapter wheel，不是编排插件，也不得从 `.aa/` 加载 Python handler。
-
-本阶段不实现 CAT。CAT 只约束口子：以后换实现时不得改 full 图、不得加厂商 profile、不得让 SUT 自证 PASSED。
+Execution 仍拥有 Attempt、HTTP、SQLite oracle 与 journal；只把遥测封存引用记进 journal。Generation 只声明义务，不读 case 去猜链路。SUT 插桩（FastAPI/Tortoise 装 SDK，或以后的 CAT agent）留在 benchmark fixture / adapter wheel，不是编排插件，也不得从 `.aa/` 加载 Python handler。被测进程自己报「齐了」不能当 PASSED；认证据和验义务必须走已安装实现。
 
 ## 3. Benchmark 事实与业务规格来源
 
@@ -286,7 +280,7 @@ quality 从冻结计划与执行证据纯计算结果，策略只决定后续路
 | intake | 业务断言 ID、规范来源与评审状态；冻结可读业务预期 |
 | generation | 派生机器计划、闭集义务绑定与 readiness；生成 pytest 桥接入口。只声明 Trace 义务，不绑定厂商材料格式 |
 | execution | 权威 subprocess/HTTP driver、SQLite observer、实例绑定与 journal；调用 telemetry 端口注入上下文并记录封存引用。不拥有 SUT 生命周期，不实现 OTLP/CAT 解析 |
-| assurance-telemetry | 已安装遥测能力（`graph_engine.plugins`）。注入关联上下文、封存材料、按冻结义务判定齐/不齐。第一版：OTLP JSONL。后续 CAT 等换实现，不换图 |
+| assurance-telemetry | 已安装遥测端口（`graph_engine.plugins`）。认证据、验义务。第一种实现：OTLP JSONL。换实现只换装配，不换图、不预埋 CAT 协议 |
 | quality | 确定性业务与证据判定、义务覆盖及新状态投影。Trace 只读封存字节 + 冻结义务；不 import execution operations 或厂商 exporter |
 | healing | 检测并拒绝验收义务降级，允许不改变语义的执行绑定修复。不得改 Trace required 或换 profile |
 | assurance-product | 安装声明、按 profile 装配 telemetry wheel、工作流接线、状态/导出/achieved 集成。装配变化进入 ProductLock，不改变 full 拓扑 |
@@ -388,7 +382,7 @@ A03/A04 等生成或执行故障也使用预先声明的 harness 边界；涉及
 
 旧 case/plan/result 继续按既有版本读取；新 profile 必须经过显式迁移补齐断言来源与义务，不从旧 `passed`、`covered` 或 strong tally 自动补全。旧结果标识 legacy/unverified，不贡献新契约的验证覆盖。
 
-不包含：为正常 User 流程新增跨步骤业务事务、一次覆盖 User 全部 CRUD/权限/角色/密码规则、重写整个 Explore、构造任意业务 DSL、全量 SQL/函数覆盖、生产部署、CAT 或其他非 OTLP 实现、远程 APM 控制面、跨 DB 支持、恶意 SUT 证明，以及 UI/Redis/Kafka/Fuzz/Performance 扩展。CAT 等第二种链路只预留第 2.1 节端口，不是本阶段交付物。
+不包含：为正常 User 流程新增跨步骤业务事务、一次覆盖 User 全部 CRUD/权限/角色/密码规则、重写整个 Explore、构造任意业务 DSL、全量 SQL/函数覆盖、生产部署、CAT 或其他非 OTLP 实现、预埋 CAT 协议、远程 APM 控制面、跨 DB 支持、恶意 SUT 证明，以及 UI/Redis/Kafka/Fuzz/Performance 扩展。第二种链路不是本阶段交付物；只要求第 2.1 节的已安装端口以后能换实现。
 
 实施交付物为：版本化规格/计划/证据契约，full workflow 内的生成/执行/裁判接线，一个 SQLite oracle，真实 Tortoise/SQLite OTel 接入及一个 User 业务检查点，两个阶段的 User benchmark 项和正常/故障 harness，产品门禁与导出兼容，以及可复现实验材料。任何一项只有文档或提示词而没有实际执行验收，都不能视为本功能完成。
 

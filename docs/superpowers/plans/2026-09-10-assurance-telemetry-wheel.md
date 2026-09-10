@@ -2,9 +2,9 @@
 
 > **For agentic workers:** Execute in the `user-full-workflow-db-oracle-trace` worktree. Do not change full graph topology.
 
-**Goal:** 把 OTLP 解析/注入/封存/义务核验抽成已安装 `assurance.telemetry` wheel，图只认 `api_db_trace.v1`。
+**Goal:** 抽出已安装 `assurance.telemetry` 端口；OTLP 是第一种实现。一种 profile（`api_db_trace.v1`），多种已安装实现。
 
-**Architecture:** 第七个 capability plugin，无 task handler、无新节点。execute/quality 调端口。第一版实现仍是 Demoso OTLP JSONL。`.aa/` 组织配置仍只列六个编排插件。
+**Architecture:** 第七个 capability plugin，无 task handler、无新节点。后端写在装配/ProductLock（wheel + digest）；没装或对不上 `NOT_READY`。execute/quality 调端口。第一版实现仍是 Demoso OTLP JSONL。不预埋 CAT 协议。`.aa/` 组织配置仍只列六个编排插件。
 
 **Tech Stack:** 现有 uv workspace、Pydantic v2、graph_engine.plugins、OTel SDK。
 

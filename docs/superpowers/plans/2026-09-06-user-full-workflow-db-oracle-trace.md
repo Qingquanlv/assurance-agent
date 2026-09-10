@@ -4,7 +4,7 @@
 
 **Goal:** 让 User 创建样例从真实 full workflow 的业务规格生成测试，经确定性执行、独立 SQLite oracle 和可选必需 Trace 校验，只有证据充分且业务正确时才 achieved/export。
 
-**Architecture:** 基于当前 Python StateGraph 与 semantic attempt kernel，复用 intake/generation/execution/quality/healing/product 主流程，阶段二另装 `assurance.telemetry`。保留 `execution.execute` / `execution.run` 两个业务节点，改接 execution 所有的稳定 TaskAttemptContract；product 仅装配闭集 profile executor，legacy 委托既有 raw Agent executor，新 profile 委托可恢复的权威执行后端。`api_db_trace.v1` 在 compile 时认证 telemetry wheel，不新增图节点。业务预期归 intake，机器计划归 generation，事实归 execution，遥测材料归 telemetry 端口，业务判定归 quality；沿既有 application 终态认证与 export 扩展门禁。不新增 Agent、产品顶层节点或第二套图引擎。不按 OTel/CAT 分叉图。
+**Architecture:** 基于当前 Python StateGraph 与 semantic attempt kernel，复用 intake/generation/execution/quality/healing/product 主流程，阶段二另装 `assurance.telemetry`。保留 `execution.execute` / `execution.run` 两个业务节点，改接 execution 所有的稳定 TaskAttemptContract；product 仅装配闭集 profile executor，legacy 委托既有 raw Agent executor，新 profile 委托可恢复的权威执行后端。一种 profile（`api_db_trace.v1` = Trace required），多种已安装实现；compile 认证装配里的 wheel/digest，没装或对不上则 `NOT_READY`，不新增图节点，不按 OTel/CAT 分叉 profile。业务预期归 intake，机器计划归 generation，事实归 execution，遥测材料归 telemetry 端口，业务判定归 quality；沿既有 application 终态认证与 export 扩展门禁。不新增 Agent、产品顶层节点或第二套图引擎。不预埋 CAT 协议。
 
 **Tech Stack:** Python 3.11、uv workspace、Pydantic v2、pytest、SQLite、HTTPX；benchmark 的 FastAPI 0.111.0 / Tortoise ORM 0.23.0 / aiosqlite 0.20.0；OTel Python/FastAPI/Tortoise instrumentation。Trace 按 Demoso：SUT 进程内 `OTLPFileExporter` 写 JSONL，driver 注入 W3C `traceparent`，事后按 `trace_id` 拉取链路。不使用上游 Collector，不把独占 SUT/SQLite 当作 Trace 门禁。Docker/OCI 仅保留为显式运行的可选安全增强实验。
 
@@ -16,7 +16,7 @@
 
 **2026-09-10 经用户确认：砍掉独占 SUT host。** `assurance_execution` 不再 `prepare`/`start`/`stop` 独占 SUT 进程，不再复制 per-attempt 运行副本，不再签发 ownership token / HMAC process receipt，不再把 inode/pid/birth identity 当作执行门禁。SUT 由 benchmark/`run_item`/pytest fixture 物化并（可选）拉起共享 uvicorn；execution 只消费绑定：`sut_base_url` + 同一 `sqlite_path` + 可选 `otel_file`，然后 POST、独立 SELECT、按 `trace_id` 拉 JSONL。`UserAttempt.stop()` 不杀共享 SUT。故障变体仍由 harness 在物化阶段写入项目，不在 execution 里再拷一份独占树。
 
-**2026-09-10 经用户确认：阶段二遥测走已安装 `assurance.telemetry` wheel（方案 B），对整体 graph 侵入最小。** 图只认 `api_db.v1` / `api_db_trace.v1`，不认 OTel / CAT。禁止为遥测加节点、加边、按厂商分叉图或新增 `api_db_otel.v1` / `api_db_cat.v1`。execute 调端口：注入关联上下文、flush、收封存引用并写入 journal；quality 只读封存字节 + 冻结 Trace 义务。第一版实现仍是 Demoso OTLP JSONL；CAT 等是后续已安装实现，本阶段不实现。SUT 插桩留 fixture/adapter；不得从项目或 SUT 加载 handler。规格正文见 spec §2.1 与 §11。
+**2026-09-10 经用户确认：一种 profile，多种已安装实现。** `api_db_trace.v1` 只表示 Trace 义务 required，不按厂商分叉成 `api_db_otel.v1` / `api_db_cat.v1`（那会逼着路由和契约按厂商走）。后端写在部署/装配：装了哪个 wheel、digest 是什么；没装或对不上为 `NOT_READY`，不得降成 `api_db.v1`。本 PR 抽出 `assurance.telemetry` 端口，OTLP JSONL 做第一种实现，图保持原节点。CAT 不是 SUT 插件：插桩可留 fixture/adapter，认证据、验义务必须是已安装实现；被测进程自报「CAT 齐了」不能当 PASSED。现在不必预埋 CAT 协议，只要求这个口子以后能换实现。规格正文见 spec §2.1 与 §11。
 
 **2026-09-10 经用户确认：砍装机矩阵 / Stage-1 重复测试。** 同一故障不要再走三遍（`run_item` 合成 status、installed full 脚本图、execution 单测）。CI 只保留：`full_workflow` 里对 `_FAULT_EXPECTATIONS` / 评分函数的廉价表测试；一条 installed 空 change 装配；一条 installed refactor→quality.report/achieved/export。删除 installed 上的 no-bridge/no-action/db-unavailable/trace 六参矩阵，以及 `full_workflow` 里同名的合成 status 复本。动作/oracle 行为仍由 execution 单测覆盖。Live OpenCode 矩阵仍单独记为未跑，不在 CI 里用脚本图冒充。
 
