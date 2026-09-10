@@ -173,9 +173,14 @@ def inspect_wheel_archive(wheel: Path, *, deployment: bool) -> None:
         dist_name = canonicalize_name(str(message["Name"]))
         if dist_name in LEGACY_DISTS:
             raise SystemExit(f"legacy distribution wheel: {wheel.name}")
+        def requirement_name(value: str) -> str:
+            token = value.split(";", 1)[0].strip()
+            for separator in ("[", " ", "(", "<", ">", "=", "!"):
+                token = token.split(separator, 1)[0]
+            return canonicalize_name(token)
+
         requirements = tuple(
-            canonicalize_name(value.split(";", 1)[0].split(" ", 1)[0])
-            for value in (message.get_all("Requires-Dist") or ())
+            requirement_name(value) for value in (message.get_all("Requires-Dist") or ())
         )
         if any(name in LEGACY_DISTS for name in requirements):
             raise SystemExit(f"legacy requirement in {wheel.name}: {requirements}")
