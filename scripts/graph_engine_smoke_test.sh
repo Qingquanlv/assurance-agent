@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Build the committed Phase 1 graph-engine tree and prove wheel isolation.
+# Ordinary CI/smoke: do not build images, start Docker/Colima, or read qualification files.
 set -euo pipefail
+if command -v docker >/dev/null 2>&1 && [[ "${GRAPH_ENGINE_SMOKE_USE_DOCKER:-}" == "1" ]]; then
+  echo "ordinary graph-engine smoke must not start Docker" >&2
+  exit 1
+fi
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/graph-engine-smoke.XXXXXX")"

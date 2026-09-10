@@ -24,6 +24,22 @@ FAULTS = (
     "forged-evidence",
     "downgrade",
     "missing-write",
+    "drop-business-span",
+    "drop-write-span",
+    "broken-context",
+    "stale-trace",
+    "drain-timeout",
+    "early-completed",
+    "refactor",
+)
+TRACE_FAULT_MATRIX = (
+    ("drop-business-span", "INCOMPLETE", "quality.report", True),
+    ("drop-write-span", "INCOMPLETE", "quality.report", True),
+    ("broken-context", "INCOMPLETE", "quality.report", True),
+    ("stale-trace", "INCOMPLETE", "quality.report", True),
+    ("drain-timeout", "INCOMPLETE", "quality.report", True),
+    ("early-completed", "FAILED", "quality.inspect", True),
+    ("refactor", "PASSED", "quality.report", True),
 )
 
 
@@ -577,8 +593,7 @@ def test_no_bridge_fault_is_generation_admission_not_runtime_a03():
         "generation.api.plan-review",
     )
     graphs = [
-        {"graph_instance_id": f"g-{step}", "graph_id": step}
-        for step in (*prefix, "generation.api.codegen")
+        {"graph_instance_id": f"g-{step}", "graph_id": step} for step in (*prefix, "generation.api.codegen")
     ]
     nodes = [
         {
@@ -632,9 +647,7 @@ def test_no_bridge_fault_is_generation_admission_not_runtime_a03():
             }
         },
     }
-    assert runner._fault_result_errors(
-        fault="no-bridge", item=item, status=runtime_a03, change_id=change_id
-    )
+    assert runner._fault_result_errors(fault="no-bridge", item=item, status=runtime_a03, change_id=change_id)
 
 
 def test_no_action_requires_runtime_verification_material():
@@ -755,9 +768,7 @@ def test_db_unavailable_requires_runtime_verification_material():
         "terminal_reason": "verification_incomplete",
         "selected_test_families": ["api"],
         "change": {"change_id": change_id, "state": "failed"},
-        "graph_hierarchy": [
-            {"graph_instance_id": f"g-{step}", "graph_id": step} for step in required
-        ],
+        "graph_hierarchy": [{"graph_instance_id": f"g-{step}", "graph_id": step} for step in required],
         "node_states": [
             {
                 "graph_instance_id": f"g-{step}",
@@ -783,9 +794,7 @@ def test_db_unavailable_requires_runtime_verification_material():
     }
 
     assert (
-        runner._fault_result_errors(
-            fault="db-unavailable", item=item, status=status, change_id=change_id
-        )
+        runner._fault_result_errors(fault="db-unavailable", item=item, status=status, change_id=change_id)
         == []
     )
     pre_execution = {
@@ -855,3 +864,163 @@ def test_attempt_rejects_reviewed_a_with_functional_frozen_b_before_any_post(tmp
         )
     assert not list(project.glob(".aa/managed-user/*/runtime/owned-process.json"))
     assert not list(host.glob("*.json"))
+
+
+def test_trace_manifest_item_uses_same_user_spec_and_trace_profile():
+    runner = load("run_item")
+    document = json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8"))
+    stage1 = runner._manifest_item(document, "opencode-user-api-db", "opencode")
+    stage2 = runner._manifest_item(document, "opencode-user-api-db-trace", "opencode")
+    assert stage2["validation_profile"] == "api_db_trace.v1"
+    assert stage1["validation_profile"] == "api_db.v1"
+    assert stage2["requirement_path"] == stage1["requirement_path"]
+    assert stage2["sut_item_id"] == stage1["sut_item_id"] == "RET-user-management"
+    assert stage2["selected_test_families"] == stage1["selected_test_families"] == ["api"]
+    assert stage2["case_modules"] == stage1["case_modules"] == ["system/user"]
+    assert stage2["required_steps"] == stage1["required_steps"]
+    assert stage2["entrypoint"] == "full"
+    assert stage2["run_mode"] == "case"
+
+
+def test_trace_item_writes_only_api_db_trace_policy(tmp_path):
+    runner = load("run_item")
+    project = tmp_path / "project"
+    runner._prepare_user_project(
+        repo=REPO, project_dir=project, fault="none", validation_profile="api_db_trace.v1"
+    )
+    assert (project / ".aa/verification-policy.yaml").read_text(encoding="utf-8") == (
+        "validation_profile: api_db_trace.v1\n"
+    )
+    tree = tmp_path / "config-tree"
+    import shutil
+
+    shutil.copytree(REPO / "tests/product/fixtures/project-config", tree)
+    runner._prepare_project_config_tree(tree, project)
+    from graph_engine.composition import ConfigTreePluginSource
+    from assurance_product.configuration import load_project_configuration
+
+    contribution = load_project_configuration(ConfigTreePluginSource(path=tree))
+    published = {resource.resource_id: resource for resource in contribution.resources}
+    assert yaml.safe_load(published["assurance.product.configuration.verification-policy"].content) == {
+        "validation_profile": "api_db_trace.v1"
+    }
+
+
+def test_trace_host_binds_collector_handle_without_oci(tmp_path):
+    runner = load("run_item")
+    project = tmp_path / "project"
+    runner._prepare_user_project(
+        repo=REPO, project_dir=project, fault="none", validation_profile="api_db_trace.v1"
+    )
+    item = dict(
+        runner._manifest_item(
+            json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+            "opencode-user-api-db-trace",
+            "opencode",
+        )
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault="none")
+    assert item["verification_host"]["collector_readiness_handle"] == "sut.collector"
+    assert "runner" not in item["verification_host"]
+    collector_args = [
+        item["host_secret_args"][index + 1]
+        for index, flag in enumerate(item["host_secret_args"])
+        if flag == "--secret" and item["host_secret_args"][index + 1].startswith("sut.collector=")
+    ]
+    assert collector_args
+    collector_path = Path(collector_args[0].split("=", 1)[1].removeprefix("file:"))
+    from assurance_execution.operations.readiness import (
+        CollectorQualification,
+        authenticate_collector_artifacts,
+    )
+
+    qualification = CollectorQualification.model_validate_json(collector_path.read_bytes())
+    assert qualification.validation_profile == "api_db_trace.v1"
+    assert qualification.configuration_digest == runner._verification_config_digest(
+        validation_profile="api_db_trace.v1", host=item["verification_host"]
+    )
+
+    class _Secrets:
+        def resolve(self, handle):
+            assert handle == "sut.collector"
+            return collector_path.read_bytes()
+
+    authenticate_collector_artifacts(_Secrets(), "sut.collector", qualification.configuration_digest)
+    deployment = tmp_path / "deployment.json"
+    runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
+    document = json.loads(deployment.read_text(encoding="utf-8"))
+    assert document["validation_profile"] == "api_db_trace.v1"
+    assert document["verification_host"]["collector_readiness_handle"] == "sut.collector"
+    assert "sut.collector" in document["secret_handles"]
+    assert "qualification" not in json.dumps(document)
+
+
+@pytest.mark.parametrize(("fault", "verdict", "prefix_end", "verified"), TRACE_FAULT_MATRIX)
+def test_trace_fault_matrix_records_stop_and_verdict(fault, verdict, prefix_end, verified):
+    runner = load("run_item")
+    expected = runner._FAULT_EXPECTATIONS[fault]
+    assert expected["verdict"] == verdict
+    assert expected["prefix_end"] == prefix_end
+    assert expected["verified_material"] is verified
+    if verdict == "PASSED":
+        assert (
+            runner._fault_outcome_errors(fault=fault, verdict="PASSED", achieved=True, published=True) == []
+        )
+        assert runner._fault_outcome_errors(
+            fault=fault, verdict="INCOMPLETE", achieved=False, published=False
+        )
+    else:
+        assert (
+            runner._fault_outcome_errors(fault=fault, verdict=verdict, achieved=False, published=False) == []
+        )
+        assert runner._fault_outcome_errors(fault=fault, verdict="PASSED", achieved=True, published=True)
+
+
+def test_refactor_freezes_new_source_artifacts_before_intake(tmp_path):
+    harness = load("user_oracle_harness")
+    project = tmp_path / "project"
+    selected = harness.materialize_project(project_dir=project, fault="refactor")
+    helper = project / "app/controllers/user_persist.py"
+    controller = project / "app/controllers/user.py"
+    assert helper.is_file()
+    helper_text = helper.read_text(encoding="utf-8")
+    assert "persist_created_user" in helper_text
+    assert "persist_user" in helper_text
+    assert "User.create" in helper_text or "filter(" in helper_text
+    assert "persist_created_user" in controller.read_text(encoding="utf-8")
+    original = harness.materialize_project(project_dir=tmp_path / "original", fault="none")
+    assert selected["source_digest"] != original["source_digest"]
+    assert selected["runtime_digest"] != original["runtime_digest"]
+    lock = json.loads((project / ".aa/user-oracle/runtime-lock.json").read_bytes())
+    assert lock["fault"] == "refactor"
+    assert lock["source_digest"] == selected["source_digest"]
+    assert "sut-source/app/controllers/user_persist.py" in lock["files"]
+
+
+def test_ordinary_ci_has_no_docker_or_qualification():
+    workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    commands = "\n".join(
+        line
+        for line in workflow.splitlines()
+        if line.lstrip().startswith("run:") or line.lstrip().startswith("- run:")
+    ).lower()
+    assert "docker" not in commands
+    assert "colima" not in commands
+    assert "qualification" not in commands
+    assert "build_verification_runner" not in commands
+    assert "scripts/graph_engine_smoke_test.sh" in workflow
+    assert "scripts/assurance_capability_wheel_smoke_test.sh" in workflow
+    assert "scripts/assurance_product_wheel_smoke_test.sh" in workflow
+
+
+def test_stage2_delivery_record_keeps_three_classes_separate():
+    record = (BENCHMARK / "stage2-delivery.md").read_text(encoding="utf-8")
+    assert "deterministic" in record.lower()
+    assert "otel" in record.lower()
+    assert "agent full" in record.lower() or "live full" in record.lower()
+    assert "not accepted" in record.lower() or "未验收" in record
+    assert "oci" in record.lower()
+    assert "optional" in record.lower() or "可选" in record
+    assert "opencode-user-api-db-trace" in record

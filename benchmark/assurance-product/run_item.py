@@ -232,7 +232,9 @@ def _user_harness() -> Any:
     return module
 
 
-def _prepare_user_project(*, repo: Path, project_dir: Path, fault: str) -> dict[str, Any]:
+def _prepare_user_project(
+    *, repo: Path, project_dir: Path, fault: str, validation_profile: str = "api_db.v1"
+) -> dict[str, Any]:
     harness = _user_harness()
     locked = harness.materialize_project(project_dir=project_dir, fault=fault)
     config_dir = project_dir / ".aa"
@@ -270,7 +272,11 @@ def _prepare_user_project(*, repo: Path, project_dir: Path, fault: str) -> dict[
     (config_dir / "data-knowledge.yaml").write_text(
         yaml.safe_dump(knowledge, sort_keys=False), encoding="utf-8"
     )
-    (config_dir / "verification-policy.yaml").write_text("validation_profile: api_db.v1\n", encoding="utf-8")
+    if validation_profile not in {"api_db.v1", "api_db_trace.v1"}:
+        raise SystemExit("User project validation_profile must be api_db.v1 or api_db_trace.v1")
+    (config_dir / "verification-policy.yaml").write_text(
+        f"validation_profile: {validation_profile}\n", encoding="utf-8"
+    )
     (project_dir / "opencode.json").write_text(
         json.dumps(_product_locked_opencode_config(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -301,6 +307,19 @@ def _configure_user_host(
             "digest": _sha256(frozen_lock.read_bytes()),
         },
     }
+    from assurance_product.models import VerificationHostConfigV1
+
+    item["verification_host"] = VerificationHostConfigV1.model_validate(
+        {
+            "sut_source_root": str(repo),
+            "managed_sut_authority_handle": "sut.authority",
+            "managed_sut_readiness_handle": None,
+            "credential_handle": "sut.credential",
+            "collector_readiness_handle": (
+                "sut.collector" if item.get("validation_profile") == "api_db_trace.v1" else None
+            ),
+        }
+    ).model_dump(mode="json")
     values = {
         "sut.authority": json.dumps(authority, sort_keys=True).encode(),
         "sut.credential": secrets.token_urlsafe(32).encode(),
@@ -308,6 +327,10 @@ def _configure_user_host(
         "managed-sut.reset-password": secrets.token_urlsafe(32).encode(),
         "managed-sut.secret-key": secrets.token_urlsafe(32).encode(),
     }
+    if item.get("validation_profile") == "api_db_trace.v1":
+        values["sut.collector"] = _collector_qualification_secret(
+            repo=repo, output=output, host=item["verification_host"]
+        )
     host_args: list[str] = []
     for handle, content in values.items():
         path = secret_dir / handle
@@ -319,17 +342,62 @@ def _configure_user_host(
             os.close(descriptor)
         host_args.extend(("--secret", f"{handle}=file:{path}"))
     item["host_secret_args"] = host_args
-    item["verification_host"] = {
-        "sut_source_root": str(repo),
-        "managed_sut_authority_handle": "sut.authority",
-        "managed_sut_readiness_handle": None,
-        "credential_handle": "sut.credential",
-        "collector_readiness_handle": None,
-    }
 
 
 def _secret_args(item: Mapping[str, Any]) -> list[str]:
     return ["--secret", _secret_arg(item), *item.get("host_secret_args", [])]
+
+
+def _owned_readiness_file(path: Path, content: bytes) -> dict[str, str]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+    try:
+        view = memoryview(content)
+        while view:
+            view = view[os.write(descriptor, view) :]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    resolved = path.resolve(strict=True)
+    return {"path": str(resolved), "digest": hashlib.sha256(resolved.read_bytes()).hexdigest()}
+
+
+def _verification_config_digest(*, validation_profile: str, host: Mapping[str, Any]) -> str:
+    from graph_engine.canonical import canonical_json_bytes
+
+    return hashlib.sha256(
+        canonical_json_bytes({"validation_profile": validation_profile, "host": dict(host)})
+    ).hexdigest()
+
+
+def _collector_qualification_secret(*, repo: Path, output: Path, host: Mapping[str, Any]) -> bytes:
+    root = output / "collector-host"
+    fixture = repo / "benchmark" / "assurance-product" / "fixtures" / "user-oracle"
+    document = {
+        "validation_profile": "api_db_trace.v1",
+        "configuration_digest": _verification_config_digest(validation_profile="api_db_trace.v1", host=host),
+        "collector_artifact": _owned_readiness_file(root / "collector-artifact", b"managed-collector\n"),
+        "collector_config": _owned_readiness_file(
+            root / "collector.yaml", (fixture / "collector.yaml").read_bytes()
+        ),
+        "otel_dependencies": _owned_readiness_file(
+            root / "otel-dependencies.lock", (fixture / "requirements.lock").read_bytes()
+        ),
+        "otel_qualification": _owned_readiness_file(
+            root / "otel-receipt.json",
+            json.dumps(
+                {"schema_version": "1", "kind": "managed-collector-preflight"}, sort_keys=True
+            ).encode()
+            + b"\n",
+        ),
+    }
+    return json.dumps(document, sort_keys=True).encode()
+
+
+def _restrict_wheel_secret_handles(path: Path, item: Mapping[str, Any]) -> None:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["secret_handles"] = [item["secret_handle"]]
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _fault_outcome_errors(*, fault: str, verdict: str | None, achieved: bool, published: bool) -> list[str]:
@@ -337,7 +405,10 @@ def _fault_outcome_errors(*, fault: str, verdict: str | None, achieved: bool, pu
     errors: list[str] = []
     if expected is None or verdict != expected["verdict"]:
         errors.append(f"fault {fault!r} did not produce its expected verification verdict")
-    if achieved or published:
+    if expected is not None and expected["verdict"] == "PASSED":
+        if not achieved:
+            errors.append("semantic-equivalent refactor must reach achieved")
+    elif achieved or published:
         errors.append("fault benchmark must refuse achieved/export")
     return errors
 
@@ -400,6 +471,11 @@ for _runtime_fault, _runtime_verdict in {
     "unknown-http": "INCOMPLETE",
     "forged-evidence": "INCOMPLETE",
     "missing-write": "FAILED",
+    "drop-business-span": "INCOMPLETE",
+    "drop-write-span": "INCOMPLETE",
+    "broken-context": "INCOMPLETE",
+    "stale-trace": "INCOMPLETE",
+    "drain-timeout": "INCOMPLETE",
 }.items():
     _FAULT_EXPECTATIONS[_runtime_fault] = {
         "verdict": _runtime_verdict,
@@ -415,6 +491,29 @@ for _runtime_fault, _runtime_verdict in {
         ),
         "verified_material": True,
     }
+_FAULT_EXPECTATIONS["early-completed"] = {
+    "verdict": "FAILED",
+    "prefix_end": "quality.inspect",
+    "stop": None,
+    "terminal_status": "failed",
+    "change_state": "failed",
+    "reasons": (
+        "not_achieved",
+        "not-achieved",
+        "needs_human",
+        "verification_failed",
+    ),
+    "verified_material": True,
+}
+_FAULT_EXPECTATIONS["refactor"] = {
+    "verdict": "PASSED",
+    "prefix_end": "quality.report",
+    "stop": None,
+    "terminal_status": "completed",
+    "change_state": "achieved",
+    "reasons": ("achieved", "completed"),
+    "verified_material": True,
+}
 
 
 def _fault_result_errors(
@@ -445,8 +544,9 @@ def _fault_result_errors(
     if status.get("status") != expectation["terminal_status"] or change_state != expectation["change_state"]:
         errors.append(f"fault {fault!r} did not stop at its fixed product terminal boundary")
     reason = str(status.get("terminal_reason") or "").lower()
-    if not any(fragment in reason for fragment in expectation["reasons"]):
-        errors.append(f"fault {fault!r} stopped for an unrelated terminal reason")
+    if expectation["reasons"] and not any(fragment in reason for fragment in expectation["reasons"]):
+        if not (expectation["verdict"] == "PASSED" and _change_is_achieved(status)):
+            errors.append(f"fault {fault!r} stopped for an unrelated terminal reason")
 
     required = tuple(item["required_steps"])
     prefix_end = str(expectation["prefix_end"])
@@ -473,7 +573,10 @@ def _fault_result_errors(
         ):
             errors.append("runtime fault is missing its current verified execution gate")
         inspection = quality_gate.get("inspection") if isinstance(quality_gate, Mapping) else None
-        if not isinstance(inspection, Mapping) or (
+        if prefix_end == "quality.inspect":
+            if "quality.inspect" not in succeeded:
+                errors.append("runtime fault is missing its current quality verification material")
+        elif not isinstance(inspection, Mapping) or (
             inspection.get("verification_status") != verdict
             or not isinstance(inspection.get("verification_ref"), Mapping)
             or not inspection.get("batch_id")
@@ -494,6 +597,9 @@ def _verification_verdict(status: Mapping[str, Any]) -> str | None:
             verdict = inspection.get("verification_status")
             if verdict in {"PASSED", "FAILED", "INCOMPLETE"}:
                 return str(verdict)
+    fallback = status.get("verification_status")
+    if fallback in {"PASSED", "FAILED", "INCOMPLETE"}:
+        return str(fallback)
     if not _change_is_achieved(status) and status.get("execution_gate") is None:
         return "NOT_READY"
     return None
@@ -1638,6 +1744,7 @@ def _write_deployment_manifest(
                 "managed-sut.admin-password",
                 "managed-sut.reset-password",
                 "managed-sut.secret-key",
+                *(("sut.collector",) if item.get("validation_profile") == "api_db_trace.v1" else ()),
             }
         )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1963,6 +2070,7 @@ def _drive_started_change(
 
     evidence["validation"] = {"transitions": transitions, "last_run": last_run}
     fault = str(item.get("fault") or "none")
+    expectation = _FAULT_EXPECTATIONS.get(fault)
     if fault != "none":
         verdict = _verification_verdict(last_status)
         errors = _fault_result_errors(
@@ -1979,12 +2087,13 @@ def _drive_started_change(
         if errors:
             evidence["outcome"] = "blocked"
             return finish(1, notes="; ".join(errors), status=last_status)
-        evidence["outcome"] = "completed"
-        return finish(
-            0,
-            notes=f"fault {fault!r} produced {verdict!r} and refused delivery",
-            status=last_status,
-        )
+        if expectation is None or expectation["verdict"] != "PASSED":
+            evidence["outcome"] = "completed"
+            return finish(
+                0,
+                notes=f"fault {fault!r} produced {verdict!r} and refused delivery",
+                status=last_status,
+            )
 
     errors = _validate_live_result(item=item, status=last_status)
     if (
@@ -2074,7 +2183,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if item.get("validation_profile"):
             sut_root = output / "project"
-            _prepare_user_project(repo=repo, project_dir=sut_root, fault=arguments.fault)
+            _prepare_user_project(
+                repo=repo,
+                project_dir=sut_root,
+                fault=arguments.fault,
+                validation_profile=str(item["validation_profile"]),
+            )
         else:
             sut_root = _resolve_sut(repo, str(item["sut_root"]))
     except (SystemExit, ValueError) as error:
@@ -2231,6 +2345,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         project_scope=str(project_dir),
         adapter=arguments.adapter,
     )
+    _restrict_wheel_secret_handles(deployment_manifest, item)
     wheel_dir = output / "binding-wheel"
     wheel_dir.mkdir()
     built = _aa_next(

@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tests.product.cli_support import SECRET_ENV
 from tests.product.test_user_oracle_full_workflow import BENCHMARK, REPO, load
 
 
-def _installed_user_sources(tmp_path: Path, installed_sources, *, fault: str = "none"):
+def _installed_user_sources(
+    tmp_path: Path, installed_sources, *, fault: str = "none", item_id: str = "opencode-user-api-db"
+):
     import shutil
 
     from assurance_product.binding_builder import build_deployment_wheel
@@ -18,25 +22,27 @@ def _installed_user_sources(tmp_path: Path, installed_sources, *, fault: str = "
     del installed_sources
     runner = load("run_item")
     project = tmp_path / "project"
-    runner._prepare_user_project(repo=REPO, project_dir=project, fault=fault)
+    raw_item = runner._manifest_item(
+        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
+        item_id,
+        "opencode",
+    )
+    runner._prepare_user_project(
+        repo=REPO,
+        project_dir=project,
+        fault=fault,
+        validation_profile=str(raw_item["validation_profile"]),
+    )
     config_tree = tmp_path / "config-tree"
     shutil.copytree(REPO / "tests/product/fixtures/project-config", config_tree)
     runner._prepare_project_config_tree(config_tree, project)
-    item = dict(
-        runner._manifest_item(
-            json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
-            "opencode-user-api-db",
-            "opencode",
-        )
-    )
+    item = dict(raw_item)
     output = tmp_path / "runtime"
     output.mkdir()
     runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault=fault)
     deployment = tmp_path / "deployment.yaml"
     runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
-    document = json.loads(deployment.read_text(encoding="utf-8"))
-    document["secret_handles"] = [item["secret_handle"]]
-    deployment.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    runner._restrict_wheel_secret_handles(deployment, item)
     built = build_deployment_wheel(deployment, tmp_path / "binding-wheel")
     evict_generated_binding_modules()
     _extract_wheel(built.wheel, tmp_path / "extract-user-binding")
@@ -71,9 +77,9 @@ def _write_full_input(path: Path, composition, *, change_id: str) -> None:
         {
             "schema_version": "1",
             "change_id": change_id,
-            "requirement": (
-                REPO / "benchmark/vue-fastapi-admin/benchmark/requirements/user-create-oracle.md"
-            ).read_text().strip(),
+            "requirement": (REPO / "benchmark/vue-fastapi-admin/benchmark/requirements/user-create-oracle.md")
+            .read_text()
+            .strip(),
             "run_mode": "case",
             "candidate_test_families": ["api"],
             "case_delta_paths": [f"qa/changes/{change_id}/cases/system/user/case.yaml"],
@@ -153,8 +159,10 @@ def _agent_success(payload: object):
 
 def _requirement_text() -> str:
     return (
-        REPO / "benchmark/vue-fastapi-admin/benchmark/requirements/user-create-oracle.md"
-    ).read_text(encoding="utf-8").strip()
+        (REPO / "benchmark/vue-fastapi-admin/benchmark/requirements/user-create-oracle.md")
+        .read_text(encoding="utf-8")
+        .strip()
+    )
 
 
 def _user_case_entry() -> dict:
@@ -299,9 +307,9 @@ def _scripted_opencode_execute(request, context, *, fault: str = "none"):
         project_root = Path(context.project_root)
         requirement_bytes = (project_root / requirement_path).read_bytes()
         requirement_digest = hashlib.sha256(requirement_bytes).hexdigest()
-        plans = list((project_root / "qa" / "changes" / change_id / "plan").rglob(
-            "resolved-assurance-plan.json"
-        ))
+        plans = list(
+            (project_root / "qa" / "changes" / change_id / "plan").rglob("resolved-assurance-plan.json")
+        )
         if not plans:
             raise AssertionError("case-design requires the promoted resolved assurance plan")
         plan = json.loads(plans[0].read_text(encoding="utf-8"))
@@ -371,11 +379,19 @@ def _scripted_opencode_execute(request, context, *, fault: str = "none"):
             },
             "source_verification": {
                 "independent": True,
-                "reviewed_source_files": ["app/controllers/user.py"],
+                "reviewed_source_files": (
+                    ["app/controllers/user.py", "app/controllers/user_persist.py"]
+                    if fault == "refactor"
+                    else ["app/controllers/user.py"]
+                ),
                 "verified_claims": [
                     {
                         "claim": "UserController.create_user persists a User row",
-                        "evidence_files": ["app/controllers/user.py"],
+                        "evidence_files": (
+                            ["app/controllers/user.py", "app/controllers/user_persist.py"]
+                            if fault == "refactor"
+                            else ["app/controllers/user.py"]
+                        ),
                     }
                 ],
             },
@@ -508,9 +524,7 @@ def _scripted_opencode_execute(request, context, *, fault: str = "none"):
                 "case_spec_digests": {item.case_id: item.spec_digest for item in machine.cases},
             }
         )
-        staged = (
-            f"qa/changes/{change_id}/generated/api/files/tests/api/test_user_create.py"
-        )
+        staged = f"qa/changes/{change_id}/generated/api/files/tests/api/test_user_create.py"
         if fault == "no-bridge":
             _write_logical(
                 write_root,
@@ -676,7 +690,13 @@ class _InstalledFullRun:
 
 
 def _drive_installed_user_full(
-    tmp_path, installed_sources, monkeypatch, *, fault: str, change_id: str
+    tmp_path,
+    installed_sources,
+    monkeypatch,
+    *,
+    fault: str,
+    change_id: str,
+    item_id: str = "opencode-user-api-db",
 ) -> _InstalledFullRun:
     from agent_runtime_opencode.discovery import agent_run_from_request
     from agent_runtime_opencode.handler import OpenCodeHandler
@@ -686,7 +706,7 @@ def _drive_installed_user_full(
     from assurance_product.runtime_bindings import _HostBackedInstalledPhase, _task_context
 
     project, item, composition, _config_tree = _installed_user_sources(
-        tmp_path, installed_sources, fault=fault
+        tmp_path, installed_sources, fault=fault, item_id=item_id
     )
     input_path = tmp_path / "input.json"
     _write_full_input(input_path, composition, change_id=change_id)
@@ -801,6 +821,21 @@ def _assessment_failure_messages(project: Path) -> list[str]:
     return sorted(set(messages))
 
 
+def _inspect_verdict(project: Path, change_id: str) -> str | None:
+    root = project / "qa" / "changes" / change_id
+    if not root.is_dir():
+        return None
+    for path in sorted(root.rglob("verification.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        verdict = payload.get("verdict") if isinstance(payload, dict) else None
+        if verdict in {"PASSED", "FAILED", "INCOMPLETE"}:
+            return str(verdict)
+    return None
+
+
 def _quality_debug(project: Path, change_id: str) -> str:
     bits: list[str] = []
     root = project / "qa" / "changes" / change_id
@@ -820,8 +855,7 @@ def _quality_debug(project: Path, change_id: str) -> str:
                 if item.get("business_status") == "violated" or item.get("evidence_status") != "observed"
             ]
             bits.append(
-                f"verdict={payload.get('verdict')} reasons={payload.get('reason_codes')} "
-                f"open={obligations}"
+                f"verdict={payload.get('verdict')} reasons={payload.get('reason_codes')} open={obligations}"
             )
         elif path.name == "action_terminal.json" or (
             isinstance(payload.get("payload"), dict) and "http" in payload["payload"]
@@ -867,16 +901,11 @@ def _healing_artifacts(project: Path) -> list[Path]:
         path
         for path in project.rglob("*")
         if path.is_file()
-        and (
-            "healing" in path.relative_to(project).parts
-            or path.name.startswith("repair-authorization")
-        )
+        and ("healing" in path.relative_to(project).parts or path.name.startswith("repair-authorization"))
     ]
 
 
-def test_installed_full_assembles_empty_change_through_codegen(
-    tmp_path, installed_sources, monkeypatch
-):
+def test_installed_full_assembles_empty_change_through_codegen(tmp_path, installed_sources, monkeypatch):
     change_id = "CH-USER-FULL-001"
     driven = _drive_installed_user_full(
         tmp_path, installed_sources, monkeypatch, fault="none", change_id=change_id
@@ -889,7 +918,9 @@ def test_installed_full_assembles_empty_change_through_codegen(
     assert status["change"]["state"] != "stopped", detail
     runner = load("run_item")
     succeeded = runner._status_steps(status)
-    prefix = tuple(driven.item["required_steps"][: driven.item["required_steps"].index("generation.api.codegen") + 1])
+    prefix = tuple(
+        driven.item["required_steps"][: driven.item["required_steps"].index("generation.api.codegen") + 1]
+    )
     missing = [step for step in prefix if step not in succeeded]
     assert not missing, f"required assembly nodes were not succeeded: {missing} {detail}"
     for name in (
@@ -907,9 +938,7 @@ def test_installed_full_assembles_empty_change_through_codegen(
     assert _process_receipts(driven.project), f"did not reach real subprocess execution: {detail}"
 
 
-def test_no_bridge_fault_is_generation_admission_not_runtime_a03(
-    tmp_path, installed_sources, monkeypatch
-):
+def test_no_bridge_fault_is_generation_admission_not_runtime_a03(tmp_path, installed_sources, monkeypatch):
     change_id = "CH-USER-NO-BRIDGE"
     driven = _drive_installed_user_full(
         tmp_path, installed_sources, monkeypatch, fault="no-bridge", change_id=change_id
@@ -926,9 +955,7 @@ def test_no_bridge_fault_is_generation_admission_not_runtime_a03(
     assert staged, f"no-bridge did not form a generation candidate: {detail}"
 
 
-def test_no_action_requires_runtime_verification_material(
-    tmp_path, installed_sources, monkeypatch
-):
+def test_no_action_requires_runtime_verification_material(tmp_path, installed_sources, monkeypatch):
     change_id = "CH-USER-NO-ACTION"
     driven = _drive_installed_user_full(
         tmp_path, installed_sources, monkeypatch, fault="no-action", change_id=change_id
@@ -947,9 +974,7 @@ def test_no_action_requires_runtime_verification_material(
     assert "incomplete" in dumped.lower(), f"no-action missing incomplete completion: {detail}"
 
 
-def test_db_unavailable_requires_runtime_verification_material(
-    tmp_path, installed_sources, monkeypatch
-):
+def test_db_unavailable_requires_runtime_verification_material(tmp_path, installed_sources, monkeypatch):
     change_id = "CH-USER-DB-UNAVAILABLE"
     driven = _drive_installed_user_full(
         tmp_path, installed_sources, monkeypatch, fault="db-unavailable", change_id=change_id
@@ -963,3 +988,45 @@ def test_db_unavailable_requires_runtime_verification_material(
     assert errors == [], f"{errors} {detail}"
     assert _process_receipts(driven.project), f"db-unavailable stopped before runtime: {detail}"
     assert status.get("execution_gate") is not None, f"db-unavailable was pre-execution NOT_READY: {detail}"
+
+
+def _drive_trace_full(tmp_path, installed_sources, monkeypatch, *, fault: str, change_id: str):
+    return _drive_installed_user_full(
+        tmp_path,
+        installed_sources,
+        monkeypatch,
+        fault=fault,
+        change_id=change_id,
+        item_id="opencode-user-api-db-trace",
+    )
+
+
+@pytest.mark.parametrize(
+    ("fault", "change_id"),
+    (
+        ("drop-business-span", "CH-USER-DROP-BUSINESS"),
+        ("drop-write-span", "CH-USER-DROP-WRITE"),
+        ("early-completed", "CH-USER-EARLY-COMPLETED"),
+        ("refactor", "CH-USER-REFACTOR"),
+    ),
+)
+def test_trace_full_matrix_stops_at_product_boundary(
+    tmp_path, installed_sources, monkeypatch, fault, change_id
+):
+    driven = _drive_trace_full(tmp_path, installed_sources, monkeypatch, fault=fault, change_id=change_id)
+    status = _status_payload(driven)
+    inspect_verdict = _inspect_verdict(driven.project, change_id)
+    if inspect_verdict and status.get("quality_gate") is None:
+        status = {**status, "verification_status": inspect_verdict}
+    detail = _run_detail(driven, status)
+    runner = load("run_item")
+    errors = runner._fault_result_errors(fault=fault, item=driven.item, status=status, change_id=change_id)
+    assert errors == [], f"{errors} {detail}"
+    assert driven.item["validation_profile"] == "api_db_trace.v1"
+    assert _process_receipts(driven.project), f"{fault} did not reach real subprocess execution: {detail}"
+    if fault != "refactor":
+        assert not _healing_artifacts(driven.project), (
+            f"{fault} received auto healing authorization: {detail}"
+        )
+    else:
+        assert (driven.project / "app/controllers/user_persist.py").is_file()

@@ -179,6 +179,18 @@ def inspect_wheel_archive(wheel: Path, *, deployment: bool) -> None:
         )
         if any(name in LEGACY_DISTS for name in requirements):
             raise SystemExit(f"legacy requirement in {wheel.name}: {requirements}")
+        if dist_name == "assurance-execution":
+            required = {
+                "httpx",
+                "pytest",
+                "pytest-json-report",
+                "opentelemetry-api",
+                "opentelemetry-sdk",
+                "opentelemetry-exporter-otlp-proto-http",
+            }
+            missing = required.difference(requirements)
+            if missing:
+                raise SystemExit(f"execution wheel missing declared runtime deps: {sorted(missing)}")
         if dist_name == "graph-engine":
             leftovers = [
                 member
@@ -824,6 +836,34 @@ install_binding opencode-product "$opencode_binding_wheel"
 scenario opencode-product
 expect_compile_ok opencode-product assurance-opencode \
   "$opencode_binding_distribution" "$opencode_binding_declaration"
+
+"$smoke_root/venv-opencode-product/bin/python" - "$smoke_root" <<'PY'
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+view = root / "product-bridge-view"
+(view / "tests").mkdir(parents=True)
+(view / "tests/test_case.py").write_text(
+    'from assurance_execution.bridge import execute_case\n'
+    'def test_case():\n'
+    '    execute_case("case")\n'
+)
+from assurance_execution.operations.verified_process import SubprocessVerificationHost
+
+calls = []
+receipt = SubprocessVerificationHost().run(
+    view=view,
+    nodeid="tests/test_case.py::test_case",
+    case_id="case",
+    container_name="unused",
+    execute=lambda case, control: calls.append(case),
+    cancel_requested=lambda: False,
+)
+if receipt.reason is not None or receipt.exit_code != 0 or calls != ["case"]:
+    raise SystemExit(f"fixed subprocess bridge failed: {receipt.model_dump(mode='json')} calls={calls}")
+print("SUBPROCESS_BRIDGE_OK")
+PY
 
 install_env missing-binding "${product_wheel}[opencode]"
 inspect_prefix missing-binding \

@@ -561,7 +561,16 @@ def _complete_trace_evidence(
 
     driver = flush_driver_provider()
     sut = flush_sut_provider(manifest.sut.base_url, run_root)
-    drain = drain_owned_collector(run_root)
+    prepare_fault = "none"
+    prepare_path = Path(run_root) / "harness-prepare.json"
+    if prepare_path.is_file():
+        try:
+            prepared = json.loads(prepare_path.read_bytes())
+        except (OSError, ValueError):
+            prepared = {}
+        if isinstance(prepared, dict) and isinstance(prepared.get("fault"), str):
+            prepare_fault = prepared["fault"]
+    drain = drain_owned_collector(run_root, timeout_s=0.0 if prepare_fault == "drain-timeout" else 5.0)
     source = run_root / "otel" / "traces.jsonl"
     if not source.is_file():
         reason = "collector_export_missing"

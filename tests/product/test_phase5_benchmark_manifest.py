@@ -128,6 +128,7 @@ def test_opencode_benchmark_keeps_dept_api_only_and_adds_user_db_full(phase5_man
     assert {item["id"] for item in items} == {
         "opencode-ret-dept-management",
         "opencode-user-api-db",
+        "opencode-user-api-db-trace",
     }
     assert all(item["adapter_binding"]["protocol_profile"] == "opencode-http-v1" for item in items)
     assert all("cursor" not in str(entry.get("id", "")).lower() for entry in items)
@@ -152,6 +153,17 @@ def test_opencode_benchmark_keeps_dept_api_only_and_adds_user_db_full(phase5_man
     raw_user = next(item for item in items if item["id"] == "opencode-user-api-db")
     assert raw_user["run_mode"] == "case"
     assert raw_user["validation_profile"] == "api_db.v1"
+    trace = phase5_manifest.item("opencode-user-api-db-trace")
+    assert trace.sut_item_id == "RET-user-management"
+    assert trace.product == "assurance-opencode"
+    assert trace.entrypoint == "full"
+    assert trace.selected_test_families == ("api",)
+    assert trace.case_modules == ("system/user",)
+    assert trace.required_steps == FULL_WORKFLOW_REQUIRED_STEPS
+    raw_trace = next(item for item in items if item["id"] == "opencode-user-api-db-trace")
+    assert raw_trace["run_mode"] == "case"
+    assert raw_trace["validation_profile"] == "api_db_trace.v1"
+    assert raw_trace["requirement_path"] == raw_user["requirement_path"]
 
 
 def test_opencode_benchmark_allows_four_review_fix_rounds() -> None:

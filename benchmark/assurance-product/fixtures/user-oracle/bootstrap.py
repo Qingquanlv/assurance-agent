@@ -7,11 +7,19 @@ import json
 import os
 import re
 import sqlite3
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 
 _DISABLED_PASSWORD = "!managed-runtime-secret-required!"
+_REQUEST_EXECUTION_ID: ContextVar[str | None] = ContextVar("aa_sut_execution_id", default=None)
+
+
+def bind_request_execution_id(execution_id: str | None) -> None:
+    """Bind the current request identity so child spans inherit aa.execution_id."""
+
+    _REQUEST_EXECUTION_ID.set(execution_id)
 
 
 def _migration_sql(migration_file: Path) -> str:
@@ -146,6 +154,21 @@ class _NormalizeAndScrubProcessor:
                 del attributes[key]
         if failed is not None:
             raise failed
+        fault = os.environ.get("AA_SUT_FAULT", "none")
+        inherited = _REQUEST_EXECUTION_ID.get()
+        if inherited and "aa.execution_id" not in attributes:
+            attributes["aa.execution_id"] = inherited
+        if fault == "stale-trace":
+            attributes["aa.execution_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        if fault == "drop-business-span":
+            route = str(attributes.get("http.route") or getattr(span, "name", "") or "")
+            if name == "opentelemetry.instrumentation.fastapi" or route.endswith("/api/v1/user/create"):
+                return
+            if getattr(span, "name", "") == "user.create.completed":
+                return
+        if fault == "drop-write-span" and name == "opentelemetry.instrumentation.tortoiseorm":
+            if attributes.get("aa.db.table") == "user" and attributes.get("aa.db.operation") == "INSERT":
+                return
         if self._downstream is not None:
             self._downstream.on_end(span)
 
@@ -203,11 +226,18 @@ def instrument_sut(app, provider) -> None:
     from opentelemetry.instrumentation.tortoiseorm import TortoiseORMInstrumentor
 
     def _server_request_hook(span, scope) -> None:  # noqa: ANN001
+        fault = os.environ.get("AA_SUT_FAULT", "none")
+        if fault == "broken-context":
+            bind_request_execution_id(None)
+            return
         for key, value in scope.get("headers") or ():
             name = key.decode("latin-1").lower() if isinstance(key, bytes) else str(key).lower()
             if name == "aa-execution-id":
                 text = value.decode("latin-1") if isinstance(value, bytes) else str(value)
+                if fault == "stale-trace":
+                    text = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
                 span.set_attribute("aa.execution_id", text)
+                bind_request_execution_id(text)
                 return
 
     TortoiseORMInstrumentor().instrument(tracer_provider=provider, capture_parameters=False)

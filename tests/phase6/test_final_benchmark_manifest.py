@@ -108,7 +108,7 @@ def test_comparison_only_surface_is_removed(repo_root: Path) -> None:
     assert not (repo_root / "benchmark/assurance-product-phase5").exists()
 
 
-def test_final_live_manifest_has_exactly_two_opencode_items(repo_root: Path) -> None:
+def test_final_live_manifest_has_exactly_three_opencode_items(repo_root: Path) -> None:
     document = json.loads((repo_root / MANIFEST_PATH.relative_to(repo_root)).read_text(encoding="utf-8"))
     assert document["schema_version"] == "1"
     items = document["items"]
@@ -116,6 +116,7 @@ def test_final_live_manifest_has_exactly_two_opencode_items(repo_root: Path) -> 
     assert {item["id"] for item in items} == {
         "opencode-ret-dept-management",
         "opencode-user-api-db",
+        "opencode-user-api-db-trace",
     }
     assert {item["sut_item_id"] for item in items} == {
         "RET-dept-management",

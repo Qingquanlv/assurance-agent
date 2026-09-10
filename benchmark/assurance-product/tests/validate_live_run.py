@@ -42,15 +42,17 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _manifest_item(manifest: Mapping[str, Any]) -> dict[str, Any]:
+_DEFAULT_LIVE_ITEM = "opencode-ret-dept-management"
+_TRACE_LIVE_ITEM = "opencode-user-api-db-trace"
+
+
+def _manifest_item(manifest: Mapping[str, Any], item_id: str = _DEFAULT_LIVE_ITEM) -> dict[str, Any]:
     items = manifest.get("items")
     if not isinstance(items, list):
         raise ValueError("manifest.items must be a list")
-    matches = [
-        item for item in items if isinstance(item, dict) and item.get("id") == "opencode-ret-dept-management"
-    ]
+    matches = [item for item in items if isinstance(item, dict) and item.get("id") == item_id]
     if len(matches) != 1:
-        raise ValueError("manifest must define exactly one OpenCode live item")
+        raise ValueError(f"manifest must define exactly one OpenCode live item {item_id!r}")
     return matches[0]
 
 
@@ -96,13 +98,14 @@ def validate(
     *,
     evidence_digest: str,
     repo: Path,
+    item_id: str = _DEFAULT_LIVE_ITEM,
 ) -> list[str]:
     """Return every admission failure; an empty list is an authenticated live run."""
     errors: list[str] = []
     errors.extend(f"{path}: {message}" for path, message in _nested_values(admission))
     errors.extend(f"evidence{path[1:]}: {message}" for path, message in _nested_values(evidence))
     try:
-        item = _manifest_item(manifest)
+        item = _manifest_item(manifest, item_id)
         expected_steps = _required_steps(item)
     except ValueError as error:
         return errors + [str(error)]
@@ -182,9 +185,11 @@ def validate(
     return errors
 
 
-def _fixture(repo: Path, evidence_path: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+def _fixture(
+    repo: Path, evidence_path: Path, item_id: str = _DEFAULT_LIVE_ITEM
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     manifest = _load_object(repo / "benchmark/assurance-product/manifest.json")
-    item = _manifest_item(manifest)
+    item = _manifest_item(manifest, item_id)
     evidence = {
         "item_id": item["id"],
         "provider_model": "openai/gpt-5.6-terra",
@@ -255,11 +260,32 @@ class LiveAdmissionTests(unittest.TestCase):
             self.assertTrue(any("session" in failure for failure in failures), failures)
             self.assertTrue(any("required-step" in failure for failure in failures), failures)
 
+    def test_accepts_user_trace_item_with_same_required_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            evidence_path = Path(directory) / "evidence.json"
+            admission, evidence, manifest = _fixture(self.repo, evidence_path, _TRACE_LIVE_ITEM)
+            self.assertEqual(evidence["item_id"], _TRACE_LIVE_ITEM)
+            self.assertEqual(
+                _manifest_item(manifest, _TRACE_LIVE_ITEM)["validation_profile"], "api_db_trace.v1"
+            )
+            self.assertEqual(
+                validate(
+                    admission,
+                    evidence,
+                    manifest,
+                    evidence_digest=_sha256(evidence_path),
+                    repo=self.repo,
+                    item_id=_TRACE_LIVE_ITEM,
+                ),
+                [],
+            )
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--admission", type=Path)
     parser.add_argument("--evidence", type=Path)
+    parser.add_argument("--item", default=_DEFAULT_LIVE_ITEM)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--self-test", action="store_true")
     arguments = parser.parse_args(argv)
@@ -273,7 +299,12 @@ def main(argv: list[str] | None = None) -> int:
         evidence = _load_object(arguments.evidence)
         manifest = _load_object(arguments.repo / "benchmark/assurance-product/manifest.json")
         errors = validate(
-            admission, evidence, manifest, evidence_digest=_sha256(arguments.evidence), repo=arguments.repo
+            admission,
+            evidence,
+            manifest,
+            evidence_digest=_sha256(arguments.evidence),
+            repo=arguments.repo,
+            item_id=arguments.item,
         )
     except ValueError as error:
         print(f"phase5-opencode-admission: {error}", file=sys.stderr)

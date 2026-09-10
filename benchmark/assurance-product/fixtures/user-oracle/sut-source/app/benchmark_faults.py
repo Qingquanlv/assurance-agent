@@ -17,7 +17,7 @@ class BenchmarkRollback(RuntimeError):
 def install():
     fault = os.environ.get("AA_SUT_FAULT", "none")
     original = UserController.create_user
-    if fault not in {"wrong-value", "rollback", "rollback-success", "missing-write"}:
+    if fault not in {"wrong-value", "rollback", "rollback-success", "missing-write", "early-completed"}:
         return
 
     def record(event, **fields):
@@ -39,6 +39,14 @@ def install():
                 user = await original(self, obj_in)
                 count = await User.filter(username=obj_in.username).using_db(connection).count()
                 record("write_observed", connection_id=id(connection), row_count=count)
+                if fault == "early-completed":
+                    from opentelemetry import trace
+
+                    with trace.get_tracer("user.oracle").start_as_current_span(
+                        "user.create.completed"
+                    ) as span:
+                        span.set_attribute("user.username", obj_in.username)
+                    record("completed_before_rollback", connection_id=id(connection))
                 raise BenchmarkRollback("user-oracle-forced-rollback")
         except BenchmarkRollback:
             count = await User.filter(username=obj_in.username).count()

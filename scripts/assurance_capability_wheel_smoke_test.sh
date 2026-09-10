@@ -90,6 +90,7 @@ import ast
 import json
 import sys
 import zipfile
+from email.parser import BytesParser
 from importlib import metadata, util
 from pathlib import Path
 
@@ -216,6 +217,25 @@ def check_archives(source_root: Path, dist_root: Path) -> None:
                 )
             ):
                 raise SystemExit(f"topology YAML leaked into {wheel.name}")
+        if distribution == "assurance-execution":
+            with zipfile.ZipFile(wheel) as archive:
+                metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+                message = BytesParser().parsebytes(archive.read(metadata_name))
+            requirements = tuple(
+                canonicalize_name(value.split(";", 1)[0].split(" ", 1)[0])
+                for value in (message.get_all("Requires-Dist") or ())
+            )
+            required = {
+                "httpx",
+                "pytest",
+                "pytest-json-report",
+                "opentelemetry-api",
+                "opentelemetry-sdk",
+                "opentelemetry-exporter-otlp-proto-http",
+            }
+            missing = required.difference(requirements)
+            if missing:
+                raise SystemExit(f"execution wheel missing declared runtime deps: {sorted(missing)}")
         if distribution not in ASSURANCE_SPECS:
             continue
         spec = ASSURANCE_SPECS[distribution]
@@ -420,6 +440,35 @@ run_prefix execution \
   "$intake_wheel" \
   "$generation_wheel" \
   "$execution_wheel"
+
+"$smoke_root/venv-execution/bin/python" - "$smoke_root" <<'PY'
+from pathlib import Path
+import json
+import sys
+
+root = Path(sys.argv[1])
+view = root / "bridge-view"
+(view / "tests").mkdir(parents=True)
+(view / "tests/test_case.py").write_text(
+    'from assurance_execution.bridge import execute_case\n'
+    'def test_case():\n'
+    '    execute_case("case")\n'
+)
+from assurance_execution.operations.verified_process import SubprocessVerificationHost
+
+calls = []
+receipt = SubprocessVerificationHost().run(
+    view=view,
+    nodeid="tests/test_case.py::test_case",
+    case_id="case",
+    container_name="unused",
+    execute=lambda case, control: calls.append(case),
+    cancel_requested=lambda: False,
+)
+if receipt.reason is not None or receipt.exit_code != 0 or calls != ["case"]:
+    raise SystemExit(f"fixed subprocess bridge failed: {receipt.model_dump(mode='json')} calls={calls}")
+print("SUBPROCESS_BRIDGE_OK")
+PY
 
 run_prefix healing \
   "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution,assurance-healing" \

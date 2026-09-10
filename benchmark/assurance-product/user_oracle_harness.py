@@ -46,7 +46,15 @@ FAULTS = (
     "forged-evidence",
     "downgrade",
     "missing-write",
+    "drop-business-span",
+    "drop-write-span",
+    "broken-context",
+    "stale-trace",
+    "drain-timeout",
+    "early-completed",
+    "refactor",
 )
+_STALE_EXECUTION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
 
 def verify_original_source(source_root: Path) -> dict[str, str]:
@@ -75,21 +83,23 @@ def verify_original_source(source_root: Path) -> dict[str, str]:
 def materialize_project(*, project_dir: Path, fault: str = "none") -> dict[str, Any]:
     if fault not in FAULTS:
         raise ValueError("unknown User oracle fault")
-    locked = verify_runtime_lock(FIXTURE_ROOT)
+    verify_runtime_lock(FIXTURE_ROOT)
     _copy_members(FIXTURE_ROOT / "sut-source", project_dir, _SOURCE_MEMBERS)
     for name in ("requirements.in", "requirements.lock"):
         shutil.copy2(FIXTURE_ROOT / name, project_dir / name)
     frozen = project_dir / ".aa/user-oracle"
     shutil.copytree(FIXTURE_ROOT, frozen, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    if fault == "refactor":
+        _apply_refactor_artifacts(project_dir, frozen / "sut-source")
     lock_path = frozen / "runtime-lock.json"
-    lock = json.loads(lock_path.read_bytes())
-    lock["fault"] = fault
-    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n")
+    lock = _rewrite_runtime_lock(frozen, fault=fault)
     for path in frozen.rglob("*"):
         if path.is_file():
             path.chmod(0o444)
     return {
-        **locked,
+        "files": lock["files"],
+        "source_digest": lock["source_digest"],
+        "runtime_digest": lock["runtime_digest"],
         "fault": fault,
         "frozen_artifact": str(frozen.resolve()),
         "frozen_artifact_digest": _sha256(lock_path),
@@ -109,6 +119,69 @@ def _tree_digest(files: Mapping[str, str], prefix: str) -> str:
 def _json_digest(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _rewrite_runtime_lock(root: Path, *, fault: str) -> dict[str, Any]:
+    lock_path = root / "runtime-lock.json"
+    lock = json.loads(lock_path.read_bytes())
+    actual: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if "__pycache__" in path.relative_to(root).parts or path.suffix == ".pyc":
+            continue
+        if path == lock_path or path.is_dir() or path.is_symlink():
+            continue
+        if not path.is_file():
+            continue
+        actual[path.relative_to(root).as_posix()] = _sha256(path)
+    lock["files"] = actual
+    lock["source_digest"] = _tree_digest(actual, "sut-source/")
+    lock["runtime_digest"] = _tree_digest(actual, "")
+    lock["fault"] = fault
+    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n")
+    return lock
+
+
+def _apply_refactor_artifacts(project_dir: Path, frozen_source: Path) -> None:
+    helper = '''from app.models.admin import User
+
+
+async def persist_created_user(controller, obj_in):
+    """Semantic-preserving helper: equivalent User INSERT plus an extra span."""
+    from opentelemetry import trace
+
+    with trace.get_tracer("app.users.helpers").start_as_current_span("persist_user") as span:
+        span.set_attribute("aa.role", "helper")
+        created = await User.create(
+            username=obj_in.username,
+            email=obj_in.email,
+            password=obj_in.password,
+            is_active=obj_in.is_active,
+            is_superuser=obj_in.is_superuser,
+            dept_id=obj_in.dept_id,
+        )
+        loaded = await controller.model.filter(id=created.id).first()
+        return loaded or created
+'''
+    for root in (project_dir, frozen_source):
+        path = root / "app/controllers/user_persist.py"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(helper, encoding="utf-8")
+        controller = root / "app/controllers/user.py"
+        text = controller.read_text(encoding="utf-8")
+        if "persist_created_user" not in text:
+            text = text.replace(
+                "from .role import role_controller\n",
+                "from .role import role_controller\nfrom .user_persist import persist_created_user\n",
+            )
+            text = text.replace(
+                "        obj_in.password = get_password_hash(password=obj_in.password)\n"
+                "        obj = await self.create(obj_in)\n"
+                "        return obj\n",
+                "        obj_in.password = get_password_hash(password=obj_in.password)\n"
+                "        obj = await persist_created_user(self, obj_in)\n"
+                "        return obj\n",
+            )
+            controller.write_text(text, encoding="utf-8")
 
 
 def _seal(payload: Mapping[str, Any], key: bytes) -> dict[str, Any]:

@@ -572,6 +572,36 @@ def test_unknown_semconv_fails_preflight() -> None:
         )
 
 
+def test_processor_stamps_request_execution_id_on_child_spans() -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    bootstrap = _load(FIXTURE / "bootstrap.py", "user_oracle_bootstrap_identity")
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(bootstrap._NormalizeAndScrubProcessor(SimpleSpanProcessor(exporter)))
+    execution_id = "11111111-1111-4111-8111-111111111111"
+    bootstrap.bind_request_execution_id(execution_id)
+    try:
+        write = provider.get_tracer("opentelemetry.instrumentation.tortoiseorm")
+        done = provider.get_tracer("user.oracle")
+        with write.start_as_current_span("user INSERT") as span:
+            span.set_attribute("db.system.name", "sqlite")
+            span.set_attribute("db.collection.name", "user")
+            span.set_attribute("db.operation.name", "INSERT")
+        with done.start_as_current_span("user.create.completed") as span:
+            span.set_attribute("user.username", "otel_user")
+        exported = {item.name: dict(item.attributes or {}) for item in exporter.get_finished_spans()}
+        assert exported["user INSERT"]["aa.execution_id"] == execution_id
+        assert exported["user INSERT"]["aa.db.table"] == "user"
+        assert exported["user INSERT"]["aa.db.operation"] == "INSERT"
+        assert exported["user.create.completed"]["aa.execution_id"] == execution_id
+    finally:
+        bootstrap.bind_request_execution_id(None)
+        provider.shutdown()
+
+
 def test_unknown_semconv_fails_on_live_processor_export_path() -> None:
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
