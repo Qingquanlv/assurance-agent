@@ -29,14 +29,6 @@ from assurance_execution.contracts.execution import (
 )
 from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_execution.contracts.selection import SelectedTargets
-from assurance_execution.contracts.telemetry import (
-    TELEMETRY_COMPLETION_NAME,
-    TELEMETRY_OTLP_NAME,
-    TelemetryCompletionV1,
-    check_trace_requirements,
-    parse_otlp_records,
-    truncated_trace_observations,
-)
 from assurance_execution.contracts.verification import (
     EvidenceCompletionV1,
     ObservationV1,
@@ -46,6 +38,14 @@ from assurance_execution.contracts.verification import (
     VerifiedExecutionAuthorityV1,
     VerifiedExecutionResultV1,
     VerifiedProcessReceiptV1,
+)
+from assurance_telemetry.contracts.telemetry import (
+    TELEMETRY_COMPLETION_NAME,
+    TELEMETRY_OTLP_NAME,
+    TelemetryCompletionV1,
+    check_trace_requirements as _check_trace_requirements,
+    parse_otlp_records,
+    truncated_trace_observations as _truncated_trace_observations,
 )
 from assurance_execution.contracts.workflow import (
     VerifiedExecutionCycleResultV1,
@@ -774,13 +774,16 @@ def _replay_trace_observations(
         otlp = b""
     try:
         spans = parse_otlp_records(bytes(otlp))
-        trace = check_trace_requirements(plan, manifest, spans, completion)
+        trace = tuple(
+            ObservationV1.model_validate(item.model_dump())
+            for item in _check_trace_requirements(plan, manifest, spans, completion)
+        )
     except ValueError as error:
         if "conflict" in str(error).lower():
             raise AssessmentInputError("verified telemetry contains conflicting spans") from error
         merged = {item.obligation_id: item for item in replayed}
-        for item in truncated_trace_observations(plan, cycle.execution_id):
-            merged[item.obligation_id] = item
+        for item in _truncated_trace_observations(plan, cycle.execution_id):
+            merged[item.obligation_id] = ObservationV1.model_validate(item.model_dump())
         return tuple(merged[key] for key in plan.required)
     merged = {item.obligation_id: item for item in replayed}
     for item in trace:

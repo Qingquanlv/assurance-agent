@@ -3,7 +3,7 @@ from __future__ import annotations
 from graph_engine.composition import WheelPluginSource
 from graph_engine.plugin_api import ProviderSource
 
-_SIX_CAPABILITY_SOURCES: tuple[ProviderSource, ...] = (
+_CAPABILITY_SOURCES: tuple[ProviderSource, ...] = (
     ProviderSource(
         distribution="assurance-intake",
         version="0.2.0",
@@ -58,6 +58,15 @@ _SIX_CAPABILITY_SOURCES: tuple[ProviderSource, ...] = (
         declaration_path="assurance_improvement/plugin-declaration.json",
         import_roots=("",),
     ),
+    ProviderSource(
+        distribution="assurance-telemetry",
+        version="0.2.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name="telemetry",
+        entrypoint_value="assurance_telemetry.plugin:TelemetryPlugin",
+        declaration_path="assurance_telemetry/plugin-declaration.json",
+        import_roots=("",),
+    ),
 )
 
 _OPENCODE_RUNTIME_SOURCE = ProviderSource(
@@ -72,7 +81,7 @@ _OPENCODE_RUNTIME_SOURCE = ProviderSource(
 
 
 def product_source_catalog() -> tuple[ProviderSource, ...]:
-    return (*_SIX_CAPABILITY_SOURCES, _OPENCODE_RUNTIME_SOURCE)
+    return (*_CAPABILITY_SOURCES, _OPENCODE_RUNTIME_SOURCE)
 
 
 def wheel_plugin_source(source: ProviderSource) -> WheelPluginSource:

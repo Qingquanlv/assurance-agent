@@ -35,6 +35,7 @@ QUALITY_DEPENDENCIES: tuple[PluginDependency, ...] = (
     PluginDependency("assurance.generation", "==0.2.0"),
     PluginDependency("assurance.execution", "==0.2.0"),
     PluginDependency("assurance.healing", "==0.2.0"),
+    PluginDependency("assurance.telemetry", "==0.2.0"),
 )
 
 QUALITY_RESOURCE_FILES: dict[str, str] = {

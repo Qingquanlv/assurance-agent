@@ -42,7 +42,8 @@ for package in \
   assurance-execution \
   assurance-healing \
   assurance-quality \
-  assurance-improvement
+  assurance-improvement \
+  assurance-telemetry
 do
   uv build \
     --offline \
@@ -79,8 +80,9 @@ execution_wheel="$(wheel_for 'assurance_execution-*.whl')"
 healing_wheel="$(wheel_for 'assurance_healing-*.whl')"
 quality_wheel="$(wheel_for 'assurance_quality-*.whl')"
 improvement_wheel="$(wheel_for 'assurance_improvement-*.whl')"
+telemetry_wheel="$(wheel_for 'assurance_telemetry-*.whl')"
 
-echo "CAPABILITY_WHEEL_FILES=$(basename "$engine_wheel") $(basename "$contracts_wheel") $(basename "$intake_wheel") $(basename "$generation_wheel") $(basename "$execution_wheel") $(basename "$healing_wheel") $(basename "$quality_wheel") $(basename "$improvement_wheel")"
+echo "CAPABILITY_WHEEL_FILES=$(basename "$engine_wheel") $(basename "$contracts_wheel") $(basename "$intake_wheel") $(basename "$generation_wheel") $(basename "$execution_wheel") $(basename "$healing_wheel") $(basename "$quality_wheel") $(basename "$improvement_wheel") $(basename "$telemetry_wheel")"
 
 cat >"$smoke_root/check.py" <<'PY'
 from __future__ import annotations
@@ -103,6 +105,7 @@ CLOSED_NAMES = (
     "assurance-healing",
     "assurance-quality",
     "assurance-improvement",
+    "assurance-telemetry",
 )
 WHEEL_GLOBS = {
     "graph-engine": "graph_engine-*.whl",
@@ -113,6 +116,7 @@ WHEEL_GLOBS = {
     "assurance-healing": "assurance_healing-*.whl",
     "assurance-quality": "assurance_quality-*.whl",
     "assurance-improvement": "assurance_improvement-*.whl",
+    "assurance-telemetry": "assurance_telemetry-*.whl",
 }
 ASSURANCE_SPECS = {
     "assurance-intake": {
@@ -150,6 +154,12 @@ ASSURANCE_SPECS = {
         "entry_point": "improvement",
         "contract": ("assurance_improvement.contracts", "ImprovementCandidate"),
         "package_root": "packages/capabilities/assurance-improvement/assurance_improvement",
+    },
+    "assurance-telemetry": {
+        "import_root": "assurance_telemetry",
+        "entry_point": "telemetry",
+        "contract": ("assurance_telemetry.contracts", "TelemetryCompletionV1"),
+        "package_root": "packages/capabilities/assurance-telemetry/assurance_telemetry",
     },
 }
 
@@ -437,13 +447,23 @@ run_prefix generation \
   "$intake_wheel" \
   "$generation_wheel"
 
-run_prefix execution \
-  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution" \
-  "execution,generation,intake" \
+run_prefix telemetry \
+  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-telemetry" \
+  "generation,intake,telemetry" \
   "$engine_wheel" \
   "$contracts_wheel" \
   "$intake_wheel" \
   "$generation_wheel" \
+  "$telemetry_wheel"
+
+run_prefix execution \
+  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-telemetry,assurance-execution" \
+  "execution,generation,intake,telemetry" \
+  "$engine_wheel" \
+  "$contracts_wheel" \
+  "$intake_wheel" \
+  "$generation_wheel" \
+  "$telemetry_wheel" \
   "$execution_wheel"
 
 "$smoke_root/venv-execution/bin/python" - "$smoke_root" <<'PY'
@@ -476,33 +496,36 @@ print("SUBPROCESS_BRIDGE_OK")
 PY
 
 run_prefix healing \
-  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution,assurance-healing" \
-  "execution,generation,healing,intake" \
+  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-telemetry,assurance-execution,assurance-healing" \
+  "execution,generation,healing,intake,telemetry" \
   "$engine_wheel" \
   "$contracts_wheel" \
   "$intake_wheel" \
   "$generation_wheel" \
+  "$telemetry_wheel" \
   "$execution_wheel" \
   "$healing_wheel"
 
 run_prefix quality \
-  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution,assurance-healing,assurance-quality" \
-  "execution,generation,healing,intake,quality" \
+  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-telemetry,assurance-execution,assurance-healing,assurance-quality" \
+  "execution,generation,healing,intake,quality,telemetry" \
   "$engine_wheel" \
   "$contracts_wheel" \
   "$intake_wheel" \
   "$generation_wheel" \
+  "$telemetry_wheel" \
   "$execution_wheel" \
   "$healing_wheel" \
   "$quality_wheel"
 
 run_prefix improvement \
-  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution,assurance-healing,assurance-quality,assurance-improvement" \
-  "execution,generation,healing,improvement,intake,quality" \
+  "graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-telemetry,assurance-execution,assurance-healing,assurance-quality,assurance-improvement" \
+  "execution,generation,healing,improvement,intake,quality,telemetry" \
   "$engine_wheel" \
   "$contracts_wheel" \
   "$intake_wheel" \
   "$generation_wheel" \
+  "$telemetry_wheel" \
   "$execution_wheel" \
   "$healing_wheel" \
   "$quality_wheel" \

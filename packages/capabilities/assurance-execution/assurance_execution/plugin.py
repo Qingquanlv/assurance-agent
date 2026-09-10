@@ -30,6 +30,7 @@ EXECUTION_SOURCE = ProviderSource(
 EXECUTION_DEPENDENCIES: tuple[PluginDependency, ...] = (
     PluginDependency("assurance.intake", "==0.2.0"),
     PluginDependency("assurance.generation", "==0.2.0"),
+    PluginDependency("assurance.telemetry", "==0.2.0"),
 )
 
 EXECUTION_RESOURCE_FILES: dict[str, str] = {
@@ -47,7 +48,6 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.execution.schema.execution-evidence.v1": "schemas/execution-evidence.v1.schema.json",
     "assurance.execution.schema.execution-manifest.v1": "schemas/execution-manifest.v1.schema.json",
     "assurance.execution.schema.selected-targets.v1": "schemas/selected-targets.v1.schema.json",
-    "assurance.execution.schema.telemetry-completion.v1": "schemas/telemetry-completion.v1.schema.json",
     "assurance.execution.workflow.execute.input.v1": "schemas/workflow/execute-input.v1.schema.json",
     "assurance.execution.workflow.execute.output.v1": "schemas/workflow/execute-output.v1.schema.json",
     "assurance.execution.workflow.rerun.input.v1": "schemas/workflow/rerun-input.v1.schema.json",

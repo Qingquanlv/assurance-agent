@@ -40,6 +40,7 @@ for package in \
   assurance-healing \
   assurance-quality \
   assurance-improvement \
+  assurance-telemetry \
   assurance-product \
   agent-runtime-opencode
 do
@@ -78,10 +79,11 @@ execution_wheel="$(wheel_for 'assurance_execution-*.whl')"
 healing_wheel="$(wheel_for 'assurance_healing-*.whl')"
 quality_wheel="$(wheel_for 'assurance_quality-*.whl')"
 improvement_wheel="$(wheel_for 'assurance_improvement-*.whl')"
+telemetry_wheel="$(wheel_for 'assurance_telemetry-*.whl')"
 product_wheel="$(wheel_for 'assurance_product-*.whl')"
 opencode_wheel="$(wheel_for 'agent_runtime_opencode-*.whl')"
 
-echo "PRODUCT_WHEEL_FILES=$(basename "$engine_wheel") $(basename "$contracts_wheel") $(basename "$intake_wheel") $(basename "$generation_wheel") $(basename "$execution_wheel") $(basename "$healing_wheel") $(basename "$quality_wheel") $(basename "$improvement_wheel") $(basename "$product_wheel") $(basename "$opencode_wheel")"
+echo "PRODUCT_WHEEL_FILES=$(basename "$engine_wheel") $(basename "$contracts_wheel") $(basename "$intake_wheel") $(basename "$generation_wheel") $(basename "$execution_wheel") $(basename "$healing_wheel") $(basename "$quality_wheel") $(basename "$improvement_wheel") $(basename "$telemetry_wheel") $(basename "$product_wheel") $(basename "$opencode_wheel")"
 
 cat >"$smoke_root/check.py" <<'PY'
 from __future__ import annotations
@@ -104,6 +106,7 @@ CLOSED_NAMES = (
     "assurance-healing",
     "assurance-quality",
     "assurance-improvement",
+    "assurance-telemetry",
     "assurance-product",
     "agent-runtime-opencode",
 )
@@ -239,6 +242,7 @@ def check_archives(dist_root: Path) -> None:
         "assurance_healing-*.whl",
         "assurance_quality-*.whl",
         "assurance_improvement-*.whl",
+        "assurance_telemetry-*.whl",
         "assurance_product-*.whl",
         "agent_runtime_opencode-*.whl",
     }
@@ -352,6 +356,7 @@ def check_selected_closure(
         ),
         "assurance.product.configuration": ("config_tree", None),
         "assurance.quality": ("wheel_plugin", "assurance-quality"),
+        "assurance.telemetry": ("wheel_plugin", "assurance-telemetry"),
         f"runtime.{selected_adapter}": (
             "wheel_plugin",
             f"agent-runtime-{selected_adapter}",
@@ -804,8 +809,8 @@ with record_path.open("w", encoding="utf-8", newline="") as stream:
 PY
 }
 
-BASE_NAMES="graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution,assurance-healing,assurance-quality,assurance-improvement,assurance-product"
-BASE_EPS="execution,generation,healing,improvement,intake,quality"
+BASE_NAMES="graph-engine,agent-runtime-contracts,assurance-intake,assurance-generation,assurance-execution,assurance-healing,assurance-quality,assurance-improvement,assurance-telemetry,assurance-product"
+BASE_EPS="execution,generation,healing,improvement,intake,quality,telemetry"
 FORBIDDEN_BASE="agent-runtime-opencode,agent-runtime-cursor,assurance-agent,assurance-kernel"
 FORBIDDEN_OPENCODE="agent-runtime-cursor,assurance-agent,assurance-kernel"
 

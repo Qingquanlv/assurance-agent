@@ -17,6 +17,7 @@ def test_execution_descriptor_has_exact_dependencies() -> None:
     assert ExecutionPlugin.descriptor().dependencies == (
         PluginDependency("assurance.intake", "==0.2.0"),
         PluginDependency("assurance.generation", "==0.2.0"),
+        PluginDependency("assurance.telemetry", "==0.2.0"),
     )
 
 
@@ -25,7 +26,7 @@ def test_execution_plugin_conforms() -> None:
         ExecutionPlugin(),
         PluginExpectation(
             plugin_id="assurance.execution",
-            dependencies=("assurance.intake", "assurance.generation"),
+            dependencies=("assurance.intake", "assurance.generation", "assurance.telemetry"),
             id_prefix="assurance.execution.",
         ),
     )

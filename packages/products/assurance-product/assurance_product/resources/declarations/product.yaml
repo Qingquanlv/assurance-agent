@@ -19,6 +19,8 @@ plugins:
     version_specifier: "==0.2.0"
   - plugin_id: assurance.improvement
     version_specifier: "==0.2.0"
+  - plugin_id: assurance.telemetry
+    version_specifier: "==0.2.0"
 runtime_plugin: runtime.opencode
 sources:
   capabilities:
@@ -68,6 +70,14 @@ sources:
       entrypoint_name: improvement
       entrypoint_value: assurance_improvement.plugin:ImprovementPlugin
       declaration_path: assurance_improvement/plugin-declaration.json
+      import_roots:
+        - ""
+    - distribution: assurance-telemetry
+      version: "0.2.0"
+      entrypoint_group: graph_engine.plugins
+      entrypoint_name: telemetry
+      entrypoint_value: assurance_telemetry.plugin:TelemetryPlugin
+      declaration_path: assurance_telemetry/plugin-declaration.json
       import_roots:
         - ""
   runtime:

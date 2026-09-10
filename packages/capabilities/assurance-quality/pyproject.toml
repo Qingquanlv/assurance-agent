@@ -9,6 +9,7 @@ dependencies = [
     "assurance-generation==0.2.0",
     "assurance-execution==0.2.0",
     "assurance-healing==0.2.0",
+    "assurance-telemetry==0.2.0",
     "graph-engine",
     "langgraph==1.2.11",
     "pydantic>=2.7",
@@ -31,4 +32,5 @@ assurance-intake = { workspace = true }
 assurance-generation = { workspace = true }
 assurance-execution = { workspace = true }
 assurance-healing = { workspace = true }
+assurance-telemetry = { workspace = true }
 graph-engine = { workspace = true }

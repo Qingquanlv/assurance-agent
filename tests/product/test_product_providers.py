@@ -7,7 +7,7 @@ from graph_engine import ENGINE_API_VERSION
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import ProviderSource
 
-_SIX_CAPABILITY_DISTRIBUTIONS = frozenset(
+_CAPABILITY_DISTRIBUTIONS = frozenset(
     {
         "assurance-intake",
         "assurance-generation",
@@ -15,10 +15,11 @@ _SIX_CAPABILITY_DISTRIBUTIONS = frozenset(
         "assurance-healing",
         "assurance-quality",
         "assurance-improvement",
+        "assurance-telemetry",
     }
 )
 _RUNTIME_DISTRIBUTIONS = frozenset({"agent-runtime-opencode"})
-_SIX_CAPABILITY_SOURCES = (
+_CAPABILITY_SOURCES = (
     ProviderSource(
         distribution="assurance-intake",
         version="0.2.0",
@@ -73,6 +74,15 @@ _SIX_CAPABILITY_SOURCES = (
         declaration_path="assurance_improvement/plugin-declaration.json",
         import_roots=("",),
     ),
+    ProviderSource(
+        distribution="assurance-telemetry",
+        version="0.2.0",
+        entrypoint_group="graph_engine.plugins",
+        entrypoint_name="telemetry",
+        entrypoint_value="assurance_telemetry.plugin:TelemetryPlugin",
+        declaration_path="assurance_telemetry/plugin-declaration.json",
+        import_roots=("",),
+    ),
 )
 
 
@@ -85,8 +95,8 @@ def test_product_exposes_only_opencode_provider() -> None:
     assert providers == {"assurance-opencode"}
 
 
-def six_capability_coordinates(catalog: tuple[ProviderSource, ...]) -> tuple[ProviderSource, ...]:
-    return tuple(source for source in catalog if source.distribution in _SIX_CAPABILITY_DISTRIBUTIONS)
+def capability_coordinates(catalog: tuple[ProviderSource, ...]) -> tuple[ProviderSource, ...]:
+    return tuple(source for source in catalog if source.distribution in _CAPABILITY_DISTRIBUTIONS)
 
 
 def runtime_coordinates(catalog: tuple[ProviderSource, ...]) -> set[str]:
@@ -97,14 +107,14 @@ def runtime_coordinates(catalog: tuple[ProviderSource, ...]) -> set[str]:
     }
 
 
-def test_source_catalog_is_six_wheels_plus_opencode() -> None:
+def test_source_catalog_is_capability_wheels_plus_opencode() -> None:
     from assurance_product.source_catalog import product_source_catalog
 
     catalog = product_source_catalog()
-    assert six_capability_coordinates(catalog) == _SIX_CAPABILITY_SOURCES
-    assert catalog == (*_SIX_CAPABILITY_SOURCES, _runtime_source())
+    assert capability_coordinates(catalog) == _CAPABILITY_SOURCES
+    assert catalog == (*_CAPABILITY_SOURCES, _runtime_source())
     assert runtime_coordinates(catalog) == {"agent-runtime-opencode==0.1.0"}
-    assert {source.distribution for source in catalog} - _SIX_CAPABILITY_DISTRIBUTIONS == {
+    assert {source.distribution for source in catalog} - _CAPABILITY_DISTRIBUTIONS == {
         "agent-runtime-opencode"
     }
 
@@ -126,6 +136,7 @@ def test_provider_returns_one_minimal_opencode_manifest() -> None:
         "assurance.product.agent",
         "assurance.product.configuration",
         "assurance.quality",
+        "assurance.telemetry",
         "runtime.opencode",
     )
     assert opencode.product_id == "assurance.product"

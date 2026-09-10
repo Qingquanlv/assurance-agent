@@ -23,6 +23,7 @@ def test_quality_descriptor_declares_exact_dependency_versions() -> None:
         PluginDependency("assurance.generation", "==0.2.0"),
         PluginDependency("assurance.execution", "==0.2.0"),
         PluginDependency("assurance.healing", "==0.2.0"),
+        PluginDependency("assurance.telemetry", "==0.2.0"),
     )
 
 
@@ -36,6 +37,7 @@ def test_quality_plugin_conforms() -> None:
                 "assurance.generation",
                 "assurance.execution",
                 "assurance.healing",
+                "assurance.telemetry",
             ),
             id_prefix="assurance.quality.",
         ),

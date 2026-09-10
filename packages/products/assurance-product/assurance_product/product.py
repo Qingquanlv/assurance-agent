@@ -54,6 +54,7 @@ _CAPABILITY_PLUGIN_IDS: tuple[str, ...] = (
     "assurance.healing",
     "assurance.quality",
     "assurance.improvement",
+    "assurance.telemetry",
 )
 _RUNTIME_PLUGIN_ID = "runtime.opencode"
 _PRODUCT_ENTRYPOINT = "assurance-opencode"

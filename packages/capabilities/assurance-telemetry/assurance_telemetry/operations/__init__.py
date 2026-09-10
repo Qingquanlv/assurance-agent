@@ -1,5 +1,3 @@
-"""Compatibility surface: telemetry operations live in assurance-telemetry."""
-
 from __future__ import annotations
 
 from assurance_telemetry.operations.telemetry import (

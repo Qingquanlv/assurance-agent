@@ -20,6 +20,7 @@ members = [
     "assurance-intake",
     "assurance-product",
     "assurance-quality",
+    "assurance-telemetry",
     "assurance-workspace",
     "graph-engine",
     "graph-engine-toy-a",
@@ -121,6 +122,7 @@ dependencies = [
     { name = "agent-runtime-contracts" },
     { name = "assurance-generation" },
     { name = "assurance-intake" },
+    { name = "assurance-telemetry" },
     { name = "graph-engine" },
     { name = "httpx" },
     { name = "langgraph" },
@@ -138,6 +140,7 @@ requires-dist = [
     { name = "agent-runtime-contracts", editable = "packages/adapters/agent-runtime-contracts" },
     { name = "assurance-generation", editable = "packages/capabilities/assurance-generation" },
     { name = "assurance-intake", editable = "packages/capabilities/assurance-intake" },
+    { name = "assurance-telemetry", editable = "packages/capabilities/assurance-telemetry" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "langgraph", specifier = "==1.2.11" },
@@ -259,6 +262,7 @@ dependencies = [
     { name = "assurance-improvement" },
     { name = "assurance-intake" },
     { name = "assurance-quality" },
+    { name = "assurance-telemetry" },
     { name = "click" },
     { name = "graph-engine" },
     { name = "langgraph" },
@@ -279,6 +283,7 @@ requires-dist = [
     { name = "assurance-improvement", editable = "packages/capabilities/assurance-improvement" },
     { name = "assurance-intake", editable = "packages/capabilities/assurance-intake" },
     { name = "assurance-quality", editable = "packages/capabilities/assurance-quality" },
+    { name = "assurance-telemetry", editable = "packages/capabilities/assurance-telemetry" },
     { name = "click", specifier = ">=8.1" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "langgraph", specifier = "==1.2.11" },
@@ -296,6 +301,7 @@ dependencies = [
     { name = "assurance-generation" },
     { name = "assurance-healing" },
     { name = "assurance-intake" },
+    { name = "assurance-telemetry" },
     { name = "graph-engine" },
     { name = "langgraph" },
     { name = "pydantic" },
@@ -309,10 +315,36 @@ requires-dist = [
     { name = "assurance-generation", editable = "packages/capabilities/assurance-generation" },
     { name = "assurance-healing", editable = "packages/capabilities/assurance-healing" },
     { name = "assurance-intake", editable = "packages/capabilities/assurance-intake" },
+    { name = "assurance-telemetry", editable = "packages/capabilities/assurance-telemetry" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "langgraph", specifier = "==1.2.11" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pyyaml", specifier = ">=6.0" },
+]
+
+[[package]]
+name = "assurance-telemetry"
+version = "0.2.0"
+source = { editable = "packages/capabilities/assurance-telemetry" }
+dependencies = [
+    { name = "assurance-generation" },
+    { name = "assurance-intake" },
+    { name = "graph-engine" },
+    { name = "httpx" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "assurance-generation", editable = "packages/capabilities/assurance-generation" },
+    { name = "assurance-intake", editable = "packages/capabilities/assurance-intake" },
+    { name = "graph-engine", editable = "packages/framework/graph-engine" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "opentelemetry-api", specifier = "==1.32.1" },
+    { name = "opentelemetry-sdk", specifier = "==1.32.1" },
+    { name = "pydantic", specifier = ">=2.7" },
 ]
 
 [[package]]
@@ -333,6 +365,7 @@ dev = [
     { name = "assurance-intake" },
     { name = "assurance-product" },
     { name = "assurance-quality" },
+    { name = "assurance-telemetry" },
     { name = "click" },
     { name = "graph-engine" },
     { name = "graph-engine-toy-a" },
@@ -368,6 +401,7 @@ dev = [
     { name = "assurance-intake", editable = "packages/capabilities/assurance-intake" },
     { name = "assurance-product", editable = "packages/products/assurance-product" },
     { name = "assurance-quality", editable = "packages/capabilities/assurance-quality" },
+    { name = "assurance-telemetry", editable = "packages/capabilities/assurance-telemetry" },
     { name = "click", specifier = ">=8.1" },
     { name = "graph-engine", editable = "packages/framework/graph-engine" },
     { name = "graph-engine-toy-a", editable = "examples/graph-engine-toy-a" },

@@ -10,6 +10,7 @@ dependencies = [
   "assurance-healing==0.2.0",
   "assurance-quality==0.2.0",
   "assurance-improvement==0.2.0",
+  "assurance-telemetry==0.2.0",
   "langgraph==1.2.11",
   "langgraph-checkpoint-sqlite==3.1.1",
   "click>=8.1",
@@ -39,4 +40,5 @@ assurance-execution = { workspace = true }
 assurance-healing = { workspace = true }
 assurance-quality = { workspace = true }
 assurance-improvement = { workspace = true }
+assurance-telemetry = { workspace = true }
 agent-runtime-opencode = { workspace = true }

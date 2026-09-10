@@ -26,23 +26,43 @@
 
 ## 2. 范围与方案选择
 
-选择扩展现有 intake、generation、execution、quality、healing 模块，复用受限 subprocess runner、产物声明、版本摘要和图调度。只增加这条执行链必须的数据与执行能力。
+选择扩展现有 intake、generation、execution、quality、healing 模块，并新增已安装 `assurance.telemetry` 能力；复用受限 subprocess runner、产物声明、版本摘要和图调度。只增加这条执行链必须的数据与执行能力。不改 full 拓扑。
 
 比较过的方案：
 
 | 方案 | 判断 |
 | --- | --- |
 | 仅强化 codegen/reviewer 提示词 | 不满足必需检查实际执行的确定性保证，不采用 |
-| 现有模块增加结构化执行义务、独立观察与确定性判定 | 本 spec 采用，第一版限定同步 API 与 SQLite |
+| 现有模块增加结构化执行义务、独立观察与确定性判定 | 阶段一（API + DB oracle）采用；第一版限定同步 API 与 SQLite |
 | 建设通用 Trace 测试平台或重写图引擎 | 超出两阶段验证所需范围，不采用 |
+| 项目/SUT 可加载 OTel 或 CAT 插件 | 引擎不扫描 SUT；被测对象自报齐不能当 PASSED。不采用 |
+| 已安装 `assurance.telemetry` wheel，产品按 profile 装配 | 阶段二采用。图走法不变；OTel 文件是第一种实现，CAT 等为后续已安装实现 |
 
 新模式使用两个显式 profile：`api_db.v1` 与 `api_db_trace.v1`。profile 在计划编译前选择并冻结；执行失败后不得自动从后者降级到前者。
 
-二者由同一个闭集参数 `validation_profile` 选择，来自项目部署配置/显式 benchmark 项，不是两个独立开关。选择依据是已认可的验收要求；能力预检只决定能否执行，不自动降低要求。选定 Trace 模式但未配置接入能力时为 NOT_READY；执行中缺少必需遥测为 INCOMPLETE。两种模式复用既有 full 节点，新增的是节点内部的确定性处理，不新增 Agent 或顶层节点。
+二者由同一个闭集参数 `validation_profile` 选择，来自项目部署配置/显式 benchmark 项，不是两个独立开关。选择依据是已认可的验收要求；能力预检只决定能否执行，不自动降低要求。选定 Trace 模式但未安装或未认证 telemetry 能力时为 NOT_READY；执行中缺少必需遥测为 INCOMPLETE。两种模式复用既有 full 节点，新增的是节点内部对已安装端口的调用，不新增 Agent、顶层节点、按厂商分叉的图，也不新增 `api_db_otel.v1` / `api_db_cat.v1`。
 
 这里的 full workflow 指所选 User API 用例经过完整产品生命周期，不表示本次同时实现所有测试类型，或强制走完所有条件分支。验收项选择 `system/user`、`selected_test_families=[api]`，将首个交付目标明确限定为创建用户并正确持久化。现有 User 需求中的更新、删除、密码重置、权限及角色关联等其余场景保留为后续范围，不能宣称已验证整个 User 模块。
 
 第一版不实现 UI 驱动接入、Redis、Kafka、Fuzz、Performance、跨服务消息拓扑、通用 SQL DSL、APM 管理界面或自动业务规则推断。现有其他测试能力继续工作，但不能被标记为已获得新验证保证。
+
+### 2.1 遥测能力：对图侵入最小
+
+阶段二的目标是把「要不要 Trace」和「用哪种链路材料」分开。图只认前者；后者是已安装实现，由 ProductLock / GraphRevision 认证，不出现在 YAML 走法里。
+
+**图不变。** full 仍是既有 `validate → prepare → case → execute-tail → achieved | 再覆盖`；`execute-tail` 内仍是既有 execute → quality →（必要时）heal。禁止为 flush、封存、OTel、CAT 增加节点或边，禁止按 profile 编译两张不同拓扑的图。compile 认证 telemetry 插件已安装发生在组产品、锁依赖时；未通过则 `NOT_READY`，图不开始走。
+
+**一种 profile，多种已安装实现。** `api_db_trace.v1` 表示「本计划的 Trace 义务 required」。第一版实现是 OTLP JSONL（Demoso：进程内 file exporter，driver 注入关联上下文，事后按本次链路身份拉取）。后续 CAT 或其他 APM 是另一个已安装实现（独立 wheel 或同一插件的另一 provider），换的是装配与材料格式，不是图、不是 quality 文案、不是新的 validation_profile。没装或 digest 漂移：`NOT_READY`，不得静默当成 `api_db.v1`。
+
+**端口按材料说话，不按厂商说话。** execute / quality / 图状态机不得把 `otlp`、`traceparent`、`cat` 写成节点契约或路由条件。厂商词只留在 telemetry 实现与 SUT adapter 内部。端口只有三句：
+
+1. **Execute → Telemetry：** 本次 `execution_id` / SUT 实例 / 材料路径；注入本次 Attempt 的关联上下文；动作与独立 SELECT 结束后，flush 并交出封存引用。
+2. **Telemetry → 密封字节：** 权威输出是 completion 记录 + 原始材料文件 + digest。谁都可以读文件，谁都不能改义务。
+3. **Quality → Telemetry 契约：** 打开上述材料，加上计划里冻结的 Trace 义务，重算齐 / 不齐。quality 不 import execution 的 operations，也不 import 任一厂商 exporter。
+
+Execution 仍拥有 Attempt、HTTP、SQLite oracle 与 journal；只把遥测封存引用记进 journal。Generation 只声明义务，不读 case 去猜链路。SUT 插桩（FastAPI/Tortoise 装 SDK，或未来的 CAT agent）留在 benchmark fixture / adapter wheel，不是编排插件，也不得从 `.aa/` 加载 Python handler。
+
+本阶段不实现 CAT。CAT 只约束口子：以后换实现时不得改 full 图、不得加厂商 profile、不得让 SUT 自证 PASSED。
 
 ## 3. Benchmark 事实与业务规格来源
 
@@ -180,7 +200,9 @@ HTTP 超时且执行是否完成未知时，不把当时查不到行直接解释
 
 阶段一通过的声明仅为「API 动作与 DB 业务契约已验证」，Trace 状态为 not_required，不显示“完整链路已验证”。
 
-## 9. 阶段二：实际 SQLite 插桩与一个业务 OTel 检查点
+## 9. 阶段二：实际 SQLite 插桩与一个业务检查点
+
+第一版材料是 OTel JSONL；义务与判定按第 2.1 节端口，不把 OTel 写进图。第 9.1–9.3 节是第一种实现的接入细节，不是第二种实现的预埋协议。
 
 ### 9.1 接入方式
 
@@ -262,12 +284,13 @@ quality 从冻结计划与执行证据纯计算结果，策略只决定后续路
 | 模块 | 本次职责 |
 | --- | --- |
 | intake | 业务断言 ID、规范来源与评审状态；冻结可读业务预期 |
-| generation | 派生机器计划、闭集义务绑定与 readiness；生成 pytest 桥接入口 |
-| execution | 权威 subprocess/HTTP driver、SQLite observer、实例绑定、数据库 span 归一和证据封存；不拥有 SUT/Collector 生命周期 |
-| quality | 确定性业务与证据判定、义务覆盖及新状态投影 |
-| healing | 检测并拒绝验收义务降级，允许不改变语义的执行绑定修复 |
-| assurance-product | 安装声明、profile 配置、工作流接线、状态/导出/achieved 集成 |
-| benchmark | User full-workflow 验收项、共享 SUT 物化/可选拉起、真实 Tortoise/SQLite 与业务插桩、故障变体及工作流证据检查 |
+| generation | 派生机器计划、闭集义务绑定与 readiness；生成 pytest 桥接入口。只声明 Trace 义务，不绑定厂商材料格式 |
+| execution | 权威 subprocess/HTTP driver、SQLite observer、实例绑定与 journal；调用 telemetry 端口注入上下文并记录封存引用。不拥有 SUT 生命周期，不实现 OTLP/CAT 解析 |
+| assurance-telemetry | 已安装遥测能力（`graph_engine.plugins`）。注入关联上下文、封存材料、按冻结义务判定齐/不齐。第一版：OTLP JSONL。后续 CAT 等换实现，不换图 |
+| quality | 确定性业务与证据判定、义务覆盖及新状态投影。Trace 只读封存字节 + 冻结义务；不 import execution operations 或厂商 exporter |
+| healing | 检测并拒绝验收义务降级，允许不改变语义的执行绑定修复。不得改 Trace required 或换 profile |
+| assurance-product | 安装声明、按 profile 装配 telemetry wheel、工作流接线、状态/导出/achieved 集成。装配变化进入 ProductLock，不改变 full 拓扑 |
+| benchmark | User full-workflow 验收项、共享 SUT 物化/可选拉起、真实 Tortoise/SQLite 与业务插桩（fixture/adapter）、故障变体及工作流证据检查 |
 
 `.aa/` 仅保存声明式绑定与策略，扩展闭合配置 schema；observer、validator、gate 等能力由已安装 wheels 提供。不得扫描 SUT 加载任意 Python 插件。
 
@@ -365,7 +388,7 @@ A03/A04 等生成或执行故障也使用预先声明的 harness 边界；涉及
 
 旧 case/plan/result 继续按既有版本读取；新 profile 必须经过显式迁移补齐断言来源与义务，不从旧 `passed`、`covered` 或 strong tally 自动补全。旧结果标识 legacy/unverified，不贡献新契约的验证覆盖。
 
-不包含：为正常 User 流程新增跨步骤业务事务、一次覆盖 User 全部 CRUD/权限/角色/密码规则、重写整个 Explore、构造任意业务 DSL、全量 SQL/函数覆盖、生产部署、远程 APM 支持、跨 DB 支持、恶意 SUT 证明，以及 UI/Redis/Kafka/Fuzz/Performance 扩展。
+不包含：为正常 User 流程新增跨步骤业务事务、一次覆盖 User 全部 CRUD/权限/角色/密码规则、重写整个 Explore、构造任意业务 DSL、全量 SQL/函数覆盖、生产部署、CAT 或其他非 OTLP 实现、远程 APM 控制面、跨 DB 支持、恶意 SUT 证明，以及 UI/Redis/Kafka/Fuzz/Performance 扩展。CAT 等第二种链路只预留第 2.1 节端口，不是本阶段交付物。
 
 实施交付物为：版本化规格/计划/证据契约，full workflow 内的生成/执行/裁判接线，一个 SQLite oracle，真实 Tortoise/SQLite OTel 接入及一个 User 业务检查点，两个阶段的 User benchmark 项和正常/故障 harness，产品门禁与导出兼容，以及可复现实验材料。任何一项只有文档或提示词而没有实际执行验收，都不能视为本功能完成。
 
@@ -378,7 +401,7 @@ A03/A04 等生成或执行故障也使用预先声明的 harness 边界；涉及
 - 质量与终态：quality `operations/assessment.py`、product `graphs/routes.py` / `application.py` / `status.py`。
 - 实际修复接纳：healing `operations/application.py`。
 - 原SUT app/数据库事实来自主工作区同路径源码，未随worktree自动带入；T3必须提交可重建快照与摘要，再于T11真实验证原驱动兼容，不把原主仓库HEAD视为SUT版本。
-- 架构规则与资源权威以当前worktree `AGENTS.md`、`.importlinter`、安装声明与ProductLock为准，不依赖其他分支的迁移文档接口。
+- 架构规则与资源权威以当前worktree `AGENTS.md`、`.importlinter`、安装声明与ProductLock为准，不依赖其他分支的迁移文档接口。阶段二 telemetry 为已安装 wheel，见 §2.1；quality 只依赖其契约。
 
 以下外部依据沿用原研究，本次未重新进行网络调研或改变其适用性结论；依赖具体版本仍须实施时锁定并验证：
 
