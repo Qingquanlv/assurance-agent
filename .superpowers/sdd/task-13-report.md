@@ -180,3 +180,22 @@ $ UV_OFFLINE=true uv run --no-sync pytest \
     -q --tb=line
 5 passed in 280.93s (0:04:40)
 ```
+
+## Named T13 installed/manifest re-run (2026-09-10, after 95cf12e2)
+
+Did not amend `749ba35e` / `3d256da8` / `95cf12e2`. Did not invent live OpenCode outcomes.
+
+```text
+$ uv run pytest \
+    packages/capabilities/assurance-quality/tests/test_inspection_outcome.py \
+    tests/product/test_user_oracle_installed_full.py::test_installed_refactor_reaches_quality_report_and_achieved \
+    tests/product/test_user_oracle_installed_full.py::test_trace_full_matrix_stops_at_product_boundary \
+    tests/product/test_user_oracle_full_workflow.py \
+    tests/product/test_phase5_benchmark_manifest.py \
+    tests/phase6/test_final_benchmark_manifest.py \
+    -q
+124 passed, 2 warnings in 303.55s (0:05:03)
+```
+
+Warnings were pre-existing Pydantic `Field(example=...)` deprecations in
+`benchmark/vue-fastapi-admin/app/schemas/depts.py`.
