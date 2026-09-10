@@ -98,6 +98,104 @@ def _write(root: Path, relative: str, payload: bytes):
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(payload).hexdigest())
 
 
+def _otlp_bytes(execution_id: str, username: str, *, write: bool = True, completed: bool = True) -> bytes:
+    def attr(key: str, value: object) -> dict[str, object]:
+        return {"key": key, "value": {"stringValue": str(value)}}
+
+    def span(
+        span_id: str, name: str, kind: int, parent: str = "", attrs: dict[str, str] | None = None
+    ) -> dict:
+        return {
+            "traceId": "a" * 32,
+            "spanId": span_id,
+            "parentSpanId": parent,
+            "name": name,
+            "kind": kind,
+            "status": {"code": 0},
+            "attributes": [attr(key, value) for key, value in (attrs or {}).items()],
+        }
+
+    identity = {"aa.execution_id": execution_id}
+    groups = [
+        (
+            "assurance.execution.http-driver",
+            [
+                span(
+                    "b" * 16,
+                    "POST /api/v1/user/create",
+                    3,
+                    attrs={**identity, "http.url": "http://127.0.0.1:1234/api/v1/user/create"},
+                )
+            ],
+        ),
+        (
+            "opentelemetry.instrumentation.fastapi",
+            [
+                span(
+                    "c" * 16,
+                    "POST /api/v1/user/create",
+                    2,
+                    "b" * 16,
+                    {**identity, "http.route": "/api/v1/user/create"},
+                )
+            ],
+        ),
+    ]
+    if write:
+        groups.append(
+            (
+                "opentelemetry.instrumentation.tortoiseorm",
+                [
+                    span(
+                        "d" * 16,
+                        "user INSERT",
+                        3,
+                        "c" * 16,
+                        {
+                            **identity,
+                            "aa.db.table": "user",
+                            "aa.db.operation": "INSERT",
+                            "aa.db.semconv": "1.24.0",
+                        },
+                    )
+                ],
+            )
+        )
+    if completed:
+        groups.append(
+            (
+                "app.api.v1.users.users",
+                [
+                    span(
+                        "e" * 16,
+                        "user.create.completed",
+                        1,
+                        "c" * 16,
+                        {**identity, "user.username": username},
+                    )
+                ],
+            )
+        )
+    return (
+        json.dumps(
+            {
+                "resourceSpans": [
+                    {
+                        "resource": {
+                            "attributes": [
+                                attr("service.name", "user-oracle-sut"),
+                                attr("service.instance.id", "sut"),
+                            ]
+                        },
+                        "scopeSpans": [{"scope": {"name": scope}, "spans": spans} for scope, spans in groups],
+                    }
+                ]
+            }
+        )
+        + "\n"
+    ).encode()
+
+
 def _materialization_request(
     tmp_path: Path,
     *,
@@ -107,6 +205,9 @@ def _materialization_request(
     http_status: int = 200,
     wrong_email: bool = False,
     process_reason: str | None = None,
+    trace: bool = False,
+    drop_write_span: bool = False,
+    early_completed: bool = False,
 ) -> tuple[MaterializeAssessmentInputV1, object | None, str | None]:
     from assurance_execution.contracts.verification import (
         VerifiedProcessLimitsV1,
@@ -122,7 +223,9 @@ def _materialization_request(
     )
     from assurance_execution.contracts.workflow import VerifiedExecutionCycleResultV1
 
-    prepared = accepted_verified_execution_input(tmp_path)
+    prepared = accepted_verified_execution_input(
+        tmp_path, validation_profile="api_db_trace.v1" if trace else "api_db.v1"
+    )
     generation = prepared.generation_result
     assert generation is not None and generation.case_execution_plan_ref is not None
     plan = CaseExecutionPlanSetV1.model_validate_json(
@@ -263,6 +366,26 @@ def _materialization_request(
                 cleanup_confirmed=True,
             ).model_dump(mode="json"),
         )
+        if trace:
+            from assurance_execution.operations.telemetry import seal_telemetry_artifacts
+
+            raw = _otlp_bytes(
+                execution_id,
+                str(plan.inputs["username"]),
+                write=not drop_write_span,
+                completed=True,
+            )
+            source = tmp_path / "sealed-traces.jsonl"
+            source.write_bytes(raw)
+            seal_telemetry_artifacts(
+                evidence_root=journal.root,
+                source_otlp=source,
+                execution_id=execution_id,
+                sut_instance_id="sut",
+                driver_flush={"state": "complete"},
+                sut_flush={"state": "complete"},
+                collector_drain=({"state": "complete"} if not early_completed else {"state": "complete"}),
+            )
         action_ref = next(
             EvidenceArtifactRefV1(
                 path=f"{manifest.evidence_root}/{name}.json",
@@ -274,14 +397,17 @@ def _materialization_request(
             path=f"{manifest.evidence_root}/process_terminal.json",
             digest=hashlib.sha256((journal.root / "process_terminal.json").read_bytes()).hexdigest(),
         )
+        names = ["action_started.json", "action_terminal.json", "process_terminal.json"]
+        if trace:
+            names.extend(["telemetry-completion.json", "telemetry.otlp.jsonl"])
         raw_refs = tuple(
             sorted(
                 (
                     EvidenceArtifactRefV1(
-                        path=f"{manifest.evidence_root}/{name}.json",
-                        digest=hashlib.sha256((journal.root / f"{name}.json").read_bytes()).hexdigest(),
+                        path=f"{manifest.evidence_root}/{name}",
+                        digest=hashlib.sha256((journal.root / name).read_bytes()).hexdigest(),
                     )
-                    for name in ("action_started", "action_terminal", "process_terminal")
+                    for name in names
                 ),
                 key=lambda item: (item.path, item.digest),
             )
@@ -310,6 +436,10 @@ def _materialization_request(
         reason = process_reason or (
             "required_facts_missing" if any(item.state != "observed" for item in observations) else None
         )
+        collector = (
+            EvidenceCompletionV1(state="complete") if trace else EvidenceCompletionV1(state="not_required")
+        )
+        incomplete = bool(reason) or collector.state not in {"complete", "not_required"}
         evidence = evidence.model_copy(
             update={
                 "observations": observations,
@@ -318,7 +448,8 @@ def _materialization_request(
                     if reason
                     else EvidenceCompletionV1(state="complete")
                 ),
-                "state": "incomplete" if reason else "collected",
+                "collector_completion": collector,
+                "state": "incomplete" if incomplete else "collected",
             }
         )
     outcome = TaskOutcome.succeeded(evidence.model_dump(mode="json"))

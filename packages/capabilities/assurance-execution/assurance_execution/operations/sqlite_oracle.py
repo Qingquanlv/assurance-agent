@@ -69,7 +69,7 @@ def observe_user(
             connection.execute("PRAGMA query_only = ON")
             connection.execute(f"PRAGMA busy_timeout = {max(1, int(remaining * 1000))}")
             connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 100)
-            rows = connection.execute(_USER_QUERY, (username, email)).fetchall()
+            rows = _oracle_select(connection, username, email)
     except sqlite3.OperationalError as error:
         message = str(error).lower()
         if "locked" in message or "busy" in message or "interrupted" in message:
@@ -114,6 +114,25 @@ def observe_user(
         "database_identity": after_identity,
         "database_metadata": _metadata(after),
     }
+
+
+def _oracle_select(connection: sqlite3.Connection, username: str, email: str) -> list[tuple[Any, ...]]:
+    try:
+        from opentelemetry import trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+
+        current = trace.get_tracer_provider()
+        if not hasattr(current, "add_span_processor"):
+            trace.set_tracer_provider(TracerProvider(resource=Resource.create({"service.name": "oracle"})))
+        tracer = trace.get_tracer("assurance.execution.oracle")
+        with tracer.start_as_current_span("oracle.user.select") as span:
+            span.set_attribute("aa.role", "oracle")
+            span.set_attribute("aa.db.table", "user")
+            span.set_attribute("aa.db.operation", "SELECT")
+            return connection.execute(_USER_QUERY, (username, email)).fetchall()
+    except Exception:
+        return connection.execute(_USER_QUERY, (username, email)).fetchall()
 
 
 def _strict_bool(value: object, field: str) -> bool | str:

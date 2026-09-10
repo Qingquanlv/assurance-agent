@@ -53,6 +53,7 @@ def _verified_terminal(
     repair_round: int = 0,
     include_verification: bool = True,
     failed_verdict: bool = False,
+    include_telemetry: bool = False,
 ) -> tuple[Path, object]:
     project = _ready_change(tmp_path)
     prepared = accepted_verified_execution_input(project, change_id=CHANGE_ID)
@@ -120,6 +121,24 @@ def _verified_terminal(
             "seal": "f" * 64,
         },
     )
+    raw_refs = [process_ref]
+    if include_telemetry:
+        otlp_ref = _write_ref(
+            project,
+            f"{evidence_root}/telemetry.otlp.jsonl",
+            {"resourceSpans": []},
+        )
+        completion_ref = _write_ref(
+            project,
+            f"{evidence_root}/telemetry-completion.json",
+            {
+                "schema_version": "1",
+                "execution_id": EXECUTION_ID,
+                "state": "complete",
+            },
+        )
+        raw_refs.extend((otlp_ref, completion_ref))
+    raw_refs_tuple = tuple(sorted(raw_refs, key=lambda item: (item.path, item.digest)))
     required = tuple(item for item in plan.required if item != omit_obligation)
     observations = tuple(
         {
@@ -172,7 +191,7 @@ def _verified_terminal(
         mapping_digest=generation.mapping_ref.digest,
         manifest_ref=manifest_ref,
         evidence_ref=outcome_ref,
-        raw_evidence_refs=(process_ref,),
+        raw_evidence_refs=raw_refs_tuple,
         executed_at=datetime(2026, 9, 7, tzinfo=UTC),
         completion_status="collected",
         evidence=evidence,
@@ -226,7 +245,7 @@ def _verified_terminal(
         evidence_ref=outcome_ref,
         execution_index_ref=execution_ref,
         execution_authority_ref=authority_ref,
-        raw_evidence_refs=(process_ref,),
+        raw_evidence_refs=raw_refs_tuple,
         source_refs=generation.source_refs,
         receipt=execution_receipt,
     )
@@ -392,6 +411,20 @@ def test_export_rechecks_verified_evidence_after_achieved(tmp_path: Path) -> Non
     verdict_ref = rendered.quality_gate.inspection.verification_ref
     assert verdict_ref is not None
     (project / verdict_ref.path).write_bytes(b"drifted")
+
+    with pytest.raises(PublishError, match="verified delivery"):
+        publish_achieved(project, CHANGE_ID)
+
+
+def test_export_rejects_tampered_sealed_trace(tmp_path: Path) -> None:
+    from assurance_product.export import PublishError, publish_achieved
+    from assurance_product.status import finalize_achieved
+
+    project, snapshot = _verified_terminal(tmp_path, include_telemetry=True)
+    rendered = _render(snapshot)
+    finalize_achieved(project, CHANGE_ID, ("api",), invocation=rendered)
+    otlp = project / f"qa/changes/{CHANGE_ID}/execution/{EXECUTION_ID}/telemetry.otlp.jsonl"
+    otlp.write_bytes(b"tampered-trace\n")
 
     with pytest.raises(PublishError, match="verified delivery"):
         publish_achieved(project, CHANGE_ID)

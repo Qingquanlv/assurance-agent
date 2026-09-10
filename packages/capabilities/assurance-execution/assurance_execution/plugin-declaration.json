@@ -49,6 +49,7 @@
       "assurance.execution.schema.selected-targets.v1",
       "assurance.execution.schema.task-input.v1",
       "assurance.execution.schema.task-output.v1",
+      "assurance.execution.schema.telemetry-completion.v1",
       "assurance.execution.workflow.execute.input.v1",
       "assurance.execution.workflow.execute.output.v1",
       "assurance.execution.workflow.rerun.input.v1",

@@ -18,6 +18,11 @@ from assurance_execution.contracts.workflow import (
     ExecutionCycleResultV1,
     VerifiedExecutionCycleResultV1,
 )
+from assurance_execution.contracts.telemetry import (
+    TelemetryCompletionV1,
+    check_trace_requirements,
+    parse_otlp_records,
+)
 from assurance_execution.contracts.verification import (
     ExecutionDispatchResultV1,
     EvidenceCompletionV1,
@@ -59,6 +64,7 @@ __all__ = [
     "ObservationV1",
     "SqliteFileIdentityV1",
     "SqliteObservationMetadataV1",
+    "TelemetryCompletionV1",
     "VerificationEvidenceV1",
     "VerificationManifestV1",
     "VerifiedExecutionAuthorityV1",
@@ -66,4 +72,6 @@ __all__ = [
     "VerifiedProcessLimitsV1",
     "VerifiedProcessReceiptV1",
     "attempt_contract_refs",
+    "check_trace_requirements",
+    "parse_otlp_records",
 ]

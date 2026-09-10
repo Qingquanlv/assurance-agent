@@ -14,10 +14,22 @@ from typing import Any
 
 import httpx
 
+from assurance_execution.contracts.telemetry import (
+    TELEMETRY_COMPLETION_NAME,
+    TELEMETRY_OTLP_NAME,
+    TelemetryCompletionV1,
+    check_trace_requirements,
+)
 from assurance_execution.contracts.verification import VerificationManifestV1
 from assurance_execution.operations.sqlite_oracle import _failed, observe_user
 from assurance_execution.operations.record_publication import _publish_exclusive, publish_record
 from assurance_execution.operations.host_secrets import read_host_secret_model
+from assurance_execution.operations.telemetry import (
+    flush_driver_provider,
+    load_otlp_records,
+    seal_telemetry_artifacts,
+    start_driver_client_span,
+)
 from assurance_generation.contracts.execution_plan import CaseExecutionPlanV1
 
 
@@ -152,14 +164,34 @@ class ActionJournal:
 async def _post(
     plan: CaseExecutionPlanV1, manifest: VerificationManifestV1, credential: bytes
 ) -> dict[str, Any]:
+    url = manifest.sut.base_url + plan.action.path
+    headers = {"token": _credentials(credential)["token"]}
+    driver_span = None
+    if manifest.validation_profile == "api_db_trace.v1":
+        driver_span, injected = start_driver_client_span(manifest.execution_id, url)
+        headers.update(injected)
+    try:
+        return await _post_once(plan, manifest, credential, url, headers)
+    finally:
+        if driver_span is not None:
+            driver_span.end()
+
+
+async def _post_once(
+    plan: CaseExecutionPlanV1,
+    manifest: VerificationManifestV1,
+    credential: bytes,
+    url: str,
+    headers: dict[str, str],
+) -> dict[str, Any]:
     async with asyncio.timeout(10):
         async with httpx.AsyncClient(
             follow_redirects=False, timeout=10, trust_env=False, transport=httpx.AsyncHTTPTransport(retries=0)
         ) as client:
             async with client.stream(
                 "POST",
-                manifest.sut.base_url + plan.action.path,
-                headers={"token": _credentials(credential)["token"]},
+                url,
+                headers=headers,
                 json={
                     **manifest.inputs.model_dump(mode="json"),
                     "password": _credentials(credential)["user_password"],
@@ -362,7 +394,7 @@ def _authenticate(
     )
     key = managed_sut_ownership_token(Path(authority.run_root), authority)
     journal = ActionJournal(context.write_root / manifest.evidence_root, manifest, key)
-    return payload, manifest, plan, journal
+    return payload, manifest, plan, journal, authority
 
 
 def _observation(
@@ -412,7 +444,7 @@ def collect_facts(journal: ActionJournal, plan: CaseExecutionPlanV1) -> list[Obs
             values["user.row_count"] = len(oracle["rows"])
             if len(oracle["rows"]) == 1:
                 values.update({f"user.{key}": value for key, value in oracle["rows"][0].items()})
-    return [
+    observations = [
         _observation(journal, key, "observed", values[key])
         if key in values
         else _observation(
@@ -426,6 +458,94 @@ def collect_facts(journal: ActionJournal, plan: CaseExecutionPlanV1) -> list[Obs
         )
         for key in plan.required
     ]
+    return _merge_trace_observations(journal, plan, observations)
+
+
+def _merge_trace_observations(
+    journal: ActionJournal,
+    plan: CaseExecutionPlanV1,
+    observations: list[ObservationV1],
+) -> list[ObservationV1]:
+    if plan.validation_profile != "api_db_trace.v1":
+        return observations
+    otlp = journal.root / TELEMETRY_OTLP_NAME
+    completion_path = journal.root / TELEMETRY_COMPLETION_NAME
+    if not otlp.is_file() or not completion_path.is_file():
+        return observations
+    try:
+        spans = load_otlp_records(otlp, journal.manifest.execution_id)
+        completion = TelemetryCompletionV1.model_validate_json(completion_path.read_bytes())
+        replayed = check_trace_requirements(plan, journal.manifest, spans, completion)
+    except ValueError:
+        return observations
+    merged = {item.obligation_id: item for item in observations}
+    for item in replayed:
+        merged[item.obligation_id] = item
+    return [merged[key] for key in plan.required]
+
+
+def _read_telemetry_completion(journal: ActionJournal) -> TelemetryCompletionV1 | None:
+    path = journal.root / TELEMETRY_COMPLETION_NAME
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        return TelemetryCompletionV1.model_validate_json(path.read_bytes())
+    except ValidationError:
+        return None
+
+
+def _collector_ready(journal: ActionJournal, plan: CaseExecutionPlanV1) -> bool:
+    if plan.validation_profile == "api_db.v1":
+        return True
+    completion = _read_telemetry_completion(journal)
+    return completion is not None and completion.state == "complete"
+
+
+def _collector_completion(journal: ActionJournal, plan: CaseExecutionPlanV1) -> EvidenceCompletionV1:
+    if plan.validation_profile == "api_db.v1":
+        return EvidenceCompletionV1(state="not_required")
+    completion = _read_telemetry_completion(journal)
+    if completion is None:
+        return EvidenceCompletionV1(state="error", reason="telemetry_completion_missing")
+    if completion.state == "complete":
+        return EvidenceCompletionV1(state="complete")
+    if completion.collector_drain.state == "timeout":
+        return EvidenceCompletionV1(state="timeout", reason=completion.collector_drain.reason)
+    return EvidenceCompletionV1(
+        state="error",
+        reason=completion.collector_drain.reason or completion.archive.reason or "collector_incomplete",
+    )
+
+
+def _complete_trace_evidence(
+    journal: ActionJournal,
+    plan: CaseExecutionPlanV1,
+    manifest: VerificationManifestV1,
+    run_root: Path,
+) -> None:
+    if plan.validation_profile != "api_db_trace.v1":
+        return
+    if (journal.root / TELEMETRY_OTLP_NAME).is_file() and (
+        journal.root / TELEMETRY_COMPLETION_NAME
+    ).is_file():
+        return
+    from assurance_execution.operations.telemetry import drain_owned_collector, flush_sut_provider
+
+    driver = flush_driver_provider()
+    sut = flush_sut_provider(manifest.sut.base_url, run_root)
+    drain = drain_owned_collector(run_root)
+    source = run_root / "otel" / "traces.jsonl"
+    if not source.is_file():
+        return
+    seal_telemetry_artifacts(
+        evidence_root=journal.root,
+        source_otlp=source,
+        execution_id=manifest.execution_id,
+        sut_instance_id=manifest.sut.instance_id,
+        driver_flush=driver,
+        sut_flush=sut,
+        collector_drain=drain,
+    )
 
 
 def _outcome(journal: ActionJournal, plan: CaseExecutionPlanV1, reason: str | None = None) -> TaskOutcome:
@@ -471,8 +591,8 @@ def _outcome(journal: ActionJournal, plan: CaseExecutionPlanV1, reason: str | No
         host_completion=EvidenceCompletionV1(state="error", reason=host_reason)
         if host_reason
         else EvidenceCompletionV1(state="complete"),
-        collector_completion=EvidenceCompletionV1(state="not_required"),
-        state="incomplete" if host_reason else "collected",
+        collector_completion=_collector_completion(journal, plan),
+        state="incomplete" if host_reason or not _collector_ready(journal, plan) else "collected",
     )
     outcome = TaskOutcome.succeeded(evidence.model_dump(mode="json"))
     journal.write("outcome", outcome.model_dump(mode="json"))
@@ -481,12 +601,20 @@ def _outcome(journal: ActionJournal, plan: CaseExecutionPlanV1, reason: str | No
 
 def _journal_refs(journal: ActionJournal) -> tuple[EvidenceArtifactRefV1, ...]:
     refs: list[EvidenceArtifactRefV1] = []
-    for name in ("action_started", "action_terminal", "process_terminal", "cleanup_terminal"):
-        path = journal.root / f"{name}.json"
+    names = (
+        "action_started.json",
+        "action_terminal.json",
+        "process_terminal.json",
+        "cleanup_terminal.json",
+        TELEMETRY_COMPLETION_NAME,
+        TELEMETRY_OTLP_NAME,
+    )
+    for name in names:
+        path = journal.root / name
         if path.is_file() and not path.is_symlink() and path.stat().st_nlink == 1:
             refs.append(
                 EvidenceArtifactRefV1(
-                    path=f"{journal.manifest.evidence_root}/{name}.json",
+                    path=f"{journal.manifest.evidence_root}/{name}",
                     digest=hashlib.sha256(path.read_bytes()).hexdigest(),
                 )
             )
@@ -597,7 +725,7 @@ class VerifiedExecutionHandler:
         return SubprocessVerificationHost()
 
     def _execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        payload, manifest, plan, journal = _authenticate(request, context)
+        payload, manifest, plan, journal, authority = _authenticate(request, context)
         port = context.activity
         if port is None or port.snapshot.workspace_identity != context.workspace_identity:
             raise ValueError("authenticated production activity port is required")
@@ -636,6 +764,7 @@ class VerifiedExecutionHandler:
             cancel_requested=context.cancel_requested,
         )
         journal.write("process_terminal", receipt.model_dump(mode="json"))
+        _complete_trace_evidence(journal, plan, manifest, Path(authority.run_root))
         return _verified_outcome(
             _outcome(journal, plan),
             request=request,
@@ -650,7 +779,7 @@ class VerifiedExecutionHandler:
         self, request: TaskRequest, context: TaskContext, activity: TaskActivitySnapshot
     ) -> TaskActivityReconcileResult:
         try:
-            payload, manifest, plan, journal = _authenticate(request, context)
+            payload, manifest, plan, journal, authority = _authenticate(request, context)
             if context.activity is None or activity != context.activity.snapshot:
                 raise ValueError("activity snapshot does not match live production activity")
             if activity.state == "prepared":
@@ -693,6 +822,7 @@ class VerifiedExecutionHandler:
                     "cleanup_terminal",
                     {"container_name": "aa-verify-" + manifest.execution_id, "confirmed": True},
                 )
+            _complete_trace_evidence(journal, plan, manifest, Path(authority.run_root))
             return TaskActivityReconcileResult(
                 status="terminal",
                 reference=reference,

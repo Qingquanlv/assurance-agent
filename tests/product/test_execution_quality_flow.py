@@ -446,9 +446,7 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
     assert gate.execution_digest == execution["execution_digest"]
 
 
-@pytest.fixture(scope="module")
-def assessment_composition(installed_sources, tmp_path_factory):
-    tmp_path = tmp_path_factory.mktemp("assessment-composition")
+def _profiled_assessment_composition(installed_sources, tmp_path, profile: str):
     import sys
     import yaml
     from assurance_product.binding_builder import build_deployment_wheel
@@ -457,7 +455,7 @@ def assessment_composition(installed_sources, tmp_path_factory):
     from tests.product.composition_harness import _extract_wheel
 
     document = yaml.safe_load(Path("tests/product/fixtures/deployment/opencode.yaml").read_text())
-    document["validation_profile"] = "api_db.v1"
+    document["validation_profile"] = profile
     document["verification_host"] = {"managed_sut_authority_handle": "sut.authority"}
     manifest = tmp_path / "deployment.yaml"
     manifest.write_text(yaml.safe_dump(document))
@@ -480,6 +478,20 @@ def assessment_composition(installed_sources, tmp_path_factory):
         for name in tuple(sys.modules):
             if name == wheel.import_package or name.startswith(wheel.import_package + "."):
                 sys.modules.pop(name, None)
+
+
+@pytest.fixture(scope="module")
+def assessment_composition(installed_sources, tmp_path_factory):
+    yield from _profiled_assessment_composition(
+        installed_sources, tmp_path_factory.mktemp("assessment-composition"), "api_db.v1"
+    )
+
+
+@pytest.fixture(scope="module")
+def trace_assessment_composition(installed_sources, tmp_path_factory):
+    yield from _profiled_assessment_composition(
+        installed_sources, tmp_path_factory.mktemp("trace-assessment-composition"), "api_db_trace.v1"
+    )
 
 
 def _bridge_assessment_request(project):
@@ -669,6 +681,74 @@ def test_installed_assessment_reaches_inspect_with_verified_incomplete(
         assert request.execution.defect.bridge_ref.path not in {
             entry["path"] for entry in evidence_manifest["entries"]
         }
+
+
+def test_installed_assessment_admits_sealed_user_trace(tmp_path, trace_assessment_composition, monkeypatch):
+    import asyncio
+    from assurance_quality.contracts.verification import VerificationVerdictV1
+    from tests.verified_assessment_fixture import _materialization_request
+
+    project = tmp_path / "project"
+    project.mkdir()
+    request, authority, _ = _materialization_request(project, authenticated=True, trace=True)
+    result = asyncio.run(
+        _installed_assessment(project, request, trace_assessment_composition, authority, monkeypatch)
+    )
+    assert hasattr(result, "output"), result
+    assessment = result.output
+    verdict = VerificationVerdictV1.model_validate_json(
+        (project / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "PASSED"
+    assert verdict.by_id("trace.http").evidence_status == "observed"
+    inspection = _publish_verified_inspection(project, request, assessment, verdict)
+    assert cast(dict, inspection["inspection_outcome"])["disposition"] == "satisfied"
+
+
+def test_installed_assessment_rejects_missing_or_rewritten_trace(
+    tmp_path, trace_assessment_composition, monkeypatch
+):
+    import asyncio
+    from graph_engine.attempts import PermanentTaskFailure
+    from tests.verified_assessment_fixture import _materialization_request
+
+    project = tmp_path / "project"
+    project.mkdir()
+    request, authority, _ = _materialization_request(project, authenticated=True, trace=True)
+    otlp = next(
+        ref for ref in request.execution.raw_evidence_refs if ref.path.endswith("telemetry.otlp.jsonl")
+    )
+    path = project / otlp.path
+    path.chmod(0o600)
+    path.write_bytes(b"{}\n")
+    result = asyncio.run(
+        _installed_assessment(project, request, trace_assessment_composition, authority, monkeypatch)
+    )
+    assert isinstance(result, PermanentTaskFailure)
+    assert result.kind == "invalid_input"
+
+
+def test_installed_assessment_missing_write_span_is_incomplete(
+    tmp_path, trace_assessment_composition, monkeypatch
+):
+    import asyncio
+    from assurance_quality.contracts.verification import VerificationVerdictV1
+    from tests.verified_assessment_fixture import _materialization_request
+
+    project = tmp_path / "project"
+    project.mkdir()
+    request, authority, _ = _materialization_request(
+        project, authenticated=True, trace=True, drop_write_span=True
+    )
+    result = asyncio.run(
+        _installed_assessment(project, request, trace_assessment_composition, authority, monkeypatch)
+    )
+    assert hasattr(result, "output"), result
+    verdict = VerificationVerdictV1.model_validate_json(
+        (project / result.output.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "INCOMPLETE"
+    assert verdict.by_id("trace.user_write").evidence_status == "missing"
 
 
 @pytest.mark.parametrize("kind", ["cycle", "defect"])

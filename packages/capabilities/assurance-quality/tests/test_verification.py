@@ -427,6 +427,66 @@ def test_self_consistent_public_execution_without_host_journal_cannot_pass(tmp_p
         materialize_assessment_inputs(request, project_root=tmp_path, write_root=tmp_path)
 
 
+def test_persisted_user_without_write_span_is_incomplete(tmp_path: Path) -> None:
+    plan = _plan(tmp_path, trace=True)
+    verdict = evaluate_verification(
+        plan,
+        _evidence(plan, states={"trace.user_write": "missing"}, collector="complete"),
+        completion_status="collected",
+    )
+    assert verdict.verdict == "INCOMPLETE"
+    assert verdict.by_id("trace.user_write").evidence_status == "missing"
+    assert verdict.by_id("user.row_count").business_status == "satisfied"
+
+
+def test_rollback_with_early_completed_span_is_failed(tmp_path: Path) -> None:
+    plan = _plan(tmp_path, trace=True)
+    actuals = _actuals(plan)
+    actuals["user.row_count"] = 0
+    states = {key: "missing" for key in plan.required if key.startswith("user.") and key != "user.row_count"}
+    verdict = evaluate_verification(
+        plan,
+        _evidence(plan, actuals=actuals, states=states, collector="complete"),
+        completion_status="collected",
+    )
+    assert verdict.verdict == "FAILED"
+    assert verdict.by_id("user.row_count").business_status == "violated"
+    assert verdict.by_id("trace.user_completed").evidence_status == "observed"
+
+
+def test_authenticated_trace_materializer_replays_sealed_otlp(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(tmp_path, authenticated=True, trace=True)
+    assessment = materialize_assessment_inputs(
+        request,
+        project_root=tmp_path,
+        write_root=tmp_path,
+        secret_port=authority,  # type: ignore[arg-type]
+        authority_handle=handle,
+    )
+    verdict = VerificationVerdictV1.model_validate_json(
+        (tmp_path / assessment.verification_ref.path).read_bytes()
+    )
+    assert verdict.verdict == "PASSED"
+    assert verdict.by_id("trace.user_write").business_status == "satisfied"
+
+
+def test_authenticated_trace_materializer_rejects_tampered_otlp(tmp_path: Path) -> None:
+    request, authority, handle = _materialization_request(tmp_path, authenticated=True, trace=True)
+    cycle = cast(VerifiedExecutionCycleResultV1, request.execution)
+    otlp = next(ref for ref in cycle.raw_evidence_refs if ref.path.endswith("telemetry.otlp.jsonl"))
+    path = tmp_path / otlp.path
+    path.chmod(0o600)
+    path.write_bytes(path.read_bytes() + b"\n")
+    with pytest.raises(AssessmentInputError, match="raw closure|digest|telemetry"):
+        materialize_assessment_inputs(
+            request,
+            project_root=tmp_path,
+            write_root=tmp_path,
+            secret_port=authority,  # type: ignore[arg-type]
+            authority_handle=handle,
+        )
+
+
 def test_authenticated_host_journal_is_replayed_before_business_pass(tmp_path: Path) -> None:
     request, authority, authority_handle = _materialization_request(tmp_path, authenticated=True)
 

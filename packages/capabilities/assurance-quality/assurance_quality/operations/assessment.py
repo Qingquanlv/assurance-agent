@@ -29,6 +29,13 @@ from assurance_execution.contracts.execution import (
 )
 from assurance_execution.contracts.selection import ClosedMappingV1
 from assurance_execution.contracts.selection import SelectedTargets
+from assurance_execution.contracts.telemetry import (
+    TELEMETRY_COMPLETION_NAME,
+    TELEMETRY_OTLP_NAME,
+    TelemetryCompletionV1,
+    check_trace_requirements,
+    parse_otlp_records,
+)
 from assurance_execution.contracts.verification import (
     EvidenceCompletionV1,
     ManagedSutAuthorityV1,
@@ -120,9 +127,7 @@ class AssessmentInputError(ValueError):
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
 _GOAL_ORDER = ("constraint_coverage", "auth_matrix_coverage", "journey_coverage")
 _BATCH_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_EXECUTION_ID = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-)
+_EXECUTION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _GOAL_RESOURCE_PATHS = {
     "assurance.product.configuration.capability-catalog": ".aa/capability-catalog.json",
     "assurance.product.configuration.data-knowledge": ".aa/data-knowledge.yaml",
@@ -728,6 +733,79 @@ def _journal_observations(
     )
 
 
+def _expected_collector_completion(
+    plan: CaseExecutionPlanV1, payloads: dict[str, object]
+) -> EvidenceCompletionV1:
+    if plan.validation_profile == "api_db.v1":
+        if TELEMETRY_OTLP_NAME in payloads or TELEMETRY_COMPLETION_NAME in payloads:
+            raise AssessmentInputError("api_db.v1 execution must not carry sealed telemetry")
+        return EvidenceCompletionV1(state="not_required")
+    raw = payloads.get(TELEMETRY_COMPLETION_NAME)
+    if not isinstance(raw, (bytes, bytearray)):
+        raise AssessmentInputError("verified trace raw closure is missing sealed telemetry")
+    try:
+        completion = TelemetryCompletionV1.model_validate_json(raw)
+    except ValidationError as error:
+        raise AssessmentInputError("verified telemetry completion is invalid") from error
+    if completion.state == "complete":
+        return EvidenceCompletionV1(state="complete")
+    if completion.collector_drain.state == "timeout":
+        return EvidenceCompletionV1(state="timeout", reason=completion.collector_drain.reason)
+    return EvidenceCompletionV1(
+        state="error",
+        reason=completion.collector_drain.reason or completion.archive.reason or "collector_incomplete",
+    )
+
+
+def _replay_trace_observations(
+    *,
+    plan: CaseExecutionPlanV1,
+    manifest: VerificationManifestV1,
+    cycle: VerifiedExecutionCycleResultV1,
+    payloads: dict[str, object],
+    replayed: tuple[ObservationV1, ...],
+) -> tuple[ObservationV1, ...]:
+    names = {Path(ref.path).name for ref in cycle.raw_evidence_refs}
+    if plan.validation_profile != "api_db_trace.v1":
+        if TELEMETRY_OTLP_NAME in names or TELEMETRY_COMPLETION_NAME in names:
+            raise AssessmentInputError("api_db.v1 execution must not carry sealed telemetry")
+        return replayed
+    if TELEMETRY_OTLP_NAME not in names or TELEMETRY_COMPLETION_NAME not in names:
+        raise AssessmentInputError("verified trace raw closure is missing sealed telemetry")
+    otlp = payloads.get(TELEMETRY_OTLP_NAME)
+    raw_completion = payloads.get(TELEMETRY_COMPLETION_NAME)
+    if not isinstance(otlp, (bytes, bytearray)) or not isinstance(raw_completion, (bytes, bytearray)):
+        raise AssessmentInputError("verified trace raw closure is missing sealed telemetry")
+    try:
+        completion = TelemetryCompletionV1.model_validate_json(raw_completion)
+    except ValidationError as error:
+        raise AssessmentInputError("verified telemetry completion is invalid") from error
+    if completion.execution_id != cycle.execution_id:
+        raise AssessmentInputError("verified telemetry belongs to a different execution")
+    if completion.sut_instance_id != manifest.sut.instance_id:
+        raise AssessmentInputError("verified telemetry belongs to a different instance")
+    try:
+        spans = parse_otlp_records(otlp)
+        trace = check_trace_requirements(plan, manifest, spans, completion)
+    except ValueError as error:
+        if "conflict" in str(error).lower():
+            raise AssessmentInputError("verified telemetry contains conflicting spans") from error
+        merged = {item.obligation_id: item for item in replayed}
+        for obligation in ("trace.http", "trace.user_write", "trace.user_completed", "trace.drained"):
+            if obligation in plan.required:
+                merged[obligation] = ObservationV1(
+                    execution_id=cycle.execution_id,
+                    obligation_id=obligation,
+                    state="missing",
+                    reason="otlp_truncated",
+                )
+        return tuple(merged[key] for key in plan.required)
+    merged = {item.obligation_id: item for item in replayed}
+    for item in trace:
+        merged[item.obligation_id] = item
+    return tuple(merged[key] for key in plan.required)
+
+
 def _verified_materials(
     root: Path,
     request: MaterializeAssessmentInputV1,
@@ -805,6 +883,15 @@ def _verified_materials(
                 manifest_digest=manifest_digest,
                 ownership_token=ownership_token,
             )
+        for filename in (TELEMETRY_COMPLETION_NAME, TELEMETRY_OTLP_NAME):
+            path = journal_root / filename
+            if not path.exists() and not path.is_symlink():
+                continue
+            relative = f"{manifest.evidence_root}/{filename}"
+            data = path.read_bytes()
+            ref = EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
+            actual_refs.append(ref)
+            payloads[filename] = data
         actual_raw_refs = tuple(sorted(actual_refs, key=lambda item: (item.path, item.digest)))
         if actual_raw_refs != cycle.raw_evidence_refs:
             raise AssessmentInputError("verified journal raw closure differs from the committed cycle")
@@ -812,9 +899,12 @@ def _verified_materials(
             "execution_terminal.json",
             "manifest.json",
             "outcome.json",
+            TELEMETRY_COMPLETION_NAME,
             *(f"{name}.json" for name in _JOURNAL_NAMES),
         }
         if any(path.name not in allowed_json for path in journal_root.glob("*.json")):
+            raise AssessmentInputError("verified journal contains an uncommitted JSON record")
+        if any(path.name != TELEMETRY_OTLP_NAME for path in journal_root.glob("*.jsonl")):
             raise AssessmentInputError("verified journal contains an uncommitted JSON record")
         outcome = TaskOutcome.model_validate(
             _journal_payload(
@@ -891,6 +981,13 @@ def _verified_materials(
             action=action,
             action_ref=action_ref,
         )
+        replayed = _replay_trace_observations(
+            plan=machine_plan,
+            manifest=manifest,
+            cycle=cycle,
+            payloads=payloads,
+            replayed=replayed,
+        )
         if evidence.observations != replayed:
             raise AssessmentInputError("verified observations differ from authenticated action history")
         process_ref = next(
@@ -910,8 +1007,12 @@ def _verified_materials(
             if host_reason
             else EvidenceCompletionV1(state="complete")
         )
-        if evidence.host_completion != expected_host or evidence.state != (
-            "incomplete" if host_reason else "collected"
+        expected_collector = _expected_collector_completion(machine_plan, payloads)
+        collector_incomplete = expected_collector.state not in {"complete", "not_required"}
+        if (
+            evidence.host_completion != expected_host
+            or evidence.collector_completion != expected_collector
+            or evidence.state != ("incomplete" if host_reason or collector_incomplete else "collected")
         ):
             raise AssessmentInputError("verified host completion differs from authenticated history")
         expected_cycle = {

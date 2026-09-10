@@ -202,8 +202,32 @@ def instrument_sut(app, provider) -> None:
     from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
     from opentelemetry.instrumentation.tortoiseorm import TortoiseORMInstrumentor
 
+    def _server_request_hook(span, scope) -> None:  # noqa: ANN001
+        for key, value in scope.get("headers") or ():
+            name = key.decode("latin-1").lower() if isinstance(key, bytes) else str(key).lower()
+            if name == "aa-execution-id":
+                text = value.decode("latin-1") if isinstance(value, bytes) else str(value)
+                span.set_attribute("aa.execution_id", text)
+                return
+
     TortoiseORMInstrumentor().instrument(tracer_provider=provider, capture_parameters=False)
-    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+    FastAPIInstrumentor.instrument_app(
+        app, tracer_provider=provider, server_request_hook=_server_request_hook
+    )
+
+    @app.post("/internal/otel/flush")
+    def _flush_otel() -> dict[str, str]:
+        from opentelemetry import trace
+
+        current = trace.get_tracer_provider()
+        flushed = True
+        if hasattr(current, "force_flush"):
+            flushed = bool(current.force_flush(timeout_millis=5000))
+        receipt = {"state": "flushed" if flushed else "incomplete", "schema_version": "1"}
+        path = os.environ.get("AA_SUT_OTEL_FLUSH_RECEIPT")
+        if path:
+            Path(path).write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
+        return receipt
 
 
 def flush_and_shutdown() -> dict[str, str]:
