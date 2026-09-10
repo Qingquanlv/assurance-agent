@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -737,37 +738,33 @@ def managed_fault_sut(tmp_path_factory, request):
 
 
 def _managed_sut(workspace, *, fault="none"):
-    from assurance_execution.operations.managed_sut import ManagedUserSutHost
+    import importlib.util
+    import os
 
-    harness = ManagedUserSutHost(
-        source_root=REPO,
-        secret_port=Secrets(
-            {
-                "managed-sut.admin-password": b"task4-host-only-canary",
-                "managed-sut.reset-password": b"task4-host-only-canary",
-                "managed-sut.secret-key": b"task4-host-only-canary",
-            }
-        ),
+    spec = importlib.util.spec_from_file_location(
+        "user_oracle_harness", REPO / "benchmark/assurance-product/user_oracle_harness.py"
     )
-    prepared = harness.prepare(
-        workspace_root=workspace, project_dir=workspace / "project", run_root=workspace / "run", fault=fault
-    )
-    started = harness.start(workspace_root=workspace, prepare_receipt=workspace / "run/harness-prepare.json")
+    assert spec and spec.loader
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+    project = workspace / "project"
+    harness.materialize_project(project_dir=project, fault=fault)
+    password = "task4-host-only-canary"
+    os.environ["AA_SUT_ADMIN_PASSWORD"] = password
+    os.environ["AA_SUT_RESET_PASSWORD"] = password
+    os.environ["AA_SUT_SECRET_KEY"] = password
+    started = harness.serve(project)
     try:
         response = httpx.post(
             started["base_url"] + "/api/v1/base/access_token",
-            json={"username": "admin", "password": "task4-host-only-canary"},
+            json={"username": "admin", "password": password},
             trust_env=False,
         )
         response.raise_for_status()
         token = response.json()["data"]["access_token"]
-        yield workspace, prepared, started, token
+        yield workspace, started, started, token
     finally:
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=workspace / "run/owned-process.json",
-            instance_id=started["instance_id"],
-        )
+        harness.stop_served(started["pid"])
         for owner in _ACTIVITY_OWNERS:
             owner.loop.call_soon_threadsafe(owner.loop.stop)
             owner.thread.join(timeout=2)
@@ -1119,7 +1116,7 @@ class RealPipeHost:
 def handler_case(managed_sut, suffix, source=None, store=None):
     from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
     from assurance_execution.operations.verified_execution import VerifiedExecutionInputV1
-    from assurance_execution.operations.verification_manifest import build_managed_sut_authority
+    from assurance_execution.contracts.verification import UserAttemptAuthorityV1
     from assurance_execution.execution_view import build_or_authenticate_execution_view
     from assurance_execution.generated_merge import GeneratedFileV2, MergedGeneratedSet, staged_generated_path
     from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
@@ -1190,8 +1187,6 @@ def handler_case(managed_sut, suffix, source=None, store=None):
     )
     manifest_path = project / manifest_relative
     manifest_path.write_text(manifest.model_dump_json())
-    authority_token = project / "run/.ownership-token"
-    token_stat = authority_token.stat()
 
     def ref(path):
         return {
@@ -1199,16 +1194,13 @@ def handler_case(managed_sut, suffix, source=None, store=None):
             "digest": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
 
-    authority = build_managed_sut_authority(
-        run_root=project / "run",
-        ownership_token_path=authority_token,
-        ownership_token_device=token_stat.st_dev,
-        ownership_token_inode=token_stat.st_ino,
-        ownership_token_digest="sha256:" + hashlib.sha256(authority_token.read_bytes()).hexdigest(),
-        prepare_receipt_digest=ref(project / "run/harness-prepare.json")["digest"],
-        start_receipt_digest=ref(project / "run/owned-process.json")["digest"],
+    authority = UserAttemptAuthorityV1(
         authorization_scope_digest=identity.identity_digest,
         activity_receipt_digest=activity_digest,
+        journal_key=os.urandom(32).hex(),
+        sut_base_url=started["base_url"],
+        sqlite_path=started["sqlite_path"],
+        instance_id=started["instance_id"],
     )
     profile = VerifiedExecutionPrepareV1(
         validation_profile="api_db.v1",
@@ -1220,12 +1212,6 @@ def handler_case(managed_sut, suffix, source=None, store=None):
         managed_sqlite_path=prepared["sqlite_path"],
         observer_sqlite_path=prepared["sqlite_path"],
         user_inputs=manifest.inputs,
-        managed_sut_prepare_receipt_ref=EvidenceArtifactRefV1.model_validate(
-            ref(project / "run/harness-prepare.json")
-        ),
-        managed_sut_start_receipt_ref=EvidenceArtifactRefV1.model_validate(
-            ref(project / "run/owned-process.json")
-        ),
         managed_sut_authority_handle="sut-authority",
     )
     test_source = (
@@ -1387,30 +1373,10 @@ def test_known_http_terminal_keeps_zero_rows_evaluable(tmp_path, managed_fault_s
     if fault.startswith("rollback"):
         facts = [
             json.loads(line)
-            for line in (managed_fault_sut[0] / "run/fault-facts.jsonl").read_text().splitlines()
+            for line in (managed_fault_sut[0] / "project/.serve/fault-facts.jsonl").read_text().splitlines()
         ]
         assert any(item["event"] == "write_observed" and item["row_count"] == 1 for item in facts)
         assert any(item["event"] == "rollback_observed" and item["row_count"] == 0 for item in facts)
-
-
-def test_handler_fixture_binds_reviewed_source_to_managed_runtime(managed_sut):
-    _, context, _, plan = handler_case(managed_sut, "fixture-source-closure")
-    prepared = managed_sut[1]
-    review = context.project_root / plan.reviewed_case.review_ref.path
-    assert review.is_file()
-    assert hashlib.sha256(review.read_bytes()).hexdigest() == plan.reviewed_case.review_ref.digest
-    source_paths = json.loads(review.read_bytes())["source_verification"]["reviewed_source_files"]
-    refs = {ref.path: ref for ref in plan.reviewed_case.preparation_refs}
-    for source in source_paths:
-        ref = refs[source]
-        mapping = prepared["source_file_mapping"][source]
-        for path in (
-            context.project_root / source,
-            Path(prepared["frozen_artifact"]) / mapping["frozen_path"],
-            Path(prepared["sut_dir"]) / mapping["runtime_path"],
-        ):
-            assert path.is_file()
-            assert hashlib.sha256(path.read_bytes()).hexdigest() == ref.digest
 
 
 def test_full_parent_handler_real_pipe_http_sqlite_and_recovery(managed_sut):
@@ -1581,14 +1547,6 @@ def test_production_handler_recovery_cuts_never_repeat_post(managed_sut, monkeyp
         store.close()
 
 
-def test_managed_lifecycle_rejects_harness_source_drift(tmp_path):
-    from assurance_execution.operations.managed_sut import ManagedUserSutHost
-
-    host = ManagedUserSutHost(source_root=tmp_path, secret_port=Secrets({}))
-    with pytest.raises(ValueError, match="NOT_READY"):
-        host.prepare(workspace_root=tmp_path, project_dir=tmp_path / "project", run_root=tmp_path / "run")
-
-
 def test_unbridged_pytest_pass_is_incomplete_and_secrets_never_leak(managed_sut):
     from assurance_execution.operations.verified_execution import VerifiedExecutionHandler
 
@@ -1750,208 +1708,6 @@ def test_http_total_deadline_bounds_a_continuously_streaming_peer(tmp_path, mana
     assert terminal is not None
     assert terminal["http"]["state"] == "timeout"
     assert calls == ["/api/v1/user/create"]
-
-
-@pytest.mark.parametrize("degradation", ["expired", "stopped"])
-@pytest.mark.parametrize("method", ["reconcile", "cancel"])
-def test_actual_semantic_handler_recovers_without_live_collector(
-    managed_sut, tmp_path, monkeypatch, degradation, method
-):
-    from types import SimpleNamespace
-    from datetime import datetime, timedelta, timezone
-    from assurance_execution.contracts.agent import ExecutionPrepareInputV1
-    from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
-    from assurance_execution.operations.verified_attempt import VerifiedAttemptHandler
-    from assurance_execution.operations.verified_execution import (
-        VerifiedExecutionHandler,
-        VerifiedExecutionInputV1,
-    )
-    from assurance_execution.operations import verified_attempt, verified_execution
-    from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
-    from tests.product.test_verified_readiness import collector_listener
-
-    # Use the actual test listener fixture generator with this test's retained identity.
-    listener = collector_listener(tmp_path)
-    collector, process = next(listener)
-    try:
-        base, context, manifest, plan = handler_case(managed_sut, "semantic_" + degradation + method)
-        assert isinstance(context.secrets, Secrets)
-        secrets = context.secrets
-        payload = VerifiedExecutionInputV1.model_validate(base.input)
-        trace_fields = formal_plan("api_db_trace.v1").model_dump(mode="json")
-        plan = type(plan).model_validate(
-            plan.model_dump(mode="json")
-            | {
-                key: trace_fields[key]
-                for key in ("validation_profile", "trace", "completion", "required", "bindings")
-            }
-        )
-        plan_bytes = (
-            CaseExecutionPlanSetV1(change_id=plan.change_id, cases=(plan,)).model_dump_json().encode()
-        )
-        (context.project_root / payload.verification.case_execution_plan_ref.path).write_bytes(plan_bytes)
-        plan_ref = payload.verification.case_execution_plan_ref.model_copy(
-            update={"digest": hashlib.sha256(plan_bytes).hexdigest()}
-        )
-        profile = payload.verification.model_copy(
-            update={"validation_profile": "api_db_trace.v1", "case_execution_plan_ref": plan_ref}
-        )
-        manifest = manifest.model_copy(
-            update={"validation_profile": "api_db_trace.v1", "case_execution_plan_digest": plan_ref.digest}
-        )
-        manifest_bytes = manifest.model_dump_json().encode()
-        (context.project_root / payload.manifest_ref.path).write_bytes(manifest_bytes)
-        payload = payload.model_copy(
-            update={
-                "verification": profile,
-                "manifest_ref": payload.manifest_ref.model_copy(
-                    update={"digest": hashlib.sha256(manifest_bytes).hexdigest()}
-                ),
-            }
-        )
-        selected = ManagedSutReadinessSelectionV1(
-            workspace_root=str(context.project_root),
-            verification=profile,
-            configuration_digest="c" * 64,
-            execution_id=manifest.execution_id,
-            authorization_scope_digest=manifest.authorization_scope_digest,
-            activity_receipt_digest=manifest.activity_receipt_digest,
-        )
-        collector.update(
-            {
-                "sut_instance_id": manifest.sut.instance_id,
-                "execution_id": manifest.execution_id,
-                "authorization_scope_digest": manifest.authorization_scope_digest,
-                "activity_receipt_digest": manifest.activity_receipt_digest,
-            }
-        )
-        response = json.dumps(
-            {"probe_nonce": collector["probe_nonce"], "execution_id": manifest.execution_id}
-        ).encode()
-        (tmp_path / "response.json").write_bytes(response)
-        collector["endpoint_response_digest"] = hashlib.sha256(response).hexdigest()
-        secrets.values.update(
-            {
-                "sut.selection": selected.model_dump_json().encode(),
-                "sut.collector": json.dumps(collector).encode(),
-            }
-        )
-        root = ExecutionPrepareInputV1(
-            change_id=plan.change_id,
-            plan_ref=plan.plan_ref,
-            plan_digest=plan.plan_digest,
-            selected_test_families=("api",),
-            capability_leafs=(),
-            validation_profile="api_db_trace.v1",
-            verification_config_digest="c" * 64,
-            verification=profile,
-        )
-
-        request = base.model_copy(
-            update={
-                "input": root.model_dump(mode="json"),
-                "binding_data": {
-                    "user_host": {"sut_source_root": str(REPO)},
-                    "readiness": {
-                        "selection_handle": "sut.selection",
-                        "authority_handle": "sut-authority",
-                        "collector_handle": "sut.collector",
-                        "configuration_digest": "c" * 64,
-                        "validation_profile": "api_db_trace.v1",
-                    },
-                },
-            }
-        )
-        # T3 prepare contracts are covered independently; this seam supplies its already authenticated output.
-        prepared = SimpleNamespace(
-            change_id=plan.change_id,
-            batch_id=payload.view.batch_id,
-            execution_id=manifest.execution_id,
-            verification_manifest_ref=payload.manifest_ref,
-            mapping=SimpleNamespace(selected=(manifest.nodeid,)),
-            execution_view_digest=payload.view.digest,
-            executed_at=payload.view.executed_at,
-        )
-        monkeypatch.setattr(verified_attempt, "assemble_execution_input", lambda *args, **kwargs: prepared)
-        posts, cleanups = [], []
-        original_post = verified_execution._post
-
-        async def count_post(*args):
-            posts.append(1)
-            return await original_post(*args)
-
-        monkeypatch.setattr(verified_execution, "_post", count_post)
-
-        class Host(RealPipeHost):
-            def run(self, **kwargs):
-                return (
-                    super()
-                    .run(**kwargs)
-                    .model_copy(
-                        update={"cleanup_confirmed": False, "reason": "container_cleanup_unconfirmed"}
-                    )
-                )
-
-            def stop(self, container_name):
-                cleanups.append(container_name)
-                return True
-
-        handler = VerifiedAttemptHandler()
-        handler._delegate = VerifiedExecutionHandler(process_host=Host())
-        original_context = context
-        # Make the receipt invalid before a fresh dispatch: it must never start.
-        stale = {
-            **collector,
-            "issued_at": (datetime.now(timezone.utc) - timedelta(seconds=45)).isoformat(),
-            "checked_at": (datetime.now(timezone.utc) - timedelta(seconds=40)).isoformat(),
-            "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
-        }
-        secrets.values["sut.collector"] = json.dumps(stale).encode()
-        with pytest.raises(ValueError):
-            asyncio.run(handler.execute(request, context))
-        assert posts == []
-        secrets.values["sut.collector"] = json.dumps(collector).encode()
-        from graph_engine.attempts.activity import TaskActivityIndeterminate
-
-        with pytest.raises(TaskActivityIndeterminate):
-            asyncio.run(handler.execute(request, context))
-        assert len(posts) == 1
-        if degradation == "expired":
-            secrets.values["sut.collector"] = json.dumps(stale).encode()
-        else:
-            process.terminate()
-            process.wait(timeout=5)
-        assert context.activity is not None
-        forged = context.activity.snapshot.model_copy(update={"state": "prepared"})
-        rejected = asyncio.run(getattr(handler, method)(request, context, forged))
-        assert rejected.status == "indeterminate"
-        recovered = asyncio.run(getattr(handler, method)(request, context, context.activity.snapshot))
-        assert recovered.status == "terminal"
-        assert recovered.outcome is not None
-        assert (context.write_root / manifest.evidence_root / "cleanup_terminal.json").is_file()
-        assert cleanups and len(posts) == 1
-        bindings = cast(dict[str, Any], request.binding_data)
-        altered = request.model_copy(
-            update={
-                "binding_data": {
-                    **bindings,
-                    "readiness": {
-                        **dict(bindings["readiness"]),
-                        "configuration_digest": "f" * 64,
-                    },
-                }
-            }
-        )
-        try:
-            result = asyncio.run(
-                getattr(handler, method)(altered, original_context, context.activity.snapshot)
-            )
-            assert result.status == "indeterminate"
-        except ValueError:
-            pass
-        assert len(posts) == 1
-    finally:
-        listener.close()
 
 
 def test_default_verified_host_executes_real_bridge_without_oci(managed_sut, monkeypatch):

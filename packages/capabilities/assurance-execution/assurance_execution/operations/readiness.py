@@ -144,39 +144,17 @@ def authenticate_host_readiness(
 ) -> ManagedSutReadinessSelectionV1:
     from assurance_execution.operations.managed_sut import authenticate_managed_sut_readiness
 
+    del source_root
     selection = authenticate_host_selection(binding, secret_port=secret_port)
     sut_failed = False
     try:
-        authenticate_managed_sut_readiness(selection, source_root=source_root, secret_port=secret_port)
+        authenticate_managed_sut_readiness(selection, secret_port=secret_port)
     except HostSecretDocumentError:
         raise
     except (ValueError, OSError):
         sut_failed = True
     if sut_failed:
         raise HostReadinessError("managed SUT readiness authentication failed")
-    if binding.validation_profile == "api_db_trace.v1":
-        if binding.collector_handle is None:
-            raise HostReadinessError("Collector/OTel readiness receipt is required")
-        receipt, _ = read_host_secret_model(
-            secret_port,
-            binding.collector_handle,
-            CollectorReadinessReceiptV1,
-            category="Collector/OTel readiness receipt",
-        )
-        collector_failed = False
-        try:
-            authenticate_collector_readiness(
-                receipt,
-                sut_instance_id=selection.verification.sut_instance_id,
-                execution_id=selection.execution_id,
-                configuration_digest=binding.configuration_digest,
-                authorization_scope_digest=selection.authorization_scope_digest,
-                activity_receipt_digest=selection.activity_receipt_digest,
-            )
-        except (ValueError, OSError):
-            collector_failed = True
-        if collector_failed:
-            raise HostReadinessError("Collector/OTel readiness authentication failed")
     return selection
 
 

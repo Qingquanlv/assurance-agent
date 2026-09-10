@@ -632,6 +632,164 @@ def prepare(
     return receipt
 
 
+_SERVED: dict[int, subprocess.Popen[bytes]] = {}
+
+
+def serve(
+    project_dir: Path,
+    *,
+    otel_file: Path | None = None,
+    ready_timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    """Start a shared SUT for tests/benchmarks. Does not issue ownership tokens."""
+    if isinstance(ready_timeout_s, bool) or not 0 < ready_timeout_s <= _MAX_READY_TIMEOUT_S:
+        raise ValueError("ready timeout must be greater than zero and at most 30 seconds")
+    project = Path(project_dir).resolve()
+    if not (project / "app").is_dir() or not (project / "requirements.lock").is_file():
+        raise ValueError("serve() requires a materialized project")
+    serve_root = project / ".serve"
+    serve_root.mkdir(exist_ok=True)
+    python = serve_root / "runtime" / "bin" / "python"
+    if not python.exists():
+        python = _provision_runtime(serve_root, project / "requirements.lock", offline=False)
+    db_file = project / "db.sqlite3"
+    instance_id = str(uuid.uuid4())
+    live_marker = serve_root / f"live-{instance_id}.json"
+    process_log = serve_root / "served-sut.log"
+    throwaway_token = secrets.token_bytes(32)
+    environment = _controlled_environment(
+        python=python,
+        run_root=serve_root,
+        sqlite_path=db_file,
+        instance_id=instance_id,
+        live_marker=live_marker,
+        runtime_secrets=False,
+        ownership_token=throwaway_token,
+    )
+    for name in ("AA_SUT_ADMIN_PASSWORD", "AA_SUT_RESET_PASSWORD", "AA_SUT_SECRET_KEY"):
+        supplied = os.environ.get(name)
+        if supplied:
+            environment[name] = supplied
+    lock_path = project / ".aa/user-oracle/runtime-lock.json"
+    fault = "none"
+    if lock_path.is_file():
+        try:
+            fault = str(json.loads(lock_path.read_bytes()).get("fault") or "none")
+        except (OSError, json.JSONDecodeError):
+            fault = "none"
+    environment["AA_SUT_FAULT"] = fault
+    environment["AA_SUT_FAULT_FACTS"] = str(serve_root / "fault-facts.jsonl")
+    resolved_otel: str | None = None
+    if otel_file is not None:
+        resolved_otel = str(Path(otel_file).resolve())
+        Path(resolved_otel).parent.mkdir(parents=True, exist_ok=True)
+        environment["AA_SUT_OTEL_FILE"] = resolved_otel
+        environment["AA_SUT_OTEL_SAMPLER"] = "always_on"
+        environment["AA_SUT_OTEL_FLUSH_RECEIPT"] = str(
+            Path(resolved_otel).parent / "otel-flush-receipt.json"
+        )
+    migration = project / "migrations" / "models" / "0_20260721171822_init.py"
+    if not migration.is_file():
+        raise ValueError("serve() requires a materialized project with migrations")
+    if not db_file.exists():
+        subprocess.run(  # noqa: S603
+            [
+                str(python),
+                str(FIXTURE_ROOT / "bootstrap.py"),
+                str(db_file),
+                "--migration",
+                str(migration),
+                "--password-env",
+                "AA_SUT_ADMIN_PASSWORD",
+            ],
+            cwd=project,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=environment,
+        )
+    listener, port = reserve_loopback_socket()
+    command = [
+        str(python),
+        "-B",
+        "-m",
+        "uvicorn",
+        "app:app",
+        "--fd",
+        str(listener.fileno()),
+        "--no-access-log",
+    ]
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        with process_log.open("ab") as stderr:
+            process = subprocess.Popen(  # noqa: S603
+                command,
+                cwd=project,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                env=environment,
+                pass_fds=(listener.fileno(),),
+            )
+        listener.close()
+        base_url = f"http://127.0.0.1:{port}"
+        deadline = time.monotonic() + ready_timeout_s
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise ValueError("served SUT exited before readiness")
+            try:
+                with urlopen(f"{base_url}/openapi.json", timeout=0.25) as response:  # noqa: S310
+                    if response.status == 200:
+                        break
+            except (URLError, TimeoutError):
+                time.sleep(0.05)
+        else:
+            raise ValueError("served SUT readiness timed out")
+    except BaseException:
+        if process is not None:
+            process.terminate()
+            process.wait(timeout=5)
+        listener.close()
+        raise
+    _SERVED[process.pid] = process
+    return {
+        "base_url": base_url,
+        "sqlite_path": str(db_file.resolve()),
+        "otel_file": resolved_otel,
+        "pid": process.pid,
+        "instance_id": instance_id,
+    }
+
+
+def stop_served(pid: int) -> None:
+    process = _SERVED.pop(pid, None)
+    if process is not None:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.05)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+
 def reserve_loopback_socket() -> tuple[socket.socket, int]:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
@@ -721,10 +879,14 @@ def _authenticated_prepare(
     return prepared, run_root, sut_dir, db_file, python, ownership_token
 
 
-def flush_otel(*, run_root: Path) -> dict[str, Any]:
-    otel = Path(run_root) / "otel"
-    observed = otel / "observed.otlp.jsonl"
-    traces = otel / "traces.jsonl"
+def flush_otel(*, run_root: Path | None = None, otlp_path: Path | None = None) -> dict[str, Any]:
+    if otlp_path is not None:
+        observed = Path(otlp_path)
+        traces = observed
+    else:
+        otel = Path(run_root) / "otel"  # type: ignore[arg-type]
+        observed = otel / "observed.otlp.jsonl"
+        traces = otel / "traces.jsonl"
     deadline = time.monotonic() + 8
     last_size = -1
     stable = 0

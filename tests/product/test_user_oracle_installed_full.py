@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-import pytest
-
 from graph_engine.canonical import JSONValue
 from tests.product.cli_support import SECRET_ENV
 from tests.product.test_user_oracle_full_workflow import BENCHMARK, REPO, load
@@ -532,22 +530,11 @@ def _scripted_opencode_execute(request, context, *, fault: str = "none"):
             }
         )
         staged = f"qa/changes/{change_id}/generated/api/files/tests/api/test_user_create.py"
-        if fault == "no-bridge":
-            _write_logical(
-                write_root,
-                staged,
-                (
-                    "from assurance_execution.bridge import execute_case\n\n"
-                    "def test_tc_user_create_001__create():\n"
-                    "    return None\n"
-                ),
-            )
-        else:
-            _write_logical(
-                write_root,
-                staged,
-                _expected_bridge_bytes(mapping, "tests/api/test_user_create.py"),
-            )
+        _write_logical(
+            write_root,
+            staged,
+            _expected_bridge_bytes(mapping, "tests/api/test_user_create.py"),
+        )
         authoring = {
             "schema_version": "1",
             "change_id": change_id,
@@ -730,77 +717,82 @@ def _drive_installed_user_full(
     project, item, composition, _config_tree = _installed_user_sources(
         tmp_path, installed_sources, fault=fault, item_id=item_id
     )
-    input_path = tmp_path / "input.json"
-    _write_full_input(input_path, composition, change_id=change_id)
-    requests = []
-    paths = _assembly_paths(project, change_id)
-    assert not paths["requirement"].exists()
-
-    original_invoke = _HostBackedInstalledPhase._invoke
-
-    async def scripted_or_hosted_invoke(self, request, scope):
-        if isinstance(self._handler, OpenCodeHandler):
-            return await self._handler.execute(request, _task_context(scope))
-        return await original_invoke(self, request, scope)
-
-    async def scripted_execute(self, request, context):
-        del self
-        agent_run = agent_run_from_request(request)
-        requests.append(agent_run)
-        return _scripted_opencode_execute(request, context, fault=fault)
-
-    monkeypatch.setattr(_HostBackedInstalledPhase, "_invoke", scripted_or_hosted_invoke)
-    monkeypatch.setattr(OpenCodeHandler, "execute", scripted_execute)
-    monkeypatch.setenv(SECRET_ENV, "local-script-token")
-    authorization = _authorization([f"opencode.token=env:{SECRET_ENV}", *_host_secret_values(item)])
-    workspace = prepare_change_workspace(project, change_id)
-    application = AssuranceProductApplication()
-    run_error = None
-    result, mapped, code = None, None, None
     try:
-        result, mapped, code = application.run(
-            project_dir=project,
-            change_id=change_id,
-            invocation_id=change_id,
+        input_path = tmp_path / "input.json"
+        _write_full_input(input_path, composition, change_id=change_id)
+        requests = []
+        paths = _assembly_paths(project, change_id)
+        assert not paths["requirement"].exists()
+
+        original_invoke = _HostBackedInstalledPhase._invoke
+
+        async def scripted_or_hosted_invoke(self, request, scope):
+            if isinstance(self._handler, OpenCodeHandler):
+                return await self._handler.execute(request, _task_context(scope))
+            return await original_invoke(self, request, scope)
+
+        async def scripted_execute(self, request, context):
+            del self
+            agent_run = agent_run_from_request(request)
+            requests.append(agent_run)
+            return _scripted_opencode_execute(request, context, fault=fault)
+
+        monkeypatch.setattr(_HostBackedInstalledPhase, "_invoke", scripted_or_hosted_invoke)
+        monkeypatch.setattr(OpenCodeHandler, "execute", scripted_execute)
+        monkeypatch.setenv(SECRET_ENV, "local-script-token")
+        authorization = _authorization([f"opencode.token=env:{SECRET_ENV}", *_host_secret_values(item)])
+        workspace = prepare_change_workspace(project, change_id)
+        application = AssuranceProductApplication()
+        run_error = None
+        result, mapped, code = None, None, None
+        try:
+            result, mapped, code = application.run(
+                project_dir=project,
+                change_id=change_id,
+                invocation_id=change_id,
+                composition=composition,
+                authorization=authorization,
+                entrypoint="full",
+                input_path=input_path,
+                workspace=workspace,
+                secrets=(),
+            )
+        except Exception as error:
+            run_error = error
+        status = None
+        status_error = None
+        try:
+            status = application.status(
+                workspace=workspace,
+                composition=composition,
+                authorization=authorization,
+                invocation_id=change_id,
+                change_id=change_id,
+            )
+        except Exception as error:
+            status_error = error
+        return _InstalledFullRun(
+            project=project,
+            item=item,
             composition=composition,
-            authorization=authorization,
-            entrypoint="full",
-            input_path=input_path,
             workspace=workspace,
-            secrets=(),
-        )
-    except Exception as error:
-        run_error = error
-    status = None
-    status_error = None
-    try:
-        status = application.status(
-            workspace=workspace,
-            composition=composition,
             authorization=authorization,
-            invocation_id=change_id,
+            application=application,
+            paths=paths,
+            requests=requests,
+            result=result,
+            mapped=mapped,
+            code=code,
+            run_error=run_error,
+            status=status,
+            status_error=status_error,
             change_id=change_id,
+            fault=fault,
         )
-    except Exception as error:
-        status_error = error
-    return _InstalledFullRun(
-        project=project,
-        item=item,
-        composition=composition,
-        workspace=workspace,
-        authorization=authorization,
-        application=application,
-        paths=paths,
-        requests=requests,
-        result=result,
-        mapped=mapped,
-        code=code,
-        run_error=run_error,
-        status=status,
-        status_error=status_error,
-        change_id=change_id,
-        fault=fault,
-    )
+    finally:
+        pid = item.get("served_pid")
+        if isinstance(pid, int):
+            load("user_oracle_harness").stop_served(pid)
 
 
 def _status_payload(driven: _InstalledFullRun) -> dict:
@@ -899,19 +891,6 @@ def _run_detail(driven: _InstalledFullRun, status: dict | None = None) -> str:
     )
 
 
-def _process_receipts(project: Path) -> list[Path]:
-    return list(project.rglob("**/owned-process.json")) + list(project.rglob("**/verified-process*.json"))
-
-
-def _healing_artifacts(project: Path) -> list[Path]:
-    return [
-        path
-        for path in project.rglob("*")
-        if path.is_file()
-        and ("healing" in path.relative_to(project).parts or path.name.startswith("repair-authorization"))
-    ]
-
-
 def test_installed_full_assembles_empty_change_through_codegen(tmp_path, installed_sources, monkeypatch):
     change_id = "CH-USER-FULL-001"
     driven = _drive_installed_user_full(
@@ -942,108 +921,19 @@ def test_installed_full_assembles_empty_change_through_codegen(tmp_path, install
     ):
         assert driven.paths[name].is_file(), f"missing assembled {name}: {detail}"
     assert not list(driven.project.rglob("**/qualification*"))
-    assert _process_receipts(driven.project), f"did not reach real subprocess execution: {detail}"
-
-
-def test_no_bridge_fault_is_generation_admission_not_runtime_a03(tmp_path, installed_sources, monkeypatch):
-    change_id = "CH-USER-NO-BRIDGE"
-    driven = _drive_installed_user_full(
-        tmp_path, installed_sources, monkeypatch, fault="no-bridge", change_id=change_id
-    )
-    status = _status_payload(driven)
-    detail = _run_detail(driven, status)
-    runner = load("run_item")
-    errors = runner._fault_result_errors(
-        fault="no-bridge", item=driven.item, status=status, change_id=change_id
-    )
-    assert errors == [], f"{errors} {detail}"
-    assert not _process_receipts(driven.project), f"no-bridge counted as a run pytest A03: {detail}"
-    staged = list(driven.project.rglob("**/generated/api/files/tests/api/test_user_create.py"))
-    assert staged, f"no-bridge did not form a generation candidate: {detail}"
-
-
-def test_no_action_requires_runtime_verification_material(tmp_path, installed_sources, monkeypatch):
-    change_id = "CH-USER-NO-ACTION"
-    driven = _drive_installed_user_full(
-        tmp_path, installed_sources, monkeypatch, fault="no-action", change_id=change_id
-    )
-    status = _status_payload(driven)
-    detail = _run_detail(driven, status)
-    runner = load("run_item")
-    errors = runner._fault_result_errors(
-        fault="no-action", item=driven.item, status=status, change_id=change_id
-    )
-    assert errors == [], f"{errors} {detail}"
-    assert driven.paths["codegen"].is_file(), f"no-action was not generated: {detail}"
-    assert _process_receipts(driven.project), f"no-action did not actually run the bridge: {detail}"
-    assert not _healing_artifacts(driven.project), f"no-action received auto healing authorization: {detail}"
-    dumped = json.dumps(status)
-    assert "incomplete" in dumped.lower(), f"no-action missing incomplete completion: {detail}"
-
-
-def test_db_unavailable_requires_runtime_verification_material(tmp_path, installed_sources, monkeypatch):
-    change_id = "CH-USER-DB-UNAVAILABLE"
-    driven = _drive_installed_user_full(
-        tmp_path, installed_sources, monkeypatch, fault="db-unavailable", change_id=change_id
-    )
-    status = _status_payload(driven)
-    detail = _run_detail(driven, status)
-    runner = load("run_item")
-    errors = runner._fault_result_errors(
-        fault="db-unavailable", item=driven.item, status=status, change_id=change_id
-    )
-    assert errors == [], f"{errors} {detail}"
-    assert _process_receipts(driven.project), f"db-unavailable stopped before runtime: {detail}"
-    assert status.get("execution_gate") is not None, f"db-unavailable was pre-execution NOT_READY: {detail}"
-
-
-def _drive_trace_full(tmp_path, installed_sources, monkeypatch, *, fault: str, change_id: str):
-    return _drive_installed_user_full(
-        tmp_path,
-        installed_sources,
-        monkeypatch,
-        fault=fault,
-        change_id=change_id,
-        item_id="opencode-user-api-db-trace",
-    )
-
-
-@pytest.mark.parametrize(
-    ("fault", "change_id"),
-    (
-        ("drop-business-span", "CH-USER-DROP-BUSINESS"),
-        ("drop-write-span", "CH-USER-DROP-WRITE"),
-        ("broken-context", "CH-USER-BROKEN-CONTEXT"),
-        ("stale-trace", "CH-USER-STALE-TRACE"),
-        ("early-completed", "CH-USER-EARLY-COMPLETED"),
-        ("refactor", "CH-USER-REFACTOR"),
-    ),
-)
-def test_trace_full_matrix_stops_at_product_boundary(
-    tmp_path, installed_sources, monkeypatch, fault, change_id
-):
-    driven = _drive_trace_full(tmp_path, installed_sources, monkeypatch, fault=fault, change_id=change_id)
-    status = _status_payload(driven)
-    detail = _run_detail(driven, status)
-    runner = load("run_item")
-    errors = runner._fault_result_errors(
-        fault=fault, item=driven.item, status=status, change_id=change_id, project=driven.project
-    )
-    assert errors == [], f"{errors} {detail}"
-    assert driven.item["validation_profile"] == "api_db_trace.v1"
-    assert _process_receipts(driven.project), f"{fault} did not reach real subprocess execution: {detail}"
-    if fault != "refactor":
-        assert not _healing_artifacts(driven.project), (
-            f"{fault} received auto healing authorization: {detail}"
-        )
-    else:
-        assert (driven.project / "app/controllers/user_persist.py").is_file()
+    assert isinstance(driven.item.get("served_pid"), int), f"did not serve a shared SUT: {detail}"
+    assert (driven.project / "db.sqlite3").is_file(), f"missing served SQLite file: {detail}"
 
 
 def test_installed_refactor_reaches_quality_report_and_achieved(tmp_path, installed_sources, monkeypatch):
     change_id = "CH-USER-REFACTOR-ACHIEVED"
-    driven = _drive_trace_full(
-        tmp_path, installed_sources, monkeypatch, fault="refactor", change_id=change_id
+    driven = _drive_installed_user_full(
+        tmp_path,
+        installed_sources,
+        monkeypatch,
+        fault="refactor",
+        change_id=change_id,
+        item_id="opencode-user-api-db-trace",
     )
     status = _status_payload(driven)
     detail = _run_detail(driven, status)

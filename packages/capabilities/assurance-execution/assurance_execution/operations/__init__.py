@@ -22,12 +22,11 @@ from assurance_execution.operations.sqlite_oracle import observe_user
 from assurance_execution.operations.verification_manifest import (
     allocate_user_inputs,
     authenticate_verification_manifest,
-    build_managed_sut_authority,
     build_verification_manifest,
     sqlite_file_identity,
 )
 
-from assurance_execution.operations.managed_sut import authenticate_managed_sut_receipts
+from assurance_execution.operations.managed_sut import authenticate_sut_binding
 from assurance_execution.operations.verified_execution import (
     VerifiedExecutionHandler,
     VerifiedExecutionInputV1,
@@ -66,7 +65,7 @@ __all__ = [
     "VerifiedExecutionHandler",
     "VerifiedExecutionInputV1",
     "VerifiedProcessReceiptV1",
-    "authenticate_managed_sut_receipts",
+    "authenticate_sut_binding",
     "ExecuteFinalizeHandler",
     "ExecutePrepareHandler",
     "ExecutionProcessHost",
@@ -78,7 +77,6 @@ __all__ = [
     "SelectHandler",
     "allocate_user_inputs",
     "authenticate_verification_manifest",
-    "build_managed_sut_authority",
     "build_verification_manifest",
     "execution_handlers",
     "observe_user",

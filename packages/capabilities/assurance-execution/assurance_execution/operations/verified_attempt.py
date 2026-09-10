@@ -7,8 +7,7 @@ from dataclasses import replace
 from graph_engine.attempts import AttemptKey
 from graph_engine.canonical import canonical_digest
 from assurance_execution.operations.user_attempt import start_user_attempt, recover_user_attempt, UserAttempt
-from assurance_execution.contracts.readiness import ManagedSutReadinessSelectionV1
-from assurance_execution.operations.managed_sut import authenticate_managed_sut_readiness
+from assurance_execution.operations.managed_sut import probe_sut_http
 from pathlib import Path
 from collections.abc import Mapping
 
@@ -174,32 +173,7 @@ class VerifiedAttemptHandler:
             if cancelling and context.activity.snapshot.state == "prepared":
                 return request, private_context, owned
             if not recovering:
-                if root.validation_profile == "api_db_trace.v1":
-                    from assurance_execution.contracts.readiness import CollectorReadinessReceiptV1
-                    from assurance_execution.operations.readiness import authenticate_collector_readiness
-
-                    if owned.record.collector_receipt is None:
-                        raise ValueError("NOT_READY: attempt-bound Collector/OTel lifecycle is required")
-                    authenticate_collector_readiness(
-                        CollectorReadinessReceiptV1.model_validate(owned.record.collector_receipt),
-                        sut_instance_id=owned.verification.sut_instance_id,
-                        execution_id=owned.execution_id,
-                        configuration_digest=str(host["configuration_digest"]),
-                        authorization_scope_digest=context.workspace_identity.identity_digest,
-                        activity_receipt_digest=owned.authority.activity_receipt_digest,
-                    )
-                authenticate_managed_sut_readiness(
-                    ManagedSutReadinessSelectionV1(
-                        workspace_root=str(context.project_root.resolve()),
-                        verification=owned.verification,
-                        configuration_digest=str(host["configuration_digest"]),
-                        execution_id=owned.execution_id,
-                        authorization_scope_digest=context.workspace_identity.identity_digest,
-                        activity_receipt_digest=owned.authority.activity_receipt_digest,
-                    ),
-                    source_root=source,
-                    secret_port=owned.secrets,
-                )
+                probe_sut_http(owned.verification.sut_base_url)
             if owned.record.prepared_input is None:
                 if recovering:
                     raise ValueError("NOT_READY: dispatched attempt has no prepared evidence")

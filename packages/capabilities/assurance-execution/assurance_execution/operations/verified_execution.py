@@ -28,7 +28,6 @@ from assurance_execution.operations.host_secrets import read_host_secret_model
 from assurance_execution.operations.telemetry import (
     flush_driver_provider,
     load_otlp_records,
-    observed_otlp_path,
     seal_incomplete_telemetry,
     seal_telemetry_artifacts,
     start_driver_client_span,
@@ -55,19 +54,16 @@ from graph_engine.plugin_api import (
 )
 from assurance_execution.contracts.agent import VerifiedExecutionPrepareV1
 from assurance_execution.contracts.verification import (
-    ManagedSutAuthorityV1,
     ObservationState,
     ObservationV1,
+    UserAttemptAuthorityV1,
     VerificationEvidenceV1,
     EvidenceCompletionV1,
     VerifiedExecutionAuthorityV1,
     VerifiedExecutionResultV1,
 )
 from assurance_execution.execution_view import ExecutionView, authenticate_execution_view
-from assurance_execution.operations.managed_sut import (
-    authenticate_managed_sut_receipts,
-    managed_sut_ownership_token,
-)
+from assurance_execution.operations.managed_sut import authenticate_sut_binding
 from assurance_execution.operations.verified_process import (
     ActionControl,
     SubprocessVerificationHost,
@@ -351,7 +347,7 @@ def _authenticate(
     VerificationManifestV1,
     CaseExecutionPlanV1,
     ActionJournal,
-    ManagedSutAuthorityV1,
+    UserAttemptAuthorityV1,
 ]:
     payload = VerifiedExecutionInputV1.model_validate(request.input)
     manifest = VerificationManifestV1.model_validate_json(
@@ -369,7 +365,7 @@ def _authenticate(
             "workspace_identity_digest": scope,
         }
     )
-    _, _, identity, _ = authenticate_managed_sut_receipts(
+    _, _, identity, _ = authenticate_sut_binding(
         context.project_root,
         profile,
         secret_port=context.secrets,
@@ -423,10 +419,10 @@ def _authenticate(
     authority, _ = read_host_secret_model(
         context.secrets,
         profile.managed_sut_authority_handle,
-        ManagedSutAuthorityV1,
-        category="independent managed SUT authority",
+        UserAttemptAuthorityV1,
+        category="User attempt authority",
     )
-    key = managed_sut_ownership_token(Path(authority.run_root), authority)
+    key = bytes.fromhex(authority.journal_key)
     journal = ActionJournal(context.write_root / manifest.evidence_root, manifest, key)
     return payload, manifest, plan, journal, authority
 
@@ -559,24 +555,23 @@ def _collector_completion(journal: ActionJournal, plan: CaseExecutionPlanV1) -> 
     )
 
 
-def _request_trace_id(run_root: Path, execution_id: str, explicit: str | None) -> str | None:
+def _request_trace_id(otlp_path: Path | None, execution_id: str, explicit: str | None) -> str | None:
     if explicit:
         return explicit
-    marker = Path(run_root) / "otel" / "request-trace.json"
+    if otlp_path is None:
+        return None
+    marker = otlp_path.parent / "request-trace.json"
     if marker.is_file():
         try:
             payload = json.loads(marker.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             payload = {}
-        if isinstance(payload, dict) and payload.get("execution_id") == execution_id:
-            value = payload.get("trace_id")
-            if isinstance(value, str) and value:
-                return value
-    source = observed_otlp_path(run_root)
-    if not source.is_file():
+        if payload.get("execution_id") == execution_id and payload.get("trace_id"):
+            return str(payload["trace_id"])
+    if not otlp_path.is_file():
         return None
     try:
-        spans = load_otlp_records(source, execution_id)
+        spans = load_otlp_records(otlp_path, execution_id)
     except ValueError:
         return None
     driver = next(
@@ -597,7 +592,7 @@ def _complete_trace_evidence(
     journal: ActionJournal,
     plan: CaseExecutionPlanV1,
     manifest: VerificationManifestV1,
-    run_root: Path,
+    otlp_path: str | None,
     trace_id: str | None = None,
 ) -> None:
     if plan.validation_profile != "api_db_trace.v1":
@@ -607,10 +602,10 @@ def _complete_trace_evidence(
     from assurance_execution.operations.telemetry import flush_sut_provider
 
     driver = flush_driver_provider()
-    sut = flush_sut_provider(manifest.sut.base_url, run_root)
-    source = observed_otlp_path(run_root)
-    request_trace = _request_trace_id(run_root, manifest.execution_id, trace_id)
-    if not source.is_file():
+    source = Path(otlp_path) if otlp_path else None
+    sut = flush_sut_provider(manifest.sut.base_url, source.parent if source is not None else None)
+    request_trace = _request_trace_id(source, manifest.execution_id, trace_id)
+    if source is None or not source.is_file():
         seal_incomplete_telemetry(
             evidence_root=journal.root,
             execution_id=manifest.execution_id,
@@ -869,14 +864,12 @@ class VerifiedExecutionHandler:
                 journal,
                 credential,
                 control,
-                observed_otlp_path(Path(authority.run_root))
-                if plan.validation_profile == "api_db_trace.v1"
-                else None,
+                Path(authority.otlp_path) if authority.otlp_path else None,
             ),
             cancel_requested=context.cancel_requested,
         )
         journal.write("process_terminal", receipt.model_dump(mode="json"))
-        _complete_trace_evidence(journal, plan, manifest, Path(authority.run_root))
+        _complete_trace_evidence(journal, plan, manifest, authority.otlp_path)
         return _verified_outcome(
             _outcome(journal, plan),
             request=request,
@@ -934,7 +927,7 @@ class VerifiedExecutionHandler:
                     "cleanup_terminal",
                     {"container_name": "aa-verify-" + manifest.execution_id, "confirmed": True},
                 )
-            _complete_trace_evidence(journal, plan, manifest, Path(authority.run_root))
+            _complete_trace_evidence(journal, plan, manifest, authority.otlp_path)
             return TaskActivityReconcileResult(
                 status="terminal",
                 reference=reference,

@@ -625,7 +625,9 @@ def test_complete_trace_evidence_embeds_stages_without_extra_json(tmp_path: Path
     otel.mkdir(parents=True)
     (otel / "observed.otlp.jsonl").write_bytes(correlated_otlp())
     (otel / "flush-receipt.json").write_text(json.dumps({"state": "flushed"}), encoding="utf-8")
-    _complete_trace_evidence(journal, plan, manifest, run_root, trace_id=TRACE_ID)
+    _complete_trace_evidence(
+        journal, plan, manifest, str(otel / "observed.otlp.jsonl"), trace_id=TRACE_ID
+    )
     document = TelemetryCompletionV1.model_validate_json(
         (journal.root / "telemetry-completion.json").read_bytes()
     )

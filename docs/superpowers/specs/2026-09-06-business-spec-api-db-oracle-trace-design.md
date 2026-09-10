@@ -263,11 +263,11 @@ quality 从冻结计划与执行证据纯计算结果，策略只决定后续路
 | --- | --- |
 | intake | 业务断言 ID、规范来源与评审状态；冻结可读业务预期 |
 | generation | 派生机器计划、闭集义务绑定与 readiness；生成 pytest 桥接入口 |
-| execution | 权威 subprocess/HTTP driver、SQLite observer、实例身份、数据库 span 归一、Collector 生命周期和证据封存 |
+| execution | 权威 subprocess/HTTP driver、SQLite observer、实例绑定、数据库 span 归一和证据封存；不拥有 SUT/Collector 生命周期 |
 | quality | 确定性业务与证据判定、义务覆盖及新状态投影 |
 | healing | 检测并拒绝验收义务降级，允许不改变语义的执行绑定修复 |
 | assurance-product | 安装声明、profile 配置、工作流接线、状态/导出/achieved 集成 |
-| benchmark | User full-workflow 验收项、独占 SUT 环境、真实 Tortoise/SQLite 与业务插桩、故障变体及工作流证据检查 |
+| benchmark | User full-workflow 验收项、共享 SUT 物化/可选拉起、真实 Tortoise/SQLite 与业务插桩、故障变体及工作流证据检查 |
 
 `.aa/` 仅保存声明式绑定与策略，扩展闭合配置 schema；observer、validator、gate 等能力由已安装 wheels 提供。不得扫描 SUT 加载任意 Python 插件。
 

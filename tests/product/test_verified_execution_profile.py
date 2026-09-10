@@ -170,10 +170,8 @@ def test_profile_mismatch_rejects_before_delegate(profiled_composition):
 
 @pytest.mark.parametrize("profile", ["api_db.v1", "api_db_trace.v1"])
 def test_authenticated_host_prerequisites_are_profile_specific(tmp_path, monkeypatch, profile):
-    import hashlib
     import json
     from assurance_product.verification_execution import VerificationConfiguration, preflight_verification
-    from assurance_execution.contracts.verification import ManagedSutAuthorityV1
     from assurance_execution.operations.verified_process import DockerVerificationHost
     from graph_engine.attempts.secret_sources import (
         InvocationRuntimeAuthorization,
@@ -183,26 +181,15 @@ def test_authenticated_host_prerequisites_are_profile_specific(tmp_path, monkeyp
 
     run = tmp_path / "run"
     run.mkdir()
-    token = run / ".ownership-token"
-    token.write_bytes(b"a" * 32)
-    token.chmod(0o400)
-    stat = token.stat()
-    authority = ManagedSutAuthorityV1.model_validate(
-        {
-            "run_root": str(run),
-            "ownership_token": {
-                "path": str(token),
-                "device": stat.st_dev,
-                "inode": stat.st_ino,
-                "digest": "sha256:" + hashlib.sha256(token.read_bytes()).hexdigest(),
-            },
-            "prepare_receipt_digest": "a" * 64,
-            "start_receipt_digest": "b" * 64,
-            "authorization_scope_digest": "c" * 64,
-            "activity_receipt_digest": "d" * 64,
-        }
-    )
-    monkeypatch.setenv("AA_TEST_PREFLIGHT_AUTHORITY", authority.model_dump_json())
+    authority = {
+        "kind": "user-invocation-host.v1",
+        "authority_root": str(run),
+        "fault": "none",
+        "sut_base_url": "http://127.0.0.1:1",
+        "sqlite_path": str(run / "missing.sqlite3"),
+        "instance_id": "missing",
+    }
+    monkeypatch.setenv("AA_TEST_PREFLIGHT_AUTHORITY", json.dumps(authority))
     monkeypatch.setenv("AA_TEST_PREFLIGHT_CREDENTIAL", json.dumps({"token": "test", "user_password": "test"}))
     monkeypatch.setenv(
         "AA_TEST_PREFLIGHT_COLLECTOR", json.dumps({"collector_ready": True, "otel_ready": True})

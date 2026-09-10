@@ -14,6 +14,10 @@
 
 **2026-09-10 经用户确认：Trace 改走 Demoso 模型，并收缩本 PR。** 参考 `/Users/lvqingquan/Demiso/demoso` 的 `ast_trace.otel_bridge`：给 FastAPI+Tortoise SUT 加官方插桩，进程内写 `observed.otlp.jsonl`（封存名仍可用 `telemetry.otlp.jsonl`），HTTP driver 只注入 `traceparent`，quality/execution 按 `trace_id` 过滤该次链路。删除独占 otelcol-contrib、Collector health_check/drain、每 Attempt 动态 OTLP 端点，以及把独占 SUT/SQLite 写成 Trace 完整性条件的逻辑。`api_db.v1` 业务判定仍用独立 SELECT oracle（可连本次测试进程的同一个库文件）；测试为了可重复仍可起临时 uvicorn，但这不是产品隔离保证。Collector 专属故障（`drain-timeout`）从闭集移除；缺链路/缺 write span 仍为 INCOMPLETE。业务 expected 仍来自已认可需求，不来自 span 属性。
 
+**2026-09-10 经用户确认：砍掉独占 SUT host。** `assurance_execution` 不再 `prepare`/`start`/`stop` 独占 SUT 进程，不再复制 per-attempt 运行副本，不再签发 ownership token / HMAC process receipt，不再把 inode/pid/birth identity 当作执行门禁。SUT 由 benchmark/`run_item`/pytest fixture 物化并（可选）拉起共享 uvicorn；execution 只消费绑定：`sut_base_url` + 同一 `sqlite_path` + 可选 `otel_file`，然后 POST、独立 SELECT、按 `trace_id` 拉 JSONL。`UserAttempt.stop()` 不杀共享 SUT。故障变体仍由 harness 在物化阶段写入项目，不在 execution 里再拷一份独占树。
+
+**2026-09-10 经用户确认：砍装机矩阵 / Stage-1 重复测试。** 同一故障不要再走三遍（`run_item` 合成 status、installed full 脚本图、execution 单测）。CI 只保留：`full_workflow` 里对 `_FAULT_EXPECTATIONS` / 评分函数的廉价表测试；一条 installed 空 change 装配；一条 installed refactor→quality.report/achieved/export。删除 installed 上的 no-bridge/no-action/db-unavailable/trace 六参矩阵，以及 `full_workflow` 里同名的合成 status 复本。动作/oracle 行为仍由 execution 单测覆盖。Live OpenCode 矩阵仍单独记为未跑，不在 CI 里用脚本图冒充。
+
 **实施基线与本次 Review：** 最初实施基线为 `1b4187660e273183a9aab71f63fd8ee70d4dddcc`，源 Plan 来自主工作区 `d7e6591a`。2026-09-09 已执行 `git fetch origin main`，固定审查远程 main 为 `99316670ef008d4551926ec76765f0182e5e806b`，当前 HEAD 为 `a025831990fb776187fe03670e2118c9b50e385e`；merge-base 等于该 main。审查命令为 `git diff 99316670...a0258319`，同时审查尚未完成的 T10–T13。本文只更新 `codex/user-full-workflow-db-oracle-trace` worktree 内的实施指引；不合并代码、不修改原工作区文档。
 
 ## Global Constraints
@@ -34,9 +38,9 @@
 - wheel 中的 Python 工厂、semantic contracts、raw-file seal/promote 与 ProductLock v3 是本基线唯一接线机制；`.aa/` 仅为闭合组织数据。不得恢复 YAML graph/execute-slot 配置或引入 project-loadable handlers。
 - 既有 `plan_ref/plan_digest` 始终表示 intake 的 `ResolvedAssurancePlan`；新增机器计划使用 `case_execution_plan_ref/case_execution_plan_digest`。两个身份都必须贯通，不覆盖或混用。
 - 完整交付保留真实 `aa compile/start/run/status/export` 路径；`entrypoint=full` 与 `run_mode=case` 是不同字段，不能把 run_mode 改成 full。
-- 本次补修保持既有 LangGraph 节点、边、重试路由与 semantic Attempt 提交机制。`prepare/finalize` 是节点内部阶段；SUT/Collector 启停属于 execution host。只调整必要的 selector/publish/Send 数据映射，不增加前置编排节点、Agent、第二套调度器或全图 `seed + context` 状态。
+- 本次补修保持既有 LangGraph 节点、边、重试路由与 semantic Attempt 提交机制。`prepare/finalize` 是节点内部阶段；SUT 启停不属于 execution host，由 benchmark/测试夹具拥有。只调整必要的 selector/publish/Send 数据映射，不增加前置编排节点、Agent、第二套调度器或全图 `seed + context` 状态。
 - 冻结根计划决定是否启用验证；缺少调用方可选字段不能切回 legacy。业务规格/来源由现有认证入口读取，完整 `CasePlanContextV1` 在候选 bindings 产生后由 host 构造。Agent 不填写信任摘要，正式机器计划和下游接纳校验不放宽。
-- `api_db.v1` 与 `api_db_trace.v1` 的业务执行不依赖 Docker、Colima、镜像或 OCI qualification 文件。pytest 子进程只负责触发窄桥接；父级 host 独占 API 凭据、SUT/SQLite/Collector 句柄、业务动作、oracle 与证据写入。当前阶段不宣称能够隔离同一 OS 用户下的恶意测试代码。
+- `api_db.v1` 与 `api_db_trace.v1` 的业务执行不依赖 Docker、Colima、镜像或 OCI qualification 文件。pytest 子进程只负责触发窄桥接；父级 host 独占 API 凭据、业务动作、oracle 与证据写入，不独占 SUT 进程或 SQLite 文件。当前阶段不宣称能够隔离同一 OS 用户下的恶意测试代码。
 
 ### 2026-09-09 Review 状态与修正索引
 

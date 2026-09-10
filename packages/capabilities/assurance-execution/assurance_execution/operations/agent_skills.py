@@ -58,7 +58,7 @@ from assurance_execution.operations.common import (
 from assurance_execution.operations.paths import resolve_canonical_evidence
 from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
-from assurance_execution.operations.managed_sut import authenticate_managed_sut_receipts
+from assurance_execution.operations.managed_sut import authenticate_sut_binding
 from assurance_execution.operations.sqlite_oracle import observe_user
 from assurance_execution.operations.verification_manifest import (
     authenticate_verification_manifest,
@@ -699,7 +699,7 @@ def _prepare_verified_execution(
             "workspace_identity_digest": context.workspace_identity.identity_digest,
         }
     )
-    managed_path, observer_path, database_identity, authority_digest = authenticate_managed_sut_receipts(
+    managed_path, observer_path, database_identity, authority_digest = authenticate_sut_binding(
         workspace,
         profile,
         secret_port=context.secrets,
@@ -761,8 +761,6 @@ def _prepare_verified_execution(
         "manifest_path": manifest_ref_path,
         "manifest_sha256": manifest_digest,
         "inputs": profile.user_inputs.model_dump(mode="json"),
-        "managed_sut_prepare_receipt_ref": profile.managed_sut_prepare_receipt_ref.model_dump(mode="json"),
-        "managed_sut_start_receipt_ref": profile.managed_sut_start_receipt_ref.model_dump(mode="json"),
         "managed_sut_authority_handle": profile.managed_sut_authority_handle,
         "managed_sut_authority_digest": authority_digest,
     }

@@ -62,51 +62,25 @@ class SqliteObservationMetadataV1(FrozenModel):
     mtime_ns: int = Field(ge=0)
 
 
-class ManagedSutOwnershipTokenV1(FrozenModel):
-    path: str = Field(min_length=1)
-    device: int = Field(ge=0)
-    inode: int = Field(ge=0)
-    digest: str = Field(pattern=_TAGGED_SHA256)
+class UserAttemptAuthorityV1(FrozenModel):
+    """Retained attempt binding and journal HMAC key. Not process ownership."""
 
-    @field_validator("path")
-    @classmethod
-    def _canonical_path(cls, value: str) -> str:
-        from pathlib import Path
-
-        path = Path(value)
-        if not path.is_absolute() or str(path.resolve(strict=False)) != value:
-            raise ValueError("managed SUT ownership token path must be canonical and absolute")
-        return value
-
-
-class ManagedSutAuthorityV1(FrozenModel):
-    """Host-retained trust anchor independent of the managed SUT receipt bundle."""
-
-    schema_version: Literal["1"] = "1"
-    run_root: str = Field(min_length=1)
-    ownership_token: ManagedSutOwnershipTokenV1
-    prepare_receipt_digest: str = Field(pattern=_SHA256)
-    start_receipt_digest: str = Field(pattern=_SHA256)
     authorization_scope_digest: str = Field(pattern=_SHA256)
     activity_receipt_digest: str = Field(pattern=_SHA256)
+    journal_key: str = Field(pattern=_SHA256)
+    sut_base_url: str = Field(pattern=r"^http://127\.0\.0\.1:[1-9][0-9]{0,4}$")
+    sqlite_path: str = Field(min_length=1)
+    instance_id: str = Field(min_length=1)
+    otlp_path: str | None = None
 
-    @field_validator("run_root")
+    @field_validator("sqlite_path")
     @classmethod
-    def _canonical_run_root(cls, value: str) -> str:
+    def _absolute_sqlite_path(cls, value: str) -> str:
         from pathlib import Path
 
-        path = Path(value)
-        if not path.is_absolute() or str(path.resolve(strict=False)) != value:
-            raise ValueError("managed SUT authority run root must be canonical and absolute")
+        if not Path(value).is_absolute() or str(Path(value)) != value:
+            raise ValueError("attempt SQLite path must be canonical and absolute")
         return value
-
-    @model_validator(mode="after")
-    def _fixed_token_path(self) -> Self:
-        from pathlib import Path
-
-        if Path(self.ownership_token.path) != Path(self.run_root) / ".ownership-token":
-            raise ValueError("managed SUT authority token path does not match its run root")
-        return self
 
 
 class ManagedSutV1(FrozenModel):
@@ -336,9 +310,8 @@ class VerifiedExecutionResultV1(VerifiedExecutionAuthorityV1):
 __all__ = [
     "EvidenceCompletionV1",
     "FrozenUserInputsV1",
-    "ManagedSutAuthorityV1",
-    "ManagedSutOwnershipTokenV1",
     "ManagedSutV1",
+    "UserAttemptAuthorityV1",
     "ObservationState",
     "ObservationV1",
     "SqliteFileIdentityV1",

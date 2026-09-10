@@ -62,8 +62,6 @@ class VerifiedExecutionPrepareV1(FrozenModel):
     managed_sqlite_path: str = Field(min_length=1)
     observer_sqlite_path: str = Field(min_length=1)
     user_inputs: FrozenUserInputsV1
-    managed_sut_prepare_receipt_ref: EvidenceArtifactRefV1
-    managed_sut_start_receipt_ref: EvidenceArtifactRefV1
     managed_sut_authority_handle: str = Field(pattern=r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 
     @field_validator("nodeid")

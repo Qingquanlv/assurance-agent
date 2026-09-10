@@ -342,7 +342,7 @@ class OwnedAttemptProbe:
                 assert checked.status == "not_dispatched"
                 outcome = await self.handler.execute(request, context)
                 assert len(logins) == 1
-                assert len(list((context.project_root / ".aa/managed-user").iterdir())) == 1
+                assert not (context.project_root / ".aa/managed-user").exists()
                 return outcome
             finally:
                 patch.undo()
@@ -438,9 +438,16 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
 
     project = tmp_path / "project"
     import json
+    import os
     from tests.product.test_user_oracle_full_workflow import load
 
-    selected = load("user_oracle_harness").materialize_project(project_dir=project)
+    harness = load("user_oracle_harness")
+    selected = harness.materialize_project(project_dir=project)
+    password = "R4-private-password"
+    os.environ["AA_SUT_ADMIN_PASSWORD"] = password
+    os.environ["AA_SUT_RESET_PASSWORD"] = password
+    os.environ["AA_SUT_SECRET_KEY"] = password
+    started = harness.serve(project)
     value = accepted_verified_execution_input(
         project, change_id="c", reviewed_source_path="app/controllers/user.py"
     ).model_copy(update={"verification": None})
@@ -499,6 +506,9 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
                 "kind": "user-invocation-host.v1",
                 "authority_root": str(private),
                 "fault": "none",
+                "sut_base_url": started["base_url"],
+                "sqlite_path": started["sqlite_path"],
+                "instance_id": started["instance_id"],
                 "frozen_artifact_ref": {
                     "path": ".aa/user-oracle/runtime-lock.json",
                     "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
@@ -511,7 +521,7 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
         SecretSourceBinding("sut.authority", "environment", "AA_TEST_AUTHORITY"),
         SecretSourceBinding("sut.credential", "environment", "AA_TEST_CREDENTIAL"),
     )
-    monkeypatch.setenv("AA_SUT_TEST_ONLY", "local-only-password")
+    monkeypatch.setenv("AA_SUT_TEST_ONLY", password)
     sources += tuple(
         SecretSourceBinding(handle, "environment", "AA_SUT_TEST_ONLY")
         for handle in ("managed-sut.admin-password", "managed-sut.reset-password", "managed-sut.secret-key")
@@ -581,13 +591,9 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
             retained_credential = record["credential"]
             result = await executor.reconcile(value, scope, await journal.load(key))
             if cut == "prepared":
-                from graph_engine.attempts import IndeterminateTaskResult
-
-                assert isinstance(result, IndeterminateTaskResult)
-                runs = list((project / ".aa/managed-user").iterdir())
-                assert len(runs) == 1
-                assert (runs[0] / "runtime/stopped-process.json").exists()
-                assert not list(workspace.write_root.rglob("action_started.json"))
+                assert not (project / ".aa/managed-user").exists()
+                assert list(private.glob("*.json"))
+                assert result.output.root.completion_status == "collected"
                 return
         else:
             result = await executor.execute(value, scope)
@@ -601,21 +607,19 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
 
             assert isinstance(result, PermanentTaskFailure)
             assert not list(workspace.write_root.rglob("action_started.json"))
-            runs = list(project.glob(".aa/managed-user/*/runtime"))
+            assert not (project / ".aa/managed-user").exists()
             if cut == "cancel_before_start":
-                assert runs == []
+                assert not list(private.glob("*.json"))
             else:
-                assert len(runs) == 1 and (runs[0] / "stopped-process.json").exists()
+                assert list(private.glob("*.json"))
             return
         assert result.output.root.completion_status == (
             "incomplete" if cut == "dispatch_started" else "collected"
         )
-        runs = list((project / ".aa/managed-user").iterdir())
-        assert len(runs) == 1
-        assert (runs[0] / "runtime/stopped-process.json").exists()
+        assert not (project / ".aa/managed-user").exists()
         import sqlite3
 
-        with sqlite3.connect(runs[0] / "runtime/sut/db.sqlite3") as database:
+        with sqlite3.connect(started["sqlite_path"]) as database:
             assert database.execute("select count(*) from user where username = 'oracle_user'").fetchone()[
                 0
             ] == (0 if cut == "dispatch_started" else 1)
@@ -633,7 +637,7 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
                     assert secret.encode() not in path.read_bytes()
         if retained_credential is not None:
             assert json.loads(next(private.glob("*.json")).read_bytes())["credential"] == retained_credential
-        assert list((project / ".aa/managed-user").iterdir()) == runs
+        assert not (project / ".aa/managed-user").exists()
         for changed in (
             value.model_copy(update={"validation_profile": "api_db_trace.v1"}),
             value.model_copy(update={"verification_config_digest": "0" * 64}),
@@ -644,18 +648,26 @@ async def _run_owned_host(tmp_path: Path, monkeypatch, cut):
                 await executor.reconcile(changed, scope, await journal.load(key))
     finally:
         store.close()
+        harness.stop_served(started["pid"])
 
 
 @pytest.fixture
 def owned_input(tmp_path):
     import json
+    import os
     from tests.product.test_user_oracle_full_workflow import load
     from tests.verified_generation_fixture import accepted_verified_execution_input
     from tests.product.test_verified_readiness import Secrets
     from graph_engine.attempts import AttemptKey
 
     project = tmp_path / "project"
-    selected = load("user_oracle_harness").materialize_project(project_dir=project)
+    harness = load("user_oracle_harness")
+    selected = harness.materialize_project(project_dir=project)
+    password = "R4-private-password"
+    os.environ["AA_SUT_ADMIN_PASSWORD"] = password
+    os.environ["AA_SUT_RESET_PASSWORD"] = password
+    os.environ["AA_SUT_SECRET_KEY"] = password
+    started = harness.serve(project)
     root = accepted_verified_execution_input(
         project, reviewed_source_path="app/controllers/user.py"
     ).model_copy(update={"verification": None})
@@ -668,6 +680,9 @@ def owned_input(tmp_path):
                     "kind": "user-invocation-host.v1",
                     "authority_root": str(private),
                     "fault": "none",
+                    "sut_base_url": started["base_url"],
+                    "sqlite_path": started["sqlite_path"],
+                    "instance_id": started["instance_id"],
                     "frozen_artifact_ref": {
                         "path": ".aa/user-oracle/runtime-lock.json",
                         "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
@@ -675,7 +690,7 @@ def owned_input(tmp_path):
                 }
             ).encode(),
             **{
-                handle: b"R4-private-password"
+                handle: password.encode()
                 for handle in (
                     "sut.credential",
                     "managed-sut.admin-password",
@@ -698,54 +713,10 @@ def owned_input(tmp_path):
         authority_handle="sut.authority",
         credential_handle="sut.credential",
     )
-    yield root, kwargs, private
-    from assurance_execution.operations.managed_sut import ManagedUserSutHost
-
-    for receipt in project.glob(".aa/managed-user/*/runtime/owned-process.json"):
-        if not receipt.with_name("stopped-process.json").exists():
-            document = json.loads(receipt.read_bytes())
-            try:
-                ManagedUserSutHost(source_root=Path(__file__).resolve().parents[2], secret_port=secrets).stop(
-                    workspace_root=project, receipt_path=receipt, instance_id=document["instance_id"]
-                )
-            except ValueError:
-                pass
-
-
-def test_startup_failure_cleans_process_after_start_receipt_is_written(owned_input, monkeypatch):
-    from assurance_execution.operations.user_attempt import start_user_attempt
-    from assurance_execution.operations.managed_sut import ManagedUserSutHost
-
-    root, kwargs, _ = owned_input
-    start = ManagedUserSutHost.start
-
-    def lose_start_reply(self, **arguments):
-        start(self, **arguments)
-        raise ValueError("test lost start reply")
-
-    monkeypatch.setattr(ManagedUserSutHost, "start", lose_start_reply)
-    with pytest.raises(ValueError, match="test lost start reply"):
-        start_user_attempt(root, **kwargs)
-    runs = list(kwargs["workspace_root"].glob(".aa/managed-user/*/runtime"))
-    assert len(runs) == 1
-    assert (runs[0] / "stopped-process.json").exists()
-
-
-def test_owned_stop_is_idempotent_even_if_runtime_source_drifted(owned_input):
-    from assurance_execution.operations.user_attempt import start_user_attempt
-
-    root, kwargs, _ = owned_input
-    owned = start_user_attempt(root, **kwargs)
-    source = Path(owned.authority.run_root) / "sut/app/controllers/user.py"
-    original = source.read_bytes()
-    source.chmod(0o600)
     try:
-        source.write_bytes(original + b"\n# changed after preparation\n")
-        owned.stop()
-        owned.stop()
-        assert (Path(owned.authority.run_root) / "stopped-process.json").exists()
+        yield root, kwargs, private
     finally:
-        source.write_bytes(original)
+        harness.stop_served(started["pid"])
 
 
 def test_retained_attempt_recovers_credentials_without_login_and_rejects_links(owned_input, monkeypatch):
@@ -815,61 +786,12 @@ def test_retained_attempt_recovers_credentials_without_login_and_rejects_links(o
     )
     try:
         assert second.execution_id != first.execution_id
-        assert second.verification.sut_instance_id != first.verification.sut_instance_id
-        assert second.verification.managed_sqlite_path != first.verification.managed_sqlite_path
+        assert second.verification.sut_instance_id == first.verification.sut_instance_id
+        assert second.verification.managed_sqlite_path == first.verification.managed_sqlite_path
         assert second.verification.user_inputs == first.verification.user_inputs
         assert len(logins) == 2
     finally:
         second.stop()
-
-
-@pytest.mark.parametrize("cut", ["before", "after"])
-def test_owned_cleanup_publication_recovers_without_partial_final(owned_input, monkeypatch, cut):
-    import json
-    import os
-    from assurance_execution.operations.user_attempt import start_user_attempt
-    from assurance_execution.operations import record_publication as publication
-
-    root, kwargs, _ = owned_input
-    owned = start_user_attempt(root, **kwargs)
-    run = Path(owned.authority.run_root)
-    stopped = run / "stopped-process.json"
-    marker = run / f"live-{owned.verification.sut_instance_id}.json"
-    publish = publication._publish_exclusive
-
-    def interrupted(source, destination):
-        if destination.name == "stopped-process.json" and cut == "before":
-            raise RuntimeError("test-only interrupted cleanup publication")
-        publish(source, destination)
-        if destination.name == "stopped-process.json":
-            raise RuntimeError("test-only interrupted cleanup publication")
-
-    with monkeypatch.context() as patch:
-        patch.setattr(publication, "_publish_exclusive", interrupted)
-        with pytest.raises(RuntimeError, match="interrupted cleanup"):
-            owned.stop()
-    assert marker.exists()
-    if cut == "before":
-        assert not stopped.exists()
-    else:
-        assert json.loads(stopped.read_bytes())["state"] == "stopped"
-    kill = os.kill
-    signals = []
-
-    def observe_kill(pid, sig):
-        signals.append(sig)
-        return kill(pid, sig)
-
-    monkeypatch.setattr(os, "kill", observe_kill)
-    owned.stop()
-    final = stopped.read_bytes()
-    owned.stop()
-    assert stopped.read_bytes() == final
-    assert json.loads(final)["instance_id"] == owned.verification.sut_instance_id
-    assert not marker.exists()
-    assert not any(signals)
-    assert stopped.stat().st_nlink == 1
-    assert stopped.stat().st_mode & 0o777 == 0o400
 
 
 @pytest.mark.parametrize("raced", [False, True])

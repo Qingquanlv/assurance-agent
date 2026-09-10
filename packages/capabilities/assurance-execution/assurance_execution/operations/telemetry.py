@@ -224,19 +224,13 @@ def flush_driver_provider() -> dict[str, Any]:
     force_flush = getattr(provider, "force_flush", None)
     if callable(force_flush):
         flushed = bool(force_flush(timeout_millis=5000))
-    shutdown = getattr(provider, "shutdown", None)
-    if callable(shutdown):
-        try:
-            shutdown()
-        except Exception:  # noqa: BLE001
-            flushed = False
     return {
         "state": "complete" if flushed else "incomplete",
         **({} if flushed else {"reason": "driver_flush_failed"}),
     }
 
 
-def flush_sut_provider(base_url: str, run_root: Path) -> dict[str, Any]:
+def flush_sut_provider(base_url: str, receipt_dir: Path | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {"state": "incomplete", "reason": "sut_flush_failed"}
     try:
         import httpx
@@ -249,8 +243,10 @@ def flush_sut_provider(base_url: str, run_root: Path) -> dict[str, Any]:
                     payload = {"state": "complete"}
     except Exception:
         pass
-    if payload.get("state") != "complete":
-        receipt = Path(run_root) / "otel" / "flush-receipt.json"
+    if payload.get("state") != "complete" and receipt_dir is not None:
+        receipt = Path(receipt_dir) / "flush-receipt.json"
+        if not receipt.is_file():
+            receipt = Path(receipt_dir) / "otel-flush-receipt.json"
         if receipt.is_file():
             try:
                 body = json.loads(receipt.read_text(encoding="utf-8"))

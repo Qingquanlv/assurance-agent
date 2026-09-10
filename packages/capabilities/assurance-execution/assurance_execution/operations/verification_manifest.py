@@ -12,41 +12,11 @@ from graph_engine.canonical import canonical_digest
 
 from assurance_execution.contracts.verification import (
     FrozenUserInputsV1,
-    ManagedSutAuthorityV1,
-    ManagedSutOwnershipTokenV1,
     ManagedSutV1,
     SqliteFileIdentityV1,
     VerificationManifestV1,
 )
 from assurance_generation.contracts.execution_plan import ValidationProfile
-
-
-def build_managed_sut_authority(
-    *,
-    run_root: Path,
-    ownership_token_path: Path,
-    ownership_token_device: int,
-    ownership_token_inode: int,
-    ownership_token_digest: str,
-    prepare_receipt_digest: str,
-    start_receipt_digest: str,
-    authorization_scope_digest: str,
-    activity_receipt_digest: str,
-) -> ManagedSutAuthorityV1:
-    """Close host-retained lifecycle values without reading the receipt bundle."""
-    return ManagedSutAuthorityV1(
-        run_root=str(run_root),
-        ownership_token=ManagedSutOwnershipTokenV1(
-            path=str(ownership_token_path),
-            device=ownership_token_device,
-            inode=ownership_token_inode,
-            digest=ownership_token_digest,
-        ),
-        prepare_receipt_digest=prepare_receipt_digest,
-        start_receipt_digest=start_receipt_digest,
-        authorization_scope_digest=authorization_scope_digest,
-        activity_receipt_digest=activity_receipt_digest,
-    )
 
 
 def sqlite_file_identity(path: Path) -> SqliteFileIdentityV1:
@@ -193,7 +163,6 @@ def allocate_user_inputs(
 __all__ = [
     "allocate_user_inputs",
     "authenticate_verification_manifest",
-    "build_managed_sut_authority",
     "build_verification_manifest",
     "sqlite_file_identity",
 ]

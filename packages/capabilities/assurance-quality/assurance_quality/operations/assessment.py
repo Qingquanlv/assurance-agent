@@ -39,8 +39,8 @@ from assurance_execution.contracts.telemetry import (
 )
 from assurance_execution.contracts.verification import (
     EvidenceCompletionV1,
-    ManagedSutAuthorityV1,
     ObservationV1,
+    UserAttemptAuthorityV1,
     VerificationEvidenceV1,
     VerificationManifestV1,
     VerifiedExecutionAuthorityV1,
@@ -483,7 +483,7 @@ def _host_authority(
     secret_port: SecretPort | None,
     authority_handle: str | None,
     execution_id: str,
-) -> tuple[ManagedSutAuthorityV1, bytes]:
+) -> tuple[UserAttemptAuthorityV1, bytes]:
     if secret_port is None or authority_handle is None:
         raise AssessmentInputError("verified assessment requires independent host authority")
     try:
@@ -496,30 +496,13 @@ def _host_authority(
             document = json.loads(retained.read_bytes())
             if isinstance(document, dict) and "authority" in document:
                 document = document["authority"]
-        authority = ManagedSutAuthorityV1.model_validate(document)
+        authority = UserAttemptAuthorityV1.model_validate(document)
+        journal_key = bytes.fromhex(authority.journal_key)
     except (KeyError, OSError, ValidationError, ValueError, TypeError, json.JSONDecodeError):
         raise AssessmentInputError("independent host authority is unavailable or invalid") from None
-    token_path = Path(authority.ownership_token.path)
-    if token_path != Path(authority.run_root) / ".ownership-token":
-        raise AssessmentInputError("independent host authority token path differs from its run root")
-    try:
-        details = token_path.stat()
-        token = token_path.read_bytes()
-    except OSError:
-        raise AssessmentInputError("independent host authority ownership token is unavailable") from None
-    if (
-        token_path.is_symlink()
-        or not token_path.is_file()
-        or details.st_nlink != 1
-        or details.st_uid != os.getuid()
-        or details.st_mode & 0o077
-        or details.st_dev != authority.ownership_token.device
-        or details.st_ino != authority.ownership_token.inode
-        or len(token) != 32
-        or f"sha256:{hashlib.sha256(token).hexdigest()}" != authority.ownership_token.digest
-    ):
-        raise AssessmentInputError("independent host authority ownership token is invalid")
-    return authority, token
+    if len(journal_key) != 32:
+        raise AssessmentInputError("independent host authority journal key is invalid")
+    return authority, journal_key
 
 
 def _journal_payload(

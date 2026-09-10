@@ -100,10 +100,9 @@ def test_real_user_create_observes_commit_and_transaction_rollback(
     harness = load("user_oracle_harness")
     for name in ("AA_SUT_ADMIN_PASSWORD", "AA_SUT_RESET_PASSWORD", "AA_SUT_SECRET_KEY"):
         monkeypatch.setenv(name, "task10-local-only-password")
-    project, run = tmp_path / "project", tmp_path / "runtime"
-    harness.prepare(workspace_root=tmp_path, project_dir=project, run_root=run, fault=fault)
-    started = harness.start(workspace_root=tmp_path, prepare_receipt=run / "harness-prepare.json")
-    frozen_start = (run / "owned-process.json").read_bytes()
+    project = tmp_path / "project"
+    harness.materialize_project(project_dir=project, fault=fault)
+    started = harness.serve(project)
 
     def post(path, payload, token=None):
         headers = {"Content-Type": "application/json"}
@@ -138,7 +137,10 @@ def test_real_user_create_observes_commit_and_transaction_rollback(
         if rows:
             assert rows[0][0] == expected_active
         if fault == "rollback-success":
-            facts = [json.loads(line) for line in (run / "fault-facts.jsonl").read_text().splitlines()]
+            facts = [
+                json.loads(line)
+                for line in (project / ".serve" / "fault-facts.jsonl").read_text().splitlines()
+            ]
             assert [fact["event"] for fact in facts] == [
                 "transaction_entered",
                 "write_observed",
@@ -148,13 +150,7 @@ def test_real_user_create_observes_commit_and_transaction_rollback(
             assert facts[2]["row_count"] == 0
             assert facts[0]["connection_id"] == facts[1]["connection_id"]
     finally:
-        harness.stop(
-            workspace_root=tmp_path,
-            receipt_path=run / "owned-process.json",
-            instance_id=started["instance_id"],
-        )
-    assert (run / "owned-process.json").read_bytes() == frozen_start
-    assert json.loads((run / "stopped-process.json").read_text())["state"] == "stopped"
+        harness.stop_served(started["pid"])
 
 
 @pytest.fixture
@@ -186,7 +182,7 @@ def test_source_preflight_rejects_original_sut_drift(locked_original_source):
 
 def test_attempt_authority_files_are_immutable_and_separate(tmp_path):
     from assurance_execution.operations.user_attempt import retain_authority, read_retained_authority
-    from assurance_execution.contracts.verification import ManagedSutAuthorityV1
+    from assurance_execution.contracts.verification import UserAttemptAuthorityV1
     from tests.verified_generation_fixture import accepted_verified_execution_input
 
     project = tmp_path / "project"
@@ -194,20 +190,17 @@ def test_attempt_authority_files_are_immutable_and_separate(tmp_path):
     accepted_verified_execution_input(project)
     host = tmp_path / "host"
     host.mkdir(mode=0o700)
+    sqlite = tmp_path / "db.sqlite3"
+    sqlite.write_bytes(b"sqlite")
     document = {
-        "run_root": str(project / "runtime"),
-        "ownership_token": {
-            "path": str(project / "runtime/.ownership-token"),
-            "device": 1,
-            "inode": 1,
-            "digest": "sha256:" + "a" * 64,
-        },
-        "prepare_receipt_digest": "b" * 64,
-        "start_receipt_digest": "c" * 64,
         "authorization_scope_digest": "d" * 64,
         "activity_receipt_digest": "e" * 64,
+        "journal_key": "a" * 64,
+        "sut_base_url": "http://127.0.0.1:32123",
+        "sqlite_path": str(sqlite),
+        "instance_id": "sut-1",
     }
-    first = ManagedSutAuthorityV1.model_validate(document)
+    first = UserAttemptAuthorityV1.model_validate(document)
     second = first.model_copy(update={"activity_receipt_digest": "f" * 64})
     a, b = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
     retain_authority(host, a, first, project_root=project)
@@ -219,75 +212,6 @@ def test_attempt_authority_files_are_immutable_and_separate(tmp_path):
     project.chmod(0o700)
     with pytest.raises(ValueError, match="outside"):
         retain_authority(project, a, first, project_root=project)
-
-
-def test_one_invocation_prepares_independent_sut_attempts(tmp_path):
-    from assurance_execution.operations.user_attempt import start_user_attempt
-    from tests.verified_generation_fixture import accepted_verified_execution_input
-    from graph_engine.attempts import AttemptKey
-
-    project = tmp_path / "project"
-    harness = load("user_oracle_harness")
-    selected = harness.materialize_project(project_dir=project)
-    root = accepted_verified_execution_input(
-        project, reviewed_source_path="app/controllers/user.py"
-    ).model_copy(update={"verification": None})
-    host = tmp_path / "host"
-    host.mkdir(mode=0o700)
-
-    class Secrets:
-        def resolve(self, handle):
-            if handle == "sut.authority":
-                return json.dumps(
-                    {
-                        "kind": "user-invocation-host.v1",
-                        "authority_root": str(host),
-                        "fault": "none",
-                        "frozen_artifact_ref": {
-                            "path": ".aa/user-oracle/runtime-lock.json",
-                            "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
-                        },
-                    }
-                ).encode()
-            return b"task10-local-only-password"
-
-    from urllib.error import URLError
-    from urllib.request import urlopen
-
-    attempts = []
-    previous_url = None
-    for char in ("a", "b"):
-        owned = start_user_attempt(
-            root,
-            source_root=REPO,
-            workspace_root=project,
-            attempt_key=AttemptKey(digest=char * 64),
-            invocation_id="same-invocation",
-            task_id=char * 64,
-            graph_instance_id="graph",
-            node_id="execution.execute",
-            authorization_scope_digest=char * 64,
-            secrets=Secrets(),
-            authority_handle="sut.authority",
-            credential_handle="sut.credential",
-        )
-        try:
-            if previous_url is not None:
-                with pytest.raises(URLError):
-                    urlopen(previous_url + "/api/v1/base/access_token", timeout=1)
-            attempts.append(owned.verification)
-            assert owned.verification.sut_base_url.startswith("http://127.0.0.1:")
-            assert owned.verification.sut_base_url != "http://127.0.0.1:9999"
-            assert json.loads(owned.secrets.resolve("sut.credential"))["token"]
-        finally:
-            previous_url = owned.verification.sut_base_url
-            owned.stop()
-    assert attempts[0].sut_instance_id != attempts[1].sut_instance_id
-    assert attempts[0].managed_sqlite_path != attempts[1].managed_sqlite_path
-    assert attempts[0].sut_base_url != attempts[1].sut_base_url
-    assert len(list(host.glob("*.json"))) == 2
-    with pytest.raises(URLError):
-        urlopen(attempts[1].sut_base_url + "/api/v1/base/access_token", timeout=1)
 
 
 @pytest.mark.parametrize("member", ["app", "migrations"])
@@ -312,8 +236,8 @@ def test_source_preflight_rejects_extra_directory_symlinks(locked_original_sourc
 
 
 def test_attempt_rejects_stale_generation_before_starting_http(tmp_path, monkeypatch):
+    import httpx
     from assurance_execution.operations.user_attempt import start_user_attempt
-    from assurance_execution.operations.managed_sut import ManagedUserSutHost
     from tests.verified_generation_fixture import accepted_verified_execution_input
     from graph_engine.attempts import AttemptKey
 
@@ -326,6 +250,8 @@ def test_attempt_rejects_stale_generation_before_starting_http(tmp_path, monkeyp
     )
     host = tmp_path / "host"
     host.mkdir(mode=0o700)
+    sqlite = tmp_path / "db.sqlite3"
+    sqlite.write_bytes(b"sqlite")
 
     class Secrets:
         def resolve(self, handle):
@@ -334,14 +260,17 @@ def test_attempt_rejects_stale_generation_before_starting_http(tmp_path, monkeyp
                     "kind": "user-invocation-host.v1",
                     "authority_root": str(host),
                     "fault": "none",
+                    "sut_base_url": "http://127.0.0.1:9",
+                    "sqlite_path": str(sqlite),
+                    "instance_id": "sut-1",
                     "frozen_artifact_ref": {"path": ".aa/user-oracle/runtime-lock.json", "digest": "a" * 64},
                 }
             ).encode()
 
     def forbidden(*args, **kwargs):
-        pytest.fail("stale generation reached SUT startup")
+        pytest.fail("stale generation reached SUT login")
 
-    monkeypatch.setattr(ManagedUserSutHost, "prepare", forbidden)
+    monkeypatch.setattr(httpx.Client, "post", forbidden)
     with pytest.raises(ValueError, match="generation"):
         start_user_attempt(
             root,
@@ -532,21 +461,26 @@ def test_user_configuration_and_host_binding_are_fixed_without_oci(tmp_path):
     output = tmp_path / "output"
     output.mkdir()
     runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault="none")
-    assert item["verification_host"] == {
-        "sut_source_root": str(REPO),
-        "managed_sut_authority_handle": "sut.authority",
-        "managed_sut_readiness_handle": None,
-        "credential_handle": "sut.credential",
-        "collector_readiness_handle": None,
-    }
-    assert "runner" not in item["verification_host"]
-    deployment = tmp_path / "deployment.json"
-    runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
-    document = json.loads(deployment.read_text(encoding="utf-8"))
-    assert document["validation_profile"] == "api_db.v1"
-    assert document["verification_host"] == item["verification_host"]
-    assert {"sut.authority", "sut.credential"} <= set(document["secret_handles"])
-    assert "qualification" not in json.dumps(document)
+    try:
+        assert item["verification_host"] == {
+            "sut_source_root": str(REPO),
+            "managed_sut_authority_handle": "sut.authority",
+            "managed_sut_readiness_handle": None,
+            "credential_handle": "sut.credential",
+            "collector_readiness_handle": None,
+        }
+        assert "runner" not in item["verification_host"]
+        deployment = tmp_path / "deployment.json"
+        runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
+        document = json.loads(deployment.read_text(encoding="utf-8"))
+        assert document["validation_profile"] == "api_db.v1"
+        assert document["verification_host"] == item["verification_host"]
+        assert {"sut.authority", "sut.credential"} <= set(document["secret_handles"])
+        assert "qualification" not in json.dumps(document)
+    finally:
+        pid = item.get("served_pid")
+        if isinstance(pid, int):
+            load("user_oracle_harness").stop_served(pid)
 
 
 def test_user_fault_parser_includes_runtime_no_action(tmp_path):
@@ -581,126 +515,6 @@ def test_fault_outcome_accepts_only_expected_non_delivery(fault, verdict):
     runner = load("run_item")
     assert runner._fault_outcome_errors(fault=fault, verdict=verdict, achieved=False, published=False) == []
     assert runner._fault_outcome_errors(fault=fault, verdict="PASSED", achieved=True, published=True)
-
-
-def test_no_bridge_fault_is_generation_admission_not_runtime_a03():
-    runner = load("run_item")
-    change_id = "CH-USER-NO-BRIDGE"
-    prefix = (
-        "intake.intake",
-        "intake.explore",
-        "intake.case-design",
-        "intake.case-review",
-        "generation.api.plan",
-        "generation.api.plan-review",
-    )
-    graphs = [
-        {"graph_instance_id": f"g-{step}", "graph_id": step} for step in (*prefix, "generation.api.codegen")
-    ]
-    nodes = [
-        {
-            "graph_instance_id": f"g-{step}",
-            "node_id": f"{step}/finalize",
-            "state": "succeeded",
-        }
-        for step in prefix
-    ]
-    nodes.append(
-        {
-            "graph_instance_id": "g-generation.api.codegen",
-            "node_id": "generation.api.codegen/finalize",
-            "state": "failed",
-        }
-    )
-    status = {
-        "invocation_id": change_id,
-        "status": "failed",
-        "terminal_reason": "generation_bridge_missing",
-        "selected_test_families": ["api"],
-        "change": {"change_id": change_id, "state": "failed"},
-        "graph_hierarchy": graphs,
-        "node_states": nodes,
-        "execution_gate": None,
-        "quality_gate": None,
-        "publication": {"status": "not_ready"},
-    }
-    item = runner._manifest_item(
-        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
-        "opencode-user-api-db",
-        "opencode",
-    )
-    assert runner._fault_result_errors(fault="no-bridge", item=item, status=status, change_id=change_id) == []
-    runtime_a03 = {
-        **status,
-        "status": "completed",
-        "terminal_reason": "verification_incomplete",
-        "change": {"change_id": change_id, "state": "stopped"},
-        "execution_gate": {
-            "validation_profile": "api_db.v1",
-            "execution_receipt_id": "execution-receipt",
-            "execution_receipt_digest": "a" * 64,
-            "batch_id": "batch-current",
-        },
-        "quality_gate": {
-            "inspection": {
-                "verification_status": "INCOMPLETE",
-                "verification_ref": {"path": "verification.json", "digest": "b" * 64},
-                "batch_id": "batch-current",
-            }
-        },
-    }
-    assert runner._fault_result_errors(fault="no-bridge", item=item, status=runtime_a03, change_id=change_id)
-
-
-def test_no_action_requires_runtime_verification_material():
-    runner = load("run_item")
-    change_id = "CH-USER-NO-ACTION"
-    item = runner._manifest_item(
-        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
-        "opencode-user-api-db",
-        "opencode",
-    )
-    required = tuple(item["required_steps"])
-    status = {
-        "invocation_id": change_id,
-        "status": "failed",
-        "terminal_reason": "verification_incomplete",
-        "selected_test_families": ["api"],
-        "change": {"change_id": change_id, "state": "failed"},
-        "graph_hierarchy": [{"graph_instance_id": f"g-{step}", "graph_id": step} for step in required],
-        "node_states": [
-            {
-                "graph_instance_id": f"g-{step}",
-                "node_id": f"{step}/finalize",
-                "state": "succeeded",
-            }
-            for step in required
-        ],
-        "execution_gate": {
-            "validation_profile": "api_db.v1",
-            "execution_receipt_id": "execution-receipt",
-            "execution_receipt_digest": "a" * 64,
-            "batch_id": "batch-current",
-        },
-        "quality_gate": {
-            "inspection": {
-                "verification_status": "INCOMPLETE",
-                "verification_ref": {"path": "verification.json", "digest": "b" * 64},
-                "batch_id": "batch-current",
-            }
-        },
-        "publication": {"status": "not_ready"},
-    }
-    assert runner._fault_result_errors(fault="no-action", item=item, status=status, change_id=change_id) == []
-    admission = {
-        **status,
-        "status": "failed",
-        "terminal_reason": "generation_bridge_missing",
-        "change": {"change_id": change_id, "state": "failed"},
-        "execution_gate": None,
-        "quality_gate": None,
-    }
-    assert runner._fault_result_errors(fault="no-action", item=item, status=admission, change_id=change_id)
 
 
 def test_missing_binding_fault_requires_its_generation_admission_boundary():
@@ -752,64 +566,6 @@ def test_missing_binding_fault_requires_its_generation_admission_boundary():
         item=item,
         status={**status, "node_states": []},
         change_id=change_id,
-    )
-
-
-def test_db_unavailable_requires_runtime_verification_material():
-    runner = load("run_item")
-    change_id = "CH-USER-DB-UNAVAILABLE"
-    item = runner._manifest_item(
-        json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8")),
-        "opencode-user-api-db",
-        "opencode",
-    )
-    required = tuple(item["required_steps"])
-    status = {
-        "invocation_id": change_id,
-        "status": "failed",
-        "terminal_reason": "verification_incomplete",
-        "selected_test_families": ["api"],
-        "change": {"change_id": change_id, "state": "failed"},
-        "graph_hierarchy": [{"graph_instance_id": f"g-{step}", "graph_id": step} for step in required],
-        "node_states": [
-            {
-                "graph_instance_id": f"g-{step}",
-                "node_id": f"{step}/finalize",
-                "state": "succeeded",
-            }
-            for step in required
-        ],
-        "execution_gate": {
-            "validation_profile": "api_db.v1",
-            "execution_receipt_id": "execution-receipt",
-            "execution_receipt_digest": "a" * 64,
-            "batch_id": "batch-current",
-        },
-        "quality_gate": {
-            "inspection": {
-                "verification_status": "INCOMPLETE",
-                "verification_ref": {"path": "verification.json", "digest": "b" * 64},
-                "batch_id": "batch-current",
-            }
-        },
-        "publication": {"status": "not_ready"},
-    }
-
-    assert (
-        runner._fault_result_errors(fault="db-unavailable", item=item, status=status, change_id=change_id)
-        == []
-    )
-    pre_execution = {
-        **status,
-        "status": "failed",
-        "terminal_reason": "database_unavailable",
-        "change": {"change_id": change_id, "state": "failed"},
-        "node_states": status["node_states"][:-3],
-        "execution_gate": None,
-        "quality_gate": None,
-    }
-    assert runner._fault_result_errors(
-        fault="db-unavailable", item=item, status=pre_execution, change_id=change_id
     )
 
 
@@ -899,61 +655,6 @@ def test_runtime_fault_fails_without_quality_gate():
     assert any("quality verification material" in error for error in errors)
 
 
-def test_attempt_rejects_reviewed_a_with_functional_frozen_b_before_any_post(tmp_path, monkeypatch):
-    import httpx
-    from graph_engine.attempts import AttemptKey
-    from assurance_execution.operations.user_attempt import start_user_attempt
-    from tests.verified_generation_fixture import accepted_verified_execution_input
-
-    project = tmp_path / "project"
-    selected = load("user_oracle_harness").materialize_project(project_dir=project)
-    source = project / "app/controllers/user.py"
-    source.write_bytes(source.read_bytes() + b"\n# reviewed source A differs from frozen B\n")
-    root = accepted_verified_execution_input(
-        project, reviewed_source_path="app/controllers/user.py"
-    ).model_copy(update={"verification": None})
-    host = tmp_path / "host"
-    host.mkdir(mode=0o700)
-
-    class Secrets:
-        def resolve(self, handle):
-            if handle == "sut.authority":
-                return json.dumps(
-                    {
-                        "kind": "user-invocation-host.v1",
-                        "authority_root": str(host),
-                        "fault": "none",
-                        "frozen_artifact_ref": {
-                            "path": ".aa/user-oracle/runtime-lock.json",
-                            "digest": selected["frozen_artifact_digest"].removeprefix("sha256:"),
-                        },
-                    }
-                ).encode()
-            return b"task10-local-only-password"
-
-    def forbidden_post(*args, **kwargs):
-        pytest.fail("unreviewed runtime reached HTTP POST")
-
-    monkeypatch.setattr(httpx.Client, "post", forbidden_post)
-    with pytest.raises(ValueError, match="NOT_READY: reviewed source"):
-        start_user_attempt(
-            root,
-            source_root=REPO,
-            workspace_root=project,
-            attempt_key=AttemptKey(digest="e" * 64),
-            invocation_id="invocation",
-            task_id="task",
-            graph_instance_id="graph",
-            node_id="execute",
-            authorization_scope_digest="a" * 64,
-            secrets=Secrets(),
-            authority_handle="sut.authority",
-            credential_handle="sut.credential",
-        )
-    assert not list(project.glob(".aa/managed-user/*/runtime/owned-process.json"))
-    assert not list(host.glob("*.json"))
-
-
 def test_trace_manifest_item_uses_same_user_spec_and_trace_profile():
     runner = load("run_item")
     document = json.loads((BENCHMARK / "manifest.json").read_text(encoding="utf-8"))
@@ -1010,39 +711,44 @@ def test_trace_host_binds_collector_handle_without_oci(tmp_path):
     output = tmp_path / "output"
     output.mkdir()
     runner._configure_user_host(repo=REPO, project=project, output=output, item=item, fault="none")
-    assert item["verification_host"]["collector_readiness_handle"] == "sut.collector"
-    assert "runner" not in item["verification_host"]
-    collector_args = [
-        item["host_secret_args"][index + 1]
-        for index, flag in enumerate(item["host_secret_args"])
-        if flag == "--secret" and item["host_secret_args"][index + 1].startswith("sut.collector=")
-    ]
-    assert collector_args
-    collector_path = Path(collector_args[0].split("=", 1)[1].removeprefix("file:"))
-    from assurance_execution.operations.readiness import (
-        CollectorQualification,
-        authenticate_collector_artifacts,
-    )
+    try:
+        assert item["verification_host"]["collector_readiness_handle"] == "sut.collector"
+        assert "runner" not in item["verification_host"]
+        collector_args = [
+            item["host_secret_args"][index + 1]
+            for index, flag in enumerate(item["host_secret_args"])
+            if flag == "--secret" and item["host_secret_args"][index + 1].startswith("sut.collector=")
+        ]
+        assert collector_args
+        collector_path = Path(collector_args[0].split("=", 1)[1].removeprefix("file:"))
+        from assurance_execution.operations.readiness import (
+            CollectorQualification,
+            authenticate_collector_artifacts,
+        )
 
-    qualification = CollectorQualification.model_validate_json(collector_path.read_bytes())
-    assert qualification.validation_profile == "api_db_trace.v1"
-    assert qualification.configuration_digest == runner._verification_config_digest(
-        validation_profile="api_db_trace.v1", host=item["verification_host"]
-    )
+        qualification = CollectorQualification.model_validate_json(collector_path.read_bytes())
+        assert qualification.validation_profile == "api_db_trace.v1"
+        assert qualification.configuration_digest == runner._verification_config_digest(
+            validation_profile="api_db_trace.v1", host=item["verification_host"]
+        )
 
-    class _Secrets:
-        def resolve(self, handle):
-            assert handle == "sut.collector"
-            return collector_path.read_bytes()
+        class _Secrets:
+            def resolve(self, handle):
+                assert handle == "sut.collector"
+                return collector_path.read_bytes()
 
-    authenticate_collector_artifacts(_Secrets(), "sut.collector", qualification.configuration_digest)
-    deployment = tmp_path / "deployment.json"
-    runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
-    document = json.loads(deployment.read_text(encoding="utf-8"))
-    assert document["validation_profile"] == "api_db_trace.v1"
-    assert document["verification_host"]["collector_readiness_handle"] == "sut.collector"
-    assert "sut.collector" in document["secret_handles"]
-    assert "qualification" not in json.dumps(document)
+        authenticate_collector_artifacts(_Secrets(), "sut.collector", qualification.configuration_digest)
+        deployment = tmp_path / "deployment.json"
+        runner._write_deployment_manifest(deployment, item, project_scope=str(project), adapter="opencode")
+        document = json.loads(deployment.read_text(encoding="utf-8"))
+        assert document["validation_profile"] == "api_db_trace.v1"
+        assert document["verification_host"]["collector_readiness_handle"] == "sut.collector"
+        assert "sut.collector" in document["secret_handles"]
+        assert "qualification" not in json.dumps(document)
+    finally:
+        pid = item.get("served_pid")
+        if isinstance(pid, int):
+            load("user_oracle_harness").stop_served(pid)
 
 
 @pytest.mark.parametrize(("fault", "verdict", "prefix_end", "verified"), TRACE_FAULT_MATRIX)

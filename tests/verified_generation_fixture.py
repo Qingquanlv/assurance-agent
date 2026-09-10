@@ -347,12 +347,6 @@ def accepted_verified_execution_input(
         managed_sqlite_path=str(database),
         observer_sqlite_path=str(database),
         user_inputs=FrozenUserInputsV1(username="probe", email="probe@example.test"),
-        managed_sut_prepare_receipt_ref=EvidenceArtifactRefV1(
-            path=f"qa/changes/{change_id}/execution/prepare.json", digest="a" * 64
-        ),
-        managed_sut_start_receipt_ref=EvidenceArtifactRefV1(
-            path=f"qa/changes/{change_id}/execution/start.json", digest="b" * 64
-        ),
         managed_sut_authority_handle="sut.authority",
     )
     return ExecutionPrepareInputV1(

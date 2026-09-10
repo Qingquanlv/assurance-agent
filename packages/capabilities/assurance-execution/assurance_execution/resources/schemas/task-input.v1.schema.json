@@ -267,12 +267,6 @@
         "user_inputs": {
           "$ref": "#/$defs/FrozenUserInputsV1"
         },
-        "managed_sut_prepare_receipt_ref": {
-          "$ref": "#/$defs/EvidenceArtifactRefV1"
-        },
-        "managed_sut_start_receipt_ref": {
-          "$ref": "#/$defs/EvidenceArtifactRefV1"
-        },
         "managed_sut_authority_handle": {
           "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$",
           "title": "Managed Sut Authority Handle",
@@ -289,8 +283,6 @@
         "managed_sqlite_path",
         "observer_sqlite_path",
         "user_inputs",
-        "managed_sut_prepare_receipt_ref",
-        "managed_sut_start_receipt_ref",
         "managed_sut_authority_handle"
       ],
       "title": "VerifiedExecutionPrepareV1",

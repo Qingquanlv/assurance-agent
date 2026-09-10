@@ -15,7 +15,6 @@ from assurance_execution.contracts.verification import (
     VerificationEvidenceV1,
     VerificationManifestV1,
 )
-from assurance_execution.operations import build_managed_sut_authority
 from assurance_execution.operations.verification_manifest import (
     allocate_user_inputs,
     authenticate_verification_manifest,
@@ -24,50 +23,6 @@ from assurance_execution.operations.verification_manifest import (
 
 
 SHA = "a" * 64
-
-
-def test_host_builds_managed_sut_authority_from_retained_values(tmp_path: Path) -> None:
-    run_root = (tmp_path / "managed-run").resolve()
-    authority = build_managed_sut_authority(
-        run_root=run_root,
-        ownership_token_path=run_root / ".ownership-token",
-        ownership_token_device=11,
-        ownership_token_inode=22,
-        ownership_token_digest="sha256:" + "1" * 64,
-        prepare_receipt_digest="2" * 64,
-        start_receipt_digest="3" * 64,
-        authorization_scope_digest="4" * 64,
-        activity_receipt_digest="5" * 64,
-    )
-
-    assert authority.run_root == str(run_root)
-    assert authority.ownership_token.device == 11
-    assert authority.prepare_receipt_digest == "2" * 64
-    with pytest.raises(ValidationError, match="token path"):
-        build_managed_sut_authority(
-            run_root=run_root,
-            ownership_token_path=tmp_path / "caller-bundle/.ownership-token",
-            ownership_token_device=11,
-            ownership_token_inode=22,
-            ownership_token_digest="sha256:" + "1" * 64,
-            prepare_receipt_digest="2" * 64,
-            start_receipt_digest="3" * 64,
-            authorization_scope_digest="4" * 64,
-            activity_receipt_digest="5" * 64,
-        )
-    noncanonical = run_root / ".." / "managed-run"
-    with pytest.raises(ValidationError, match="canonical"):
-        build_managed_sut_authority(
-            run_root=noncanonical,
-            ownership_token_path=noncanonical / ".ownership-token",
-            ownership_token_device=11,
-            ownership_token_inode=22,
-            ownership_token_digest="sha256:" + "1" * 64,
-            prepare_receipt_digest="2" * 64,
-            start_receipt_digest="3" * 64,
-            authorization_scope_digest="4" * 64,
-            activity_receipt_digest="5" * 64,
-        )
 
 
 def _manifest(tmp_path: Path, *, nodeid: str = "tests/api/test_user.py::test_create[admin]"):

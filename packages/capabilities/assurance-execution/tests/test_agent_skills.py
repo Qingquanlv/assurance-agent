@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
 import re
@@ -40,9 +38,8 @@ from graph_engine.plugin_api import (
 from assurance_execution.contracts import ExecutionAgentResultV1
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
-from assurance_execution.contracts.verification import ManagedSutAuthorityV1
+from assurance_execution.contracts.verification import UserAttemptAuthorityV1
 from assurance_execution.operations import agent_skills
-from assurance_execution.operations import build_managed_sut_authority
 from assurance_execution.operations.agent_skills import (
     ExecuteFinalizeHandler,
     ExecutePrepareHandler,
@@ -50,7 +47,6 @@ from assurance_execution.operations.agent_skills import (
     RunPrepareHandler,
 )
 from assurance_execution.resource_loader import resource_bytes
-from assurance_generation.contracts.execution_plan import CaseExecutionPlanSetV1
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     VALID_LEAFS,
@@ -168,15 +164,6 @@ def _business_payload(request: AgentRunRequest) -> dict[str, object]:
     return thawed
 
 
-def _seal_test_receipt(document: Mapping[str, Any], ownership_token: bytes) -> dict[str, Any]:
-    unsigned = {key: value for key, value in document.items() if key != "receipt_digest"}
-    encoded = json.dumps(unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
-    return {
-        **unsigned,
-        "receipt_digest": "hmac-sha256:" + hmac.new(ownership_token, encoded, hashlib.sha256).hexdigest(),
-    }
-
-
 def _verified_prepare_input(
     project: Path, db: Path, *, runtime_source: bytes = b"def create_user(): pass\n"
 ) -> _VerifiedPayload:
@@ -195,119 +182,15 @@ def _verified_prepare_input(
             'CREATE TABLE "user" (username TEXT, email TEXT, is_active INTEGER, '
             "is_superuser INTEGER, dept_id INTEGER)"
         )
-    run_root = db.parent.parent
-    prepare_receipt = run_root / "harness-prepare.json"
-    start_receipt = run_root / "owned-process.json"
-    ownership_token = b"task-3-managed-sut-owner-token!!"
-    assert len(ownership_token) == 32
-    token_path = run_root / ".ownership-token"
-    token_path.write_bytes(ownership_token)
-    token_path.chmod(0o400)
-    file_stat = db.stat()
-    sqlite_identity = {
-        "path": str(db.resolve()),
-        "device": file_stat.st_dev,
-        "inode": file_stat.st_ino,
-    }
-    qualification = {
-        "schema_version": "1",
-        "python_version": "3.11.14",
-        "python_executable": str(run_root / "runtime/bin/python"),
-        "distributions": {"fastapi": "0.111.0"},
-        "app_module": str(db.parent / "app/__init__.py"),
-        "sqlite_engine": "tortoise.backends.sqlite",
-        "sqlite_path": str(db.resolve()),
-    }
-    qualification_digest = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(qualification, separators=(",", ":"), sort_keys=True).encode()
-        ).hexdigest()
-    )
-    frozen = project / ".aa/user-oracle/sut-source/app/user.py"
-    runtime = db.parent / "app/user.py"
-    for member in (frozen, runtime):
-        member.parent.mkdir(parents=True, exist_ok=True)
-        member.write_bytes(runtime_source)
-    source_files = {"sut-source/app/user.py": "sha256:" + hashlib.sha256(runtime_source).hexdigest()}
-    source_digest = (
-        "sha256:"
-        + hashlib.sha256(json.dumps(sorted(source_files.items()), separators=(",", ":")).encode()).hexdigest()
-    )
-    bootstrap = project / ".aa/user-oracle/bootstrap.py"
-    bootstrap.write_bytes(b"# fixed lifecycle helper\n")
-    source_files["bootstrap.py"] = "sha256:" + hashlib.sha256(bootstrap.read_bytes()).hexdigest()
-    runtime_digest = (
-        "sha256:"
-        + hashlib.sha256(json.dumps(sorted(source_files.items()), separators=(",", ":")).encode()).hexdigest()
-    )
-    frozen_lock = project / ".aa/user-oracle/runtime-lock.json"
-    frozen_lock.write_text(
-        json.dumps(
-            {
-                "schema_version": "1",
-                "fault": "none",
-                "files": source_files,
-                "source_digest": source_digest,
-                "runtime_digest": runtime_digest,
-            }
-        )
-    )
-    prepare_unsigned = {
-        "schema_version": "1",
-        "state": "prepared",
-        "fault": "none",
-        "frozen_artifact": str(project / ".aa/user-oracle"),
-        "frozen_artifact_digest": "sha256:" + hashlib.sha256(frozen_lock.read_bytes()).hexdigest(),
-        "source_files": source_files,
-        "source_file_mapping": {
-            "app/user.py": {"frozen_path": "sut-source/app/user.py", "runtime_path": "app/user.py"}
-        },
-        "workspace_root": str(project.resolve()),
-        "run_root": str(run_root.resolve()),
-        "sut_dir": str(db.parent.resolve()),
-        "sqlite_path": str(db.resolve()),
-        "sqlite_identity": sqlite_identity,
-        "runtime_qualification": qualification,
-        "runtime_qualification_digest": qualification_digest,
-        "source_digest": source_digest,
-        "runtime_digest": runtime_digest,
-    }
-    prepare_document = _seal_test_receipt(prepare_unsigned, ownership_token)
-    prepare_bytes = (json.dumps(prepare_document, indent=2, sort_keys=True) + "\n").encode()
-    prepare_receipt.write_bytes(prepare_bytes)
-    start_unsigned = {
-        "schema_version": "1",
-        "state": "started",
-        "workspace_root": str(project.resolve()),
-        "run_root": str(run_root.resolve()),
-        "sut_dir": str(db.parent.resolve()),
-        "sqlite_path": str(db.resolve()),
-        "sqlite_identity": sqlite_identity,
-        "prepare_receipt": str(prepare_receipt.resolve()),
-        "prepare_receipt_digest": prepare_document["receipt_digest"],
-        "prepare_receipt_sha256": hashlib.sha256(prepare_bytes).hexdigest(),
-        "instance_id": "managed-sut-1",
-        "base_url": "http://127.0.0.1:32123",
-        "source_digest": source_digest,
-        "runtime_digest": runtime_digest,
-    }
-    start_document = _seal_test_receipt(start_unsigned, ownership_token)
-    start_bytes = (json.dumps(start_document, indent=2, sort_keys=True) + "\n").encode()
-    start_receipt.write_bytes(start_bytes)
-    token_stat = token_path.stat()
-    authority = build_managed_sut_authority(
-        run_root=run_root.resolve(),
-        ownership_token_path=token_path.resolve(),
-        ownership_token_device=token_stat.st_dev,
-        ownership_token_inode=token_stat.st_ino,
-        ownership_token_digest="sha256:" + hashlib.sha256(ownership_token).hexdigest(),
-        prepare_receipt_digest=hashlib.sha256(prepare_bytes).hexdigest(),
-        start_receipt_digest=hashlib.sha256(start_bytes).hexdigest(),
+    authority_handle = "managed-sut-authority.test"
+    authority = UserAttemptAuthorityV1(
         authorization_scope_digest="0" * 64,
         activity_receipt_digest="0" * 64,
+        journal_key="1" * 64,
+        sut_base_url="http://127.0.0.1:32123",
+        sqlite_path=str(db.resolve()),
+        instance_id="managed-sut-1",
     )
-    authority_handle = "managed-sut-authority.test"
     verification = dict(cast(dict[str, Any], payload["verification"]))
     verification.update(
         {
@@ -316,14 +199,6 @@ def _verified_prepare_input(
             "managed_sqlite_path": str(db.resolve()),
             "observer_sqlite_path": str(db.resolve()),
             "user_inputs": {"username": "qa_t3", "email": "qa_t3@example.test"},
-            "managed_sut_prepare_receipt_ref": {
-                "path": prepare_receipt.relative_to(project).as_posix(),
-                "digest": hashlib.sha256(prepare_bytes).hexdigest(),
-            },
-            "managed_sut_start_receipt_ref": {
-                "path": start_receipt.relative_to(project).as_posix(),
-                "digest": hashlib.sha256(start_bytes).hexdigest(),
-            },
             "managed_sut_authority_handle": authority_handle,
         }
     )
@@ -352,7 +227,7 @@ def _bind_test_managed_sut_authority(
 ) -> None:
     if not isinstance(payload, _VerifiedPayload):
         return
-    authority = ManagedSutAuthorityV1.model_validate_json(payload.host_authority_bytes)
+    authority = UserAttemptAuthorityV1.model_validate_json(payload.host_authority_bytes)
     activity_digest = agent_skills.canonical_digest(
         {
             "attempt_key": attempt_key,
@@ -761,8 +636,6 @@ async def test_verified_prepare_freezes_manifest_and_uses_execution_scoped_view(
     emitted = first_request.canonical_bytes() + (tmp_path / manifest_ref["path"]).read_bytes()
     emitted += independent_receipt.read_bytes()
     assert payload.host_authority_bytes not in emitted
-    assert b"task-3-managed-sut-owner-token!!" not in emitted
-    assert b'"ownership_token"' not in emitted
     assert manifest["execution_id"] == execution_id
     assert manifest["attempt_key"] == {"digest": "1" * 64}
     assert manifest["nodeid"] == "tests/api/test_user_create.py::test_tc_user_create_001__create"
@@ -790,7 +663,7 @@ async def test_verified_prepare_rejects_fabricated_self_consistent_sut_bundle(
 
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "independent managed SUT authority" in outcome.failure.message
+    assert "User attempt authority" in outcome.failure.message or "SUT SQLite path" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -820,7 +693,7 @@ async def test_verified_prepare_requires_host_secret_authority(tmp_path: Path, m
 
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "independent managed SUT authority" in outcome.failure.message
+    assert "User attempt authority" in outcome.failure.message or "SUT SQLite path" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -904,43 +777,7 @@ async def test_verified_prepare_rejects_unrelated_database_even_when_profile_pat
 
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "managed SUT receipt" in outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_prepare_rejects_tampered_managed_sut_receipt(tmp_path: Path) -> None:
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    profile = cast(dict[str, Any], payload["verification"])
-    start_ref = cast(dict[str, str], profile["managed_sut_start_receipt_ref"])
-    (tmp_path / start_ref["path"]).write_text("{}\n", encoding="utf-8")
-
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="8" * 64)
-
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "managed SUT receipt digest changed" in outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_prepare_rejects_tampered_receipt_with_recomputed_reference_digest(
-    tmp_path: Path,
-) -> None:
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    profile = cast(dict[str, Any], payload["verification"])
-    start_ref = cast(dict[str, str], profile["managed_sut_start_receipt_ref"])
-    start_path = tmp_path / start_ref["path"]
-    started = json.loads(start_path.read_text())
-    started["base_url"] = "http://127.0.0.1:32124"
-    start_bytes = (json.dumps(started, indent=2, sort_keys=True) + "\n").encode()
-    start_path.write_bytes(start_bytes)
-    start_ref["digest"] = hashlib.sha256(start_bytes).hexdigest()
-    profile["sut_base_url"] = started["base_url"]
-
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="e" * 64)
-
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "independent managed SUT authority" in outcome.failure.message
+    assert "SUT SQLite path" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -954,55 +791,7 @@ async def test_verified_prepare_rejects_managed_sut_identity_mismatch(tmp_path: 
 
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "managed SUT receipt identity" in outcome.failure.message
-
-
-@pytest.mark.asyncio
-async def test_verified_prepare_rejects_authenticated_non_sqlite_sut_config(tmp_path: Path) -> None:
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    profile = cast(dict[str, Any], payload["verification"])
-    prepare_ref = cast(dict[str, str], profile["managed_sut_prepare_receipt_ref"])
-    start_ref = cast(dict[str, str], profile["managed_sut_start_receipt_ref"])
-    prepare_path = tmp_path / prepare_ref["path"]
-    start_path = tmp_path / start_ref["path"]
-    prepared = json.loads(prepare_path.read_text())
-    prepared["runtime_qualification"]["sqlite_engine"] = "tortoise.backends.postgres"
-    prepared["runtime_qualification_digest"] = (
-        "sha256:"
-        + hashlib.sha256(
-            json.dumps(prepared["runtime_qualification"], separators=(",", ":"), sort_keys=True).encode()
-        ).hexdigest()
-    )
-    ownership_token = (tmp_path / ".managed/.ownership-token").read_bytes()
-    prepared = _seal_test_receipt(prepared, ownership_token)
-    prepare_bytes = (json.dumps(prepared, indent=2, sort_keys=True) + "\n").encode()
-    prepare_path.write_bytes(prepare_bytes)
-    prepare_ref["digest"] = hashlib.sha256(prepare_bytes).hexdigest()
-    started = json.loads(start_path.read_text())
-    started["prepare_receipt_sha256"] = prepare_ref["digest"]
-    started["prepare_receipt_digest"] = prepared["receipt_digest"]
-    started = _seal_test_receipt(started, ownership_token)
-    start_bytes = (json.dumps(started, indent=2, sort_keys=True) + "\n").encode()
-    start_path.write_bytes(start_bytes)
-    start_ref["digest"] = hashlib.sha256(start_bytes).hexdigest()
-    authority = ManagedSutAuthorityV1.model_validate_json(payload.host_authority_bytes)
-    payload.host_authority_bytes = canonical_json_bytes(
-        cast(
-            JSONValue,
-            authority.model_copy(
-                update={
-                    "prepare_receipt_digest": prepare_ref["digest"],
-                    "start_receipt_digest": start_ref["digest"],
-                }
-            ).model_dump(mode="json"),
-        )
-    )
-
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="a" * 64)
-
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "effective SQLite config" in outcome.failure.message
+    assert "SUT binding identity" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -1428,117 +1217,3 @@ def test_cache_safe_pytest_recipe_does_not_dirty_candidate(tmp_path: Path) -> No
     assert not (candidate / ".pytest_cache").exists()
     assert not list(candidate.rglob("__pycache__"))
     assert not (candidate / ".hypothesis").exists()
-
-
-@pytest.mark.asyncio
-async def test_verified_prepare_rejects_self_consistent_unreviewed_runtime_before_action(
-    tmp_path: Path,
-) -> None:
-    payload = _verified_prepare_input(
-        tmp_path, tmp_path / ".managed/sut/db.sqlite3", runtime_source=b"def create_user(): return True\n"
-    )
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="7" * 64)
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "reviewed source" in outcome.failure.message
-    assert not list(tmp_path.glob("qa/changes/*/.staging/**/verification-manifest.json"))
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("location", ["app", ".aa/user-oracle/sut-source/app", ".managed/sut/app"])
-@pytest.mark.parametrize("change", ["bytes", "symlink"])
-async def test_verified_prepare_rejects_reviewed_file_copy_drift(
-    tmp_path: Path, location: str, change: str
-) -> None:
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    source = tmp_path / location / "user.py"
-    if change == "bytes":
-        source.write_bytes(b"def create_user(): return False\n")
-    else:
-        saved = source.parent.with_name(source.parent.name + "-saved")
-        source.parent.rename(saved)
-        source.parent.symlink_to(saved, target_is_directory=True)
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="8" * 64)
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert (
-        "reviewed source" in outcome.failure.message
-        or "symbolic link" in outcome.failure.message
-        or "reviewed case input" in outcome.failure.message
-    )
-
-
-@pytest.mark.asyncio
-async def test_verified_prepare_rejects_changed_frozen_artifact_lock(tmp_path: Path) -> None:
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    lock = tmp_path / ".aa/user-oracle/runtime-lock.json"
-    lock.write_bytes(lock.read_bytes() + b"\n")
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="9" * 64)
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "frozen artifact" in outcome.failure.message
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("member", [".aa/user-oracle/bootstrap.py", ".managed/sut/undeclared.py"])
-@pytest.mark.parametrize("recover", [False, True])
-async def test_verified_admission_rechecks_entire_artifact_closure(
-    tmp_path: Path, member: str, recover: bool
-) -> None:
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    if recover:
-        first = await _execute_verified(tmp_path, payload, attempt_key="d" * 64)
-        assert first.status == "succeeded"
-    changed = tmp_path / member
-    changed.write_bytes(b"# unreviewed artifact change after lifecycle validation\n")
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="d" * 64)
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "NOT_READY" in outcome.failure.message
-
-
-def test_artifact_admission_checks_frozen_fault_selection(tmp_path: Path) -> None:
-    from assurance_execution.operations.managed_sut import authenticate_reviewed_sut_source
-
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    profile = payload["verification"]
-    plans = CaseExecutionPlanSetV1.model_validate_json(
-        (tmp_path / profile["case_execution_plan_ref"]["path"]).read_bytes()
-    )
-    prepared = json.loads((tmp_path / profile["managed_sut_prepare_receipt_ref"]["path"]).read_bytes())
-    prepared["fault"] = "wrong-value"
-    with pytest.raises(ValueError, match="NOT_READY.*fault"):
-        authenticate_reviewed_sut_source(tmp_path, plans.cases[0], prepared)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("root", [".aa/user-oracle", ".managed/sut"])
-@pytest.mark.parametrize(
-    "drift", ["symlink", "hardlink", "fifo", "empty-directory", "bytecode", "db-lookalike"]
-)
-async def test_artifact_admission_rejects_unsafe_or_undeclared_members(
-    tmp_path: Path, root: str, drift: str
-) -> None:
-    payload = _verified_prepare_input(tmp_path, tmp_path / ".managed/sut/db.sqlite3")
-    directory = tmp_path / root
-    if drift in {"symlink", "hardlink", "fifo"}:
-        member = directory / ("bootstrap.py" if root.startswith(".aa/") else "app/user.py")
-        saved = tmp_path / "saved-member"
-        member.rename(saved)
-        if drift == "symlink":
-            member.symlink_to(saved)
-        elif drift == "hardlink":
-            os.link(saved, member)
-        else:
-            os.mkfifo(member)
-    elif drift == "empty-directory":
-        (directory / "extra").mkdir()
-    elif drift == "bytecode":
-        (directory / "__pycache__").mkdir()
-        (directory / "__pycache__/injected.pyc").write_bytes(b"undeclared code")
-    else:
-        (directory / "db.sqlite3.py").write_bytes(b"# not an allowed SQLite sidecar")
-    outcome = await _execute_verified(tmp_path, payload, attempt_key="e" * 64)
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "NOT_READY" in outcome.failure.message

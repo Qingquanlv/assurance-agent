@@ -300,28 +300,19 @@ def _materialization_request(
     journal: ActionJournal | None = None
     if authenticated:
         from assurance_execution.contracts.verification import (
-            ManagedSutAuthorityV1,
+            UserAttemptAuthorityV1,
             VerifiedProcessReceiptV1,
         )
 
         token = bytes(range(32))
-        token_path = run_root / ".ownership-token"
-        token_path.write_bytes(token)
-        token_path.chmod(0o600)
-        token_stat = token_path.stat()
-        authority_document = ManagedSutAuthorityV1.model_validate(
+        authority_document = UserAttemptAuthorityV1.model_validate(
             {
-                "run_root": str(run_root),
-                "ownership_token": {
-                    "path": str(token_path),
-                    "device": token_stat.st_dev,
-                    "inode": token_stat.st_ino,
-                    "digest": f"sha256:{hashlib.sha256(token).hexdigest()}",
-                },
-                "prepare_receipt_digest": "7" * 64,
-                "start_receipt_digest": "8" * 64,
                 "authorization_scope_digest": manifest.authorization_scope_digest,
                 "activity_receipt_digest": manifest.activity_receipt_digest,
+                "journal_key": token.hex(),
+                "sut_base_url": "http://127.0.0.1:1234",
+                "sqlite_path": str(sqlite),
+                "instance_id": "sut",
             }
         )
 

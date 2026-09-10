@@ -39,6 +39,13 @@ def _set_runtime_secrets(monkeypatch: pytest.MonkeyPatch, password: str = "runti
         monkeypatch.setenv(name, password)
 
 
+def _serve(harness, tmp_path: Path, *, fault: str = "none", otel: bool = True) -> dict[str, Any]:
+    project = tmp_path / "project"
+    harness.materialize_project(project_dir=project, fault=fault)
+    otel_file = tmp_path / "observed.otlp.jsonl" if otel else None
+    return harness.serve(project, otel_file=otel_file)
+
+
 def _json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, token: str | None = None):
     data = None if payload is None else json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
@@ -104,51 +111,23 @@ def test_runtime_lock_records_hashed_otel_deps_without_collector() -> None:
 
 def test_api_db_v1_start_does_not_launch_collector(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    prepared = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project",
-        run_root=workspace / "runs" / "api-db",
-    )
     _set_runtime_secrets(monkeypatch)
-    started = harness.start(
-        workspace_root=workspace,
-        prepare_receipt=Path(prepared["run_root"]) / "harness-prepare.json",
-    )
+    started = _serve(harness, tmp_path, otel=False)
     try:
+        assert started.get("otel_file") is None
         assert "collector" not in started
-        assert not (Path(prepared["run_root"]) / "otel").exists()
-        assert os.environ.get("AA_SUT_OTEL_FILE") in {None, ""}
         assert os.environ.get("AA_SUT_OTEL_ENDPOINT") in {None, ""}
         assert os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") in {None, ""}
     finally:
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=Path(prepared["run_root"]) / "owned-process.json",
-            instance_id=started["instance_id"],
-        )
+        harness.stop_served(started["pid"])
 
 
 def test_real_user_save_emits_fastapi_server_and_sqlite_client_spans(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    prepared = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project",
-        run_root=workspace / "runs" / "normal",
-    )
     _set_runtime_secrets(monkeypatch)
-    execution_id = str(uuid.uuid4())
-    started = harness.start(
-        workspace_root=workspace,
-        prepare_receipt=Path(prepared["run_root"]) / "harness-prepare.json",
-        validation_profile="api_db_trace.v1",
-        execution_id=execution_id,
-    )
+    started = _serve(harness, tmp_path)
     try:
         token = _login(started["base_url"], "runtime-only")
         created = _create_user(started["base_url"], token, "otel_user")
@@ -158,9 +137,9 @@ def test_real_user_save_emits_fastapi_server_and_sqlite_client_spans(
                 'SELECT username FROM "user" WHERE username = ?', ("otel_user",)
             ).fetchall()
         assert rows == [("otel_user",)]
-        flush = harness.flush_otel(run_root=Path(prepared["run_root"]))
+        otlp_path = Path(started["otel_file"])
+        flush = harness.flush_otel(otlp_path=otlp_path)
         assert flush["state"] == "flushed"
-        otlp_path = Path(started["otel"]["otlp_path"])
         assert otlp_path.name in {"observed.otlp.jsonl", "traces.jsonl"}
         records = harness.load_otlp_file(otlp_path)
         spans = harness.flatten_spans(records)
@@ -202,38 +181,22 @@ def test_real_user_save_emits_fastapi_server_and_sqlite_client_spans(
         assert "db.statement" not in raw
         assert "db.query.text" not in raw
     finally:
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=Path(prepared["run_root"]) / "owned-process.json",
-            instance_id=started["instance_id"],
-        )
+        harness.stop_served(started["pid"])
 
 
 def test_transaction_variant_emits_real_sqlite_client_spans(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    prepared = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project",
-        run_root=workspace / "runs" / "tx",
-        fault="rollback-success",
-    )
     _set_runtime_secrets(monkeypatch)
-    started = harness.start(
-        workspace_root=workspace,
-        prepare_receipt=Path(prepared["run_root"]) / "harness-prepare.json",
-        validation_profile="api_db_trace.v1",
-        execution_id=str(uuid.uuid4()),
-    )
+    started = _serve(harness, tmp_path, fault="rollback-success")
     try:
         token = _login(started["base_url"], "runtime-only")
         created = _create_user(started["base_url"], token, "tx_user")
         assert created.get("code") == 200
-        harness.flush_otel(run_root=Path(prepared["run_root"]))
-        spans = harness.flatten_spans(harness.load_otlp_file(Path(started["otel"]["otlp_path"])))
+        otlp_path = Path(started["otel_file"])
+        harness.flush_otel(otlp_path=otlp_path)
+        spans = harness.flatten_spans(harness.load_otlp_file(otlp_path))
         client = [
             span
             for span in spans
@@ -243,11 +206,7 @@ def test_transaction_variant_emits_real_sqlite_client_spans(
         assert client
         assert any(span["normalized"]["table"] == "user" for span in client)
     finally:
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=Path(prepared["run_root"]) / "owned-process.json",
-            instance_id=started["instance_id"],
-        )
+        harness.stop_served(started["pid"])
 
 
 def test_injected_traceparent_file_contains_that_trace_server_and_write(
@@ -256,21 +215,9 @@ def test_injected_traceparent_file_contains_that_trace_server_and_write(
     from assurance_execution.operations.telemetry import driver_trace_headers
 
     harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    prepared = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project",
-        run_root=workspace / "runs" / "inject",
-    )
     _set_runtime_secrets(monkeypatch)
     execution_id = str(uuid.uuid4())
-    started = harness.start(
-        workspace_root=workspace,
-        prepare_receipt=Path(prepared["run_root"]) / "harness-prepare.json",
-        validation_profile="api_db_trace.v1",
-        execution_id=execution_id,
-    )
+    started = _serve(harness, tmp_path)
     try:
         headers = driver_trace_headers(execution_id)
         assert "traceparent" in headers
@@ -299,8 +246,8 @@ def test_injected_traceparent_file_contains_that_trace_server_and_write(
         with urlopen(request, timeout=5) as response:  # noqa: S310
             created = json.loads(response.read().decode())
         assert created.get("code") == 200
-        harness.flush_otel(run_root=Path(prepared["run_root"]))
-        records = harness.load_otlp_file(Path(started["otel"]["otlp_path"]))
+        harness.flush_otel(otlp_path=Path(started["otel_file"]))
+        records = harness.load_otlp_file(Path(started["otel_file"]))
         pulled = [span for span in harness.flatten_spans(records) if span.get("trace_id") == trace_id]
         assert any(
             span["kind"] == "SERVER"
@@ -320,57 +267,22 @@ def test_injected_traceparent_file_contains_that_trace_server_and_write(
         ]
         assert write, pulled
     finally:
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=Path(prepared["run_root"]) / "owned-process.json",
-            instance_id=started["instance_id"],
-        )
+        harness.stop_served(started["pid"])
 
 
 def test_new_attempt_uses_separate_otel_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _load_harness()
-    workspace = tmp_path / "worktree"
-    workspace.mkdir()
-    first_prep = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project-a",
-        run_root=workspace / "runs" / "a",
-    )
-    second_prep = harness.prepare(
-        workspace_root=workspace,
-        project_dir=workspace / "project-b",
-        run_root=workspace / "runs" / "b",
-    )
     _set_runtime_secrets(monkeypatch)
-    first = harness.start(
-        workspace_root=workspace,
-        prepare_receipt=Path(first_prep["run_root"]) / "harness-prepare.json",
-        validation_profile="api_db_trace.v1",
-        execution_id=str(uuid.uuid4()),
-    )
-    second = harness.start(
-        workspace_root=workspace,
-        prepare_receipt=Path(second_prep["run_root"]) / "harness-prepare.json",
-        validation_profile="api_db_trace.v1",
-        execution_id=str(uuid.uuid4()),
-    )
+    first = _serve(harness, tmp_path / "a")
+    second = _serve(harness, tmp_path / "b")
     try:
-        assert first["otel"]["otlp_path"] != second["otel"]["otlp_path"]
+        assert first["otel_file"] != second["otel_file"]
         assert first["base_url"] != second["base_url"]
         assert "collector" not in first
         assert "collector" not in second
-        assert not (Path(first_prep["run_root"]) / "otel" / "collector-process.json").exists()
     finally:
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=Path(first_prep["run_root"]) / "owned-process.json",
-            instance_id=first["instance_id"],
-        )
-        harness.stop(
-            workspace_root=workspace,
-            receipt_path=Path(second_prep["run_root"]) / "owned-process.json",
-            instance_id=second["instance_id"],
-        )
+        harness.stop_served(first["pid"])
+        harness.stop_served(second["pid"])
 
 
 def test_unknown_semconv_fails_preflight() -> None:

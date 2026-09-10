@@ -298,10 +298,26 @@ def _configure_user_host(
     secret_dir = output / "host-secrets"
     secret_dir.mkdir(mode=0o700)
     frozen_lock = project / ".aa/user-oracle/runtime-lock.json"
+    admin_password = secrets.token_urlsafe(32)
+    reset_password = secrets.token_urlsafe(32)
+    secret_key = secrets.token_urlsafe(32)
+    os.environ["AA_SUT_ADMIN_PASSWORD"] = admin_password
+    os.environ["AA_SUT_RESET_PASSWORD"] = reset_password
+    os.environ["AA_SUT_SECRET_KEY"] = secret_key
+    harness = _user_harness()
+    otel_file = None
+    if item.get("validation_profile") == "api_db_trace.v1":
+        otel_file = output / "observed.otlp.jsonl"
+    served = harness.serve(project, otel_file=otel_file)
+    item["served_pid"] = served["pid"]
     authority = {
         "kind": "user-invocation-host.v1",
         "authority_root": str(private),
         "fault": fault,
+        "sut_base_url": served["base_url"],
+        "sqlite_path": served["sqlite_path"],
+        "instance_id": served["instance_id"],
+        "otel_file": served["otel_file"],
         "frozen_artifact_ref": {
             "path": ".aa/user-oracle/runtime-lock.json",
             "digest": _sha256(frozen_lock.read_bytes()),
@@ -323,9 +339,9 @@ def _configure_user_host(
     values = {
         "sut.authority": json.dumps(authority, sort_keys=True).encode(),
         "sut.credential": secrets.token_urlsafe(32).encode(),
-        "managed-sut.admin-password": secrets.token_urlsafe(32).encode(),
-        "managed-sut.reset-password": secrets.token_urlsafe(32).encode(),
-        "managed-sut.secret-key": secrets.token_urlsafe(32).encode(),
+        "managed-sut.admin-password": admin_password.encode(),
+        "managed-sut.reset-password": reset_password.encode(),
+        "managed-sut.secret-key": secret_key.encode(),
     }
     if item.get("validation_profile") == "api_db_trace.v1":
         values["sut.collector"] = _collector_qualification_secret(
@@ -2463,21 +2479,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if item.get("validation_profile"):
-            return _drive_started_change(
-                aa_next=aa_next,
-                repo=repo,
-                project_dir=project_dir,
-                change_id=change_id,
-                source_args=source_args,
-                input_path=input_path,
-                item=item,
-                env=isolated_env,
-                run_log=run_log,
-                poll_seconds=arguments.poll_seconds,
-                timeout_seconds=arguments.timeout_seconds,
-                evidence=evidence,
-                finish=finish,
-            )
+            try:
+                return _drive_started_change(
+                    aa_next=aa_next,
+                    repo=repo,
+                    project_dir=project_dir,
+                    change_id=change_id,
+                    source_args=source_args,
+                    input_path=input_path,
+                    item=item,
+                    env=isolated_env,
+                    run_log=run_log,
+                    poll_seconds=arguments.poll_seconds,
+                    timeout_seconds=arguments.timeout_seconds,
+                    evidence=evidence,
+                    finish=finish,
+                )
+            finally:
+                pid = item.get("served_pid")
+                if isinstance(pid, int):
+                    _user_harness().stop_served(pid)
         with _managed_sut_runtime(
             repo=repo,
             project_dir=project_dir,
