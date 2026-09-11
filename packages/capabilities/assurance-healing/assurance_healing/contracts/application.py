@@ -88,10 +88,13 @@ class ApplyTestRepairInputV1(FrozenModel):
             self.proposal_ref,
             self.execution_ref,
             self.mapping_ref,
-            *self.source_refs,
             *(() if self.approval_ref is None else (self.approval_ref,)),
         )
         if any(not ref.path.startswith(prefix) for ref in refs):
+            raise ValueError("repair evidence must belong to the current change")
+        if any(
+            not (ref.path.startswith(prefix) or ref.path.startswith("qa/tests/")) for ref in self.source_refs
+        ):
             raise ValueError("repair evidence must belong to the current change")
         source_paths = {ref.path for ref in self.source_refs}
         if any(path not in source_paths for path in self.allowed_test_paths):

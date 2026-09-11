@@ -97,7 +97,7 @@ async def test_plan_review_requires_complete_unique_repair_set(fix_ids: list[str
                     "severity": "medium",
                     "category": "consistency",
                     "message": "Repair this affected section",
-                    "locator": {"artifact": f"qa/changes/CH-DEMO-001/plans/{file}", "key": "Factory Mapping"},
+                    "locator": {"artifact": f"qa/results/plans/{file}", "key": "Factory Mapping"},
                 }
                 for name, file in (("F1", "api-codegen-plan.md"), ("F2", "api-test-data-plan.md"))
             ],
@@ -127,7 +127,7 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("locked plan input\n", encoding="utf-8")
     review = review_result(family)
-    latest = change_root / "review/api-plan-review.json"
+    latest = tmp_path / "qa/results/review/api-plan-review.json"
     latest.parent.mkdir(parents=True)
     latest.write_text(json.dumps(review), encoding="utf-8")
     envelope = fake_agent_result(review)
@@ -250,7 +250,7 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
     assert "plan input is not a regular single-link file" in prepared.failure.message
-    assert "qa/changes/CH-DEMO-001/plans/api-" in prepared.failure.message
+    assert "qa/results/plans/api-" in prepared.failure.message
 
 
 @pytest.mark.parametrize("family", FAMILIES)

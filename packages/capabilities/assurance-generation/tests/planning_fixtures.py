@@ -40,11 +40,13 @@ def family_case_id(family: str) -> str:
 
 
 def family_write_root(change_id: str = "CH-DEMO-001") -> str:
-    return f"qa/changes/{change_id}/plans/"
+    del change_id
+    return "qa/results/plans/"
 
 
 def family_plan_files(family: str, change_id: str = "CH-DEMO-001") -> tuple[str, ...]:
-    root = f"qa/changes/{change_id}/plans"
+    del change_id
+    root = "qa/results/plans"
     names = {
         "api": (
             "api-plan.md",

@@ -230,7 +230,7 @@ def test_performance_plan_review_accepts_bounded_automatic_repair() -> None:
                     "category": "runtime_contract",
                     "message": "Use the source-backed unfiltered tree lookup for descendants.",
                     "locator": {
-                        "artifact": "qa/changes/CH-DEMO-001/plans/performance-plan.md",
+                        "artifact": "qa/results/plans/performance-plan.md",
                         "case_id": "TC_PERFORMANCE_001",
                         "key": "Seed Lifecycle",
                     },

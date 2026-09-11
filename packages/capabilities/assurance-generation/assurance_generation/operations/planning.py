@@ -97,15 +97,17 @@ _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
 
 
 def plan_outputs(change_id: str, family: Family) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{change_id}/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]))
+    del change_id
+    return tuple(sorted(f"qa/results/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]))
 
 
 def plan_review_outputs(change_id: str, family: Family) -> tuple[str, ...]:
+    del change_id
     return tuple(
         sorted(
             (
-                f"qa/changes/{change_id}/review/{family}-plan-review.json",
-                f"qa/changes/{change_id}/review/{family}-plan-review-summary.md",
+                f"qa/results/review/{family}-plan-review.json",
+                f"qa/results/review/{family}-plan-review-summary.md",
             )
         )
     )
@@ -437,7 +439,7 @@ def plan_repair_review(
     """Load the current review for a graph-authorized automatic or human-requested retry."""
     if business.local_round == 0:
         return None
-    relative = f"qa/changes/{business.change_id}/review/{family}-plan-review.json"
+    relative = f"qa/results/review/{family}-plan-review.json"
     path = _regular_input_file(
         workspace,
         workspace.joinpath(*PurePosixPath(relative).parts),
@@ -464,9 +466,10 @@ def plan_repair_review(
 
 
 def constraints_for_cases(*, family: Family, change_id: str, cases: CaseYamlAuthoring) -> FamilyConstraintsV1:
+    del change_id
     entries = tuple((*cases.added, *cases.modified))
     return FamilyConstraintsV1(
-        write_roots=(f"qa/changes/{change_id}/plans/",),
+        write_roots=("qa/results/plans/",),
         operations=tuple(entry.test_condition_id for entry in entries),
         risks=tuple(entry.risk.level for entry in entries),
     )
@@ -543,7 +546,7 @@ def prepare_plan_outcome(
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
     targets: tuple[str, ...] = ()
-    mapping_path = f"qa/changes/{business.change_id}/plans/{family}-codegen-mapping.json"
+    mapping_path = f"qa/results/plans/{family}-codegen-mapping.json"
     try:
         mapping = CodegenMapping.model_validate_json(
             _workspace_file(context.project_root, mapping_path).read_bytes()
@@ -656,7 +659,7 @@ def _authenticate_codegen_mapping(
     family: Family,
     images: Mapping[str, bytes],
 ) -> CodegenMapping:
-    relative = f"qa/changes/{document.change_id}/plans/{family}-codegen-mapping.json"
+    relative = f"qa/results/plans/{family}-codegen-mapping.json"
     try:
         raw = json.loads(images[relative])
         mapping = CodegenMapping.model_validate(raw)

@@ -80,16 +80,16 @@ async def test_finalize_rejects_mapping_drift_across_staged_and_unchanged_repair
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# Plan\n")
-    mapping_path = tmp_path / "qa/changes/CH-DEMO-001/plans/api-codegen-mapping.json"
+    mapping_path = tmp_path / "qa/results/plans/api-codegen-mapping.json"
     mapping_path.write_text(_mapping().model_dump_json())
     # Only one file is edited by this repair; the stale claim in an unchanged
     # file must still be checked against the complete package.
-    unchanged = tmp_path / "qa/changes/CH-DEMO-001/plans/api-codegen-plan.md"
+    unchanged = tmp_path / "qa/results/plans/api-codegen-plan.md"
     unchanged.write_text(
         "## Test Function Mapping\n| Case ID | Test Function | Target File |\n|---|---|---|\n| TC_API_001 | test_tc_api_001__wrong | tests/api/test_users.py |\n"
     )
     stage = tmp_path / ".stage"
-    edited = stage / "qa/changes/CH-DEMO-001/plans/api-test-data-plan.md"
+    edited = stage / "qa/results/plans/api-test-data-plan.md"
     edited.parent.mkdir(parents=True)
     edited.write_text("# Repaired data plan\n")
     payload = fake_agent_result(valid_plan_result("api"))

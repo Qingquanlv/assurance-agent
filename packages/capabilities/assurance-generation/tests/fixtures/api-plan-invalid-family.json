@@ -13,10 +13,10 @@
     }
   ],
   "output_files": [
-    "qa/changes/CH-DEMO-001/plans/api-plan.md",
-    "qa/changes/CH-DEMO-001/plans/api-test-data-plan.md",
-    "qa/changes/CH-DEMO-001/plans/api-codegen-plan.md",
-    "qa/changes/CH-DEMO-001/plans/api-codegen-mapping.json",
-    "qa/changes/CH-DEMO-001/plans/m3-review-summary.md"
+    "qa/results/plans/api-plan.md",
+    "qa/results/plans/api-test-data-plan.md",
+    "qa/results/plans/api-codegen-plan.md",
+    "qa/results/plans/api-codegen-mapping.json",
+    "qa/results/plans/m3-review-summary.md"
   ]
 }

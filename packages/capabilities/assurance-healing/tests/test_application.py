@@ -30,8 +30,8 @@ from tests.product.test_change_local_output_routing import BINDING, execute_task
 from tests.acg_plan_fixture import install_plan
 
 CHANGE = "CH-REPAIR-1"
-SOURCE = f"qa/changes/{CHANGE}/generated/api/files/tests/api/test_users.py"
-TARGET = "tests/api/test_users.py"
+SOURCE = "qa/tests/api/test_users.py"
+TARGET = "qa/tests/api/test_users.py"
 MAPPING = f"qa/changes/{CHANGE}/generated/mapping.json"
 PROPOSAL = f"qa/changes/{CHANGE}/healing/fix-proposal.json"
 APPROVAL = f"qa/changes/{CHANGE}/healing/approval.json"
@@ -356,8 +356,8 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
 @pytest.mark.asyncio
 async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tmp_path: Path) -> None:
     payload, _ = _fixture(tmp_path)
-    other_target = "tests/api/test_other.py"
-    other_source = f"qa/changes/{CHANGE}/generated/api/files/{other_target}"
+    other_target = "qa/tests/api/test_other.py"
+    other_source = other_target
     other_bytes = b"def test_other():\n    assert True\n"
     other_ref = _write(tmp_path, other_source, other_bytes)
     source_refs = cast(list[dict[str, str]], payload["source_refs"])
@@ -408,7 +408,7 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
 async def test_prepare_rejects_a_proposal_outside_approval_scope(tmp_path: Path) -> None:
     payload, _ = _fixture(tmp_path)
     approval = _approval(_proposal())
-    approval["paths"] = [TARGET]
+    approval["paths"] = ["qa/tests/api/test_other.py"]
     payload["approval_ref"] = _write(tmp_path, APPROVAL, _json_bytes(approval))
     result = await execute_task(
         ApplyTestRepairPrepareHandler(),

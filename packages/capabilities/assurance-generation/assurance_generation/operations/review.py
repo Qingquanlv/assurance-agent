@@ -117,7 +117,7 @@ class PlanReviewFinalizeHandler:
                 input_refs = tuple(evidence_ref(context.project_root, path) for path in input_paths)
                 review_ref = evidence_ref(
                     context.write_root,
-                    f"qa/changes/{document.change_id}/review/{family}-plan-review.json",
+                    f"qa/results/review/{family}-plan-review.json",
                 )
                 history_relative = (
                     f"qa/changes/{document.change_id}/plan/{family}/reviews/epochs/"

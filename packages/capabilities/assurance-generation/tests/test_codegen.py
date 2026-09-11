@@ -53,6 +53,12 @@ def test_family_allows_only_qa_tests_roots() -> None:
     assert not family_allows_target("api", "tests/api/test_dept.py")
 
 
+def test_staged_generated_path_is_removed() -> None:
+    import assurance_generation.contracts.codegen as codegen
+
+    assert not hasattr(codegen, "staged_generated_path")
+
+
 def _write_generated(root: Path, family: str, target: str, content: bytes = b"test\n") -> str:
     relative = target if target.startswith("qa/tests/") else durable_oracle_path(family=family)
     path = root.joinpath(*relative.split("/"))
@@ -85,7 +91,7 @@ def _write_plan_mapping(workspace: Path, family: str, targets: list[str]) -> Non
     ]
     document = mapping_document(family, target_file=targets[0])
     document["entries"] = entries
-    path = workspace / f"qa/changes/CH-DEMO-001/plans/{family}-codegen-mapping.json"
+    path = workspace / f"qa/results/plans/{family}-codegen-mapping.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document), encoding="utf-8")
 

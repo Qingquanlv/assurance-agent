@@ -59,12 +59,12 @@ benchmark requirement without inspecting secret values.
 ### required
 
 - `qa/cases/**/case.yaml`
-- `qa/changes/<change-id>/proposal.md`
+- `qa/proposal.md`
 
 ### optional
 
 - `qa/results/review/performance-plan-review.json`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
+- `qa/results/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only)
@@ -85,7 +85,7 @@ benchmark requirement without inspecting secret values.
 `performance-codegen-mapping.json` must use this exact JSON shape:
 
 ```json
-{"schema_version":"1","layer":"performance","entries":[{"case_id":"TC_DEPT_PERF_001","symbol":"DeptUser.read_department","target_file":"tests/perf/locustfile_dept.py"}]}
+{"schema_version":"1","layer":"performance","entries":[{"case_id":"TC_DEPT_PERF_001","symbol":"DeptUser.read_department","target_file":"qa/tests/perf/locustfile_dept.py"}]}
 ```
 
 Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are

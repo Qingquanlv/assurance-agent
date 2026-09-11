@@ -52,7 +52,7 @@ async def cycle_fixture(
         target = durable_oracle_path(family=family)
         source = target
         _write(root, source, f"def {family_symbol(family)}():\n    assert True\n".encode())
-        plan = f"qa/changes/CH-DEMO-001/plans/{family}-plan.md"
+        plan = f"qa/results/plans/{family}-plan.md"
         _write(root, plan, b"reviewed test plan\n")
         _write(
             root,
@@ -179,6 +179,26 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
     adapted = adapt_execution(cast(ProductState, {**valid_product_input(), **state}))
     feature_input = cast(dict[str, object], adapted["feature_input"])
     assert feature_input["generation_result"] == result
+
+
+async def test_generation_cycle_requires_results_plan_prefix(tmp_path: Path) -> None:
+    payload, _ = await cycle_fixture(tmp_path)
+    result = complete_generation_cycle(payload, tmp_path, tmp_path / ".stage")
+    assert all(ref.path.startswith("qa/results/plans/") for ref in result.plan_refs)
+
+
+async def test_generation_cycle_rejects_change_scoped_plan_prefix(tmp_path: Path) -> None:
+    payload, _ = await cycle_fixture(tmp_path, families=("api",))
+    old_plan = f"qa/changes/{payload.change_id}/plans/api-plan.md"
+    (tmp_path / old_plan).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / old_plan).write_bytes(b"legacy plan\n")
+    family = payload.families[0].model_copy(update={"plan_files": (old_plan,)})
+    with pytest.raises(ValueError, match="plan artifacts"):
+        complete_generation_cycle(
+            payload.model_copy(update={"families": (family,)}),
+            tmp_path,
+            tmp_path / ".stage",
+        )
 
 
 @pytest.mark.parametrize("fault", ["changed_source", "stale_epoch", "missing_family", "foreign_case"])

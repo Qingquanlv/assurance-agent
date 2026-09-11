@@ -46,12 +46,12 @@ those exact reads and a path-scoped grep both fail.
 ### required
 
 - `qa/cases/**/case.yaml`
-- `qa/changes/<change-id>/proposal.md`
+- `qa/proposal.md`
 
 ### optional
 
 - `qa/results/review/fuzz-plan-review.json`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
+- `qa/results/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only)
@@ -112,7 +112,7 @@ handoff and have explicit per-case state discovery and cleanup.
 `fuzz-codegen-mapping.json` must use this exact JSON shape:
 
 ```json
-{"schema_version":"1","layer":"fuzz","entries":[{"case_id":"TC_DEPT_FUZZ_001","symbol":"test_tc_dept_fuzz_001__behavior","target_file":"tests/fuzz/test_dept.py"}]}
+{"schema_version":"1","layer":"fuzz","entries":[{"case_id":"TC_DEPT_FUZZ_001","symbol":"test_tc_dept_fuzz_001__behavior","target_file":"qa/tests/fuzz/test_dept.py"}]}
 ```
 
 Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are

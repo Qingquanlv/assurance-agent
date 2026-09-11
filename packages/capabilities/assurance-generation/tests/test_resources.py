@@ -504,6 +504,29 @@ def test_e2e_codegen_uses_importable_support_modules_instead_of_conftest_imports
     assert "import that module by its package path" in skill
 
 
+@pytest.mark.parametrize(
+    ("family", "target_file"),
+    (
+        ("api", "qa/tests/api/test_dept.py"),
+        ("e2e", "qa/tests/e2e/test_dept.py"),
+        ("fuzz", "qa/tests/fuzz/test_dept.py"),
+        ("performance", "qa/tests/perf/locustfile_dept.py"),
+    ),
+)
+def test_plan_skill_mapping_examples_use_qa_tests(family: str, target_file: str) -> None:
+    skill = resource_text(f"skills/aa-{family}-plan/SKILL.md")
+    compact = "".join(skill.split())
+    assert f'"target_file":"{target_file}"' in compact
+    assert '"case_id"' in compact and '"symbol"' in compact and '"target_file"' in compact
+    assert "qa/changes/<change-id>/.qa.yaml" not in skill
+    assert "qa/changes/<change-id>/proposal.md" not in skill
+    assert "qa/changes/<change-id>/facts/" not in skill
+    if family in {"api", "e2e"}:
+        assert "qa/.qa.yaml" in skill
+    assert "qa/proposal.md" in skill
+    assert "qa/results/facts/" in skill
+
+
 def test_all_planners_use_the_result_contract_as_the_capability_whitelist() -> None:
     for family in ("api", "e2e", "fuzz", "performance"):
         planner = " ".join(resource_text(f"skills/aa-{family}-plan/SKILL.md").split())

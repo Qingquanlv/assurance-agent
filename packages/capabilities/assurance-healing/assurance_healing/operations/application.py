@@ -14,7 +14,7 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from pydantic import ValidationError
 
 from assurance_execution.contracts import ExecutionEvidenceV1
-from assurance_generation.contracts.codegen import staged_generated_path
+from assurance_generation.contracts.codegen import durable_test_path
 from assurance_generation.contracts.mapping import ClosedMappingV1, selected_test_file
 from assurance_healing.contracts.agent import AgentBindingDataV1
 from assurance_healing.contracts.application import (
@@ -72,9 +72,10 @@ def _load_ref(root: Path, ref: EvidenceArtifactRefV1, model: type[Any]) -> Any:
 
 
 def _mapped_sources(change_id: str, mapping: ClosedMappingV1) -> dict[str, set[str]]:
+    del change_id
     sources: dict[str, set[str]] = {}
     for entry in mapping.mappings:
-        source = staged_generated_path(change_id, entry.layer, selected_test_file(entry.test))
+        source = durable_test_path(selected_test_file(entry.test))
         sources.setdefault(source, set()).add(entry.test.partition("::")[2])
     return sources
 

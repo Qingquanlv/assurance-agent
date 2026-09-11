@@ -67,13 +67,13 @@ finally-safe cleanup in case the defective product unexpectedly persists data.
 ### required
 
 - `qa/cases/**/case.yaml`
-- `qa/changes/<change-id>/.qa.yaml`
-- `qa/changes/<change-id>/proposal.md`
+- `qa/.qa.yaml`
+- `qa/proposal.md`
 
 ### optional
 
 - `qa/results/review/api-plan-review.json`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
+- `qa/results/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only contract evidence)
@@ -97,7 +97,7 @@ finally-safe cleanup in case the defective product unexpectedly persists data.
 `api-codegen-mapping.json` must use this exact JSON shape:
 
 ```json
-{"schema_version":"1","layer":"api","entries":[{"case_id":"TC_DEPT_API_001","symbol":"test_tc_dept_api_001__behavior","target_file":"tests/api/test_dept.py"}]}
+{"schema_version":"1","layer":"api","entries":[{"case_id":"TC_DEPT_API_001","symbol":"test_tc_dept_api_001__behavior","target_file":"qa/tests/api/test_dept.py"}]}
 ```
 
 Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are

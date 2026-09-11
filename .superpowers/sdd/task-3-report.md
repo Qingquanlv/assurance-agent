@@ -1,96 +1,174 @@
-# Task 3 Report: Lever 2 — treat v4/v5 resume like v6 (skip topology audit)
+# Task 3 Report: Codegen writes `qa/tests/` directly
 
-**Status:** DONE  
-**Branch:** `chore/slimming-dead-paths`  
-**Commit:** `d177795` — `fix: skip v4/v5 topology audit on resume`
+## Status
 
-## What was implemented
+DONE_WITH_CONCERNS
 
-v4/v5 same-definition resume now takes the v6 short-circuit: `allowed=True`, no topology receipt.
+## TDD Evidence
 
-- `evaluate_resume_compatibility` returns the v6 decision for every schema version. The legacy audit body was removed from this function; `audit_topology_for_resume`, receipt helpers, and `assess_remaining_work` stay in the file.
-- Runtime wrappers `_compatibility_decision_readonly` and `_enforce_resume_compatibility` always return `allowed=True` without loading a bundle, receipt, or calling evaluate’s audit path.
-- `supersede.py`, `aa workflow supersede`, and `evaluate_supersede_eligibility` were not changed. `test_supersede.py` still constructs blocked decisions for eligibility unit tests.
-- Same-definition resume still fail-closes on digest drift via `_resolve_bundle` / `assert_live_semantic_compatibility` (unchanged).
-- README + release-note sentences that claimed resume still blocks with `legacy_commit_safety_semantics_unbound` were updated. The reason string remains in the docs corpus (supersede eligibility). `test_docs_contract.py` did not need assertion changes.
+### RED (Step 2)
+
+Tests and fixtures were rewritten first. Production still exported `staged_generated_path` and `FAMILY_TARGET_ROOTS` still used `tests/api/` (etc.). `durable_test_path` did not exist.
+
+Command:
+
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests/test_codegen.py packages/capabilities/assurance-generation/tests/test_codegen_characterization.py -v
+```
+
+Output:
+
+```
+ERROR collecting packages/capabilities/assurance-generation/tests/test_codegen.py
+ImportError: cannot import name 'durable_test_path' from 'assurance_generation.contracts.codegen'
+
+ERROR collecting packages/capabilities/assurance-generation/tests/test_codegen_characterization.py
+ImportError: cannot import name 'staged_generated_file' from 'codegen_fixtures'
+
+============================== 2 errors in 0.87s ===============================
+```
+
+Exit code: 2
+
+Failure reason: missing `durable_test_path` / leftover `staged_generated_file`, not a typo.
+
+### GREEN (Step 4)
+
+Command:
+
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests -v
+```
+
+Output:
+
+```
+============================= 584 passed in 5.14s ==============================
+```
+
+Exit code: 0
+
+Re-run after format:
+
+```
+584 passed in 5.05s
+```
+
+## What changed
+
+- `durable_test_path(target_path)` requires a path that already starts with `qa/tests/`. It does not rewrite `tests/…` → `qa/tests/…`.
+- `FAMILY_TARGET_ROOTS` and `family_allows_target` accept only `qa/tests/{family|testdata}/`.
+- `CodegenGeneratedFileAuthoring.repo_path` and `CodegenMappingEntry.target_file` validators require `qa/tests/`. Mapping field names stay `{case_id, symbol, target_file}`; symbol shape stays `test_<case_id_lowercase>__<behavior>`.
+- Codegen allowed outputs are `qa/results/codegen/{family}-generated-files.json` (plus the existing summary) and durable `qa/tests/…` targets. Bytes are read from those durable paths, not `qa/changes/…/generated/…`.
+- Planning case discovery uses `qa/cases/**/case.yaml`.
+- Skill path bullets for `aa-*-codegen` and `aa-*-plan` follow the rewrite table.
+
+## Files Changed
+
+| File | Action |
+|------|--------|
+| `assurance_generation/contracts/codegen.py` | `durable_test_path`; `FAMILY_TARGET_ROOTS`; `qa/tests/` validators; compatibility `staged_generated_path` |
+| `assurance_generation/operations/codegen.py` | write/read `qa/tests/` and `qa/results/codegen/` |
+| `assurance_generation/operations/planning.py` | case glob `qa/cases/**/case.yaml` |
+| `assurance_generation/operations/cycle.py` | authenticate durable oracles; mapping write via `qa_join("generation/epochs/…")` |
+| `assurance_generation/validators/generated_files.py` | family roots under `qa/tests/` |
+| `tests/codegen_fixtures.py`, `tests/test_codegen.py` | failing tests first; durable oracle helpers |
+| other generation tests/fixtures/skills/schema/declaration | path prefix + descriptor sync so Step 4 passes |
+
+## Commit
+
+`6079b3d3` Write codegen oracles directly under qa/tests.
+
+Only `packages/capabilities/assurance-generation` was staged.
+
+## Concerns
+
+1. **`staged_generated_path` was not fully deleted.** Healing still imports the name (`assurance_healing.operations.application`). Generation tests import the product graph, so deleting the symbol breaks collection. The remaining function is a compatibility wrapper that calls `durable_test_path` and does **not** rewrite `tests/…` → `qa/tests/…`. Later tasks should switch healing and drop the name.
+2. **Scope beyond the brief file list** was required for Step 4: validator roots, cycle mapping write (`qa/generation/epochs/…` to match Task 2 claims), result-contract schema, plugin declaration, and additional generation tests/fixtures. `execution_view` and `ChangeWorkspace` were not changed.
+3. **Plan packages** still live under `qa/changes/{change_id}/plans/`. Only the case glob moved to `qa/cases/`.
+4. **Healing runtime** will raise if it still passes `tests/…` into the compatibility wrapper.
+
+---
+
+# Task 3 Important-review fixes
+
+## Status
+
+DONE
 
 ## TDD Evidence
 
 ### RED
 
+New assertions failed on leftover alias, old plan/review prefixes, nested generated-tree writes, and skill `target_file` examples.
+
 Command:
 
-```
-uv run pytest tests/unit/workflow/graph/test_resume_compatibility.py::test_v4_and_v5_skip_legacy_topology_audit_like_v6 -v
-```
-
-Result: **FAILED** (exit 1)
-
-```
-E           AssertionError: assert False is True
-E            +  where False = ResumeCompatibilityDecision(..., allowed=False, reason='legacy_commit_safety_semantics_unbound', ..., event_schema_version=4, ...).allowed
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests/test_codegen.py::test_staged_generated_path_is_removed packages/capabilities/assurance-generation/tests/test_planning.py::test_plan_outputs_use_results_plans_and_review packages/capabilities/assurance-generation/tests/test_generated_files_validator.py::test_generated_files_reject_nested_change_generated_suffix packages/capabilities/assurance-generation/tests/test_resources.py::test_plan_skill_mapping_examples_use_qa_tests packages/capabilities/assurance-generation/tests/test_generation_cycle.py::test_generation_cycle_rejects_invalid_family_evidence -v
 ```
 
-Failure was the missing short-circuit on v4 (pending codegen fixture), not a typo.
-
-### GREEN
-
-After the unconditional skip in `evaluate_resume_compatibility`:
+Output:
 
 ```
-uv run pytest tests/unit/workflow/graph/test_resume_compatibility.py::test_v4_and_v5_skip_legacy_topology_audit_like_v6 -v
+FAILED test_staged_generated_path_is_removed
+  AssertionError: assert not True  (staged_generated_path still exported)
+
+FAILED test_plan_outputs_use_results_plans_and_review
+  qa/changes/CH-DEMO-001/plans/... != qa/results/plans/...
+
+FAILED test_generated_files_reject_nested_change_generated_suffix
+  assert True is False  (qa/changes/.../generated/.../qa/tests/... accepted)
+
+FAILED test_plan_skill_mapping_examples_use_qa_tests[api/e2e/fuzz/performance]
+  target_file examples still used tests/... not qa/tests/...
+
+4 passed (cycle reject-invalid still raised for other reasons), 7 failed
 ```
 
-Result: **1 passed, 1 warning in 0.56s** (exit 0)
+Exit code: 1. Failures matched the leftover behaviors, not typos.
 
-Covering suite:
+### GREEN (covering)
 
-```
-uv run pytest \
-  tests/unit/workflow/graph/test_resume_compatibility.py \
-  tests/unit/workflow/graph/test_supersede.py \
-  tests/unit/test_docs_contract.py \
-  tests/integration/test_graph_runtime.py \
-  tests/integration/test_graph_runtime_faults.py \
-  -v
+Command:
+
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests -v
 ```
 
-Result: **112 passed, 1 warning in 55.65s** (exit 0)
-
-The one warning is pre-existing and unrelated:
+Output:
 
 ```
-assurance_agent/workflow/graph/models.py:70: UserWarning: Field name "schema" in "CompiledWorkflow" shadows an attribute in parent "BaseModel"
+============================= 593 passed in 13.92s =============================
 ```
 
-Lint on touched Python: `ruff check` clean, `ruff format --check` clean, `pyright` 0 errors.
+Exit code: 0
 
-## Files changed
+Healing import-site module:
 
-Committed (this task only):
+```bash
+uv run pytest packages/capabilities/assurance-healing/tests/test_application.py -v
+```
 
-| Path | Action |
-|------|--------|
-| `assurance_agent/workflow/graph/resume_compatibility.py` | unconditional skip in `evaluate_resume_compatibility` |
-| `assurance_agent/workflow/graph/runtime.py` | wrappers always no-op |
-| `tests/unit/workflow/graph/test_resume_compatibility.py` | new skip test; v4/v5 evaluate tests expect `allowed=True` / `receipt is None` |
-| `README.md` | resume line no longer claims the unbound resume block |
-| `docs/release-notes/2026-08-four-layer-assurance.md` | same-definition resume skip; reason kept for supersede |
+Output:
 
-Not committed (out of scope): `.superpowers/sdd/progress.md`, `.superpowers/sdd/task-3-report.md`
+```
+============================== 16 passed in 5.65s ==============================
+```
 
-Not modified: `supersede.py`, `evaluate_supersede_eligibility`, `test_docs_contract.py`, `test_supersede.py`
+Exit code: 0
 
-## Self-review
+## What changed
 
-**Completeness:** v4/v5/v6 pending-codegen fixtures now `allowed=True` with `new_receipt is None`. Runtime wrappers never call the audit path. `audit_topology_for_resume` remains. Supersede CLI/eligibility unchanged.
+- Deleted `staged_generated_path` from `assurance_generation.contracts.codegen`. Healing now calls `durable_test_path(selected_test_file(...))` and must already pass `qa/tests/…`. Execution keeps its own merge helper and does not import the generation symbol.
+- `plan_outputs` / `plan_review_outputs` / cycle plan-prefix / planning mapping and review reads authorize `qa/results/plans/` and `qa/results/review/`. Plan validator default roots match.
+- `aa-*-plan` mapping examples use `qa/tests/…` and leftover `.qa.yaml` / `proposal.md` / `facts/` bullets use the flat table.
+- Removed `logical_generated_target` stripping so `qa/changes/…/generated/…` cannot sneak in via a nested suffix.
 
-**Quality / discipline:** Evaluate signature kept (callers still pass bundle/receipt args). Audit helpers left in `resume_compatibility.py` rather than a large delete. Runtime `_load_topology_compatibility_receipt` / `_legacy_profile_reconstructable` are now unused; left in place to avoid an extra delete in this slice.
+## Files Changed
 
-**Testing:** New test failed first on v4 `legacy_commit_safety_semantics_unbound`, then passed. Evaluate-based v4/v5 block tests were rewritten to the skip assertions. Receipt round-trip still uses `build_topology_compatibility_receipt` (evaluate no longer emits receipts). Eligibility tests still construct a blocked decision.
-
-**Findings:** none to fix in production.
+Generation package (contracts, planning/cycle/review ops, validators, plan skills, persona, tests/fixtures) plus healing import-site (`operations/application.py`), contract source-ref prefix (`qa/tests/` allowed), and `tests/test_application.py`.
 
 ## Concerns
 
-None that affect correctness. Leftover unused runtime helpers (`_load_topology_compatibility_receipt`, `_legacy_profile_reconstructable`) and `_selected_layers` can be deleted in a later slimming slice.
+Reviewer-skill markdown still lists `qa/changes/<change-id>/plans/` and `…/review/` in some bullets. Execution still defines its own `staged_generated_path` under `qa/changes/…/generated/`. `plan_review_input_paths` still locks `qa/changes/{id}/proposal.md`.

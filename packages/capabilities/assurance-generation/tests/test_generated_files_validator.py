@@ -103,6 +103,16 @@ def test_generated_files_accept_shared_builder_under_family_root() -> None:
     assert result == ValidationResult(accepted=True)
 
 
+def test_generated_files_reject_nested_change_generated_suffix() -> None:
+    sneak = "qa/changes/CH-DEMO-001/generated/api/files/qa/tests/api/test_users.py"
+    mapping = CodegenMapping.model_validate(mapping_document("api", target_file=durable_oracle_path()))
+    result = GeneratedFilesValidator(family="api", mapping=mapping).validate(
+        candidate_with(sneak), validation_context()
+    )
+    assert result.accepted is False
+    assert result.reason is not None
+
+
 @pytest.mark.parametrize("family", FAMILIES)
 def test_generated_files_reject_outside_family_root(family: str) -> None:
     mapping = CodegenMapping.model_validate(mapping_document(family, target_file="qa/tests/other/app.py"))

@@ -46,13 +46,13 @@ those exact reads and a path-scoped grep both fail.
 ### required
 
 - `qa/cases/**/case.yaml`
-- `qa/changes/<change-id>/.qa.yaml`
-- `qa/changes/<change-id>/proposal.md`
+- `qa/.qa.yaml`
+- `qa/proposal.md`
 
 ### optional
 
 - `qa/results/review/e2e-plan-review.json`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
+- `qa/results/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - backend and frontend product source (read-only)
@@ -76,7 +76,7 @@ those exact reads and a path-scoped grep both fail.
 `e2e-codegen-mapping.json` must use this exact JSON shape:
 
 ```json
-{"schema_version":"1","layer":"e2e","entries":[{"case_id":"TC_DEPT_E2E_001","symbol":"test_tc_dept_e2e_001__behavior","target_file":"tests/e2e/test_dept.py"}]}
+{"schema_version":"1","layer":"e2e","entries":[{"case_id":"TC_DEPT_E2E_001","symbol":"test_tc_dept_e2e_001__behavior","target_file":"qa/tests/e2e/test_dept.py"}]}
 ```
 
 Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are

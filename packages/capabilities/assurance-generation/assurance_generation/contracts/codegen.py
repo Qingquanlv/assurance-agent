@@ -7,7 +7,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from assurance_generation.contracts.agent import under_write_root
-from assurance_generation.contracts.families import LAYER_NAMES, LayerName
+from assurance_generation.contracts.families import LayerName
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.plans import canonical_relative_path
 from assurance_intake.contracts import NonEmptyStr
@@ -31,21 +31,6 @@ def durable_test_path(target_path: str) -> str:
     if not target.startswith("qa/tests/"):
         raise ValueError("codegen target_path must start with qa/tests/")
     return target
-
-
-def staged_generated_path(change_id: str, family: str, target_path: str) -> str:
-    """Import compatibility for later-task wheels. Does not rewrite tests/ → qa/tests/."""
-    if (
-        not change_id
-        or change_id in {".", ".."}
-        or "/" in change_id
-        or "\\" in change_id
-        or "\x00" in change_id
-    ):
-        raise ValueError("change_id must be one canonical path component")
-    if family not in LAYER_NAMES:
-        raise ValueError(f"unknown generation family: {family}")
-    return durable_test_path(target_path)
 
 
 def family_allows_target(family: LayerName, target_path: str) -> bool:

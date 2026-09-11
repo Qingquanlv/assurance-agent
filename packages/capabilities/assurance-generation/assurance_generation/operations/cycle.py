@@ -61,7 +61,7 @@ def complete_generation_cycle(
         if test_targets != targets:
             raise ValueError("generated tests must match the reviewed mapping targets")
         for path in family.plan_files:
-            if not path.startswith(f"qa/changes/{request.change_id}/plans/"):
+            if not path.startswith("qa/results/plans/"):
                 raise ValueError("plan artifacts must belong to the current change")
             plans[path] = evidence_ref(project_root, path)
         for item in family.mapping.entries:
