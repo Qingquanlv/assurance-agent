@@ -61,7 +61,7 @@ def _input(family: str) -> dict[str, object]:
 
 
 def _plan() -> dict[str, object]:
-    return {"artifacts": [{"path": "qa/changes", "digest": _SHA}]}
+    return {"artifacts": [{"path": "qa/results", "digest": _SHA}]}
 
 
 def _review(
@@ -78,7 +78,7 @@ def _review(
         "auto_fix_allowed": auto_fix,
         "human_review_required": human,
         "codegen_readiness": readiness,
-        "artifacts": [{"path": "qa/changes", "digest": _SHA}],
+        "artifacts": [{"path": "qa/results", "digest": _SHA}],
     }
     if used is not None:
         payload["rounds_used"] = used

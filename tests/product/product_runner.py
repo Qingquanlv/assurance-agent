@@ -136,7 +136,7 @@ class _ScriptedTaskHost:
 
     def _public_fields(self, extra: Mapping[str, object] | None = None) -> dict[str, JSONValue]:
         payload: dict[str, JSONValue] = {
-            "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+            "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
             "auto_fix_allowed": False,
             "change_id": "CH-DEMO-001",
             "classification": "failed",

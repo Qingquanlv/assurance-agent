@@ -73,7 +73,6 @@ _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
     "assurance-v1-reviewer": (
         "qa/results/inspect/**",
         "qa/results/review/**",
-        "**qa/improvements/reviews/**",
     ),
     "assurance-v1-test-author": (
         "qa/results/codegen/**",

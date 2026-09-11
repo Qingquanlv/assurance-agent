@@ -379,7 +379,7 @@ class _ExecutionLoopHost:
             self._execution_index += 1
             return TaskOutcome.succeeded(
                 {
-                    "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                    "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                     "change_id": change_id,
                     "rounds_budget": rounds_budget,
                     "rounds_used": rounds_used,
@@ -479,7 +479,7 @@ class _ExecutionLoopHost:
                 cast(
                     JSONValue,
                     {
-                        "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                        "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                         "auto_fix_allowed": False,
                         "change_id": change_id,
                         "decision": decision,
@@ -495,7 +495,7 @@ class _ExecutionLoopHost:
                 cast(
                     JSONValue,
                     {
-                        "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                        "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                         "change_id": change_id,
                         "lifecycle_state": "evaluating",
                         "outcome": "passed",
@@ -504,7 +504,7 @@ class _ExecutionLoopHost:
             )
         return TaskOutcome.succeeded(
             {
-                "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                 "auto_fix_allowed": False,
                 "change_id": change_id,
                 "classification": "test",

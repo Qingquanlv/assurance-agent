@@ -1383,7 +1383,7 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
 @pytest.mark.asyncio
 async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/requirement.md"
+    relative = "qa/cases/system/dept/case.yaml"
     payload = b"# RET-dept-management\n\nCover department CRUD.\n"
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1393,7 +1393,7 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
         IntakeFinalizeHandler(),
         {"output_files": [relative]},
         project,
-        ["qa/archive", "qa/cases", "qa/changes"],
+        ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         write_root=write_root,
     )
     assert executed.status == "succeeded"

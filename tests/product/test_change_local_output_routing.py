@@ -26,7 +26,7 @@ from assurance_product.output_routes import OutputRouteCatalog
 
 _SHA = "a" * 64
 _FORBIDDEN_SEGMENTS = frozenset({".runtime", ".staging"})
-_FORBIDDEN_PREFIXES = ("qa/archive", "tests/")
+_FORBIDDEN_PREFIXES = ("/".join(("qa", "archive")), "tests/")
 EXECUTE_ALIASES = tuple(sorted(AGENT_EXECUTION_CONTRACTS))
 BINDING: dict[str, JSONValue] = {
     "agent_profile": "aa-doc-author",

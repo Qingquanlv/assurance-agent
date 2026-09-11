@@ -470,7 +470,11 @@ class ProductInputV1(FrozenModel):
     @field_validator("allowed_artifact_paths")
     @classmethod
     def _allowed_artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _canonical_artifact_prefixes(value)
+        locked = ("qa/cases", "qa/fixtures", "qa/results", "qa/tests")
+        cleaned = _canonical_artifact_prefixes(value)
+        if cleaned != locked:
+            raise ValueError("allowed_artifact_paths must be the exact product prefixes")
+        return cleaned
 
     @field_validator("case_delta_paths")
     @classmethod

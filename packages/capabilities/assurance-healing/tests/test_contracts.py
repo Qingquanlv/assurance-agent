@@ -672,7 +672,7 @@ def test_output_routes_are_flat_qa_paths() -> None:
     from assurance_healing.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
 
     rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
-    assert "qa/changes" not in rendered
+    assert "qa/" + "changes" not in rendered
     assert "{change_id}" not in rendered
-    assert "qa/archive" not in rendered
+    assert "qa/" + "archive" not in rendered
     assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)

@@ -10,7 +10,12 @@ _SKIP_PARTS = {"docs/superpowers/specs", "docs/superpowers/plans"}
 
 
 def test_installed_python_has_no_legacy_change_tree() -> None:
-    forbidden = ("qa/" + "changes/", "qa/" + "archive/")
+    forbidden = (
+        "qa/" + "changes/",
+        "qa/" + "archive/",
+        "qa/" + "changes",
+        "qa/" + "archive",
+    )
     hits: list[str] = []
     for path in (*(_ROOT / "packages").rglob("*.py"), *(_ROOT / "tests").rglob("*.py")):
         relative = path.relative_to(_ROOT).as_posix()

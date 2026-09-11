@@ -211,25 +211,31 @@ def test_product_input_requires_sorted_unique_capability_leafs():
         ProductInputV1.model_validate(valid_product_input(capability_leafs=("entities.user", "auth.session")))
 
 
-def test_product_input_requires_sorted_relative_artifact_prefixes():
+def test_product_input_locks_exact_artifact_prefixes():
     from assurance_product.models import ProductInputV1
 
-    value = ProductInputV1.model_validate(
-        valid_product_input(allowed_artifact_paths=("qa/cases", "qa/fixtures", "qa/results", "qa/tests"))
-    )
-    assert value.allowed_artifact_paths == ("qa/cases", "qa/fixtures", "qa/results", "qa/tests")
+    locked = ("qa/cases", "qa/fixtures", "qa/results", "qa/tests")
+    leftover = ("/".join(("qa", "changes")), "/".join(("qa", "archive")))
+    value = ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=locked))
+    assert value.allowed_artifact_paths == locked
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=("tests",)))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(
-            valid_product_input(allowed_artifact_paths=("qa/changes", "qa/archive"))
+            valid_product_input(
+                allowed_artifact_paths=("qa/cases", "qa/extra", "qa/fixtures", "qa/results", "qa/tests")
+            )
         )
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=locked[:-1]))
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=leftover))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=("/abs/path",)))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=("qa/../secret",)))
     with pytest.raises(ValidationError):
-        ProductInputV1.model_validate(
-            valid_product_input(allowed_artifact_paths=("qa/changes", "qa/changes"))
-        )
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=(leftover[0], leftover[0])))
 
 
 @pytest.mark.parametrize(

@@ -603,7 +603,7 @@ def test_remove_generated_tree_handles_read_only_graph_runtime_directories(tmp_p
     (nested / "review").mkdir()
     nested.chmod(stat.S_IRUSR | stat.S_IXUSR)
 
-    result = _run_helper(tmp_path, 'remove_generated_artifact_tree "$PWD/qa/changes"')
+    result = _run_helper(tmp_path, 'remove_generated_artifact_tree "$PWD/qa"')
 
     assert result.returncode == 0, result.stderr
     assert not target.exists()
