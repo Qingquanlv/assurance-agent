@@ -30,7 +30,7 @@ class ExecutionCycleResultV1(FrozenModel):
 
     @model_validator(mode="after")
     def _paths_match_change(self) -> Self:
-        prefix = f"qa/changes/{self.change_id}/"
+        prefix = "qa/"
         if not self.evidence_ref.path.startswith(prefix):
             raise ValueError("execution evidence must belong to the current change")
         if not self.mapping_ref.path.startswith(prefix):

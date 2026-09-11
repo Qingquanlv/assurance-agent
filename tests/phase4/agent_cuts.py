@@ -46,7 +46,7 @@ WHEEL_FINALIZERS = {
 
 _HEX = "a" * 64
 _PLAN_REF = {
-    "path": f"qa/changes/CH-DEMO-001/plan/{_HEX}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{_HEX}/resolved-assurance-plan.json",
     "digest": _HEX,
 }
 
@@ -110,8 +110,8 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                 "baseline_tree_id": _HEX,
                 "runner_profile_digest": _HEX,
                 "execution_view_root": (
-                    "qa/changes/CH-DEMO-001/.staging/task/attempt-1/"
-                    "qa/changes/CH-DEMO-001/.staging/execution/batch-1"
+                    "qa/.staging/task/attempt-1/"
+                    "qa/.staging/execution/batch-1"
                 ),
                 "execution_view_digest": _HEX,
                 "executed_at": "2026-09-05T00:00:00Z",
@@ -159,7 +159,7 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                         "selected_families": ["api"],
                         "applicable_goals": ["constraint_coverage"],
                         "applicability_refs": [
-                            {"path": "qa/changes/CH-DEMO-001/cases/api/case.yaml", "digest": _HEX}
+                            {"path": "qa/cases/api/case.yaml", "digest": _HEX}
                         ],
                         "risk_tier": "low",
                         "policy_digest": _HEX,
@@ -173,31 +173,31 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                         }
                     },
                     "trace_ref": {
-                        "path": "qa/changes/CH-DEMO-001/inspect/trace.json",
+                        "path": "qa/results/inspect/trace.json",
                         "digest": _HEX,
                     },
                     "gaps_ref": {
-                        "path": "qa/changes/CH-DEMO-001/inspect/gaps.json",
+                        "path": "qa/results/inspect/gaps.json",
                         "digest": _HEX,
                     },
                     "metrics_ref": {
-                        "path": "qa/changes/CH-DEMO-001/inspect/metrics.json",
+                        "path": "qa/results/inspect/metrics.json",
                         "digest": _HEX,
                     },
                     "sufficiency_ref": {
-                        "path": "qa/changes/CH-DEMO-001/inspect/sufficiency.json",
+                        "path": "qa/results/inspect/sufficiency.json",
                         "digest": _HEX,
                     },
                     "execution_ref": {
-                        "path": "qa/changes/CH-DEMO-001/execution/result.json",
+                        "path": "qa/results/execution/result.json",
                         "digest": _HEX,
                     },
                     "observations_ref": {
-                        "path": "qa/changes/CH-DEMO-001/inspect/observations.json",
+                        "path": "qa/results/inspect/observations.json",
                         "digest": _HEX,
                     },
                     "issue_evidence_manifest_ref": {
-                        "path": "qa/changes/CH-DEMO-001/inspect/issue-evidence-manifest.json",
+                        "path": "qa/results/inspect/issue-evidence-manifest.json",
                         "digest": _HEX,
                     },
                     "owned_evidence_ids": [],
@@ -209,21 +209,21 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                     "plan_digest": _HEX,
                     "plan_ref": _PLAN_REF,
                     "preparation_refs": [
-                        {"path": "qa/changes/CH-DEMO-001/intake/prepare.json", "digest": _HEX},
+                        {"path": "qa/results/intake/prepare.json", "digest": _HEX},
                         _PLAN_REF,
                     ],
-                    "case_refs": [{"path": "qa/changes/CH-DEMO-001/cases/api/case.yaml", "digest": _HEX}],
+                    "case_refs": [{"path": "qa/cases/api/case.yaml", "digest": _HEX}],
                     "review_ref": {
-                        "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                        "path": "qa/results/review/case-review.json",
                         "digest": _HEX,
                     },
                 },
                 "mapping_ref": {
-                    "path": "qa/changes/CH-DEMO-001/generated/mapping.json",
+                    "path": "qa/results/generated/mapping.json",
                     "digest": _HEX,
                 },
                 "fact_baseline_ref": {
-                    "path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json",
+                    "path": "qa/results/facts/fact-baseline.json",
                     "digest": _HEX,
                 },
             }

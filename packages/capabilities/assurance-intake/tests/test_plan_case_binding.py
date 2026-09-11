@@ -7,7 +7,7 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, require_s
 
 PLAN_DIGEST = "a" * 64
 PLAN_REF = EvidenceArtifactRefV1(
-    path=f"qa/changes/CH-1/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
+    path=f"qa/results/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
     digest="b" * 64,
 )
 
@@ -23,7 +23,7 @@ def test_case_design_requires_plan_binding() -> None:
         "capability_leafs": (),
         "artifact_paths": (),
         "selected_test_families": ("api",),
-        "case_delta_paths": ("qa/changes/CH-1/cases/core/case.yaml",),
+        "case_delta_paths": ("qa/cases/core/case.yaml",),
     }
     with pytest.raises(ValidationError, match="plan_digest|plan_ref"):
         CaseDesignInputV1.model_validate(payload)

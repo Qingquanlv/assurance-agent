@@ -46,12 +46,12 @@ def _input(family: str) -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "selected_test_families": [family],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         "family": family,
         "lane_selected": True,
         "rounds_used": 0,
@@ -97,15 +97,15 @@ def _reviewed_case() -> dict[str, object]:
     return {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 0,
-        "preparation_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+        "preparation_refs": [{"path": "qa/requirement.md", "digest": _SHA}],
         "case_refs": [
             {
-                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "path": "qa/cases/menus/case.yaml",
                 "digest": _SHA,
             }
         ],
         "review_ref": {
-            "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+            "path": "qa/results/review/case-review.json",
             "digest": _SHA,
         },
     }
@@ -426,7 +426,7 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt(tmp_path: P
         "plan_ref": cycle_input.plan_ref.model_dump(mode="json"),
         "selected_test_families": ["api"],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,

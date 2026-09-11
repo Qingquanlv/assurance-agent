@@ -19,7 +19,7 @@ generate-report handler owns `quality_score` and `final_status`.
 
 ### required
 
-- a Markdown report at `qa/changes/<change-id>/report/report.md`
+- a Markdown report at `qa/results/report/report.md`
 - structured `ReportResultV1` declaring that path in `report_files`
 - every source digest equals the locked projection digest
 

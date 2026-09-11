@@ -37,6 +37,6 @@ for `RetroAnalysisResultV3` with `domain=workflow`.
 - Never write `slice_sha256` or calculate a digest.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
-- Write the typed result to `qa/changes/<change-id>/retro/retro-workflow-analysis.json`.
+- Write the typed result to `qa/results/retro/retro-workflow-analysis.json`.
 - Write and return the same complete `RetroAnalysisResultV3` JSON object. No Markdown fence or prose in the final answer.
 - Return the typed result and stop.

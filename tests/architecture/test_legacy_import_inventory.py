@@ -71,7 +71,7 @@ def test_scanner_audits_benchmark_source_without_rescanning_run_evidence(tmp_pat
     evidence = tmp_path / "benchmark/assurance-product/results/old-run/venv/installed.py"
     phase3 = tmp_path / "benchmark/agent-runtime-phase3/results/old-run/copied_source.py"
     dependency = tmp_path / "benchmark/vue-fastapi-admin/.venv/lib/dependency.py"
-    stage = tmp_path / "benchmark/vue-fastapi-admin/qa/changes/CH-1/.staging/copied_source.py"
+    stage = tmp_path / "benchmark/vue-fastapi-admin/qa/.staging/copied_source.py"
     evaluation = tmp_path / "benchmark/vue-fastapi-admin/eval/out/run/sut/copied_source.py"
     cache = tmp_path / "benchmark/vue-fastapi-admin/.aa/cache/diff-base/copied_source.py"
     for path in (source, evidence, phase3, dependency, stage, evaluation, cache):

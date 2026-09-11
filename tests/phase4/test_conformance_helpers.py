@@ -53,8 +53,8 @@ _SHA = "a" * 64
 
 def _agent_workspace(
     *,
-    write_root: str = "qa/changes/CH-1/.staging/attempt-1",
-    allowed_outputs: tuple[str, ...] = ("qa/changes/CH-1/proposal.md",),
+    write_root: str = "qa/.staging/attempt-1",
+    allowed_outputs: tuple[str, ...] = ("qa/proposal.md",),
     agent_profile: str = "assurance-v1-doc-author",
 ) -> AgentWorkspaceV1:
     payload = {

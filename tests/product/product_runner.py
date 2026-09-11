@@ -547,7 +547,7 @@ def _product_input(
         "requirement": "Add login",
         "run_mode": "implement",
         "candidate_test_families": selected_test_families,
-        "case_delta_paths": ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
+        "case_delta_paths": ("qa/cases/system/dept/case.yaml",),
         "capability_leafs": (),
         "capability_catalog": {
             "resource_id": "assurance.product.configuration.capability-catalog",
@@ -561,7 +561,7 @@ def _product_input(
             "resource_id": "assurance.product.configuration.data-knowledge",
             "sha256": _SHA,
         },
-        "allowed_artifact_paths": ("qa/changes",),
+        "allowed_artifact_paths": ("qa/cases", "qa/fixtures", "qa/results", "qa/tests"),
         "budgets": {
             "review_rounds": 1,
             "coverage_rounds": coverage_rounds,

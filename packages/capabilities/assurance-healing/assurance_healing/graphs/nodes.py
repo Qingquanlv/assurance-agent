@@ -202,7 +202,7 @@ def publish_proposal(state: Mapping[str, object], output: object, receipt: objec
     proposal = FixProposalResultV1.model_validate(
         {name: payload[name] for name in FixProposalResultV1.model_fields if name in payload}
     )
-    relative = f"qa/changes/{proposal.change_id}/healing/fix-proposal.json"
+    relative = "qa/results/healing/fix-proposal.json"
     data = canonical_json_bytes(cast(JSONValue, proposal.model_dump(mode="json"))) + b"\n"
     return {
         "proposal_result": proposal.model_dump(mode="json"),

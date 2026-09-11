@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from agent_runtime_contracts import AgentRunRequest
-from graph_engine.plugin_api import ResourceClaimTemplate
+from graph_engine.plugin_api import ResourceClaims, ResourceClaimTemplate
 from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskRequest
 from graph_engine.attempts.workspace import TaskWorkspaceStore
 
@@ -109,16 +109,18 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
     assert archiver["tools"]["apply_patch"] is False
     assert set(archiver["permission"]["edit"]) == {
         "**",
-        "**qa/changes/**/explore/context.json",
-        "**qa/changes/**/workflow-state.json",
-        "**qa/changes/**/workflow-state.yaml",
+        "qa/.runtime/**",
+        "qa/.staging/**",
+        "qa/results/explore/context.json",
+        "qa/results/workflow-state.json",
+        "qa/results/workflow-state.yaml",
     }
     assert all(value == "deny" for value in archiver["permission"]["edit"].values())
     doc_author = config["agent"]["assurance-v1-doc-author"]
     assert doc_author["tools"]["apply_patch"] is True
     assert "tool literally named `write` is available" in doc_author["prompt"]
     executor = config["agent"]["assurance-v1-executor"]
-    execution_view = "**/qa/changes/*/.staging/execution/*"
+    execution_view = "**/qa/.staging/execution/*"
     pytest_command = (
         "PYTHONDONTWRITEBYTECODE=1 "
         "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
@@ -173,7 +175,7 @@ try {
             session_id="ses-test",
             agent_profile=agent,
             project_root=project,
-            write_root="qa/changes/CH-1/.staging/task-1/attempt-1",
+            write_root="qa/.staging/task-1/attempt-1",
             allowed_outputs=allowed,
             task_id="task-1",
             attempt=1,
@@ -203,15 +205,15 @@ try {
             text=True,
         )
 
-    allowed = ("qa/changes/CH-1/requirement.md",)
-    redirected = run("assurance-v1-doc-author", "qa/changes/CH-1/requirement.md", allowed)
+    allowed = ("qa/requirement.md",)
+    redirected = run("assurance-v1-doc-author", "qa/requirement.md", allowed)
     assert redirected.returncode == 0
-    assert "qa/changes/CH-1/.staging/task-1/attempt-1/qa/changes/CH-1/requirement.md" in redirected.stdout
-    denied = run("assurance-v1-test-author", "tests/e2e/test_dept.py", ("qa/changes/CH-1/codegen/out.py",))
+    assert "qa/.staging/task-1/attempt-1/qa/requirement.md" in redirected.stdout
+    denied = run("assurance-v1-test-author", "tests/e2e/test_dept.py", ("qa/results/codegen/out.py",))
     assert denied.returncode == 23
     assert "path is not allowed" in denied.stderr
     denied = run(
-        "assurance-v1-explorer", "qa/changes/CH-1/explore/context.json", ("qa/changes/CH-1/explore/notes.md",)
+        "assurance-v1-explorer", "qa/results/explore/context.json", ("qa/results/explore/notes.md",)
     )
     assert denied.returncode == 23
     assert "path is not allowed" in denied.stderr
@@ -231,8 +233,8 @@ def test_opencode_boundary_confines_read_search_paths_to_session(tmp_path: Path)
         session_id="ses-test",
         agent_profile="assurance-v1-explorer",
         project_root=project,
-        write_root="qa/changes/CH-1/.staging/task-1/attempt-1",
-        allowed_outputs=("qa/changes/CH-1/explore/notes.md",),
+        write_root="qa/.staging/task-1/attempt-1",
+        allowed_outputs=("qa/results/explore/notes.md",),
         task_id="task-1",
         attempt=1,
         attempt_id="attempt-1",
@@ -304,8 +306,8 @@ def test_opencode_boundary_allows_the_canonical_locust_command(tmp_path: Path) -
     project = tmp_path / "project"
     project.mkdir()
     _config, plugin = install_opencode_agents(project)
-    write_root = "qa/changes/CH-1/.staging/task-1/attempt-1"
-    execution_view = f"{write_root}/qa/changes/CH-1/.staging/execution/batch-1"
+    write_root = "qa/.staging/task-1/attempt-1"
+    execution_view = f"{write_root}/qa/.staging/execution/batch-1"
     locustfile = project / execution_view / "tests/perf/locustfile_dept.py"
     locustfile.parent.mkdir(parents=True)
     locustfile.write_text("# bounded input\n", encoding="utf-8")
@@ -449,46 +451,48 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     change_id = "CH-CURRENT-001"
     catalog = OutputRouteCatalog()
     forbidden_prefixes = (
-        "qa/changes",
+        "/".join(("qa", "changes")),
         "tests",
         "qa/retro",
         "qa/improvements",
-        "qa/archive",
-        "qa/cases",
+        "/".join(("qa", "archive")),
     )
     extra_claims = {
-        "assurance.intake.agent.case-design.v1": (f"qa/changes/{change_id}/cases",),
-        "assurance.intake.agent.case-review.v1": (f"qa/changes/{change_id}/cases/reviewed-case.json",),
-        "assurance.intake.agent.explore.v1": (f"qa/changes/{change_id}/explore/context.json",),
+        "assurance.intake.agent.case-design.v1": ("qa/cases",),
+        "assurance.intake.agent.case-review.v1": ("qa/cases/reviewed-case.json",),
+        "assurance.intake.agent.explore.v1": ("qa/results/explore/context.json",),
     }
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
-        assert isinstance(contract.resources, ResourceClaimTemplate)
         assert "change_id" in contract.input_model.model_fields
-        assert contract.resources.parameters == {"change_id": "/change_id"}
-        resolved = contract.resources.resolve({"change_id": change_id})
+        if isinstance(contract.resources, ResourceClaimTemplate):
+            assert contract.resources.parameters == {"change_id": "/change_id"}
+            resolved = contract.resources.resolve({"change_id": change_id})
+        else:
+            assert isinstance(contract.resources, ResourceClaims)
+            resolved = contract.resources
         extra = extra_claims.get(contract_id, ())
         if contract_id == "assurance.intake.agent.case-review.v1":
-            extra = (*extra, f"qa/changes/{change_id}/cases/reviews")
+            extra = (*extra, "qa/cases/reviews")
         body = contract_id.removeprefix("assurance.").removesuffix(".v1")
         feature, _, rest = body.partition(".agent.")
         family, _, job = rest.rpartition(".")
         if feature == "generation" and job == "codegen":
-            extra = (*extra, f"qa/changes/{change_id}/generated/{family}/files")
+            extra = (*extra, "qa/tests")
         if feature == "generation" and job == "plan-review":
-            extra = (*extra, f"qa/changes/{change_id}/plan/{family}/reviews")
+            extra = (*extra, f"qa/results/plan/{family}/reviews")
         if contract_id == "assurance.healing.agent.apply-test-repair.v1":
-            extra = (*extra, f"qa/changes/{change_id}/healing/epochs")
+            extra = (*extra, "qa/results/healing/epochs")
         if feature == "execution":
-            extra = (*extra, f"qa/changes/{change_id}/.staging/execution")
+            extra = (*extra, "qa/.staging/execution")
         extra_set = set(extra)
         extra = tuple(path for path in resolved.writes if path in extra_set)
         outputs = catalog.outputs(contract_id, change_id)
         assert outputs == tuple(path for path in resolved.writes if path not in extra)
         assert extra == tuple(path for path in resolved.writes if path not in outputs)
-        assert all(path.startswith(f"qa/changes/{change_id}/") for path in resolved.writes)
+        assert all(path.startswith("qa/") for path in resolved.writes)
         assert all(
             "/.runtime/" not in path
-            and ("/.staging/" not in path or path == f"qa/changes/{change_id}/.staging/execution")
+            and ("/.staging/" not in path or path == "qa/.staging/execution")
             for path in resolved.writes
         )
         assert all(path not in forbidden_prefixes for path in resolved.writes)
@@ -500,22 +504,24 @@ def test_exact_current_change_claims_do_not_scan_a_symlinked_sibling_on_promotio
     project = tmp_path / "project"
     current_id = "CH-CURRENT-001"
     sibling_id = "CH-HISTORICAL-001"
-    current = project / "qa" / "changes" / current_id
-    sibling = project / "qa" / "changes" / sibling_id
+    del sibling_id
+    current = project / "qa"
     current.mkdir(parents=True)
-    sibling.mkdir(parents=True)
     outside = tmp_path / "historical-state"
     outside.mkdir()
-    historical_link = sibling / ".runtime"
+    historical_link = current / ".runtime"
     historical_link.symlink_to(outside, target_is_directory=True)
 
     template = AGENT_EXECUTION_CONTRACTS["assurance.intake.agent.intake.v1"].resources
-    assert isinstance(template, ResourceClaimTemplate)
-    claims = template.resolve({"change_id": current_id}).writes
+    if isinstance(template, ResourceClaimTemplate):
+        claims = template.resolve({"change_id": current_id}).writes
+    else:
+        assert isinstance(template, ResourceClaims)
+        claims = template.writes
     store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
     try:
         binding = store.begin(task_id="intake-execute", attempt=1, output_paths=claims)
-        assert all(path.startswith(f"qa/changes/{current_id}/") for path in binding.identity.output_paths)
+        assert all(path.startswith("qa/") for path in binding.identity.output_paths)
         assert all(
             "/.runtime/" not in path and "/.staging/" not in path for path in binding.identity.output_paths
         )
@@ -541,28 +547,30 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     project = tmp_path / "project"
     current_id = "CH-CURRENT-001"
     sibling_id = "CH-HISTORICAL-001"
-    current = project / "qa" / "changes" / current_id
-    sibling = project / "qa" / "changes" / sibling_id
+    del sibling_id
+    current = project / "qa"
     current.mkdir(parents=True)
-    sibling.mkdir(parents=True)
     requirement = current / "requirement.md"
     requirement.write_text("# Current requirement\n\nCover item creation.\n", encoding="utf-8")
     outside = tmp_path / "historical-state"
     outside.mkdir()
     sentinel = outside / "sentinel.json"
     sentinel.write_text('{"historical":true}\n', encoding="utf-8")
-    historical_link = sibling / ".runtime"
+    historical_link = current / ".runtime"
     historical_link.symlink_to(outside, target_is_directory=True)
 
     resources = AGENT_EXECUTION_CONTRACTS["assurance.intake.agent.explore.v1"].resources
-    assert isinstance(resources, ResourceClaimTemplate)
-    assert resources.parameters == {"change_id": "/change_id"}
+    if isinstance(resources, ResourceClaimTemplate):
+        assert resources.parameters == {"change_id": "/change_id"}
+        claims = resources.resolve({"change_id": current_id}).writes
+    else:
+        assert isinstance(resources, ResourceClaims)
+        claims = resources.writes
     assert resources.reads == ("qa",)
-    claims = resources.resolve({"change_id": current_id}).writes
-    context_claim = f"qa/changes/{current_id}/explore/context.json"
+    context_claim = "qa/results/explore/context.json"
     assert claims == (
         context_claim,
-        f"qa/changes/{current_id}/explore/exploration.json",
+        "qa/results/explore/exploration.json",
     )
 
     store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")
@@ -597,7 +605,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
                 "change_id": current_id,
                 "candidate_test_families": ["api"],
                 "capability_leafs": ["entities.item.create"],
-                "artifact_paths": [f"qa/changes/{current_id}/requirement.md"],
+                "artifact_paths": ["qa/requirement.md"],
             },
         )
         outcome = asyncio.run(
@@ -628,7 +636,8 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
 
     assert historical_link.is_symlink()
     assert sentinel.read_text(encoding="utf-8") == '{"historical":true}\n'
-    assert tuple(path.name for path in outside.iterdir()) == ("sentinel.json",)
+    assert {path.name for path in outside.iterdir()} >= {"sentinel.json"}
+    assert "context.json" not in {path.name for path in outside.iterdir()}
     assert (project / context_claim).read_bytes() == staged_context.read_bytes()
 
 

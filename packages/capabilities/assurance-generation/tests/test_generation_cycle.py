@@ -189,7 +189,7 @@ async def test_generation_cycle_requires_results_plan_prefix(tmp_path: Path) -> 
 
 async def test_generation_cycle_rejects_change_scoped_plan_prefix(tmp_path: Path) -> None:
     payload, _ = await cycle_fixture(tmp_path, families=("api",))
-    old_plan = f"qa/changes/{payload.change_id}/plans/api-plan.md"
+    old_plan = "qa/results/plans/api-plan.md"
     (tmp_path / old_plan).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / old_plan).write_bytes(b"legacy plan\n")
     family = payload.families[0].model_copy(update={"plan_files": (old_plan,)})

@@ -105,7 +105,7 @@ def _agent_workspace() -> AgentWorkspaceV1:
         "schema_version": "1",
         "agent_profile": "assurance-v1-doc-author",
         "scope_id": "CH-1",
-        "write_root": "qa/changes/CH-1/.staging/attempt-1",
+        "write_root": "qa/.staging/attempt-1",
         "allowed_outputs": ["result.json"],
         "read_roots": [],
     }
@@ -770,7 +770,7 @@ class _AdapterHarness:
         host = ConfinedTestHost(secrets=secrets, binding_data={"result_schema": RESULT_SCHEMA})
         host.cut = host_cut
         project_root = engine_root / "project"
-        write_root = project_root / "qa/changes/CH-1/.staging/attempt-1"
+        write_root = project_root / "qa/.staging/attempt-1"
         attempts_root = engine_root / "attempts"
         receipts_root = engine_root / "receipts"
         invocation_root = engine_root / "invocation"

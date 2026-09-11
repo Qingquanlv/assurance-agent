@@ -206,7 +206,7 @@ def test_validate_structured_result_allows_title_and_description_annotations() -
         **_INTAKE_RESULT_SCHEMA,
         "description": "intake artifact list",
     }
-    payload = {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    payload = {"output_files": ["qa/proposal.md"]}
     assert (
         validate_structured_result(
             payload,

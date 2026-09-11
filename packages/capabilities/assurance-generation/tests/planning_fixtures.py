@@ -12,7 +12,7 @@ VALID_LEAFS = ("auth.session.create", "entities.item.create")
 _SHA = "a" * 64
 PLAN_DIGEST = _SHA
 PLAN_REF: dict[str, JSONValue] = {
-    "path": f"qa/changes/CH-DEMO-001/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
     "digest": _SHA,
 }
 BINDING: dict[str, JSONValue] = {

@@ -57,7 +57,7 @@ def _publish_state() -> dict[str, object]:
     state = assess_graph_input()
     state["assessment_inputs"] = _assessment_output()
     state["fact_baseline_ref"] = {
-        "path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json",
+        "path": "qa/results/facts/fact-baseline.json",
         "digest": "a" * 64,
     }
     return state
@@ -105,7 +105,7 @@ async def _finalize_inspection(
     classification_performed: bool = True,
 ):
     baseline_document = {"source": "unavailable", "change_id": MATERIALIZED_CHANGE_ID}
-    baseline_path = f"qa/changes/{MATERIALIZED_CHANGE_ID}/facts/fact-baseline.json"
+    baseline_path = "qa/results/facts/fact-baseline.json"
     baseline_ref = EvidenceArtifactRefV1.model_validate(_write_json(root, baseline_path, baseline_document))
     inspect_business = business.model_copy(update={"fact_baseline_ref": baseline_ref})
     assessment = business.assessment
@@ -125,7 +125,7 @@ async def _finalize_inspection(
     stage = root / ".stage"
     _write_stage(
         stage,
-        f"qa/changes/{MATERIALIZED_CHANGE_ID}/inspect/inspection.json",
+        "qa/results/inspect/inspection.json",
         inspection_document,
     )
     return await execute_task(
@@ -228,7 +228,7 @@ def test_stale_reviewed_case_cannot_publish_a_normal_result() -> None:
     reviewed = deepcopy(state["reviewed_case"])
     assert isinstance(reviewed, dict)
     reviewed["review_ref"] = {
-        "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+        "path": "qa/results/review/case-review.json",
         "digest": "b" * 64,
     }
     state["reviewed_case"] = reviewed
@@ -241,7 +241,7 @@ def test_stale_mapping_cannot_publish_a_normal_result() -> None:
     generation = deepcopy(state["generation_result"])
     assert isinstance(generation, dict)
     generation["mapping_ref"] = {
-        "path": "qa/changes/CH-DEMO-001/codegen/closed-mapping.json",
+        "path": "qa/results/codegen/closed-mapping.json",
         "digest": "b" * 64,
     }
     state["generation_result"] = generation
@@ -441,7 +441,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
 
     stage = tmp_path / ".stage"
     baseline_document = {"source": "unavailable", "change_id": MATERIALIZED_CHANGE_ID}
-    baseline_path = f"qa/changes/{MATERIALIZED_CHANGE_ID}/facts/fact-baseline.json"
+    baseline_path = "qa/results/facts/fact-baseline.json"
     _write_stage(stage, baseline_path, baseline_document)
     baseline_result = await execute_task(
         FactBaselineFinalizeHandler(),
@@ -473,7 +473,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
         "coverage_digest": assessment.gaps_ref.digest,
         "metrics_digest": assessment.metrics_ref.digest,
     }
-    inspection_path = f"qa/changes/{MATERIALIZED_CHANGE_ID}/inspect/inspection.json"
+    inspection_path = "qa/results/inspect/inspection.json"
     _write_stage(stage, inspection_path, inspection_document)
     inspection_result = await execute_task(
         InspectFinalizeHandler(),
@@ -549,7 +549,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
         reviewed_case=materialized.reviewed_case,
         mapping_ref=materialized.generation.mapping_ref,
     )
-    baseline_path = f"qa/changes/{MATERIALIZED_CHANGE_ID}/facts/fact-baseline.json"
+    baseline_path = "qa/results/facts/fact-baseline.json"
     stage = tmp_path / ".stage"
     baseline_document = {"source": "unavailable", "change_id": MATERIALIZED_CHANGE_ID}
     _write_stage(stage, baseline_path, baseline_document)
@@ -584,7 +584,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
     }
     _write_stage(
         stage,
-        f"qa/changes/{MATERIALIZED_CHANGE_ID}/inspect/inspection.json",
+        "qa/results/inspect/inspection.json",
         inspection_document,
     )
 
@@ -614,7 +614,7 @@ async def test_failing_execution_requires_analyzed_agent_status(
     inspection_document["status"] = "failed"
     _write_stage(
         stage,
-        f"qa/changes/{MATERIALIZED_CHANGE_ID}/inspect/inspection.json",
+        "qa/results/inspect/inspection.json",
         inspection_document,
     )
     rejected = await execute_task(

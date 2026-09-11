@@ -6,7 +6,7 @@ from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationR
 
 from assurance_healing.validators.paths import canonical_relative, under_root
 
-_DEFAULT_TEST_ROOTS = ("tests", "qa/changes")
+_DEFAULT_TEST_ROOTS = ("qa/tests",)
 _DEFAULT_PRODUCT_ROOTS = ("app", "src", "web/src")
 _OUTSIDE = "healing candidate may write only approved test paths"
 _UNAPPROVED = "test-tree changes require approval"

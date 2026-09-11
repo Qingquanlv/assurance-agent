@@ -52,42 +52,39 @@ _DISABLED_TOOLS = (
 _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
     "assurance-v1-archiver": (),
     "assurance-v1-doc-author": (
-        "**qa/changes/**/.qa.yaml",
-        "**qa/changes/**/cases/**",
-        "**qa/changes/**/facts/**",
-        "**qa/changes/**/healing/**",
-        "**qa/changes/**/plans/**",
-        "**qa/changes/**/proposal.md",
-        "**qa/changes/**/requirement.md",
-        "**qa/changes/**/retro/**",
-        "**qa/changes/**/review/**",
-        "**qa/changes/**/trace/**",
+        "qa/.qa.yaml",
+        "qa/cases/**",
+        "qa/results/facts/**",
+        "qa/results/healing/**",
+        "qa/results/plans/**",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results/retro/**",
+        "qa/results/review/**",
+        "qa/results/trace/**",
     ),
-    "assurance-v1-executor": ("**qa/changes/**/execution/**",),
-    "assurance-v1-explorer": ("**qa/changes/**/explore/**",),
+    "assurance-v1-executor": ("qa/results/execution/**",),
+    "assurance-v1-explorer": ("qa/results/explore/**",),
     "assurance-v1-reporter": (
-        "**qa/changes/**/inspect/**",
-        "**qa/changes/**/issue-review/**",
-        "**qa/changes/**/report/**",
+        "qa/results/inspect/**",
+        "qa/results/issue-review/**",
+        "qa/results/report/**",
     ),
     "assurance-v1-reviewer": (
-        "**qa/changes/**/inspect/**",
-        "**qa/changes/**/review/**",
+        "qa/results/inspect/**",
+        "qa/results/review/**",
         "**qa/improvements/reviews/**",
     ),
     "assurance-v1-test-author": (
-        "**qa/changes/**/codegen/**",
-        "**qa/changes/**/coverage-repair/**",
-        "**qa/changes/**/healing/**",
-        "**tests/api/**",
-        "**tests/e2e/**",
-        "**tests/fuzz/**",
-        "**tests/perf/**",
-        "**tests/testdata/**",
+        "qa/results/codegen/**",
+        "qa/results/coverage-repair/**",
+        "qa/results/healing/**",
+        "qa/tests/**",
+        "qa/fixtures/**",
     ),
 }
 
-_EXECUTION_VIEW = "**/qa/changes/*/.staging/execution/*"
+_EXECUTION_VIEW = "**/qa/.staging/execution/*"
 _EXECUTOR_COMMANDS = (
     f"npm run test --prefix {_EXECUTION_VIEW} *",
     f"npm test --prefix {_EXECUTION_VIEW} *",
@@ -216,9 +213,11 @@ def _agent_definition(agent_profile: str) -> dict[str, object]:
     edit.update({pattern: "allow" for pattern in _EDIT_RULES[agent_profile]})
     edit.update(
         {
-            "**qa/changes/**/explore/context.json": "deny",
-            "**qa/changes/**/workflow-state.json": "deny",
-            "**qa/changes/**/workflow-state.yaml": "deny",
+            "qa/.runtime/**": "deny",
+            "qa/.staging/**": "deny",
+            "qa/results/explore/context.json": "deny",
+            "qa/results/workflow-state.json": "deny",
+            "qa/results/workflow-state.yaml": "deny",
         }
     )
     bash = {"*": "deny"}

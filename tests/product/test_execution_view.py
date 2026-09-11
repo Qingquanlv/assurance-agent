@@ -18,9 +18,9 @@ from assurance_product.execution_view import ExecutionView, build_execution_view
 
 CHANGE_ID = "CH-DEMO-001"
 BATCH_ID = "20260822T000000Z"
-CANDIDATE_TARGET = "tests/api/test_users.py"
-EXISTING_TARGET = "tests/api/test_existing.py"
-SUPPORT_TARGET = "tests/conftest.py"
+CANDIDATE_TARGET = "qa/tests/api/test_users.py"
+EXISTING_TARGET = "qa/tests/api/test_existing.py"
+SUPPORT_TARGET = "qa/tests/conftest.py"
 APP_SOURCE = "app/main.py"
 
 
@@ -29,7 +29,14 @@ def _digest(content: bytes) -> str:
 
 
 def _staged_path(family: str, target: str) -> str:
-    return f"qa/changes/{CHANGE_ID}/generated/{family}/files/{target}"
+    del family
+    return target if target.startswith("qa/tests/") else f"qa/tests/{target.removeprefix('tests/')}"
+
+
+def _view_path(target: str) -> str:
+    if target.startswith("qa/tests/"):
+        return "tests/" + target[len("qa/tests/") :]
+    return target
 
 
 def _write(project: Path, relative: str, content: bytes) -> Path:
@@ -44,7 +51,7 @@ def _promote(project: Path, family: str, target: str, content: bytes) -> Generat
     digest = _digest(content)
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/codegen/{family}-generated-files.json",
+        f"qa/results/codegen/{family}-generated-files.json",
         json.dumps(
             {
                 "schema_version": "1",
@@ -74,7 +81,7 @@ def _promote(project: Path, family: str, target: str, content: bytes) -> Generat
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     (project / "tests" / "api").mkdir(parents=True)
     (project / "app").mkdir(parents=True)
     return project
@@ -86,7 +93,7 @@ def _selected(*targets: str) -> tuple[str, ...]:
 
 def test_candidate_files_shadow_existing_tests_in_the_disposable_view(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    original = _write(project, CANDIDATE_TARGET, b"original-sut\n")
+    original = _write(project, "tests/api/test_users.py", b"original-sut\n")
     _write(project, APP_SOURCE, b"APP = 1\n")
     _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
     merged = merge_generated(project, CHANGE_ID, ("api",))
@@ -101,9 +108,9 @@ def test_candidate_files_shadow_existing_tests_in_the_disposable_view(tmp_path: 
 
     assert isinstance(view, ExecutionView)
     assert view.batch_id == BATCH_ID
-    assert view.root == f"qa/changes/{CHANGE_ID}/.staging/execution/{BATCH_ID}"
+    assert view.root == f"qa/.staging/execution/{BATCH_ID}"
     assert view.selected_targets == _selected(CANDIDATE_TARGET)
-    shadowed = project.joinpath(*view.root.split("/"), *CANDIDATE_TARGET.split("/"))
+    shadowed = project.joinpath(*view.root.split("/"), *_view_path(CANDIDATE_TARGET).split("/"))
     assert shadowed.read_bytes() == b"generated-candidate\n"
     assert original.read_bytes() == b"original-sut\n"
     assert not (project.joinpath(*view.root.split("/")) / "app").exists()
@@ -112,7 +119,7 @@ def test_candidate_files_shadow_existing_tests_in_the_disposable_view(tmp_path: 
 def test_unchanged_existing_tests_remain_selected(tmp_path: Path) -> None:
     project = _project(tmp_path)
     _write(project, EXISTING_TARGET, b"def test_ok():\n    assert True\n")
-    _write(project, SUPPORT_TARGET, b"import pytest\n")
+    _write(project, "qa/fixtures/conftest.py", b"import pytest\n")
     _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
     merged = merge_generated(project, CHANGE_ID, ("api",))
     selected = _selected(CANDIDATE_TARGET, EXISTING_TARGET)
@@ -126,8 +133,8 @@ def test_unchanged_existing_tests_remain_selected(tmp_path: Path) -> None:
     )
 
     assert view.selected_targets == selected
-    existing = project.joinpath(*view.root.split("/"), *EXISTING_TARGET.split("/"))
-    support = project.joinpath(*view.root.split("/"), *SUPPORT_TARGET.split("/"))
+    existing = project.joinpath(*view.root.split("/"), *_view_path(EXISTING_TARGET).split("/"))
+    support = project.joinpath(*view.root.split("/"), *_view_path(SUPPORT_TARGET).split("/"))
     assert existing.read_bytes() == b"def test_ok():\n    assert True\n"
     assert support.read_bytes() == b"import pytest\n"
 
@@ -145,10 +152,10 @@ def test_authenticated_python_support_is_projected_without_unselected_tests(
         "tests/api/conftest.py": b"import pytest\n",
     }
     for relative, payload in expected_support.items():
-        _write(project, relative, payload)
-    _write(project, "tests/api/test_unselected.py", b"raise AssertionError('must not collect')\n")
-    _write(project, "tests/perf/locustfile_unselected.py", b"raise AssertionError('must not run')\n")
-    _write(project, "tests/__pycache__/config.cpython-311.pyc", b"runtime noise\n")
+        _write(project, "qa/fixtures/" + relative.removeprefix("tests/"), payload)
+    _write(project, "qa/tests/api/test_unselected.py", b"raise AssertionError('must not collect')\n")
+    _write(project, "qa/tests/perf/locustfile_unselected.py", b"raise AssertionError('must not run')\n")
+    _write(project, "qa/fixtures/__pycache__/config.cpython-311.pyc", b"runtime noise\n")
     _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
     merged = merge_generated(project, CHANGE_ID, ("api",))
 
@@ -170,7 +177,7 @@ def test_authenticated_python_support_is_projected_without_unselected_tests(
 
 def test_execution_view_digest_authenticates_python_support(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    support = _write(project, "tests/api/adapters/dept.py", b"DEPT_ID = 1\n")
+    support = _write(project, "qa/fixtures/api/adapters/dept.py", b"DEPT_ID = 1\n")
     _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
     merged = merge_generated(project, CHANGE_ID, ("api",))
 
@@ -219,7 +226,7 @@ def test_conflicts_block_view_creation(tmp_path: Path) -> None:
     project = _project(tmp_path)
     _promote(project, "api", CANDIDATE_TARGET, b"generated-candidate\n")
     merged = merge_generated(project, CHANGE_ID, ("api",))
-    occupied = project / "qa" / "changes" / CHANGE_ID / ".staging" / "execution" / BATCH_ID
+    occupied = project / "qa" / ".staging" / "execution" / BATCH_ID
     occupied.mkdir(parents=True)
     (occupied / "occupied.txt").write_text("stale\n", encoding="utf-8")
 
@@ -246,7 +253,7 @@ def test_cleanup_does_not_delete_canonical_evidence(tmp_path: Path) -> None:
     )
     evidence = _write(
         project,
-        f"qa/changes/{CHANGE_ID}/execution/execute-result.json",
+        "qa/results/execution/execute-result.json",
         json.dumps({"status": "passed"}).encode("utf-8"),
     )
 
@@ -285,8 +292,8 @@ def test_failed_materialization_does_not_leave_a_blocking_view(
         merged=merged,
         selected=_selected(CANDIDATE_TARGET),
     )
-    assert view.root == f"qa/changes/{CHANGE_ID}/.staging/execution/{BATCH_ID}"
-    shadowed = project.joinpath(*view.root.split("/"), *CANDIDATE_TARGET.split("/"))
+    assert view.root == f"qa/.staging/execution/{BATCH_ID}"
+    shadowed = project.joinpath(*view.root.split("/"), *_view_path(CANDIDATE_TARGET).split("/"))
     assert shadowed.read_bytes() == b"generated-candidate\n"
 
 

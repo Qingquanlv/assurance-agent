@@ -222,7 +222,7 @@ def test_completed_full_run_fails_closed_without_achieved_terminal_envelope(
     )
 
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
     identity = InvocationIdentityRecord(
@@ -277,7 +277,7 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
     execution = json.loads(
-        (project / "qa" / "changes" / CHANGE_ID / "execution" / "execute-result.json").read_text(
+        (project / "qa" / "results/execution" / "execute-result.json").read_text(
             encoding="utf-8"
         )
     )
@@ -438,7 +438,7 @@ def test_resume_uses_the_same_achieved_terminalization_path(
     from assurance_product.models import StatusV1
 
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
     identity = InvocationIdentityRecord(

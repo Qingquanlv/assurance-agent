@@ -43,8 +43,8 @@ from graph_engine.plugin_api import (
 _SHA = "a" * 64
 _CANARY = b"canary-secret-value"
 _SECRET_TEXT = "canary-secret-value"
-WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
-ALLOWED_OUTPUTS = ("qa/changes/CH-1/proposal.md",)
+WRITE_ROOT = "qa/.staging/task-1/attempt-1"
+ALLOWED_OUTPUTS = ("qa/proposal.md",)
 FIXTURE_RESULT_SCHEMA = {
     "additionalProperties": False,
     "properties": {"ok": {"const": True, "type": "boolean"}},

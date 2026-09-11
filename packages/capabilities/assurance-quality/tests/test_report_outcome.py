@@ -52,23 +52,23 @@ def _receipt(name: str) -> ReceiptRef:
 
 
 def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
-    base = f"qa/changes/{_CHANGE}"
-    assessment_base = f"{base}/inspect/epochs/0/batches/{batch_id}"
-    plan_ref = _ref(f"{base}/plan/{_DIGEST}/resolved-assurance-plan.json")
+    results = "qa/results"
+    assessment_base = f"{results}/inspect/epochs/0/batches/{batch_id}"
+    plan_ref = _ref(f"{results}/plan/{_DIGEST}/resolved-assurance-plan.json")
     reviewed = {
         "change_id": _CHANGE,
         "coverage_epoch": 0,
         "plan_digest": _DIGEST,
         "plan_ref": plan_ref,
         "preparation_refs": sorted(
-            [plan_ref, _ref(f"{base}/preparation/context.json")],
+            [plan_ref, _ref(f"{results}/preparation/context.json")],
             key=lambda item: (item["path"], item["digest"]),
         ),
-        "case_refs": [_ref(f"{base}/cases/system/case.yaml")],
-        "review_ref": _ref(f"{base}/review/case-review.json"),
+        "case_refs": [_ref("qa/cases/system/case.yaml")],
+        "review_ref": _ref(f"{results}/review/case-review.json"),
     }
-    mapping_ref = _ref(f"{base}/generation/epochs/0/mapping.json")
-    execution_ref = _ref(f"{base}/execution/epochs/0/batches/{batch_id}/result.json")
+    mapping_ref = _ref(f"{results}/generation/epochs/0/mapping.json")
+    execution_ref = _ref(f"{results}/execution/epochs/0/batches/{batch_id}/result.json")
     assessment = {
         "change_id": _CHANGE,
         "coverage_epoch": 0,
@@ -105,7 +105,7 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "healing_ref": None,
         "issue_ref": None,
     }
-    fact_ref = _ref(f"{base}/facts/fact-baseline.json")
+    fact_ref = _ref(f"{results}/facts/fact-baseline.json")
     assessment_refs = sorted(
         [
             assessment["trace_ref"],
@@ -138,7 +138,7 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "coverage_epoch": 0,
         "batch_id": batch_id,
         "capability_leafs": ["orders.create"],
-        "allowed_artifact_paths": [base],
+        "allowed_artifact_paths": [results],
         "assessment_inputs": assessment,
         "fact_baseline_ref": fact_ref,
         "reviewed_case": reviewed,
@@ -149,12 +149,12 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
             "plan_ref": plan_ref,
             "reviewed_case": reviewed,
             "mapping_ref": mapping_ref,
-            "source_refs": [_ref(f"{base}/generated/api/files/tests/test_orders.py")],
-            "plan_refs": [_ref(f"{base}/generation/epochs/0/api/plan.json")],
+            "source_refs": [_ref("qa/tests/test_orders.py")],
+            "plan_refs": [_ref(f"{results}/generation/epochs/0/api/plan.json")],
         },
         "inspection_outcome": inspection,
         "coverage_state": "satisfied",
-        "report_refs": [_ref(f"{base}/report/stale.md")],
+        "report_refs": [_ref(f"{results}/report/stale.md")],
         "report_receipt": _receipt("stale-report").model_dump(mode="json"),
         "execution_digest": _DIGEST,
         "healing_digest": None,
@@ -186,7 +186,7 @@ def _raw_report(selected: ReportSkillInputV1, *, include_files: bool = True) -> 
         "metrics_digest": selected.metrics_digest,
     }
     if include_files:
-        result["report_files"] = [f"qa/changes/{_CHANGE}/report/report.md"]
+        result["report_files"] = ["qa/results/report/report.md"]
     return result
 
 
@@ -245,7 +245,7 @@ def test_diagnostic_report_binds_current_issue_analysis() -> None:
     inspection["disposition"] = "blocked"
     inspection["coverage_state"] = None
     state["report_purpose"] = "diagnostic"
-    issue_ref = _ref(f"qa/changes/{_CHANGE}/inspect/issue-analysis.json")
+    issue_ref = _ref("qa/results/inspect/issue-analysis.json")
     state["issue_analysis_ref"] = issue_ref
 
     selected = cast(ReportSkillInputV1, select_report(state))
@@ -348,7 +348,7 @@ async def test_report_bytes_are_finalized_then_bound_to_commit_receipt(tmp_path:
     state = _state()
     selected = cast(ReportSkillInputV1, select_report(state))
     _write_authenticated_inputs(project, selected)
-    report_path = f"qa/changes/{_CHANGE}/report/report.md"
+    report_path = "qa/results/report/report.md"
     staged = write_root / report_path
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(b"# Current report\n")
@@ -385,7 +385,7 @@ def test_reported_tail_rejects_previous_batch_or_inspection_receipt() -> None:
         plan_ref=inspection.plan_ref,
         batch_id="previous-batch",
         inspection_receipt=_receipt("inspect-previous"),
-        report_refs=(EvidenceArtifactRefV1.model_validate(_ref(f"qa/changes/{_CHANGE}/report/report.md")),),
+        report_refs=(EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md")),),
         report_receipt=_receipt("report-current"),
     )
     with pytest.raises(ValueError, match="current inspection"):
@@ -403,7 +403,7 @@ def test_reported_tail_requires_a_satisfied_inspection() -> None:
         plan_ref=inspection.plan_ref,
         batch_id=_BATCH,
         inspection_receipt=inspection.inspection_receipt,
-        report_refs=(EvidenceArtifactRefV1.model_validate(_ref(f"qa/changes/{_CHANGE}/report/report.md")),),
+        report_refs=(EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md")),),
         report_receipt=_receipt("report-current"),
     )
     with pytest.raises(ValueError, match="satisfied inspection"):
@@ -434,7 +434,7 @@ async def test_failed_report_attempt_clears_stale_report_state() -> None:
             status="reported",
             inspection=InspectionOutcomeV1.model_validate(_state()["inspection_outcome"]),
             plan_digest="d" * 64,
-            plan_ref=EvidenceArtifactRefV1(path="qa/changes/CH-1/plan.json", digest="e" * 64),
+            plan_ref=EvidenceArtifactRefV1(path="qa/results/plan.json", digest="e" * 64),
             report_refs=(),
             report_receipt=None,
         )
@@ -452,7 +452,7 @@ async def test_report_graph_publishes_only_the_current_committed_outcome() -> No
     ).report
     state = _state()
     inspection = InspectionOutcomeV1.model_validate(state["inspection_outcome"])
-    ref = EvidenceArtifactRefV1.model_validate(_ref(f"qa/changes/{_CHANGE}/report/report.md"))
+    ref = EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md"))
     finalized = FinalizedReportV1(
         change_id=_CHANGE,
         coverage_epoch=0,
@@ -484,9 +484,9 @@ def test_diagnostic_report_cannot_publish_a_normal_success_outcome() -> None:
     state["inspection_outcome"] = inspection.model_dump(mode="json")
     state["coverage_state"] = None
     state["report_purpose"] = "diagnostic"
-    state["issue_analysis_ref"] = _ref(f"qa/changes/{_CHANGE}/inspect/issue-analysis.json")
+    state["issue_analysis_ref"] = _ref("qa/results/inspect/issue-analysis.json")
     selected = cast(ReportSkillInputV1, select_report(state))
-    ref = EvidenceArtifactRefV1.model_validate(_ref(f"qa/changes/{_CHANGE}/report/report.md"))
+    ref = EvidenceArtifactRefV1.model_validate(_ref("qa/results/report/report.md"))
     finalized = FinalizedReportV1(
         change_id=_CHANGE,
         coverage_epoch=0,

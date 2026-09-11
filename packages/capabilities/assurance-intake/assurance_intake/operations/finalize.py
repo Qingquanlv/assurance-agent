@@ -72,11 +72,11 @@ def _validate_case_review_repair_scope(
         return
     if not payload.case_delta_paths:
         raise InputError("case_delta_paths are required to lock case-review automatic repairs")
-    change_root = f"qa/changes/{change_id}"
+    change_root = "qa"
     allowed = {
         f"{change_root}/.qa.yaml",
         f"{change_root}/proposal.md",
-        f"{change_root}/trace/minimum-coverage-matrix.json",
+        f"{change_root}/results/trace/minimum-coverage-matrix.json",
         *payload.case_delta_paths,
     }
     if document.next_action != "run_case_design":
@@ -337,9 +337,9 @@ def _validate_explore_outputs(workspace: Path, declared: tuple[str, ...]) -> Non
         except (ValidationError, ValueError) as error:
             raise OutputError(f"invalid exploration.json: {error}") from error
         parts = PurePosixPath(relative).parts
-        if len(parts) < 5 or parts[:2] != ("qa", "changes"):
+        if parts != ("qa", "results", "explore", "exploration.json"):
             raise OutputError(f"invalid exploration.json path: {relative}")
-        if document.change_id != parts[2]:
+        if not document.change_id:
             raise OutputError("exploration.json change_id does not match its change directory")
         if document.context_ref != "explore/context.json":
             raise OutputError("exploration.json context_ref must be explore/context.json")
@@ -393,7 +393,7 @@ def _load_authored_case_delta(
 ) -> CaseYamlAuthoring:
     if not locked:
         raise InputError("artifact_paths must lock the expected output files")
-    root_relative = f"qa/changes/{change_id}/cases"
+    root_relative = "qa/cases"
     declared_cases = sorted(
         relative
         for relative in declared
@@ -899,8 +899,8 @@ class ExploreFinalizeHandler:
             if not payload.artifact_paths:
                 raise InputError("artifact_paths must lock the expected output files")
             document = _artifact_list(payload)
-            change_id = _case_change_id(payload.change_id)
-            expected = {f"qa/changes/{change_id}/explore/exploration.json"}
+            _case_change_id(payload.change_id)
+            expected = {"qa/results/explore/exploration.json"}
             if set(document.output_files) != expected:
                 raise OutputError("explore receipt must declare exactly exploration.json")
             artifacts = _finalize_artifact_list(payload, context.write_root)
@@ -932,11 +932,11 @@ class CaseDesignFinalizeHandler:
                 raise InputError("case selected families do not match frozen assurance plan")
             capability_leafs = _leafs(payload.capability_leafs)
             receipt = _artifact_list(payload)
-            change_root = f"qa/changes/{change_id}"
+            change_root = "qa"
             for relative in receipt.output_files:
                 if not relative.startswith(f"{change_root}/"):
                     raise OutputError("case-design receipt may contain only current change outputs")
-            matrix_relative = f"{change_root}/trace/minimum-coverage-matrix.json"
+            matrix_relative = f"{change_root}/results/trace/minimum-coverage-matrix.json"
             required = {
                 f"{change_root}/.qa.yaml",
                 f"{change_root}/proposal.md",
@@ -1082,7 +1082,7 @@ class CaseReviewFinalizeHandler:
             if plan.change_id != change_id:
                 raise InputError("frozen assurance plan does not match case review change_id")
             _validate_case_review_repair_scope(document, payload, change_id=change_id)
-            matrix_relative = f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json"
+            matrix_relative = "qa/results/trace/minimum-coverage-matrix.json"
             images = _read_case_review_inputs(context.project_root, payload, matrix_relative)
             authored = _load_authored_case_delta(
                 context.project_root,
@@ -1121,7 +1121,7 @@ class CaseReviewFinalizeHandler:
                     case_review_outputs(change_id),
                     payload.artifact_paths,
                 )
-                review_relative = f"qa/changes/{change_id}/review/case-review.json"
+                review_relative = "qa/results/review/case-review.json"
                 review_ref = EvidenceArtifactRefV1.model_validate(
                     next(item for item in artifacts if item["path"] == review_relative)
                 )
@@ -1142,7 +1142,7 @@ class CaseReviewFinalizeHandler:
                     source_refs=tuple(sorted((*input_refs, review_ref), key=lambda item: item.path)),
                 )
                 history_relative = (
-                    f"qa/changes/{change_id}/cases/reviews/epochs/{payload.coverage_epoch}/"
+                    f"qa/cases/reviews/epochs/{payload.coverage_epoch}/"
                     f"rounds/{payload.review_round}.json"
                 )
                 history_bytes = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
@@ -1162,7 +1162,7 @@ class CaseReviewFinalizeHandler:
                     case_refs=payload.case_refs,
                     review_ref=review_ref,
                 )
-                manifest_relative = f"qa/changes/{change_id}/cases/reviewed-case.json"
+                manifest_relative = "qa/cases/reviewed-case.json"
                 manifest_bytes = canonical_json_bytes(reviewed.model_dump(mode="json")) + b"\n"
                 manifest_path = context.write_root.joinpath(*manifest_relative.split("/"))
                 manifest_path.parent.mkdir(parents=True, exist_ok=True)

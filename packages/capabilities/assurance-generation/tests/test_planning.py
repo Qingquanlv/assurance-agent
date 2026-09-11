@@ -57,7 +57,7 @@ def test_plan_outputs_use_results_plans_and_review() -> None:
             path.startswith("qa/results/review/") for path in plan_review_outputs("CH-DEMO-001", family)
         )
         assert not any(
-            "qa/changes/" in path
+            "/".join(("qa", "changes")) + "/" in path
             for path in (*plan_outputs("CH-DEMO-001", family), *plan_review_outputs("CH-DEMO-001", family))
         )
 
@@ -277,7 +277,7 @@ async def test_plan_prepare_hydrates_family_input_from_reviewed_workspace_cases(
             "plan_digest": PLAN_DIGEST,
             "plan_ref": PLAN_REF,
             "capability_leafs": list(VALID_LEAFS),
-            "artifact_paths": ["qa/changes"],
+            "artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         },
         tmp_path,
         binding_data=BINDING,

@@ -1,4 +1,17 @@
 {
+  "schema_version": "1",
+  "kind": "plugin",
+  "source": {
+    "distribution": "assurance-generation",
+    "version": "0.2.0",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "generation",
+    "entrypoint_value": "assurance_generation.plugin:GenerationPlugin",
+    "declaration_path": "assurance_generation/plugin-declaration.json",
+    "import_roots": [
+      ""
+    ]
+  },
   "descriptor": {
     "schema_version": "1",
     "source": {
@@ -148,18 +161,5 @@
         "digest": "e7066ddb6586fe70b66373db907dc6c0de52f1de29599788e415bf8a712d0ee1"
       }
     ]
-  },
-  "kind": "plugin",
-  "schema_version": "1",
-  "source": {
-    "declaration_path": "assurance_generation/plugin-declaration.json",
-    "distribution": "assurance-generation",
-    "entrypoint_group": "graph_engine.plugins",
-    "entrypoint_name": "generation",
-    "entrypoint_value": "assurance_generation.plugin:GenerationPlugin",
-    "import_roots": [
-      ""
-    ],
-    "version": "0.2.0"
   }
 }

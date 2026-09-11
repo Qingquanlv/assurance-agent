@@ -112,7 +112,7 @@ def install_plan(
         },
     }
     exploration_bytes = canonical_json_bytes(cast(JSONValue, exploration))
-    exploration_path = f"qa/changes/{change_id}/explore/exploration.json"
+    exploration_path = f"qa/results/explore/exploration.json"
     exploration_digest = _write(root, exploration_path, exploration_bytes)
     source_digests = (
         ("assurance.product.configuration.capability-catalog", catalog_digest),

@@ -40,6 +40,6 @@ Map validated retro signals to concrete process Improvements. Schema truth is
   version, root cause, resolution, or disposition.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
-- Write the typed result to `qa/changes/<change-id>/retro/retro.json`.
+- Write the typed result to `qa/results/retro/retro.json`.
 - Write and return the same complete JSON object. No Markdown fence or prose in the final answer.
 - Return the typed result and stop.

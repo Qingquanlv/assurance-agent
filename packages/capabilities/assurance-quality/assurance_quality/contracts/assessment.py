@@ -161,7 +161,7 @@ class FinalizedFactBaselineV1(FrozenModel):
     def _baseline_matches_assessment(self) -> Self:
         if self.agent_result.change_id != self.assessment.change_id:
             raise ValueError("fact baseline change_id must match assessment")
-        expected = f"qa/changes/{self.assessment.change_id}/facts/fact-baseline.json"
+        expected = "qa/results/facts/fact-baseline.json"
         if self.fact_baseline_ref.path != expected:
             raise ValueError("fact baseline ref must use the current change path")
         return self
@@ -392,7 +392,7 @@ class FinalizedReportV1(FrozenModel):
 
     @model_validator(mode="after")
     def _refs_belong_to_report(self) -> Self:
-        prefix = f"qa/changes/{self.change_id}/report/"
+        prefix = "qa/results/report/"
         if any(not ref.path.startswith(prefix) for ref in self.report_refs):
             raise ValueError("report refs must belong to the current change report directory")
         return self
@@ -415,7 +415,7 @@ class ReportOutcomeV1(FrozenModel):
 
     @model_validator(mode="after")
     def _refs_belong_to_report(self) -> Self:
-        prefix = f"qa/changes/{self.change_id}/report/"
+        prefix = "qa/results/report/"
         if any(not ref.path.startswith(prefix) for ref in self.report_refs):
             raise ValueError("report refs must belong to the current change report directory")
         return self

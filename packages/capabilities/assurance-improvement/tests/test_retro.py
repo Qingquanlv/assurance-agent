@@ -93,7 +93,7 @@ def _finalize_payload(tmp_path, *, source_id="PROB-1", domain=None, result_domai
 
     _, stage = dual_roots(tmp_path)
     suffix = f"retro-{domain}-analysis" if domain else "retro"
-    path = stage / f"qa/changes/CH-DEMO-001/retro/{suffix}.json"
+    path = stage / f"qa/results/retro/{suffix}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document))
     return payload
@@ -441,7 +441,7 @@ async def test_failed_retro_validation_leaves_canonical_outputs_unchanged(tmp_pa
     from tests.product.test_change_local_output_routing import dual_roots
 
     project, write_root = dual_roots(tmp_path)
-    canonical = project / "qa/changes/CH-DEMO-001/retro/retro.json"
+    canonical = project / "qa/results/retro/retro.json"
     canonical.parent.mkdir(parents=True)
     original = b'{"schema_version":"3"}\n'
     canonical.write_bytes(original)

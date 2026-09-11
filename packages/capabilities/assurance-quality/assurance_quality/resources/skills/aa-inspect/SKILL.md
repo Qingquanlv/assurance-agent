@@ -44,5 +44,5 @@ inspect handler; this skill verifies closure and does not invent categories.
 - Do not write product trees, tests, cases, plans, or healing files.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
-- Write the typed result to `qa/changes/<change-id>/inspect/inspection.json`.
+- Write the typed result to `qa/results/inspect/inspection.json`.
 - Return the typed result and stop.

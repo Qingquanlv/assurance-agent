@@ -28,7 +28,7 @@ _CONTRACTS_SPEC.loader.exec_module(_CONTRACTS)
 valid_evidence = _CONTRACTS.valid_evidence
 valid_result = _CONTRACTS.valid_result
 
-_EVIDENCE_PATH = "qa/changes/CH-DEMO-001/execution-evidence.json"
+_EVIDENCE_PATH = "qa/results/execution-evidence.json"
 
 
 def candidate_with_result(test: str) -> CandidateWriteSet:

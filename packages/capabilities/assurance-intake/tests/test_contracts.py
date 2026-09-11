@@ -74,7 +74,7 @@ _SHA = "a" * 64
 
 def _reviewed_case() -> ReviewedCaseV1:
     plan_ref = EvidenceArtifactRefV1(
-        path=f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+        path=f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
         digest=_SHA,
     )
     return ReviewedCaseV1(
@@ -83,11 +83,11 @@ def _reviewed_case() -> ReviewedCaseV1:
         plan_digest=_SHA,
         plan_ref=plan_ref,
         preparation_refs=(
+            EvidenceArtifactRefV1(path="qa/requirement.md", digest=_SHA),
             plan_ref,
-            EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/requirement.md", digest=_SHA),
         ),
-        case_refs=(EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/cases/menus/case.yaml", digest=_SHA),),
-        review_ref=EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/review/case-review.json", digest=_SHA),
+        case_refs=(EvidenceArtifactRefV1(path="qa/cases/menus/case.yaml", digest=_SHA),),
+        review_ref=EvidenceArtifactRefV1(path="qa/results/review/case-review.json", digest=_SHA),
     )
 
 
@@ -114,25 +114,25 @@ def test_reviewed_case_requires_all_version_refs(field: str) -> None:
 
 
 def test_case_rework_targets_stay_inside_the_current_change() -> None:
-    gap = EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/inspect/coverage-gaps.json", digest=_SHA)
+    gap = EvidenceArtifactRefV1(path="qa/results/inspect/coverage-gaps.json", digest=_SHA)
     with pytest.raises(ValidationError):
         CaseReworkContextV1(
             previous_case=_reviewed_case(),
             inspect_receipt=ReceiptRef(receipt_id="inspect", receipt_digest=_SHA),
             assessment_refs=(gap,),
             gaps_ref=gap,
-            target_case_paths=("qa/changes/OTHER/cases/menus/case.yaml",),
+            target_case_paths=("qa/results/menus/case.yaml",),
         )
 
 
 def test_case_rework_can_describe_a_missing_requirement_through_gap_evidence() -> None:
-    gap = EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/inspect/coverage-gaps.json", digest=_SHA)
+    gap = EvidenceArtifactRefV1(path="qa/results/inspect/coverage-gaps.json", digest=_SHA)
     context = CaseReworkContextV1(
         previous_case=_reviewed_case(),
         inspect_receipt=ReceiptRef(receipt_id="inspect", receipt_digest=_SHA),
         assessment_refs=(gap,),
         gaps_ref=gap,
-        target_case_paths=("qa/changes/CH-DEMO-001/cases/menus/case.yaml",),
+        target_case_paths=("qa/cases/menus/case.yaml",),
     )
     assert context.gaps_ref == gap
 

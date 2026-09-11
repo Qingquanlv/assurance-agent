@@ -518,9 +518,9 @@ def test_plan_skill_mapping_examples_use_qa_tests(family: str, target_file: str)
     compact = "".join(skill.split())
     assert f'"target_file":"{target_file}"' in compact
     assert '"case_id"' in compact and '"symbol"' in compact and '"target_file"' in compact
-    assert "qa/changes/<change-id>/.qa.yaml" not in skill
-    assert "qa/changes/<change-id>/proposal.md" not in skill
-    assert "qa/changes/<change-id>/facts/" not in skill
+    assert "qa/.qa.yaml" not in skill
+    assert "qa/proposal.md" not in skill
+    assert "qa/results/facts/" not in skill
     if family in {"api", "e2e"}:
         assert "qa/.qa.yaml" in skill
     assert "qa/proposal.md" in skill

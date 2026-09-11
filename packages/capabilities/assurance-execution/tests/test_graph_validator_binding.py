@@ -171,7 +171,7 @@ def _graph_input() -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "plan_digest": "a" * 64,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{'a' * 64}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{'a' * 64}/resolved-assurance-plan.json",
             "digest": "a" * 64,
         },
         "batch_id": "20260822T000000Z",
@@ -204,7 +204,7 @@ def _output() -> ExecutionEvidenceV1:
             "change_id": "CH-DEMO-001",
             "plan_digest": "a" * 64,
             "plan_ref": {
-                "path": f"qa/changes/CH-DEMO-001/plan/{'a' * 64}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{'a' * 64}/resolved-assurance-plan.json",
                 "digest": "a" * 64,
             },
             "batch_id": "20260822T000000Z",

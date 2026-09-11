@@ -123,7 +123,7 @@ def agent_workspace(
     try:
         write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        write_root = "qa/changes/_attempt/.staging/write"
+        write_root = "qa/.staging/write"
     if write_root in {".", ""}:
         write_root = ".staging/write"
     payload = {
@@ -307,7 +307,7 @@ def _change_root(workspace: Path, change_id: str) -> Path:
         or PurePosixPath(change_id).name != change_id
     ):
         raise InputError("change_id must be one canonical path component")
-    root = workspace / "qa" / "changes" / change_id
+    root = workspace / "qa"
     try:
         root.resolve().relative_to(workspace.resolve())
     except ValueError as error:

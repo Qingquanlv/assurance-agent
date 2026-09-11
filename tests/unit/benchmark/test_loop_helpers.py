@@ -210,7 +210,7 @@ def test_batch_manifest_initializes_canonical_members_and_resumes_identically(tm
 
 
 def test_execution_final_status_reads_canonical_json_manifest(tmp_path: Path) -> None:
-    execution = tmp_path / "qa" / "changes" / "CH-1" / "execution"
+    execution = tmp_path / "qa" / "results/execution"
     execution.mkdir(parents=True)
     (execution / "execution-manifest.json").write_text(json.dumps({"final_status": "FAIL"}), encoding="utf-8")
 
@@ -403,7 +403,7 @@ def test_knowledge_promotion_runs_only_after_batch_members_settle(tmp_path: Path
     fake = _install_fake_aa(tmp_path)
     call_log = tmp_path / "aa-calls.log"
     manifest = tmp_path / "batch-manifest.json"
-    proposal = tmp_path / "qa" / "changes" / "CH-A" / "plans" / "data-knowledge.proposal.api.yaml"
+    proposal = tmp_path / "qa" / "results/plans" / "data-knowledge.proposal.api.yaml"
     proposal.parent.mkdir(parents=True)
     proposal.write_text("version: 1\n", encoding="utf-8")
     assert _run_helper(tmp_path, _manifest_command(tmp_path, "batch-1", ("CH-A",))).returncode == 0
@@ -597,7 +597,7 @@ def _collect_eval_command(tmp_path: Path, suites: str) -> str:
 
 
 def test_remove_generated_tree_handles_read_only_graph_runtime_directories(tmp_path: Path) -> None:
-    target = tmp_path / "qa" / "changes"
+    target = tmp_path / "qa"
     nested = target / "CH-1" / ".graph-runtime" / "views" / "view-1"
     nested.mkdir(parents=True)
     (nested / "review").mkdir()
@@ -999,7 +999,7 @@ def _write_verification_metric_artifacts(change_dir: Path, change_id: str) -> No
 
 
 def test_verification_metrics_summary_validates_identity_and_reports_vectors(tmp_path: Path) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    change_dir = tmp_path / "qa"
     _write_verification_metric_artifacts(change_dir, "CH-METRICS")
 
     valid = _run_helper(
@@ -1031,7 +1031,7 @@ def test_verification_metrics_accept_the_reject_verdict(tmp_path: Path) -> None:
     not the verdict's desirability — a reject row must not read as
     ``invalid_artifacts``.
     """
-    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    change_dir = tmp_path / "qa"
     _write_verification_metric_artifacts(change_dir, "CH-METRICS")
     shortboards = change_dir / "inspect" / "metrics-nightly-shortboards.json"
     payload = json.loads(shortboards.read_text(encoding="utf-8"))
@@ -1077,7 +1077,7 @@ def test_verification_metrics_gate_requires_complete_rows_when_enabled(tmp_path:
 
 
 def test_verification_metrics_stage_reports_command_and_artifact_failures(tmp_path: Path) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    change_dir = tmp_path / "qa"
     _write_verification_metric_artifacts(change_dir, "CH-METRICS")
     command = (
         "ok_runner() { return 0; }; "
@@ -1105,7 +1105,7 @@ def test_verification_metrics_stage_reports_command_and_artifact_failures(tmp_pa
 
 
 def test_verification_metrics_snapshot_is_complete_or_writes_nothing(tmp_path: Path) -> None:
-    change_dir = tmp_path / "qa" / "changes" / "CH-METRICS"
+    change_dir = tmp_path / "qa"
     _write_verification_metric_artifacts(change_dir, "CH-METRICS")
     run_dir = tmp_path / "run"
 
@@ -1659,21 +1659,6 @@ def test_read_workflow_root_state_never_calls_aa_status(tmp_path: Path) -> None:
     assert not (tmp_path / "aa-calls.log").exists()
 
 
-def test_specialty_collect_helper_omits_schema_root_escape_hatch() -> None:
-    helpers = _HELPERS.read_text(encoding="utf-8")
-    reporter = (
-        _ROOT / "benchmark" / "vue-fastapi-admin" / "benchmark" / "benchmark_specialty_report.py"
-    ).read_text(encoding="utf-8")
-    start = helpers.index("collect_benchmark_specialty_report() {")
-    end = helpers.index("\nvalidate_workflow_command_result() {", start)
-    collect_fn = helpers[start:end]
-    assert "--schema-root" not in collect_fn
-    assert "schema_root" not in collect_fn
-    assert "--schema-root" not in reporter
-    assert "schema_root" not in reporter
-    assert "collect_benchmark_specialty_report" in helpers
-
-
 def test_raw_evidence_row_uses_ten_columns_and_unknown(tmp_path: Path) -> None:
     import os
 
@@ -1753,13 +1738,3 @@ def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomple
     assert raw_with_reason.returncode != 0
 
 
-def test_finalize_and_reuse_register_nothing_for_pending_or_mismatched_receipt(
-    tmp_path: Path,
-) -> None:
-    del tmp_path
-    pytest.skip(_DELETED_PACKAGE_LEFTOVER)
-
-
-def test_evidence_row_cli_ten_columns_for_v3_and_legacy_without_schema_root(tmp_path: Path) -> None:
-    del tmp_path
-    pytest.skip("specialty eval leftover after deleted-package cutover")

@@ -32,9 +32,9 @@ from tests.phase4.conformance import execute_task
 CHANGE_ID = "CH-ASSESS-001"
 BATCH_ID = "20260905T010203Z"
 EXECUTED_AT = datetime(2026, 9, 5, 1, 2, 3, tzinfo=UTC)
-CASE_PATH = f"qa/changes/{CHANGE_ID}/cases/items/case.yaml"
-MAPPING_PATH = f"qa/changes/{CHANGE_ID}/codegen/closed-mapping.json"
-EVIDENCE_PATH = f"qa/changes/{CHANGE_ID}/execution/execute-result.json"
+CASE_PATH = "qa/cases/items/case.yaml"
+MAPPING_PATH = "qa/results/codegen/closed-mapping.json"
+EVIDENCE_PATH = "qa/results/execution/execute-result.json"
 TEST_SELECTOR = "tests/api/test_items.py::test_create_item"
 CAPABILITY = "entities.item.constraints.name"
 
@@ -134,10 +134,10 @@ def _workspace_input(
     )
     selector = TEST_SELECTOR.replace("/api/", f"/{family}/")
     mapped_capability = next(iter(cast(dict[str, object], selected_cases[0]["trace"])))
-    preparation = _write_text(root, f"qa/changes/{CHANGE_ID}/requirement.md", "# Requirement\n")
+    preparation = _write_text(root, "qa/requirement.md", "# Requirement\n")
     review = _write_json(
         root,
-        f"qa/changes/{CHANGE_ID}/review/case-review.json",
+        "qa/results/review/case-review.json",
         {"decision": "approved"},
     )
     case_ref = _write_text(
@@ -155,7 +155,7 @@ def _workspace_input(
     )
     matrix_ref = _write_json(
         root,
-        f"qa/changes/{CHANGE_ID}/trace/minimum-coverage-matrix.json",
+        "qa/results/trace/minimum-coverage-matrix.json",
         matrix_rows
         if matrix_rows is not None
         else [
@@ -181,10 +181,10 @@ def _workspace_input(
     )
     source = _write_text(
         root,
-        f"qa/changes/{CHANGE_ID}/generated/{family}/files/tests/{family}/test_items.py",
+        f"qa/results/generated/{family}/files/tests/{family}/test_items.py",
         "def test_create_item():\n    assert True\n",
     )
-    plan = _write_text(root, f"qa/changes/{CHANGE_ID}/plans/{family}-plan.md", "# Plan\n")
+    plan = _write_text(root, f"qa/results/plans/{family}-plan.md", "# Plan\n")
     mapping = {
         "schema_version": "1",
         "selected": [selector],
@@ -803,7 +803,7 @@ def _both_layer_input(root: Path, key: str, e2e_evidence: str) -> dict[str, Any]
     mapping_ref = _write_json(root, MAPPING_PATH, mapping)
     source_ref = _write_text(
         root,
-        f"qa/changes/{CHANGE_ID}/generated/e2e/files/tests/e2e/test_items.py",
+        "qa/tests/e2e/test_items.py",
         "def test_create_item():\n    assert True\n",
     )
     evidence = json.loads((root / EVIDENCE_PATH).read_bytes())
@@ -936,7 +936,7 @@ async def test_applicability_preserves_authenticated_goal_sources(tmp_path: Path
     assert result.status == "succeeded", result.failure
     output = AssessmentInputsV1.model_validate(result.output)
     sources = {
-        f"qa/changes/{CHANGE_ID}/explore/exploration.json",
+        "qa/results/explore/exploration.json",
         ".aa/capability-catalog.json",
         ".aa/data-knowledge.yaml",
     }
@@ -1013,7 +1013,7 @@ async def test_optional_healing_and_issue_evidence_are_digest_authenticated(tmp_
     request = _workspace_input(tmp_path)
     request["healing_ref"] = _write_json(
         tmp_path,
-        f"qa/changes/{CHANGE_ID}/healing/fix-proposal.json",
+        "qa/results/healing/fix-proposal.json",
         {"status": "applied"},
     )
     request["issue_ref"] = _write_json(

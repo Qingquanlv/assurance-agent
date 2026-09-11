@@ -69,11 +69,11 @@ _BOUNDED_PROFILES: Mapping[str, str] = {
 
 
 def intake_outputs(change_id: str) -> tuple[str, ...]:
-    return tuple(sorted((f"qa/changes/{change_id}/.qa.yaml", f"qa/changes/{change_id}/requirement.md")))
+    return tuple(sorted(("qa/.qa.yaml", "qa/requirement.md")))
 
 
 def explore_outputs(change_id: str) -> tuple[str, ...]:
-    return (f"qa/changes/{change_id}/explore/exploration.json",)
+    return ("qa/results/explore/exploration.json",)
 
 
 def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -81,9 +81,9 @@ def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tu
         sorted(
             (
                 *case_delta_paths,
-                f"qa/changes/{change_id}/.qa.yaml",
-                f"qa/changes/{change_id}/proposal.md",
-                f"qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+                "qa/.qa.yaml",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
             )
         )
     )
@@ -93,15 +93,15 @@ def case_review_outputs(change_id: str) -> tuple[str, ...]:
     return tuple(
         sorted(
             (
-                f"qa/changes/{change_id}/review/case-review.json",
-                f"qa/changes/{change_id}/review/case-review-summary.md",
+                "qa/results/review/case-review.json",
+                "qa/results/review/case-review-summary.md",
             )
         )
     )
 
 
 def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
-    change_root = f"qa/changes/{change_id}"
+    change_root = "qa"
     return tuple(
         sorted(
             (
@@ -109,7 +109,7 @@ def case_review_inputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tup
                 *case_delta_paths,
                 f"{change_root}/proposal.md",
                 f"{change_root}/requirement.md",
-                f"{change_root}/trace/minimum-coverage-matrix.json",
+                f"{change_root}/results/trace/minimum-coverage-matrix.json",
             )
         )
     )
@@ -167,7 +167,7 @@ def _review_repair_contract(
     *,
     business: CaseDesignInputV1,
 ) -> ReviewRepairContractV1 | None:
-    review_relative = f"qa/changes/{business.change_id}/review/case-review.json"
+    review_relative = "qa/results/review/case-review.json"
     review_path = project_root.joinpath(*review_relative.split("/"))
     if not review_path.exists() and not review_path.is_symlink():
         return None
@@ -256,7 +256,7 @@ def _logical_write_root(context: TaskContext) -> str:
     try:
         relative = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        relative = "qa/changes/_attempt/.staging/write"
+        relative = "qa/.staging/write"
     if relative in {".", ""}:
         return ".staging/write"
     return relative
@@ -374,7 +374,7 @@ class ExplorePrepareHandler:
                 context.project_root,
                 change_id=business.change_id,
             )
-            relative = f"qa/changes/{business.change_id}/explore/context.json"
+            relative = "qa/results/explore/context.json"
             path = context.write_root.joinpath(*relative.split("/"))
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(canonical_json_bytes(document.model_dump(mode="json")) + b"\n")
@@ -412,7 +412,7 @@ class CaseDesignPrepareHandler:
                     context.project_root,
                     (*rework.previous_case.preparation_refs, *rework.previous_case.case_refs),
                 )
-            exploration_relative = f"qa/changes/{business.change_id}/explore/exploration.json"
+            exploration_relative = "qa/results/explore/exploration.json"
             exploration_path = context.project_root.joinpath(*exploration_relative.split("/"))
             exploration = None
             if exploration_path.exists() or exploration_path.is_symlink():

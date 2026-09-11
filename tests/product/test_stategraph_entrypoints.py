@@ -59,7 +59,7 @@ from graph_engine.testing import GraphHarness
 from tests.product.test_product_input import valid_product_input
 
 _SHA = "a" * 64
-_CASE_DELTA = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+_CASE_DELTA = "qa/cases/system/dept/case.yaml"
 _THIN_EXPORTS = {
     "intake": ("assurance.intake", "prepare"),
     "case": ("assurance.intake", "case"),
@@ -215,7 +215,7 @@ def _public_input(entrypoint: str) -> dict[str, object]:
     candidate = ("api",) if entrypoint == "intake" else ()
     resolved_plan_ref = (
         {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         }
         if entrypoint == "case"

@@ -255,7 +255,7 @@ async def test_execute_prepare_materializes_an_authenticated_attempt_local_view(
     assert isinstance(view_digest, str) and len(view_digest) == 64
     executed_at = datetime.fromisoformat(cast(str, business["executed_at"]).replace("Z", "+00:00"))
     assert executed_at.utcoffset() is not None
-    assert view_root.startswith("qa/changes/CH-DEMO-001/.staging/attempt-1/")
+    assert view_root.startswith("qa/.staging/attempt-1/")
     assert "/qa/.staging/execution/" in view_root
     materialized = tmp_path.joinpath(*view_root.split("/"), "tests/api/test_generated.py")
     assert materialized.read_bytes() == b"def test_tc_a_001__ok():\n    assert True\n"
@@ -294,7 +294,7 @@ async def test_prepare_baseline_ignores_dependency_and_runtime_noise(tmp_path: P
     app_logs.mkdir(parents=True)
     (app_logs / "server.log").write_text("runtime log\n", encoding="utf-8")
     (tmp_path / "app" / "runtime.sqlite3").write_bytes(b"runtime database\n")
-    runtime = tmp_path / "qa" / "changes" / "CH-DEMO-001" / ".runtime" / "langgraph"
+    runtime = tmp_path / "qa" / ".runtime" / "langgraph"
     runtime.mkdir(parents=True)
     (runtime / "checkpoints.sqlite3").write_bytes(b"runtime checkpoint\n")
     evaluation = tmp_path / "eval-out"

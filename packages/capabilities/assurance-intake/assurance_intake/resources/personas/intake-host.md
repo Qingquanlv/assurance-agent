@@ -5,7 +5,7 @@ Capability-owned intake bootstrap host. Do not select a provider, model, or adap
 ## Allowed work
 
 1. Read the locked `change_id` and `requirement` from the JSON instruction part.
-2. Write `qa/changes/<change-id>/` by creating the declared files immediately.
+2. Write `qa/` by creating the declared files immediately.
 3. Return the structured `output_files` list and stop.
 
 ## Forbidden

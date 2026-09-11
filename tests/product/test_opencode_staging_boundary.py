@@ -19,11 +19,11 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is re
 
 _SESSION_ID = "ses-bound"
 _AGENT = "assurance-v1-doc-author"
-_WRITE_ROOT = "qa/changes/CH-1/.staging/task-1/attempt-1"
-_ALLOWED = "qa/changes/CH-1/proposal.md"
-_OTHER_NODE = "qa/changes/CH-1/review/review.md"
+_WRITE_ROOT = "qa/.staging/task-1/attempt-1"
+_ALLOWED = "qa/proposal.md"
+_OTHER_NODE = "qa/results/review/review.md"
 _EXECUTION_VIEW = (
-    f"{_WRITE_ROOT}/qa/changes/CH-1/.staging/execution/"
+    f"{_WRITE_ROOT}/qa/.staging/execution/"
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 _DRIVER = r"""
@@ -336,7 +336,7 @@ def test_repair_copy_on_write_rejects_non_private_project_baselines(
         os.link(outside, baseline)
     else:
         outside_qa = tmp_path / "outside-qa"
-        outside_baseline = outside_qa / "changes" / "CH-1" / "proposal.md"
+        outside_baseline = outside_qa / "proposal.md"
         outside_baseline.parent.mkdir(parents=True)
         outside_baseline.write_text("outside\n", encoding="utf-8")
         (project / "qa").symlink_to(outside_qa, target_is_directory=True)
@@ -459,19 +459,19 @@ def test_reads_fall_back_to_project_when_overlay_is_absent(tmp_path: Path) -> No
     ("tool", "args"),
     [
         ("write", {"filePath": _OTHER_NODE}),
-        ("edit", {"path": "qa/changes/CH-2/proposal.md"}),
+        ("edit", {"path": "qa/requirement.md"}),
         (
             "apply_patch",
             {
                 "patchText": (
-                    "*** Begin Patch\n*** Update File: qa/changes/CH-1/requirement.md\n"
+                    "*** Begin Patch\n*** Update File: qa/results/requirement.md\n"
                     "@@\n-old\n+new\n*** End Patch"
                 )
             },
         ),
         ("write", {"filePath": "tests/e2e/test_dept.py"}),
-        ("write", {"filePath": "qa/changes/CH-1/.staging/task-1/attempt-2/qa/changes/CH-1/proposal.md"}),
-        ("write", {"filePath": "qa/changes/CH-1/workflow-state.json"}),
+        ("write", {"filePath": "qa/.staging/task-1/attempt-2/qa/proposal.md"}),
+        ("write", {"filePath": "qa/results/workflow-state.json"}),
     ],
 )
 def test_writes_outside_exact_allowed_outputs_are_denied(
@@ -498,7 +498,7 @@ def test_ambient_glob_permission_is_not_authority(tmp_path: Path) -> None:
             plugin,
             session=session,
             tool="write",
-            args={"filePath": "qa/changes/CH-1/requirement.md"},
+            args={"filePath": "qa/requirement.md"},
         ),
         "not allowed",
     )
@@ -512,7 +512,7 @@ def test_different_attempt_binding_cannot_write_this_attempt(tmp_path: Path) -> 
         project,
         _binding_title(
             project,
-            write_root="qa/changes/CH-1/.staging/task-1/attempt-2",
+            write_root="qa/.staging/task-1/attempt-2",
             attempt=2,
             attempt_id="attempt-2",
         ),
@@ -527,7 +527,7 @@ def test_different_attempt_binding_cannot_write_this_attempt(tmp_path: Path) -> 
             plugin,
             session=_session(project, _binding_title(project)),
             tool="write",
-            args={"filePath": "qa/changes/CH-1/.staging/task-1/attempt-2/qa/changes/CH-1/proposal.md"},
+            args={"filePath": "qa/.staging/task-1/attempt-2/qa/proposal.md"},
         ),
         "not allowed",
     )
@@ -836,7 +836,7 @@ def test_executor_echo_view_then_rm_outside_view_is_denied(tmp_path: Path) -> No
             plugin,
             session=session,
             tool="bash",
-            args={"command": "echo qa/changes/CH-1/.staging/execution/x; rm -rf /Users"},
+            args={"command": "echo qa/.staging/execution/x; rm -rf /Users"},
         ),
         "shell",
     )
@@ -845,8 +845,8 @@ def test_executor_echo_view_then_rm_outside_view_is_denied(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     "command",
     [
-        f"{_CWD_RENAME} qa/changes/CH-1/.staging/execution/api",
-        f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated {_CWD_RENAME} qa/changes/CH-1/.staging/execution/api",
+        f"{_CWD_RENAME} qa/.staging/execution/api",
+        f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated {_CWD_RENAME} qa/.staging/execution/api",
         f"{_EXECUTOR_VIEW_COMMAND} <({_CWD_RENAME})",
         f"{_EXECUTOR_VIEW_COMMAND} >hijack",
     ],
@@ -912,10 +912,10 @@ def test_author_profile_cannot_run_execution_view_shell(tmp_path: Path) -> None:
 def test_adversarial_rename_replace_and_swap_of_project_or_output_parent_are_denied(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / "qa/changes/CH-1").mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     plugin = _install(project)
     session = _session(project, _binding_title(project))
-    output_parent = "qa/changes/CH-1"
+    output_parent = "qa"
     for tool, args in (
         ("write", {"filePath": str(project)}),
         ("write", {"filePath": output_parent}),
@@ -928,7 +928,7 @@ def test_adversarial_rename_replace_and_swap_of_project_or_output_parent_are_den
                 )
             },
         ),
-        ("bash", {"command": f"mv {project / output_parent} {project / 'qa/changes/CH-1.bak'}"}),
+        ("bash", {"command": f"mv {project / output_parent} {project / 'qa.bak'}"}),
         ("bash", {"command": f"mv {project} {project.parent / 'project.bak'}"}),
         (
             "bash",
@@ -937,5 +937,5 @@ def test_adversarial_rename_replace_and_swap_of_project_or_output_parent_are_den
     ):
         denied = _run(plugin, session=session, tool=tool, args=args)
         assert denied.returncode == 23, denied.stdout + denied.stderr
-        assert (project / "qa/changes/CH-1").is_dir()
+        assert (project / "qa").is_dir()
         assert project.is_dir()

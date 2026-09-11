@@ -56,7 +56,7 @@ def _goal(*required: TestFamily) -> PreparedQualityGoalV1:
     return PreparedQualityGoalV1.model_validate(
         {
             "obligations_ref": {
-                "path": "qa/changes/CH-1/explore/exploration.json",
+                "path": "qa/results/explore/exploration.json",
                 "digest": _SHA_A,
             },
             "source_resource_digests": (
@@ -106,7 +106,7 @@ def _request(
             "policy_digest": _SHA_B,
             "family_policy": FamilyPolicy(required=required, allowed=allowed),
             "exploration_ref": {
-                "path": "qa/changes/CH-1/explore/exploration.json",
+                "path": "qa/results/explore/exploration.json",
                 "digest": _SHA_A,
             },
             "source_resource_digests": (
@@ -177,7 +177,7 @@ def test_resolved_plan_records_fixed_reasons_and_two_distinct_digests() -> None:
 
     ref = plan_artifact_ref(plan)
     assert ref.digest != plan.plan_digest
-    assert ref.path == (f"qa/changes/CH-1/plan/{plan.plan_digest}/resolved-assurance-plan.json")
+    assert ref.path == (f"qa/results/plan/{plan.plan_digest}/resolved-assurance-plan.json")
     assert decode_plan(plan_bytes(plan), ref) == plan
 
 

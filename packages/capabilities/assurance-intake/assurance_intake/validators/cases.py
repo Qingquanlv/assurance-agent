@@ -16,8 +16,7 @@ from graph_engine.plugin_api import (
 
 from assurance_intake.contracts import CaseYamlAuthoring, QaYaml
 
-_CHANGE_PREFIX = "qa/changes/"
-_CASES_PREFIX = "qa/cases/"
+_ALLOWED_PREFIXES = ("qa/cases/", "qa/results/", "qa/.qa.yaml", "qa/requirement.md", "qa/proposal.md")
 _OUTSIDE_REASON = "intake candidate may write only change and cases paths"
 _UNLISTED_REASON = "intake candidate contains an unlisted file"
 _YAML_SUFFIXES = (".yaml", ".yml")
@@ -35,7 +34,7 @@ def _canonical_relative(path: str) -> bool:
 
 
 def _allowed_owner_path(path: str) -> bool:
-    return _canonical_relative(path) and path.startswith((_CHANGE_PREFIX, _CASES_PREFIX))
+    return _canonical_relative(path) and path.startswith(_ALLOWED_PREFIXES)
 
 
 class CaseCandidateValidator:

@@ -274,7 +274,7 @@ def adapt_issue_analysis(state: ProductState) -> dict[str, object]:
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
     # Fact baseline is produced after the immutable analysis bundle. Do not expose
     # that unbound document to the analyzer as if it were authenticated evidence.
-    fact_baseline_path = f"qa/changes/{inspection.change_id}/facts/fact-baseline.json"
+    fact_baseline_path = "qa/results/facts/fact-baseline.json"
     refs = {
         (ref.path, ref.digest): ref
         for ref in (
@@ -317,8 +317,7 @@ def adapt_issue_analysis(state: ProductState) -> dict[str, object]:
 def _issue_analysis_ref(state: ProductState) -> EvidenceArtifactRefV1:
     if state.get("attempt_failure"):
         raise ValueError("failed issue analysis cannot publish evidence")
-    change_id = str(state.get("change_id"))
-    expected = f"qa/changes/{change_id}/inspect/issue-analysis.json"
+    expected = "qa/results/inspect/issue-analysis.json"
     raw_refs = state.get("evidence_refs")
     if not isinstance(raw_refs, list):
         raise ValueError("issue analysis evidence refs must be a list")

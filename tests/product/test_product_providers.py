@@ -157,7 +157,7 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.output_routes import OutputRouteCatalog
     from assurance_product.product import AssuranceOpenCodeProductProvider
-    from graph_engine.plugin_api import ResourceClaimTemplate
+    from graph_engine.plugin_api import ResourceClaims, ResourceClaimTemplate
 
     change_id = "CH-CURRENT-001"
     catalog = OutputRouteCatalog()
@@ -169,11 +169,12 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
     assert manifest.graph_factory_symbol == "assurance_product.graphs.factory:build_product_graphs"
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         resources = contract.resources
-        assert isinstance(resources, ResourceClaimTemplate)
-        assert resources.parameters == {"change_id": "/change_id"}
-        assert resources.resolve({"change_id": change_id}).writes == catalog.resource_claims(
-            contract_id, change_id
-        )
+        if isinstance(resources, ResourceClaimTemplate):
+            writes = resources.resolve({"change_id": change_id}).writes
+        else:
+            assert isinstance(resources, ResourceClaims)
+            writes = resources.writes
+        assert writes == catalog.resource_claims(contract_id, change_id)
 
 
 def _runtime_source() -> ProviderSource:

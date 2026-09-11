@@ -223,7 +223,7 @@ def common_lifecycle_args(
         "candidate_test_families": (candidate_families if entrypoint in {"full", "intake"} else ()),
         "change_id": change_id,
         "case_delta_paths": (
-            (f"qa/changes/{change_id}/cases/system/dept/case.yaml",)
+            ("qa/cases/system/dept/case.yaml",)
             if entrypoint in {"full", "intake", "case"}
             else ()
         ),

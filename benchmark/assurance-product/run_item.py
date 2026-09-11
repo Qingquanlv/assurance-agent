@@ -97,14 +97,14 @@ def main() -> int:
         "run_mode": "case",
         "candidate_test_families": list(arguments["selected_test_families"]),
         "case_delta_paths": [
-            f"qa/changes/{arguments['change_id']}/cases/{module}/case.yaml"
+            f"qa/cases/{module}/case.yaml"
             for module in arguments["case_modules"]
         ],
         "capability_leafs": _catalog_leafs(composition, catalog_ref["resource_id"]),
         "capability_catalog": catalog_ref,
         "product_policy": _ref(composition, "assurance.product.configuration.product-policy"),
         "data_knowledge": _ref(composition, "assurance.product.configuration.data-knowledge"),
-        "allowed_artifact_paths": ["qa/archive", "qa/cases", "qa/changes", "tests"],
+        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         "budgets": {
             "review_rounds": 4,
             "coverage_rounds": 2,
@@ -236,7 +236,7 @@ def _acg_plan(change_root: Path) -> tuple[dict[str, Any] | None, dict[str, str] 
         return None, None
     relative = plans[0].relative_to(change_root)
     return plan, {
-        "path": f"qa/changes/{change_root.name}/{relative.as_posix()}",
+        "path": f"qa/results/{relative.as_posix()}",
         "digest": _sha256(data),
     }
 
@@ -1698,7 +1698,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sut_root = _resolve_sut(repo, str(item["sut_root"]))
     except SystemExit as error:
         return _fail(str(error))
-    change_root = sut_root / "qa" / "changes" / change_id
+    change_root = sut_root / "qa"
     run_log = output / "run.log"
     run_log.touch()
 

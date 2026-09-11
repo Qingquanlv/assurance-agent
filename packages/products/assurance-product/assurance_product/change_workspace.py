@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,6 +25,21 @@ class ChangePaths:
     langgraph_checkpoints: Path
     langgraph_leases: Path
     langgraph_identities: Path
+
+
+def _reject_identity_mismatch(qa: Path, change_id: str) -> None:
+    status_path = qa / "status.json"
+    if not status_path.exists():
+        return
+    if status_path.is_symlink() or not status_path.is_file():
+        raise ValueError("persisted change identity is invalid")
+    try:
+        payload = json.loads(status_path.read_text(encoding="utf-8"))
+        persisted = payload["change"]["change_id"]
+    except (OSError, KeyError, TypeError, json.JSONDecodeError, UnicodeError) as exc:
+        raise ValueError("persisted change identity is invalid") from exc
+    if not isinstance(persisted, str) or persisted != change_id:
+        raise ValueError("persisted change identity does not match requested change")
 
 
 def safe_change_id(change_id: str) -> str:
@@ -122,6 +138,7 @@ class ChangeWorkspace:
         qa = project / "qa"
         if not qa.is_dir() or qa.is_symlink():
             raise ValueError("project must contain a real qa directory")
+        _reject_identity_mismatch(qa, resolved_id)
         runtime_root = qa / ".runtime"
         langgraph_root = runtime_root / "langgraph"
         paths = ChangePaths(

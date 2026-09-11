@@ -77,21 +77,21 @@ those exact reads and a path-scoped grep both fail.
 The final JSON instruction part contains the mechanically locked
 `review_input_paths`. Use the native read tool to read every listed path
 directly before reviewing. Do not use glob, wildcard search, or ignore-aware
-file discovery under `qa/changes/` to decide whether an input exists. The host
+file discovery under `qa/` to decide whether an input exists. The host
 has already verified these exact paths as regular files.
 
 ### required
 
-- `qa/changes/<change-id>/plans/e2e-plan.md`
-- `qa/changes/<change-id>/plans/e2e-test-data-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/m4-review-summary.md`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/e2e-plan.md`
+- `qa/results/plans/e2e-test-data-plan.md`
+- `qa/results/plans/e2e-codegen-plan.md`
+- `qa/results/plans/e2e-codegen-mapping.json`
+- `qa/results/plans/m4-review-summary.md`
+- `qa/cases/**/case.yaml`
 
 ### optional
 
-- `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`
+- `qa/results/plans/data-knowledge.proposal.e2e.yaml`
 - `.aa/data-knowledge.yaml`
 - backend and frontend product source (read-only)
 - `tests/e2e/**` and `tests/testdata/domain/**`
@@ -100,8 +100,8 @@ has already verified these exact paths as regular files.
 
 ### required
 
-- `qa/changes/<change-id>/review/e2e-plan-review.json`
-- `qa/changes/<change-id>/review/e2e-plan-review-summary.md`
+- `qa/results/review/e2e-plan-review.json`
+- `qa/results/review/e2e-plan-review-summary.md`
 
 ## Boundaries
 

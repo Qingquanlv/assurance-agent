@@ -67,12 +67,12 @@ _BOUNDED_PROFILES = {
     "aa-test-author": "assurance-v1-test-author",
 }
 _IMPROVEMENT_OUTPUTS = {
-    RETRO_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro.json",),
-    RETRO_EVAL_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro-eval-analysis.json",),
-    RETRO_ISSUE_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro-issue-analysis.json",),
-    RETRO_WORKFLOW_SKILL: lambda change_id: (f"qa/changes/{change_id}/retro/retro-workflow-analysis.json",),
-    REVIEW_SKILL: lambda change_id: (f"qa/changes/{change_id}/review/improvement-review.json",),
-    ARCHIVE_SKILL: lambda change_id: (f"qa/changes/{change_id}/archive/archive-receipt.json",),
+    RETRO_SKILL: lambda change_id: ("qa/results/retro/retro.json",),
+    RETRO_EVAL_SKILL: lambda change_id: ("qa/results/retro/retro-eval-analysis.json",),
+    RETRO_ISSUE_SKILL: lambda change_id: ("qa/results/retro/retro-issue-analysis.json",),
+    RETRO_WORKFLOW_SKILL: lambda change_id: ("qa/results/retro/retro-workflow-analysis.json",),
+    REVIEW_SKILL: lambda change_id: ("qa/results/review/improvement-review.json",),
+    ARCHIVE_SKILL: lambda change_id: ("qa/results/archive/archive-receipt.json",),
 }
 
 
@@ -86,7 +86,7 @@ def agent_workspace(
     try:
         write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        write_root = "qa/changes/_attempt/.staging/write"
+        write_root = "qa/.staging/write"
     if write_root in {".", ""}:
         write_root = ".staging/write"
     payload = {
@@ -242,7 +242,7 @@ def _finalize_retro(
             raise OutputError("candidate source is outside the retro manifest")
     suffix = f"retro-{expected_domain}-analysis" if expected_domain else "retro"
     try:
-        path = _workspace_file(context.write_root, f"qa/changes/{payload.change_id}/retro/{suffix}.json")
+        path = _workspace_file(context.write_root, f"qa/results/retro/{suffix}.json")
         written = RetroAnalysisResultV3.model_validate_json(path.read_bytes())
     except (OSError, ValueError) as error:
         raise OutputError(f"required Retro result artifact is invalid: {suffix}.json") from error

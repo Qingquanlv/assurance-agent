@@ -30,7 +30,7 @@ def _receipt(name: str = "inspect-0") -> ReceiptRef:
 
 def _plan_ref() -> EvidenceArtifactRefV1:
     return _ref(
-        f"qa/changes/CH-1/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+        f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
         "c" * 64,
     )
 
@@ -43,10 +43,10 @@ def _reviewed_case(epoch: int = 0) -> ReviewedCaseV1:
         plan_ref=_plan_ref(),
         preparation_refs=(
             _plan_ref(),
-            _ref("qa/changes/CH-1/preparation/context.json"),
+            _ref("qa/results/preparation/context.json"),
         ),
-        case_refs=(_ref("qa/changes/CH-1/cases/system/case.yaml"),),
-        review_ref=_ref("qa/changes/CH-1/review/case-review.json"),
+        case_refs=(_ref("qa/cases/system/case.yaml"),),
+        review_ref=_ref("qa/results/review/case-review.json"),
     )
 
 
@@ -61,8 +61,8 @@ def _inspection(epoch: int = 0, receipt: ReceiptRef | None = None) -> Inspection
         disposition="coverage_insufficient",
         inspection_receipt=receipt or _receipt(),
         reviewed_case=reviewed,
-        mapping_ref=_ref(f"qa/changes/CH-1/generation/epochs/{epoch}/mapping.json"),
-        assessment_refs=(_ref(f"qa/changes/CH-1/inspect/epochs/{epoch}/gaps.json"),),
+        mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
+        assessment_refs=(_ref(f"qa/results/inspect/epochs/{epoch}/gaps.json"),),
         reason_codes=("uncovered_required_case",),
         coverage_state="repair_required",
     )
@@ -117,8 +117,8 @@ def test_advance_coverage_switches_epoch_without_changing_review_budget() -> Non
     assert update["last_coverage_source_receipt"] == _receipt().model_dump(mode="json")
     rework = cast(dict[str, object], update["case_rework_context"])
     assert rework["previous_case"] == _reviewed_case().model_dump(mode="json")
-    assert rework["gaps_ref"] == _ref("qa/changes/CH-1/inspect/epochs/0/gaps.json").model_dump(mode="json")
-    assert rework["target_case_paths"] == ["qa/changes/CH-1/cases/system/case.yaml"]
+    assert rework["gaps_ref"] == _ref("qa/results/inspect/epochs/0/gaps.json").model_dump(mode="json")
+    assert rework["target_case_paths"] == ["qa/cases/system/case.yaml"]
 
 
 def test_same_inspection_receipt_cannot_advance_coverage_twice() -> None:
@@ -188,10 +188,10 @@ def test_tail_result_status_and_evidence_round_trip() -> None:
 
 
 def test_public_execute_adapter_initializes_standalone_tail_from_artifacts() -> None:
-    artifact = {"path": "qa/changes/CH-DEMO-001/cases/reviewed-case.json", "digest": _SHA}
+    artifact = {"path": "qa/cases/reviewed-case.json", "digest": _SHA}
     payload = valid_product_input(
         resolved_plan_ref={
-            "path": f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
             "digest": "c" * 64,
         },
         capability_leafs=("auth.session",),
@@ -216,22 +216,22 @@ def test_full_tail_adapter_preserves_case_scope_and_current_epoch() -> None:
         coverage_epoch=1,
         plan_digest=_PLAN_DIGEST,
         plan_ref=EvidenceArtifactRefV1(
-            path=f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+            path=f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
             digest="c" * 64,
         ),
         preparation_refs=(
             EvidenceArtifactRefV1(
-                path=f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+                path=f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
                 digest="c" * 64,
             ),
-            _ref("qa/changes/CH-DEMO-001/preparation/context.json"),
+            _ref("qa/results/preparation/context.json"),
         ),
-        case_refs=(_ref("qa/changes/CH-DEMO-001/cases/system/case.yaml"),),
-        review_ref=_ref("qa/changes/CH-DEMO-001/review/case-review.json"),
+        case_refs=(_ref("qa/cases/system/case.yaml"),),
+        review_ref=_ref("qa/results/review/case-review.json"),
     )
     payload = valid_product_input(
         candidate_test_families=("api",),
-        case_delta_paths=("qa/changes/CH-DEMO-001/cases/system/case.yaml",),
+        case_delta_paths=("qa/cases/system/case.yaml",),
         capability_leafs=("auth.session",),
     )
     state = {

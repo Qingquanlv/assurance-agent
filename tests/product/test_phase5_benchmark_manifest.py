@@ -628,7 +628,7 @@ def test_runner_requires_loaded_assurance_boundary_plugin(monkeypatch: pytest.Mo
 
 def test_live_product_input_authorizes_declared_test_roots() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
-    assert '"allowed_artifact_paths": ["qa/archive", "qa/cases", "qa/changes", "tests"]' in source
+    assert '"allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"]' in source
 
 
 def test_live_runner_keeps_polling_while_external_activity_is_recoverable() -> None:

@@ -230,7 +230,7 @@ def _reviewed_obligations(
     capability_leafs: frozenset[str],
     journey_keys: frozenset[str],
 ) -> tuple[MinimumCoverageMatrixRow, ...]:
-    matrix_path = f"qa/changes/{request.reviewed_case.change_id}/trace/minimum-coverage-matrix.json"
+    matrix_path = "qa/results/trace/minimum-coverage-matrix.json"
     matrix_ref = next(
         (ref for ref in request.reviewed_case.preparation_refs if ref.path == matrix_path),
         None,
@@ -552,12 +552,12 @@ def materialize_assessment_inputs(
     ):
         _read_ref(project_root, ref)
     if request.healing_ref is not None:
-        healing_prefix = f"qa/changes/{request.reviewed_case.change_id}/healing/"
+        healing_prefix = "qa/results/healing/"
         if not request.healing_ref.path.startswith(healing_prefix):
             raise AssessmentInputError("healing evidence must belong to the current change")
         _read_ref(project_root, request.healing_ref)
     if request.issue_ref is not None:
-        change_prefix = f"qa/changes/{request.reviewed_case.change_id}/inspect/"
+        change_prefix = "qa/results/inspect/"
         if request.issue_ref.path != "issues/snapshot.json" and not request.issue_ref.path.startswith(
             change_prefix
         ):
@@ -726,7 +726,7 @@ def materialize_assessment_inputs(
         }
     )
     base = (
-        f"qa/changes/{request.reviewed_case.change_id}/inspect/epochs/"
+        f"qa/results/inspect/epochs/"
         f"{request.reviewed_case.coverage_epoch}/batches/{request.execution.batch_id}"
     )
     trace_ref = _write_document(write_root, f"{base}/trace.json", projection)

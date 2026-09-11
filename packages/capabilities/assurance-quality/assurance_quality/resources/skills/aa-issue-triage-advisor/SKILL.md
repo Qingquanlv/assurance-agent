@@ -32,5 +32,5 @@ human action. Schema truth is `assurance_quality.contracts` for `IssueTriageResu
 - Do not invent Problem state.
 - Summarize observable facts; do not include raw logs or secrets.
 - Use the locked execution binding from the prepare request.
-- Write the typed result to `qa/changes/<change-id>/inspect/issue-triage.json`.
+- Write the typed result to `qa/results/inspect/issue-triage.json`.
 - Return the typed result and stop.

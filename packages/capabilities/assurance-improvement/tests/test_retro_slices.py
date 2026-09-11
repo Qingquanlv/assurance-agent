@@ -73,7 +73,7 @@ def _scope(root: Path) -> AuthorizedAttemptScope:
 
 @pytest.mark.asyncio
 async def test_builds_workflow_and_eval_slices_from_authenticated_evidence(tmp_path: Path) -> None:
-    underlying = EvidenceArtifactRefV1(path=f"qa/changes/{_CHANGE}/review/case-review.json", digest="b" * 64)
+    underlying = EvidenceArtifactRefV1(path="qa/results/review/case-review.json", digest="b" * 64)
     history = build_loop_round_history(
         change_id=_CHANGE,
         coverage_epoch=1,
@@ -86,12 +86,12 @@ async def test_builds_workflow_and_eval_slices_from_authenticated_evidence(tmp_p
     )
     history_ref = _write(
         tmp_path,
-        f"qa/changes/{_CHANGE}/cases/reviews/epochs/1/rounds/2.json",
+        "qa/cases/reviews/epochs/1/rounds/2.json",
         _json_bytes(history.model_dump(mode="json")),
     )
     inspection_ref = _write(
         tmp_path,
-        f"qa/changes/{_CHANGE}/inspect/inspection.json",
+        "qa/results/inspect/inspection.json",
         _json_bytes(
             {
                 "schema_version": "1.0",
@@ -128,7 +128,7 @@ async def test_missing_loop_history_is_an_integrity_gap_not_a_reconstructed_roun
 ) -> None:
     report_ref = _write(
         tmp_path,
-        f"qa/changes/{_CHANGE}/report/report.md",
+        "qa/results/report/report.md",
         b"# sealed report\n",
     )
     request = RetroBuildSlicesInputV1(
@@ -160,7 +160,7 @@ async def test_each_plan_bound_source_retains_its_own_authenticated_plan(tmp_pat
     report_refs = (
         _write(
             tmp_path,
-            f"qa/changes/{_CHANGE}/report/report-outcome.json",
+            "qa/results/report/report-outcome.json",
             _json_bytes(
                 {
                     "change_id": _CHANGE,
@@ -171,7 +171,7 @@ async def test_each_plan_bound_source_retains_its_own_authenticated_plan(tmp_pat
         ),
         _write(
             tmp_path,
-            f"qa/changes/{second_change}/report/report-outcome.json",
+            "qa/results/report/report-outcome.json",
             _json_bytes(
                 {
                     "change_id": second_change,
@@ -217,7 +217,7 @@ async def test_plan_bound_source_requires_the_exact_plan_ref_in_source_refs(tmp_
     plan, ref_value = install_plan(tmp_path, _CHANGE)
     report_ref = _write(
         tmp_path,
-        f"qa/changes/{_CHANGE}/report/report-outcome.json",
+        "qa/results/report/report-outcome.json",
         _json_bytes(
             {
                 "change_id": _CHANGE,

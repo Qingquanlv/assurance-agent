@@ -63,7 +63,7 @@ def proposal_input() -> dict[str, Any]:
         "change_id": "CH-DEMO-001",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "owner_id": "assurance.healing",
@@ -144,7 +144,7 @@ async def test_fix_proposal_prepare_is_deterministic_and_provider_neutral(tmp_pa
 
 @pytest.mark.asyncio
 async def test_fix_proposal_authenticates_and_receives_issue_analysis(tmp_path: Path) -> None:
-    relative = "qa/changes/CH-DEMO-001/inspect/issue-analysis.json"
+    relative = "qa/results/inspect/issue-analysis.json"
     data = b'{"reason":"wrong database binding"}'
     path = tmp_path / relative
     path.parent.mkdir(parents=True)
@@ -188,7 +188,7 @@ async def test_fix_proposal_finalize_accepts_typed_proposal(tmp_path: Path) -> N
     target = project / "tests/api/test_users.py"
     target.parent.mkdir(parents=True)
     target.write_text("def test_ok():\n    assert True\n")
-    staged = write_root / "qa/changes/CH-DEMO-001/healing/fix-proposal.json"
+    staged = write_root / "qa/results/healing/fix-proposal.json"
     staged.parent.mkdir(parents=True)
     staged.write_bytes(canonical_json_bytes(cast(JSONValue, valid_proposal())) + b"\n")
     outcome = await execute_task(
@@ -211,7 +211,7 @@ async def test_fix_proposal_finalize_rejects_wrapped_runtime_input(
     target.parent.mkdir(parents=True)
     target.write_text("def test_ok():\n    assert True\n")
     proposal = valid_proposal()
-    proposal_path = write_root / "qa/changes/CH-DEMO-001/healing/fix-proposal.json"
+    proposal_path = write_root / "qa/results/healing/fix-proposal.json"
     proposal_path.parent.mkdir(parents=True)
     proposal_path.write_bytes(canonical_json_bytes(cast(JSONValue, proposal)) + b"\n")
     current = fake_agent_result(proposal)
@@ -251,7 +251,7 @@ async def test_allocate_returns_effect_intent_without_writing(tmp_path: Path) ->
         "change_id": "CH-DEMO-001",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "owner_id": "assurance.healing",
@@ -280,7 +280,7 @@ async def test_record_approval_and_apply_emit_intents_only(tmp_path: Path) -> No
             "change_id": "CH-DEMO-001",
             "plan_digest": _SHA,
             "plan_ref": {
-                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
                 "digest": _SHA,
             },
             "owner_id": "assurance.healing",
@@ -307,7 +307,7 @@ async def test_record_approval_and_apply_emit_intents_only(tmp_path: Path) -> No
             "change_id": "CH-DEMO-001",
             "plan_digest": _SHA,
             "plan_ref": {
-                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
                 "digest": _SHA,
             },
             "owner_id": "assurance.healing",
@@ -472,7 +472,7 @@ async def test_coverage_repair_finalize_rejects_unknown_locator(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_failed_proposal_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    canonical = project / "qa/changes/CH-DEMO-001/healing/fix-proposal.json"
+    canonical = project / "qa/results/healing/fix-proposal.json"
     canonical.parent.mkdir(parents=True)
     original = b'{"schema_version":"1"}\n'
     canonical.write_bytes(original)

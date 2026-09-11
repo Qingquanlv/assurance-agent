@@ -295,7 +295,7 @@ async def test_project_archive_uses_quality_report_issue_risk(tmp_path: Path) ->
                 "invocation_id": "inv-archive-1",
                 "archive_digest": HEX_A,
                 "report": quality_report_payload(issue_risk="high"),
-                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "artifact_paths": ["qa/results/archive-summary.md"],
                 "publish_receipt": _publish_receipt(),
             }
         ),
@@ -329,7 +329,7 @@ async def test_project_archive_without_publish_receipt_fails(tmp_path: Path) -> 
                 "invocation_id": "inv-archive-1",
                 "archive_digest": HEX_A,
                 "report": quality_report_payload(issue_risk="high"),
-                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "artifact_paths": ["qa/results/archive-summary.md"],
             }
         ),
         tmp_path,
@@ -350,7 +350,7 @@ async def test_project_archive_rejects_mismatched_publish_receipt(tmp_path: Path
                 "invocation_id": "inv-archive-1",
                 "archive_digest": HEX_A,
                 "report": quality_report_payload(issue_risk="clear"),
-                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "artifact_paths": ["qa/results/archive-summary.md"],
                 "publish_receipt": _publish_receipt("CH-OTHER-001"),
             }
         ),
@@ -371,7 +371,7 @@ async def test_project_archive_accepts_authenticated_publish_receipt(tmp_path: P
                 "invocation_id": "inv-archive-1",
                 "archive_digest": HEX_A,
                 "report": quality_report_payload(issue_risk="clear"),
-                "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+                "artifact_paths": ["qa/results/archive-summary.md"],
                 "publish_receipt": _publish_receipt(),
             }
         ),
@@ -658,9 +658,9 @@ def test_candidates_validator_requires_complete_expected_map() -> None:
 def test_archive_integrity_requires_all_four_authenticated_inputs() -> None:
     result = ArchiveIntegrityValidator().validate(
         write_set(
-            "qa/archive/subject.json",
-            "qa/archive/artifact-manifest.json",
-            "qa/archive/archive-summary.md",
+            "qa/results/subject.json",
+            "qa/results/artifact-manifest.json",
+            "qa/results/archive-summary.md",
         ),
         validation_context(),
     )
@@ -802,10 +802,10 @@ def test_archive_integrity_requires_summary_in_manifest() -> None:
     import json
 
     files = {
-        "qa/archive/subject.json": json.dumps({"change_id": "CH-DEMO-001"}).encode(),
-        "qa/archive/artifact-manifest.json": json.dumps({"artifact_paths": ["qa/archive/other.md"]}).encode(),
-        "qa/archive/archive-summary.md": b"# summary\n",
-        "qa/changes/pre-archive-tree.json": json.dumps({"tree": "ok"}).encode(),
+        "qa/results/subject.json": json.dumps({"change_id": "CH-DEMO-001"}).encode(),
+        "qa/results/artifact-manifest.json": json.dumps({"artifact_paths": ["qa/results/other.md"]}).encode(),
+        "qa/results/archive-summary.md": b"# summary\n",
+        "qa/results/pre-archive-tree.json": json.dumps({"tree": "ok"}).encode(),
     }
     listed = {path: hashlib.sha256(raw).hexdigest() for path, raw in files.items()}
     write = write_set(*files).model_copy(
@@ -818,10 +818,10 @@ def test_archive_integrity_requires_summary_in_manifest() -> None:
     )
     result = ArchiveIntegrityValidator(
         expected={
-            "subject": listed["qa/archive/subject.json"],
-            "manifest": listed["qa/archive/artifact-manifest.json"],
-            "summary": listed["qa/archive/archive-summary.md"],
-            "pre_archive": listed["qa/changes/pre-archive-tree.json"],
+            "subject": listed["qa/results/subject.json"],
+            "manifest": listed["qa/results/artifact-manifest.json"],
+            "summary": listed["qa/results/archive-summary.md"],
+            "pre_archive": listed["qa/results/pre-archive-tree.json"],
         },
         file_bytes=files,
     ).validate(write, validation_context())
@@ -836,5 +836,5 @@ def test_plugin_validators_are_path_only() -> None:
 
     contribution = ImprovementPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     validator = contribution.commit_validators["assurance.improvement.validator.archive-integrity.v1"]
-    result = validator.validate(write_set("qa/archive/subject.json"), validation_context())
+    result = validator.validate(write_set("qa/results/subject.json"), validation_context())
     assert result.accepted is True

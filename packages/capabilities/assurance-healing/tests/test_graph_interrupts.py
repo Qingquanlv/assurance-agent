@@ -81,7 +81,7 @@ def test_proposal_approval_requires_an_authenticated_reference_before_applicatio
         return_value={
             "action": "approve",
             "approval_ref": {
-                "path": "qa/changes/CH-FIX-001/healing/approval.json",
+                "path": "qa/results/healing/approval.json",
                 "digest": _SHA,
             },
         },
@@ -89,7 +89,7 @@ def test_proposal_approval_requires_an_authenticated_reference_before_applicatio
         assert proposal_approval(state) == {
             "human_action": "approve",
             "approval_ref": {
-                "path": "qa/changes/CH-FIX-001/healing/approval.json",
+                "path": "qa/results/healing/approval.json",
                 "digest": _SHA,
             },
         }
@@ -300,7 +300,7 @@ async def test_fix_proposal_waits_for_approval_ref_before_application() -> None:
             resume={
                 "action": "approve",
                 "approval_ref": {
-                    "path": "qa/changes/CH-FIX-001/healing/approval.json",
+                    "path": "qa/results/healing/approval.json",
                     "digest": _SHA,
                 },
             }

@@ -57,6 +57,8 @@ def resolve_selected_file(workspace: Path, relative: str) -> Path:
         file_path = canonical_relative(relative)
     except ValueError as error:
         raise InputError(str(error)) from error
+    if file_path.startswith("qa/tests/"):
+        file_path = "tests/" + file_path[len("qa/tests/") :]
     path = workspace.joinpath(*PurePosixPath(file_path).parts)
     if path.is_symlink():
         raise InputError(f"selected test is not a regular workspace file: {relative}")

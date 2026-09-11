@@ -88,8 +88,8 @@ analysis are expected to expose.
 **After completing work:**
 
 1. Write output files:
-   - `qa/changes/<change-id>/review/case-review.json`
-   - `qa/changes/<change-id>/review/case-review-summary.md`
+   - `qa/results/review/case-review.json`
+   - `qa/results/review/case-review-summary.md`
 2. Report the graph-owned state delta (the graph applies it; do not write an orchestration state file):
    - `phases.case_review.status` = `pass | needs_fix | needs_human_review | reject`
    - `phases.case_review.gate_file` = `review/case-review.json`
@@ -132,14 +132,14 @@ The user or orchestrator should provide:
 Expected input files:
 
 ```text
-qa/changes/<change-id>/proposal.md
-qa/changes/<change-id>/requirement.md
-qa/changes/<change-id>/cases/<locked-module>/case.yaml
-qa/changes/<change-id>/.qa.yaml
+qa/proposal.md
+qa/requirement.md
+qa/cases/<locked-module>/case.yaml
+qa/.qa.yaml
 ```
 
 Do not use glob to discover these files. Read the exact `review_input_paths` from
-the JSON instruction even when `qa/changes/**` is ignored by repository search.
+the JSON instruction even when `qa/**` is ignored by repository search.
 
 Required independent evidence:
 
@@ -162,8 +162,8 @@ docs/**/*.md
 Write the following files:
 
 ```text
-qa/changes/<change-id>/review/case-review.json
-qa/changes/<change-id>/review/case-review-summary.md
+qa/results/review/case-review.json
+qa/results/review/case-review-summary.md
 ```
 
 Create the review directory if it does not exist.
@@ -174,8 +174,8 @@ Create the review directory if it does not exist.
 
 This skill is a **gate producer**. The workflow cannot advance past case review without the JSON file this skill writes.
 
-- You **must** write `qa/changes/<change-id>/review/case-review.json` as valid JSON with all required fields.
-- You **must** write `qa/changes/<change-id>/review/case-review-summary.md`.
+- You **must** write `qa/results/review/case-review.json` as valid JSON with all required fields.
+- You **must** write `qa/results/review/case-review-summary.md`.
 - A natural language conclusion in chat is **not** a substitute for the JSON file. Never end with only a textual verdict.
 - User approval in chat does not release the gate; only a valid `case-review.json` does. If the user says "approved", "looks good", or "continue", treat it only as review context — still validate every review criterion independently. Only write `decision == "pass"` when the artifacts satisfy all review criteria.
 - If you cannot write the JSON file for any reason, treat the review as **failed** and report it — the workflow must treat a missing or invalid `case-review.json` as a STOP condition.
@@ -379,7 +379,7 @@ The case should be understandable by a QA engineer without reading hidden contex
 
 Check that case files are valid YAML and follow the delta format produced by `aa-case-design`.
 
-**Change delta files** (`qa/changes/<change-id>/cases/**/case.yaml`) must use the delta top-level structure:
+**Change delta files** (`qa/cases/**/case.yaml`) must use the delta top-level structure:
 
 ```yaml
 schema_version: "1.0"
@@ -451,7 +451,7 @@ trace:
   <exact graph-provided typed capability leaf>: {covered: true}
 ```
 
-**`automation_targets` field:** For change delta files produced by `aa-case-design`, `automation_targets` is **forbidden** and must be flagged as a blocker. Legacy stable case files in `qa/cases/**` may use it for reference, but the change delta under `qa/changes/<change-id>/cases/**/case.yaml` must use the `automation` block.
+**`automation_targets` field:** For change delta files produced by `aa-case-design`, `automation_targets` is **forbidden** and must be flagged as a blocker. Legacy stable case files in `qa/cases/**` may use it for reference, but the change delta under `qa/cases/**/case.yaml` must use the `automation` block.
 
 ### 4. Testability
 
@@ -565,7 +565,7 @@ These details belong in API plan, test code, or data-knowledge.yaml — not in c
 
 ### 10. Delta Operation Correctness
 
-For every change delta file (`qa/changes/<change-id>/cases/**/case.yaml`), verify:
+For every change delta file (`qa/cases/**/case.yaml`), verify:
 
 - `added[].case_id` **MUST NOT** already exist in the target stable case file (`qa/cases/<module>/case.yaml`). Violation = blocker.
 - `modified[].case_id` **MUST** already exist in the target stable case file. Violation = blocker.
@@ -631,7 +631,7 @@ Finding example (Type 1):
   "id": "CASE-FINDING-LAYER-001",
   "severity": "medium",
   "category": "layering",
-  "file": "qa/changes/<change-id>/cases/<module>/case.yaml",
+  "file": "qa/cases/<module>/case.yaml",
   "message": "TC_MENU_001 validation is verifiable via single API request; set type to API not E2E.",
   "suggestion": "Change type from E2E to API.",
   "auto_fix_allowed": true,
@@ -759,7 +759,7 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
   edit or do not classify it as mechanically auto-fixable.
 - Every `auto_fix_plan` item must use this exact shape; do not substitute
   `action`, `instructions`, or a free-form `locator` for these fields:
-  `{"finding_id":"CR-001","artifact":"qa/changes/<change-id>/cases/<module>/case.yaml","case_id":"TC_001","edits":["one exact edit instruction"]}`.
+  `{"finding_id":"CR-001","artifact":"qa/cases/<module>/case.yaml","case_id":"TC_001","edits":["one exact edit instruction"]}`.
   Use `case_id: null` for a proposal or matrix repair. The matching
   finding locator's `key` is the exclusive field or section scope.
 - Each `auto_fix_plan[].artifact` MUST equal that finding's `locator.artifact`,
@@ -847,7 +847,7 @@ scope, not from the highest finding severity.
 Write valid JSON to:
 
 ```text
-qa/changes/<change-id>/review/case-review.json
+qa/results/review/case-review.json
 ```
 
 **Minimal top-level structure (illustrative — see `assurance_intake.contracts` (`CaseReviewResultV1`) for the full contract):**
@@ -889,9 +889,9 @@ qa/changes/<change-id>/review/case-review.json
 ```
 
 `reviewed_files` MUST include:
-- `qa/changes/<change-id>/proposal.md`
-- `qa/changes/<change-id>/.qa.yaml`
-- every `qa/changes/<change-id>/cases/**/case.yaml` reviewed
+- `qa/proposal.md`
+- `qa/.qa.yaml`
+- every `qa/cases/**/case.yaml` reviewed
 
 `reviewed_files` MUST NOT be empty.
 
@@ -915,7 +915,7 @@ For all other categories, `fix_scope` is omitted.
 Write a human-readable summary to:
 
 ```text
-qa/changes/<change-id>/review/case-review-summary.md
+qa/results/review/case-review-summary.md
 ```
 
 Use this structure:

@@ -97,11 +97,11 @@ _BOUNDED_PROFILES = {
     "aa-test-author": "assurance-v1-test-author",
 }
 _QUALITY_OUTPUTS = {
-    FACT_BASELINE_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/facts/fact-baseline.json",),
-    INSPECTION_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/inspect/inspection.json",),
-    ISSUE_ANALYSIS_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/inspect/issue-analysis.json",),
-    ISSUE_TRIAGE_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/inspect/issue-triage.json",),
-    REPORT_RESULT_ID: lambda change_id: (f"qa/changes/{change_id}/report/report.md",),
+    FACT_BASELINE_RESULT_ID: lambda change_id: ("qa/results/facts/fact-baseline.json",),
+    INSPECTION_RESULT_ID: lambda change_id: ("qa/results/inspect/inspection.json",),
+    ISSUE_ANALYSIS_RESULT_ID: lambda change_id: ("qa/results/inspect/issue-analysis.json",),
+    ISSUE_TRIAGE_RESULT_ID: lambda change_id: ("qa/results/inspect/issue-triage.json",),
+    REPORT_RESULT_ID: lambda change_id: ("qa/results/report/report.md",),
 }
 
 
@@ -115,7 +115,7 @@ def agent_workspace(
     try:
         write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        write_root = "qa/changes/_attempt/.staging/write"
+        write_root = "qa/.staging/write"
     if write_root in {".", ""}:
         write_root = ".staging/write"
     payload = {
@@ -259,7 +259,7 @@ def _authenticate_report_input(business: ReportSkillInputV1, root: Path) -> None
 
 
 def _authenticate_issue_analysis_input(business: QualitySkillInputV1, root: Path) -> None:
-    expected_prefix = f"qa/changes/{business.change_id}/inspect/"
+    expected_prefix = "qa/results/inspect/"
 
     def unique_path(name: str) -> str:
         matches = [
@@ -455,7 +455,7 @@ class FactBaselineFinalizeHandler:
                 raise InputError("fact-baseline input must not contain a future baseline reference")
             if document.change_id != business.change_id:
                 raise OutputError("fact baseline change_id does not match the locked assessment")
-            relative = f"qa/changes/{business.change_id}/facts/fact-baseline.json"
+            relative = "qa/results/facts/fact-baseline.json"
             _, baseline_ref = _staged_agent_document(
                 context=context,
                 relative=relative,
@@ -488,7 +488,7 @@ class InspectFinalizeHandler:
             _authenticate_assessment_input(business, context.project_root)
             if business.fact_baseline_ref is None:
                 raise InputError("Inspect requires an authenticated fact baseline")
-            relative = f"qa/changes/{business.change_id}/inspect/inspection.json"
+            relative = "qa/results/inspect/inspection.json"
             _staged_agent_document(
                 context=context,
                 relative=relative,
@@ -599,7 +599,7 @@ class IssueAnalysisFinalizeHandler:
                 evidence_bundle_digest=document.evidence_bundle_digest,
                 candidates=list(document.candidates),
             )
-            relative = f"qa/changes/{document.change_id}/inspect/issue-analysis.json"
+            relative = "qa/results/inspect/issue-analysis.json"
             _, issue_analysis_ref = _staged_agent_document(
                 context=context,
                 relative=relative,

@@ -81,7 +81,7 @@ def resolve_generation_input(data: object, project_root: Path) -> ReviewedCaseV1
     reviewed = request.reviewed_case
     standalone = reviewed is None
     if standalone:
-        expected = f"qa/changes/{request.change_id}/cases/reviewed-case.json"
+        expected = "qa/cases/reviewed-case.json"
         manifests = [item for item in request.source_artifacts if item.path == expected]
         if len(manifests) != 1:
             raise InputError("generation requires exactly one reviewed-case.json artifact")

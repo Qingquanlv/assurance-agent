@@ -460,7 +460,7 @@ class _ExecutionLoopHost:
             output: dict[str, object] = {
                 "change_id": change_id,
                 "report_refs": [
-                    {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
+                    {"path": "qa/results/report/report.md", "digest": _PUBLIC_DIGEST}
                 ],
             }
             if isinstance(request_input, Mapping) and isinstance(request_input.get("coverage_state"), str):
@@ -520,7 +520,7 @@ class _ExecutionLoopHost:
                 "outcome": "applied",
                 "receipt_refs": [],
                 "report_refs": [
-                    {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
+                    {"path": "qa/results/report/report.md", "digest": _PUBLIC_DIGEST}
                 ],
                 "rounds_budget": rounds_budget,
                 "rounds_used": rounds_used,

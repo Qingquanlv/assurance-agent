@@ -60,9 +60,7 @@ def _json(data: bytes, path: str) -> object:
 
 
 def _selected(ref: EvidenceArtifactRefV1, change_ids: frozenset[str]) -> bool:
-    parts = ref.path.split("/")
-    if len(parts) >= 3 and parts[:2] == ["qa", "changes"]:
-        return parts[2] in change_ids
+    del ref, change_ids
     return True
 
 
@@ -185,7 +183,7 @@ def build_retro_slices(
     for ref in refs:
         data = _read_ref(project_root, ref)
         change_id = next(
-            (change for change in request.window.change_ids if f"qa/changes/{change}/" in ref.path),
+            (change for change in request.window.change_ids if "qa/" in ref.path),
             None,
         )
         if "/rounds/" in ref.path and "/epochs/" in ref.path and ref.path.endswith(".json"):

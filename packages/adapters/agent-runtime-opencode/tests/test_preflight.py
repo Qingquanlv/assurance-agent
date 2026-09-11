@@ -98,7 +98,7 @@ def _workspace_identity() -> TaskWorkspaceIdentity:
         "task_id": "task-1",
         "attempt": 1,
         "attempt_id": "attempt-1",
-        "output_paths": ["qa/changes/CH-1/proposal.md"],
+        "output_paths": ["qa/proposal.md"],
         "baseline_files": [],
         "project_digest": _SHA,
         "write_root_digest": "b" * 64,
@@ -109,7 +109,7 @@ def _workspace_identity() -> TaskWorkspaceIdentity:
 
 def _context(*, secrets: SecretPort | None = None, tmp_path: Path | None = None) -> TaskContext:
     project_root = (tmp_path or Path(".")).resolve()
-    write_root = project_root / "qa/changes/CH-1/.staging/task-1/attempt-1"
+    write_root = project_root / "qa/.staging/task-1/attempt-1"
     write_root.mkdir(parents=True, exist_ok=True)
     return TaskContext(
         project_root=project_root,

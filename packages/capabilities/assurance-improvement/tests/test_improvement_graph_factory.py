@@ -198,7 +198,7 @@ def skill_graph_fields() -> dict[str, object]:
         "retro_id": "RET-1",
         "owned_evidence_ids": ["PROB-1", "OCC-1"],
         "artifact_paths": ["retro/context.json"],
-        "allowed_artifact_paths": ["qa/archive"],
+        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         "capability_leafs": ["auth.session.create"],
         "source_manifest": {
             "issue_slice_sha256": "a",
@@ -226,7 +226,7 @@ def skill_graph_fields() -> dict[str, object]:
         "invocation_id": "inv-archive-1",
         "archive_digest": _SHA,
         "locked_signal_ids": ["issue-pattern:PROB-1"],
-        "evidence_refs": [{"path": "qa/archive/CH-DEMO-001/inspect/inspection.json", "digest": _SHA}],
+        "evidence_refs": [{"path": "qa/results/inspect/inspection.json", "digest": _SHA}],
         "lifecycle_state": "exported",
     }
 
@@ -245,7 +245,7 @@ def archive_agent_output() -> dict[str, object]:
         "issue_risk": "clear",
         "issue_risk_rationale": "no active issues",
         "summary": "# Archive CH-DEMO-001\n",
-        "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+        "artifact_paths": ["qa/results/archive-summary.md"],
         "invocation_id": "inv-archive-1",
         "archive_digest": _SHA,
     }

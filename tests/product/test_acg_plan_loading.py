@@ -58,7 +58,7 @@ def test_standalone_entrypoint_routes_the_real_load_graph(
 ) -> None:
     payload = _public_input(tmp_path)
     if entrypoint == "case":
-        payload["case_delta_paths"] = ("qa/changes/CH-DEMO-001/cases/item/case.yaml",)
+        payload["case_delta_paths"] = ("qa/cases/item/case.yaml",)
     loaded = load_plan_artifact(
         select_load_plan(adapt_load_plan(cast(ProductState, payload))), project_root=tmp_path
     )

@@ -83,7 +83,7 @@ class ApplyTestRepairInputV1(FrozenModel):
             self.reviewed_case.plan_digest,
             self.reviewed_case.plan_ref,
         )
-        prefix = f"qa/changes/{self.change_id}/"
+        prefix = "qa/"
         refs = (
             self.proposal_ref,
             self.execution_ref,

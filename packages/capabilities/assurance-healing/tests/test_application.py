@@ -32,13 +32,13 @@ from tests.acg_plan_fixture import install_plan
 CHANGE = "CH-REPAIR-1"
 SOURCE = "qa/tests/api/test_users.py"
 TARGET = "qa/tests/api/test_users.py"
-MAPPING = f"qa/changes/{CHANGE}/generated/mapping.json"
-PROPOSAL = f"qa/changes/{CHANGE}/healing/fix-proposal.json"
-APPROVAL = f"qa/changes/{CHANGE}/healing/approval.json"
-EXECUTION = f"qa/changes/{CHANGE}/execution/execute-result.json"
-CASE = f"qa/changes/{CHANGE}/cases/api/case.yaml"
-REVIEW = f"qa/changes/{CHANGE}/review/case-review.json"
-PREP = f"qa/changes/{CHANGE}/intake/prepare.json"
+MAPPING = "qa/results/generated/mapping.json"
+PROPOSAL = "qa/results/healing/fix-proposal.json"
+APPROVAL = "qa/results/healing/approval.json"
+EXECUTION = "qa/results/execution/execute-result.json"
+CASE = "qa/cases/api/case.yaml"
+REVIEW = "qa/results/review/case-review.json"
+PREP = "qa/results/intake/prepare.json"
 SHA = "a" * 64
 
 
@@ -83,7 +83,7 @@ def _mapping(*, symbol: str = "test_users") -> dict[str, object]:
 
 def _execution(plan_digest: str = SHA, plan_ref: dict[str, str] | None = None) -> dict[str, Any]:
     bound_ref = plan_ref or {
-        "path": f"qa/changes/{CHANGE}/plan/{plan_digest}/resolved-assurance-plan.json",
+        "path": f"qa/results/plan/{plan_digest}/resolved-assurance-plan.json",
         "digest": SHA,
     }
     return {
@@ -244,7 +244,7 @@ def test_applied_requires_committed_changed_tests() -> None:
         AppliedTestRepairV1(
             change_id=CHANGE,
             plan_digest="d" * 64,
-            plan_ref=EvidenceArtifactRefV1(path="qa/changes/CH-1/plan.json", digest="e" * 64),
+            plan_ref=EvidenceArtifactRefV1(path="qa/results/plan.json", digest="e" * 64),
             coverage_epoch=0,
             repair_round=1,
             status="applied",
@@ -293,7 +293,7 @@ async def test_finalize_proves_existing_test_bytes_changed(tmp_path: Path) -> No
     output = cast(dict[str, Any], result.outcome.output)
     assert output["changed_test_refs"] == [{"path": SOURCE, "digest": hashlib.sha256(after).hexdigest()}]
     assert output["mapping_ref"] == payload["mapping_ref"]
-    history_path = stage / f"qa/changes/{CHANGE}/healing/epochs/0/rounds/1/repair.json"
+    history_path = stage / "qa/results/healing/epochs/0/rounds/1/repair.json"
     first_history = history_path.read_bytes()
     history = json.loads(first_history)
     assert history["loop_kind"] == "implementation_repair"
@@ -429,7 +429,7 @@ async def test_finalize_rejects_unproved_or_unsafe_patch(tmp_path: Path, mutatio
     if mutation == "no_change":
         after = before
     elif mutation == "unapproved":
-        path = f"qa/changes/{CHANGE}/generated/api/files/tests/api/test_admin.py"
+        path = "qa/tests/api/test_admin.py"
     elif mutation == "case":
         path = CASE
     elif mutation == "product":
@@ -484,7 +484,7 @@ def test_input_binds_reviewed_case_epoch() -> None:
                 "change_id": CHANGE,
                 "plan_digest": SHA,
                 "plan_ref": {
-                    "path": f"qa/changes/{CHANGE}/plan/{SHA}/resolved-assurance-plan.json",
+                    "path": f"qa/results/plan/{SHA}/resolved-assurance-plan.json",
                     "digest": SHA,
                 },
                 "coverage_epoch": 1,
@@ -516,7 +516,7 @@ def test_publisher_adds_only_real_commit_receipt() -> None:
             "change_id": CHANGE,
             "plan_digest": SHA,
             "plan_ref": {
-                "path": f"qa/changes/{CHANGE}/plan/{SHA}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{SHA}/resolved-assurance-plan.json",
                 "digest": SHA,
             },
             "coverage_epoch": 0,

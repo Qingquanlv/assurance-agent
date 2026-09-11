@@ -77,16 +77,16 @@ those exact reads and a path-scoped grep both fail.
 The final JSON instruction part contains the mechanically locked
 `review_input_paths`. Use the native read tool to read every listed path
 directly before reviewing. Do not use glob, wildcard search, or ignore-aware
-file discovery under `qa/changes/` to decide whether an input exists. The host
+file discovery under `qa/` to decide whether an input exists. The host
 has already verified these exact paths as regular files.
 
 ### required
 
-- `qa/changes/<change-id>/plans/performance-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/performance-review-summary.md`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/performance-plan.md`
+- `qa/results/plans/performance-codegen-plan.md`
+- `qa/results/plans/performance-codegen-mapping.json`
+- `qa/results/plans/performance-review-summary.md`
+- `qa/cases/**/case.yaml`
 
 ### optional
 
@@ -98,8 +98,8 @@ has already verified these exact paths as regular files.
 
 ### required
 
-- `qa/changes/<change-id>/review/performance-plan-review.json`
-- `qa/changes/<change-id>/review/performance-plan-review-summary.md`
+- `qa/results/review/performance-plan-review.json`
+- `qa/results/review/performance-plan-review-summary.md`
 
 ## Boundaries
 

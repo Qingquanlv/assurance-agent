@@ -452,7 +452,7 @@ async def test_failed_review_validation_leaves_canonical_outputs_unchanged(tmp_p
     from tests.product.test_change_local_output_routing import dual_roots
 
     project, write_root = dual_roots(tmp_path)
-    canonical = project / "qa/changes/CH-DEMO-001/review/improvement-review.json"
+    canonical = project / "qa/results/review/improvement-review.json"
     canonical.parent.mkdir(parents=True)
     original = b'{"schema_version":"1"}\n'
     canonical.write_bytes(original)
@@ -465,7 +465,7 @@ async def test_failed_review_validation_leaves_canonical_outputs_unchanged(tmp_p
     )
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    assert request.workspace.allowed_outputs == ("qa/changes/CH-DEMO-001/review/improvement-review.json",)
+    assert request.workspace.allowed_outputs == ("qa/results/review/improvement-review.json",)
     failed = await execute_task(
         ImprovementReviewFinalizeHandler(),
         locked_review_input({**REVIEW_RESULT, "evidence_traceability": "incomplete"}),

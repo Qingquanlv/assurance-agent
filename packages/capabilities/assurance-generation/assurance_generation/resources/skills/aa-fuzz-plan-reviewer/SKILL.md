@@ -55,7 +55,7 @@ those exact reads and a path-scoped grep both fail.
 The final JSON instruction part contains the mechanically locked
 `review_input_paths`. Use the native read tool to read every listed path
 directly before reviewing. Do not use glob, wildcard search, or ignore-aware
-file discovery under `qa/changes/` to decide whether an input exists. The host
+file discovery under `qa/` to decide whether an input exists. The host
 has already verified these exact paths as regular files.
 
 Before deciding the first review, build one complete support/runtime inventory:
@@ -85,11 +85,11 @@ finding already requires re-entry.
 
 ### required
 
-- `qa/changes/<change-id>/plans/fuzz-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/fuzz-review-summary.md`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/fuzz-plan.md`
+- `qa/results/plans/fuzz-codegen-plan.md`
+- `qa/results/plans/fuzz-codegen-mapping.json`
+- `qa/results/plans/fuzz-review-summary.md`
+- `qa/cases/**/case.yaml`
 
 ### optional
 
@@ -101,8 +101,8 @@ finding already requires re-entry.
 
 ### required
 
-- `qa/changes/<change-id>/review/fuzz-plan-review.json`
-- `qa/changes/<change-id>/review/fuzz-plan-review-summary.md`
+- `qa/results/review/fuzz-plan-review.json`
+- `qa/results/review/fuzz-plan-review-summary.md`
 
 ## Boundaries
 

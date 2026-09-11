@@ -189,7 +189,7 @@ def _agent_workspace(
     try:
         write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        write_root = "qa/changes/_attempt/.staging/write"
+        write_root = "qa/.staging/write"
     if write_root in {".", ""}:
         write_root = ".staging/write"
     payload = {

@@ -17,7 +17,7 @@ from tests.product.test_achieved_terminal import (
 
 def _install_quality(project: Path) -> tuple[dict[str, Any], bytes]:
     gate = _quality_gate_for(project, _execute_gate_for(project))
-    report = (project / f"qa/changes/{CHANGE_ID}/report/report.md").read_bytes()
+    report = (project / "qa/results/report/report.md").read_bytes()
     return cast(dict[str, Any], gate), report
 
 

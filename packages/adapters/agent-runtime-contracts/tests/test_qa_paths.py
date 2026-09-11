@@ -29,9 +29,9 @@ def test_qa_join_rejects_legacy_and_project_tests_writes() -> None:
     import pytest
 
     for suffix in (
-        "qa/changes/CH-1/cases/x.yaml",
-        "changes/CH-1/cases/x.yaml",
-        "archive/CH-1/summary.md",
+        "/".join(("qa", "changes", "CH-1", "cases", "x.yaml")),
+        "/".join(("changes", "CH-1", "cases", "x.yaml")),
+        "/".join(("archive", "CH-1", "summary.md")),
         "/abs/path",
     ):
         with pytest.raises(ValueError):

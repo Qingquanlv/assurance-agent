@@ -386,7 +386,7 @@ def _scenario_features(
                     "classification": "product_bug",
                     "fix_eligible": False,
                     "evidence_refs": [
-                        _ref("qa/changes/CH-DEMO-001/inspect/issue-analysis.json").model_dump(mode="json")
+                        _ref("qa/results/inspect/issue-analysis.json").model_dump(mode="json")
                     ],
                     "status": "passed",
                 },

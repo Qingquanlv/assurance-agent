@@ -234,7 +234,7 @@ async def test_fake_server_rejects_title_update_extra_fields() -> None:
 async def test_opencode_rebinds_prepare_workspace_to_current_execute_workspace() -> None:
     fixture = _open_code_fixture()
     try:
-        execute_root = fixture.context.project_root / "qa/changes/CH-1/.staging/execute-task/attempt-1"
+        execute_root = fixture.context.project_root / "qa/.staging/execute-task/attempt-1"
         execute_root.mkdir(parents=True)
         context = replace(fixture.context, write_root=execute_root)
         fixture.fake.terminal_mode = "success"

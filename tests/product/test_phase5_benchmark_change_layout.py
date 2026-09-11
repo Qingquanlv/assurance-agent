@@ -202,7 +202,7 @@ class _FakeAA:
             self.project_dirs.append(recorded[recorded.index("--project-dir") + 1])
 
     def _materialize_change(self) -> Path:
-        change_root = self.sut / "qa" / "changes" / self.change_id
+        change_root = self.sut / "qa"
         change_root.mkdir(parents=True, exist_ok=True)
         (change_root / "status.json").write_text(
             json.dumps(self.terminal, indent=2, sort_keys=True) + "\n",
@@ -247,7 +247,7 @@ class _FakeAA:
             self.export_calls += 1
             if self.export_receipt is None:
                 return _completed(1, stderr="export must not run")
-            receipt_path = self.sut / "qa" / "changes" / self.change_id / "publish-receipt.json"
+            receipt_path = self.sut / "qa" / "results/publish-receipt.json"
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
             receipt_path.write_text(json.dumps(self.export_receipt, indent=2, sort_keys=True) + "\n")
             return _completed(0, json.dumps(self.export_receipt))
@@ -816,7 +816,7 @@ def test_success_uses_real_sut_change_and_exports_once(
         ]
     )
 
-    change_root = sut / "qa" / "changes" / change_id
+    change_root = sut / "qa"
     evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
     assert code == 0
     assert fake.export_calls == 1
@@ -945,7 +945,7 @@ def test_failure_leaves_original_sut_tests_unchanged_and_skips_export(
     assert not (output / "export").exists()
     evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
     assert evidence["change_id"] == change_id
-    assert evidence["change_root"] == str(sut / "qa" / "changes" / change_id)
+    assert evidence["change_root"] == str(sut / "qa")
     assert evidence["terminal_status"] == "failed"
     assert evidence.get("publish_receipt") in (None, {})
 

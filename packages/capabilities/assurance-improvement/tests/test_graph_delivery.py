@@ -165,7 +165,7 @@ def export_receipt() -> dict[str, object]:
     return {
         "sha256": "e",
         "created": True,
-        "artifact_path": "qa/changes/CH-DEMO-001/export/change.json",
+        "artifact_path": "qa/results/export/change.json",
     }
 
 
@@ -195,7 +195,7 @@ def export_graph_input(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         **skill_graph_fields(),
         "projection": improvement_projection(),
-        "artifact_path": "qa/changes/CH-DEMO-001/export/change.json",
+        "artifact_path": "qa/results/export/change.json",
         "sha256": "e",
         "created": True,
         "target_digest": HEX_A,
@@ -548,7 +548,7 @@ async def test_review_export_and_rollback_route_on_typed_results() -> None:
     assert [call.contract_id for call in exported.semantic_calls] == [TASK_EXPORT_ID]
     published_export = exported.published_update
     assert published_export is not None
-    assert published_export["artifact_path"] == "qa/changes/CH-DEMO-001/export/change.json"
+    assert published_export["artifact_path"] == "qa/results/export/change.json"
 
     rolled = await harness.run(
         bundle.rollback,

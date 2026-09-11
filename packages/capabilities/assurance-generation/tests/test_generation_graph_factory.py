@@ -40,7 +40,7 @@ _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_generation" / "g
 
 def _reviewed_case() -> dict[str, object]:
     plan_ref = {
-        "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+        "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
         "digest": _SHA,
     }
     return {
@@ -49,17 +49,17 @@ def _reviewed_case() -> dict[str, object]:
         "plan_digest": _SHA,
         "plan_ref": plan_ref,
         "preparation_refs": [
+            {"path": "qa/requirement.md", "digest": _SHA},
             plan_ref,
-            {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
         ],
         "case_refs": [
             {
-                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "path": "qa/cases/menus/case.yaml",
                 "digest": _SHA,
             }
         ],
         "review_ref": {
-            "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+            "path": "qa/results/review/case-review.json",
             "digest": _SHA,
         },
     }
@@ -80,12 +80,12 @@ def generation_graph_input(
         "change_id": "CH-DEMO-001",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "selected_test_families": list(selected),
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,

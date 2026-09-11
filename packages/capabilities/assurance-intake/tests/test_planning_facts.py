@@ -20,7 +20,7 @@ def _facts(root: Path, *leafs: str, targets: tuple[str, ...] = ()) -> dict:
 
 def test_facts_observe_ignored_files_without_importing_or_disclosing_values(tmp_path: Path) -> None:
     _write(tmp_path, ".gitignore", "tests/\napp/\n")
-    _write(tmp_path, "qa/changes/CH-1/requirement.md", "Read `app/schema.py`.")
+    _write(tmp_path, "qa/requirement.md", "Read `app/schema.py`.")
     _write(tmp_path, "app/schema.py", "raise RuntimeError('must not import SUT')\n")
     _write(
         tmp_path,

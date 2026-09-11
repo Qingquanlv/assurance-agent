@@ -104,7 +104,7 @@ def test_generated_files_accept_shared_builder_under_family_root() -> None:
 
 
 def test_generated_files_reject_nested_change_generated_suffix() -> None:
-    sneak = "qa/changes/CH-DEMO-001/generated/api/files/qa/tests/api/test_users.py"
+    sneak = "qa/tests/api/test_users.py"
     mapping = CodegenMapping.model_validate(mapping_document("api", target_file=durable_oracle_path()))
     result = GeneratedFilesValidator(family="api", mapping=mapping).validate(
         candidate_with(sneak), validation_context()

@@ -270,7 +270,7 @@ def _executor(
 def test_raw_executor_runs_prepare_runtime_result_finalize_output_in_order(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="primary")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
-    expected_agent_result = CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",))
+    expected_agent_result = CaseDesignAgentResult(output_files=("qa/proposal.md",))
     expected_output = CaseDesignOutput(
         status="committed",
         output_files=expected_agent_result.output_files,
@@ -309,7 +309,7 @@ def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
     )
     runtime = RecordingRuntime({"not": "an-agent-result"}, _workspace(tmp_path), order)
     finalize = RecordingFinalize(
-        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary"),
+        CaseDesignOutput(status="committed", output_files=("qa/proposal.md",), path="primary"),
         order,
     )
 
@@ -329,7 +329,7 @@ def test_invalid_raw_result_fails_before_finalize(tmp_path: Path) -> None:
 def test_invalid_output_fails_after_finalize(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases")
-    expected_agent_result = CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",))
+    expected_agent_result = CaseDesignAgentResult(output_files=("qa/proposal.md",))
     order: list[str] = []
     prepare = RecordingPrepare(prepared_value, order)
     runtime = RecordingRuntime(expected_agent_result.model_dump(), _workspace(tmp_path), order)
@@ -361,12 +361,12 @@ def test_raw_executor_resolves_single_graph_facing_task_contract(tmp_path: Path)
         CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), order
     )
     runtime = RecordingRuntime(
-        CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+        CaseDesignAgentResult(output_files=("qa/proposal.md",)).model_dump(),
         _workspace(tmp_path),
         order,
     )
     finalize = RecordingFinalize(
-        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary"),
+        CaseDesignOutput(status="committed", output_files=("qa/proposal.md",), path="primary"),
         order,
     )
     executor = _executor(prepare=prepare, runtime=runtime, finalize=finalize)
@@ -387,7 +387,7 @@ def test_case_design_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_pat
     validated_input = CaseDesignInput(change_id="CH-1", path="primary")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="primary case-design")
     expected_agent_result = CaseDesignAgentResult(
-        output_files=("qa/changes/CH-1/proposal.md", "qa/changes/CH-1/.qa.yaml")
+        output_files=("qa/proposal.md", "qa/.qa.yaml")
     )
     expected_output = CaseDesignOutput(
         status="committed",
@@ -416,7 +416,7 @@ def test_case_design_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_pat
 def test_case_design_repair_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="repair")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="repair", prompt="repair case-design")
-    expected_agent_result = CaseDesignAgentResult(output_files=("qa/changes/CH-1/cases/api/case.yaml",))
+    expected_agent_result = CaseDesignAgentResult(output_files=("qa/cases/api/case.yaml",))
     expected_output = CaseDesignOutput(
         status="repaired",
         output_files=expected_agent_result.output_files,
@@ -579,7 +579,7 @@ def raw_executor_fixture(tmp_path: Path) -> _RawExecutorFixture:
         b"prepare\n",
     )
     runtime = _WritingRuntime(
-        CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+        CaseDesignAgentResult(output_files=("qa/proposal.md",)).model_dump(),
         _workspace(tmp_path),
         order,
         "qa/runtime.txt",
@@ -587,7 +587,7 @@ def raw_executor_fixture(tmp_path: Path) -> _RawExecutorFixture:
         scope.workspace.write_root,
     )
     finalize = _WritingFinalize(
-        CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary"),
+        CaseDesignOutput(status="committed", output_files=("qa/proposal.md",), path="primary"),
         order,
         "qa/finalize.txt",
         b"finalize\n",
@@ -618,9 +618,9 @@ def test_raw_executor_uses_three_disjoint_staging_phases(raw_executor_fixture) -
 def test_phase_write_claims_cover_descendant_files() -> None:
     from agent_runtime_contracts.attempt_executor import _covered_by_claims
 
-    claims = {"qa/changes/CH-1/generated"}
-    assert _covered_by_claims("qa/changes/CH-1/generated/api/files/tests/test_a.py", claims)
-    assert not _covered_by_claims("qa/changes/CH-1/cases/api/case.yaml", claims)
+    claims = {"qa/results/generated"}
+    assert _covered_by_claims("qa/tests/test_a.py", claims)
+    assert not _covered_by_claims("qa/cases/api/case.yaml", claims)
 
 
 def test_raw_executor_persists_phase_deltas_into_host_receipt(
@@ -689,7 +689,7 @@ class _FailingFinalize:
 
 
 def _success_output() -> CaseDesignOutput:
-    return CaseDesignOutput(status="committed", output_files=("qa/changes/CH-1/proposal.md",), path="primary")
+    return CaseDesignOutput(status="committed", output_files=("qa/proposal.md",), path="primary")
 
 
 def test_prepare_phase_failure_is_returned_not_raised(tmp_path: Path) -> None:
@@ -698,7 +698,7 @@ def test_prepare_phase_failure_is_returned_not_raised(tmp_path: Path) -> None:
         _contract(),
         prepare=_FailingPrepare(),
         runtime=RecordingRuntime(
-            CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+            CaseDesignAgentResult(output_files=("qa/proposal.md",)).model_dump(),
             _workspace(tmp_path),
             order,
         ),
@@ -742,7 +742,7 @@ def test_finalize_phase_failure_is_returned_not_raised(tmp_path: Path) -> None:
             order,
         ),
         runtime=RecordingRuntime(
-            CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+            CaseDesignAgentResult(output_files=("qa/proposal.md",)).model_dump(),
             _workspace(tmp_path),
             order,
         ),
@@ -768,7 +768,7 @@ def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path) -> None:
             b"secret\n",
         ),
         runtime=RecordingRuntime(
-            CaseDesignAgentResult(output_files=("qa/changes/CH-1/proposal.md",)).model_dump(),
+            CaseDesignAgentResult(output_files=("qa/proposal.md",)).model_dump(),
             _workspace(tmp_path),
             order,
         ),
@@ -785,7 +785,7 @@ def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path) -> None:
 
 def test_directory_phase_write_claim_allows_nested_file(tmp_path: Path) -> None:
     order: list[str] = []
-    claim = "qa/changes/CH-1/files"
+    claim = "qa/results/files"
     executor = ResolvedRawAgentExecutor(
         _contract_with_prepare_write_claim(claim),
         prepare=_WritingPrepare(
@@ -810,8 +810,8 @@ def test_directory_phase_write_claim_allows_nested_file(tmp_path: Path) -> None:
 
 def test_directory_phase_write_claim_rejects_sibling_prefix(tmp_path: Path) -> None:
     order: list[str] = []
-    claim = "qa/changes/CH-1/files"
-    sibling_path = "qa/changes/CH-1/files-evil/escape.json"
+    claim = "qa/results/files"
+    sibling_path = "qa/results/files-evil/escape.json"
     executor = ResolvedRawAgentExecutor(
         _contract_with_prepare_write_claim(claim),
         prepare=_WritingPrepare(

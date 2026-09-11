@@ -101,7 +101,7 @@ def select_resolve_plan(state: Mapping[str, object]) -> ResolvePlanInputV1:
             "exploration_ref": next(
                 item
                 for item in _preparation_refs(state)
-                if item["path"] == f"qa/changes/{state['change_id']}/explore/exploration.json"
+                if item["path"] == "qa/results/explore/exploration.json"
             ),
             "source_resource_digests": (
                 (catalog["resource_id"], catalog["sha256"]),
@@ -317,7 +317,7 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
     }
     if payload.get("decision") != "pass":
         return update
-    review_path = f"qa/changes/{state['change_id']}/review/case-review.json"
+    review_path = "qa/results/review/case-review.json"
     review_ref = next(
         (
             EvidenceArtifactRefV1.model_validate(item)

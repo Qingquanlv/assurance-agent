@@ -47,37 +47,37 @@ def _input() -> dict[str, object]:
         "requirement": "Cover department CRUD.",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "selected_test_families": ["api"],
-        "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+        "case_delta_paths": ["qa/cases/menus/case.yaml"],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,
         "preparation_refs": [
+            {"path": "qa/requirement.md", "digest": _SHA},
             {
-                "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
                 "digest": _SHA,
             },
-            {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
         ],
     }
 
 
 def _artifact() -> ArtifactListResultV1:
-    return ArtifactListResultV1(output_files=("qa/changes/CH-DEMO-001/proposal.md",))
+    return ArtifactListResultV1(output_files=("qa/proposal.md",))
 
 
 def _design() -> dict[str, object]:
     return {
-        "output_files": ["qa/changes/CH-DEMO-001/proposal.md"],
+        "output_files": ["qa/proposal.md"],
         "validation_status": "pass",
         "artifacts": [
             {
-                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "path": "qa/cases/menus/case.yaml",
                 "digest": _SHA,
             }
         ],
@@ -98,7 +98,7 @@ def _review(
         "human_review_required": human,
         "artifacts": [
             {
-                "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                "path": "qa/results/review/case-review.json",
                 "digest": _SHA,
             }
         ],
@@ -138,7 +138,7 @@ def _review_result_v1(
             },
             "artifacts": [
                 {
-                    "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                    "path": "qa/results/review/case-review.json",
                     "digest": _SHA,
                 }
             ],

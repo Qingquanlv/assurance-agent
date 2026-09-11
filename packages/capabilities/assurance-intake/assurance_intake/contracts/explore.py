@@ -111,7 +111,7 @@ class ExploreContextV1(BaseModel):
 def build_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV1:
     """Build an honest content-deterministic MRC without consulting ambient state."""
 
-    requirement = workspace / "qa" / "changes" / change_id / "requirement.md"
+    requirement = workspace / "qa" / "requirement.md"
     requirement_summary = None
     if requirement.is_file() and not requirement.is_symlink():
         requirement_summary = requirement.read_text(encoding="utf-8")[:2000]

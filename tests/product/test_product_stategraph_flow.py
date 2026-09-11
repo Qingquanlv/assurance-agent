@@ -60,7 +60,7 @@ from tests.product.test_stategraph_entrypoints import _real_features, _stub_feat
 
 _SHA = "a" * 64
 _PLAN_DIGEST = "b" * 64
-_CASE_DELTA = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+_CASE_DELTA = "qa/cases/system/dept/case.yaml"
 _GRAPHS_ROOT = (
     Path(__file__).resolve().parents[2] / "packages/products/assurance-product/assurance_product/graphs"
 )
@@ -85,7 +85,7 @@ def _receipt(name: str) -> ReceiptRef:
 
 def _plan_ref() -> EvidenceArtifactRefV1:
     return _ref(
-        f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+        f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
         "c" * 64,
     )
 
@@ -106,10 +106,10 @@ def _reviewed(epoch: int = 0) -> ReviewedCaseV1:
         plan_ref=_plan_ref(),
         preparation_refs=(
             _plan_ref(),
-            _ref("qa/changes/CH-DEMO-001/preparation/context.json"),
+            _ref("qa/results/preparation/context.json"),
         ),
         case_refs=(_ref(_CASE_DELTA),),
-        review_ref=_ref("qa/changes/CH-DEMO-001/review/case-review.json"),
+        review_ref=_ref("qa/results/review/case-review.json"),
     )
 
 
@@ -132,9 +132,9 @@ def _generation(epoch: int = 0) -> dict[str, object]:
         plan_digest=_PLAN_DIGEST,
         plan_ref=_plan_ref(),
         reviewed_case=_reviewed(epoch),
-        mapping_ref=_ref(f"qa/changes/CH-DEMO-001/generation/epochs/{epoch}/mapping.json"),
-        source_refs=(_ref(f"qa/changes/CH-DEMO-001/generated/epochs/{epoch}/tests/test_case.py"),),
-        plan_refs=(_ref(f"qa/changes/CH-DEMO-001/plans/epochs/{epoch}/api.json"),),
+        mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
+        source_refs=(_ref(f"qa/results/generated/epochs/{epoch}/tests/test_case.py"),),
+        plan_refs=(_ref(f"qa/results/plans/epochs/{epoch}/api.json"),),
     )
     return {"generation_result": result.model_dump(mode="json"), "status": "passed"}
 
@@ -151,7 +151,7 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         executed_at=datetime(2026, 9, 5, 12, epoch, repair_round, tzinfo=UTC),
         final_status=status,  # type: ignore[arg-type]
         evidence_ref=_ref(
-            f"qa/changes/CH-DEMO-001/execution/epochs/{epoch}/rounds/{repair_round}/result.json"
+            f"qa/results/execution/epochs/{epoch}/rounds/{repair_round}/result.json"
         ),
         mapping_ref=generated.mapping_ref,
         source_refs=generated.source_refs,
@@ -162,17 +162,17 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
 
 def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, object]:
     execution = ExecutionCycleResultV1.model_validate(_execution(epoch)["execution_result"])
-    gaps = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/gaps.json")
+    gaps = _ref(f"qa/results/inspect/epochs/{epoch}/gaps.json")
     observations = _ref(
-        f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json"
+        f"qa/results/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json"
     )
     issue_manifest = _ref(
-        f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/batches/"
+        f"qa/results/inspect/epochs/{epoch}/batches/"
         f"{execution.batch_id}/issue-evidence-manifest.json"
     )
-    trace = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/trace.json")
-    metrics = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/metrics.json")
-    sufficiency = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/trace-sufficiency.json")
+    trace = _ref(f"qa/results/inspect/epochs/{epoch}/trace.json")
+    metrics = _ref(f"qa/results/inspect/epochs/{epoch}/metrics.json")
+    sufficiency = _ref(f"qa/results/inspect/epochs/{epoch}/trace-sufficiency.json")
     coverage_state = {
         "satisfied": "satisfied",
         "coverage_insufficient": "repair_required",
@@ -240,7 +240,7 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
 
 def _report(epoch: int = 0) -> dict[str, object]:
     inspection = InspectionOutcomeV1.model_validate(_inspection(epoch)["inspection_outcome"])
-    ref = _ref(f"qa/changes/CH-DEMO-001/report/epochs/{epoch}/report.json")
+    ref = _ref(f"qa/results/report/epochs/{epoch}/report.json")
     receipt = _receipt(f"report-{epoch}")
     outcome = ReportOutcomeV1(
         change_id="CH-DEMO-001",
@@ -261,7 +261,7 @@ def _report(epoch: int = 0) -> dict[str, object]:
 
 
 def _diagnostic_report(epoch: int = 0) -> dict[str, object]:
-    ref = _ref(f"qa/changes/CH-DEMO-001/report/epochs/{epoch}/report.json")
+    ref = _ref(f"qa/results/report/epochs/{epoch}/report.json")
     receipt = _receipt(f"diagnostic-report-{epoch}")
     return {
         "report_outcome": {},
@@ -274,7 +274,7 @@ def _diagnostic_report(epoch: int = 0) -> dict[str, object]:
 
 def _analysis_result(classification: str) -> dict[str, object]:
     inspection = cast(dict, _inspection()["inspection_outcome"])
-    ref = {"path": "qa/changes/CH-DEMO-001/inspect/issue-analysis.json", "digest": "a" * 64}
+    ref = {"path": "qa/results/inspect/issue-analysis.json", "digest": "a" * 64}
     return {
         "issue_analysis": {
             "agent_result": {
@@ -310,7 +310,7 @@ def _analysis_result(classification: str) -> dict[str, object]:
 
 
 def _applied(epoch: int = 0, repair_round: int = 1) -> dict[str, object]:
-    source = _ref(f"qa/changes/CH-DEMO-001/generated/epochs/{epoch}/tests/test_case.py")
+    source = _ref(f"qa/results/generated/epochs/{epoch}/tests/test_case.py")
     result = AppliedTestRepairV1(
         change_id="CH-DEMO-001",
         coverage_epoch=epoch,
@@ -319,7 +319,7 @@ def _applied(epoch: int = 0, repair_round: int = 1) -> dict[str, object]:
         plan_ref=_plan_ref(),
         status="applied",
         changed_test_refs=(source,),
-        mapping_ref=_ref(f"qa/changes/CH-DEMO-001/generation/epochs/{epoch}/mapping.json"),
+        mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
         receipt=_receipt(f"repair-{epoch}-{repair_round}"),
     )
     return {
@@ -409,7 +409,7 @@ def _flow_features(
                 **_plan_update(),
                 "status": "prepared",
                 "preparation_refs": [
-                    _ref("qa/changes/CH-DEMO-001/preparation/context.json").model_dump(mode="json")
+                    _ref("qa/results/preparation/context.json").model_dump(mode="json")
                 ],
             }
         ),
@@ -590,7 +590,7 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
                     **_plan_update(),
                     "status": "prepared",
                     "preparation_refs": [
-                        _ref("qa/changes/CH-DEMO-001/preparation/context.json").model_dump(mode="json")
+                        _ref("qa/results/preparation/context.json").model_dump(mode="json")
                     ],
                 },
             ),

@@ -31,5 +31,5 @@ Close briefed coverage gaps by editing tests named in the brief. Schema truth is
 - Do not add skip or xfail markers.
 - Do not hide an unresolved import by moving it outside the allowed file set.
 - Prefer the typed summary over any remembered conversation state.
-- Write the typed result to `qa/changes/<change-id>/healing/coverage-repair.json`.
+- Write the typed result to `qa/results/healing/coverage-repair.json`.
 - Return the typed result and stop.

@@ -84,7 +84,7 @@ async def test_analysis_finalizer_closes_slice_and_written_result(tmp_path: Path
         "signals": [signal],
         "candidates": [candidate_payload()] if fault == "candidate" else [],
     }
-    path = tmp_path / "qa/changes/CH-DEMO-001/retro/retro-issue-analysis.json"
+    path = tmp_path / "qa/results/retro/retro-issue-analysis.json"
     path.parent.mkdir(parents=True)
     if fault != "file_missing":
         path.write_text(json.dumps({**document, "signals": []} if fault == "file_mismatch" else document))
@@ -141,7 +141,7 @@ async def test_synthesis_consumes_locked_context_without_reconciled_ledger(tmp_p
         candidate["source_refs"] = {"occurrence_ids": ["OCC-1"]}
     business = select_retro(state).model_dump(mode="json")
     document = {"schema_version": "3", "retro_id": RETRO_ID, "signals": [], "candidates": [candidate]}
-    path = tmp_path / "qa/changes/CH-DEMO-001/retro/retro.json"
+    path = tmp_path / "qa/results/retro/retro.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(document))
     outcome = await execute_task(
@@ -183,7 +183,7 @@ async def test_reconcile_reads_existing_store_and_stages_result_without_direct_p
     ledger = json.loads((staging / "qa/improvements/ledger.json").read_text())
     assert ledger["last_seq"] == 1
     assert {item["state"] for item in ledger["improvements"].values()} == {"proposed"}
-    status = json.loads((staging / "qa/changes/CH-DEMO-001/retro/status.json").read_text())
+    status = json.loads((staging / "qa/results/retro/status.json").read_text())
     assert status["result"] == "completed"
     assert len(status["improvement_ids"]) == 1
     # Simulate the Kernel's committed publication, then reconcile in a new workspace.

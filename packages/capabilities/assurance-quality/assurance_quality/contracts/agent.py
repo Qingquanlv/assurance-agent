@@ -170,7 +170,7 @@ class FinalizedIssueAnalysisV1(FrozenModel):
 
     @model_validator(mode="after")
     def _closed_result(self) -> Self:
-        expected = f"qa/changes/{self.agent_result.change_id}/inspect/issue-analysis.json"
+        expected = "qa/results/inspect/issue-analysis.json"
         if self.issue_analysis_ref.path != expected:
             raise ValueError("issue analysis ref must use the current change path")
         if self.agent_result.status == "completed" and self.candidate_digest is None:

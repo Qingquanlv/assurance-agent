@@ -326,7 +326,7 @@ def finalize_achieved(
     _require_quality_gate(project, change_id, invocation, execution_gate)
     manifest = _apply_manifest(project, change_id, merged)
     status = _achieved_status(invocation, change_id, manifest)
-    change_root = project / "qa" / "changes" / change_id
+    change_root = project / "qa"
     _write_canonical_json(change_root / "apply-manifest.json", manifest.model_dump(mode="json"))
     _write_canonical_json(change_root / "status.json", status.model_dump(mode="json"))
     return status
@@ -489,7 +489,7 @@ def _require_execution_gate(
         "execution.execute": "execute-result.json",
         "execution.run": "run-result.json",
     }[gate.semantic_node_id]
-    execution_root = project / "qa" / "changes" / change_id / "execution"
+    execution_root = project / "qa" / "results" / "execution"
     payload = _read_json_object(execution_root / filename, "execution evidence")
     evidence, document = _validated_execution_evidence(payload, label="execution evidence")
     if evidence.change_id != change_id or evidence.batch_id != gate.batch_id:
@@ -545,7 +545,7 @@ def _require_quality_gate(
     filename = (
         "run-result.json" if execution_gate.semantic_node_id == "execution.run" else "execute-result.json"
     )
-    execution_path = f"qa/changes/{change_id}/execution/{filename}"
+    execution_path = f"qa/results/execution/{filename}"
     if not any(ref.path == execution_path for ref in inspection.assessment_refs):
         raise ValueError("quality inspection execution reference is missing")
     refs = (

@@ -35,5 +35,5 @@ Schema truth is `assurance_quality.contracts` for `FactBaselineResultV1`.
 - If a fact is uncertain, omit it or set it to null and add a warning.
 - Do not mutate product data, seeds, fixtures, or cases.
 - Use the locked execution binding from the prepare request.
-- Write the typed result to `qa/changes/<change-id>/facts/fact-baseline.json`.
+- Write the typed result to `qa/results/facts/fact-baseline.json`.
 - Return the typed result and stop.

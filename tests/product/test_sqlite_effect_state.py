@@ -25,7 +25,7 @@ _OTHER_RECEIPT: JSONValue = {"idempotency_key": _BUSINESS, "settlement_key": "c"
 @pytest.fixture
 def workspace(tmp_path: Path) -> ChangeWorkspace:
     project = (tmp_path / "project").resolve()
-    (project / "qa" / "changes" / "CH-1").mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     return ChangeWorkspace.prepare(project, "CH-1")
 
 

@@ -25,7 +25,7 @@ _WHEEL_ROOT = _TESTS_ROOT.parent
 VALID_LEAFS = frozenset({"entities.item.create", "auth.session.create"})
 VALID_CASES = frozenset({"TC_A", "TC_B"})
 _PLAN_REF = {
-    "path": f"qa/changes/CH-DEMO-001/plan/{'a' * 64}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{'a' * 64}/resolved-assurance-plan.json",
     "digest": "a" * 64,
 }
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")

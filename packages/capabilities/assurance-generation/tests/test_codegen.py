@@ -45,7 +45,7 @@ def test_durable_test_path_requires_qa_tests_prefix() -> None:
     with pytest.raises(ValueError):
         durable_test_path("tests/api/test_dept.py")
     with pytest.raises(ValueError):
-        durable_test_path("qa/changes/CH-1/generated/api/files/tests/api/test_dept.py")
+        durable_test_path("qa/tests/api/test_dept.py")
 
 
 def test_family_allows_only_qa_tests_roots() -> None:
@@ -174,7 +174,7 @@ async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tm
 async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_path: Path) -> None:
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     payload = codegen_input(family)
-    payload["artifact_paths"] = ["qa/archive", "qa/cases", "qa/changes", "qa/tests"]
+    payload["artifact_paths"] = ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"]
 
     prepared = await execute_task(
         codegen_prepare_handler(family),

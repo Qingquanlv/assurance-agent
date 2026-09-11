@@ -42,8 +42,8 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
 _LIFECYCLE_ONLY: dict[str, object] = {
     "change_id": "CH-RETRO-002",
     "capability_leafs": ["auth.session.create"],
-    "allowed_artifact_paths": ["qa/archive"],
-    "evidence_refs": [{"path": "qa/archive/CH-RETRO-002/inspect/inspection.json", "digest": "b" * 64}],
+    "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+    "evidence_refs": [{"path": "qa/results/inspect/inspection.json", "digest": "b" * 64}],
     "lifecycle_state": "evaluating",
 }
 _WINDOW = {"selection": {"mode": "last", "requested_last": 1}, "change_ids": ["CH-DEMO-001"]}

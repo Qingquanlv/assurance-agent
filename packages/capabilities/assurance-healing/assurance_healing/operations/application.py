@@ -303,7 +303,7 @@ class ApplyTestRepairFinalizeHandler:
                 source_refs=tuple(source_by_path[path] for path in sorted(source_by_path)),
             )
             history_relative = (
-                f"qa/changes/{business.change_id}/healing/epochs/{business.coverage_epoch}/"
+                f"qa/results/healing/epochs/{business.coverage_epoch}/"
                 f"rounds/{business.repair_round}/repair.json"
             )
             history_bytes = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"

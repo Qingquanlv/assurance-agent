@@ -377,6 +377,8 @@ def _canonical_artifact_prefixes(values: tuple[str, ...]) -> tuple[str, ...]:
             or any(part in {"", ".", ".."} for part in posix.parts)
         ):
             raise ValueError("allowed_artifact_paths must be canonical relative POSIX prefixes")
+        if posix.parts[:2] in {("qa", "changes"), ("qa", "archive")}:
+            raise ValueError("allowed_artifact_paths must not use leftover change or archive prefixes")
     return ordered
 
 
@@ -477,10 +479,10 @@ class ProductInputV1(FrozenModel):
 
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> ProductInputV1:
-        prefix = ("qa", "changes", self.change_id, "cases")
+        prefix = ("qa", "cases")
         for path in self.case_delta_paths:
             parts = PurePosixPath(path).parts
-            if len(parts) < 6 or parts[:4] != prefix or parts[-1] != "case.yaml":
+            if len(parts) < 4 or parts[:2] != prefix or parts[-1] != "case.yaml":
                 raise ValueError(
                     "case_delta_paths must be exact current-change cases/<module>/case.yaml paths"
                 )

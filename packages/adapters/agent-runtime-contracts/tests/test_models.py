@@ -79,8 +79,8 @@ def _selection(
 
 def _workspace(
     *,
-    write_root: str = "qa/changes/CH-1/.staging/task-1/attempt-1",
-    allowed_outputs: tuple[str, ...] = ("qa/changes/CH-1/proposal.md",),
+    write_root: str = "qa/.staging/task-1/attempt-1",
+    allowed_outputs: tuple[str, ...] = ("qa/proposal.md",),
     read_roots: tuple[str, ...] = (),
     agent_profile: str = "assurance-v1-doc-author",
 ) -> AgentWorkspaceV1:
@@ -205,14 +205,14 @@ def test_agent_run_request_rejects_mutation() -> None:
 
 def test_agent_workspace_accepts_canonical_relative_write_root_and_sorted_outputs() -> None:
     workspace = _workspace(
-        write_root="qa/changes/CH-1/.staging/task-1/attempt-1",
-        allowed_outputs=("qa/changes/CH-1/cases.yaml", "qa/changes/CH-1/proposal.md"),
+        write_root="qa/.staging/task-1/attempt-1",
+        allowed_outputs=("qa/results/cases.yaml", "qa/proposal.md"),
     )
     assert workspace.schema_version == "1"
-    assert workspace.write_root == "qa/changes/CH-1/.staging/task-1/attempt-1"
+    assert workspace.write_root == "qa/.staging/task-1/attempt-1"
     assert workspace.allowed_outputs == (
-        "qa/changes/CH-1/cases.yaml",
-        "qa/changes/CH-1/proposal.md",
+        "qa/results/cases.yaml",
+        "qa/proposal.md",
     )
     expected = canonical_digest(workspace.model_dump(mode="json", exclude={"identity_digest"}))
     assert workspace.identity_digest == expected
@@ -227,13 +227,13 @@ def test_agent_workspace_accepts_canonical_relative_write_root_and_sorted_output
 def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_roots(
     tmp_path: Path,
 ) -> None:
-    old_write_root = "qa/changes/CH-1/.staging/task-1/attempt-1"
-    old_view = f"{old_write_root}/qa/changes/CH-1/.staging/execution/batch-1"
+    old_write_root = "qa/.staging/task-1/attempt-1"
+    old_view = f"{old_write_root}/qa/.staging/execution/batch-1"
     original = _request().model_copy(
         update={"workspace": _workspace(agent_profile="assurance-v1-executor", read_roots=(old_view,))}
     )
     project = tmp_path / "project"
-    new_write_root = project / "qa/changes/CH-1/.staging/task-2/attempt-1"
+    new_write_root = project / "qa/.staging/task-2/attempt-1"
     new_write_root.mkdir(parents=True)
 
     effective = rebind_agent_run_workspace(
@@ -244,7 +244,7 @@ def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_root
 
     assert original.workspace.read_roots == (old_view,)
     assert effective.workspace.read_roots == (
-        "qa/changes/CH-1/.staging/task-2/attempt-1/qa/changes/CH-1/.staging/execution/batch-1",
+        "qa/.staging/task-2/attempt-1/qa/.staging/execution/batch-1",
     )
     assert effective.workspace.identity_digest == canonical_digest(
         effective.workspace.model_dump(mode="json", exclude={"identity_digest"})
@@ -257,8 +257,8 @@ def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_root
         ("/tmp/view",),
         ("../view",),
         ("qa/../view",),
-        ("qa/changes/view-b", "qa/changes/view-a"),
-        ("qa/changes/view-a", "qa/changes/view-a"),
+        ("qa/results/view-b", "qa/results/view-a"),
+        ("qa/results/view-a", "qa/results/view-a"),
     ],
 )
 def test_agent_workspace_rejects_noncanonical_read_roots(
@@ -280,9 +280,9 @@ def test_agent_workspace_rejects_noncanonical_read_roots(
         "C:/stage",
         "../escape",
         "qa/../secret",
-        "qa/changes/./attempt",
+        "qa/results/attempt",
         "qa\\changes\\stage",
-        "/qa/changes/stage",
+        "/qa/results/stage",
         "",
         ".",
         "..",
@@ -303,10 +303,10 @@ def test_agent_workspace_rejects_absolute_or_parent_write_roots(write_root: str)
         ("/tmp/out.md",),
         ("../escape.md",),
         ("qa/../secret.md",),
-        ("qa/changes/./proposal.md",),
+        ("qa/proposal.md",),
         ("qa\\changes\\proposal.md",),
-        ("qa/changes/proposal.md", "qa/changes/cases.yaml"),
-        ("qa/changes/proposal.md", "qa/changes/proposal.md"),
+        ("qa/results/proposal.md", "qa/results/cases.yaml"),
+        ("qa/results/proposal.md", "qa/results/proposal.md"),
     ],
 )
 def test_agent_workspace_rejects_unsorted_absolute_or_parent_outputs(
@@ -328,7 +328,7 @@ def test_agent_workspace_identity_digest_is_stable_and_authenticated() -> None:
     drifted["identity_digest"] = _SHA_A
     with pytest.raises(ValidationError, match="canonical"):
         AgentWorkspaceV1.model_validate(drifted)
-    different = _workspace(write_root="qa/changes/CH-1/.staging/task-1/attempt-2")
+    different = _workspace(write_root="qa/.staging/task-1/attempt-2")
     assert different.identity_digest != first.identity_digest
 
 
@@ -337,7 +337,7 @@ def test_rebind_agent_run_workspace_uses_current_stage_and_preserves_authority(
 ) -> None:
     original = _request()
     project_root = tmp_path / "project"
-    write_root = project_root / "qa/changes/CH-1/.staging/execute-task/attempt-1"
+    write_root = project_root / "qa/.staging/execute-task/attempt-1"
     write_root.mkdir(parents=True)
 
     effective = rebind_agent_run_workspace(
@@ -346,8 +346,8 @@ def test_rebind_agent_run_workspace_uses_current_stage_and_preserves_authority(
         write_root=write_root,
     )
 
-    assert original.workspace.write_root == "qa/changes/CH-1/.staging/task-1/attempt-1"
-    assert effective.workspace.write_root == "qa/changes/CH-1/.staging/execute-task/attempt-1"
+    assert original.workspace.write_root == "qa/.staging/task-1/attempt-1"
+    assert effective.workspace.write_root == "qa/.staging/execute-task/attempt-1"
     assert effective.workspace.agent_profile == original.workspace.agent_profile
     assert effective.workspace.scope_id == original.workspace.scope_id
     assert effective.workspace.allowed_outputs == original.workspace.allowed_outputs
@@ -752,7 +752,7 @@ def test_agent_result_validates_and_digests_exact_payload_before_pydantic() -> N
     from agent_runtime_contracts.schema import validate_local_agent_result
 
     contract = _local_agent_contract()
-    payload = {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    payload = {"output_files": ["qa/proposal.md"]}
     exact, digest, validated = validate_local_agent_result(
         payload,
         result_model=contract.agent_result_model,
@@ -903,14 +903,14 @@ def test_agent_execution_contract_is_provider_neutral() -> None:
         resources=ResourceClaimTemplate(
             parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
-            writes=("qa/changes/{change_id}/requirement.md",),
+            writes=("qa/requirement.md",),
         ),
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
             prepare=(),
-            runtime=("qa/changes/{change_id}/requirement.md",),
+            runtime=("qa/requirement.md",),
             finalize=(),
         ),
     )

@@ -39,10 +39,10 @@ def test_plan_reviewer_skills_do_not_instruct_removed_decisions(skill_id: str) -
 
 def test_e2e_reviewer_skill_outputs_use_family_prefixed_names() -> None:
     skill = resource_text("skills/aa-e2e-plan-reviewer/SKILL.md")
-    assert "qa/changes/<change-id>/review/e2e-plan-review.json" in skill
-    assert "qa/changes/<change-id>/review/e2e-plan-review-summary.md" in skill
-    assert "qa/changes/<change-id>/review/plan-review.json" not in skill
-    assert "qa/changes/<change-id>/review/plan-review-summary.md" not in skill
+    assert "qa/results/review/e2e-plan-review.json" in skill
+    assert "qa/results/review/e2e-plan-review-summary.md" in skill
+    assert "qa/results/review/plan-review.json" not in skill
+    assert "qa/results/review/plan-review-summary.md" not in skill
 
 
 @pytest.mark.parametrize("family", FAMILIES)

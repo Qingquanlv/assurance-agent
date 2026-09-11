@@ -186,6 +186,13 @@ def _project_config(project_root: Path) -> Path | None:
     return None
 
 
+def _view_relative_selector(item: str) -> str:
+    path, separator, symbol = item.partition("::")
+    if path.startswith("qa/tests/"):
+        path = "tests/" + path[len("qa/tests/") :]
+    return f"{path}{separator}{symbol}" if separator else path
+
+
 def _view_prefixed_selectors(
     selected: tuple[str, ...],
     *,
@@ -195,7 +202,8 @@ def _view_prefixed_selectors(
     prefix = rootdir.relative_to(project_root).as_posix()
     prefixed: list[str] = []
     for item in selected:
-        prefixed.append(item if item.startswith(f"{prefix}/") else f"{prefix}/{item}")
+        view_item = _view_relative_selector(item)
+        prefixed.append(view_item if view_item.startswith(f"{prefix}/") else f"{prefix}/{view_item}")
     return tuple(prefixed)
 
 

@@ -71,7 +71,7 @@ BINDING: dict[str, JSONValue] = {
     "request_config_digest": _SHA,
 }
 PLAN_REF: JSONValue = {
-    "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_B}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{HEX_B}/resolved-assurance-plan.json",
     "digest": HEX_B,
 }
 
@@ -160,7 +160,7 @@ def skill_input() -> JSONValue:
 
 
 def authenticated_issue_input(root: Path) -> JSONValue:
-    base = f"qa/changes/{CHANGE_ID}"
+    base = "qa"
     source_path = f"{base}/execution/api-result.json"
     observations_path = f"{base}/inspect/epochs/0/batches/{BATCH_ID}/observations.json"
     manifest_path = f"{base}/inspect/epochs/0/batches/{BATCH_ID}/issue-evidence-manifest.json"
@@ -247,12 +247,12 @@ async def test_issue_finalize_rechecks_owned_evidence_before_stamping_candidate_
         candidate = as_object(cast(list[JSONValue], structured["candidates"])[0])
         candidate["affected_surface"] = {"kind": "endpoint", "value": "POST /api/v1/dept/create"}
     structured["evidence_bundle_digest"] = locked["evidence_bundle_digest"]
-    relative = f"qa/changes/{CHANGE_ID}/inspect/issue-analysis.json"
-    staged = tmp_path / "qa" / "changes" / CHANGE_ID / ".staging" / "attempt-1" / relative
+    relative = "qa/results/inspect/issue-analysis.json"
+    staged = tmp_path / "qa" / ".staging" / "attempt-1" / relative
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(canonical_json_bytes(structured))
     if tampered:
-        (tmp_path / f"qa/changes/{CHANGE_ID}/execution/api-result.json").write_bytes(b"changed after prepare")
+        (tmp_path / "qa/results/execution/api-result.json").write_bytes(b"changed after prepare")
     outcome = await execute_task(
         IssueAnalysisFinalizeHandler(),
         fake_agent_result(structured, **locked),
@@ -332,7 +332,7 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_issue_analysis_prepare_rejects_tampered_manifest_evidence(tmp_path: Path) -> None:
     payload = authenticated_issue_input(tmp_path)
-    (tmp_path / f"qa/changes/{CHANGE_ID}/execution/api-result.json").write_bytes(b"tampered\n")
+    (tmp_path / "qa/results/execution/api-result.json").write_bytes(b"tampered\n")
 
     outcome = await execute_task(
         IssueAnalysisPrepareHandler(),
@@ -682,7 +682,7 @@ async def test_failed_report_validation_leaves_canonical_outputs_unchanged(tmp_p
     from tests.product.test_change_local_output_routing import dual_roots
 
     project, write_root = dual_roots(tmp_path)
-    canonical = project / "qa/changes/CH-DEMO-001/report/report.md"
+    canonical = project / "qa/results/report/report.md"
     canonical.parent.mkdir(parents=True)
     original = b"# Canonical report\n"
     canonical.write_bytes(original)

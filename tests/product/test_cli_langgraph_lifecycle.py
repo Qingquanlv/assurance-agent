@@ -51,10 +51,7 @@ _AGENT_ENTRYPOINTS = frozenset(
 def _identity_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
     return (
         project_dir
-        / "qa"
-        / "changes"
-        / change_id
-        / ".runtime"
+        / "qa" / ".runtime"
         / "langgraph"
         / "identities"
         / f"{invocation_id}.json"
@@ -119,7 +116,7 @@ def test_leftover_invocation_without_identity_fails_closed(
     (project_dir / "README.md").write_text("seed\n", encoding="utf-8")
     change_id = "CH-LEFTOVER-001"
     ChangeWorkspace.prepare(project_dir, change_id)
-    leftover = project_dir / "qa" / "changes" / change_id / ".runtime" / "invocations"
+    leftover = project_dir / "qa" / ".runtime" / "invocations"
     leftover.mkdir(parents=True, exist_ok=True)
     (leftover / "inv-pre-migration-001").mkdir()
     path = _identity_path(project_dir, change_id, "inv-pre-migration-001")
@@ -295,7 +292,7 @@ def _reject_lifecycle_tampers(
     identity_path.chmod(0o644)
 
     checkpoints = (
-        project_dir / "qa" / "changes" / change_id / ".runtime" / "langgraph" / "checkpoints.sqlite3"
+        project_dir / "qa" / ".runtime" / "langgraph" / "checkpoints.sqlite3"
     )
     if checkpoints.is_file():
         real = checkpoints.with_name("checkpoints.sqlite3.real")
@@ -449,7 +446,7 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     assert started.exit_code == 0, started.output
     assert SECRET_VALUE not in started.output
     started_doc = parse_json_output(started.stdout)
-    runtime = project_dir / "qa" / "changes" / change_id / ".runtime"
+    runtime = project_dir / "qa" / ".runtime"
     for path in runtime.rglob("*"):
         if path.is_file():
             assert SECRET_VALUE.encode() not in path.read_bytes()

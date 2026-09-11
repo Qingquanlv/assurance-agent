@@ -262,8 +262,8 @@ def test_collect_selector_rejects_lifecycle_only_public_payload() -> None:
             {
                 "change_id": "CH-RETRO-002",
                 "capability_leafs": ["auth.session.create"],
-                "allowed_artifact_paths": ["qa/archive"],
-                "evidence_refs": [{"path": "qa/archive/x.json", "digest": "b" * 64}],
+                "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+                "evidence_refs": [{"path": "qa/results/x.json", "digest": "b" * 64}],
                 "lifecycle_state": "evaluating",
             }
         )

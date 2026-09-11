@@ -95,7 +95,7 @@ def publish_execution(
         filename = "run-result.json" if semantic_node_id == "execution.run" else "execute-result.json"
         encoded = (json.dumps(evidence.model_dump(mode="json"), indent=2) + "\n").encode()
         evidence_ref = EvidenceArtifactRefV1(
-            path=f"qa/changes/{evidence.change_id}/execution/{filename}",
+            path=f"qa/results/execution/{filename}",
             digest=hashlib.sha256(encoded).hexdigest(),
         )
         cycle = ExecutionCycleResultV1(

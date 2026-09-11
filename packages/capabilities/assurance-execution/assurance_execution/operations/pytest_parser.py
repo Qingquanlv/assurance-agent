@@ -34,14 +34,28 @@ def test_file_from_nodeid(nodeid: str) -> str:
     return nodeid.split("::", 1)[0]
 
 
+def _durable_selector(nodeid: str) -> str:
+    path, separator, symbol = nodeid.partition("::")
+    if "/tests/" in path:
+        path = "qa/tests/" + path.split("/tests/", 1)[1]
+    elif path.startswith("tests/"):
+        path = "qa/tests/" + path[len("tests/") :]
+    return f"{path}{separator}{symbol}" if separator else path
+
+
 def _selected_for_nodeid(nodeid: str, allowed: frozenset[str]) -> str | None:
-    file_path = test_file_from_nodeid(nodeid)
-    if file_path in allowed:
-        return file_path
-    matches = tuple(
-        selector for selector in allowed if nodeid == selector or nodeid.startswith(f"{selector}[")
-    )
-    return matches[0] if len(matches) == 1 else None
+    for candidate in (nodeid, _durable_selector(nodeid)):
+        file_path = test_file_from_nodeid(candidate)
+        if file_path in allowed:
+            return file_path
+        matches = tuple(
+            selector
+            for selector in allowed
+            if candidate == selector or candidate.startswith(f"{selector}[")
+        )
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def _longrepr_text(longrepr: object) -> str:

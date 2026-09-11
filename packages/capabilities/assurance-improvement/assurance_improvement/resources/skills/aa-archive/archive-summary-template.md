@@ -52,15 +52,15 @@ open_problem_count: {count of active Problems linked to this Change}
 
 ## Archived Artifacts
 
-- `qa/archive/{change_id}/cases/`
-- `qa/archive/{change_id}/plans/`
-- `qa/archive/{change_id}/review/`
-- `qa/archive/{change_id}/execution/`
-- `qa/archive/{change_id}/inspect/`
-- `qa/archive/{change_id}/issues/` (if present)
-- `qa/archive/{change_id}/report/` (if present)
-- `qa/archive/{change_id}/events.jsonl`
-- `qa/archive/{change_id}/healing/`
+- `qa/results/cases/`
+- `qa/results/plans/`
+- `qa/results/review/`
+- `qa/results/execution/`
+- `qa/results/inspect/`
+- `qa/results/issues/` (if present)
+- `qa/results/report/` (if present)
+- `qa/results/events.jsonl`
+- `qa/results/healing/`
 
 ## Notes
 

@@ -17,7 +17,7 @@ _OUTSIDE_REASON = "execution candidate may write only tests and change execution
 _UNMAPPED_REASON = "execution evidence contains a test outside the closed mapping"
 _COVER_REASON = "execution evidence must uniquely cover the closed mapping"
 _MAPPING_MISMATCH_REASON = "execution evidence mapping does not match the locked mapping"
-_ALLOWED_PREFIXES = ("tests/", "qa/changes/")
+_ALLOWED_PREFIXES = ("qa/tests/", "qa/results/")
 
 
 def _canonical_relative(path: str) -> bool:
@@ -36,7 +36,7 @@ def _allowed_path(path: str) -> bool:
 
 def _is_test_module(path: str) -> bool:
     posix = PurePosixPath(path)
-    if posix.suffix != ".py" or not path.startswith("tests/"):
+    if posix.suffix != ".py" or not path.startswith("qa/tests/"):
         return False
     return posix.stem.startswith("test_") or posix.stem.endswith("_test")
 

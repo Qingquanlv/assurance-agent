@@ -118,7 +118,7 @@ def test_product_result_schema_missing_document_is_invalid_output() -> None:
     outcome = reduce_terminal(
         kind="succeeded",
         session={},
-        messages=_intake_messages({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        messages=_intake_messages({"output_files": ["qa/proposal.md"]}),
         agent_run=agent_run,
         request=task_request(agent_run),
         diff=None,
@@ -147,14 +147,14 @@ def test_product_result_schema_on_contract_validates() -> None:
     outcome = reduce_terminal(
         kind="succeeded",
         session={},
-        messages=_intake_messages({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        messages=_intake_messages({"output_files": ["qa/proposal.md"]}),
         agent_run=agent_run,
         request=task_request(agent_run),
         diff=None,
     )
     assert outcome.status == "succeeded"
     result = AgentRunResult.model_validate(outcome.output)
-    assert thaw_json(result.result_payload) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    assert thaw_json(result.result_payload) == {"output_files": ["qa/proposal.md"]}
 
 
 def test_closed_terminal_accepts_one_json_text_step_pair_and_optional_patch() -> None:
@@ -401,21 +401,21 @@ def test_model_reported_file_manifest_is_not_workspace_proof() -> None:
     outcome = reduce_terminal(
         kind="succeeded",
         session={},
-        messages=_closed_assistant({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        messages=_closed_assistant({"output_files": ["qa/proposal.md"]}),
         agent_run=agent_run,
         request=task_request(agent_run),
         diff=None,
     )
     assert outcome.status == "succeeded"
     result = AgentRunResult.model_validate(outcome.output)
-    assert thaw_json(result.result_payload) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    assert thaw_json(result.result_payload) == {"output_files": ["qa/proposal.md"]}
     expected_evidence = {
         "adapter_id": "runtime.opencode",
         "history_digest": canonical_digest([{"id": "asst-1", "role": "assistant"}]),
         "model": "provider_default",
         "provider": "provider_default",
         "provider_diff_digest": None,
-        "result_digest": canonical_digest({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        "result_digest": canonical_digest({"output_files": ["qa/proposal.md"]}),
         "terminal": "succeeded",
         "tool_digest": canonical_digest([]),
     }

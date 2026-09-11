@@ -205,7 +205,7 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
                 "change_id": "RET-dept-management",
                 "requirement": "Cover department CRUD.",
                 "capability_leafs": [],
-                "artifact_paths": ["qa/changes"],
+                "artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
             },
             project,
             binding_data=BINDING,
@@ -214,8 +214,8 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
     )
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.allowed_outputs == (
-        "qa/changes/RET-dept-management/.qa.yaml",
-        "qa/changes/RET-dept-management/requirement.md",
+        "qa/.qa.yaml",
+        "qa/requirement.md",
     )
     assert request.workspace.write_root == "qa/.staging/attempt-1"
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
@@ -225,7 +225,7 @@ def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Pat
     from assurance_intake.operations import ExploreFinalizeHandler
 
     project, write_root = dual_roots(tmp_path)
-    canonical = project / "qa/changes/CH-DEMO-001/explore/exploration.json"
+    canonical = project / "qa/results/explore/exploration.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)
     promoted = b"not-json"
     canonical.write_bytes(promoted)
@@ -237,13 +237,13 @@ def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Pat
                 "agent_result": fake_agent_result(
                     {
                         "output_files": [
-                            "qa/changes/CH-DEMO-001/explore/exploration.json",
+                            "qa/results/explore/exploration.json",
                         ]
                     }
                 ).model_dump(mode="json"),
                 "change_id": "CH-DEMO-001",
                 "capability_leafs": ["entities.item.create"],
-                "artifact_paths": ["qa/changes/CH-DEMO-001/explore/exploration.json"],
+                "artifact_paths": ["qa/results/explore/exploration.json"],
             },
             project,
             write_root=write_root,
