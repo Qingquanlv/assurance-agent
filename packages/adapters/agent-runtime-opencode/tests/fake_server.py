@@ -122,6 +122,7 @@ class OpenCodeFakeServer:
         self.structured_result: object = {"ok": True}
         self.error_message = "provider failed"
         self.diff_payload: object | None = None
+        self.pending_permissions: list[dict[str, object]] = []
         self.path_faults: dict[str, str] = {}
         self._reject_all = False
         self._created_ids: list[str] = []
@@ -307,6 +308,11 @@ class OpenCodeFakeServer:
             if self.cut == "polling_lag":
                 time.sleep(0.05)
             self._write_json(handler, 200, self._status_map())
+            return
+        if path == "/permission" and handler.command == "GET":
+            with self._lock:
+                permissions = [dict(item) for item in self.pending_permissions]
+            self._write_json(handler, 200, permissions)
             return
         if path == "/session" and handler.command == "GET":
             directory = (query.get("directory") or [None])[0]

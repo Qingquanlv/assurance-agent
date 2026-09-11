@@ -87,6 +87,20 @@ def prompt_admission_body(agent_run: AgentRunRequest, message_id: str) -> dict[s
     parts.append(
         OpenCodeTextPart(
             text=(
+                "# Runtime workspace contract\n\n"
+                "Only these exact logical paths may be written. This runtime whitelist "
+                "overrides wildcard or directory-shaped output wording in supplied skills. "
+                "Do not attempt, declare, or list any other output. If a helper or fixture "
+                "path is not listed, keep that code inside an authorized mapped target. "
+                "Complete and verify every required write before returning.\n\n"
+                "allowed_outputs: "
+                f"{canonical_json_text(list(agent_run.workspace.allowed_outputs))}"
+            )
+        )
+    )
+    parts.append(
+        OpenCodeTextPart(
+            text=(
                 "# Runtime result contract\n\n"
                 "Your final assistant response MUST be exactly one JSON object with no "
                 "Markdown fence, commentary, completion summary, or trailing text. The object "

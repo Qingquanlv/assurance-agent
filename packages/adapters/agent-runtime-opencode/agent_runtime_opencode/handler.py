@@ -50,7 +50,10 @@ from agent_runtime_opencode.protocol import (
     resolve_advertised_profile,
 )
 from agent_runtime_opencode.reducer import contract_result_candidate_from_messages, reduce_terminal
-from agent_runtime_opencode.workspace_binding import workspace_binding_title
+from agent_runtime_opencode.workspace_binding import (
+    materialize_allowed_baselines,
+    workspace_binding_title,
+)
 
 
 def workspace_identity_digest_for(context: TaskContext) -> str:
@@ -80,6 +83,35 @@ def _activity_is_bound(context: TaskContext) -> bool:
         return False
     snapshot = port.snapshot
     return snapshot.reference is not None or snapshot.state == "bound"
+
+
+async def _pending_permission_result(
+    client: OpenCodeHttpClient,
+    session_id: str,
+) -> TaskActivityReconcileResult | None:
+    try:
+        permissions = await client.list_permissions()
+    except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError) as error:
+        return TaskActivityReconcileResult(
+            status="indeterminate",
+            reason=str(error) or "provider permission observation is indeterminate",
+        )
+    for permission in permissions:
+        if not isinstance(permission, dict):
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason="permission list contains a non-object entry",
+            )
+        if permission.get("sessionID") == session_id:
+            return TaskActivityReconcileResult(
+                status="terminal",
+                outcome=TaskOutcome.failed(
+                    "external_effect",
+                    "OpenCode session is waiting for a permission decision",
+                    retryable=False,
+                ),
+            )
+    return None
 
 
 class OpenCodeHandler:
@@ -433,7 +465,7 @@ class OpenCodeHandler:
         stamped = await self._stamp_workspace_binding(client, agent_run, context, session_id)
         if stamped is not None:
             return stamped
-        admitted = await self._admit_prompt(client, agent_run, reference)
+        admitted = await self._admit_prompt(client, agent_run, reference, context)
         if admitted is not None:
             return admitted
         return await self._observe_bound(
@@ -546,6 +578,7 @@ class OpenCodeHandler:
         client: OpenCodeHttpClient,
         agent_run: AgentRunRequest,
         reference: OpenCodeActivityReference,
+        context: TaskContext,
     ) -> TaskActivityReconcileResult | None:
         session_id = reference.session_id
         if not session_id:
@@ -553,6 +586,9 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="bound session identity is unknown",
             )
+        permission_result = await _pending_permission_result(client, session_id)
+        if permission_result is not None:
+            return permission_result
         expected_body = prompt_admission_body(agent_run, reference.expected_message_id)
         try:
             record = await client.get_message(session_id, reference.expected_message_id)
@@ -569,6 +605,18 @@ class OpenCodeHandler:
                     reason="prompt identity conflict",
                 )
             return None
+        try:
+            materialize_allowed_baselines(
+                project_root=context.project_root,
+                write_root=context.write_root,
+                baseline_files=context.workspace_identity.baseline_files,
+                allowed_outputs=agent_run.workspace.allowed_outputs,
+            )
+        except ValueError as error:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason=str(error) or "workspace baseline materialization is invalid",
+            )
         try:
             await client.admit_message(session_id, expected_body)
         except httpx.HTTPStatusError as error:
@@ -596,6 +644,14 @@ class OpenCodeHandler:
             return TaskActivityReconcileResult(
                 status="indeterminate",
                 reason="bound session identity is unknown",
+            )
+        permission_result = await _pending_permission_result(client, session_id)
+        if permission_result is not None:
+            return TaskActivityReconcileResult(
+                status=permission_result.status,
+                reference=thaw_json(reference.model_dump(mode="json")),
+                outcome=permission_result.outcome,
+                reason=permission_result.reason,
             )
         cursor: str | None = None
         try:

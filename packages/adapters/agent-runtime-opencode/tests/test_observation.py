@@ -244,6 +244,34 @@ async def test_open_tool_work_is_not_terminal() -> None:
         fixture.close()
 
 
+async def test_pending_permission_fails_fast_instead_of_waiting_for_observation_horizon() -> None:
+    fixture = _bound_fixture(terminal_mode="busy")
+    session_id = fixture.reference.session_id
+    assert session_id is not None
+    fixture.fake.pending_permissions = [
+        {
+            "id": "per_1",
+            "sessionID": session_id,
+            "permission": "read",
+            "patterns": ["benchmark/secret.env"],
+        }
+    ]
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "terminal"
+        assert result.outcome is not None
+        assert result.outcome.status == "failed"
+        assert result.outcome.failure is not None
+        assert result.outcome.failure.kind == "external_effect"
+        assert result.outcome.failure.retryable is False
+        assert result.outcome.failure.message == "OpenCode session is waiting for a permission decision"
+        assert fixture.fake.prompt_posts == 0
+        assert fixture.fake.count("GET", "/permission") == 1
+    finally:
+        fixture.close()
+
+
 async def test_busy_session_is_aborted_after_complete_structured_result_is_captured() -> None:
     fixture = _bound_fixture(terminal_mode="success_busy")
     try:

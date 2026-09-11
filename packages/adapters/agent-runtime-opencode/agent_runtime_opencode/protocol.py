@@ -161,6 +161,17 @@ class OpenCodeHttpClient:
     async def get_status(self) -> dict[str, Any]:
         return await self._json("GET", "/session/status")
 
+    async def list_permissions(self) -> list[Any]:
+        try:
+            payload = await self._json("GET", "/permission")
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                return []
+            raise
+        if not isinstance(payload, list):
+            raise ValueError("permission list shape must be a JSON array")
+        return payload
+
     async def open_sse(self, *, cursor: str | None = None) -> bytes:
         extra = {"cursor": cursor} if cursor else None
         observation_slice = min(

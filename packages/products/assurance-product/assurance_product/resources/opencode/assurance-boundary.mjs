@@ -214,12 +214,56 @@ const rewritePatch = (text, rewrite) => {
     if (target.trim() !== target || target.length === 0) {
       throw new Error("apply_patch has an invalid file path");
     }
-    rewritten.push(`*** ${match[0]}${rewrite(target)}`);
+    rewritten.push(`*** ${match[0]}${rewrite(target, match[1])}`);
     if (match[1] !== "Move to") operations += 1;
   }
   rewritten.push(lines.at(-1));
   if (operations === 0) throw new Error("apply_patch declares no file operation");
   return rewritten.join("\n");
+};
+
+const ensureStagedParent = (root, binding, logical) => {
+  const lexicalRoot = path.resolve(root, binding.write_root);
+  if (!exists(lexicalRoot) || isSymlink(lexicalRoot)) {
+    throw new Error("Assurance write boundary: staged root is missing or invalid");
+  }
+  const realRoot = fs.realpathSync.native(lexicalRoot);
+  if (realRoot !== lexicalRoot) {
+    throw new Error("Assurance write boundary: staged root is missing or invalid");
+  }
+  let current = realRoot;
+  for (const part of logical.split("/").slice(0, -1)) {
+    const next = path.join(current, part);
+    if (!exists(next)) fs.mkdirSync(next, { mode: 0o700 });
+    const stat = fs.lstatSync(next);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error("Assurance write boundary: staged parent is invalid");
+    }
+    current = next;
+  }
+};
+
+const seedStagedBaseline = (root, binding, candidate, destination) => {
+  if (exists(destination)) {
+    const destinationStat = fs.lstatSync(destination);
+    if (destinationStat.isSymbolicLink() || !destinationStat.isFile() || destinationStat.nlink !== 1) {
+      throw new Error("Assurance write boundary: staged destination is invalid");
+    }
+    return;
+  }
+  const { logical } = lexicalLogical(root, candidate);
+  const source = canonicalize(candidate, root);
+  if (relativeLogical(root, candidate) !== logical) {
+    throw new Error("Assurance write boundary: baseline file is invalid");
+  }
+  if (!exists(source)) return;
+  const sourceStat = fs.lstatSync(source);
+  if (sourceStat.isSymbolicLink() || !sourceStat.isFile() || sourceStat.nlink !== 1) {
+    throw new Error("Assurance write boundary: baseline file is invalid");
+  }
+  ensureStagedParent(root, binding, logical);
+  fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+  fs.chmodSync(destination, sourceStat.mode & 0o777);
 };
 
 const nativeWriteKeys = ["filePath", "file_path", "path", "rename"];
@@ -428,7 +472,13 @@ export default async ({ client }) => ({
     }
     const rewrite = (candidate) => assertWritable(binding, root, candidate);
     if (tool === "apply_patch") {
-      output.args.patchText = rewritePatch(output.args?.patchText, rewrite);
+      output.args.patchText = rewritePatch(output.args?.patchText, (candidate, operation) => {
+        const destination = rewrite(candidate);
+        if (operation === "Update File" || operation === "Delete File") {
+          seedStagedBaseline(root, binding, candidate, destination);
+        }
+        return destination;
+      });
       return;
     }
     rewriteNativeWrites(output.args, rewrite);

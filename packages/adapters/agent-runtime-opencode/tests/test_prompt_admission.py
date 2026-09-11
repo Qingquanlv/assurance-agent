@@ -138,12 +138,76 @@ async def test_prompt_body_forwards_bounded_agent_selection_and_message_policy()
         assert body["agent"] == run.workspace.agent_profile
         assert "tools" not in body
         assert "model" not in body
+        workspace_part = body["parts"][-2]
+        assert workspace_part["type"] == "text"
+        assert workspace_part["text"].startswith("# Runtime workspace contract\n")
+        assert "Only these exact logical paths may be written" in workspace_part["text"]
+        for output in run.workspace.allowed_outputs:
+            assert output in workspace_part["text"]
         contract_part = body["parts"][-1]
         assert contract_part["type"] == "text"
         assert contract_part["text"].startswith("# Runtime result contract\n")
         assert "final assistant response MUST be exactly one JSON object" in contract_part["text"]
         assert "does not replace required tool calls or file writes" in contract_part["text"]
         assert "schema_id: fixture.result.v1" in contract_part["text"]
+    finally:
+        fixture.close()
+
+
+async def test_exact_baselines_are_materialized_before_prompt_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def record_materialization(**kwargs: object) -> None:
+        calls.append(
+            (
+                kwargs["project_root"],
+                kwargs["write_root"],
+                kwargs["baseline_files"],
+                kwargs["allowed_outputs"],
+            )
+        )
+
+    monkeypatch.setattr(
+        "agent_runtime_opencode.handler.materialize_allowed_baselines",
+        record_materialization,
+    )
+    fixture = _bound_fixture(terminal_mode="busy")
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "running"
+        assert calls == [
+            (
+                fixture.context.project_root,
+                fixture.context.write_root,
+                fixture.context.workspace_identity.baseline_files,
+                agent_run_request().workspace.allowed_outputs,
+            )
+        ]
+        assert fixture.fake.prompt_posts == 1
+    finally:
+        fixture.close()
+
+
+async def test_invalid_baseline_materialization_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_materialization(**kwargs: object) -> None:
+        raise ValueError("baseline source drifted from the workspace identity")
+
+    monkeypatch.setattr(
+        "agent_runtime_opencode.handler.materialize_allowed_baselines",
+        reject_materialization,
+    )
+    fixture = _bound_fixture(terminal_mode="busy")
+    try:
+        result = await fixture.reconcile()
+
+        assert result.status == "indeterminate"
+        assert result.reason == "baseline source drifted from the workspace identity"
+        assert fixture.fake.prompt_posts == 0
     finally:
         fixture.close()
 

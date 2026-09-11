@@ -33,6 +33,7 @@ _PINNED_CLIENT_ROUTES = frozenset(
         "get_status",
         "list_sessions",
         "list_messages",
+        "list_permissions",
         "open_sse",
         "get_session_diff",
         "update_session",

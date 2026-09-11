@@ -276,6 +276,44 @@ def test_every_apply_patch_header_is_redirected_to_write_root(tmp_path: Path, he
     assert (project / _ALLOWED).exists() is False
 
 
+def test_apply_patch_update_seeds_existing_allowed_file_into_staged_overlay(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    canonical = project / _ALLOWED
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("old\n", encoding="utf-8")
+    (project / _WRITE_ROOT).mkdir(parents=True)
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+    patch = f"*** Begin Patch\n*** Update File: {_ALLOWED}\n@@\n-old\n+new\n*** End Patch"
+
+    args = _allowed(_run(plugin, session=session, tool="apply_patch", args={"patchText": patch}))
+
+    staged = _staged(project, _ALLOWED)
+    assert str(staged) in args["patchText"]
+    assert staged.read_text(encoding="utf-8") == "old\n"
+    assert canonical.read_text(encoding="utf-8") == "old\n"
+
+
+def test_apply_patch_update_rejects_non_regular_staged_destination(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    canonical = project / _ALLOWED
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text("old\n", encoding="utf-8")
+    staged = project / _WRITE_ROOT / _ALLOWED
+    staged.parent.mkdir(parents=True)
+    staged.mkdir()
+    plugin = _install(project)
+    session = _session(project, _binding_title(project))
+    patch = f"*** Begin Patch\n*** Update File: {_ALLOWED}\n@@\n-old\n+new\n*** End Patch"
+
+    _denied(
+        _run(plugin, session=session, tool="apply_patch", args={"patchText": patch}),
+        "staged destination is invalid",
+    )
+
+
 def test_reads_prefer_staged_overlay(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
