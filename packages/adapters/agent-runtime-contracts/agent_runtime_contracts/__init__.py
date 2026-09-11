@@ -28,6 +28,7 @@ from agent_runtime_contracts.schema import (
     validate_local_agent_result,
     validate_structured_result,
 )
+from agent_runtime_contracts.qa_paths import qa_join, qa_route
 from agent_runtime_contracts.workspace import rebind_agent_run_workspace
 
 __all__ = [
@@ -55,4 +56,6 @@ __all__ = [
     "result_schema_from_model",
     "validate_local_agent_result",
     "validate_structured_result",
+    "qa_join",
+    "qa_route",
 ]
