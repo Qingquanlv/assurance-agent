@@ -33,6 +33,10 @@ decision, complete one exhaustive pass across every required plan artifact,
 every mapping row, and every source-backed runtime boundary used by the plan.
 Return all independently observable defects in the same review document so a
 single bounded planner re-entry can repair the whole package.
+During the existing full-package review, verify every mapped helper's sync/async
+invocation against the test-runner configuration and check that the combined
+assertion logic, including all alternative success paths, preserves the frozen
+case oracle, reporting all source-supported defects in the current round.
 
 Before the first decision in every round, close this runtime inventory for the
 whole package, not only for the section most recently edited:

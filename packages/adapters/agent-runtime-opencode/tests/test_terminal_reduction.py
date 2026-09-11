@@ -165,6 +165,15 @@ def test_closed_terminal_accepts_one_json_text_step_pair_and_optional_patch() ->
     assert parse_closed_terminal_result(messages) == {"ok": True}
 
 
+def test_closed_terminal_recovers_one_json_object_after_leading_commentary() -> None:
+    messages = _closed_assistant(
+        {"ok": True},
+        text='Review artifacts are written. Final result:\n\n{"ok":true}',
+    )
+
+    assert parse_closed_terminal_result(messages) == {"ok": True}
+
+
 def test_repeated_identical_closed_results_are_one_logical_terminal_result() -> None:
     first = _closed_assistant({"ok": True})
     second = _closed_assistant({"ok": True})
@@ -181,6 +190,46 @@ def test_repeated_identical_closed_results_are_one_logical_terminal_result() -> 
         )
         == "succeeded"
     )
+
+
+def test_idle_history_ignores_intermediate_tool_call_text_before_closed_result() -> None:
+    messages = [
+        {
+            "info": {
+                "id": "asst-tool",
+                "role": "assistant",
+                "time": {"created": 1, "completed": 2},
+                "finish": "tool-calls",
+            },
+            "parts": [
+                {"type": "step-start"},
+                {"type": "text", "text": "I will verify the output before returning it."},
+                {"type": "tool", "state": {"status": "completed"}},
+                {"type": "step-finish", "reason": "tool-calls"},
+            ],
+        },
+        *_closed_assistant({"ok": True}),
+    ]
+
+    kind = classify_provider_state(
+        session_id="ses_idle",
+        status_map={"ses_idle": {"type": "idle"}},
+        session={"id": "ses_idle"},
+        messages=messages,
+    )
+    outcome = reduce_terminal(
+        kind=kind,
+        session={"id": "ses_idle"},
+        messages=messages,
+        agent_run=agent_run_request(),
+        request=task_request(agent_run_request()),
+        diff=None,
+    )
+
+    assert kind == "succeeded"
+    assert outcome.status == "succeeded"
+    result = AgentRunResult.model_validate(outcome.output)
+    assert thaw_json(result.result_payload) == {"ok": True}
 
 
 def test_closed_terminal_rejects_distinct_result_messages() -> None:
@@ -219,12 +268,6 @@ def test_closed_terminal_rejects_distinct_result_messages() -> None:
         _closed_assistant({"ok": True}, extra_parts=({"type": "unknown", "text": "x"},)),
         _closed_assistant({"ok": True}, error={"name": "ProviderError", "message": "failed"}),
         _closed_assistant({"ok": True}, truncated=True),
-        [
-            {
-                "info": {"id": "asst-1", "role": "assistant", "time": {"created": 1, "completed": 2}},
-                "parts": [{"type": "text", "text": 'Done. {"ok": true}'}],
-            }
-        ],
     ],
 )
 def test_closed_terminal_rejects_ambiguous_or_unsafe_parts(messages: list[dict[str, object]]) -> None:

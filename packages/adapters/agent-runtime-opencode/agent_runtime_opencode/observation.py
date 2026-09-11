@@ -386,6 +386,8 @@ def parse_closed_terminal_result(messages: Sequence[object]) -> dict[str, Any]:
         if not isinstance(parts, list):
             raise ValueError("terminal message parts are missing")
         if _nonempty_text_parts(parts):
+            if info.get("finish") == "tool-calls":
+                continue
             result_bearing.append(message)
             continue
         for part in parts:
@@ -473,7 +475,15 @@ def _exact_json_object(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as error:
-        raise ValueError("terminal text is not one JSON object") from error
+        decoder = json.JSONDecoder()
+        start = text.find("{")
+        try:
+            candidate, end = decoder.raw_decode(text, start)
+        except (json.JSONDecodeError, ValueError):
+            raise ValueError("terminal text is not one JSON object") from error
+        if not isinstance(candidate, dict) or text[end:].strip():
+            raise ValueError("terminal text is not one JSON object") from error
+        return candidate
     if not isinstance(parsed, dict):
         raise ValueError("terminal text is not one JSON object")
     return parsed

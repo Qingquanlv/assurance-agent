@@ -68,7 +68,7 @@
     "opencode": {
       "adapter_id": "runtime.opencode.execute",
       "source_root": "packages/adapters/agent-runtime-opencode/agent_runtime_opencode",
-      "source_digest": "5f3c7a17ca23d49565fb8586ded57e11a45e7fffe7257a9ac7317e97e619640f",
+      "source_digest": "ed958629684561f51b1ee855611ced81b674f03cc5d9ebe8fd275684d484e62f",
       "adapter_version": "0.1.0",
       "protocol_profile": "opencode-http-v1",
       "prompt_admission": "caller-message-id-v1",
