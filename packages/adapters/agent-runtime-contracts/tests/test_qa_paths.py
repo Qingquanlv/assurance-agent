@@ -38,8 +38,21 @@ def test_qa_join_rejects_legacy_and_project_tests_writes() -> None:
             qa_join(suffix)
 
 
+def test_qa_join_rejects_escaping_path_segments() -> None:
+    import pytest
+
+    for suffix in (
+        "../../outside",
+        "cases/../archive/x",
+        "plans/./api-plan.md",
+        "tests/api/../outside.py",
+    ):
+        with pytest.raises(ValueError):
+            qa_join(suffix)
+
+
 def test_qa_route_sorts_unique_results() -> None:
-    assert qa_route("review/a.json", "cases/x.yaml") == (
+    assert qa_route("review/a.json", "cases/x.yaml", "review/a.json") == (
         "qa/cases/x.yaml",
         "qa/results/review/a.json",
     )
