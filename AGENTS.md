@@ -25,9 +25,8 @@ Non-obvious notes:
   `scripts/assurance_capability_wheel_smoke_test.sh`,
   `scripts/assurance_product_wheel_smoke_test.sh`).
 - Installed commands are `aa compile`, `aa start`, `aa run`, `aa status`,
-  `aa resume`, `aa export`, `aa archive`, `aa bindings build`, and
-  `aa lock show`. Delivery is `aa run` to achieved, then `aa export`, then
-  optional `aa archive`.
+  `aa resume`, `aa bindings build`, and
+  `aa lock show`. Delivery is `aa run` to achieved.
 - Full workflow driving (`aa run`) needs an external OpenCode agent server
   (default `http://127.0.0.1:4096`); it is not required for building, testing,
   or the deterministic scheduler.

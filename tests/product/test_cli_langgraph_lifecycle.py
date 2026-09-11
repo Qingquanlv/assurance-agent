@@ -435,8 +435,6 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     from assurance_product.invocation_identity import InvocationIdentityRecord
     from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
     from graph_engine.attempts.resource_arbiter import ResourceArbiter
-    from tests.product.test_result_export import CHANGE_ID
-
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = opencode_composition
     args, project_dir, change_id = common_lifecycle_args(
@@ -445,7 +443,7 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         composition=composition,
         invocation_id=_EVALUATE_INVOCATION,
         entrypoint="improvement-evaluate",
-        change_id=CHANGE_ID,
+        change_id="CH-PUB-001",
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output

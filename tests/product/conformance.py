@@ -249,7 +249,7 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_receipt_before_engine_ack_replays_without_provider",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_replay_without_provider",
             "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
-            "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
+            "tests/product/test_replay_properties.py::test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged",
         ),
         "fault_crash_recovery": (
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[before_create]",
@@ -259,9 +259,7 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[before_prompt_post]",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_admission_before_response]",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]",
-            "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[prepared]",
-            "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[replacing]",
-            "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[committed]",
+            "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
         ),
         "stop_interrupt": (
             "tests/product/test_stop_and_interrupts.py::test_revision_mismatch_rejects_drifted_resume",
@@ -327,11 +325,6 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_mutation-assurance.improvement.effect.archive.v1]",
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_receipt-assurance.improvement.effect.archive.v1]",
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[reconcile_error-assurance.improvement.effect.archive.v1]",
-            "tests/product/test_publish_recovery.py::test_failed_replace_rolls_back",
-            "tests/product/test_publish_recovery.py::test_export_directory_fsync_failure_rolls_back_and_retry_matches_uninterrupted",
-            "tests/product/test_result_export.py::test_publish_rejects_target_baseline_drift",
-            "tests/product/test_export_security.py::test_publish_rejects_symlink_target",
-            "tests/product/test_export_security.py::test_publish_rejects_hardlink_target",
             "tests/product/test_report_flow.py::test_report_is_mandatory_on_success",
         ),
     }
@@ -506,22 +499,6 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
         "effect-reconcile-lost-ack": (
             "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_receipt-assurance.improvement.effect.archive.v1]"
         ),
-        "export-file-write": (
-            "tests/product/test_publish_recovery.py::test_export_file_write_or_file_fsync_failure_rolls_back_and_retries[write]"
-        ),
-        "export-rename": ("tests/product/test_publish_recovery.py::test_failed_replace_rolls_back"),
-        "export-directory-fsync": (
-            "tests/product/test_publish_recovery.py::test_export_directory_fsync_failure_rolls_back_and_retry_matches_uninterrupted"
-        ),
-        "export-destination-race": (
-            "tests/product/test_export_security.py::test_destination_swap_after_authentication_before_replace_fails_closed_without_clobber[symlink]"
-        ),
-        "export-destination-symlink": (
-            "tests/product/test_export_security.py::test_publish_rejects_symlink_target"
-        ),
-        "export-destination-hardlink": (
-            "tests/product/test_export_security.py::test_publish_rejects_hardlink_target"
-        ),
     }
 )
 
@@ -549,9 +526,33 @@ _PHASE5_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
             "WorkspaceSeed/tree identity was removed; repeated start now authenticates the process-local workspace binding.",
             "packages/framework/graph-engine/tests/runtime/test_production_host_faults.py::test_worker_rejects_substituted_project_root_before_handler_execution",
         ),
+        "export-file-write": (
+            "aa export / publish_achieved was removed; delivery stops at achieved.",
+            "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
+        ),
+        "export-rename": (
+            "aa export / publish_achieved was removed; delivery stops at achieved.",
+            "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
+        ),
+        "export-directory-fsync": (
+            "aa export / publish_achieved was removed; delivery stops at achieved.",
+            "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
+        ),
+        "export-destination-race": (
+            "aa export / publish_achieved was removed; delivery stops at achieved.",
+            "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
+        ),
+        "export-destination-symlink": (
+            "aa export / publish_achieved was removed; delivery stops at achieved.",
+            "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
+        ),
+        "export-destination-hardlink": (
+            "aa export / publish_achieved was removed; delivery stops at achieved.",
+            "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
+        ),
         "comparison-input-drift": (
-            "Legacy-vs-current comparison input authentication was removed; replay authentication remains in product publish tests.",
-            "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
+            "Legacy-vs-current comparison input authentication was removed; replay authentication remains in product resume tests.",
+            "tests/product/test_replay_properties.py::test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged",
         ),
         "comparison-one-side-running": (
             "Legacy-vs-current comparison of running terminals was removed; STOP vs completion remains in product interrupt tests.",

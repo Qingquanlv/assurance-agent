@@ -361,32 +361,6 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
         (workspace.paths.qa_root / "status.json").read_bytes(),
         (workspace.paths.qa_root / "apply-manifest.json").read_bytes(),
     )
-    from assurance_product.export import publish_achieved
-
-    publish_achieved(project, CHANGE_ID)
-    published = (
-        (workspace.paths.qa_root / "status.json").read_bytes(),
-        (workspace.paths.qa_root / "apply-manifest.json").read_bytes(),
-        (workspace.paths.qa_root / "publish-receipt.json").read_bytes(),
-    )
-
-    application.run(
-        project_dir=project,
-        change_id=CHANGE_ID,
-        invocation_id=identity.invocation_id,
-        composition=object(),
-        authorization=object(),  # type: ignore[arg-type]
-        entrypoint=None,
-        input_path=None,
-        workspace=workspace,
-        secrets=(),
-    )
-
-    assert published == (
-        (workspace.paths.qa_root / "status.json").read_bytes(),
-        (workspace.paths.qa_root / "apply-manifest.json").read_bytes(),
-        (workspace.paths.qa_root / "publish-receipt.json").read_bytes(),
-    )
 
 
 def test_status_returns_the_authenticated_persisted_full_terminal_projection(

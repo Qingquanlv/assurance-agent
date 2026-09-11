@@ -25,7 +25,7 @@ RETAINED_COMPARISON_ASSERTIONS = {
     ),
     "replay": (
         "tests/product/test_replay_properties.py",
-        ("test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",),
+        ("test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged",),
     ),
     "coverage": (
         "tests/product/test_coverage_loop.py",
