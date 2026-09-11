@@ -539,46 +539,46 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
             "aa-case-design",
             "assurance-v1-doc-author",
             (
-                "qa/changes/{change_id}/.qa.yaml",
-                "qa/changes/{change_id}/cases",
-                "qa/changes/{change_id}/proposal.md",
-                "qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
             ),
             (
-                "qa/changes/{change_id}/.qa.yaml",
-                "qa/changes/{change_id}/proposal.md",
-                "qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+                "qa/.qa.yaml",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
             ),
         ),
         "case-review": (
             "aa-case-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/changes/{change_id}/cases/reviewed-case.json",
-                "qa/changes/{change_id}/cases/reviews",
-                "qa/changes/{change_id}/review/case-review-summary.md",
-                "qa/changes/{change_id}/review/case-review.json",
+                "qa/cases/reviewed-case.json",
+                "qa/cases/reviews",
+                "qa/results/review/case-review-summary.md",
+                "qa/results/review/case-review.json",
             ),
             (
-                "qa/changes/{change_id}/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/changes/{change_id}/review/case-review-summary.md",
-                "qa/changes/{change_id}/review/case-review.json",
+                "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/case-review-summary.md",
+                "qa/results/review/case-review.json",
             ),
         ),
         "explore": (
             "aa-explore",
             "assurance-v1-explorer",
             (
-                "qa/changes/{change_id}/explore/context.json",
-                "qa/changes/{change_id}/explore/exploration.json",
+                "qa/results/explore/context.json",
+                "qa/results/explore/exploration.json",
             ),
-            ("qa/changes/{change_id}/explore/exploration.json",),
+            ("qa/results/explore/exploration.json",),
         ),
         "intake": (
             "aa-intake",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/.qa.yaml", "qa/changes/{change_id}/requirement.md"),
-            ("qa/changes/{change_id}/.qa.yaml", "qa/changes/{change_id}/requirement.md"),
+            ("qa/.qa.yaml", "qa/requirement.md"),
+            ("qa/.qa.yaml", "qa/requirement.md"),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
@@ -597,3 +597,13 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
         assert "opencode" not in dumped
         assert "cursor" not in dumped
     assert forbidden_imports("assurance_intake", "assurance_product") == set()
+
+
+def test_output_routes_are_flat_qa_paths() -> None:
+    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+    assert "qa/changes" not in rendered
+    assert "{change_id}" not in rendered
+    assert "qa/archive" not in rendered
+    assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)

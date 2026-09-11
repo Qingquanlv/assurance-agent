@@ -6,6 +6,7 @@ from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.qa_paths import qa_route
 from graph_engine.attempts import (
     AttemptExecutionContext,
     AttemptRetryPolicy,
@@ -18,7 +19,6 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import (
     AttemptContractRef,
     InvocationMetadata,
-    ResourceClaimTemplate,
     ResourceClaims,
     TaskContext,
     TaskRequest,
@@ -77,7 +77,10 @@ _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{{change_id}}/{suffix}" for suffix in suffixes))
+    return qa_route(*suffixes)
+
+
+_ARCHIVE_RECEIPT = "qa/results/archive/archive-receipt.json"
 
 
 def _job(
@@ -87,6 +90,7 @@ def _job(
     result_model: type[Any],
     outputs: tuple[str, ...],
 ) -> AgentExecutionContract[Any, Any, Any]:
+    writes = (_ARCHIVE_RECEIPT,) if base == "archive" else _paths(*outputs)
     return AgentExecutionContract(
         contract_id=f"assurance.improvement.agent.{base}.v1",
         owner_id="assurance.improvement",
@@ -103,15 +107,14 @@ def _job(
         ),
         agent_result_model=result_model,
         output_model=result_model,
-        resources=ResourceClaimTemplate(
-            parameters={"change_id": "/change_id"},
+        resources=ResourceClaims(
             reads=("qa",),
-            writes=_paths(*outputs),
+            writes=writes,
         ),
         retry=_AGENT_RETRY,
         timeout=_TIMEOUT,
         validators=(),
-        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=_paths(*outputs), finalize=()),
+        phase_write_claims=AgentPhaseWriteClaims(prepare=(), runtime=writes, finalize=()),
     )
 
 
@@ -174,7 +177,10 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
     }
 )
 OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {base: _paths(*outputs) for base, _skill, _profile, _result, outputs in _JOBS}
+    {
+        base: (_ARCHIVE_RECEIPT,) if base == "archive" else _paths(*outputs)
+        for base, _skill, _profile, _result, outputs in _JOBS
+    }
 )
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
     {
@@ -220,8 +226,7 @@ TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingPro
             handler_id="assurance.improvement.reconcile-improvements",
             input_model=RetroReconcileInputV1,
             output_model=RetroReconcileResultV1,
-            resources=ResourceClaimTemplate(
-                parameters={"change_id": "/change_id"},
+            resources=ResourceClaims(
                 reads=("qa/improvements/ledger.json",),
                 writes=tuple(
                     sorted(

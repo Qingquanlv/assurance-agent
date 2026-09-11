@@ -47,15 +47,15 @@ def test_quality_owns_five_agent_contracts() -> None:
         ".aa/data-knowledge.yaml",
         ".aa/policy.yaml",
         "issues",
-        "qa/changes/CH-1",
+        "qa",
     )
     assert resolved.writes == (
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/coverage-gaps.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/metrics.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/observations.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace.json",
+        "qa/results/inspect/epochs/2/batches/B-1/coverage-gaps.json",
+        "qa/results/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
+        "qa/results/inspect/epochs/2/batches/B-1/metrics.json",
+        "qa/results/inspect/epochs/2/batches/B-1/observations.json",
+        "qa/results/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
+        "qa/results/inspect/epochs/2/batches/B-1/trace.json",
     )
     expected = {
         "fact-baseline": ("aa-fact-baseline", "assurance-v1-doc-author", FactBaselineResultV1),

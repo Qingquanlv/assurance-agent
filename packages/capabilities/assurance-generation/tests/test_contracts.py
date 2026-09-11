@@ -264,110 +264,110 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-api-codegen",
             "assurance-v1-test-author",
             (
-                "qa/changes/{change_id}/codegen/api-codegen-summary.md",
-                "qa/changes/{change_id}/codegen/api-generated-files.json",
+                "qa/results/codegen/api-codegen-summary.md",
+                "qa/results/codegen/api-generated-files.json",
             ),
         ),
         "api.plan-review": (
             "aa-api-plan-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/changes/{change_id}/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/changes/{change_id}/review/api-plan-review-summary.md",
-                "qa/changes/{change_id}/review/api-plan-review.json",
+                "qa/results/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/api-plan-review-summary.md",
+                "qa/results/review/api-plan-review.json",
             ),
         ),
         "api.plan": (
             "aa-api-plan",
             "assurance-v1-doc-author",
             (
-                "qa/changes/{change_id}/plans/api-codegen-mapping.json",
-                "qa/changes/{change_id}/plans/api-codegen-plan.md",
-                "qa/changes/{change_id}/plans/api-plan.md",
-                "qa/changes/{change_id}/plans/api-test-data-plan.md",
-                "qa/changes/{change_id}/plans/m3-review-summary.md",
+                "qa/results/plans/api-codegen-mapping.json",
+                "qa/results/plans/api-codegen-plan.md",
+                "qa/results/plans/api-plan.md",
+                "qa/results/plans/api-test-data-plan.md",
+                "qa/results/plans/m3-review-summary.md",
             ),
         ),
         "e2e.codegen": (
             "aa-e2e-codegen",
             "assurance-v1-test-author",
             (
-                "qa/changes/{change_id}/codegen/e2e-codegen-summary.md",
-                "qa/changes/{change_id}/codegen/e2e-generated-files.json",
+                "qa/results/codegen/e2e-codegen-summary.md",
+                "qa/results/codegen/e2e-generated-files.json",
             ),
         ),
         "e2e.plan-review": (
             "aa-e2e-plan-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/changes/{change_id}/plan/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/changes/{change_id}/review/e2e-plan-review-summary.md",
-                "qa/changes/{change_id}/review/e2e-plan-review.json",
+                "qa/results/plan/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/e2e-plan-review-summary.md",
+                "qa/results/review/e2e-plan-review.json",
             ),
         ),
         "e2e.plan": (
             "aa-e2e-plan",
             "assurance-v1-doc-author",
             (
-                "qa/changes/{change_id}/plans/e2e-codegen-mapping.json",
-                "qa/changes/{change_id}/plans/e2e-codegen-plan.md",
-                "qa/changes/{change_id}/plans/e2e-plan.md",
-                "qa/changes/{change_id}/plans/e2e-test-data-plan.md",
-                "qa/changes/{change_id}/plans/m4-review-summary.md",
+                "qa/results/plans/e2e-codegen-mapping.json",
+                "qa/results/plans/e2e-codegen-plan.md",
+                "qa/results/plans/e2e-plan.md",
+                "qa/results/plans/e2e-test-data-plan.md",
+                "qa/results/plans/m4-review-summary.md",
             ),
         ),
         "fuzz.codegen": (
             "aa-fuzz-codegen",
             "assurance-v1-test-author",
             (
-                "qa/changes/{change_id}/codegen/fuzz-codegen-summary.md",
-                "qa/changes/{change_id}/codegen/fuzz-generated-files.json",
+                "qa/results/codegen/fuzz-codegen-summary.md",
+                "qa/results/codegen/fuzz-generated-files.json",
             ),
         ),
         "fuzz.plan-review": (
             "aa-fuzz-plan-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/changes/{change_id}/plan/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/changes/{change_id}/review/fuzz-plan-review-summary.md",
-                "qa/changes/{change_id}/review/fuzz-plan-review.json",
+                "qa/results/plan/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/fuzz-plan-review-summary.md",
+                "qa/results/review/fuzz-plan-review.json",
             ),
         ),
         "fuzz.plan": (
             "aa-fuzz-plan",
             "assurance-v1-doc-author",
             (
-                "qa/changes/{change_id}/plans/fuzz-codegen-mapping.json",
-                "qa/changes/{change_id}/plans/fuzz-codegen-plan.md",
-                "qa/changes/{change_id}/plans/fuzz-plan.md",
-                "qa/changes/{change_id}/plans/fuzz-review-summary.md",
+                "qa/results/plans/fuzz-codegen-mapping.json",
+                "qa/results/plans/fuzz-codegen-plan.md",
+                "qa/results/plans/fuzz-plan.md",
+                "qa/results/plans/fuzz-review-summary.md",
             ),
         ),
         "performance.codegen": (
             "aa-performance-codegen",
             "assurance-v1-test-author",
             (
-                "qa/changes/{change_id}/codegen/performance-codegen-summary.md",
-                "qa/changes/{change_id}/codegen/performance-generated-files.json",
+                "qa/results/codegen/performance-codegen-summary.md",
+                "qa/results/codegen/performance-generated-files.json",
             ),
         ),
         "performance.plan-review": (
             "aa-performance-plan-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/changes/{change_id}/plan/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/changes/{change_id}/review/performance-plan-review-summary.md",
-                "qa/changes/{change_id}/review/performance-plan-review.json",
+                "qa/results/plan/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/performance-plan-review-summary.md",
+                "qa/results/review/performance-plan-review.json",
             ),
         ),
         "performance.plan": (
             "aa-performance-plan",
             "assurance-v1-doc-author",
             (
-                "qa/changes/{change_id}/plans/performance-codegen-mapping.json",
-                "qa/changes/{change_id}/plans/performance-codegen-plan.md",
-                "qa/changes/{change_id}/plans/performance-plan.md",
-                "qa/changes/{change_id}/plans/performance-review-summary.md",
+                "qa/results/plans/performance-codegen-mapping.json",
+                "qa/results/plans/performance-codegen-plan.md",
+                "qa/results/plans/performance-plan.md",
+                "qa/results/plans/performance-review-summary.md",
             ),
         ),
     }
@@ -386,16 +386,14 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             path for path in writes if "{coverage_epoch}" not in path and "{review_round}" not in path
         )
         if stage == "codegen":
-            expected_claims = tuple(sorted((*writes, f"qa/changes/{{change_id}}/generated/{family}/files")))
+            expected_claims = tuple(sorted((*writes, "qa/tests")))
             expected_claims = tuple(
                 path
                 for path in expected_claims
                 if "{coverage_epoch}" not in path and "{review_round}" not in path
             )
         if stage == "plan-review":
-            expected_claims = tuple(
-                sorted((*expected_claims, f"qa/changes/{{change_id}}/plan/{family}/reviews"))
-            )
+            expected_claims = tuple(sorted((*expected_claims, f"qa/results/plan/{family}/reviews")))
         assert contract.resources.writes == expected_claims
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()
@@ -405,21 +403,25 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
     assert not any(name == "assurance_product" or name.startswith("assurance_product.") for name in found)
 
 
-def test_codegen_job_claims_cover_dynamic_change_local_mapping_targets() -> None:
-    from graph_engine.plugin_api import ResourceClaimTemplate
+def test_output_routes_are_flat_qa_paths() -> None:
+    from assurance_generation.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
 
+    rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+    assert "qa/changes" not in rendered
+    assert "{change_id}" not in rendered
+    assert "qa/archive" not in rendered
+    assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+
+
+def test_codegen_job_claims_cover_dynamic_change_local_mapping_targets() -> None:
     from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
 
     for family in ("api", "e2e", "fuzz", "performance"):
         base = f"{family}.codegen"
         resources = AGENT_JOB_CONTRACTS[base].resources
-        assert isinstance(resources, ResourceClaimTemplate)
-        claims = resources.resolve({"change_id": "CH-1"}).writes
-        dynamic_root = f"qa/changes/CH-1/generated/{family}/files"
-        assert dynamic_root in claims
-        assert dynamic_root not in tuple(
-            path.replace("{change_id}", "CH-1") for path in OUTPUT_ROUTE_TEMPLATES[base]
-        )
+        claims = resources.writes
+        assert "qa/tests" in claims
+        assert "qa/tests" not in OUTPUT_ROUTE_TEMPLATES[base]
 
 
 def test_generation_schema_bytes_equal_model_schema() -> None:

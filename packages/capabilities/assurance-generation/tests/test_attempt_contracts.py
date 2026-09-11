@@ -45,11 +45,11 @@ def test_generation_round_history_routes_include_epoch_and_local_round() -> None
     from assurance_generation.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
 
     plan_pattern = (
-        "qa/changes/{change_id}/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+        "qa/results/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
     )
     assert plan_pattern in OUTPUT_ROUTE_TEMPLATES["api.plan-review"]
-    assert plan_pattern.format(change_id="CH-1", coverage_epoch=0, review_round=0) != plan_pattern.format(
-        change_id="CH-1", coverage_epoch=1, review_round=0
+    assert plan_pattern.format(coverage_epoch=0, review_round=0) != plan_pattern.format(
+        coverage_epoch=1, review_round=0
     )
 
 

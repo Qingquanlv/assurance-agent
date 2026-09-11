@@ -5,9 +5,10 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.qa_paths import qa_join, qa_route
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
+from graph_engine.plugin_api import AttemptContractRef, ResourceClaims
 
 from assurance_healing.contracts.agent import CoverageRepairInputV1, FixProposalInputV1, FixProposalResultV1
 from assurance_healing.contracts.application import (
@@ -24,7 +25,7 @@ _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{{change_id}}/{suffix}" for suffix in suffixes))
+    return qa_route(*suffixes)
 
 
 def _job(
@@ -45,8 +46,7 @@ def _job(
         input_model=input_model,
         agent_result_model=result_model,
         output_model=result_model,
-        resources=ResourceClaimTemplate(
-            parameters={"change_id": "/change_id"},
+        resources=ResourceClaims(
             reads=("qa",),
             writes=_paths(*outputs),
         ),
@@ -76,8 +76,8 @@ _JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] =
     ),
 )
 
-_APPLICATION_RUNTIME_ROOTS = ("qa/changes/{change_id}/generated",)
-_APPLICATION_FINALIZE_ROOTS = ("qa/changes/{change_id}/healing/epochs",)
+_APPLICATION_RUNTIME_ROOTS = ("qa/tests",)
+_APPLICATION_FINALIZE_ROOTS = _paths("healing/epochs")
 _APPLICATION_ROOTS = tuple(sorted((*_APPLICATION_RUNTIME_ROOTS, *_APPLICATION_FINALIZE_ROOTS)))
 
 AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
@@ -96,8 +96,7 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
             input_model=ApplyTestRepairInputV1,
             agent_result_model=TestRepairResultV1,
             output_model=VerifiedTestRepairV1,
-            resources=ResourceClaimTemplate(
-                parameters={"change_id": "/change_id"},
+            resources=ResourceClaims(
                 reads=("qa",),
                 writes=_APPLICATION_ROOTS,
             ),
@@ -119,7 +118,7 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
             sorted(
                 (
                     *_APPLICATION_RUNTIME_ROOTS,
-                    "qa/changes/{change_id}/healing/epochs/{coverage_epoch}/rounds/{repair_round}",
+                    qa_join("healing/epochs/{coverage_epoch}/rounds/{repair_round}"),
                 )
             )
         )

@@ -78,10 +78,10 @@ _PURE_IDS = frozenset(
 def test_review_history_identity_includes_epoch() -> None:
     from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
 
-    pattern = "qa/changes/{change_id}/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    pattern = "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
     assert pattern in OUTPUT_ROUTE_TEMPLATES["case-review"]
-    first = pattern.format(change_id="CH-1", coverage_epoch=0, review_round=0)
-    second = pattern.format(change_id="CH-1", coverage_epoch=1, review_round=0)
+    first = pattern.format(coverage_epoch=0, review_round=0)
+    second = pattern.format(coverage_epoch=1, review_round=0)
     assert first != second
 
 
@@ -247,7 +247,7 @@ def test_intake_owns_resolve_and_read_only_load_plan_tasks() -> None:
     load = TASK_ATTEMPT_CONTRACTS["load-plan"]
     assert resolve.contract_id == "assurance.intake.task.resolve-plan"
     assert resolve.handler_id == "assurance.intake.resolve-plan"
-    assert resolve.resources.writes == ("qa/changes/{change_id}/plan",)
+    assert resolve.resources.writes == ("qa/results/plan",)
     assert load.contract_id == "assurance.intake.task.load-plan"
     assert load.handler_id == "assurance.intake.load-plan"
     assert load.resources.writes == ()

@@ -5,9 +5,10 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.qa_paths import qa_join, qa_route
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
+from graph_engine.plugin_api import AttemptContractRef, ResourceClaims
 
 from assurance_intake.contracts.agent import (
     ArtifactListResultV1,
@@ -30,7 +31,10 @@ _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{{change_id}}/{suffix}" for suffix in suffixes))
+    return qa_route(*suffixes)
+
+
+_CASES_ROOT = "qa/cases"
 
 
 def _job(
@@ -47,7 +51,15 @@ def _job(
     prepare_paths = _paths(*prepare_suffixes) if prepare_suffixes else ()
     finalize_suffixes = ("cases/reviewed-case.json", "cases/reviews") if base == "case-review" else ()
     finalize_paths = _paths(*finalize_suffixes) if finalize_suffixes else ()
-    writes = tuple(sorted(set(_paths(*outputs, *extra_claims)) | set(prepare_paths) | set(finalize_paths)))
+    literal_claims = (_CASES_ROOT,) if base == "case-design" else ()
+    writes = tuple(
+        sorted(
+            set(_paths(*outputs, *extra_claims))
+            | set(literal_claims)
+            | set(prepare_paths)
+            | set(finalize_paths)
+        )
+    )
     return AgentExecutionContract(
         contract_id=f"assurance.intake.agent.{base}.v1",
         owner_id="assurance.intake",
@@ -58,8 +70,7 @@ def _job(
         input_model=input_model,
         agent_result_model=result_model,
         output_model=output_model,
-        resources=ResourceClaimTemplate(
-            parameters={"change_id": "/change_id"},
+        resources=ResourceClaims(
             reads=("qa",),
             writes=writes,
         ),
@@ -88,7 +99,7 @@ _JOBS: tuple[
         ArtifactListResultV1,
         CaseDesignOutputV1,
         (".qa.yaml", "proposal.md", "trace/minimum-coverage-matrix.json"),
-        ("cases",),
+        (),
     ),
     (
         "case-review",
@@ -136,8 +147,9 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                     *_paths(*outputs),
                     *(
                         (
-                            "qa/changes/{change_id}/cases/reviews/epochs/"
-                            "{coverage_epoch}/rounds/{review_round}.json",
+                            qa_join(
+                                "cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+                            ),
                         )
                         if base == "case-review"
                         else ()
@@ -154,10 +166,9 @@ _RESOLVE_PLAN = TaskAttemptContract(
     handler_id="assurance.intake.resolve-plan",
     input_model=ResolvePlanInputV1,
     output_model=ResolvePlanOutputV1,
-    resources=ResourceClaimTemplate(
-        parameters={"change_id": "/change_id"},
-        reads=(".aa", "qa/changes/{change_id}/explore"),
-        writes=("qa/changes/{change_id}/plan",),
+    resources=ResourceClaims(
+        reads=(".aa", "qa"),
+        writes=_paths("plan"),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,
@@ -169,9 +180,8 @@ _LOAD_PLAN = TaskAttemptContract(
     handler_id="assurance.intake.load-plan",
     input_model=LoadPlanInputV1,
     output_model=ResolvePlanOutputV1,
-    resources=ResourceClaimTemplate(
-        parameters={"change_id": "/change_id"},
-        reads=(".aa", "qa/changes/{change_id}"),
+    resources=ResourceClaims(
+        reads=(".aa", "qa"),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,

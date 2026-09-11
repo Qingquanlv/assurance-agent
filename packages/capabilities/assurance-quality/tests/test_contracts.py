@@ -461,27 +461,27 @@ def test_quality_agent_job_catalog_is_feature_owned() -> None:
         "fact-baseline": (
             "aa-fact-baseline",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/facts/fact-baseline.json",),
+            ("qa/results/facts/fact-baseline.json",),
         ),
         "inspect": (
             "aa-inspect",
             "assurance-v1-reviewer",
-            ("qa/changes/{change_id}/inspect/inspection.json",),
+            ("qa/results/inspect/inspection.json",),
         ),
         "issue-analysis": (
             "aa-issue-analyzer",
             "assurance-v1-reporter",
-            ("qa/changes/{change_id}/inspect/issue-analysis.json",),
+            ("qa/results/inspect/issue-analysis.json",),
         ),
         "issue-triage": (
             "aa-issue-triage-advisor",
             "assurance-v1-reporter",
-            ("qa/changes/{change_id}/inspect/issue-triage.json",),
+            ("qa/results/inspect/issue-triage.json",),
         ),
         "report": (
             "aa-report-generator",
             "assurance-v1-reporter",
-            ("qa/changes/{change_id}/report/report.md",),
+            ("qa/results/report/report.md",),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
@@ -499,3 +499,13 @@ def test_quality_agent_job_catalog_is_feature_owned() -> None:
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
+
+
+def test_output_routes_are_flat_qa_paths() -> None:
+    from assurance_quality.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+    assert "qa/changes" not in rendered
+    assert "{change_id}" not in rendered
+    assert "qa/archive" not in rendered
+    assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)

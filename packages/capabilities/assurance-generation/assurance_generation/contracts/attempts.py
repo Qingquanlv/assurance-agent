@@ -5,6 +5,7 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.qa_paths import qa_join, qa_route
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
@@ -63,7 +64,10 @@ _PLAN_FILES: Mapping[str, tuple[str, ...]] = MappingProxyType(
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{{change_id}}/{suffix}" for suffix in suffixes))
+    return qa_route(*suffixes)
+
+
+_GENERATED_TESTS_ROOT = "qa/tests"
 
 
 def _review_outputs(family: str) -> tuple[str, ...]:
@@ -87,13 +91,12 @@ def _job(
     outputs: tuple[str, ...],
 ) -> AgentExecutionContract[Any, Any, Any]:
     family, _, stage = base.partition(".")
-    claim_outputs = outputs
-    if stage == "codegen":
-        claim_outputs = (*outputs, f"generated/{family}/files")
     finalize_suffixes: tuple[str, ...] = ()
     if stage == "plan-review":
         finalize_suffixes = (f"plan/{family}/reviews",)
-    runtime_writes = _paths(*claim_outputs)
+    runtime_writes = _paths(*outputs)
+    if stage == "codegen":
+        runtime_writes = tuple(sorted((*runtime_writes, _GENERATED_TESTS_ROOT)))
     finalize_writes = _paths(*finalize_suffixes)
     writes = tuple(sorted((*runtime_writes, *finalize_writes)))
     return AgentExecutionContract(
@@ -106,8 +109,7 @@ def _job(
         input_model=input_model,
         agent_result_model=agent_result_model,
         output_model=output_model,
-        resources=ResourceClaimTemplate(
-            parameters={"change_id": "/change_id"},
+        resources=ResourceClaims(
             reads=("qa",),
             writes=writes,
         ),
@@ -248,8 +250,10 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                     *_paths(*outputs),
                     *(
                         (
-                            f"qa/changes/{{change_id}}/plan/{base.partition('.')[0]}/reviews/"
-                            "epochs/{coverage_epoch}/rounds/{review_round}.json",
+                            qa_join(
+                                f"plan/{base.partition('.')[0]}/reviews/"
+                                "epochs/{coverage_epoch}/rounds/{review_round}.json"
+                            ),
                         )
                         if base.partition(".")[2] == "plan-review"
                         else ()
@@ -278,9 +282,9 @@ _PUBLISH_CYCLE = TaskAttemptContract(
     input_model=CompleteGenerationInputV1,
     output_model=GenerationCycleResultV1,
     resources=ResourceClaimTemplate(
-        parameters={"change_id": "/change_id", "coverage_epoch": "/coverage_epoch_token"},
-        reads=("qa/changes/{change_id}",),
-        writes=("qa/changes/{change_id}/generation/epochs/{coverage_epoch}/mapping.json",),
+        parameters={"coverage_epoch": "/coverage_epoch_token"},
+        reads=("qa",),
+        writes=(qa_join("generation/epochs/{coverage_epoch}/mapping.json"),),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,

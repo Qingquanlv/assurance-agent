@@ -5,9 +5,10 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.qa_paths import qa_join, qa_route
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
+from graph_engine.plugin_api import AttemptContractRef, ResourceClaims
 
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
@@ -18,7 +19,7 @@ _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{{change_id}}/{suffix}" for suffix in suffixes))
+    return qa_route(*suffixes)
 
 
 def _job(
@@ -28,7 +29,7 @@ def _job(
     outputs: tuple[str, ...],
 ) -> AgentExecutionContract[Any, Any, Any]:
     writes = _paths(*outputs)
-    view_root = "qa/changes/{change_id}/.staging/execution"
+    view_root = qa_join(".staging/execution")
     attempt_writes = tuple(sorted((*writes, view_root)))
     return AgentExecutionContract(
         contract_id=f"assurance.execution.agent.{base}.v1",
@@ -40,8 +41,7 @@ def _job(
         input_model=input_model,
         agent_result_model=ExecutionAgentResultV1,
         output_model=ExecutionEvidenceV1,
-        resources=ResourceClaimTemplate(
-            parameters={"change_id": "/change_id"},
+        resources=ResourceClaims(
             reads=("qa",),
             writes=attempt_writes,
         ),
