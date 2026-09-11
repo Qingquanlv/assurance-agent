@@ -10,7 +10,9 @@ from pydantic import ValidationError
 
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
-from assurance_generation.contracts.codegen import staged_generated_path
+from agent_runtime_contracts.qa_paths import qa_join
+
+from assurance_generation.contracts.codegen import durable_test_path
 from assurance_generation.contracts.mapping import ClosedMappingEntryV1, ClosedMappingV1
 from assurance_generation.contracts.workflow import CompleteGenerationInputV1, GenerationCycleResultV1
 from assurance_generation.operations.planning import evidence_ref
@@ -50,7 +52,7 @@ def complete_generation_cycle(
             raise ValueError("generation family identity does not match the current cycle")
         targets = {item.target_file for item in family.mapping.entries}
         for file in family.files:
-            path = staged_generated_path(request.change_id, family.family, file.repo_path)
+            path = durable_test_path(file.repo_path)
             ref = evidence_ref(project_root, path)
             if file.content_sha256 != f"sha256:{ref.digest}":
                 raise ValueError(f"committed generated source changed: {path}")
@@ -80,7 +82,7 @@ def complete_generation_cycle(
     entries.sort(key=lambda entry: (entry.layer, entry.test, entry.case_id))
     mapping = ClosedMappingV1(selected=tuple(entry.test for entry in entries), mappings=tuple(entries))
     data = canonical_json_bytes(mapping.model_dump(mode="json")) + b"\n"
-    relative = f"qa/changes/{request.change_id}/generation/epochs/{request.coverage_epoch}/mapping.json"
+    relative = qa_join(f"generation/epochs/{request.coverage_epoch}/mapping.json")
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)

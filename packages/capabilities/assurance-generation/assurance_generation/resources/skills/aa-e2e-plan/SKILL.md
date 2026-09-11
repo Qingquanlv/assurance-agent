@@ -45,13 +45,13 @@ those exact reads and a path-scoped grep both fail.
 
 ### required
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/cases/**/case.yaml`
 - `qa/changes/<change-id>/.qa.yaml`
 - `qa/changes/<change-id>/proposal.md`
 
 ### optional
 
-- `qa/changes/<change-id>/review/e2e-plan-review.json`
+- `qa/results/review/e2e-plan-review.json`
 - `qa/changes/<change-id>/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
@@ -65,11 +65,11 @@ those exact reads and a path-scoped grep both fail.
 
 ### required
 
-- `qa/changes/<change-id>/plans/e2e-plan.md`
-- `qa/changes/<change-id>/plans/e2e-test-data-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/m4-review-summary.md`
+- `qa/results/plans/e2e-plan.md`
+- `qa/results/plans/e2e-test-data-plan.md`
+- `qa/results/plans/e2e-codegen-plan.md`
+- `qa/results/plans/e2e-codegen-mapping.json`
+- `qa/results/plans/m4-review-summary.md`
 
 ## Closed Codegen Mapping Contract
 
@@ -87,7 +87,7 @@ exactly once, and no other Case ID.
 
 ### conditional
 
-- `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`
+- `qa/results/plans/data-knowledge.proposal.e2e.yaml`
 
 When a proposal is required, write the complete data-knowledge proposal envelope
 and validate the whole envelope against the runtime contract.

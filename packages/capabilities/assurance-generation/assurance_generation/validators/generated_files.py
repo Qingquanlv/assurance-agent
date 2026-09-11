@@ -32,19 +32,19 @@ def closed_family(family: str) -> Family:
 
 
 FAMILY_TEST_ROOTS: dict[Family, tuple[str, ...]] = {
-    "api": ("tests/api/", "tests/testdata/"),
-    "e2e": ("tests/e2e/", "tests/testdata/"),
-    "fuzz": ("tests/fuzz/", "tests/testdata/"),
-    "performance": ("tests/perf/", "tests/testdata/"),
+    "api": ("qa/tests/api/", "qa/tests/testdata/"),
+    "e2e": ("qa/tests/e2e/", "qa/tests/testdata/"),
+    "fuzz": ("qa/tests/fuzz/", "qa/tests/testdata/"),
+    "performance": ("qa/tests/perf/", "qa/tests/testdata/"),
 }
 ALL_TEST_ROOTS: tuple[str, ...] = (
-    "tests/api/",
-    "tests/e2e/",
-    "tests/fuzz/",
-    "tests/perf/",
-    "tests/testdata/",
+    "qa/tests/api/",
+    "qa/tests/e2e/",
+    "qa/tests/fuzz/",
+    "qa/tests/perf/",
+    "qa/tests/testdata/",
 )
-MAPPING_WRITE_ROOTS: tuple[str, ...] = ("qa/changes/", *ALL_TEST_ROOTS)
+MAPPING_WRITE_ROOTS: tuple[str, ...] = ("qa/results/", *ALL_TEST_ROOTS)
 _OUTSIDE_REASON = "generation candidate may write only declared test paths"
 _UNMAPPED_REASON = "generated test file is absent from the closed mapping: {path}"
 _STALE_REASON = "codegen mapping is stale: {path}"
@@ -91,7 +91,7 @@ def _accepts_generated_write(path: str, write_roots: tuple[str, ...], family: Fa
 
 def _is_mapping_target_module(path: str) -> bool:
     posix = PurePosixPath(path)
-    if not posix.parts or posix.parts[0] != "tests" or posix.suffix != ".py":
+    if posix.suffix != ".py" or posix.parts[:2] != ("qa", "tests"):
         return False
     stem = posix.stem
     return stem.startswith("test_") or stem.endswith("_test")

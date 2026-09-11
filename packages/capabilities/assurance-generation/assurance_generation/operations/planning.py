@@ -341,9 +341,14 @@ def load_family_cases(
     capability_leafs: tuple[str, ...],
     case_paths: tuple[str, ...] | None = None,
 ) -> CaseYamlAuthoring:
-    cases_root = _change_root(workspace, change_id) / "cases"
+    _change_root(workspace, change_id)
+    cases_root = workspace / "qa" / "cases"
+    try:
+        cases_root.resolve().relative_to(workspace.resolve())
+    except ValueError as error:
+        raise InputError("reviewed case directory escapes the attempt workspace") from error
     if not cases_root.is_dir() or cases_root.is_symlink():
-        raise InputError(f"reviewed case directory is missing: qa/changes/{change_id}/cases")
+        raise InputError("reviewed case directory is missing: qa/cases")
     selected: dict[str, list[object]] = {"added": [], "modified": []}
     schema_versions: set[str] = set()
     paths = (
@@ -352,7 +357,7 @@ def load_family_cases(
         else tuple(sorted(cases_root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
     )
     if not paths:
-        raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
+        raise InputError("reviewed case files are missing: qa/cases/**/case.yaml")
     for path in paths:
         document = _yaml_document(_regular_input_file(workspace, path))
         version = document.get("schema_version")
@@ -391,13 +396,17 @@ def plan_review_input_paths(
     family: Family,
 ) -> tuple[str, ...]:
     """Return the mechanically locked files a plan reviewer must read exactly."""
-    change_root = _change_root(workspace, change_id)
-    cases_root = change_root / "cases"
+    _change_root(workspace, change_id)
+    cases_root = workspace / "qa" / "cases"
+    try:
+        cases_root.resolve().relative_to(workspace.resolve())
+    except ValueError as error:
+        raise InputError("reviewed case directory escapes the attempt workspace") from error
     if not cases_root.is_dir() or cases_root.is_symlink():
-        raise InputError(f"reviewed case directory is missing: qa/changes/{change_id}/cases")
+        raise InputError("reviewed case directory is missing: qa/cases")
     case_files = tuple(sorted(cases_root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
     if not case_files:
-        raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
+        raise InputError("reviewed case files are missing: qa/cases/**/case.yaml")
 
     relative_paths = (
         *plan_outputs(change_id, family),

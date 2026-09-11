@@ -44,7 +44,7 @@ async def test_plan_handoff_preserves_reviewed_decisions_through_codegen(family:
     for relative in (
         *family_plan_files(family),
         "qa/changes/CH-DEMO-001/proposal.md",
-        "qa/changes/CH-DEMO-001/cases/items/case.yaml",
+        "qa/cases/items/case.yaml",
     ):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)

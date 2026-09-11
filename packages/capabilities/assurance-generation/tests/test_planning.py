@@ -40,7 +40,7 @@ def test_e2e_plan_skill_reentry_reads_family_prefixed_review() -> None:
 
 
 def _write_reviewed_cases(tmp_path: Path, family: str) -> None:
-    path = tmp_path / "qa/changes/CH-DEMO-001/cases/items/case.yaml"
+    path = tmp_path / "qa/cases/items/case.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(reviewed_cases(family), sort_keys=False), encoding="utf-8")
 
@@ -62,10 +62,10 @@ def _write_plan_package(project: Path, family: str) -> tuple[str, ...]:
                         "case_id": f"TC_{family.upper()}_001",
                         "symbol": f"test_tc_{family}_001__happy_path",
                         "target_file": {
-                            "api": "tests/api/test_users.py",
-                            "e2e": "tests/e2e/test_users.py",
-                            "fuzz": "tests/fuzz/test_users.py",
-                            "performance": "tests/perf/test_users.py",
+                            "api": "qa/tests/api/test_users.py",
+                            "e2e": "qa/tests/e2e/test_users.py",
+                            "fuzz": "qa/tests/fuzz/test_users.py",
+                            "performance": "qa/tests/perf/test_users.py",
                         }[family],
                     }
                 ],

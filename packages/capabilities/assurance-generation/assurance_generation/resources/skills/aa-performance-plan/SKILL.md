@@ -58,12 +58,12 @@ benchmark requirement without inspecting secret values.
 
 ### required
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/cases/**/case.yaml`
 - `qa/changes/<change-id>/proposal.md`
 
 ### optional
 
-- `qa/changes/<change-id>/review/performance-plan-review.json`
+- `qa/results/review/performance-plan-review.json`
 - `qa/changes/<change-id>/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
@@ -75,10 +75,10 @@ benchmark requirement without inspecting secret values.
 
 ### required
 
-- `qa/changes/<change-id>/plans/performance-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/performance-review-summary.md`
+- `qa/results/plans/performance-plan.md`
+- `qa/results/plans/performance-codegen-plan.md`
+- `qa/results/plans/performance-codegen-mapping.json`
+- `qa/results/plans/performance-review-summary.md`
 
 ## Closed Codegen Mapping Contract
 

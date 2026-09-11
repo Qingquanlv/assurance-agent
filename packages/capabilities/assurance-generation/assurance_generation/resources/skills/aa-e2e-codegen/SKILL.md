@@ -18,13 +18,13 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 
 - reviewed E2E plan (`PlanResultV1`)
 - frozen case references for the selected E2E cases
-- `qa/changes/<change-id>/plans/e2e-plan.md`
-- `qa/changes/<change-id>/plans/e2e-test-data-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/m4-review-summary.md`
-- `qa/changes/<change-id>/review/e2e-plan-review.json`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/e2e-plan.md`
+- `qa/results/plans/e2e-test-data-plan.md`
+- `qa/results/plans/e2e-codegen-plan.md`
+- `qa/results/plans/e2e-codegen-mapping.json`
+- `qa/results/plans/m4-review-summary.md`
+- `qa/results/review/e2e-plan-review.json`
+- `qa/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
 ### optional
@@ -39,24 +39,24 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 
 ### required
 
-- `qa/changes/<change-id>/codegen/e2e-codegen-summary.md`
-- `qa/changes/<change-id>/codegen/e2e-generated-files.json`
-- generated or updated test files under `qa/changes/<change-id>/generated/e2e/files/tests/e2e/**`
+- `qa/results/codegen/e2e-codegen-summary.md`
+- `qa/results/codegen/e2e-generated-files.json`
+- generated or updated test files under `qa/tests/e2e/**`
 
 ### conditional
 
-- `qa/changes/<change-id>/generated/e2e/files/tests/testdata/domain/**` when the
+- `qa/tests/testdata/domain/**` when the
   reviewed plan authorizes a shared builder
 
-The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+The generated-files manifest and mapping keep `target_file` under `qa/tests/`. Do not
 write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized staged files under
-`qa/changes/<change-id>/generated/e2e/files/` plus the summary and
-generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
-the logical `tests/e2e/**` or `tests/testdata/**` target.
+Write only authorized files under
+`qa/tests/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` are
+the logical and physical `qa/tests/e2e/**` or `qa/tests/testdata/**` path.
 
 Do not modify product source.
 

@@ -66,13 +66,13 @@ finally-safe cleanup in case the defective product unexpectedly persists data.
 
 ### required
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/cases/**/case.yaml`
 - `qa/changes/<change-id>/.qa.yaml`
 - `qa/changes/<change-id>/proposal.md`
 
 ### optional
 
-- `qa/changes/<change-id>/review/api-plan-review.json`
+- `qa/results/review/api-plan-review.json`
 - `qa/changes/<change-id>/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
@@ -86,11 +86,11 @@ finally-safe cleanup in case the defective product unexpectedly persists data.
 
 ### required
 
-- `qa/changes/<change-id>/plans/api-plan.md`
-- `qa/changes/<change-id>/plans/api-test-data-plan.md`
-- `qa/changes/<change-id>/plans/api-codegen-plan.md`
-- `qa/changes/<change-id>/plans/api-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/m3-review-summary.md`
+- `qa/results/plans/api-plan.md`
+- `qa/results/plans/api-test-data-plan.md`
+- `qa/results/plans/api-codegen-plan.md`
+- `qa/results/plans/api-codegen-mapping.json`
+- `qa/results/plans/m3-review-summary.md`
 
 ## Closed Codegen Mapping Contract
 
@@ -108,7 +108,7 @@ exactly once, and no other Case ID.
 
 ### conditional
 
-- `qa/changes/<change-id>/plans/data-knowledge.proposal.api.yaml`
+- `qa/results/plans/data-knowledge.proposal.api.yaml`
 
 When a proposal is required, write the complete data-knowledge proposal envelope.
 For a delta, `based_on_l1_version` is the current L1 `version`; for a bootstrap

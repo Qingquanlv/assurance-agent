@@ -45,12 +45,12 @@ those exact reads and a path-scoped grep both fail.
 
 ### required
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/cases/**/case.yaml`
 - `qa/changes/<change-id>/proposal.md`
 
 ### optional
 
-- `qa/changes/<change-id>/review/fuzz-plan-review.json`
+- `qa/results/review/fuzz-plan-review.json`
 - `qa/changes/<change-id>/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
@@ -102,10 +102,10 @@ handoff and have explicit per-case state discovery and cleanup.
 
 ### required
 
-- `qa/changes/<change-id>/plans/fuzz-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/fuzz-review-summary.md`
+- `qa/results/plans/fuzz-plan.md`
+- `qa/results/plans/fuzz-codegen-plan.md`
+- `qa/results/plans/fuzz-codegen-mapping.json`
+- `qa/results/plans/fuzz-review-summary.md`
 
 ## Closed Codegen Mapping Contract
 

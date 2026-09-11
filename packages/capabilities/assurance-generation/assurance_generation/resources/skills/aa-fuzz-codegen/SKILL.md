@@ -19,18 +19,18 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 
 - reviewed fuzz plan (`PlanResultV1`) including endpoint/property strategy
 - frozen case references for the selected fuzz cases
-- `qa/changes/<change-id>/plans/fuzz-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/fuzz-review-summary.md`
-- `qa/changes/<change-id>/review/fuzz-plan-review.json`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/fuzz-plan.md`
+- `qa/results/plans/fuzz-codegen-plan.md`
+- `qa/results/plans/fuzz-codegen-mapping.json`
+- `qa/results/plans/fuzz-review-summary.md`
+- `qa/results/review/fuzz-plan-review.json`
+- `qa/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
 ### optional
 
 - baseline tree identity when the graph provides one
-- `qa/changes/<change-id>/review/fuzz-plan-checks.json`
+- `qa/results/review/fuzz-plan-checks.json`
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
 - `tests/fuzz/**`
@@ -40,24 +40,24 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 
 ### required
 
-- `qa/changes/<change-id>/codegen/fuzz-codegen-summary.md`
-- `qa/changes/<change-id>/codegen/fuzz-generated-files.json`
-- generated or updated test files under `qa/changes/<change-id>/generated/fuzz/files/tests/fuzz/**`
+- `qa/results/codegen/fuzz-codegen-summary.md`
+- `qa/results/codegen/fuzz-generated-files.json`
+- generated or updated test files under `qa/tests/fuzz/**`
 
 ### conditional
 
-- `qa/changes/<change-id>/generated/fuzz/files/tests/testdata/domain/**` when the
+- `qa/tests/testdata/domain/**` when the
   reviewed plan authorizes a shared builder
 
-The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+The generated-files manifest and mapping keep `target_file` under `qa/tests/`. Do not
 write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized staged files under
-`qa/changes/<change-id>/generated/fuzz/files/` plus the summary and
-generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
-the logical `tests/fuzz/**` or `tests/testdata/**` target.
+Write only authorized files under
+`qa/tests/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` are
+the logical and physical `qa/tests/fuzz/**` or `qa/tests/testdata/**` path.
 
 Do not modify product source.
 

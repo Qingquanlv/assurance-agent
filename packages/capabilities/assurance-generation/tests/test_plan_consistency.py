@@ -22,7 +22,7 @@ def _mapping() -> CodegenMapping:
                 {
                     "case_id": "TC_API_001",
                     "symbol": "test_tc_api_001__happy_path",
-                    "target_file": "tests/api/test_users.py",
+                    "target_file": "qa/tests/api/test_users.py",
                 }
             ],
         }

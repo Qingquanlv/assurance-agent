@@ -114,8 +114,10 @@ async def test_plan_review_requires_complete_unique_repair_set(fix_ids: list[str
 async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path) -> None:
     family = "api"
     change_root = tmp_path / "qa/changes/CH-DEMO-001"
-    (change_root / "cases/items").mkdir(parents=True)
-    (change_root / "cases/items/case.yaml").write_text(
+    change_root.mkdir(parents=True)
+    cases_root = tmp_path / "qa/cases/items"
+    cases_root.mkdir(parents=True)
+    (cases_root / "case.yaml").write_text(
         "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n",
         encoding="utf-8",
     )
@@ -185,7 +187,7 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("locked plan input\n", encoding="utf-8")
-    case_path = change_root / "cases/items/case.yaml"
+    case_path = tmp_path / "qa/cases/items/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
 
@@ -213,7 +215,7 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
             sorted(
                 (
                     *family_plan_files(family),
-                    "qa/changes/CH-DEMO-001/cases/items/case.yaml",
+                    "qa/cases/items/case.yaml",
                     "qa/changes/CH-DEMO-001/proposal.md",
                 )
             )
@@ -233,7 +235,7 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
     proposal_path = tmp_path / "qa/changes/CH-DEMO-001/proposal.md"
     proposal_path.parent.mkdir(parents=True, exist_ok=True)
     proposal_path.write_text("# Proposal\n", encoding="utf-8")
-    case_path = tmp_path / "qa/changes/CH-DEMO-001/cases/items/case.yaml"
+    case_path = tmp_path / "qa/cases/items/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
 
