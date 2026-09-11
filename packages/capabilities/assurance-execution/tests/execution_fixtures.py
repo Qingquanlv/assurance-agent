@@ -285,7 +285,7 @@ def validation_context() -> ValidationContext:
 def codegen_mapping(
     *,
     layer: str = "api",
-    target_file: str = "tests/generated_test.py",
+    target_file: str = "qa/tests/generated_test.py",
     case_id: str = "TC_A",
     symbol: str = "test_tc_a_001__ok",
 ) -> dict[str, object]:
@@ -349,7 +349,7 @@ def reviewed_cases(*, case_id: str = "TC_A", leaf: str = "entities.item.create")
 
 def select_request(
     *,
-    target_file: str = "tests/generated_test.py",
+    target_file: str = "qa/tests/generated_test.py",
     selected_targets: dict[str, bool] | None = None,
     extra_mappings: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:

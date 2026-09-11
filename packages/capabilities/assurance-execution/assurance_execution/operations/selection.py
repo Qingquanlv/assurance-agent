@@ -55,9 +55,12 @@ def close_mappings(payload: SelectInputV1) -> ClosedMappingV1:
             case = by_id.get(item.case_id)
             if case is None:
                 raise InputError(f"unknown case id: {item.case_id}")
+            view_file = item.target_file
+            if view_file.startswith("qa/tests/"):
+                view_file = "tests/" + view_file[len("qa/tests/") :]
             entries.append(
                 ClosedMappingEntryV1(
-                    test=f"{item.target_file}::{item.symbol.replace('.', '::')}",
+                    test=f"{view_file}::{item.symbol.replace('.', '::')}",
                     case_id=item.case_id,
                     capability=_capability_for_case(case.trace, leafs),
                     layer=mapping.layer,

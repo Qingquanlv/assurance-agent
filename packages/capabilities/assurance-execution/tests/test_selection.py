@@ -55,7 +55,7 @@ async def test_select_ignores_unselected_layer_mapping(tmp_path: Path) -> None:
                     {
                         "case_id": "TC_A",
                         "symbol": "test_tc_a_001__ok",
-                        "target_file": "tests/e2e/test_legacy.py",
+                        "target_file": "qa/tests/e2e/test_legacy.py",
                     }
                 ],
             }
@@ -76,7 +76,7 @@ async def test_select_keeps_multiple_cases_in_one_test_file_distinct(tmp_path: P
         {
             "case_id": "TC_B",
             "symbol": "test_tc_b_001__other",
-            "target_file": "tests/generated_test.py",
+            "target_file": "qa/tests/generated_test.py",
         }
     )
     second = copy.deepcopy(payload["reviewed_cases"]["added"][0])

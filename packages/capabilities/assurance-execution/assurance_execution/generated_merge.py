@@ -8,6 +8,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Literal, cast
 
+from agent_runtime_contracts.qa_paths import qa_join
+from assurance_generation.contracts.codegen import durable_test_path
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import FrozenModel
 
@@ -34,11 +36,8 @@ class MergedGeneratedSet(FrozenModel):
         return MappingProxyType({item.target_path: item.staged_path for item in self.files})
 
 
-def staged_generated_path(change_id: str, family: str, target_path: str) -> str:
-    return (
-        f"qa/changes/{_safe_component(change_id, label='change_id')}"
-        f"/generated/{_closed_family(family)}/files/{_safe_target(target_path)}"
-    )
+def staged_generated_path(target_path: str) -> str:
+    return durable_test_path(_safe_target(target_path))
 
 
 def merge_generated(
@@ -47,11 +46,11 @@ def merge_generated(
     families: tuple[str, ...],
 ) -> MergedGeneratedSet:
     project = Path(project_root)
-    closed_change = _safe_component(change_id, label="change_id")
+    _safe_component(change_id, label="change_id")
     selected: tuple[TestFamily, ...] = tuple(_closed_family(family) for family in families)
     collected: list[GeneratedFileV2] = []
     for family in selected:
-        collected.extend(_collect_family(project, closed_change, family))
+        collected.extend(_collect_family(project, family))
     merged = _collapse_ownership(collected)
     ordered = tuple(sorted(merged, key=lambda item: (item.target_path, item.family)))
     digest = canonical_digest(cast(JSONValue, [item.model_dump(mode="json") for item in ordered]))
@@ -94,8 +93,8 @@ def _digest_bytes(payload: bytes) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
-def _collect_family(project: Path, change_id: str, family: TestFamily) -> tuple[GeneratedFileV2, ...]:
-    manifest_relative = f"qa/changes/{change_id}/codegen/{family}-generated-files.json"
+def _collect_family(project: Path, family: TestFamily) -> tuple[GeneratedFileV2, ...]:
+    manifest_relative = qa_join(f"codegen/{family}-generated-files.json")
     manifest_path = _regular_file(project, manifest_relative, missing="closed manifest")
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -107,7 +106,6 @@ def _collect_family(project: Path, change_id: str, family: TestFamily) -> tuple[
     if not isinstance(listed, list) or not listed:
         raise ValueError(f"closed manifest membership is empty: {family}")
     collected: list[GeneratedFileV2] = []
-    listed_targets: set[str] = set()
     for entry in listed:
         if not isinstance(entry, dict):
             raise ValueError(f"closed manifest membership is invalid: {family}")
@@ -116,7 +114,7 @@ def _collect_family(project: Path, change_id: str, family: TestFamily) -> tuple[
             raise ValueError(f"closed manifest membership is invalid: {family}")
         try:
             target = _safe_target(target)
-            staged = staged_generated_path(change_id, family, target)
+            staged = staged_generated_path(target)
         except ValueError as error:
             raise ValueError(f"target path must be canonical and relative: {target}") from error
         path = _regular_file(project, staged, missing="closed manifest")
@@ -128,7 +126,6 @@ def _collect_family(project: Path, change_id: str, family: TestFamily) -> tuple[
         operation = entry.get("operation") or entry.get("disposition") or "generated"
         if operation not in {"generated", "updated", "reused"}:
             raise ValueError(f"closed manifest operation is invalid: {target}")
-        listed_targets.add(target)
         collected.append(
             GeneratedFileV2(
                 target_path=target,
@@ -139,27 +136,7 @@ def _collect_family(project: Path, change_id: str, family: TestFamily) -> tuple[
                 family=family,
             )
         )
-    _reject_extras(project, change_id, family, listed_targets)
     return tuple(collected)
-
-
-def _reject_extras(project: Path, change_id: str, family: TestFamily, listed: set[str]) -> None:
-    root = project.joinpath(*PurePosixPath(f"qa/changes/{change_id}/generated/{family}/files").parts)
-    if not root.exists():
-        return
-    if root.is_symlink() or not root.is_dir():
-        raise ValueError(f"generated family namespace is invalid: {family}")
-    extras: list[str] = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            raise ValueError(f"generated family namespace contains a symlink: {family}")
-        if not path.is_file():
-            continue
-        target = path.relative_to(root).as_posix()
-        if target not in listed:
-            extras.append(target)
-    if extras:
-        raise ValueError(f"extra on-disk generated file: {extras[0]}")
 
 
 def _collapse_ownership(files: tuple[GeneratedFileV2, ...] | list[GeneratedFileV2]) -> list[GeneratedFileV2]:

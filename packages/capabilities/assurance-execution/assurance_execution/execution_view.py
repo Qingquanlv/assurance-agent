@@ -12,10 +12,13 @@ from pydantic import AwareDatetime
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import FrozenModel
 
+from agent_runtime_contracts.qa_paths import qa_join
+
 from assurance_execution.contracts.selection import selected_test_file
 from assurance_execution.generated_merge import MergedGeneratedSet
 
 _TESTS_PREFIX = "tests/"
+_QA_TESTS_PREFIX = "qa/tests/"
 _PREPARATION_FILE = ".assurance/execution-prepared-v1.json"
 _IGNORED_SUPPORT_DIRECTORIES = frozenset(
     {
@@ -51,11 +54,8 @@ class ExecutionView(FrozenModel):
     executed_at: AwareDatetime | None = None
 
 
-def execution_view_relative(change_id: str, batch_id: str) -> str:
-    return (
-        f"qa/changes/{_safe_component(change_id, label='change_id')}"
-        f"/.staging/execution/{_safe_component(batch_id, label='batch_id')}"
-    )
+def execution_view_relative(batch_id: str) -> str:
+    return f"{qa_join('.staging/execution')}/{_safe_component(batch_id, label='batch_id')}"
 
 
 def build_execution_view(
@@ -88,7 +88,7 @@ def build_or_authenticate_execution_view(
 ) -> ExecutionView:
     project = Path(project_root)
     destination_root = Path(write_root)
-    relative_root = execution_view_relative(change_id, batch_id)
+    relative_root = execution_view_relative(batch_id)
     view_root = _join(destination_root, relative_root)
     preparation = (
         _read_preparation(view_root, change_id=change_id, batch_id=batch_id)
@@ -143,7 +143,7 @@ def _planned_view(
     closed_change = _safe_component(change_id, label="change_id")
     closed_batch = _safe_component(batch_id, label="batch_id")
     selected_targets = tuple(selected)
-    relative_root = execution_view_relative(closed_change, closed_batch)
+    relative_root = execution_view_relative(closed_batch)
     planned = _plan_view_files(project, merged, selected_targets)
     if preparation is not None:
         if preparation.change_id != closed_change or preparation.batch_id != closed_batch:
@@ -233,9 +233,9 @@ def _scan_view(root: Path) -> dict[str, tuple[bytes, int]]:
 
 
 def _validated_view_root(write_root: Path, view: ExecutionView) -> Path:
-    change_id = _change_id_from_root(view.root)
-    expected = execution_view_relative(change_id, view.batch_id)
-    if view.root != expected:
+    batch_id = _batch_id_from_root(view.root)
+    expected = execution_view_relative(batch_id)
+    if view.root != expected or batch_id != view.batch_id:
         raise ValueError(f"execution view root is not disposable staging: {view.root}")
     root = _join(write_root, view.root)
     try:
@@ -253,17 +253,11 @@ def _safe_component(value: str, *, label: str) -> str:
     return value
 
 
-def _change_id_from_root(root: str) -> str:
+def _batch_id_from_root(root: str) -> str:
     parts = PurePosixPath(root).parts
-    if (
-        len(parts) != 6
-        or parts[0] != "qa"
-        or parts[1] != "changes"
-        or parts[3] != ".staging"
-        or parts[4] != "execution"
-    ):
+    if len(parts) != 4 or parts[0] != "qa" or parts[1] != ".staging" or parts[2] != "execution":
         raise ValueError(f"execution view root is not disposable staging: {root}")
-    return _safe_component(parts[2], label="change_id")
+    return _safe_component(parts[3], label="batch_id")
 
 
 def _plan_view_files(
@@ -274,17 +268,28 @@ def _plan_view_files(
     planned: dict[str, tuple[bytes, int]] = {}
     selected_files = tuple(dict.fromkeys(selected_test_file(item) for item in selected))
     for item in merged.files:
-        target = _require_test_support(item.target_path)
+        target = _view_target_from_durable(item.target_path)
         planned[target] = _read_regular(project, item.staged_path)
     for relative in selected_files:
-        target = _require_test_support(relative)
+        target = _view_target_from_durable(relative)
         if target in planned:
             continue
-        planned[target] = _read_regular(project, target)
+        planned[target] = _read_regular(project, _durable_from_view_target(target))
     for support, source in collect_test_support_files(project).items():
         if support not in planned:
             planned[support] = source
     return dict(sorted(planned.items()))
+
+
+def _view_target_from_durable(relative: str) -> str:
+    if relative.startswith(_QA_TESTS_PREFIX):
+        relative = _TESTS_PREFIX + relative[len(_QA_TESTS_PREFIX) :]
+    return _require_test_support(relative)
+
+
+def _durable_from_view_target(relative: str) -> str:
+    target = _require_test_support(relative)
+    return _QA_TESTS_PREFIX + target[len(_TESTS_PREFIX) :]
 
 
 def _require_test_support(relative: str) -> str:
@@ -308,7 +313,7 @@ def _require_test_support(relative: str) -> str:
 
 
 def collect_test_support_files(project: Path) -> dict[str, tuple[bytes, int]]:
-    root = project / "tests"
+    root = project / "qa" / "fixtures"
     if not root.exists():
         return {}
     if root.is_symlink() or not root.is_dir():
@@ -329,8 +334,9 @@ def collect_test_support_files(project: Path) -> dict[str, tuple[bytes, int]]:
         for name in sorted(filenames):
             if not _is_python_support(name):
                 continue
-            relative = (current_path / name).relative_to(project).as_posix()
-            source = _read_regular(project, relative)
+            source_relative = (current_path / name).relative_to(project).as_posix()
+            relative = _TESTS_PREFIX + (current_path / name).relative_to(root).as_posix()
+            source = _read_regular(project, source_relative)
             payload, _ = source
             if len(payload) > _MAX_SUPPORT_FILE_BYTES:
                 raise ValueError(f"conflict: test support file exceeds size limit: {relative}")
