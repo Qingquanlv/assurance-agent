@@ -25,7 +25,7 @@ from assurance_intake.validators import CaseCandidateValidator, CaseReferenceVal
 
 INTAKE_SOURCE = ProviderSource(
     distribution="assurance-intake",
-    version="0.2.0",
+    version="0.3.0",
     entrypoint_group="graph_engine.plugins",
     entrypoint_name="intake",
     entrypoint_value="assurance_intake.plugin:IntakePlugin",
@@ -94,7 +94,7 @@ _VALIDATORS = {
 class IntakePlugin(CapabilityPlugin):
     spec = CapabilitySpec(
         plugin_id="assurance.intake",
-        version="0.2.0",
+        version="0.3.0",
         engine_api=ENGINE_API_VERSION,
         source=INTAKE_SOURCE,
         resource_bytes=resource_bytes,

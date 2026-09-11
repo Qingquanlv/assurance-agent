@@ -1,15 +1,15 @@
 [project]
 name = "assurance-product"
-version = "0.2.0"
+version = "0.3.0"
 requires-python = ">=3.11"
 dependencies = [
   "graph-engine==0.2.0",
-  "assurance-intake==0.2.0",
-  "assurance-generation==0.2.0",
-  "assurance-execution==0.2.0",
-  "assurance-healing==0.2.0",
-  "assurance-quality==0.2.0",
-  "assurance-improvement==0.2.0",
+  "assurance-intake==0.3.0",
+  "assurance-generation==0.3.0",
+  "assurance-execution==0.3.0",
+  "assurance-healing==0.3.0",
+  "assurance-quality==0.3.0",
+  "assurance-improvement==0.3.0",
   "langgraph==1.2.11",
   "langgraph-checkpoint-sqlite==3.1.1",
   "click>=8.1",

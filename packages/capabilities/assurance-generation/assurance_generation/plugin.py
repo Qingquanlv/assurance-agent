@@ -24,7 +24,7 @@ from assurance_generation.validators import (
 
 GENERATION_SOURCE = ProviderSource(
     distribution="assurance-generation",
-    version="0.2.0",
+    version="0.3.0",
     entrypoint_group="graph_engine.plugins",
     entrypoint_name="generation",
     entrypoint_value="assurance_generation.plugin:GenerationPlugin",
@@ -32,7 +32,7 @@ GENERATION_SOURCE = ProviderSource(
     import_roots=("",),
 )
 
-GENERATION_DEPENDENCIES: tuple[PluginDependency, ...] = (PluginDependency("assurance.intake", "==0.2.0"),)
+GENERATION_DEPENDENCIES: tuple[PluginDependency, ...] = (PluginDependency("assurance.intake", "==0.3.0"),)
 
 GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.persona.reviewer.v1": "personas/reviewer.md",
@@ -80,7 +80,7 @@ _VALIDATORS = {
 class GenerationPlugin(CapabilityPlugin):
     spec = CapabilitySpec(
         plugin_id="assurance.generation",
-        version="0.2.0",
+        version="0.3.0",
         engine_api=ENGINE_API_VERSION,
         source=GENERATION_SOURCE,
         resource_bytes=resource_bytes,

@@ -18,10 +18,10 @@ from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
 
 def test_quality_descriptor_declares_exact_dependency_versions() -> None:
     assert QualityPlugin.descriptor().dependencies == (
-        PluginDependency("assurance.intake", "==0.2.0"),
-        PluginDependency("assurance.generation", "==0.2.0"),
-        PluginDependency("assurance.execution", "==0.2.0"),
-        PluginDependency("assurance.healing", "==0.2.0"),
+        PluginDependency("assurance.intake", "==0.3.0"),
+        PluginDependency("assurance.generation", "==0.3.0"),
+        PluginDependency("assurance.execution", "==0.3.0"),
+        PluginDependency("assurance.healing", "==0.3.0"),
     )
 
 
@@ -54,7 +54,7 @@ def test_quality_source_identity() -> None:
     assert source == QUALITY_SOURCE
     assert source == ProviderSource(
         distribution="assurance-quality",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="quality",
         entrypoint_value="assurance_quality.plugin:QualityPlugin",

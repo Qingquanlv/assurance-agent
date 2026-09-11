@@ -23,12 +23,12 @@ _PRODUCT_VERSION = "1.0.0"
 _DISTRIBUTION = "test-assurance-phase4-product"
 _FACTORY_SYMBOL = "test_assurance_phase4_product.product:build_phase4_graphs"
 _ASSURANCE_PLUGINS = (
-    PluginRequirement(plugin_id="assurance.execution", version_specifier="==0.2.0"),
-    PluginRequirement(plugin_id="assurance.generation", version_specifier="==0.2.0"),
-    PluginRequirement(plugin_id="assurance.healing", version_specifier="==0.2.0"),
-    PluginRequirement(plugin_id="assurance.improvement", version_specifier="==0.2.0"),
-    PluginRequirement(plugin_id="assurance.intake", version_specifier="==0.2.0"),
-    PluginRequirement(plugin_id="assurance.quality", version_specifier="==0.2.0"),
+    PluginRequirement(plugin_id="assurance.execution", version_specifier="==0.3.0"),
+    PluginRequirement(plugin_id="assurance.generation", version_specifier="==0.3.0"),
+    PluginRequirement(plugin_id="assurance.healing", version_specifier="==0.3.0"),
+    PluginRequirement(plugin_id="assurance.improvement", version_specifier="==0.3.0"),
+    PluginRequirement(plugin_id="assurance.intake", version_specifier="==0.3.0"),
+    PluginRequirement(plugin_id="assurance.quality", version_specifier="==0.3.0"),
 )
 _PREPARE_ID = "test.assurance.bindings.prepare"
 _EXECUTE_ID = "test.assurance.bindings.execute"

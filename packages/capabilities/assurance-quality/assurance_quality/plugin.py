@@ -22,7 +22,7 @@ from assurance_quality.validators.trace import TraceValidator
 
 QUALITY_SOURCE = ProviderSource(
     distribution="assurance-quality",
-    version="0.2.0",
+    version="0.3.0",
     entrypoint_group="graph_engine.plugins",
     entrypoint_name="quality",
     entrypoint_value="assurance_quality.plugin:QualityPlugin",
@@ -31,10 +31,10 @@ QUALITY_SOURCE = ProviderSource(
 )
 
 QUALITY_DEPENDENCIES: tuple[PluginDependency, ...] = (
-    PluginDependency("assurance.intake", "==0.2.0"),
-    PluginDependency("assurance.generation", "==0.2.0"),
-    PluginDependency("assurance.execution", "==0.2.0"),
-    PluginDependency("assurance.healing", "==0.2.0"),
+    PluginDependency("assurance.intake", "==0.3.0"),
+    PluginDependency("assurance.generation", "==0.3.0"),
+    PluginDependency("assurance.execution", "==0.3.0"),
+    PluginDependency("assurance.healing", "==0.3.0"),
 )
 
 QUALITY_RESOURCE_FILES: dict[str, str] = {
@@ -117,7 +117,7 @@ _VALIDATORS = {
 class QualityPlugin(CapabilityPlugin):
     spec = CapabilitySpec(
         plugin_id="assurance.quality",
-        version="0.2.0",
+        version="0.3.0",
         engine_api=ENGINE_API_VERSION,
         source=QUALITY_SOURCE,
         resource_bytes=resource_bytes,

@@ -2,28 +2,28 @@ schema_version: "1"
 kind: product
 product_id: assurance
 manifest_product_id: assurance.product
-product_version: "0.2.0"
+product_version: "0.3.0"
 engine_api: "2.0"
 entrypoints:
   run: root
 plugins:
   - plugin_id: assurance.intake
-    version_specifier: "==0.2.0"
+    version_specifier: "==0.3.0"
   - plugin_id: assurance.generation
-    version_specifier: "==0.2.0"
+    version_specifier: "==0.3.0"
   - plugin_id: assurance.execution
-    version_specifier: "==0.2.0"
+    version_specifier: "==0.3.0"
   - plugin_id: assurance.healing
-    version_specifier: "==0.2.0"
+    version_specifier: "==0.3.0"
   - plugin_id: assurance.quality
-    version_specifier: "==0.2.0"
+    version_specifier: "==0.3.0"
   - plugin_id: assurance.improvement
-    version_specifier: "==0.2.0"
+    version_specifier: "==0.3.0"
 runtime_plugin: runtime.opencode
 sources:
   capabilities:
     - distribution: assurance-intake
-      version: "0.2.0"
+      version: "0.3.0"
       entrypoint_group: graph_engine.plugins
       entrypoint_name: intake
       entrypoint_value: assurance_intake.plugin:IntakePlugin
@@ -31,7 +31,7 @@ sources:
       import_roots:
         - ""
     - distribution: assurance-generation
-      version: "0.2.0"
+      version: "0.3.0"
       entrypoint_group: graph_engine.plugins
       entrypoint_name: generation
       entrypoint_value: assurance_generation.plugin:GenerationPlugin
@@ -39,7 +39,7 @@ sources:
       import_roots:
         - ""
     - distribution: assurance-execution
-      version: "0.2.0"
+      version: "0.3.0"
       entrypoint_group: graph_engine.plugins
       entrypoint_name: execution
       entrypoint_value: assurance_execution.plugin:ExecutionPlugin
@@ -47,7 +47,7 @@ sources:
       import_roots:
         - ""
     - distribution: assurance-healing
-      version: "0.2.0"
+      version: "0.3.0"
       entrypoint_group: graph_engine.plugins
       entrypoint_name: healing
       entrypoint_value: assurance_healing.plugin:HealingPlugin
@@ -55,7 +55,7 @@ sources:
       import_roots:
         - ""
     - distribution: assurance-quality
-      version: "0.2.0"
+      version: "0.3.0"
       entrypoint_group: graph_engine.plugins
       entrypoint_name: quality
       entrypoint_value: assurance_quality.plugin:QualityPlugin
@@ -63,7 +63,7 @@ sources:
       import_roots:
         - ""
     - distribution: assurance-improvement
-      version: "0.2.0"
+      version: "0.3.0"
       entrypoint_group: graph_engine.plugins
       entrypoint_name: improvement
       entrypoint_value: assurance_improvement.plugin:ImprovementPlugin

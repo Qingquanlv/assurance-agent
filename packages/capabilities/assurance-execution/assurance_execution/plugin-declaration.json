@@ -3,7 +3,7 @@
   "kind": "plugin",
   "source": {
     "distribution": "assurance-execution",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "execution",
     "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
@@ -16,7 +16,7 @@
     "schema_version": "1",
     "source": {
       "distribution": "assurance-execution",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "execution",
       "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
@@ -26,7 +26,7 @@
       ]
     },
     "plugin_id": "assurance.execution",
-    "plugin_version": "0.2.0",
+    "plugin_version": "0.3.0",
     "engine_api": "2.0",
     "task_handlers": [
       "assurance.execution.execute.finalize",
@@ -45,11 +45,11 @@
     "dependencies": [
       {
         "plugin_id": "assurance.intake",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.generation",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       }
     ],
     "schemas": [

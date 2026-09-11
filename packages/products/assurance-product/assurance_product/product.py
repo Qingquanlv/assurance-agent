@@ -45,7 +45,7 @@ from assurance_product.source_catalog import (
     wheel_plugin_source,
 )
 
-_PRODUCT_VERSION = "0.2.0"
+_PRODUCT_VERSION = "0.3.0"
 _MANIFEST_PRODUCT_ID = "assurance.product"
 _CAPABILITY_PLUGIN_IDS: tuple[str, ...] = (
     "assurance.intake",
@@ -61,7 +61,7 @@ _DECLARATION_FILENAME = "product-declaration-opencode.json"
 _DECLARATION_PATH = f"assurance_product/{_DECLARATION_FILENAME}"
 _PROVIDER_SYMBOL = "AssuranceOpenCodeProductProvider"
 _PLUGIN_VERSIONS: dict[str, str] = {
-    **{plugin_id: "==0.2.0" for plugin_id in _CAPABILITY_PLUGIN_IDS},
+    **{plugin_id: "==0.3.0" for plugin_id in _CAPABILITY_PLUGIN_IDS},
     _RUNTIME_PLUGIN_ID: "==0.1.0",
     PLUGIN_ID: f"=={PLUGIN_VERSION}",
     CONFIGURATION_PLUGIN_ID: f"=={CONFIGURATION_PLUGIN_VERSION}",

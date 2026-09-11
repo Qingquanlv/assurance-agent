@@ -43,7 +43,7 @@ from assurance_improvement.validators.review import ReviewValidator
 
 IMPROVEMENT_SOURCE = ProviderSource(
     distribution="assurance-improvement",
-    version="0.2.0",
+    version="0.3.0",
     entrypoint_group="graph_engine.plugins",
     entrypoint_name="improvement",
     entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",
@@ -52,11 +52,11 @@ IMPROVEMENT_SOURCE = ProviderSource(
 )
 
 IMPROVEMENT_DEPENDENCIES: tuple[PluginDependency, ...] = (
-    PluginDependency("assurance.intake", "==0.2.0"),
-    PluginDependency("assurance.generation", "==0.2.0"),
-    PluginDependency("assurance.execution", "==0.2.0"),
-    PluginDependency("assurance.healing", "==0.2.0"),
-    PluginDependency("assurance.quality", "==0.2.0"),
+    PluginDependency("assurance.intake", "==0.3.0"),
+    PluginDependency("assurance.generation", "==0.3.0"),
+    PluginDependency("assurance.execution", "==0.3.0"),
+    PluginDependency("assurance.healing", "==0.3.0"),
+    PluginDependency("assurance.quality", "==0.3.0"),
 )
 
 DELIVERY_POLICY = EffectPolicy(max_attempts=5, timeout_seconds=120.0, backoff_seconds=2.0)
@@ -154,7 +154,7 @@ _HANDLERS = improvement_handlers()
 class ImprovementPlugin(CapabilityPlugin):
     spec = CapabilitySpec(
         plugin_id="assurance.improvement",
-        version="0.2.0",
+        version="0.3.0",
         engine_api=ENGINE_API_VERSION,
         source=IMPROVEMENT_SOURCE,
         resource_bytes=resource_bytes,

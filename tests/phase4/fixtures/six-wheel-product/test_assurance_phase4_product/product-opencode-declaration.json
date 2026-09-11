@@ -13,27 +13,27 @@
     "plugins": [
       {
         "plugin_id": "assurance.execution",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.generation",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.healing",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.improvement",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.intake",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.quality",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "runtime.opencode",

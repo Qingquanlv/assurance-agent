@@ -19,7 +19,7 @@ from assurance_execution.validators import ClosedMappingValidator, ExecutionEvid
 
 EXECUTION_SOURCE = ProviderSource(
     distribution="assurance-execution",
-    version="0.2.0",
+    version="0.3.0",
     entrypoint_group="graph_engine.plugins",
     entrypoint_name="execution",
     entrypoint_value="assurance_execution.plugin:ExecutionPlugin",
@@ -28,8 +28,8 @@ EXECUTION_SOURCE = ProviderSource(
 )
 
 EXECUTION_DEPENDENCIES: tuple[PluginDependency, ...] = (
-    PluginDependency("assurance.intake", "==0.2.0"),
-    PluginDependency("assurance.generation", "==0.2.0"),
+    PluginDependency("assurance.intake", "==0.3.0"),
+    PluginDependency("assurance.generation", "==0.3.0"),
 )
 
 EXECUTION_RESOURCE_FILES: dict[str, str] = {
@@ -61,7 +61,7 @@ _VALIDATORS = {
 class ExecutionPlugin(CapabilityPlugin):
     spec = CapabilitySpec(
         plugin_id="assurance.execution",
-        version="0.2.0",
+        version="0.3.0",
         engine_api=ENGINE_API_VERSION,
         source=EXECUTION_SOURCE,
         resource_bytes=resource_bytes,

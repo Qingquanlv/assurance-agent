@@ -3,7 +3,7 @@
   "kind": "plugin",
   "source": {
     "distribution": "assurance-quality",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "entrypoint_group": "graph_engine.plugins",
     "entrypoint_name": "quality",
     "entrypoint_value": "assurance_quality.plugin:QualityPlugin",
@@ -16,7 +16,7 @@
     "schema_version": "1",
     "source": {
       "distribution": "assurance-quality",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "quality",
       "entrypoint_value": "assurance_quality.plugin:QualityPlugin",
@@ -26,7 +26,7 @@
       ]
     },
     "plugin_id": "assurance.quality",
-    "plugin_version": "0.2.0",
+    "plugin_version": "0.3.0",
     "engine_api": "2.0",
     "task_handlers": [
       "assurance.quality.aggregate-nightly-metrics",
@@ -85,19 +85,19 @@
     "dependencies": [
       {
         "plugin_id": "assurance.intake",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.generation",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.execution",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.healing",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       }
     ],
     "schemas": [
