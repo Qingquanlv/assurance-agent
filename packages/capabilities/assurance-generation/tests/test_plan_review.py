@@ -113,15 +113,14 @@ async def test_plan_review_requires_complete_unique_repair_set(fix_ids: list[str
 @pytest.mark.asyncio
 async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path) -> None:
     family = "api"
-    change_root = tmp_path / "qa/changes/CH-DEMO-001"
-    change_root.mkdir(parents=True)
     cases_root = tmp_path / "qa/cases/items"
     cases_root.mkdir(parents=True)
     (cases_root / "case.yaml").write_text(
         "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n",
         encoding="utf-8",
     )
-    (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
+    (tmp_path / "qa").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "qa/proposal.md").write_text("# Proposal\n", encoding="utf-8")
     for relative in family_plan_files(family):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,7 +148,7 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
     )
 
     assert executed.status == "succeeded", executed.failure
-    history_path = stage / "qa/changes/CH-DEMO-001/plan/api/reviews/epochs/2/rounds/1.json"
+    history_path = stage / "qa/results/plan/api/reviews/epochs/2/rounds/1.json"
     history = json.loads(history_path.read_bytes())
     assert history["loop_kind"] == "plan_review"
     assert history["family"] == "api"
@@ -179,8 +178,7 @@ async def test_plan_review_finalize_rejects_wrong_family(family: str, tmp_path: 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: Path) -> None:
-    change_root = tmp_path / "qa/changes/CH-DEMO-001"
-    proposal_path = change_root / "proposal.md"
+    proposal_path = tmp_path / "qa/proposal.md"
     proposal_path.parent.mkdir(parents=True, exist_ok=True)
     proposal_path.write_text("# Proposal\n", encoding="utf-8")
     for relative in family_plan_files(family):
@@ -216,7 +214,7 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
                 (
                     *family_plan_files(family),
                     "qa/cases/items/case.yaml",
-                    "qa/changes/CH-DEMO-001/proposal.md",
+                    "qa/proposal.md",
                 )
             )
         )
@@ -232,7 +230,7 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
 
 @pytest.mark.asyncio
 async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missing(tmp_path: Path) -> None:
-    proposal_path = tmp_path / "qa/changes/CH-DEMO-001/proposal.md"
+    proposal_path = tmp_path / "qa/proposal.md"
     proposal_path.parent.mkdir(parents=True, exist_ok=True)
     proposal_path.write_text("# Proposal\n", encoding="utf-8")
     case_path = tmp_path / "qa/cases/items/case.yaml"

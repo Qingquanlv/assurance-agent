@@ -120,7 +120,7 @@ class PlanReviewFinalizeHandler:
                     f"qa/results/review/{family}-plan-review.json",
                 )
                 history_relative = (
-                    f"qa/changes/{document.change_id}/plan/{family}/reviews/epochs/"
+                    f"qa/results/plan/{family}/reviews/epochs/"
                     f"{payload.coverage_epoch}/rounds/{payload.local_round}.json"
                 )
                 history_ref = persist_loop_round_history(

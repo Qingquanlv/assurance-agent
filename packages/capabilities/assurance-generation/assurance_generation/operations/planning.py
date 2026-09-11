@@ -412,7 +412,7 @@ def plan_review_input_paths(
 
     relative_paths = (
         *plan_outputs(change_id, family),
-        f"qa/changes/{change_id}/proposal.md",
+        "qa/proposal.md",
         *(path.relative_to(workspace).as_posix() for path in case_files),
     )
     for relative in relative_paths:
