@@ -15,8 +15,6 @@ from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.generated_merge import merge_generated
 from assurance_product.models import (
     AdapterEvidenceRefV1,
-    ApplyManifestFileV1,
-    ApplyManifestV1,
     ExecutionGateRefV1,
     GraphStatusV1,
     NodeStatusV1,
@@ -321,13 +319,11 @@ def finalize_achieved(
 ) -> StatusV1:
     project = Path(project_root)
     _require_terminal_full_success(invocation)
-    merged = merge_generated(project, change_id, families)
+    merge_generated(project, change_id, families)
     execution_gate = _require_execution_gate(project, change_id, invocation)
     _require_quality_gate(project, change_id, invocation, execution_gate)
-    manifest = _apply_manifest(project, change_id, merged)
-    status = _achieved_status(invocation, change_id, manifest)
+    status = _achieved_status(invocation, change_id)
     change_root = project / "qa"
-    _write_canonical_json(change_root / "apply-manifest.json", manifest.model_dump(mode="json"))
     _write_canonical_json(change_root / "status.json", status.model_dump(mode="json"))
     return status
 
@@ -575,41 +571,14 @@ def _reject_symlink_components(root: Path, target: Path) -> None:
             raise ValueError("quality evidence path is a symlink")
 
 
-def _apply_manifest(project: Path, change_id: str, merged: object) -> ApplyManifestV1:
-    files = []
-    for item in getattr(merged, "files"):
-        target = project.joinpath(*str(item.target_path).split("/"))
-        baseline = None
-        if target.is_file() and not target.is_symlink() and target.stat().st_nlink == 1:
-            baseline = f"sha256:{hashlib.sha256(target.read_bytes()).hexdigest()}"
-        files.append(
-            ApplyManifestFileV1(
-                target_path=item.target_path,
-                source_path=item.staged_path,
-                source_sha256=item.sha256,
-                baseline_sha256=baseline,
-                mode=item.mode,
-                operation=item.operation,
-            )
-        )
-    ordered = tuple(sorted(files, key=lambda item: item.target_path))
-    return ApplyManifestV1(
-        schema_version="1",
-        change_id=change_id,
-        digest=str(getattr(merged, "digest")),
-        files=ordered,
-    )
-
-
 def _achieved_status(
     invocation: Mapping[str, object] | StatusV1,
     change_id: str,
-    manifest: ApplyManifestV1,
 ) -> StatusV1:
     payload = invocation.model_dump(mode="json") if isinstance(invocation, StatusV1) else dict(invocation)
     payload["change"] = {"change_id": change_id, "state": "achieved"}
-    payload["apply"] = {"manifest_digest": manifest.digest, "file_count": len(manifest.files)}
-    payload["publication"] = {"status": "ready"}
+    payload["apply"] = {"manifest_digest": None, "file_count": 0}
+    payload["publication"] = {"status": "not_ready"}
     return StatusV1.model_validate(payload)
 
 

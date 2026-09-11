@@ -374,7 +374,7 @@ def test_execution_publish_records_checkpoint_authority() -> None:
     assert published["execution_semantic_node_id"] == "execution.run"
 
 
-def test_finalize_achieved_writes_status_and_apply_manifest(tmp_path: Path):
+def test_finalize_achieved_writes_status_without_apply_manifest(tmp_path: Path):
     from assurance_product.status import finalize_achieved
 
     project = _ready_change(tmp_path)
@@ -393,22 +393,16 @@ def test_finalize_achieved_writes_status_and_apply_manifest(tmp_path: Path):
 
     assert status.change.change_id == CHANGE_ID
     assert status.change.state == "achieved"
-    assert status.publication.status == "ready"
-    assert status.apply.file_count == 1
-    assert status.apply.manifest_digest is not None
+    assert status.publication.status == "not_ready"
+    assert status.apply.file_count == 0
+    assert status.apply.manifest_digest is None
     status_path = project / "qa" / "status.json"
     manifest_path = project / "qa" / "apply-manifest.json"
     assert status_path.is_file()
-    assert manifest_path.is_file()
+    assert not manifest_path.exists()
     written_status = json.loads(status_path.read_text(encoding="utf-8"))
-    written_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert written_status["publication"]["status"] == "ready"
+    assert written_status["publication"]["status"] == "not_ready"
     assert written_status["change"]["state"] == "achieved"
-    assert written_manifest["change_id"] == CHANGE_ID
-    assert written_manifest["files"][0]["target_path"] == TARGET
-    assert written_manifest["files"][0]["source_path"] == _staged_path("api", TARGET)
-    assert written_manifest["files"][0]["source_sha256"] == _digest(b"generated-candidate\n")
-    assert written_manifest["files"][0]["baseline_sha256"] == _digest(b"generated-candidate\n")
     assert (project / TARGET).read_bytes() == original
     assert (project / "tests" / "api" / "test_users.py").read_bytes() == b"original-sut\n"
     assert not (project / "qa" / "archive").exists()

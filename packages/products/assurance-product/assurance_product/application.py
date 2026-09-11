@@ -907,8 +907,6 @@ def _persisted_achieved_full_status(
     if (
         persisted.status != "completed"
         or persisted.change.state != "achieved"
-        or persisted.apply.manifest_digest is None
-        or persisted.publication.status not in {"ready", "published"}
         or persisted.selected_test_families != families
     ):
         raise RuntimeSelectionError("persisted terminal status is not an achieved full result")

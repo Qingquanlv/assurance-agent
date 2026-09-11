@@ -579,7 +579,10 @@ def _parse_wheel_declaration(
         None,
     )
     if declaration_file is None:
-        raise SourceSnapshotError("wheel declaration path is absent from the authenticated snapshot")
+        raise SourceSnapshotError(
+            "wheel declaration path is absent from the authenticated snapshot: "
+            f"{source.distribution} ({source.declaration_path})"
+        )
     try:
         document = json.loads(
             declaration_file.content,
