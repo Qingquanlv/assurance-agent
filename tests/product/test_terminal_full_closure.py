@@ -332,17 +332,17 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
         secrets=(),
     )
 
-    assert (workspace.paths.change_root / "status.json").is_file()
-    assert (workspace.paths.change_root / "apply-manifest.json").is_file()
-    persisted = json.loads((workspace.paths.change_root / "status.json").read_text(encoding="utf-8"))
+    assert (workspace.paths.qa_root / "status.json").is_file()
+    assert (workspace.paths.qa_root / "apply-manifest.json").is_file()
+    persisted = json.loads((workspace.paths.qa_root / "status.json").read_text(encoding="utf-8"))
     assert persisted["change"] == {"change_id": CHANGE_ID, "state": "achieved"}
     assert persisted["selected_test_families"] == ["api"]
     assert persisted["publication"]["status"] == "ready"
     assert result.status == mapped == "completed"
     assert code == 0
     before = (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
+        (workspace.paths.qa_root / "status.json").read_bytes(),
+        (workspace.paths.qa_root / "apply-manifest.json").read_bytes(),
     )
 
     application.run(
@@ -358,16 +358,16 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
     )
 
     assert before == (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
+        (workspace.paths.qa_root / "status.json").read_bytes(),
+        (workspace.paths.qa_root / "apply-manifest.json").read_bytes(),
     )
     from assurance_product.export import publish_achieved
 
     publish_achieved(project, CHANGE_ID)
     published = (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
-        (workspace.paths.change_root / "publish-receipt.json").read_bytes(),
+        (workspace.paths.qa_root / "status.json").read_bytes(),
+        (workspace.paths.qa_root / "apply-manifest.json").read_bytes(),
+        (workspace.paths.qa_root / "publish-receipt.json").read_bytes(),
     )
 
     application.run(
@@ -383,9 +383,9 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
     )
 
     assert published == (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
-        (workspace.paths.change_root / "publish-receipt.json").read_bytes(),
+        (workspace.paths.qa_root / "status.json").read_bytes(),
+        (workspace.paths.qa_root / "apply-manifest.json").read_bytes(),
+        (workspace.paths.qa_root / "publish-receipt.json").read_bytes(),
     )
 
 
@@ -420,7 +420,7 @@ def test_status_returns_the_authenticated_persisted_full_terminal_projection(
             publication={"status": "published"},
         )
     )
-    (workspace.paths.change_root / "status.json").write_text(
+    (workspace.paths.qa_root / "status.json").write_text(
         persisted.model_dump_json(indent=2) + "\n",
         encoding="utf-8",
     )

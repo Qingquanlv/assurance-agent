@@ -200,24 +200,27 @@ def _evaluate_task_payload() -> dict[str, object]:
     }
 
 
-def _workspace_at(project_root: Path, change_root: Path) -> ChangeWorkspace:
+def _workspace_at(project_root: Path, qa_root: Path) -> ChangeWorkspace:
     from assurance_product.change_workspace import ChangePaths
 
-    runtime = change_root / ".runtime"
+    runtime = qa_root / ".runtime"
     langgraph = runtime / "langgraph"
     return ChangeWorkspace(
         ChangePaths(
             project_root=project_root.resolve(),
-            change_root=change_root,
-            staging_root=change_root / ".staging",
+            qa_root=qa_root,
+            staging_root=qa_root / ".staging",
             runtime_root=runtime,
-            generated_root=change_root / "generated",
-            apply_manifest=change_root / "apply-manifest.json",
+            tests_root=qa_root / "tests",
+            cases_root=qa_root / "cases",
+            fixtures_root=qa_root / "fixtures",
+            results_root=qa_root / "results",
             langgraph_root=langgraph,
             langgraph_checkpoints=langgraph / "checkpoints.sqlite3",
             langgraph_leases=langgraph / "leases",
             langgraph_identities=langgraph / "identities",
-        )
+        ),
+        change_id=qa_root.name,
     )
 
 

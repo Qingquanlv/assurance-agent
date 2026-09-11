@@ -269,7 +269,7 @@ class ProductRuntimePorts:
                 binding.receipts_root,
             )
             workspace_provider = TaskWorkspaceProvider(task_store)
-            receipts_root = invocation_activity_receipts_root(workspace.paths.change_root, invocation_id)
+            receipts_root = invocation_activity_receipts_root(workspace.paths.qa_root, invocation_id)
             receipts_root.parent.mkdir(parents=True, exist_ok=True)
             receipts = TerminalReceiptStore.open_or_create(receipts_root)
             secret_resolver = AuthorizedSecretResolver(auth)
@@ -306,7 +306,7 @@ class ProductRuntimePorts:
                 store=task_store,
                 receipts=receipts,
                 activity_factory=activity_factory,
-                invocation_root=workspace.paths.change_root,
+                invocation_root=workspace.paths.qa_root,
             )
             network = _preflight_selected_root(typed_composition, auth, reachable)
             expected_allow = any(".agent." in contract_id for contract_id in reachable)

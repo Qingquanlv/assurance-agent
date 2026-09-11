@@ -13,11 +13,13 @@ def _mkdir(path: Path) -> None:
 @dataclass(frozen=True, slots=True)
 class ChangePaths:
     project_root: Path
-    change_root: Path
+    qa_root: Path
     staging_root: Path
     runtime_root: Path
-    generated_root: Path
-    apply_manifest: Path
+    tests_root: Path
+    cases_root: Path
+    fixtures_root: Path
+    results_root: Path
     langgraph_root: Path
     langgraph_checkpoints: Path
     langgraph_leases: Path
@@ -109,45 +111,43 @@ def require_descendant(project: Path, path: Path) -> Path:
 
 
 class ChangeWorkspace:
-    def __init__(self, paths: ChangePaths) -> None:
+    def __init__(self, paths: ChangePaths, change_id: str) -> None:
         self.paths = paths
+        self.change_id = safe_change_id(change_id)
 
     @classmethod
     def open(cls, project_root: Path, change_id: str) -> ChangeWorkspace:
         project = require_real_directory(project_root)
+        resolved_id = safe_change_id(change_id)
         qa = project / "qa"
-        changes = qa / "changes"
-        if not qa.is_dir() or qa.is_symlink() or not changes.is_dir() or changes.is_symlink():
-            raise ValueError("project must contain real qa/changes directories")
-        change = require_descendant(project, changes / safe_change_id(change_id))
-        runtime_root = change / ".runtime"
+        if not qa.is_dir() or qa.is_symlink():
+            raise ValueError("project must contain a real qa directory")
+        runtime_root = qa / ".runtime"
         langgraph_root = runtime_root / "langgraph"
         paths = ChangePaths(
             project_root=project,
-            change_root=change,
-            staging_root=change / ".staging",
+            qa_root=qa,
+            staging_root=qa / ".staging",
             runtime_root=runtime_root,
-            generated_root=change / "generated",
-            apply_manifest=change / "apply-manifest.json",
+            tests_root=qa / "tests",
+            cases_root=qa / "cases",
+            fixtures_root=qa / "fixtures",
+            results_root=qa / "results",
             langgraph_root=langgraph_root,
             langgraph_checkpoints=langgraph_root / "checkpoints.sqlite3",
             langgraph_leases=langgraph_root / "leases",
             langgraph_identities=langgraph_root / "identities",
         )
-        return cls(paths)
+        return cls(paths, resolved_id)
 
     @classmethod
     def prepare(cls, project_root: Path, change_id: str) -> ChangeWorkspace:
         project = require_real_directory(project_root)
         resolved_id = safe_change_id(change_id)
         qa = project / "qa"
-        changes = qa / "changes"
-        change = changes / resolved_id
         created: list[Path] = []
         try:
             _ensure_real_directory(qa, created)
-            _ensure_real_directory(changes, created)
-            _ensure_real_directory(change, created)
             workspace = cls.open(project, resolved_id)
             workspace.initialize()
         except Exception:
@@ -211,4 +211,4 @@ class ChangeWorkspace:
     def output_route(self, capability_alias: str) -> tuple[str, ...]:
         from assurance_product.output_routes import OutputRouteCatalog
 
-        return OutputRouteCatalog().outputs(capability_alias, self.paths.change_root.name)
+        return OutputRouteCatalog().outputs(capability_alias, self.change_id)

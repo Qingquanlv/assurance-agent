@@ -455,7 +455,7 @@ class AssuranceProductApplication:
             composition=composition,
             authorization=authorization,
             invocation_id=invocation_id,
-            change_id=workspace.paths.change_root.name,
+            change_id=workspace.change_id,
             record=record,
             status=status,
         )

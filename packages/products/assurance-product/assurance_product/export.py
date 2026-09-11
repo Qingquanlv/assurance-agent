@@ -249,7 +249,7 @@ def publish_achieved(project_root: Path, change_id: str) -> PublishReceiptV1:
         raise PublishError(str(error)) from error
     project_directory = _open_authenticated_directory(workspace.paths.project_root, "project root")
     try:
-        lock = _acquire_export_lock(workspace.paths.change_root)
+        lock = _acquire_export_lock(workspace.paths.qa_root)
         try:
             return _publish_achieved_locked(workspace, project_directory)
         finally:
@@ -264,10 +264,10 @@ def _publish_achieved_locked(
     project_directory: int,
 ) -> PublishReceiptV1:
     status = _read_status(workspace)
-    if status.change.state != "achieved" or status.change.change_id != workspace.paths.change_root.name:
+    if status.change.state != "achieved" or status.change.change_id != workspace.change_id:
         raise PublishError("cannot publish a change that is not achieved")
     manifest = _read_manifest(workspace)
-    if manifest.change_id != workspace.paths.change_root.name:
+    if manifest.change_id != workspace.change_id:
         raise PublishError("apply manifest change_id does not match the change")
     planned = _plan_files(workspace, manifest)
     files = tuple(_publish_file(item) for item in planned)
@@ -598,7 +598,7 @@ def _append_journal(
 ) -> tuple[PublishJournalRecordV1, ...]:
     updated = (*records, _record(bindings, files, phase))
     _write_json(
-        workspace.paths.change_root / _JOURNAL_NAME,
+        workspace.paths.qa_root / _JOURNAL_NAME,
         PublishJournalV1(schema_version="1", records=updated).model_dump(mode="json"),
     )
     return updated
@@ -627,7 +627,7 @@ def _record_matches(record: PublishJournalRecordV1, bindings: _Bindings) -> bool
 
 
 def _read_status(workspace: ChangeWorkspace) -> StatusV1:
-    path = workspace.paths.change_root / _STATUS_NAME
+    path = workspace.paths.qa_root / _STATUS_NAME
     try:
         return StatusV1.model_validate_json(_read_regular(path, _STATUS_NAME))
     except FileNotFoundError as error:
@@ -637,7 +637,7 @@ def _read_status(workspace: ChangeWorkspace) -> StatusV1:
 
 
 def _read_manifest(workspace: ChangeWorkspace) -> ApplyManifestV1:
-    path = workspace.paths.apply_manifest
+    path = workspace.paths.qa_root / "apply-manifest.json"
     try:
         return ApplyManifestV1.model_validate_json(_read_regular(path, "apply-manifest.json"))
     except FileNotFoundError as error:
@@ -647,7 +647,7 @@ def _read_manifest(workspace: ChangeWorkspace) -> ApplyManifestV1:
 
 
 def _read_optional_receipt(workspace: ChangeWorkspace) -> PublishReceiptV1 | None:
-    path = workspace.paths.change_root / _RECEIPT_NAME
+    path = workspace.paths.qa_root / _RECEIPT_NAME
     if not path.exists():
         return None
     try:
@@ -657,7 +657,7 @@ def _read_optional_receipt(workspace: ChangeWorkspace) -> PublishReceiptV1 | Non
 
 
 def _read_optional_journal(workspace: ChangeWorkspace) -> PublishJournalV1 | None:
-    path = workspace.paths.change_root / _JOURNAL_NAME
+    path = workspace.paths.qa_root / _JOURNAL_NAME
     if not path.exists():
         return None
     try:
@@ -667,17 +667,17 @@ def _read_optional_journal(workspace: ChangeWorkspace) -> PublishJournalV1 | Non
 
 
 def _write_receipt(workspace: ChangeWorkspace, receipt: PublishReceiptV1) -> None:
-    _write_json(workspace.paths.change_root / _RECEIPT_NAME, receipt.model_dump(mode="json"))
+    _write_json(workspace.paths.qa_root / _RECEIPT_NAME, receipt.model_dump(mode="json"))
 
 
 def _mark_published(workspace: ChangeWorkspace, status: StatusV1) -> None:
     if status.publication.status == "published":
-        _fsync_directory(workspace.paths.change_root)
+        _fsync_directory(workspace.paths.qa_root)
         return
     payload = status.model_dump(mode="json")
     payload["publication"] = {"status": "published"}
     _write_json(
-        workspace.paths.change_root / _STATUS_NAME, StatusV1.model_validate(payload).model_dump(mode="json")
+        workspace.paths.qa_root / _STATUS_NAME, StatusV1.model_validate(payload).model_dump(mode="json")
     )
 
 

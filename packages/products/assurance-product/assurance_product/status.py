@@ -89,7 +89,7 @@ def render_status_from_langgraph(
 
 
 def load_persisted_status(workspace: ChangeWorkspace) -> StatusV1 | None:
-    path = workspace.paths.change_root / _STATUS_NAME
+    path = workspace.paths.qa_root / _STATUS_NAME
     if not path.exists():
         return None
     try:
@@ -353,14 +353,14 @@ def archive_published(project_root: Path, change_id: str) -> dict[str, object]:
             return archived
         raise ArchiveError(str(error)) from error
     status = _read_archive_status(workspace)
-    if status.change.state != "achieved" or status.change.change_id != workspace.paths.change_root.name:
+    if status.change.state != "achieved" or status.change.change_id != workspace.change_id:
         raise ArchiveError("cannot archive a change that is not achieved")
     if status.publication.status != "published":
         raise ArchiveError("cannot archive before publish")
     _authenticate_publish_receipt(workspace)
     archive_root = _relocate_change(workspace)
     return {
-        "change_id": workspace.paths.change_root.name,
+        "change_id": workspace.change_id,
         "archive_root": f"qa/archive/{archive_root.name}",
     }
 
@@ -381,7 +381,7 @@ def _existing_archive_without_change(project: Path, change_id: str) -> dict[str,
 
 
 def _read_archive_status(workspace: ChangeWorkspace) -> StatusV1:
-    path = workspace.paths.change_root / _STATUS_NAME
+    path = workspace.paths.qa_root / _STATUS_NAME
     try:
         return StatusV1.model_validate_json(_read_regular_file(path, _STATUS_NAME))
     except FileNotFoundError as error:
@@ -391,19 +391,19 @@ def _read_archive_status(workspace: ChangeWorkspace) -> StatusV1:
 
 
 def _authenticate_publish_receipt(workspace: ChangeWorkspace) -> PublishReceiptV1:
-    path = workspace.paths.change_root / _RECEIPT_NAME
+    path = workspace.paths.qa_root / _RECEIPT_NAME
     if not path.exists():
         raise ArchiveError("publish receipt is missing")
     try:
         receipt = PublishReceiptV1.model_validate_json(_read_regular_file(path, _RECEIPT_NAME))
         manifest = ApplyManifestV1.model_validate_json(
-            _read_regular_file(workspace.paths.apply_manifest, _MANIFEST_NAME)
+            _read_regular_file(workspace.paths.qa_root / _MANIFEST_NAME, _MANIFEST_NAME)
         )
     except FileNotFoundError as error:
         raise ArchiveError("publish receipt is missing") from error
     except (OSError, ValueError) as error:
         raise ArchiveError("publish receipt is invalid") from error
-    if receipt.change_id != workspace.paths.change_root.name or receipt.change_id != manifest.change_id:
+    if receipt.change_id != workspace.change_id or receipt.change_id != manifest.change_id:
         raise ArchiveError("publish receipt change_id does not match the change")
     if receipt.manifest_digest != manifest.digest:
         raise ArchiveError("publish receipt does not match the apply manifest")
@@ -432,7 +432,7 @@ def _authenticate_publish_receipt(workspace: ChangeWorkspace) -> PublishReceiptV
 
 
 def _relocate_change(workspace: ChangeWorkspace) -> Path:
-    source = workspace.paths.change_root
+    source = workspace.paths.qa_root
     archive_parent = _ensure_archive_parent(workspace.paths.project_root)
     destination = archive_parent / source.name
     if destination.exists():
