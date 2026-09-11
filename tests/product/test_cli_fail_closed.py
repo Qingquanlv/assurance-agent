@@ -135,6 +135,15 @@ def test_cli_rejects_graph_import_and_workflow_overrides(cli_runner, tmp_path: P
         assert "no such option" in result.output.lower() or "no such option" in str(result.exception).lower()
 
 
+def test_cli_has_no_export_or_archive_commands() -> None:
+    from assurance_product.cli import app
+
+    names = {cmd.name for cmd in app.commands.values()}
+    assert "export" not in names
+    assert "archive" not in names
+    assert "run" in names
+
+
 def test_resume_file_rejects_unknown_and_duplicate_ids(cli_runner, tmp_path: Path):
     from assurance_product.application import parse_resume_file
 

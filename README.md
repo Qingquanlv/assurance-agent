@@ -21,11 +21,11 @@ bash scripts/assurance_capability_wheel_smoke_test.sh
 bash scripts/assurance_product_wheel_smoke_test.sh
 ```
 
-`aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`, `aa export`,
-`aa archive`, `aa bindings build`, and `aa lock show` operate on an installed
+`aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
+`aa bindings build`, and `aa lock show` operate on an installed
 product plus an explicit binding wheel and project configuration tree.
 
-Delivery is `aa run` to achieved, then `aa export`, then optional `aa archive`.
+Delivery is `aa run` to achieved.
 
 The `full` and `intake` entrypoints create one frozen assurance plan after
 Explore. Their public input supplies candidates rather than a selected family:

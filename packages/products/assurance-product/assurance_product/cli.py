@@ -27,7 +27,6 @@ from graph_engine.attempts.secret_sources import (
 from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.export import PublishError, publish_achieved, select_publish_change
 from assurance_product.models import PRODUCT_ENTRYPOINTS
 from assurance_product.product import (
     AssuranceCompositionError,
@@ -37,7 +36,6 @@ from assurance_product.product import (
     resolve_assurance_composition,
 )
 from assurance_product.application import RuntimeSelectionError, SelectionCrash
-from assurance_product.status import ArchiveError, archive_published
 
 _SOURCE_FLAGS = (
     "product",
@@ -440,48 +438,6 @@ def resume_command(
     raise SystemExit(code)
 
 
-@app.command("export")
-@click.option("--project-dir", type=click.Path())
-@click.option("--change")
-@click.option("--json", "as_json", is_flag=True)
-def export_command(
-    project_dir: str | None,
-    change: str | None,
-    as_json: bool,
-) -> None:
-    del as_json
-    _require_options({"project_dir": project_dir}, ("project_dir",))
-    try:
-        document = _export_change(project_dir=Path(cast(str, project_dir)), change_id=change)
-    except CommandError as error:
-        _fail(str(error), error.code)
-    _emit(document)
-
-
-@app.command("archive")
-@click.option("--project-dir", type=click.Path())
-@click.option("--change")
-@click.option("--json", "as_json", is_flag=True)
-def archive_command(
-    project_dir: str | None,
-    change: str | None,
-    as_json: bool,
-) -> None:
-    del as_json
-    _require_options(
-        {"project_dir": project_dir, "change": change},
-        ("project_dir", "change"),
-    )
-    try:
-        document = _archive_change(
-            project_dir=Path(cast(str, project_dir)),
-            change_id=cast(str, change),
-        )
-    except CommandError as error:
-        _fail(str(error), error.code)
-    _emit(document)
-
-
 @app.group("lock")
 def lock() -> None:
     """Authenticated invocation lock commands."""
@@ -790,21 +746,3 @@ def _resume_invocation(
                 resume_file=resume_file,
             ),
         )
-
-
-def _export_change(*, project_dir: Path, change_id: str | None) -> dict[str, object]:
-    try:
-        project = Path(project_dir).resolve()
-        selected = select_publish_change(project, change_id)
-        ChangeWorkspace.open(project, selected)
-        receipt = publish_achieved(project, selected)
-    except (PublishError, ValueError, OSError) as error:
-        raise CommandError(str(error)) from error
-    return receipt.model_dump(mode="json")
-
-
-def _archive_change(*, project_dir: Path, change_id: str) -> dict[str, object]:
-    try:
-        return archive_published(Path(project_dir).resolve(), change_id)
-    except (ArchiveError, ValueError, OSError) as error:
-        raise CommandError(str(error)) from error

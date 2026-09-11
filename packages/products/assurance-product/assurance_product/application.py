@@ -19,7 +19,6 @@ from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.export import publish_achieved, select_publish_change
 from assurance_product.invocation_identity import (
     InvocationIdentityRecord,
     RuntimeSelectionError,
@@ -44,7 +43,6 @@ from assurance_product.revision_registry import (
 )
 from assurance_product.runtime_ports import ProductRuntimePorts
 from assurance_product.status import (
-    archive_published,
     finalize_achieved,
     load_persisted_status,
     render_status_from_langgraph,
@@ -612,15 +610,6 @@ class AssuranceProductApplication:
             "lock": product_lock.model_dump(mode="json"),
             "revision": manifest.revision.model_dump(mode="json"),
         }
-
-    def export(self, *, project_dir: Path, change_id: str | None) -> dict[str, object]:
-        project = Path(project_dir).resolve()
-        selected = select_publish_change(project, change_id)
-        ChangeWorkspace.open(project, selected)
-        return publish_achieved(project, selected).model_dump(mode="json")
-
-    def archive(self, *, project_dir: Path, change_id: str) -> dict[str, object]:
-        return archive_published(Path(project_dir).resolve(), change_id)
 
     def bindings_build(self, *, manifest: Path, output_dir: Path) -> dict[str, object]:
         built = build_deployment_wheel(manifest, output_dir)
