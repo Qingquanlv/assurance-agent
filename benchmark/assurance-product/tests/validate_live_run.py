@@ -121,7 +121,7 @@ def validate(
     if admission.get("evidence_sha256") != evidence_digest:
         errors.append("evidence_sha256 does not authenticate provider diagnostics")
 
-    expected_model = "openai/gpt-5.6-terra"
+    expected_model = "deepseek/deepseek-v4-flash"
     expected_effort = "max"
     routes = item.get("routing_assignments")
     if not isinstance(routes, Mapping) or not routes:
@@ -187,7 +187,7 @@ def _fixture(repo: Path, evidence_path: Path) -> tuple[dict[str, Any], dict[str,
     item = _manifest_item(manifest)
     evidence = {
         "item_id": item["id"],
-        "provider_model": "openai/gpt-5.6-terra",
+        "provider_model": "deepseek/deepseek-v4-flash",
         "worker_profile": "max",
         "outcome": "completed",
         "terminal_status": "completed",

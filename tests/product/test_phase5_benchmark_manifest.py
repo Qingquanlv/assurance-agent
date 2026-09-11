@@ -4,6 +4,7 @@ import hashlib
 import json
 import importlib.util
 import sys
+from copy import deepcopy
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -142,8 +143,33 @@ def test_opencode_benchmark_is_one_full_locked_item(phase5_manifest):
     assert item.required_steps == FULL_WORKFLOW_REQUIRED_STEPS
     assert set(item.routing_assignments) == set(PREPARE_IDS)
     assert item.routing_assignments == item.deployment_binding_routes
-    assert all(route.provider_model == "openai/gpt-5.6-terra" for route in item.routing_assignments.values())
+    assert all(
+        route.provider_model == "deepseek/deepseek-v4-flash" for route in item.routing_assignments.values()
+    )
     assert all(route.worker_profile == "max" for route in item.routing_assignments.values())
+
+
+def test_benchmark_runner_accepts_only_deepseek_v4_pro_routes() -> None:
+    spec = importlib.util.spec_from_file_location("phase5_run_item_routing", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    deepseek_item = deepcopy(manifest["items"][0])
+    for route_map in ("routing_assignments", "deployment_binding_routes"):
+        for assignment in deepseek_item[route_map].values():
+            assignment["provider_model"] = "deepseek/deepseek-v4-flash"
+
+    accepted = runner._manifest_item({"items": [deepseek_item]}, "opencode-ret-dept-management", "opencode")
+    assert accepted["routing_assignments"] == deepseek_item["routing_assignments"]
+
+    terra_item = deepcopy(deepseek_item)
+    for route_map in ("routing_assignments", "deployment_binding_routes"):
+        for assignment in terra_item[route_map].values():
+            assignment["provider_model"] = "openai/gpt-5.6-terra"
+    with pytest.raises(SystemExit, match="OpenCode model mismatch"):
+        runner._manifest_item({"items": [terra_item]}, "opencode-ret-dept-management", "opencode")
 
 
 def test_opencode_benchmark_allows_four_review_fix_rounds() -> None:

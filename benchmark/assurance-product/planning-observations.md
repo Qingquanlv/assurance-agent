@@ -58,7 +58,7 @@ criteria or retry budgets to manufacture fewer review rounds.
 
 Run evidence: `results/opencode-20260908-planning-facts-terra-10/evidence.json`.
 This run used the built wheels and the local OpenCode server with
-`openai/gpt-5.6-terra` / `max`, selecting only API. The actual OpenCode user
+`deepseek/deepseek-v4-flash` / `max`, selecting only API. The actual OpenCode user
 request and durable activity receipt both contained `planning_facts`.
 
 - Case: seven cases, first Review passed, zero repairs.

@@ -88,6 +88,8 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
         assert "`apply_patch` is allowed only" in metadata["prompt"]
         assert "Never invoke write, edit, artifact_write, or apply_patch in parallel" in metadata["prompt"]
         assert "native write tool" in metadata["prompt"]
+        assert "Never answer with `Complete` or a prose completion summary" in metadata["prompt"]
+        assert "repeat that exact JSON object verbatim" in metadata["prompt"]
     explorer = config["agent"]["assurance-v1-explorer"]
     assert explorer["permission"]["bash"] == {"*": "deny"}
     assert explorer["tools"]["bash"] is False
