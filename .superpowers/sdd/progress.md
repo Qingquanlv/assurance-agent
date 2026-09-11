@@ -56,3 +56,34 @@ Task P11: complete (commit after 0aa0ea57, focused checks green)
 - I1 verification note: the plan's package-path Pyright invocation overrides the root include set and reports 445 pre-existing errors from excluded framework tests; the repository gate `uv run pyright` reports 0 errors.
 - Task I2: complete (pre- and post-extraction focused characterization 105 passed; complete Attempt regression 234 passed; graph-engine Ruff, repository-configured Pyright, and import contracts clean; I0 journal-byte oracle unchanged).
 - I2 depth/deletion review: accepted. `_run` now exposes one commit call followed by Effect settlement and terminal/release coordination; `_commit_or_recover` directly owns validation through promotion/recovery, replacing the former validation, prepare-recovery, and promotion helper branches. Only the two private result dataclasses were added; no collaborator, protocol, dependency bag, wrapper, second coordinator, public contract, or persisted shape was introduced.
+
+# SDD Progress — QA Flat Workspace
+
+**Plan:** docs/superpowers/plans/2026-09-11-qa-flat-workspace.md
+**Branch:** benchmark-regression
+**Worktree:** /Users/lvqingquan/agent/assurance-agent (in-place; no extra worktree)
+**Start HEAD:** 5bddf10523c47600a5022e4e076c5ead5fe686af
+
+## Tasks
+
+Task 1: complete (commits 5bddf105..465a75cc, review clean after 465a75cc)
+Task 2: complete (commits 465a75cc..2341e709, review clean)
+- Minor for whole-branch: improvement archive-receipt hardcoded (qa_join forbids archive/ substring); intake resolve reads widened to qa/; leftover qa/changes fixtures in some contract tests
+Task 3: complete (commits 2341e709..66f2315d, codegen/plan/review writes approved; leftover reviewer-skill + resolve_inputs qa/changes deferred to Task 7)
+- Minor: _change_root still builds qa/changes for identity; planning fallback write-root label; healing dual-prefix source_refs; optional tests/** skill reads
+Task 4: complete (commits 66f2315d..e90c1e64, review clean)
+- Minor: agent_skills fallback write-root label; no explicit qa/tests-vs-fixtures conflict test
+Task 5: complete (commits e90c1e64..689eeef3)
+- Minor: export/archive compile-remap to qa_root (archive would relocate qa/); intake prepare still emits qa/changes allowed_outputs; status mismatch test deferred to Task 7
+Task 5: complete (commits e90c1e64..689eeef3, review clean)
+- Minor: unused require_descendant; _workspace_at change_id=qa_root.name coincidence
+Task 6: complete (commits 689eeef3..a6b1e72e, review clean after a6b1e72e)
+- Minor: DELIVERY_FLOW is a prefix of the old sentence; benchmark fakes still model aa export
+Task 7: complete (commits a6b1e72e..a16a22e6, review clean after a16a22e6)
+- Minor: product-input-v1.json weaker than model; goldens/public-closure.json unused qa/changes; _SKIP_PARTS unused
+Task 8: complete (commits a16a22e6..a15411a2, review clean)
+- Minor: full tests/product not run; docs/usage.md gitignored; workspace metapackage still 0.2.0
+Task 9: blocked (scan + ruff green; focused pytest 54 pre-existing failures)
+- Scan of `packages tests` has no `qa/changes` / `qa/archive`
+- `docs/usage.md` rewritten locally but gitignored
+- Red is Task 7–8 rewrite residue (allowlist vs `qa/.qa.yaml`, exact prefixes, `qa/tests/` validators, export/phase5/cursor)

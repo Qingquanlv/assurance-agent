@@ -1064,11 +1064,7 @@ async def _finalize_files(
         "case_delta_paths": (
             case_delta_paths
             if case_delta_paths is not None
-            else (
-                ["qa/cases/menus/case.yaml"]
-                if isinstance(handler, CaseDesignFinalizeHandler)
-                else []
-            )
+            else (["qa/cases/menus/case.yaml"] if isinstance(handler, CaseDesignFinalizeHandler) else [])
         ),
         **({"change_id": change_id} if change_id is not None else {}),
         **({"validation_attempt": validation_attempt} if validation_attempt is not None else {}),
@@ -2602,9 +2598,7 @@ async def test_case_review_finalize_rejects_auto_fix_without_an_exact_field_loca
     _write_case_design_outputs(tmp_path, authored)
     _write_review_matrix(tmp_path, missing=[])
     _write_fixable_case_review(tmp_path, allowed_key="title")
-    document = json.loads(
-        (tmp_path / "qa/results/review/case-review.json").read_text(encoding="utf-8")
-    )
+    document = json.loads((tmp_path / "qa/results/review/case-review.json").read_text(encoding="utf-8"))
     document["findings"][0]["locator"]["key"] = None
 
     executed = await _finalize_files(
@@ -2627,9 +2621,7 @@ async def test_case_review_finalize_rejects_case_id_as_a_mutable_field_locator(
 ) -> None:
     _write_review_matrix(tmp_path, missing=[])
     _write_fixable_case_review(tmp_path, allowed_key="case_id")
-    document = json.loads(
-        (tmp_path / "qa/results/review/case-review.json").read_text(encoding="utf-8")
-    )
+    document = json.loads((tmp_path / "qa/results/review/case-review.json").read_text(encoding="utf-8"))
 
     outcome = await _finalize_review_with_written_cases(tmp_path, cast(JSONValue, document))
 

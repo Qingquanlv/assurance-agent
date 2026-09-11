@@ -371,9 +371,7 @@ def test_execution_agent_job_catalog_is_feature_owned() -> None:
         assert contract.contract_id == f"assurance.execution.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
-        assert contract.resources.writes == tuple(
-            sorted(("qa/.staging/execution", *writes))
-        )
+        assert contract.resources.writes == tuple(sorted(("qa/.staging/execution", *writes)))
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped

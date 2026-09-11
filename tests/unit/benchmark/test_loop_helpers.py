@@ -1736,5 +1736,3 @@ def test_parse_evidence_row_rejects_unknown_reason_and_zero_substituted_incomple
         "parse_evidence_row_fields 'CH-1|raw|bogus|0|complete|0|0|pass|0|0'",
     )
     assert raw_with_reason.returncode != 0
-
-

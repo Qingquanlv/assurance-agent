@@ -49,9 +49,7 @@ def _selected_for_nodeid(nodeid: str, allowed: frozenset[str]) -> str | None:
         if file_path in allowed:
             return file_path
         matches = tuple(
-            selector
-            for selector in allowed
-            if candidate == selector or candidate.startswith(f"{selector}[")
+            selector for selector in allowed if candidate == selector or candidate.startswith(f"{selector}[")
         )
         if len(matches) == 1:
             return matches[0]

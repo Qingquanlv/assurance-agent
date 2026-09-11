@@ -49,13 +49,7 @@ _AGENT_ENTRYPOINTS = frozenset(
 
 
 def _identity_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
-    return (
-        project_dir
-        / "qa" / ".runtime"
-        / "langgraph"
-        / "identities"
-        / f"{invocation_id}.json"
-    )
+    return project_dir / "qa" / ".runtime" / "langgraph" / "identities" / f"{invocation_id}.json"
 
 
 def _load_identity(path: Path) -> dict[str, object]:
@@ -291,9 +285,7 @@ def _reject_lifecycle_tampers(
     assert modest.exit_code == 40, modest.output
     identity_path.chmod(0o644)
 
-    checkpoints = (
-        project_dir / "qa" / ".runtime" / "langgraph" / "checkpoints.sqlite3"
-    )
+    checkpoints = project_dir / "qa" / ".runtime" / "langgraph" / "checkpoints.sqlite3"
     if checkpoints.is_file():
         real = checkpoints.with_name("checkpoints.sqlite3.real")
         checkpoints.rename(real)
@@ -432,6 +424,7 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     from assurance_product.invocation_identity import InvocationIdentityRecord
     from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
     from graph_engine.attempts.resource_arbiter import ResourceArbiter
+
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = opencode_composition
     args, project_dir, change_id = common_lifecycle_args(

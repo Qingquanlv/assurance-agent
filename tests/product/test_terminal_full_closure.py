@@ -277,9 +277,7 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
     execution = json.loads(
-        (project / "qa" / "results/execution" / "execute-result.json").read_text(
-            encoding="utf-8"
-        )
+        (project / "qa" / "results/execution" / "execute-result.json").read_text(encoding="utf-8")
     )
     snapshot = SimpleNamespace(
         next=(),

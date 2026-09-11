@@ -37,12 +37,12 @@ Explore. Their public input supplies candidates rather than a selected family:
   "requirement": "Protect the account recovery journey",
   "run_mode": "implement",
   "candidate_test_families": ["api", "e2e"],
-  "case_delta_paths": ["qa/changes/CH-123/cases/account-recovery/case.yaml"],
+  "case_delta_paths": ["qa/cases/account-recovery/case.yaml"],
   "capability_leafs": ["account.recovery.complete"],
   "capability_catalog": {"resource_id": "assurance.product.configuration.capability-catalog", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
   "product_policy": {"resource_id": "assurance.product.configuration.product-policy", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
   "data_knowledge": {"resource_id": "assurance.product.configuration.data-knowledge", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
-  "allowed_artifact_paths": ["qa/changes", "tests"],
+  "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
   "budgets": {"review_rounds": 2, "coverage_rounds": 2, "healing_rounds": 1, "execution_retries": 1}
 }
 ```
@@ -57,13 +57,13 @@ They use an empty candidate set and the exact content-addressed reference:
   "requirement": "Protect the account recovery journey",
   "run_mode": "case",
   "candidate_test_families": [],
-  "resolved_plan_ref": {"path": "qa/changes/CH-123/plan/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/resolved-assurance-plan.json", "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
-  "case_delta_paths": ["qa/changes/CH-123/cases/account-recovery/case.yaml"],
+  "resolved_plan_ref": {"path": "qa/results/plan/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/resolved-assurance-plan.json", "digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},
+  "case_delta_paths": ["qa/cases/account-recovery/case.yaml"],
   "capability_leafs": ["account.recovery.complete"],
   "capability_catalog": {"resource_id": "assurance.product.configuration.capability-catalog", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
   "product_policy": {"resource_id": "assurance.product.configuration.product-policy", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
   "data_knowledge": {"resource_id": "assurance.product.configuration.data-knowledge", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
-  "allowed_artifact_paths": ["qa/changes", "tests"],
+  "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
   "budgets": {"review_rounds": 2, "coverage_rounds": 2, "healing_rounds": 1, "execution_retries": 1}
 }
 ```

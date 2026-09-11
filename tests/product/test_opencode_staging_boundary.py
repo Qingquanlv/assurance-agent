@@ -23,8 +23,7 @@ _WRITE_ROOT = "qa/.staging/task-1/attempt-1"
 _ALLOWED = "qa/proposal.md"
 _OTHER_NODE = "qa/results/review/review.md"
 _EXECUTION_VIEW = (
-    f"{_WRITE_ROOT}/qa/.staging/execution/"
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    f"{_WRITE_ROOT}/qa/.staging/execution/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 )
 _DRIVER = r"""
 import { pathToFileURL } from "node:url";

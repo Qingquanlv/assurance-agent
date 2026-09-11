@@ -109,10 +109,7 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                 },
                 "baseline_tree_id": _HEX,
                 "runner_profile_digest": _HEX,
-                "execution_view_root": (
-                    "qa/.staging/task/attempt-1/"
-                    "qa/.staging/execution/batch-1"
-                ),
+                "execution_view_root": ("qa/.staging/task/attempt-1/qa/.staging/execution/batch-1"),
                 "execution_view_digest": _HEX,
                 "executed_at": "2026-09-05T00:00:00Z",
                 "mapping": {
@@ -158,9 +155,7 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                         "required_case_ids": ["TC-1"],
                         "selected_families": ["api"],
                         "applicable_goals": ["constraint_coverage"],
-                        "applicability_refs": [
-                            {"path": "qa/cases/api/case.yaml", "digest": _HEX}
-                        ],
+                        "applicability_refs": [{"path": "qa/cases/api/case.yaml", "digest": _HEX}],
                         "risk_tier": "low",
                         "policy_digest": _HEX,
                     },

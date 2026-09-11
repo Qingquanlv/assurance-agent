@@ -243,9 +243,7 @@ def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_root
     )
 
     assert original.workspace.read_roots == (old_view,)
-    assert effective.workspace.read_roots == (
-        "qa/.staging/task-2/attempt-1/qa/.staging/execution/batch-1",
-    )
+    assert effective.workspace.read_roots == ("qa/.staging/task-2/attempt-1/qa/.staging/execution/batch-1",)
     assert effective.workspace.identity_digest == canonical_digest(
         effective.workspace.model_dump(mode="json", exclude={"identity_digest"})
     )

@@ -146,11 +146,7 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                 (
                     *_paths(*outputs),
                     *(
-                        (
-                            qa_join(
-                                "cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
-                            ),
-                        )
+                        (qa_join("cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"),)
                         if base == "case-review"
                         else ()
                     ),

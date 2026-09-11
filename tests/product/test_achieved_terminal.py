@@ -185,9 +185,7 @@ class _PlanBinding(TypedDict):
 
 def _plan_binding_for(project: Path) -> _PlanBinding:
     evidence = json.loads(
-        (project / "qa" / "results/execution" / "execute-result.json").read_text(
-            encoding="utf-8"
-        )
+        (project / "qa" / "results/execution" / "execute-result.json").read_text(encoding="utf-8")
     )
     return {
         "plan_digest": cast(str, evidence["plan_digest"]),
@@ -232,9 +230,7 @@ def _ready_change(tmp_path: Path, *, execution_status: str = "passed") -> Path:
 
 def _execute_gate_for(project: Path) -> dict[str, object]:
     evidence = json.loads(
-        (project / "qa" / "results/execution" / "execute-result.json").read_text(
-            encoding="utf-8"
-        )
+        (project / "qa" / "results/execution" / "execute-result.json").read_text(encoding="utf-8")
     )
     return _execution_gate(evidence, semantic_node_id="execution.execute")
 

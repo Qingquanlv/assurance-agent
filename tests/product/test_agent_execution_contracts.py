@@ -212,9 +212,7 @@ try {
     denied = run("assurance-v1-test-author", "tests/e2e/test_dept.py", ("qa/results/codegen/out.py",))
     assert denied.returncode == 23
     assert "path is not allowed" in denied.stderr
-    denied = run(
-        "assurance-v1-explorer", "qa/results/explore/context.json", ("qa/results/explore/notes.md",)
-    )
+    denied = run("assurance-v1-explorer", "qa/results/explore/context.json", ("qa/results/explore/notes.md",))
     assert denied.returncode == 23
     assert "path is not allowed" in denied.stderr
 
@@ -491,8 +489,7 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         assert extra == tuple(path for path in resolved.writes if path not in outputs)
         assert all(path.startswith("qa/") for path in resolved.writes)
         assert all(
-            "/.runtime/" not in path
-            and ("/.staging/" not in path or path == "qa/.staging/execution")
+            "/.runtime/" not in path and ("/.staging/" not in path or path == "qa/.staging/execution")
             for path in resolved.writes
         )
         assert all(path not in forbidden_prefixes for path in resolved.writes)

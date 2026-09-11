@@ -386,9 +386,7 @@ def test_raw_executor_resolves_single_graph_facing_task_contract(tmp_path: Path)
 def test_case_design_raw_attempt_preserves_both_legacy_prepare_consumers(tmp_path: Path) -> None:
     validated_input = CaseDesignInput(change_id="CH-1", path="primary")
     prepared_value = CaseDesignPrepared(change_id="CH-1", path="primary", prompt="primary case-design")
-    expected_agent_result = CaseDesignAgentResult(
-        output_files=("qa/proposal.md", "qa/.qa.yaml")
-    )
+    expected_agent_result = CaseDesignAgentResult(output_files=("qa/proposal.md", "qa/.qa.yaml"))
     expected_output = CaseDesignOutput(
         status="committed",
         output_files=expected_agent_result.output_files,

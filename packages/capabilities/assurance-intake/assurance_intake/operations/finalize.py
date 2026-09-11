@@ -1142,8 +1142,7 @@ class CaseReviewFinalizeHandler:
                     source_refs=tuple(sorted((*input_refs, review_ref), key=lambda item: item.path)),
                 )
                 history_relative = (
-                    f"qa/cases/reviews/epochs/{payload.coverage_epoch}/"
-                    f"rounds/{payload.review_round}.json"
+                    f"qa/cases/reviews/epochs/{payload.coverage_epoch}/rounds/{payload.review_round}.json"
                 )
                 history_bytes = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
                 history_path = context.write_root.joinpath(*history_relative.split("/"))

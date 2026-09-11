@@ -675,9 +675,7 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
                 {
                     "change_id": "CH-1",
                     "batch_id": "batch-1",
-                    "execution_view_root": (
-                        "qa/.staging/task/attempt-1/qa/.staging/execution/batch-1"
-                    ),
+                    "execution_view_root": ("qa/.staging/task/attempt-1/qa/.staging/execution/batch-1"),
                 }
             ),
         ),

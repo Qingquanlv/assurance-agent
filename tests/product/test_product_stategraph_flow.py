@@ -150,9 +150,7 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         batch_id=f"20260905T120{epoch}{repair_round}0Z",
         executed_at=datetime(2026, 9, 5, 12, epoch, repair_round, tzinfo=UTC),
         final_status=status,  # type: ignore[arg-type]
-        evidence_ref=_ref(
-            f"qa/results/execution/epochs/{epoch}/rounds/{repair_round}/result.json"
-        ),
+        evidence_ref=_ref(f"qa/results/execution/epochs/{epoch}/rounds/{repair_round}/result.json"),
         mapping_ref=generated.mapping_ref,
         source_refs=generated.source_refs,
         receipt=_receipt(f"execution-{epoch}-{repair_round}"),
@@ -163,12 +161,9 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
 def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, object]:
     execution = ExecutionCycleResultV1.model_validate(_execution(epoch)["execution_result"])
     gaps = _ref(f"qa/results/inspect/epochs/{epoch}/gaps.json")
-    observations = _ref(
-        f"qa/results/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json"
-    )
+    observations = _ref(f"qa/results/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json")
     issue_manifest = _ref(
-        f"qa/results/inspect/epochs/{epoch}/batches/"
-        f"{execution.batch_id}/issue-evidence-manifest.json"
+        f"qa/results/inspect/epochs/{epoch}/batches/{execution.batch_id}/issue-evidence-manifest.json"
     )
     trace = _ref(f"qa/results/inspect/epochs/{epoch}/trace.json")
     metrics = _ref(f"qa/results/inspect/epochs/{epoch}/metrics.json")
@@ -408,9 +403,7 @@ def _flow_features(
             or {
                 **_plan_update(),
                 "status": "prepared",
-                "preparation_refs": [
-                    _ref("qa/results/preparation/context.json").model_dump(mode="json")
-                ],
+                "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
             }
         ),
         load_plan=_echo({**_plan_update(), "status": "prepared"}),
@@ -589,9 +582,7 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
                 {
                     **_plan_update(),
                     "status": "prepared",
-                    "preparation_refs": [
-                        _ref("qa/results/preparation/context.json").model_dump(mode="json")
-                    ],
+                    "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
                 },
             ),
         ),
