@@ -561,7 +561,7 @@ def _product_input(
             "resource_id": "assurance.product.configuration.data-knowledge",
             "sha256": _SHA,
         },
-        "allowed_artifact_paths": ("qa/cases", "qa/fixtures", "qa/results", "qa/tests"),
+        "allowed_artifact_paths": ("qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"),
         "budgets": {
             "review_rounds": 1,
             "coverage_rounds": coverage_rounds,

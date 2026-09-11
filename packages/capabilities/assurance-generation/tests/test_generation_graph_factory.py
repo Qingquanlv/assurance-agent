@@ -85,7 +85,7 @@ def generation_graph_input(
         },
         "selected_test_families": list(selected),
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,

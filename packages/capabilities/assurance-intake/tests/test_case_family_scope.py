@@ -132,8 +132,8 @@ async def _finalize(
             },
         }
         artifacts = (
-            f"{_ROOT}/review/case-review-summary.md",
-            f"{_ROOT}/review/case-review.json",
+            "qa/results/review/case-review-summary.md",
+            "qa/results/review/case-review.json",
         )
         review_path = stage / artifacts[1]
         review_path.parent.mkdir(parents=True, exist_ok=True)

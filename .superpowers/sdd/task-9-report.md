@@ -2,9 +2,9 @@
 
 ## Status
 
-BLOCKED
+DONE_WITH_CONCERNS
 
-Scan and ruff are green after leftover remaps. The focused pytest gate is not green. Remaining failures are rewrite residue named in Tasks 7–8, not introduced by this task. No git APIs added. No live OpenCode run.
+Scan and ruff stayed green. The focused pytest gate is 2483 passed / 13 skipped / 1 failed. The remaining failure is the Task 8 cursor snapshot message, not rewrite residue from this unlock. No git APIs added. No live OpenCode run.
 
 ## Step 1: Forbidden-string scan
 
@@ -151,3 +151,21 @@ Brief’s `git add docs` is a no-op (`docs/` is gitignored). Leftover tracked re
 - Getting green needs allowlist/root-file policy (`qa/.qa.yaml` vs the four prefixes), healing/execution `qa/tests/` validators, quality evidence paths, and leftover export/phase5/cursor tests — not more string deletion.
 - `docs/usage.md` update cannot be committed.
 - Retro golden directory is still named `qa/changes/`; content scan is clean.
+
+## Unblock: allowlist expansion + rewrite residue
+
+Controller lock is now the exact sorted 7-tuple (`qa/.qa.yaml`, `qa/cases`, `qa/fixtures`, `qa/proposal.md`, `qa/requirement.md`, `qa/results`, `qa/tests`) on `ProductInputV1`, `run_item.py`, fixtures, and tests that asserted the old 4-tuple.
+
+Combined command:
+
+```bash
+uv run pytest packages/adapters/agent-runtime-contracts/tests/test_qa_paths.py packages/capabilities/assurance-intake/tests packages/capabilities/assurance-generation/tests packages/capabilities/assurance-execution/tests packages/capabilities/assurance-quality/tests packages/capabilities/assurance-healing/tests packages/capabilities/assurance-improvement/tests tests/product -q --tb=line
+```
+
+**2483 passed, 13 skipped, 1 failed** in 411.53s.
+
+Remaining (pre-existing Task 8; not chased):
+
+- `tests/product/test_product_composition.py::test_unselected_adapter_source_is_rejected_before_provider_import` — message is `wheel declaration path is absent from the authenticated snapshot` instead of `runtime.cursor|agent-runtime-cursor`.
+
+Status: DONE_WITH_CONCERNS.

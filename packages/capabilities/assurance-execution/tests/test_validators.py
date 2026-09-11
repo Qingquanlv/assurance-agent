@@ -51,7 +51,7 @@ def validation_context() -> ValidationContext:
 
 def test_evidence_validator_rejects_result_outside_mapping() -> None:
     result = ExecutionEvidenceValidator().validate(
-        candidate_with_result("tests/legacy_test.py"), validation_context()
+        candidate_with_result("qa/tests/legacy_test.py"), validation_context()
     )
     assert result.accepted is False
     assert result.reason == "execution evidence contains a test outside the closed mapping"
@@ -59,7 +59,7 @@ def test_evidence_validator_rejects_result_outside_mapping() -> None:
 
 def test_closed_mapping_validator_rejects_unmapped_test() -> None:
     result = ClosedMappingValidator().validate(
-        candidate_with_result("tests/legacy_test.py"), validation_context()
+        candidate_with_result("qa/tests/legacy_test.py"), validation_context()
     )
     assert result.accepted is False
     assert result.reason == "mapping must equal selected tests"
@@ -70,7 +70,7 @@ def test_plugin_contributed_validators_are_path_only() -> None:
     mapping = contribution.commit_validators["assurance.execution.validator.closed-mapping.v1"]
     evidence = contribution.commit_validators["assurance.execution.validator.evidence.v1"]
     context = validation_context()
-    allowed = candidate_with_result("tests/legacy_test.py")
+    allowed = candidate_with_result("qa/tests/legacy_test.py")
     assert mapping.validate(allowed, context).accepted is True
     assert evidence.validate(allowed, context).accepted is True
     rejected = mapping.validate(candidate_with_result("src/app.py"), context)
@@ -92,7 +92,7 @@ def _evidence_candidate(path: str = _EVIDENCE_PATH) -> CandidateWriteSet:
 
 def test_evidence_validator_rejects_malformed_injected_bytes() -> None:
     result = ExecutionEvidenceValidator(
-        mapping=_locked_mapping(["tests/generated_test.py"]),
+        mapping=_locked_mapping(["qa/tests/generated_test.py"]),
         file_bytes={_EVIDENCE_PATH: b"{not-json"},
     ).validate(_evidence_candidate(), validation_context())
     assert result.accepted is False
@@ -101,11 +101,11 @@ def test_evidence_validator_rejects_malformed_injected_bytes() -> None:
 
 def test_evidence_validator_rejects_injected_unmapped_result_bytes() -> None:
     payload = valid_evidence(
-        selected=["tests/generated_test.py"],
-        results=[valid_result("tests/legacy_test.py")],
+        selected=["qa/tests/generated_test.py"],
+        results=[valid_result("qa/tests/legacy_test.py")],
     )
     result = ExecutionEvidenceValidator(
-        mapping=_locked_mapping(["tests/generated_test.py"]),
+        mapping=_locked_mapping(["qa/tests/generated_test.py"]),
         file_bytes={_EVIDENCE_PATH: json.dumps(payload).encode("utf-8")},
     ).validate(_evidence_candidate(), validation_context())
     assert result.accepted is False
@@ -114,9 +114,9 @@ def test_evidence_validator_rejects_injected_unmapped_result_bytes() -> None:
 
 
 def test_evidence_validator_rejects_injected_mapping_mismatch() -> None:
-    payload = valid_evidence(selected=["tests/legacy_test.py"])
+    payload = valid_evidence(selected=["qa/tests/legacy_test.py"])
     result = ExecutionEvidenceValidator(
-        mapping=_locked_mapping(["tests/generated_test.py"]),
+        mapping=_locked_mapping(["qa/tests/generated_test.py"]),
         file_bytes={_EVIDENCE_PATH: json.dumps(payload).encode("utf-8")},
     ).validate(_evidence_candidate(), validation_context())
     assert result.accepted is False

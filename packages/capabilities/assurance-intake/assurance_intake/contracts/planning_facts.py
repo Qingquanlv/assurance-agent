@@ -148,8 +148,7 @@ def build_planning_facts(
     candidates = {"tests/conftest.py", "tests/config.py"}
     candidates.update(f"tests/{_FAMILY_ROOTS[f]}/conftest.py" for f in families if f in _FAMILY_ROOTS)
     inputs: list[dict[str, str]] = []
-    for suffix in ("requirement.md", "proposal.md", "explore/exploration.json"):
-        relative = f"qa/results/{suffix}"
+    for relative in ("qa/requirement.md", "qa/proposal.md", "qa/results/explore/exploration.json"):
         data, _ = _read(root, relative)
         if data is None:
             continue

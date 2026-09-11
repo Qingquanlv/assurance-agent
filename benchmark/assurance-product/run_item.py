@@ -104,7 +104,7 @@ def main() -> int:
         "capability_catalog": catalog_ref,
         "product_policy": _ref(composition, "assurance.product.configuration.product-policy"),
         "data_knowledge": _ref(composition, "assurance.product.configuration.data-knowledge"),
-        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
         "budgets": {
             "review_rounds": 4,
             "coverage_rounds": 2,

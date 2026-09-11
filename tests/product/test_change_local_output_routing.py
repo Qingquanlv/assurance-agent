@@ -205,7 +205,7 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
                 "change_id": "RET-dept-management",
                 "requirement": "Cover department CRUD.",
                 "capability_leafs": [],
-                "artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+                "artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
             },
             project,
             binding_data=BINDING,

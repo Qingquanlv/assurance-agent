@@ -160,7 +160,7 @@ def skill_input() -> JSONValue:
 
 
 def authenticated_issue_input(root: Path) -> JSONValue:
-    base = "qa"
+    base = "qa/results"
     source_path = f"{base}/execution/api-result.json"
     observations_path = f"{base}/inspect/epochs/0/batches/{BATCH_ID}/observations.json"
     manifest_path = f"{base}/inspect/epochs/0/batches/{BATCH_ID}/issue-evidence-manifest.json"

@@ -358,6 +358,17 @@ def _canonical_text(value: str, label: str) -> str:
     return normalized
 
 
+LOCKED_ALLOWED_ARTIFACT_PATHS: tuple[str, ...] = (
+    "qa/.qa.yaml",
+    "qa/cases",
+    "qa/fixtures",
+    "qa/proposal.md",
+    "qa/requirement.md",
+    "qa/results",
+    "qa/tests",
+)
+
+
 def _canonical_artifact_prefixes(values: tuple[str, ...]) -> tuple[str, ...]:
     cleaned = tuple(unicodedata.normalize("NFC", item.strip()) for item in values)
     if any(not item for item in cleaned):
@@ -470,7 +481,7 @@ class ProductInputV1(FrozenModel):
     @field_validator("allowed_artifact_paths")
     @classmethod
     def _allowed_artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        locked = ("qa/cases", "qa/fixtures", "qa/results", "qa/tests")
+        locked = LOCKED_ALLOWED_ARTIFACT_PATHS
         cleaned = _canonical_artifact_prefixes(value)
         if cleaned != locked:
             raise ValueError("allowed_artifact_paths must be the exact product prefixes")

@@ -277,7 +277,7 @@ async def test_plan_prepare_hydrates_family_input_from_reviewed_workspace_cases(
             "plan_digest": PLAN_DIGEST,
             "plan_ref": PLAN_REF,
             "capability_leafs": list(VALID_LEAFS),
-            "artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+            "artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
         },
         tmp_path,
         binding_data=BINDING,

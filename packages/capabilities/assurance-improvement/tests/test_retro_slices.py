@@ -160,7 +160,7 @@ async def test_each_plan_bound_source_retains_its_own_authenticated_plan(tmp_pat
     report_refs = (
         _write(
             tmp_path,
-            "qa/results/report/report-outcome.json",
+            f"qa/results/report/{_CHANGE}/report-outcome.json",
             _json_bytes(
                 {
                     "change_id": _CHANGE,
@@ -171,7 +171,7 @@ async def test_each_plan_bound_source_retains_its_own_authenticated_plan(tmp_pat
         ),
         _write(
             tmp_path,
-            "qa/results/report/report-outcome.json",
+            f"qa/results/report/{second_change}/report-outcome.json",
             _json_bytes(
                 {
                     "change_id": second_change,

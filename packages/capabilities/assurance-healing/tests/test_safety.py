@@ -42,20 +42,20 @@ def validation_context() -> ValidationContext:
 
 def test_test_tree_validator_permits_only_approved_test_changes() -> None:
     validator = TestTreeValidator(
-        allowed_test_roots=("tests",),
+        allowed_test_roots=("qa/tests",),
         forbidden_product_roots=("app", "src"),
         require_approval=True,
         approved=False,
     )
-    rejected = validator.validate(candidate("tests/api/test_users.py"), validation_context())
+    rejected = validator.validate(candidate("qa/tests/api/test_users.py"), validation_context())
     assert rejected.accepted is False
     approved = TestTreeValidator(
-        allowed_test_roots=("tests",),
+        allowed_test_roots=("qa/tests",),
         forbidden_product_roots=("app", "src"),
         require_approval=True,
         approved=True,
     )
-    assert approved.validate(candidate("tests/api/test_users.py"), validation_context()).accepted is True
+    assert approved.validate(candidate("qa/tests/api/test_users.py"), validation_context()).accepted is True
     product = approved.validate(candidate("app/main.py"), validation_context())
     assert product.accepted is False
 
@@ -80,8 +80,8 @@ def test_override_validator_checks_exact_token() -> None:
         expected_change_id="CH-DEMO-001",
         policy_digest=_HEX_A,
         candidate_digest=_HEX_B,
-        file_bytes={"healing/override-token.json": __import__("json").dumps(token).encode()},
-    ).validate(candidate("healing/override-token.json"), validation_context())
+        file_bytes={"qa/results/healing/override-token.json": __import__("json").dumps(token).encode()},
+    ).validate(candidate("qa/results/healing/override-token.json"), validation_context())
     assert accepted.accepted is True
     forged = dict(token)
     forged["change_id"] = "CH-OTHER"
@@ -89,14 +89,14 @@ def test_override_validator_checks_exact_token() -> None:
         expected_change_id="CH-DEMO-001",
         policy_digest=_HEX_A,
         candidate_digest=_HEX_B,
-        file_bytes={"healing/override-token.json": __import__("json").dumps(forged).encode()},
-    ).validate(candidate("healing/override-token.json"), validation_context())
+        file_bytes={"qa/results/healing/override-token.json": __import__("json").dumps(forged).encode()},
+    ).validate(candidate("qa/results/healing/override-token.json"), validation_context())
     assert rejected.accepted is False
 
 
 def test_default_repair_and_override_validators_fail_closed() -> None:
     context = validation_context()
-    repair = RepairCandidateValidator().validate(candidate("tests/api/x.py"), context)
+    repair = RepairCandidateValidator().validate(candidate("qa/tests/api/x.py"), context)
     assert repair.accepted is False
     override = OverrideValidator().validate(candidate("healing/token.json"), context)
     assert override.accepted is False
@@ -115,7 +115,7 @@ def test_repair_candidate_authenticates_apply_summary() -> None:
         "proposals": [
             {
                 "proposal_id": "P1",
-                "files_to_modify": ["tests/api/test_other.py", "tests/api/test_users.py"],
+                "files_to_modify": ["qa/tests/api/test_other.py", "qa/tests/api/test_users.py"],
             }
         ],
     }
@@ -123,15 +123,15 @@ def test_repair_candidate_authenticates_apply_summary() -> None:
         "schema_version": "1",
         "outcome": "applied",
         "proposal_ids": ["P1"],
-        "claimed_modified_paths": ["tests/api/test_users.py"],
+        "claimed_modified_paths": ["qa/tests/api/test_users.py"],
         "intent_sha256": f"sha256:{_HEX_A}",
         "write_set_id": "ws-1",
         "applied": True,
     }
     validator = RepairCandidateValidator(approved_proposal=proposal, apply_summary=summary)
     context = validation_context()
-    assert validator.validate(candidate("tests/api/test_users.py"), context).accepted is True
-    extra = validator.validate(candidate("tests/api/test_other.py"), context)
+    assert validator.validate(candidate("qa/tests/api/test_users.py"), context).accepted is True
+    extra = validator.validate(candidate("qa/tests/api/test_other.py"), context)
     assert extra.accepted is False
 
 
@@ -139,21 +139,21 @@ def test_repair_apply_summary_parse_failure_is_rejected() -> None:
     rejected = RepairCandidateValidator(
         approved_proposal={
             "status": "approved",
-            "proposals": [{"proposal_id": "P1", "files_to_modify": ["tests/api/test_users.py"]}],
+            "proposals": [{"proposal_id": "P1", "files_to_modify": ["qa/tests/api/test_users.py"]}],
         },
         file_bytes={"healing/apply-summary.json": b"{"},
-    ).validate(candidate("tests/api/test_users.py"), validation_context())
+    ).validate(candidate("qa/tests/api/test_users.py"), validation_context())
     assert rejected.accepted is False
 
 
 def test_repair_candidate_requires_named_proposal_files() -> None:
     proposal = {
         "status": "approved",
-        "proposals": [{"proposal_id": "P1", "files_to_modify": ["tests/api/test_users.py"]}],
+        "proposals": [{"proposal_id": "P1", "files_to_modify": ["qa/tests/api/test_users.py"]}],
     }
     validator = RepairCandidateValidator(approved_proposal=proposal, require_approval=True)
-    assert validator.validate(candidate("tests/api/test_users.py"), validation_context()).accepted is True
-    extra = validator.validate(candidate("tests/api/test_other.py"), validation_context())
+    assert validator.validate(candidate("qa/tests/api/test_users.py"), validation_context()).accepted is True
+    extra = validator.validate(candidate("qa/tests/api/test_other.py"), validation_context())
     assert extra.accepted is False
     product = validator.validate(candidate("app/main.py"), validation_context())
     assert product.accepted is False
@@ -165,9 +165,9 @@ def test_plugin_validators_are_path_only() -> None:
     override = contribution.commit_validators["assurance.healing.validator.override.v1"]
     repair = contribution.commit_validators["assurance.healing.validator.repair-candidate.v1"]
     context = validation_context()
-    allowed = candidate("tests/api/test_users.py")
+    allowed = candidate("qa/tests/api/test_users.py")
     assert tree.validate(allowed, context).accepted is True
-    assert override.validate(candidate("healing/override-token.json"), context).accepted is True
+    assert override.validate(candidate("qa/results/healing/override-token.json"), context).accepted is True
     assert repair.validate(allowed, context).accepted is True
     assert tree.validate(candidate("src/app.py"), context).accepted is False
     assert repair.validate(candidate("app/main.py"), context).accepted is False
@@ -214,7 +214,7 @@ async def test_status_and_coverage_repair_handlers() -> None:
         "batch_id": "batch-1",
         "probe_verdict": "pass",
         "eligible": True,
-        "allowed_test_files": ["tests/api/test_users.py"],
+        "allowed_test_files": ["qa/tests/api/test_users.py"],
         "repair_items": [
             {
                 "kind": "uncovered_required_case",
@@ -229,7 +229,7 @@ async def test_status_and_coverage_repair_handlers() -> None:
             "change_id": "CH-DEMO-001",
             "brief": brief,
             "test_tree_sha256": _HEX_A,
-            "test_files_sha256": {"tests/api/test_users.py": _HEX_B},
+            "test_files_sha256": {"qa/tests/api/test_users.py": _HEX_B},
             "product_tree_sha256": _HEX_A,
             "product_files_sha256": {},
             "declaration_tree_sha256": _HEX_A,
@@ -256,13 +256,13 @@ async def test_status_and_coverage_repair_handlers() -> None:
                 "attempt": 1,
                 "attempt_token": "token-1",
                 "test_tree_sha256": _HEX_A,
-                "test_files_sha256": {"tests/api/test_users.py": _HEX_B},
+                "test_files_sha256": {"qa/tests/api/test_users.py": _HEX_B},
                 "product_tree_sha256": _HEX_A,
                 "product_files_sha256": {},
                 "declaration_tree_sha256": _HEX_A,
                 "declaration_files_sha256": {},
             },
-            "current_test_files": {"tests/api/test_users.py": _HEX_B},
+            "current_test_files": {"qa/tests/api/test_users.py": _HEX_B},
             "current_product_files": {},
             "current_declaration_files": {},
             "summary": {

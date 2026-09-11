@@ -145,7 +145,15 @@ async def run_generation_boundary(root: Path, coverage_epoch: int = 0):
             "reviewed_case": payload.reviewed_case.model_dump(mode="json"),
             "selected_test_families": ["api", "e2e"],
             "capability_leafs": ["entities.item.create"],
-            "allowed_artifact_paths": [],
+            "allowed_artifact_paths": [
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/fixtures",
+                "qa/proposal.md",
+                "qa/requirement.md",
+                "qa/results",
+                "qa/tests",
+            ],
             "rounds_used": 0,
             "rounds_budget": 2,
         },
@@ -189,7 +197,7 @@ async def test_generation_cycle_requires_results_plan_prefix(tmp_path: Path) -> 
 
 async def test_generation_cycle_rejects_change_scoped_plan_prefix(tmp_path: Path) -> None:
     payload, _ = await cycle_fixture(tmp_path, families=("api",))
-    old_plan = "qa/results/plans/api-plan.md"
+    old_plan = "/".join(("generated", "plans", "api-plan.md"))
     (tmp_path / old_plan).parent.mkdir(parents=True, exist_ok=True)
     (tmp_path / old_plan).write_bytes(b"legacy plan\n")
     family = payload.families[0].model_copy(update={"plan_files": (old_plan,)})

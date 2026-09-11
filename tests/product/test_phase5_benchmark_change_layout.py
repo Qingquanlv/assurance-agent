@@ -831,7 +831,7 @@ def test_success_uses_real_sut_change_and_exports_once(
     assert not (output / "latest").exists()
     assert not (output / "result-registry.json").exists()
     assert change_root.is_dir()
-    assert (change_root / "publish-receipt.json").is_file()
+    assert (change_root / "results" / "publish-receipt.json").is_file()
     assert evidence["sut_root"] == str(sut)
     assert evidence["change_id"] == change_id
     assert evidence["change_root"] == str(change_root)

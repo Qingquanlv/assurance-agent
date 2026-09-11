@@ -88,6 +88,7 @@ class QualityState(CheckpointBridgeState, total=False):
     inspection_outcome: InspectionOutcomeV1
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]
+    artifact_paths: list[str]
     evidence_refs: list[dict[str, str]]
     execution_status: Literal["failed", "passed"]
     budgets: dict[str, int]

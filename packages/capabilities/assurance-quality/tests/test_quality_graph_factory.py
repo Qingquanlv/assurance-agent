@@ -101,7 +101,7 @@ def quality_graph_input(
         "owned_evidence_ids": ["OBS-DEMO-001"],
         "evidence_bundle_digest": f"sha256:{_SHA}",
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
         "evidence_refs": [{"path": "qa/results/execution/result.json", "digest": _SHA}],
         "execution_status": "passed",
         "budgets": {"coverage_rounds": 2, "failure_rounds": 1},

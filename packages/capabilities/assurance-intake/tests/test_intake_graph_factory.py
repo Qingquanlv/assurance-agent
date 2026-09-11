@@ -91,7 +91,7 @@ def intake_graph_input() -> dict[str, object]:
         "plan_ref": plan_ref,
         "case_delta_paths": ["qa/cases/menus/case.yaml"],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
         "budgets": {
             "review_rounds": 2,
             "coverage_rounds": 2,
@@ -485,7 +485,7 @@ def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
             "digest": _SHA,
         },
         "capability_leafs": ["entities.item.create"],
-        "artifact_paths": ["qa/cases", "qa/fixtures", "qa/results", "qa/tests"],
+        "artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
         "selected_test_families": ["api"],
         "case_delta_paths": ["qa/cases/menus/case.yaml"],
         "validation_attempt": validation_attempt,
