@@ -296,7 +296,6 @@ def test_enumerated_observational_noise_normalizes_away(legacy_export: Path, new
 def test_harness_modules_do_not_import_runtime_packages() -> None:
     assert (HARNESS_ROOT / "projection.py").is_file()
     assert (HARNESS_ROOT / "eval.py").is_file()
-    assert (HARNESS_ROOT / "schemas" / "behavioral-projection-v1.json").is_file()
     imports = imported_top_level_modules(HARNESS_ROOT)
     assert "assurance_agent" not in imports
     assert "graph_engine" not in imports

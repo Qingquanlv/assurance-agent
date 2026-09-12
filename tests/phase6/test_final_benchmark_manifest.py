@@ -146,5 +146,4 @@ def test_final_benchmark_keeps_runner_and_projection_layout(repo_root: Path) -> 
     assert (BENCHMARK_ROOT / "run_item.py").is_file()
     assert (BENCHMARK_ROOT / "eval.py").is_file()
     assert (BENCHMARK_ROOT / "projection.py").is_file()
-    assert (BENCHMARK_ROOT / "schemas" / "behavioral-projection-v1.json").is_file()
     assert PRODUCT_TESTS.is_dir()

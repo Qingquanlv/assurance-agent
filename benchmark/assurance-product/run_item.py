@@ -45,8 +45,6 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "interrupted"}
 _OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS = 300
 _OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS = 10
 _OPENCODE_RESOLVED_READ_ATTEMPTS = 3
-_TEST_RUNTIME_SCHEMA = "vue-fastapi-admin-tests-runtime/v1"
-_TEST_RUNTIME_MANIFEST_SHA256 = "0b06f859331fc617db6e8a257f5860e3d070eebfc03c8348bcb16142907c889c"
 _BACKEND_URL = "http://127.0.0.1:9999"
 _FRONTEND_URL = "http://127.0.0.1:3100"
 _WRITE_PRODUCT_INPUT = r"""
@@ -241,10 +239,6 @@ def _acg_plan(change_root: Path) -> tuple[dict[str, Any] | None, dict[str, str] 
     }
 
 
-def _test_runtime_seed_root(repo: Path) -> Path:
-    return repo / "benchmark" / "assurance-product" / "fixtures" / "vue-fastapi-admin-tests-runtime-v1"
-
-
 def _required_runtime_environment(output: Path) -> dict[str, str]:
     sqlite_file = output / "sut-runtime" / "db.sqlite3"
     return {
@@ -288,190 +282,6 @@ def _runtime_environment_errors(environment: Mapping[str, str], *, output: Path)
         for name, expected in _required_opencode_environment(output).items()
         if environment.get(name) != expected
     ]
-
-
-def _dept_runtime_symbols(knowledge_path: Path) -> set[str]:
-    try:
-        document = yaml.safe_load(knowledge_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
-        raise SystemExit("live SUT data knowledge is not valid YAML") from error
-
-    def collect(value: object, *, under_dept: bool = False) -> set[str]:
-        if not isinstance(value, dict):
-            return set()
-        found: set[str] = set()
-        for key, child in value.items():
-            selected = under_dept or key == "dept"
-            if selected and key == "symbol" and isinstance(child, str):
-                found.add(child)
-            found.update(collect(child, under_dept=selected))
-        return found
-
-    return collect(document)
-
-
-def _materialize_test_runtime_seed(
-    *,
-    seed_root: Path,
-    project_dir: Path,
-) -> dict[str, Any]:
-    manifest_path = seed_root / "manifest.json"
-    if not manifest_path.is_file() or manifest_path.is_symlink():
-        raise SystemExit("test runtime seed is missing a regular manifest.json")
-    manifest_bytes = manifest_path.read_bytes()
-    manifest_digest = _sha256(manifest_bytes)
-    if manifest_digest != _TEST_RUNTIME_MANIFEST_SHA256:
-        raise SystemExit("test runtime seed manifest digest does not match the pinned version")
-    try:
-        manifest = json.loads(manifest_bytes)
-    except json.JSONDecodeError as error:
-        raise SystemExit("test runtime seed manifest is not valid JSON") from error
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != _TEST_RUNTIME_SCHEMA:
-        raise SystemExit(f"test runtime seed must use {_TEST_RUNTIME_SCHEMA}")
-    raw_files = manifest.get("files")
-    raw_modules = manifest.get("modules")
-    raw_symbols = manifest.get("symbols")
-    if (
-        not isinstance(raw_files, dict)
-        or not raw_files
-        or not isinstance(raw_modules, list)
-        or not raw_modules
-        or not isinstance(raw_symbols, list)
-        or not raw_symbols
-        or any(not isinstance(value, str) for value in (*raw_modules, *raw_symbols))
-    ):
-        raise SystemExit("test runtime seed manifest has invalid files/modules/symbols")
-    declared: dict[str, str] = {}
-    for raw_relative, raw_digest in raw_files.items():
-        if not isinstance(raw_relative, str) or not isinstance(raw_digest, str):
-            raise SystemExit("test runtime seed file entries must be strings")
-        relative = Path(raw_relative)
-        if (
-            relative.is_absolute()
-            or not relative.parts
-            or relative.parts[0] != "tests"
-            or any(part in {"", ".", ".."} for part in relative.parts)
-        ):
-            raise SystemExit(f"unsafe test runtime seed path: {raw_relative!r}")
-        if any(part.startswith("test_") or part.startswith("locustfile") for part in relative.parts):
-            raise SystemExit(f"test runtime seed contains a case oracle: {raw_relative}")
-        if not re.fullmatch(r"[0-9a-f]{64}", raw_digest):
-            raise SystemExit(f"invalid test runtime seed digest: {raw_relative}")
-        declared[relative.as_posix()] = raw_digest
-    actual: set[str] = set()
-    for source in seed_root.rglob("*"):
-        if source.is_symlink():
-            raise SystemExit(f"test runtime seed contains a symbolic link: {source}")
-        if source.is_file() and source != manifest_path:
-            actual.add(source.relative_to(seed_root).as_posix())
-    undeclared = sorted(actual - set(declared))
-    missing = sorted(set(declared) - actual)
-    if undeclared:
-        raise SystemExit(f"test runtime seed has undeclared files: {undeclared}")
-    if missing:
-        raise SystemExit(f"test runtime seed is missing declared files: {missing}")
-    declared_symbols = set(raw_symbols)
-    required_symbols = _dept_runtime_symbols(project_dir / ".aa" / "data-knowledge.yaml")
-    absent_symbols = sorted(required_symbols - declared_symbols)
-    if absent_symbols:
-        raise SystemExit(f"test runtime seed is missing dept symbols: {absent_symbols}")
-    payloads: dict[str, bytes] = {}
-    for relative, expected_digest in sorted(declared.items()):
-        source = seed_root / relative
-        data = source.read_bytes()
-        if _sha256(data) != expected_digest:
-            raise SystemExit(f"test runtime seed digest mismatch: {relative}")
-        payloads[relative] = data
-
-    project_root = project_dir.resolve()
-    for relative, data in payloads.items():
-        target = project_dir / relative
-        parent = project_dir
-        for part in Path(relative).parts[:-1]:
-            parent /= part
-            if parent.is_symlink():
-                raise SystemExit(f"test runtime seed target parent is a symbolic link: {relative}")
-            if parent.exists() and not parent.is_dir():
-                raise SystemExit(f"test runtime seed target parent is not a directory: {relative}")
-        if target.exists() or target.is_symlink():
-            if target.is_symlink():
-                raise SystemExit(f"test runtime seed target is a symbolic link: {relative}")
-            if not target.is_file() or target.read_bytes() != data:
-                raise SystemExit(f"existing test runtime support differs: {relative}")
-            if target.stat().st_nlink != 1:
-                raise SystemExit(f"test runtime seed target has an unsafe link count: {relative}")
-
-    for relative, data in payloads.items():
-        target = project_dir / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if not target.parent.resolve().is_relative_to(project_root):
-            raise SystemExit(f"test runtime seed target escapes the project: {relative}")
-        if not target.exists():
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            try:
-                descriptor = os.open(target, flags, 0o644)
-            except OSError as error:
-                raise SystemExit(f"test runtime seed target could not be created: {relative}") from error
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(data)
-        expected_digest = declared[relative]
-        if (
-            target.is_symlink()
-            or not target.is_file()
-            or target.stat().st_nlink != 1
-            or _sha256(target.read_bytes()) != expected_digest
-        ):
-            raise SystemExit(f"test runtime seed materialization failed: {relative}")
-    return {
-        "schema_version": _TEST_RUNTIME_SCHEMA,
-        "manifest_digest": manifest_digest,
-        "file_count": len(declared),
-        "modules": list(raw_modules),
-        "symbols": sorted(declared_symbols),
-    }
-
-
-_VALIDATE_TEST_RUNTIME = r"""
-import importlib
-import json
-import sys
-
-project_dir, raw_modules, raw_symbols = sys.argv[1:]
-sys.path.insert(0, project_dir)
-for module_name in json.loads(raw_modules):
-    importlib.import_module(module_name)
-for symbol in json.loads(raw_symbols):
-    module_name, _, attribute = symbol.rpartition(".")
-    value = getattr(importlib.import_module(module_name), attribute, None)
-    if not callable(value):
-        raise SystemExit(f"test runtime symbol is absent or not callable: {symbol}")
-"""
-
-
-def _validate_test_runtime_symbols(
-    *,
-    python: Path,
-    project_dir: Path,
-    symbols: Sequence[str],
-    env: Mapping[str, str],
-    modules: Sequence[str] = (),
-) -> None:
-    _run_checked(
-        [
-            str(python),
-            "-c",
-            _VALIDATE_TEST_RUNTIME,
-            str(project_dir),
-            json.dumps(list(modules)),
-            json.dumps(list(symbols)),
-        ],
-        cwd=project_dir,
-        env=env,
-        timeout=60,
-        label="test runtime import check",
-    )
 
 
 def derive_change_id(*, item_id: str, stamp: str, nonce: str) -> str:
@@ -587,7 +397,6 @@ class _SutRuntime:
         "env",
         "frontend_log",
         "frontend_url",
-        "seed_receipt",
         "sqlite_file",
     )
 
@@ -600,7 +409,6 @@ class _SutRuntime:
         sqlite_file: Path,
         backend_log: Path,
         frontend_log: Path,
-        seed_receipt: Mapping[str, Any],
     ) -> None:
         self.env = env
         self.backend_url = backend_url
@@ -608,7 +416,6 @@ class _SutRuntime:
         self.sqlite_file = sqlite_file
         self.backend_log = backend_log
         self.frontend_log = frontend_log
-        self.seed_receipt = seed_receipt
 
 
 def _prepare_sut_python(
@@ -872,18 +679,7 @@ def _managed_sut_runtime(
     if runtime_root.exists():
         raise SystemExit(f"managed SUT runtime directory must be fresh: {runtime_root}")
     runtime_root.mkdir(parents=True)
-    seed_receipt = _materialize_test_runtime_seed(
-        seed_root=_test_runtime_seed_root(repo),
-        project_dir=project_dir,
-    )
     python = _prepare_sut_python(project_dir=project_dir, runtime_root=runtime_root, env=env)
-    _validate_test_runtime_symbols(
-        python=python,
-        project_dir=project_dir,
-        modules=tuple(seed_receipt["modules"]),
-        symbols=tuple(seed_receipt["symbols"]),
-        env=env,
-    )
     _copy_runtime_component(project_dir / "app", runtime_root / "app")
     _copy_runtime_component(project_dir / "migrations", runtime_root / "migrations")
     sqlite_file = runtime_root / "db.sqlite3"
@@ -953,7 +749,6 @@ def _managed_sut_runtime(
             sqlite_file=sqlite_file,
             backend_log=backend_log,
             frontend_log=frontend_log,
-            seed_receipt=seed_receipt,
         )
     except BaseException:
         body_failed = True
@@ -1929,7 +1724,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             env=isolated_env,
         ) as sut_runtime:
             isolated_env.update(sut_runtime.env)
-            evidence["test_runtime_seed"] = dict(sut_runtime.seed_receipt)
             evidence["logs"].update(
                 {
                     "sut_backend": str(sut_runtime.backend_log),

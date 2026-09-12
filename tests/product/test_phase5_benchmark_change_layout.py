@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
 import importlib.util
 from importlib.resources import files
 import json
@@ -22,7 +21,6 @@ from tests.product.test_phase5_benchmark_manifest import (
     FULL_WORKFLOW_REQUIRED_STEPS,
     REPO,
     RUNNER_PATH,
-    TEST_RUNTIME_SEED_ROOT,
 )
 
 ITEM_ID = "opencode-ret-dept-management"
@@ -318,104 +316,16 @@ def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path
             sqlite_file=Path("/tmp/fake-sut.sqlite3"),
             backend_log=Path("/tmp/fake-backend.log"),
             frontend_log=Path("/tmp/fake-frontend.log"),
-            seed_receipt={"schema_version": "vue-fastapi-admin-tests-runtime/v1"},
         )
 
     monkeypatch.setattr(runner, "_managed_sut_runtime", ready_runtime)
     monkeypatch.setenv("AA_NEXT_OPENCODE_TOKEN", "test-token")
 
 
-def test_runtime_seed_materializes_support_without_touching_existing_case_tests(
-    tmp_path: Path,
-) -> None:
+def test_run_item_does_not_materialize_test_runtime_seed() -> None:
     runner = _load_runner()
-    sut = _make_sut(tmp_path)
-
-    receipt = runner._materialize_test_runtime_seed(
-        seed_root=TEST_RUNTIME_SEED_ROOT,
-        project_dir=sut,
-    )
-    runner._validate_test_runtime_symbols(
-        python=Path(sys.executable),
-        project_dir=sut,
-        symbols=tuple(receipt["symbols"]),
-        env=os.environ,
-    )
-
-    assert receipt["schema_version"] == "vue-fastapi-admin-tests-runtime/v1"
-    assert receipt["manifest_digest"] == "0b06f859331fc617db6e8a257f5860e3d070eebfc03c8348bcb16142907c889c"
-    assert (sut / ORIGINAL_TEST).read_bytes() == ORIGINAL_BYTES
-    assert (sut / "tests" / "config.py").is_file()
-    assert (sut / "tests" / "testdata" / "domain" / "dept.py").is_file()
-
-
-def test_runtime_seed_rejects_undeclared_or_tampered_support(tmp_path: Path) -> None:
-    runner = _load_runner()
-    sut = _make_sut(tmp_path)
-    tampered = tmp_path / "tampered-seed"
-    shutil.copytree(TEST_RUNTIME_SEED_ROOT, tampered)
-    (tampered / "tests" / "config.py").write_text("tampered = True\n", encoding="utf-8")
-
-    with pytest.raises(SystemExit, match="digest mismatch"):
-        runner._materialize_test_runtime_seed(seed_root=tampered, project_dir=sut)
-
-    shutil.copytree(TEST_RUNTIME_SEED_ROOT, tampered, dirs_exist_ok=True)
-    (tampered / "tests" / "api" / "test_hidden_oracle.py").write_text(
-        "def test_hidden(): pass\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(SystemExit, match="undeclared files"):
-        runner._materialize_test_runtime_seed(seed_root=tampered, project_dir=sut)
-
-
-def test_runtime_seed_rejects_rehashed_manifest_and_existing_support_drift(tmp_path: Path) -> None:
-    runner = _load_runner()
-    sut = _make_sut(tmp_path)
-    rehashed = tmp_path / "rehashed-seed"
-    shutil.copytree(TEST_RUNTIME_SEED_ROOT, rehashed)
-    config = rehashed / "tests" / "config.py"
-    config.write_text(config.read_text(encoding="utf-8") + "DRIFT = True\n", encoding="utf-8")
-    manifest_path = rehashed / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["files"]["tests/config.py"] = hashlib.sha256(config.read_bytes()).hexdigest()
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    with pytest.raises(SystemExit, match="manifest digest"):
-        runner._materialize_test_runtime_seed(seed_root=rehashed, project_dir=sut)
-
-    existing = sut / "tests" / "config.py"
-    existing.parent.mkdir(parents=True, exist_ok=True)
-    existing.write_text("project_owned = True\n", encoding="utf-8")
-    with pytest.raises(SystemExit, match="existing test runtime support differs"):
-        runner._materialize_test_runtime_seed(seed_root=TEST_RUNTIME_SEED_ROOT, project_dir=sut)
-
-
-def test_runtime_seed_rejects_symlinked_parents_and_hardlinked_targets_before_writing(
-    tmp_path: Path,
-) -> None:
-    runner = _load_runner()
-    symlinked_sut = _make_sut(tmp_path / "symlink")
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (symlinked_sut / "tests" / "testdata").symlink_to(outside, target_is_directory=True)
-
-    with pytest.raises(SystemExit, match="symbolic link"):
-        runner._materialize_test_runtime_seed(
-            seed_root=TEST_RUNTIME_SEED_ROOT,
-            project_dir=symlinked_sut,
-        )
-    assert not (symlinked_sut / "tests" / "config.py").exists()
-
-    hardlinked_sut = _make_sut(tmp_path / "hardlink")
-    original = tmp_path / "shared-config.py"
-    config_bytes = (TEST_RUNTIME_SEED_ROOT / "tests" / "config.py").read_bytes()
-    original.write_bytes(config_bytes)
-    os.link(original, hardlinked_sut / "tests" / "config.py")
-    with pytest.raises(SystemExit, match="link count"):
-        runner._materialize_test_runtime_seed(
-            seed_root=TEST_RUNTIME_SEED_ROOT,
-            project_dir=hardlinked_sut,
-        )
-    assert not (hardlinked_sut / "tests" / "e2e" / "conftest.py").exists()
+    assert not hasattr(runner, "_materialize_test_runtime_seed")
+    assert not hasattr(runner, "_TEST_RUNTIME_MANIFEST_SHA256")
 
 
 def test_limited_role_provisioning_creates_an_unprivileged_role_and_user(
@@ -872,7 +782,6 @@ def test_main_keeps_managed_sut_active_from_start_through_export(
                 sqlite_file=Path("/tmp/fake-sut.sqlite3"),
                 backend_log=Path("/tmp/fake-backend.log"),
                 frontend_log=Path("/tmp/fake-frontend.log"),
-                seed_receipt={"schema_version": "vue-fastapi-admin-tests-runtime/v1"},
             )
         finally:
             active = False
