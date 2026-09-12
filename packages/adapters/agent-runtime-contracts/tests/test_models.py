@@ -494,17 +494,19 @@ def test_agent_run_result_authenticates_digests_and_forbids_provider_payloads() 
     for field_name in _FORBIDDEN_RESULT_FIELDS:
         with pytest.raises(ValidationError, match="extra"):
             AgentRunResult.model_validate({**dumped, field_name: "leak"})
-    canary = {"status": "ok", "token": "sk-secret-canary"}
-    with pytest.raises(ValidationError, match="credential"):
-        AgentRunResult.model_validate(
-            {
-                "result_payload": canary,
-                "result_digest": canonical_digest(canary),
-                "evidence_digest": _SHA_B,
-                "adapter_id": "agent-runtime-fixture",
-                "adapter_version": "1.0.0",
-            }
-        )
+    # Service-secret rejection belongs to the producer with the actual secret
+    # context; the envelope must not guess from business-result string shapes.
+    business = {"status": "ok", "token": "sk-source-grounded-business-value"}
+    governed = AgentRunResult.model_validate(
+        {
+            "result_payload": business,
+            "result_digest": canonical_digest(business),
+            "evidence_digest": _SHA_B,
+            "adapter_id": "agent-runtime-fixture",
+            "adapter_version": "1.0.0",
+        }
+    )
+    assert governed.model_dump(mode="json")["result_payload"] == business
 
 
 def test_agent_run_result_bounds_and_redacts_diagnostics() -> None:

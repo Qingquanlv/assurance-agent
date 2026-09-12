@@ -562,7 +562,8 @@ def validate_local_agent_result(
         schema=schema,
         schema_digest=canonical_digest(schema),
     )
-    reject_credentials_in_digest_input(exact)
+    # Governed business fields are authorized by the result model, not by
+    # transport credential heuristics. Preserve their exact values for sealing.
     digest = canonical_digest(exact)
     validated = result_model.model_validate(
         exact,

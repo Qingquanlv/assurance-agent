@@ -121,6 +121,23 @@ def reject_canaries_in_payload(value: object, *, canaries: Sequence[str | bytes]
         raise ValueError("structured result contains a credential")
 
 
+def reject_service_canaries_in_result(value: object, *, canaries: Sequence[str | bytes]) -> None:
+    """Reject known service secrets without reinterpreting schema-authorized business fields."""
+    texts = _canary_texts(canaries)
+
+    def contains_canary(item: object) -> bool:
+        if isinstance(item, str):
+            return any(text in item for text in texts)
+        if isinstance(item, Mapping):
+            return any(contains_canary(key) or contains_canary(value) for key, value in item.items())
+        if isinstance(item, list | tuple):
+            return any(contains_canary(value) for value in item)
+        return False
+
+    if contains_canary(value):
+        raise ValueError("structured result contains a service credential")
+
+
 def bound_redacted_messages(
     messages: Sequence[str],
     *,

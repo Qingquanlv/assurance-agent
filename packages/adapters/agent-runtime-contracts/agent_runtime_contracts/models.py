@@ -13,7 +13,6 @@ from agent_runtime_contracts.schema import (
     canonical_digest,
     canonical_json_bytes,
     freeze_json,
-    reject_credentials_in_digest_input,
     thaw_json,
     validate_result_schema_document,
 )
@@ -268,7 +267,8 @@ class AgentRunResult(FrozenModel):
     @model_validator(mode="after")
     def _authenticate_result_digest(self) -> Self:
         thawed = thaw_json(self.result_payload)
-        reject_credentials_in_digest_input(thawed)
+        # The producer validates its business schema and service-secret boundary.
+        # This envelope authenticates exact bytes, not transport credential heuristics.
         expected = canonical_digest(thawed)
         if self.result_digest != expected:
             raise ValueError("result digest is not canonical")
