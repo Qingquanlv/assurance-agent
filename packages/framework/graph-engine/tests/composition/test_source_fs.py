@@ -259,7 +259,10 @@ def test_declared_tree_rejects_path_swap_during_component_open(
 
     monkeypatch.setattr(source_fs, "_snapshot_boundary", swap)
 
-    with pytest.raises(SourceSnapshotError, match="changed while opening|safely open"):
+    with pytest.raises(
+        SourceSnapshotError,
+        match="changed while opening|safely open|changed while it was read",
+    ):
         capture_declared_tree(
             tmp_path,
             ("plugin.yaml",),

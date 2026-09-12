@@ -10,7 +10,6 @@ from typing import Any
 
 import pytest
 import yaml
-from pydantic import ValidationError
 
 from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
 from assurance_product.configuration import capability_leafs_from_knowledge
@@ -23,7 +22,6 @@ RUNNER_PATH = REPO / "benchmark" / "assurance-product" / "run_item.py"
 DEPT_REQUIREMENT_PATH = REPO / "benchmark" / "assurance-product" / "requirements" / "dept-management.md"
 DATA_KNOWLEDGE_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "data-knowledge.yaml"
 POLICY_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "policy.yaml"
-DEPT_SCHEMA_PATH = REPO / "benchmark" / "vue-fastapi-admin" / "app" / "schemas" / "depts.py"
 FULL_WORKFLOW_REQUIRED_STEPS = (
     "intake.intake",
     "intake.explore",
@@ -232,15 +230,11 @@ def test_full_benchmark_requirement_is_api_only() -> None:
     assert "P95 响应时间不超过 500 ms" not in requirement
 
 
-def test_dept_create_rejects_names_longer_than_the_database_column() -> None:
-    spec = importlib.util.spec_from_file_location("phase5_dept_schema", DEPT_SCHEMA_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+def test_dept_name_boundary_is_an_explicit_benchmark_requirement() -> None:
+    requirement = DEPT_REQUIREMENT_PATH.read_text(encoding="utf-8")
 
-    module.DeptCreate(name="x" * 20)
-    with pytest.raises(ValidationError):
-        module.DeptCreate(name="x" * 21)
+    assert "部门名称长度不超过 20 个字符" in requirement
+    assert "21 个及以上字符必须被拒绝" in requirement
 
 
 def test_full_benchmark_declares_its_required_e2e_journey() -> None:

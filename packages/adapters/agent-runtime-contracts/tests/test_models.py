@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -603,21 +605,20 @@ def test_isolated_wheel_import_does_not_load_adapters_or_assurance(tmp_path: Pat
         ],
         check=True,
     )
-    subprocess.run(
+    isolated_python = venv / "bin" / "python"
+    isolated_site = subprocess.run(
         [
-            "uv",
-            "pip",
-            "install",
-            "--offline",
-            "--python",
-            str(venv / "bin" / "python"),
-            "pydantic",
-            "packaging",
-            "pyyaml",
-            "langgraph",
+            str(isolated_python),
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
         ],
         check=True,
-    )
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_site = sysconfig.get_paths()["purelib"]
+    isolated_env = os.environ.copy()
+    isolated_env["PYTHONPATH"] = os.pathsep.join((isolated_site, dependency_site))
     script = r"""
 import importlib.util
 import sys
@@ -637,8 +638,9 @@ for package in (
     assert not any(name == package or name.startswith(package + ".") for name in sys.modules), package
 """
     completed = subprocess.run(
-        [str(venv / "bin" / "python"), "-c", script],
+        [str(isolated_python), "-S", "-c", script],
         cwd=tmp_path,
+        env=isolated_env,
         check=True,
         capture_output=True,
         text=True,
