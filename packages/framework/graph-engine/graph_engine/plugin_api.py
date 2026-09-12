@@ -592,7 +592,7 @@ def _validate_resource_parameter_component(value: str) -> str:
 class ResourceClaimTemplate(FrozenModel):
     """Closed, business-neutral resource prefixes resolved from final task input."""
 
-    parameters: Mapping[str, str] = {}
+    parameters: Mapping[str, str] = Field(default_factory=dict, validate_default=True)
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
     exclusive: tuple[str, ...] = ()

@@ -223,7 +223,7 @@ def build_pytest_argv(
         argv.append(f"--rootdir={rootdir}")
         argv.append(f"--confcutdir={rootdir}")
     if project_root is not None:
-        pythonpath = f"{rootdir}/qa" if rootdir is not None else str(project_root)
+        pythonpath = str(rootdir) if rootdir is not None else str(project_root)
         argv.append(f"-o=pythonpath={pythonpath}")
         resolved_config = config or _project_config(project_root)
         if resolved_config is not None:

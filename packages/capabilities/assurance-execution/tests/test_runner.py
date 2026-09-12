@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from assurance_execution.operations.common import InputError
-from assurance_execution.operations.runner import ConfinedExecutionProcessHost, RunTestsHandler
+from assurance_execution.operations.runner import (
+    ConfinedExecutionProcessHost,
+    RunTestsHandler,
+    build_pytest_argv,
+)
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     as_object,
     execute_task,
@@ -92,9 +96,35 @@ async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     assert not report_path.is_absolute()
     assert ".." not in report_path.parts
     assert " " not in argv[1]
-    pythonpath_flags = [item for item in argv if item.startswith("-o=pythonpath=")]
-    assert len(pythonpath_flags) == 1
-    assert pythonpath_flags[0].endswith("/qa")
+
+
+def test_runner_argv_imports_projected_support_from_execution_view(tmp_path: Path) -> None:
+    write_test(tmp_path / "qa/fixtures/__init__.py", body="")
+    write_test(tmp_path / "qa/fixtures/support.py", body="VALUE = 1\n")
+    write_test(
+        tmp_path / "qa/tests/api/test_generated.py",
+        body="from tests.support import VALUE\n\n\ndef test_ok():\n    assert VALUE == 1\n",
+    )
+    view = materialize_execution_view(tmp_path, ["qa/tests/api/test_generated.py"])
+    rootdir = tmp_path.joinpath(*view.root.split("/"))
+    argv = build_pytest_argv(
+        ("qa/tests/api/test_generated.py",),
+        rootdir=rootdir,
+        project_root=tmp_path,
+    )
+    argv_without_report = tuple(
+        item for item in argv if item != "--json-report" and not item.startswith("--json-report-file=")
+    )
+
+    completed = subprocess.run(
+        argv_without_report,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.mark.asyncio
