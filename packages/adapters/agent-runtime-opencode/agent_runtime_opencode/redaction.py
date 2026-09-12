@@ -11,9 +11,10 @@ from pydantic import ValidationError
 from agent_runtime_contracts.schema import bound_redacted_diagnostics, thaw_json
 
 
-_BEARER_TOKEN = r"[A-Za-z0-9._\-+/=]{8,}"
+_BEARER_TOKEN = r"\S{8,}"
 _SECRET_PATTERNS = (
-    re.compile(rf"(?i)(?:authorization:\s*)?bearer\s+{_BEARER_TOKEN}"),
+    re.compile(r"(?i)\bauthorization\s*[:=](?!=)[^\r\n]+"),
+    re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
     re.compile(r"sk-[A-Za-z0-9-]+"),
     re.compile(r"(?i)api[_-]?key\s*[=:](?!=)\s*\S+"),
@@ -79,8 +80,10 @@ def redact_json(value: object, *, canaries: Sequence[str | bytes] = ()) -> objec
         return redact_text(thawed, canaries=canaries)
     if isinstance(thawed, Mapping):
         return {
-            redact_text(key, canaries=canaries) if isinstance(key, str) else key: redact_json(
-                item, canaries=canaries
+            redact_text(key, canaries=canaries) if isinstance(key, str) else key: (
+                "[redacted]"
+                if isinstance(key, str) and key.casefold() == "authorization"
+                else redact_json(item, canaries=canaries)
             )
             for key, item in thawed.items()
         }
@@ -95,6 +98,8 @@ def _payload_contains_canary(value: object, *, canaries: Sequence[str | bytes]) 
         return redact_text(thawed, canaries=canaries) != thawed
     if isinstance(thawed, Mapping):
         for key, item in thawed.items():
+            if isinstance(key, str) and key.casefold() == "authorization":
+                return True
             if isinstance(key, str) and redact_text(key, canaries=canaries) != key:
                 return True
             if _payload_contains_canary(item, canaries=canaries):

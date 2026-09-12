@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import ast
 import hashlib
 import sys
 from pathlib import Path
+from graph_engine.canonical import JSONValue
 
 import pytest
 import yaml
@@ -16,6 +18,7 @@ from assurance_generation.operations.init_runtime import (
     collect_l1_symbols,
     symbol_to_repo_path,
 )
+from assurance_generation.operations import init_runtime as runtime_module
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
 
 _SHA = "a" * 64
@@ -108,6 +111,94 @@ def test_unsafe_symbol_is_rejected(symbol: str) -> None:
         symbol_to_repo_path(symbol)
 
 
+async def _initialize_knowledge(root: Path, knowledge: object, leafs: list[str]):
+    project, write_root = dual_roots(root)
+    data = yaml.safe_dump(knowledge).encode()
+    path = project / DATA_KNOWLEDGE_PATH
+    path.parent.mkdir(parents=True)
+    path.write_bytes(data)
+    payload: JSONValue = {
+        "change_id": "CH-DEMO-001",
+        "data_knowledge": {
+            "resource_id": DATA_KNOWLEDGE_RESOURCE_ID,
+            "sha256": hashlib.sha256(data).hexdigest(),
+        },
+        "capability_leafs": list(leafs),
+    }
+    outcome = await execute_task(
+        InitTestRuntimeHandler(),
+        payload,
+        project,
+        write_root=write_root,
+    )
+    return outcome, write_root
+
+
+@pytest.mark.asyncio
+async def test_init_selects_exact_capability_keys_and_required_module_symbols(tmp_path: Path) -> None:
+    knowledge = {
+        "adapters": {
+            "create": {"symbol": "tests.api.adapters.dept.create"},
+            "cleanup": {"symbol": "tests.api.adapters.dept.cleanup"},
+            "unselected": {"symbol": "tests.api.adapters.user.create"},
+        }
+    }
+    outcome, root = await _initialize_knowledge(tmp_path, knowledge, ["adapters.create"])
+    assert outcome.status == "succeeded"
+    assert isinstance(outcome.output, dict)
+    assert outcome.output["symbols_declared"] == [
+        "tests.api.adapters.dept.cleanup",
+        "tests.api.adapters.dept.create",
+    ]
+    assert (root / "qa/tests/api/adapters/dept.py").is_file()
+    assert not (root / "qa/tests/api/adapters/user.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_init_does_not_infer_selection_from_a_capability_prefix(tmp_path: Path) -> None:
+    outcome, root = await _initialize_knowledge(
+        tmp_path, {"adapters": {"create": {"symbol": "tests.api.adapters.dept.create"}}}, ["adapters"]
+    )
+    assert outcome.status == "succeeded"
+    assert isinstance(outcome.output, dict)
+    assert outcome.output["symbols_declared"] == []
+    assert not (root / "qa/tests/api/adapters/dept.py").exists()
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    ["tests.api.adapters.class.make", "tests.api.adapters.dept.for", "tests.api.adapters.bad-name.make"],
+)
+def test_init_rejects_non_python_symbols(symbol: str) -> None:
+    with pytest.raises(ValueError, match="unsafe"):
+        symbol_to_repo_path(symbol)
+
+
+@pytest.mark.asyncio
+async def test_init_escapes_notes_in_a_compilable_module(tmp_path: Path) -> None:
+    notes = 'Quoted """ text\\ and a newline\nwith more text'
+    outcome, root = await _initialize_knowledge(
+        tmp_path, {"adapter": {"symbol": "tests.api.adapters.dept.create", "notes": notes}}, []
+    )
+    assert outcome.status == "succeeded"
+    path = root / "qa/tests/api/adapters/dept.py"
+    tree = ast.parse(path.read_text())
+    function = tree.body[1]
+    assert isinstance(function, ast.FunctionDef)
+    assert ast.get_docstring(function, clean=False) == notes
+    compile(path.read_bytes(), str(path), "exec")
+
+
+@pytest.mark.asyncio
+async def test_init_does_not_publish_invalid_python_templates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(runtime_module, "resource_bytes", lambda _path: b"def broken(:\n")
+    outcome, root = await _initialize_knowledge(tmp_path, {}, [])
+    assert outcome.status == "failed"
+    assert not (root / "qa/results/init/test-runtime.json").exists()
+
+
 @pytest.mark.asyncio
 async def test_handler_creates_harness_and_skeletons(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
@@ -121,7 +212,7 @@ async def test_handler_creates_harness_and_skeletons(tmp_path: Path) -> None:
         {
             "change_id": "CH-DEMO-001",
             "data_knowledge": {"resource_id": DATA_KNOWLEDGE_RESOURCE_ID, "sha256": digest},
-            "capability_leafs": ["dept.crud.create"],
+            "capability_leafs": ["capabilities.adapters.api.dept.make_dept"],
             "allowed_artifact_paths": [
                 "qa/.qa.yaml",
                 "qa/cases",
@@ -165,7 +256,7 @@ async def test_second_run_skips_existing_regular_files(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True)
     path.write_bytes(knowledge)
     digest = hashlib.sha256(knowledge).hexdigest()
-    payload = {
+    payload: JSONValue = {
         "change_id": "CH-DEMO-001",
         "data_knowledge": {"resource_id": DATA_KNOWLEDGE_RESOURCE_ID, "sha256": digest},
         "capability_leafs": [],

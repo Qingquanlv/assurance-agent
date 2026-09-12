@@ -417,7 +417,6 @@ def _flow_features(
             {
                 **_plan_update(),
                 "status": "prepared",
-                "reviewed_case": _reviewed().model_dump(mode="json"),
             }
         ),
         case=_graph(case or _case()),
@@ -429,6 +428,7 @@ def _flow_features(
         fuzz=_echo({"status": "skipped"}),
         performance=_echo({"status": "skipped"}),
         init_runtime=_echo(init or {"status": "completed"}),
+        resolve_inputs=_echo({"reviewed_case": _reviewed().model_dump(mode="json")}),
     )
     features["assurance.execution"] = ExecutionGraphs(
         execute=_graph(execute or _execution()),
@@ -612,6 +612,7 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
         fuzz=generation.fuzz,
         performance=generation.performance,
         init_runtime=counted("init", ({"status": "completed"},)),
+        resolve_inputs=generation.resolve_inputs,
     )
     del intake
     del generation

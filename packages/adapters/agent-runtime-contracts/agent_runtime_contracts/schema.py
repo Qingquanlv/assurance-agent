@@ -44,9 +44,10 @@ _ALLOWED_SCHEMA_KEYS = frozenset(
     }
 )
 _PRIMITIVE_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
-_BEARER_TOKEN = r"[A-Za-z0-9._\-+/=]{8,}"
+_BEARER_TOKEN = r"\S{8,}"
 _SECRET_PATTERNS = (
-    re.compile(rf"(?i)(?:authorization:\s*)?bearer\s+{_BEARER_TOKEN}"),
+    re.compile(r"(?i)\bauthorization\s*[:=](?!=)[^\r\n]+"),
+    re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
     re.compile(r"sk-[A-Za-z0-9-]+"),
     re.compile(r"(?i)api[_-]?key\s*[=:](?!=)\s*\S+"),
@@ -451,6 +452,8 @@ def _credential_texts(value: object) -> tuple[str, ...]:
         for key, item in value.items():
             if isinstance(key, str):
                 texts.append(key)
+                if key.casefold() == "authorization":
+                    texts.append("Authorization: [redacted]")
             texts.extend(_credential_texts(item))
         return tuple(texts)
     if isinstance(value, list | tuple):

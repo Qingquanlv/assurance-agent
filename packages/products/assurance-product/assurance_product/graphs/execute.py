@@ -50,7 +50,7 @@ def adapt_execute_tail_input(
     standalone: bool,
 ) -> dict[str, object]:
     payload = _input_from_state(state)
-    reviewed_case: object = state.get("reviewed_case")
+    reviewed_case: object = None if standalone else state.get("reviewed_case")
     if reviewed_case is None and not standalone:
         case_result = state.get("case_result")
         if isinstance(case_result, Mapping):
@@ -721,6 +721,7 @@ def build_execute_root(
     builder.add_node("adapt-load-plan", cast(Any, adapt_load_plan))
     builder.add_node("load-plan", load_plan)
     builder.add_node("adapt-tail", cast(Any, adapt_public_execute_tail))
+    builder.add_node("resolve-inputs", cast(Any, bundles).generation.resolve_inputs)
     builder.add_node("execute-tail", tail)
     builder.add_node("publish", publish_public_output)
     builder.add_edge(START, "validate")
@@ -731,7 +732,12 @@ def build_execute_root(
         cast(Any, route_prepare),
         {"prepared": "adapt-tail", "failed": "publish"},
     )
-    builder.add_edge("adapt-tail", "execute-tail")
+    builder.add_edge("adapt-tail", "resolve-inputs")
+    builder.add_conditional_edges(
+        "resolve-inputs",
+        cast(Any, lambda state: "failed" if state.get("attempt_failure") else "ready"),
+        {"failed": "publish", "ready": "execute-tail"},
+    )
     builder.add_edge("execute-tail", "publish")
     builder.add_edge("publish", END)
     return context.compile_root(builder)

@@ -183,6 +183,7 @@ def _stub_features() -> dict[str, object]:
             fuzz=_stub_export(dict, "generation.fuzz"),
             performance=_stub_export(dict, "generation.performance"),
             init_runtime=_stub_export(dict, "generation.init_runtime"),
+            resolve_inputs=_stub_export(dict, "generation.resolve_inputs"),
         ),
         "assurance.execution": ExecutionGraphs(
             execute=_stub_export(dict, "execution.execute"),

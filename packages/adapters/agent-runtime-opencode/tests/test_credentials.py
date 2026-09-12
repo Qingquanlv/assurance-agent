@@ -12,6 +12,7 @@ from agent_runtime_opencode.protocol import canonical_json_text
 from agent_runtime_opencode.redaction import (
     encoded_canary_forms,
     redact_text,
+    redact_json,
     reject_canaries_in_payload,
     scan_for_canaries,
 )
@@ -32,6 +33,25 @@ _REVIEW_PROSE = (
 def test_review_prose_is_not_treated_as_a_credential() -> None:
     assert redact_text(_REVIEW_PROSE) == _REVIEW_PROSE
     reject_canaries_in_payload({"claim": _REVIEW_PROSE})
+
+
+@pytest.mark.parametrize("value", ["Bearer x", "Bearer abcdefgh!suffix", "Basic x:y"])
+def test_explicit_authorization_redacts_and_rejects_the_complete_value(value: str) -> None:
+    header = f"Authorization: {value}"
+    assert redact_text(header) == "[redacted]"
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload({"diagnostic": header})
+
+
+def test_bare_bearer_redaction_does_not_leave_an_unsupported_suffix() -> None:
+    assert redact_text("Bearer abcdefgh!suffix") == "[redacted]"
+
+
+def test_authorization_mapping_is_redacted_and_rejected_even_with_a_short_value() -> None:
+    value = {"headers": {"Authorization": "Bearer x"}}
+    assert redact_json(value) == {"headers": {"Authorization": "[redacted]"}}
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload(value)
 
 
 def test_assignment_and_bearer_tokens_are_still_credentials() -> None:

@@ -293,7 +293,6 @@ def _scenario_features(
                     "plan_ref": plan_ref,
                     "selected_test_families": list(plan.selected_test_families),
                     "status": "prepared",
-                    "reviewed_case": _bind_plan(_reviewed().model_dump(mode="json"), plan, plan_ref),
                 },
             ),
             visits=visits,
@@ -325,6 +324,9 @@ def _scenario_features(
         fuzz=_echo({}),
         performance=_echo({}),
         init_runtime=_echo({"status": "completed"}),
+        resolve_inputs=_echo(
+            {"reviewed_case": _bind_plan(_reviewed().model_dump(mode="json"), plan, plan_ref)}
+        ),
     )
     features["assurance.execution"] = ExecutionGraphs(
         execute=_recording_graph(

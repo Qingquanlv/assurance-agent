@@ -33,6 +33,14 @@ def test_canonical_encoding_is_stable_and_sorted() -> None:
     assert canonical_json_bytes(value) == canonical_json_bytes({"a": [1, {"y": None, "z": True}], "b": 2})
 
 
+@pytest.mark.parametrize("value", ["Bearer x", "Bearer abcdefgh!suffix", "Basic x:y"])
+def test_explicit_authorization_is_closed_in_diagnostics_and_digest_inputs(value: str) -> None:
+    header = f"Authorization: {value}"
+    assert bound_redacted_diagnostics((header,)) == ("[redacted]",)
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input({"diagnostic": header})
+
+
 def test_validate_structured_result_accepts_exact_strict_schema() -> None:
     schema_digest = canonical_digest(_STRICT_SCHEMA)
     payload = {"status": "ok", "artifact": "result.json"}
@@ -386,3 +394,8 @@ def test_bound_redacted_diagnostics_redact_before_limiting() -> None:
     assert len(messages[1]) <= 240
     with pytest.raises(ValueError, match="bound"):
         bound_redacted_diagnostics(tuple(f"note-{index}" for index in range(17)))
+
+
+def test_authorization_mapping_cannot_enter_digest_inputs() -> None:
+    with pytest.raises(ValueError, match="credentials"):
+        reject_credentials_in_digest_input({"headers": {"Authorization": "Bearer x"}})

@@ -485,18 +485,10 @@ def _exact_json_object(text: str) -> dict[str, Any]:
 
 
 def _sole_trailing_json_object(text: str) -> dict[str, Any] | None:
-    """Locate the one JSON object that consumes the text through its exact end.
-
-    Model prose sometimes precedes the closed result with a self-review sentence
-    that itself contains brace-shaped text (for example inline-code like
-    `{covered: true}`). That decoy is not valid JSON on its own, so scanning
-    every `{` occurrence left-to-right and keeping the object that reaches the
-    exact end finds the real trailing result. Concatenated objects
-    (`{"ok":true}{"ok":true}`) leave a leftover that still starts with `{` or
-    `[` and stay rejected, as does commentary after the object.
-    """
+    """Allow prose before exactly one complete object, never multiple objects."""
     decoder = json.JSONDecoder()
     trailing: dict[str, Any] | None = None
+    found = False
     start = text.find("{")
     while start != -1:
         try:
@@ -504,15 +496,13 @@ def _sole_trailing_json_object(text: str) -> dict[str, Any] | None:
         except (json.JSONDecodeError, ValueError):
             start = text.find("{", start + 1)
             continue
-        if not isinstance(candidate, dict):
-            start = text.find("{", start + 1)
-            continue
-        leftover = text[end:].strip()
-        if leftover.startswith("{") or leftover.startswith("["):
+        if found:
             return None
-        if leftover == "":
+        found = True
+        if not text[end:].strip():
             trailing = candidate
-        start = text.find("{", start + 1)
+        # Skip the entire decoded object, including nested objects and strings.
+        start = text.find("{", end)
     return trailing
 
 

@@ -34,6 +34,36 @@ class GenerationGraphs:
     fuzz: CompiledStateGraph
     performance: CompiledStateGraph
     init_runtime: CompiledStateGraph
+    resolve_inputs: CompiledStateGraph
+
+
+def _resolve_inputs_attempt(context: CapabilityBuildContext) -> Callable[..., Any]:
+    return cast(
+        Callable[..., Any],
+        context.attempt(
+            "assurance.generation.resolve-inputs",
+            semantic_node_id="generation.resolve-inputs",
+            activation=activation_generation_inputs,
+            select=select_generation_inputs,
+            publish=publish_generation_inputs,
+        ),
+    )
+
+
+def _build_resolve_inputs_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
+    builder: StateGraph[GenerationState] = StateGraph(GenerationState)
+    builder.add_node("generation.resolve-inputs", _resolve_inputs_attempt(context))
+    builder.add_node(
+        "done",
+        cast(
+            Callable[..., Any],
+            lambda state: {"status": "failed" if state.get("attempt_failure") else "completed"},
+        ),
+    )
+    builder.add_edge(START, "generation.resolve-inputs")
+    builder.add_edge("generation.resolve-inputs", "done")
+    builder.add_edge("done", END)
+    return context.compile_subgraph(builder)
 
 
 def _build_root_graph(
@@ -47,16 +77,7 @@ def _build_root_graph(
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
     builder.add_node(
         "generation.resolve-inputs",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                "assurance.generation.resolve-inputs",
-                semantic_node_id="generation.resolve-inputs",
-                activation=activation_generation_inputs,
-                select=select_generation_inputs,
-                publish=publish_generation_inputs,
-            ),
-        ),
+        _resolve_inputs_attempt(context),
     )
     builder.add_node("fanout", cast(Callable[..., Any], lambda _state: {}))
     builder.add_node("api", api)
@@ -119,6 +140,7 @@ def build_generation_graphs(context: CapabilityBuildContext) -> GenerationGraphs
         fuzz=fuzz,
         performance=performance,
         init_runtime=build_init_runtime_graph(context),
+        resolve_inputs=_build_resolve_inputs_graph(context),
     )
 
 

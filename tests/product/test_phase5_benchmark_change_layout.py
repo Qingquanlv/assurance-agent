@@ -328,6 +328,46 @@ def test_run_item_does_not_materialize_test_runtime_seed() -> None:
     assert not hasattr(runner, "_TEST_RUNTIME_MANIFEST_SHA256")
 
 
+@pytest.mark.parametrize("preflight_failure", (False, True))
+def test_retained_init_receipt_is_not_current_run_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preflight_failure: bool
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    receipt = sut / "qa/results/init/test-runtime.json"
+    receipt.parent.mkdir(parents=True)
+    retained = b'{"schema_version":"1","change_id":"previous-run"}\n'
+    receipt.write_bytes(retained)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    fake = _FakeAA(
+        sut=sut, change_id=change_id, terminal=_failed_status(change_id=change_id), export_receipt=None
+    )
+    _wire_fake(runner, monkeypatch, fake, sut)
+    if preflight_failure:
+        monkeypatch.setattr(runner, "_check_opencode", lambda _endpoint: 1)
+    output = tmp_path / "output"
+    assert (
+        runner.main(
+            [
+                "--item",
+                ITEM_ID,
+                "--adapter",
+                "opencode",
+                "--output",
+                str(output),
+                "--nonce",
+                NONCE,
+                "--stamp",
+                STAMP,
+            ]
+        )
+        != 0
+    )
+    evidence = json.loads((output / "evidence.json").read_text())
+    assert evidence.get("test_runtime_seed") is None
+    assert receipt.read_bytes() == retained
+
+
 def test_limited_role_provisioning_creates_an_unprivileged_role_and_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

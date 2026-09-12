@@ -195,10 +195,11 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
         "fuzz",
         "performance",
         "init_runtime",
+        "resolve_inputs",
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
-    assert len(recording_context.bound_contract_ids) == 15
+    assert len(recording_context.bound_contract_ids) == 16
     assert len(unique) == 15
     assert set(unique) == {
         *(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()),
@@ -206,6 +207,29 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
     }
     assert all(item not in unique for item in _PURE_IDS)
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
+
+
+@pytest.mark.parametrize("failed", (False, True))
+async def test_resolve_inputs_export_publishes_review_or_stops(failed: bool) -> None:
+    harness = GraphHarness()
+    bundle = build_generation_graphs(
+        harness.recording_context(owner_id="assurance.generation", contracts=generation_contracts())
+    )
+    payload = generation_graph_input()
+    payload["reviewed_case"] = None
+    payload["source_artifacts"] = [{"path": "qa/cases/reviewed-case.json", "digest": _SHA}]
+    resolution = (
+        PermanentTaskFailure(kind="invalid_input", message="review digest changed")
+        if failed
+        else committed(_reviewed_case(), ReceiptRef(receipt_id="review", receipt_digest=_SHA))
+    )
+    result = await harness.run(
+        bundle.resolve_inputs, input=payload, script={"generation.resolve-inputs": [resolution]}
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == ["generation.resolve-inputs"]
+    assert isinstance(result.terminal, dict)
+    assert result.terminal["status"] == ("failed" if failed else "completed")
+    assert result.terminal.get("reviewed_case") == (None if failed else _reviewed_case())
 
 
 def test_factory_binds_no_task_contract_for_pure_completion_or_round_advance(recording_context) -> None:

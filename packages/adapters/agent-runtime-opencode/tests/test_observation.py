@@ -608,6 +608,18 @@ def test_concatenated_json_objects_are_still_rejected() -> None:
         parse_closed_terminal_result(_live_shaped_terminal('{"ok":true}{"ok":true}'))
 
 
+@pytest.mark.parametrize("separator", [" and then ", "\nSelf-review passed.\n"])
+def test_multiple_json_objects_with_intervening_prose_are_rejected(separator: str) -> None:
+    with pytest.raises(ValueError, match="one JSON object"):
+        parse_closed_terminal_result(_live_shaped_terminal('{"ok":false}' + separator + '{"ok":true}'))
+
+
+def test_nested_objects_in_the_one_trailing_result_remain_valid() -> None:
+    assert parse_closed_terminal_result(_live_shaped_terminal('Review done. {"result":{"ok":true}}')) == {
+        "result": {"ok": True}
+    }
+
+
 def test_reasoning_beside_the_terminal_text_is_a_closed_result() -> None:
     messages = _live_shaped_terminal('{"ok": true}')
 

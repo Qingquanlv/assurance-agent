@@ -1573,12 +1573,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             evidence["lock_digest"] = status.get("lock_digest") or evidence.get("lock_digest")
             evidence["provider"] = _provider_reference(status, adapter=arguments.adapter, item=item)
         evidence["notes"] = notes
-        receipt = project_dir / "qa" / "results" / "init" / "test-runtime.json"
-        evidence["test_runtime_seed"] = (
-            {"path": "qa/results/init/test-runtime.json", "digest": _sha256(receipt.read_bytes())}
-            if receipt.is_file() and not receipt.is_symlink()
-            else None
-        )
+        # Public status does not expose a current-invocation artifact seal. A
+        # retained workspace file (even with a matching change id) is not evidence.
+        evidence["test_runtime_seed"] = None
         _write_json(output / "evidence.json", _redact_evidence(evidence))
         _write_evidence_markdown(evidence_md, evidence)
         return code

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import keyword
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -58,11 +60,16 @@ class L1Symbol:
     symbol: str
     kind: str = ""
     notes: str | None = None
+    capability: str = ""
 
 
-def collect_l1_symbols(document: object) -> tuple[L1Symbol, ...]:
+def collect_l1_symbols(document: object, capability_leafs: tuple[str, ...] = ()) -> tuple[L1Symbol, ...]:
     found: list[L1Symbol] = []
     _collect_l1_symbols(document, found)
+    if capability_leafs:
+        selected = set(capability_leafs)
+        modules = {item.symbol.rpartition(".")[0] for item in found if item.capability in selected}
+        found = [item for item in found if item.symbol.rpartition(".")[0] in modules]
     found.sort(key=lambda item: item.symbol)
     return tuple(found)
 
@@ -81,6 +88,8 @@ def symbol_to_repo_path(symbol: str) -> tuple[str, str]:
         raise ValueError("unsafe symbol")
     *module_parts, name = parts[1:]
     for part in (*module_parts, name):
+        if not part.isidentifier() or keyword.iskeyword(part):
+            raise ValueError("unsafe Python symbol")
         if _FORBIDDEN_NAME.match(part):
             raise ValueError(f"unsafe symbol starts with test_ or locustfile: {part}")
         if part.startswith("/") or part in {".", ".."}:
@@ -99,7 +108,7 @@ def init_test_runtime(
     request: InitTestRuntimeInputV1, project_root: Path, write_root: Path
 ) -> InitTestRuntimeResultV1:
     document = _authenticate_knowledge(request, project_root)
-    symbols = collect_l1_symbols(document)
+    symbols = collect_l1_symbols(document, request.capability_leafs)
     grouped: dict[str, list[L1Symbol]] = {}
     package_inits: set[str] = set(TESTDATA_PACKAGE_PATHS)
     for item in symbols:
@@ -147,11 +156,11 @@ class InitTestRuntimeHandler:
             payload = InitTestRuntimeInputV1.model_validate(request.input)
             result = init_test_runtime(payload, context.project_root, context.write_root)
             return TaskOutcome.succeeded(result.model_dump(mode="json"))
-        except (ValueError, ValidationError, OSError, yaml.YAMLError) as error:
+        except (ValueError, ValidationError, OSError, SyntaxError, yaml.YAMLError) as error:
             return TaskOutcome.failed("invalid_input", str(error), retryable=False)
 
 
-def _collect_l1_symbols(node: object, found: list[L1Symbol]) -> None:
+def _collect_l1_symbols(node: object, found: list[L1Symbol], path: tuple[str, ...] = ()) -> None:
     if isinstance(node, Mapping):
         symbol = node.get("symbol")
         if isinstance(symbol, str) and symbol.startswith(_L1_PREFIXES):
@@ -162,14 +171,16 @@ def _collect_l1_symbols(node: object, found: list[L1Symbol]) -> None:
                     symbol=symbol,
                     kind=kind if isinstance(kind, str) else "",
                     notes=notes if isinstance(notes, str) else None,
+                    capability=".".join(path),
                 )
             )
-        for value in node.values():
-            _collect_l1_symbols(value, found)
+        for key, value in node.items():
+            if isinstance(key, str):
+                _collect_l1_symbols(value, found, (*path, key))
         return
     if isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
         for item in node:
-            _collect_l1_symbols(item, found)
+            _collect_l1_symbols(item, found, path)
 
 
 def _authenticate_knowledge(request: InitTestRuntimeInputV1, project_root: Path) -> Mapping[str, object]:
@@ -215,8 +226,8 @@ def _render_module(items: Sequence[L1Symbol]) -> str:
         doc = item.notes or item.symbol
         blocks.append(
             f"{prefix} {name}(*args, **kwargs):\n"
-            f'    """{doc}"""\n'
-            f'    raise NotImplementedError("assurance.init: {item.symbol}")\n'
+            f"    {json.dumps(doc)}\n"
+            f"    raise NotImplementedError({json.dumps('assurance.init: ' + item.symbol)})\n"
         )
     return "\n".join(blocks) + "\n"
 
@@ -232,6 +243,8 @@ def _write_or_skip(project_root: Path, write_root: Path, relative: str, data: by
 
 
 def _write_bytes(root: Path, relative: str, data: bytes) -> None:
+    if relative.endswith(".py"):
+        compile(data, relative, "exec")
     path = _workspace_path(root, relative)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
