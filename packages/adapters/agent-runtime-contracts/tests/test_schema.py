@@ -26,6 +26,41 @@ _STRICT_SCHEMA = {
 }
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"admin_password": "source pass 123"},
+        '{"admin_password": "source-pass-123"}',
+        "{'admin_password': 'source pass 123'}",
+        'admin_password="source pass 123"',
+    ],
+)
+def test_password_values_cannot_enter_transport_digest_inputs(value: object) -> None:
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input(value)
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        '{"admin_password": "source pass 123"}',
+        "{'password': 'source pass 123'}",
+        'admin_password="source pass 123"',
+    ],
+)
+def test_password_diagnostics_redact_complete_quoted_values(diagnostic: str) -> None:
+    redacted = bound_redacted_diagnostics((diagnostic,))[0]
+    assert "[redacted]" in redacted
+    assert "source" not in redacted
+    assert "123" not in redacted
+
+
+def test_password_comparison_does_not_trigger_transport_redaction() -> None:
+    prose = 'The code checks admin_password == "source pass 123".'
+    assert bound_redacted_diagnostics((prose,)) == (prose,)
+    reject_credentials_in_digest_input({"claim": prose})
+
+
 def test_canonical_encoding_is_stable_and_sorted() -> None:
     value = {"b": 2, "a": [1, {"z": True, "y": None}]}
     expected = b'{"a":[1,{"y":null,"z":true}],"b":2}'

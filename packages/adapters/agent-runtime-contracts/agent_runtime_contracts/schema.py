@@ -45,7 +45,11 @@ _ALLOWED_SCHEMA_KEYS = frozenset(
 )
 _PRIMITIVE_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
 _BEARER_TOKEN = r"\S{8,}"
+# Transport text can contain quoted, escaped, or multiline values. Once a
+# password assignment is identified, keep no trailing value fragments.
+PASSWORD_ASSIGNMENT_PATTERN = re.compile(r"""(?i)(?<![\w-])[\w-]*password[\w-]*["']?\s*[:=](?!=)[\s\S]+""")
 _SECRET_PATTERNS = (
+    PASSWORD_ASSIGNMENT_PATTERN,
     re.compile(r"""(?i)\bauthorization["']?\s*[:=](?!=)[^\r\n]+"""),
     re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
@@ -444,6 +448,10 @@ def _contains_credential(text: str) -> bool:
     return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
 
 
+def is_credential_key(key: str) -> bool:
+    return key.casefold() == "authorization" or "password" in key.casefold()
+
+
 def _credential_texts(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
@@ -452,7 +460,7 @@ def _credential_texts(value: object) -> tuple[str, ...]:
         for key, item in value.items():
             if isinstance(key, str):
                 texts.append(key)
-                if key.casefold() == "authorization":
+                if is_credential_key(key):
                     texts.append("Authorization: [redacted]")
             texts.extend(_credential_texts(item))
         return tuple(texts)

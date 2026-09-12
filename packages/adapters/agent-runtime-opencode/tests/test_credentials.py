@@ -10,6 +10,7 @@ from urllib.parse import quote
 import pytest
 
 from agent_runtime_opencode.protocol import canonical_json_text
+from agent_runtime_opencode.reducer import reduce_terminal
 from agent_runtime_opencode.redaction import (
     encoded_canary_forms,
     redact_text,
@@ -22,6 +23,8 @@ from harness import (  # pyright: ignore[reportMissingImports]
     _SECRET_TEXT,
     _bound_fixture,
     _terminal_success_fixture,
+    agent_run_request,
+    task_request,
 )
 
 
@@ -31,9 +34,53 @@ _REVIEW_PROSE = (
 )
 
 
+@pytest.mark.parametrize("key", ["password", "admin_password", "adminPassword", "user-password"])
+def test_password_key_transport_mapping_is_redacted_and_rejected(key: str) -> None:
+    payload = {"headers": {key: "source pass 123"}}
+    assert redact_json(payload) == {"headers": {key: "[redacted]"}}
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        'login failed: {"admin_password": "source-pass-123"}',
+        "login failed: {'admin_password': 'source pass 123'}",
+        'admin_password="source pass 123"',
+        "admin_password='source pass 123'",
+        'admin_password="source \\"pass\\" 123"',
+        'admin_password="source\npass 123"',
+        'admin_password="source pass 123',
+    ],
+)
+def test_password_diagnostic_is_redacted_in_real_terminal_failure(diagnostic: str) -> None:
+    run = agent_run_request()
+    outcome = reduce_terminal(
+        kind="failed",
+        session={"error": {"name": "ProviderError", "message": diagnostic}},
+        messages=[],
+        agent_run=run,
+        request=task_request(run),
+        diff=None,
+    )
+    assert outcome.failure is not None
+    assert "[redacted]" in outcome.failure.message
+    assert "source" not in outcome.failure.message
+    assert "123" not in outcome.failure.message
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload({"diagnostic": diagnostic})
+
+
 def test_review_prose_is_not_treated_as_a_credential() -> None:
     assert redact_text(_REVIEW_PROSE) == _REVIEW_PROSE
     reject_canaries_in_payload({"claim": _REVIEW_PROSE})
+
+
+def test_password_comparison_is_not_a_transport_credential() -> None:
+    prose = 'The code checks admin_password == "source pass 123".'
+    assert redact_text(prose) == prose
+    reject_canaries_in_payload({"claim": prose})
 
 
 @pytest.mark.parametrize("value", ["Bearer x", "Bearer abcdefgh!suffix", "Basic x:y"])

@@ -222,7 +222,7 @@ def _sha256(data: bytes) -> str:
 
 
 def _acg_plan(change_root: Path) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
-    plans = sorted(change_root.glob("plan/*/resolved-assurance-plan.json"))
+    plans = sorted(change_root.glob("results/plan/*/resolved-assurance-plan.json"))
     if len(plans) != 1 or not plans[0].is_file() or plans[0].is_symlink():
         return None, None
     data = plans[0].read_bytes()
@@ -234,7 +234,7 @@ def _acg_plan(change_root: Path) -> tuple[dict[str, Any] | None, dict[str, str] 
         return None, None
     relative = plans[0].relative_to(change_root)
     return plan, {
-        "path": f"qa/results/{relative.as_posix()}",
+        "path": f"qa/{relative.as_posix()}",
         "digest": _sha256(data),
     }
 
@@ -1430,32 +1430,10 @@ def _drive_started_change(
             status=last_status,
         )
 
-    exported = _aa_next(
-        aa_next,
-        "export",
-        "--json",
-        "--project-dir",
-        str(project_dir),
-        "--change",
-        change_id,
-        cwd=repo,
-        env=env,
-        timeout=600,
-    )
-    if exported.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(
-            exported.returncode,
-            notes=f"export failed: {exported.stderr.strip()}",
-            status=last_status,
-        )
-    export_doc = _parse_json(exported.stdout, label="export")
-    evidence["publish_receipt"] = export_doc
-    evidence["lock_digest"] = export_doc.get("lock_digest") or evidence.get("lock_digest")
     evidence["outcome"] = "completed"
     return finish(
         0,
-        notes="live item reached achieved and export published once",
+        notes="live item reached achieved",
         status=last_status,
     )
 
@@ -1547,7 +1525,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "notes": "",
         "status": {},
         "validation": {},
-        "publish_receipt": None,
         "provider": {"session": None, "process": None},
         "logs": {"run_log": str(run_log)},
     }

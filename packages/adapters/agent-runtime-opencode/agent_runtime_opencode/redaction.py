@@ -8,11 +8,17 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts.schema import bound_redacted_diagnostics, thaw_json
+from agent_runtime_contracts.schema import (
+    PASSWORD_ASSIGNMENT_PATTERN,
+    bound_redacted_diagnostics,
+    is_credential_key,
+    thaw_json,
+)
 
 
 _BEARER_TOKEN = r"\S{8,}"
 _SECRET_PATTERNS = (
+    PASSWORD_ASSIGNMENT_PATTERN,
     re.compile(r"""(?i)\bauthorization["']?\s*[:=](?!=)[^\r\n]+"""),
     re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
@@ -82,7 +88,7 @@ def redact_json(value: object, *, canaries: Sequence[str | bytes] = ()) -> objec
         return {
             redact_text(key, canaries=canaries) if isinstance(key, str) else key: (
                 "[redacted]"
-                if isinstance(key, str) and key.casefold() == "authorization"
+                if isinstance(key, str) and is_credential_key(key)
                 else redact_json(item, canaries=canaries)
             )
             for key, item in thawed.items()
@@ -98,7 +104,7 @@ def _payload_contains_canary(value: object, *, canaries: Sequence[str | bytes]) 
         return redact_text(thawed, canaries=canaries) != thawed
     if isinstance(thawed, Mapping):
         for key, item in thawed.items():
-            if isinstance(key, str) and key.casefold() == "authorization":
+            if isinstance(key, str) and is_credential_key(key):
                 return True
             if isinstance(key, str) and redact_text(key, canaries=canaries) != key:
                 return True
