@@ -644,7 +644,6 @@ REPOSITORY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "wheel_repository_isolation": (
             "packages/adapters/agent-runtime-contracts/tests/test_models.py::test_isolated_wheel_import_does_not_load_adapters_or_assurance",
             "tests/phase4/test_six_wheel_composition.py::test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints",
-            "tests/product/test_behavioral_projection.py::test_harness_modules_do_not_import_runtime_packages",
             "tests/product/test_product_packaging.py::test_wheels_omit_whole_tree_modules_and_result_export_schema",
             "tests/product/test_wheel_smoke_contract.py::test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix",
             "tests/product/test_product_providers.py::test_source_catalog_is_six_wheels_plus_opencode",

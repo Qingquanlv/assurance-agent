@@ -69,12 +69,11 @@ def test_scan_fails_closed_on_unreadable_or_unparsable_python(tmp_path: Path) ->
 def test_scanner_audits_benchmark_source_without_rescanning_run_evidence(tmp_path: Path) -> None:
     source = tmp_path / "benchmark/assurance-product/run_item.py"
     evidence = tmp_path / "benchmark/assurance-product/results/old-run/venv/installed.py"
-    phase3 = tmp_path / "benchmark/agent-runtime-phase3/results/old-run/copied_source.py"
     dependency = tmp_path / "benchmark/vue-fastapi-admin/.venv/lib/dependency.py"
     stage = tmp_path / "benchmark/vue-fastapi-admin/qa/.staging/copied_source.py"
     evaluation = tmp_path / "benchmark/vue-fastapi-admin/eval/out/run/sut/copied_source.py"
     cache = tmp_path / "benchmark/vue-fastapi-admin/.aa/cache/diff-base/copied_source.py"
-    for path in (source, evidence, phase3, dependency, stage, evaluation, cache):
+    for path in (source, evidence, dependency, stage, evaluation, cache):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("import graph_engine.runtime\n", encoding="utf-8")
     hits = scan_legacy_imports(tmp_path)

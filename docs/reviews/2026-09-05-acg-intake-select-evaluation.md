@@ -22,9 +22,9 @@ raising median total cost. Any blocked run is reported separately and cannot be
 counted as a cost saving. These thresholds are evaluation criteria, not product
 behavior or a claimed result.
 
-Use `acg_comparison.py` on the collected JSON rows. The current implementation
-and deterministic tests establish comparability checks and reporting only;
-they do not provide evidence that initial selection reduces real provider cost.
+The proposed offline comparison script was retired before provider-backed
+execution. This document is an archival preregistration, not a current runbook,
+and provides no evidence that initial selection reduces real provider cost.
 
 Comparison identities must be known before a pair can be compared: digests and
 `model_id` are non-empty strings, and `tool_versions` is a non-empty object
