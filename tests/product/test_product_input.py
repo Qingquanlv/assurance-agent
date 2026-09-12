@@ -17,6 +17,7 @@ _SHA = "a" * 64
 _FAMILY_EMPTY_ENTRYPOINTS = (
     "case",
     "execute",
+    "init",
     "archive",
     "retro",
     "issue-review",
@@ -57,7 +58,15 @@ def valid_product_input(**overrides: object) -> dict[str, object]:
             "resource_id": "assurance.product.configuration.data-knowledge",
             "sha256": _SHA,
         },
-        "allowed_artifact_paths": ("qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"),
+        "allowed_artifact_paths": (
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ),
         "budgets": {
             "review_rounds": 1,
             "coverage_rounds": 1,
@@ -214,7 +223,15 @@ def test_product_input_requires_sorted_unique_capability_leafs():
 def test_product_input_locks_exact_artifact_prefixes():
     from assurance_product.models import ProductInputV1
 
-    locked = ("qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests")
+    locked = (
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
+    )
     leftover = ("/".join(("qa", "changes")), "/".join(("qa", "archive")))
     value = ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=locked))
     assert value.allowed_artifact_paths == locked

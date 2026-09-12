@@ -430,7 +430,7 @@ async def test_each_prepare_locks_skill_persona_and_execution(
 
 
 @pytest.mark.asyncio
-async def test_fact_baseline_finalize_requires_authenticated_assessment_input(tmp_path: Path) -> None:
+async def test_fact_baseline_finalize_requires_authenticated_reviewed_case(tmp_path: Path) -> None:
     structured = {
         "source": "seed_file",
         "schema_version": "1.0",
@@ -635,6 +635,16 @@ def test_quality_resources_forbid_legacy_and_provider_names() -> None:
     assert "Quality reporter persona" in reporter
     assert "Document-author persona" not in explorer
     assert "Generation reviewer" not in reviewer
+
+
+def test_fact_baseline_records_only_source_proven_initial_admin_credentials() -> None:
+    skill = " ".join((_RESOURCES / "skills/aa-fact-baseline/SKILL.md").read_text(encoding="utf-8").split())
+
+    assert "startup initialization or seed source" in skill
+    assert "`admin_username` and `admin_password`" in skill
+    assert "deterministically resolves both values" in skill
+    assert "omit both credential facts" in skill
+    assert "Never read `.env` or `*.env` files" in skill
 
 
 def test_result_contracts_match_capability_schemas() -> None:

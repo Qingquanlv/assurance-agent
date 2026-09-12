@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from assurance_generation.graphs.api import compile_family_pair
+from assurance_generation.graphs.init_runtime import build_init_runtime_graph
 from assurance_generation.graphs.nodes import (
     activation_generation_cycle,
     activation_generation_inputs,
@@ -32,6 +33,7 @@ class GenerationGraphs:
     e2e: CompiledStateGraph
     fuzz: CompiledStateGraph
     performance: CompiledStateGraph
+    init_runtime: CompiledStateGraph
 
 
 def _build_root_graph(
@@ -116,6 +118,7 @@ def build_generation_graphs(context: CapabilityBuildContext) -> GenerationGraphs
         e2e=e2e,
         fuzz=fuzz,
         performance=performance,
+        init_runtime=build_init_runtime_graph(context),
     )
 
 

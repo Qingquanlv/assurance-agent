@@ -52,7 +52,7 @@ _AMBIENT_OVERRIDE_VARS = frozenset(
     }
 )
 _CREDENTIAL_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|authorization|bearer|token|secret)\s*[:=]\s*\S+|sk-[A-Za-z0-9-]+"
+    r"(?i)(api[_-]?key|authorization|bearer|token|secret)\s*[:=](?!=)\s*\S+|sk-[A-Za-z0-9-]+"
 )
 _WORKSPACE_PACKAGES = {
     "agent-runtime-fixture": ("examples/agent-runtime-fixture", "agent_runtime_fixture"),

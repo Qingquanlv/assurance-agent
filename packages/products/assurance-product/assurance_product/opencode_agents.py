@@ -207,18 +207,35 @@ def bounded_agent_profiles() -> tuple[str, ...]:
     return tuple(sorted(declared))
 
 
+_EDIT_DENY_FILES = (
+    "qa/results/explore/context.json",
+    "qa/results/workflow-state.json",
+    "qa/results/workflow-state.yaml",
+)
+
+
+def _edit_match_patterns(logical: str) -> tuple[str, ...]:
+    if logical.startswith("**/"):
+        return (logical,)
+    # OpenCode serializes permission keys with sort_keys=True and last-match wins.
+    # `**/<logical>` covers repo-prefixed remapped paths. `qa/.staging/**/<logical>`
+    # sorts after both `qa/.staging/**` and directory globs such as
+    # `qa/.staging/**/qa/results/explore/**`.
+    return (logical, f"**/{logical}", f"qa/.staging/**/{logical}")
+
+
 def _agent_definition(agent_profile: str) -> dict[str, object]:
-    edit = {"**": "deny"}
-    edit.update({pattern: "allow" for pattern in _EDIT_RULES[agent_profile]})
-    edit.update(
-        {
-            "qa/.runtime/**": "deny",
-            "qa/.staging/**": "deny",
-            "qa/results/explore/context.json": "deny",
-            "qa/results/workflow-state.json": "deny",
-            "qa/results/workflow-state.yaml": "deny",
-        }
-    )
+    edit: dict[str, str] = {
+        "**": "deny",
+        "qa/.runtime/**": "deny",
+        "qa/.staging/**": "deny",
+    }
+    for logical in _EDIT_RULES[agent_profile]:
+        for pattern in _edit_match_patterns(logical):
+            edit[pattern] = "allow"
+    for logical in _EDIT_DENY_FILES:
+        for pattern in _edit_match_patterns(logical):
+            edit[pattern] = "deny"
     bash = {"*": "deny"}
     bash.update({command: "allow" for command in _BASH_RULES[agent_profile]})
     tools = {tool: False for tool in _DISABLED_TOOLS}

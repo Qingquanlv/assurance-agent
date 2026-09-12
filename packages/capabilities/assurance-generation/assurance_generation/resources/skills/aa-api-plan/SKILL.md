@@ -43,6 +43,15 @@ keys, and distinguish an existing helper amendment from create-if-missing. On re
 check the whole package for consistency while editing only authorized locators;
 if another required edit is outside them, report the scope gap without broadening it.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first. When its `Product Source Verification` section lists
@@ -69,18 +78,30 @@ finally-safe cleanup in case the defective product unexpectedly persists data.
 - `qa/cases/**/case.yaml`
 - `qa/.qa.yaml`
 - `qa/proposal.md`
+- `qa/results/facts/fact-baseline.json`
 
 ### optional
 
 - `qa/results/review/api-plan-review.json`
-- `qa/results/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only contract evidence)
-- `tests/testdata/domain/**`
-- `tests/api/adapters/**`
-- `tests/config.py`
-- `tests/conftest.py`
+- `qa/tests/testdata/domain/**`
+- `qa/tests/api/adapters/**`
+- `qa/tests/config.py`
+- `qa/tests/conftest.py`
+
+## Initial administrator credentials
+
+When a selected API case requires administrator authentication, derive the exact
+`admin_username` and `admin_password` from the product's startup initialization or seed source.
+Use the fact baseline to locate the evidence, then exact-read the cited product source and verify
+that both values are the ones used to create the initial administrator. Record the verified pair
+in the Auth Strategy and Run Guidance sections consumed by codegen.
+
+Never use a test-runtime credential default or infer a password from a conventional value. Do not
+read `.env` or `*.env` files. If both values cannot be resolved from deterministic source, mark
+codegen not ready and state the unresolved source instead of supplying a fallback.
 
 ## Outputs
 
@@ -189,12 +210,12 @@ On every return, `output_files` is the complete plan-package manifest. List all
 required output paths above, including required files that were unchanged in
 this repair. Do not return only the files edited in the current repair.
 
-Shared business-valid factories belong in `tests/testdata/domain/`. They own
+Shared business-valid factories belong in `qa/tests/testdata/domain/`. They own
 domain defaults and invariant-preserving create/cleanup behavior, return plain
 snapshots, and contain no HTTP client, browser, property, or load-test glue.
 
 Reusable cross-test API lifecycle and transport glue belongs in
-`tests/api/adapters/`. A plan maps each external reusable data need to a shared
+`qa/tests/api/adapters/`. A plan maps each external reusable data need to a shared
 domain factory or API adapter when it actually consumes one. Requests that are
 the behavior under test, and existing helpers private to the closed-mapping
 target, stay in that mapped API test and do not require an adapter capability.
@@ -224,7 +245,7 @@ Authoring tables (keep column names exact):
   function is named `test_<case_id_lowercase>__<desc>`; the full case_id and
   double underscore are mandatory.
 - Factory Mapping uses `Entity | Shared Module | Function | Ownership | Required By`.
-  `Shared Module` names `tests/testdata/domain/<entity>.py`. Ownership is
+  `Shared Module` names `qa/tests/testdata/domain/<entity>.py`. Ownership is
   `reuse` when the implementation exists or an earlier selected layer owns its
   creation; otherwise the first selected layer uses `create-if-missing` for the
   exact bounded L1-declared symbol.

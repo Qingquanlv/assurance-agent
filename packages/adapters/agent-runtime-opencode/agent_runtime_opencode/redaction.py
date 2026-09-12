@@ -11,14 +11,17 @@ from pydantic import ValidationError
 from agent_runtime_contracts.schema import bound_redacted_diagnostics, thaw_json
 
 
+_BEARER_TOKEN = r"[A-Za-z0-9._\-+/=]{8,}"
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
-    re.compile(r"(?i)bearer\s+\S+"),
+    re.compile(rf"(?i)(?:authorization:\s*)?bearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
     re.compile(r"sk-[A-Za-z0-9-]+"),
-    re.compile(r"(?i)api[_-]?key\s*[=:]\s*\S+"),
+    re.compile(r"(?i)api[_-]?key\s*[=:](?!=)\s*\S+"),
     re.compile(r"(?i)https?://[^/\s:@]+:[^/\s:@]+@"),
-    re.compile(r"(?i)[A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*\s*=\s*\S+"),
+    re.compile(
+        r"(?i)(?:^|[^A-Za-z0-9_])[A-Z0-9_]*?(?:SECRET|TOKEN|PASSWORD|API_KEY)"
+        r"[A-Z0-9_]*\s*(?<![!=])=(?!=)\s*\S+"
+    ),
 )
 _DEFAULT_LIMIT = 240
 

@@ -125,6 +125,12 @@ def _case(epoch: int = 0) -> dict[str, object]:
     }
 
 
+def _fact_baseline() -> dict[str, object]:
+    return {
+        "fact_baseline_ref": _ref("qa/results/facts/fact-baseline.json").model_dump(mode="json"),
+    }
+
+
 def _generation(epoch: int = 0) -> dict[str, object]:
     result = GenerationCycleResultV1(
         change_id="CH-DEMO-001",
@@ -394,6 +400,7 @@ def _flow_features(
     report: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     retro: Mapping[str, object] | None = None,
     apply: Mapping[str, object] | None = None,
+    init: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     del repair_coverage
     features = _stub_features()
@@ -406,7 +413,13 @@ def _flow_features(
                 "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
             }
         ),
-        load_plan=_echo({**_plan_update(), "status": "prepared"}),
+        load_plan=_echo(
+            {
+                **_plan_update(),
+                "status": "prepared",
+                "reviewed_case": _reviewed().model_dump(mode="json"),
+            }
+        ),
         case=_graph(case or _case()),
     )
     features["assurance.generation"] = GenerationGraphs(
@@ -415,6 +428,7 @@ def _flow_features(
         e2e=_echo({"status": "skipped"}),
         fuzz=_echo({"status": "skipped"}),
         performance=_echo({"status": "skipped"}),
+        init_runtime=_echo(init or {"status": "completed"}),
     )
     features["assurance.execution"] = ExecutionGraphs(
         execute=_graph(execute or _execution()),
@@ -426,6 +440,7 @@ def _flow_features(
         issue_analyze=_echo(issue_analyze or {"classification": "test", "fix_eligible": True}),
         issue_reconcile=_echo({"classification": "test", "fix_eligible": True}),
         report=_graph(report or _report()),
+        fact_baseline=_graph(_fact_baseline()),
     )
     features["assurance.healing"] = HealingGraphs(
         repair_failure=_echo(repair_failure or _applied()),
@@ -459,11 +474,11 @@ def _product_graphs(features: Mapping[str, object] | None = None) -> ProductGrap
     return build_product_graphs(context=_build_context(), features=features or _flow_features())
 
 
-def test_build_product_graphs_merges_twelve_thin_roots_plus_execute_and_full() -> None:
+def test_build_product_graphs_merges_thirteen_thin_roots_plus_execute_and_full() -> None:
     graphs = build_product_graphs(context=_build_context(), features=_real_features())
     assert isinstance(graphs, ProductGraphs)
     assert set(graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS)
-    assert len(graphs.entrypoints) == 14
+    assert len(graphs.entrypoints) == 15
     assert graphs.contracts is ENTRYPOINT_CONTRACTS
     assert set(graphs.entrypoints) - {"execute", "full"} == set(
         build_thin_entrypoint_graphs(context=_build_context(), features=_real_features()).entrypoints
@@ -551,7 +566,7 @@ def test_quality_adapter_uses_committed_time_for_hashed_execution_batch() -> Non
 
 
 def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
-    calls = {"prepare": 0, "case": 0}
+    calls = {"prepare": 0, "init": 0, "case": 0}
 
     def counted(name: str, updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
         builder = StateGraph(cast(Any, dict))
@@ -589,11 +604,51 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
         load_plan=intake.load_plan,
         case=counted("case", (_case(0), _case(1))),
     )
+    generation = cast(GenerationGraphs, features["assurance.generation"])
+    features["assurance.generation"] = GenerationGraphs(
+        generation=generation.generation,
+        api=generation.api,
+        e2e=generation.e2e,
+        fuzz=generation.fuzz,
+        performance=generation.performance,
+        init_runtime=counted("init", ({"status": "completed"},)),
+    )
     del intake
+    del generation
     result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
     assert result["terminal"] == {"status": "completed", "reason": "achieved"}
     assert result["coverage_epoch"] == 1
-    assert calls == {"prepare": 1, "case": 2}
+    assert calls == {"prepare": 1, "init": 1, "case": 2}
+
+
+def test_full_init_failure_does_not_enter_case() -> None:
+    calls = {"case": 0}
+
+    def counted(name: str, updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
+        builder = StateGraph(cast(Any, dict))
+
+        def node(state: object) -> dict[str, object]:
+            del state
+            index = min(calls[name], len(updates) - 1)
+            calls[name] += 1
+            return dict(updates[index])
+
+        builder.add_node("echo", node)
+        builder.add_edge(START, "echo")
+        builder.add_edge("echo", END)
+        return builder.compile()
+
+    features = _flow_features(init={"status": "failed", "attempt_failure": {"kind": "runtime"}})
+    intake = cast(IntakeGraphs, features["assurance.intake"])
+    features["assurance.intake"] = IntakeGraphs(
+        prepare=intake.prepare,
+        load_plan=intake.load_plan,
+        case=counted("case", (_case(),)),
+    )
+    del intake
+    result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
+    assert calls == {"case": 0}
 
 
 @pytest.mark.parametrize("feature", ["retro", "apply"])
@@ -635,7 +690,9 @@ def test_failed_report_never_enters_retro_or_achieved() -> None:
 def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None:
     graphs = _product_graphs()
     assert {"validate", "adapt-tail", "execute-tail", "publish"} <= set(graphs.entrypoints["execute"].nodes)
-    assert {"adapt-case", "advance-coverage", "execute-tail"} <= set(graphs.entrypoints["full"].nodes)
+    assert {"adapt-init", "init", "adapt-case", "advance-coverage", "execute-tail"} <= set(
+        graphs.entrypoints["full"].nodes
+    )
     tail = graphs.entrypoints["full"].nodes["execute-tail"]
     runnable = getattr(tail, "runnable", tail)
     nested = getattr(runnable, "bound", runnable)
@@ -645,7 +702,9 @@ def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None
         nested_nodes = getattr(inner, "nodes", {})
     forbidden = {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
     assert not forbidden.intersection(nested_nodes)
-    assert {"generation", "execute", "quality", "fix-proposal", "run", "report"} <= set(nested_nodes)
+    assert {"fact-baseline", "generation", "execute", "quality", "fix-proposal", "run", "report"} <= set(
+        nested_nodes
+    )
 
 
 def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runtime() -> None:

@@ -12,6 +12,7 @@ from agent_runtime_opencode.protocol import canonical_json_text
 from agent_runtime_opencode.redaction import (
     encoded_canary_forms,
     redact_text,
+    reject_canaries_in_payload,
     scan_for_canaries,
 )
 from harness import (  # pyright: ignore[reportMissingImports]
@@ -20,6 +21,26 @@ from harness import (  # pyright: ignore[reportMissingImports]
     _bound_fixture,
     _terminal_success_fixture,
 )
+
+
+_REVIEW_PROSE = (
+    'AuthControl.is_authed treats literal token == "dev" as authenticated. '
+    "The API documents a Bearer scheme, not a raw cookie header."
+)
+
+
+def test_review_prose_is_not_treated_as_a_credential() -> None:
+    assert redact_text(_REVIEW_PROSE) == _REVIEW_PROSE
+    reject_canaries_in_payload({"claim": _REVIEW_PROSE})
+
+
+def test_assignment_and_bearer_tokens_are_still_credentials() -> None:
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload({"note": f"Authorization: Bearer {_SECRET_TEXT}"})
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload({"note": f"OPENCODE_TOKEN={_SECRET_TEXT}"})
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload({"note": f"api_key={_SECRET_TEXT}"})
 
 
 def test_redaction_happens_before_size_limiting() -> None:

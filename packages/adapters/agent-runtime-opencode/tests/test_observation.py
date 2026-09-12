@@ -589,6 +589,25 @@ def _live_shaped_terminal(text: str) -> list[dict[str, object]]:
     ]
 
 
+def test_leading_prose_with_non_json_brace_snippet_still_finds_trailing_json() -> None:
+    text = (
+        "Self-review passed: 15 cases use `{covered: true}` in the matrix. "
+        '{"output_files": ["qa/proposal.md"]}'
+    )
+
+    assert parse_closed_terminal_result(_live_shaped_terminal(text)) == {"output_files": ["qa/proposal.md"]}
+
+
+def test_trailing_commentary_after_the_json_object_is_still_rejected() -> None:
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(_live_shaped_terminal('{"ok": true} and some commentary'))
+
+
+def test_concatenated_json_objects_are_still_rejected() -> None:
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(_live_shaped_terminal('{"ok":true}{"ok":true}'))
+
+
 def test_reasoning_beside_the_terminal_text_is_a_closed_result() -> None:
     messages = _live_shaped_terminal('{"ok": true}')
 

@@ -36,6 +36,8 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import (
     AssessmentFinalizeInputV1,
     AssessmentSkillInputV1,
+    FactBaselineFinalizeInputV1,
+    FactBaselineSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     FinalizedReportV1,
@@ -215,6 +217,17 @@ def _authenticate_ref(root: Path, ref: object) -> bytes:
     return data
 
 
+def _authenticate_fact_baseline_input(business: FactBaselineSkillInputV1, root: Path) -> None:
+    refs = (
+        *business.reviewed_case.preparation_refs,
+        *business.reviewed_case.case_refs,
+        business.reviewed_case.review_ref,
+        business.plan_ref,
+    )
+    for ref in refs:
+        _authenticate_ref(root, ref)
+
+
 def _authenticate_assessment_input(business: AssessmentSkillInputV1, root: Path) -> None:
     refs = (
         *business.reviewed_case.preparation_refs,
@@ -352,7 +365,9 @@ def _prepare(
     input_model: type[Any] = QualitySkillInputV1,
 ) -> TaskOutcome:
     business = validate_input(input_model, request.input)
-    if isinstance(business, AssessmentSkillInputV1):
+    if isinstance(business, FactBaselineSkillInputV1):
+        _authenticate_fact_baseline_input(business, context.project_root)
+    elif isinstance(business, AssessmentSkillInputV1):
         _authenticate_assessment_input(business, context.project_root)
     binding = validate_binding(request.binding_data)
     return prepare_outcome(
@@ -374,7 +389,7 @@ class FactBaselinePrepareHandler:
                 FACT_BASELINE_RESULT_ID,
                 request,
                 context,
-                input_model=AssessmentSkillInputV1,
+                input_model=FactBaselineSkillInputV1,
             )
         except (InputError, OutputError) as error:
             return failed_input(error)
@@ -440,21 +455,19 @@ class ReportPrepareHandler:
 
 
 class FactBaselineFinalizeHandler:
-    input_model = AssessmentFinalizeInputV1
+    input_model = FactBaselineFinalizeInputV1
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            business = validate_input(AssessmentFinalizeInputV1, request.input)
+            business = validate_input(FactBaselineFinalizeInputV1, request.input)
             agent_run = business.agent_result
             try:
                 document = FactBaselineResultV1.model_validate(thaw_json(agent_run.result_payload))
             except ValidationError as error:
                 raise OutputError(str(error)) from error
-            _authenticate_assessment_input(business, context.project_root)
-            if business.fact_baseline_ref is not None:
-                raise InputError("fact-baseline input must not contain a future baseline reference")
+            _authenticate_fact_baseline_input(business, context.project_root)
             if document.change_id != business.change_id:
-                raise OutputError("fact baseline change_id does not match the locked assessment")
+                raise OutputError("fact baseline change_id does not match the locked Reviewed Case")
             relative = "qa/results/facts/fact-baseline.json"
             _, baseline_ref = _staged_agent_document(
                 context=context,
@@ -464,7 +477,7 @@ class FactBaselineFinalizeHandler:
             )
             finalized = FinalizedFactBaselineV1(
                 agent_result=document,
-                assessment=business.assessment,
+                reviewed_case=business.reviewed_case,
                 fact_baseline_ref=baseline_ref,
             )
             return TaskOutcome.succeeded(cast(JSONValue, finalized.model_dump(mode="json")))

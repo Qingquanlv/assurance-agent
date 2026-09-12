@@ -101,7 +101,15 @@ def quality_graph_input(
         "owned_evidence_ids": ["OBS-DEMO-001"],
         "evidence_bundle_digest": f"sha256:{_SHA}",
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "evidence_refs": [{"path": "qa/results/execution/result.json", "digest": _SHA}],
         "execution_status": "passed",
         "budgets": {"coverage_rounds": 2, "failure_rounds": 1},
@@ -171,6 +179,10 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
             "execution_at": "2026-08-22T00:00:00Z",
             "healing_ref": None,
             "issue_ref": None,
+            "fact_baseline_ref": {
+                "path": "qa/results/facts/fact-baseline.json",
+                "digest": _SHA,
+            },
         }
     )
     return payload
@@ -181,10 +193,11 @@ def _receipt() -> ReceiptRef:
 
 
 def _fact_baseline_output() -> dict[str, object]:
+    source = assess_graph_input()
     baseline = {"path": "qa/results/facts/fact-baseline.json", "digest": _SHA}
     return {
         "agent_result": {"source": "unavailable", "change_id": "CH-DEMO-001"},
-        "assessment": _assessment_output(),
+        "reviewed_case": source["reviewed_case"],
         "fact_baseline_ref": baseline,
     }
 
@@ -471,6 +484,7 @@ def test_quality_factory_exports_five_public_graphs(recording_context) -> None:
         "issue_analyze",
         "issue_reconcile",
         "report",
+        "fact_baseline",
     )
     assert isinstance(bundle, QualityGraphs)
     assert not hasattr(bundle, "nodes")
@@ -489,6 +503,7 @@ def test_target_graphs_contain_no_phase_nodes_or_private_table(recording_context
         bundle.issue_analyze,
         bundle.issue_reconcile,
         bundle.report,
+        bundle.fact_baseline,
     ):
         names.update(_node_names(graph))
     assert names.isdisjoint(_PHASE_NODES)
@@ -523,18 +538,15 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
         input=assess_graph_input(),
         script={
             "quality.materialize-assessment-inputs": [committed(_assessment_output(), receipt)],
-            "quality.fact-baseline": [committed(_fact_baseline_output(), receipt)],
             "quality.inspect": [committed(_inspect_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "quality.materialize-assessment-inputs",
-        "quality.fact-baseline",
         "quality.inspect",
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
         _MATERIALIZE_ID,
-        _FACT_BASELINE_ID,
         _INSPECT_ID,
     ]
     published = result.published_update
@@ -554,7 +566,7 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     assert result.terminal is not None
 
 
-async def test_assess_stops_before_fact_baseline_when_materialization_fails() -> None:
+async def test_assess_stops_before_inspect_when_materialization_fails() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
     bundle = build_quality_graphs(context)
@@ -571,6 +583,26 @@ async def test_assess_stops_before_fact_baseline_when_materialization_fails() ->
         "quality.materialize-assessment-inputs"
     ]
     assert result.terminal is not None
+
+
+async def test_fact_baseline_export_publishes_the_committed_ref() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
+    bundle = build_quality_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.fact_baseline,
+        input=assess_graph_input(),
+        script={"quality.fact-baseline": [committed(_fact_baseline_output(), receipt)]},
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == ["quality.fact-baseline"]
+    assert [call.contract_id for call in result.semantic_calls] == [_FACT_BASELINE_ID]
+    published = result.published_update
+    assert published is not None
+    assert published["fact_baseline_ref"] == {
+        "path": "qa/results/facts/fact-baseline.json",
+        "digest": _SHA,
+    }
 
 
 @pytest.mark.parametrize(

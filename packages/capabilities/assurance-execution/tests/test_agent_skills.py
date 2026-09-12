@@ -500,7 +500,7 @@ async def test_execute_finalize_accepts_typed_evidence(tmp_path: Path) -> None:
     outcome = await execute_task(ExecuteFinalizeHandler(), payload, tmp_path)
     assert outcome.status == "succeeded"
     results = as_object(outcome.output)["results"]
-    assert as_object(results[0])["test"] == "tests/api/test_generated.py::test_tc_a_001__ok"
+    assert as_object(results[0])["test"] == "qa/tests/api/test_generated.py::test_tc_a_001__ok"
     assert as_object(outcome.output)["executed_at"] == payload["executed_at"]
     assert not tmp_path.joinpath(*view_root.split("/")).exists()
 

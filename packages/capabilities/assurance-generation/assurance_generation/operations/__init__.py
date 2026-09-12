@@ -29,6 +29,7 @@ from assurance_generation.operations.workflow_state import (
 )
 from assurance_generation.operations.resolve_inputs import ResolveGenerationInputsHandler
 from assurance_generation.operations.cycle import PublishGenerationCycleHandler
+from assurance_generation.operations.init_runtime import InitTestRuntimeHandler
 
 
 def planning_handlers() -> Mapping[str, TaskHandler]:
@@ -58,6 +59,7 @@ def generation_handlers() -> Mapping[str, TaskHandler]:
             REVIEW_ROUND_ADVANCE_ID: GenerationReviewRoundAdvanceHandler(),
             "assurance.generation.resolve-inputs.execute": ResolveGenerationInputsHandler(),
             "assurance.generation.publish-cycle.execute": PublishGenerationCycleHandler(),
+            "assurance.generation.init-test-runtime.execute": InitTestRuntimeHandler(),
         }
     )
 

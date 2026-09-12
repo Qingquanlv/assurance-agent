@@ -328,6 +328,7 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     {
         "case",
         "execute",
+        "init",
         "archive",
         "retro",
         "issue-review",

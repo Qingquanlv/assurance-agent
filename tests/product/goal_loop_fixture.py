@@ -293,6 +293,7 @@ def _scenario_features(
                     "plan_ref": plan_ref,
                     "selected_test_families": list(plan.selected_test_families),
                     "status": "prepared",
+                    "reviewed_case": _bind_plan(_reviewed().model_dump(mode="json"), plan, plan_ref),
                 },
             ),
             visits=visits,
@@ -323,6 +324,7 @@ def _scenario_features(
         e2e=_echo({}),
         fuzz=_echo({}),
         performance=_echo({}),
+        init_runtime=_echo({"status": "completed"}),
     )
     features["assurance.execution"] = ExecutionGraphs(
         execute=_recording_graph(
@@ -416,6 +418,18 @@ def _scenario_features(
             dispatches=dispatches,
             attempt_keys=attempt_keys,
             select_index=lambda state: 0,
+        ),
+        fact_baseline=_recording_graph(
+            root=root,
+            label="fact-baseline",
+            semantic_id="quality.fact-baseline",
+            updates=(
+                {"fact_baseline_ref": _ref("qa/results/facts/fact-baseline.json").model_dump(mode="json")},
+            ),
+            visits=visits,
+            dispatches=dispatches,
+            attempt_keys=attempt_keys,
+            select_index=_state_epoch,
         ),
     )
     repair = (

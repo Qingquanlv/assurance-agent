@@ -44,12 +44,12 @@ _ALLOWED_SCHEMA_KEYS = frozenset(
     }
 )
 _PRIMITIVE_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
+_BEARER_TOKEN = r"[A-Za-z0-9._\-+/=]{8,}"
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
-    re.compile(r"(?i)bearer\s+\S+"),
+    re.compile(rf"(?i)(?:authorization:\s*)?bearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
     re.compile(r"sk-[A-Za-z0-9-]+"),
-    re.compile(r"(?i)api[_-]?key\s*[=:]\s*\S+"),
+    re.compile(r"(?i)api[_-]?key\s*[=:](?!=)\s*\S+"),
 )
 MAX_DIAGNOSTIC_COUNT = 16
 MAX_DIAGNOSTIC_LENGTH = 240

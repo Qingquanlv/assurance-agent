@@ -174,7 +174,15 @@ async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tm
 async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_path: Path) -> None:
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     payload = codegen_input(family)
-    payload["artifact_paths"] = ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"]
+    payload["artifact_paths"] = [
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
+    ]
 
     prepared = await execute_task(
         codegen_prepare_handler(family),

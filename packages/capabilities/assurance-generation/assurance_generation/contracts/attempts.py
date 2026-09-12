@@ -17,6 +17,7 @@ from assurance_generation.contracts.codegen import (
 )
 from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
+from assurance_generation.contracts.init_runtime import InitTestRuntimeInputV1, InitTestRuntimeResultV1
 from assurance_generation.contracts.workflow import (
     CompleteGenerationInputV1,
     GenerationCycleResultV1,
@@ -290,12 +291,30 @@ _PUBLISH_CYCLE = TaskAttemptContract(
     timeout=_TIMEOUT,
     validators=(),
 )
+_INIT_TEST_RUNTIME = TaskAttemptContract(
+    contract_id="assurance.generation.init-test-runtime",
+    owner_id="assurance.generation",
+    handler_id="assurance.generation.init-test-runtime.execute",
+    input_model=InitTestRuntimeInputV1,
+    output_model=InitTestRuntimeResultV1,
+    resources=ResourceClaims(
+        reads=("qa",),
+        writes=("qa/tests", qa_join("init/test-runtime.json")),
+    ),
+    retry=_TASK_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
-    {"resolve-inputs": _RESOLVE_INPUTS, "publish-cycle": _PUBLISH_CYCLE}
+    {
+        "resolve-inputs": _RESOLVE_INPUTS,
+        "publish-cycle": _PUBLISH_CYCLE,
+        "init-test-runtime": _INIT_TEST_RUNTIME,
+    }
 )
 GENERATION_GRAPH_CONTRACT_IDS: tuple[str, ...] = tuple(
     contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()
-) + (_RESOLVE_INPUTS.contract_id, _PUBLISH_CYCLE.contract_id)
+) + (_RESOLVE_INPUTS.contract_id, _PUBLISH_CYCLE.contract_id, _INIT_TEST_RUNTIME.contract_id)
 
 
 def attempt_contract_refs() -> tuple[AttemptContractRef, ...]:

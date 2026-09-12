@@ -85,7 +85,15 @@ def generation_graph_input(
         },
         "selected_test_families": list(selected),
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "rounds_used": 0,
         "rounds_budget": 2,
         "coverage_epoch": 0,
@@ -186,11 +194,12 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
         "e2e",
         "fuzz",
         "performance",
+        "init_runtime",
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
-    assert len(recording_context.bound_contract_ids) == 14
-    assert len(unique) == 14
+    assert len(recording_context.bound_contract_ids) == 15
+    assert len(unique) == 15
     assert set(unique) == {
         *(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()),
         *(contract.contract_id for contract in TASK_ATTEMPT_CONTRACTS.values()),

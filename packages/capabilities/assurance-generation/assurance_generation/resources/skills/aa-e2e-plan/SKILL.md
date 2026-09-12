@@ -35,6 +35,15 @@ keys, and distinguish an existing helper amendment from create-if-missing. On re
 check the whole package for consistency while editing only authorized locators;
 if another required edit is outside them, report the scope gap without broadening it.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first. When its `Product Source Verification` section lists
@@ -48,18 +57,18 @@ those exact reads and a path-scoped grep both fail.
 - `qa/cases/**/case.yaml`
 - `qa/.qa.yaml`
 - `qa/proposal.md`
+- `qa/results/facts/fact-baseline.json`
 
 ### optional
 
 - `qa/results/review/e2e-plan-review.json`
-- `qa/results/facts/fact-baseline.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - backend and frontend product source (read-only)
-- `tests/testdata/domain/**`
-- `tests/e2e/**`
-- `tests/config.py`
-- `tests/conftest.py`
+- `qa/tests/testdata/domain/**`
+- `qa/tests/e2e/**`
+- `qa/tests/config.py`
+- `qa/tests/conftest.py`
 
 ## Outputs
 
@@ -115,8 +124,8 @@ as a reason to block codegen.
 
 For every exact L1-declared Python symbol, translate its module path to an exact
 `.py` path and exact-read that file before assigning `missing` or
-`create-if-missing`. For example, inspect `tests/e2e/conftest.py` for
-`tests.e2e.conftest.e2e_login_admin` and `tests/testdata/domain/dept.py` for
+`create-if-missing`. For example, inspect `qa/tests/e2e/conftest.py` for
+`tests.e2e.conftest.e2e_login_admin` and `qa/tests/testdata/domain/dept.py` for
 `tests.testdata.domain.dept.unique_dept_name`. Glob, search, and repository
 status do not prove an ignored helper is absent. Only mark the implementation
 missing after the exact read fails or the exact-readable file does not define

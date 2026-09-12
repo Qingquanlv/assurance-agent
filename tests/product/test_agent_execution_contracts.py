@@ -109,8 +109,14 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
     assert archiver["tools"]["apply_patch"] is False
     assert set(archiver["permission"]["edit"]) == {
         "**",
+        "**/qa/results/explore/context.json",
+        "**/qa/results/workflow-state.json",
+        "**/qa/results/workflow-state.yaml",
         "qa/.runtime/**",
         "qa/.staging/**",
+        "qa/.staging/**/qa/results/explore/context.json",
+        "qa/.staging/**/qa/results/workflow-state.json",
+        "qa/.staging/**/qa/results/workflow-state.yaml",
         "qa/results/explore/context.json",
         "qa/results/workflow-state.json",
         "qa/results/workflow-state.yaml",

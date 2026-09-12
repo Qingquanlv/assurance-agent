@@ -22,6 +22,7 @@ from assurance_quality.contracts.agent import (
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
     AssessmentSkillInputV1,
+    FactBaselineSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     FinalizedReportV1,
@@ -79,7 +80,7 @@ _JOBS: tuple[tuple[str, str, str, type[Any], tuple[str, ...], type[Any], type[An
         _DOC_AUTHOR,
         FactBaselineResultV1,
         ("facts/fact-baseline.json",),
-        AssessmentSkillInputV1,
+        FactBaselineSkillInputV1,
         FinalizedFactBaselineV1,
     ),
     (
@@ -185,6 +186,7 @@ QUALITY_GRAPH_EXPORTS: tuple[str, ...] = (
     "issue_analyze",
     "issue_reconcile",
     "report",
+    "fact_baseline",
 )
 
 

@@ -79,6 +79,15 @@ bounded finding in `auto_fix_plan`. Independently verify source-backed claims;
 the facts digest binds observations, not semantic truth. Re-review repaired output
 before passing; the desired repair count never changes the acceptance criteria.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first from the locked inputs. When its `Product Source Verification`
@@ -107,7 +116,7 @@ has already verified these exact paths as regular files.
 - `qa/results/plans/data-knowledge.proposal.api.yaml`
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only contract evidence)
-- `tests/api/**` and `tests/testdata/domain/**`
+- `qa/tests/api/**` and `qa/tests/testdata/domain/**`
 
 ## Outputs
 
@@ -142,6 +151,18 @@ SUT defect to be corrected before codegen. Use `pass` with
 `ready_with_warnings` when the mapped test remains executable; reserve
 `needs_human_review` for a genuinely missing intent, product, policy,
 authorization, credential, or safety decision.
+
+## Initial administrator credential review
+
+When the API plan requires administrator authentication, independently compare `admin_username`
+and `admin_password` in the plan with the exact startup initialization or seed source cited by the
+approved plan. Both values must deterministically match the values used to create the initial
+administrator. Do not read `.env` or `*.env` files as credential evidence.
+
+Treat a missing value, a contradictory value, or any credential fallback such as a test-runtime
+default as a non-pass finding with `not_ready`. Use bounded `needs_fix` when the product source
+proves the correction; use `needs_human_review` only when the source cannot resolve the required
+credential without a runtime or policy decision.
 
 ## Domain Notes
 

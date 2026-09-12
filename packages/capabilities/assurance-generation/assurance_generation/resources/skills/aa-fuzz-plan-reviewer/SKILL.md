@@ -44,6 +44,15 @@ bounded finding in `auto_fix_plan`. Independently verify source-backed claims;
 the facts digest binds observations, not semantic truth. Re-review repaired output
 before passing; the desired repair count never changes the acceptance criteria.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first from the locked inputs. When its `Product Source Verification`
@@ -95,7 +104,7 @@ finding already requires re-entry.
 
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only)
-- `tests/fuzz/**` and `tests/testdata/domain/**`
+- `qa/tests/fuzz/**` and `qa/tests/testdata/domain/**`
 
 ## Outputs
 

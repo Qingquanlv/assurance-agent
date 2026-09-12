@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
+    FactBaselineSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     MaterializeAssessmentInputV1,
@@ -25,6 +26,7 @@ from assurance_quality.operations.agent_skills import (
     FactBaselineFinalizeHandler,
     FactBaselinePrepareHandler,
     InspectFinalizeHandler,
+    InspectPrepareHandler,
 )
 from assurance_quality.operations.assessment import (
     classify_inspection_disposition,
@@ -88,6 +90,18 @@ def _assessment_business(root: Path) -> AssessmentSkillInputV1:
         assessment=assessment,
         reviewed_case=request.reviewed_case,
         mapping_ref=request.generation.mapping_ref,
+    )
+
+
+def _fact_baseline_business(business: AssessmentSkillInputV1) -> FactBaselineSkillInputV1:
+    return FactBaselineSkillInputV1(
+        change_id=business.change_id,
+        coverage_epoch=business.coverage_epoch,
+        plan_digest=business.plan_digest,
+        plan_ref=business.plan_ref,
+        capability_leafs=business.capability_leafs,
+        artifact_paths=business.artifact_paths,
+        reviewed_case=business.reviewed_case,
     )
 
 
@@ -395,7 +409,7 @@ async def test_prepare_rejects_assessment_evidence_that_changed_after_materializ
     metrics.write_bytes(metrics.read_bytes() + b"\n")
 
     result = await execute_task(
-        FactBaselinePrepareHandler(),
+        InspectPrepareHandler(),
         cast(JSONValue, business.model_dump(mode="json")),
         tmp_path,
         binding_data=BINDING,
@@ -433,7 +447,7 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
     business = _assessment_business(tmp_path)
     prepared = await execute_task(
         FactBaselinePrepareHandler(),
-        cast(JSONValue, business.model_dump(mode="json")),
+        cast(JSONValue, _fact_baseline_business(business).model_dump(mode="json")),
         tmp_path,
         binding_data=BINDING,
     )
@@ -447,7 +461,10 @@ async def test_finalize_authenticates_baseline_and_builds_deterministic_inspecti
         FactBaselineFinalizeHandler(),
         cast(
             JSONValue,
-            {**business.model_dump(mode="json"), "agent_result": _agent_run(baseline_document)},
+            {
+                **_fact_baseline_business(business).model_dump(mode="json"),
+                "agent_result": _agent_run(baseline_document),
+            },
         ),
         tmp_path,
         write_root=stage,
@@ -557,7 +574,10 @@ async def test_failing_execution_requires_analyzed_agent_status(
         FactBaselineFinalizeHandler(),
         cast(
             JSONValue,
-            {**business.model_dump(mode="json"), "agent_result": _agent_run(baseline_document)},
+            {
+                **_fact_baseline_business(business).model_dump(mode="json"),
+                "agent_result": _agent_run(baseline_document),
+            },
         ),
         tmp_path,
         write_root=stage,

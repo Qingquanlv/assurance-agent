@@ -9,13 +9,14 @@ from langgraph.graph.state import CompiledStateGraph
 from assurance_intake.contracts.workflow import CaseFlowResultV1
 from assurance_product.graphs.entrypoints import (
     adapt_case,
+    adapt_init,
     adapt_prepare,
     publish_public_output,
     validate_public_input,
 )
 from assurance_product.graphs.execute import adapt_execute_tail_input
 from assurance_product.graphs.loop_state import advance_coverage, can_reenter_case
-from assurance_product.graphs.routes import route_prepare
+from assurance_product.graphs.routes import route_init, route_prepare
 from assurance_product.graphs.state import ProductState
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import BusinessBudgetsV1
@@ -89,6 +90,8 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_node("validate", validate_public_input("full"))
     builder.add_node("adapt-prepare", cast(Any, adapt_prepare))
     builder.add_node("prepare", typed.intake.prepare)
+    builder.add_node("adapt-init", cast(Any, adapt_init))
+    builder.add_node("init", typed.generation.init_runtime)
     builder.add_node("adapt-case", cast(Any, adapt_case))
     builder.add_node("case", typed.intake.case)
     builder.add_node("advance-coverage", cast(Any, advance_coverage))
@@ -102,7 +105,13 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_conditional_edges(
         "prepare",
         cast(Callable[..., Any], route_prepare),
-        {"prepared": "adapt-case", "failed": "not-achieved"},
+        {"prepared": "adapt-init", "failed": "not-achieved"},
+    )
+    builder.add_edge("adapt-init", "init")
+    builder.add_conditional_edges(
+        "init",
+        cast(Callable[..., Any], route_init),
+        {"initialized": "adapt-case", "failed": "not-achieved"},
     )
     builder.add_edge("adapt-case", "case")
     builder.add_edge("advance-coverage", "adapt-case")

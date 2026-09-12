@@ -20,9 +20,7 @@ from tests.product.conformance import PREPARE_IDS
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO / "benchmark" / "assurance-product" / "manifest.json"
 RUNNER_PATH = REPO / "benchmark" / "assurance-product" / "run_item.py"
-DEPT_REQUIREMENT_PATH = (
-    REPO / "benchmark" / "assurance-product" / "requirements" / "dept-management.md"
-)
+DEPT_REQUIREMENT_PATH = REPO / "benchmark" / "assurance-product" / "requirements" / "dept-management.md"
 DATA_KNOWLEDGE_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "data-knowledge.yaml"
 POLICY_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "policy.yaml"
 DEPT_SCHEMA_PATH = REPO / "benchmark" / "vue-fastapi-admin" / "app" / "schemas" / "depts.py"
@@ -31,11 +29,11 @@ FULL_WORKFLOW_REQUIRED_STEPS = (
     "intake.explore",
     "intake.case-design",
     "intake.case-review",
+    "quality.fact-baseline",
     "generation.api.plan",
     "generation.api.plan-review",
     "generation.api.codegen",
     "execution.execute",
-    "quality.fact-baseline",
     "quality.inspect",
     "quality.report",
 )
@@ -498,7 +496,10 @@ def test_runner_requires_loaded_assurance_boundary_plugin(monkeypatch: pytest.Mo
 
 def test_live_product_input_authorizes_declared_test_roots() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
-    assert '"allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"]' in source
+    assert (
+        '"allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"]'
+        in source
+    )
 
 
 def test_live_runner_keeps_polling_while_external_activity_is_recoverable() -> None:

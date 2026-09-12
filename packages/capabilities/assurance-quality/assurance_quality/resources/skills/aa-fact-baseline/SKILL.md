@@ -10,8 +10,8 @@ Schema truth is `assurance_quality.contracts` for `FactBaselineResultV1`.
 
 ### required
 
-- locked change, coverage epoch, and execution batch identity
-- authenticated Reviewed Case, mapping, execution, trace, gap, metrics, and sufficiency refs
+- locked change and coverage epoch
+- authenticated Reviewed Case and its plan, preparation, case, and review refs
 - seed or init sources named in that canonical business input
 
 ### optional
@@ -30,6 +30,13 @@ Schema truth is `assurance_quality.contracts` for `FactBaselineResultV1`.
 ## Rules
 
 - Never invent credentials, role ids, route prefixes, token headers, or database facts.
+- When administrator authentication is required, inspect the startup initialization or seed source
+  named by the locked input. Record `admin_username` and `admin_password` in `facts` only when that
+  source deterministically resolves both values used to create the initial administrator.
+- If either initial administrator value is indirect, runtime-dependent, contradictory, or
+  unavailable, omit both credential facts and add a warning that identifies the unresolved source.
+- Never read `.env` or `*.env` files to obtain credentials. Source-proven initialization literals
+  and deterministic constants are allowed; environment values and existing database contents are not.
 - Never emit `facts.endpoints` or `facts.*_endpoints`. A single `login_endpoint` is allowed.
 - This is not a performance baseline.
 - If a fact is uncertain, omit it or set it to null and add a warning.

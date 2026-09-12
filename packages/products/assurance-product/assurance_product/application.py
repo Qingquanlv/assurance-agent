@@ -82,6 +82,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
         "improvement-export": (),
         "improvement-review": ("assurance.improvement.agent.improvement-review.v1",),
         "improvement-rollback": (),
+        "init": (),
         "intake": (
             "assurance.intake.agent.intake.v1",
             "assurance.intake.agent.explore.v1",
@@ -102,7 +103,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
 
 
 if set(ENTRYPOINT_AGENT_CONTRACT_IDS) != set(PRODUCT_ENTRYPOINTS):
-    raise RuntimeError("entrypoint Agent-contract inventory must cover the 14 public names")
+    raise RuntimeError("entrypoint Agent-contract inventory must cover the 15 public names")
 
 
 _LG_EXIT = {

@@ -50,7 +50,7 @@ def adapt_execute_tail_input(
     standalone: bool,
 ) -> dict[str, object]:
     payload = _input_from_state(state)
-    reviewed_case: object = None if standalone else state.get("reviewed_case")
+    reviewed_case: object = state.get("reviewed_case")
     if reviewed_case is None and not standalone:
         case_result = state.get("case_result")
         if isinstance(case_result, Mapping):
@@ -86,6 +86,33 @@ def adapt_execute_tail_input(
 
 def adapt_public_execute_tail(state: ProductState) -> dict[str, object]:
     return adapt_execute_tail_input(state, standalone=True)
+
+
+def adapt_fact_baseline(state: ProductState) -> dict[str, object]:
+    payload = _input_from_state(state)
+    reviewed = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
+    feature_input = {
+        "change_id": payload.change_id,
+        "coverage_epoch": int(state.get("coverage_epoch", 0)),
+        "plan_digest": state.get("plan_digest") or reviewed.plan_digest,
+        "plan_ref": state.get("plan_ref") or reviewed.plan_ref.model_dump(mode="json"),
+        "reviewed_case": reviewed.model_dump(mode="json"),
+        "capability_leafs": list(payload.capability_leafs),
+        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
+    }
+    return {**feature_input, "feature_input": feature_input}
+
+
+def _route_fact_baseline(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return "blocked"
+    try:
+        ref = EvidenceArtifactRefV1.model_validate(state.get("fact_baseline_ref"))
+    except (TypeError, ValueError):
+        return "blocked"
+    if ref.path != "qa/results/facts/fact-baseline.json":
+        return "blocked"
+    return "generation"
 
 
 def adapt_generation(state: ProductState) -> dict[str, object]:
@@ -200,6 +227,7 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "execution_at": execution.executed_at.isoformat(),
         "healing_ref": state.get("healing_ref"),
         "issue_ref": state.get("issue_ref"),
+        "fact_baseline_ref": state.get("fact_baseline_ref"),
         "activation": {
             "kind": "trigger",
             "value": f"inspect.{execution.coverage_epoch}.{batch_token}.{execution.repair_round}",
@@ -272,8 +300,8 @@ def adapt_issue_analysis(state: ProductState) -> dict[str, object]:
     if not assessment.owned_evidence_ids:
         raise ValueError("blocked inspection has no owned observations")
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
-    # Fact baseline is produced after the immutable analysis bundle. Do not expose
-    # that unbound document to the analyzer as if it were authenticated evidence.
+    # Fact baseline is sealed before generation and is not part of the immutable
+    # execution analysis bundle. Do not expose it to the analyzer as owned evidence.
     fact_baseline_path = "qa/results/facts/fact-baseline.json"
     refs = {
         (ref.path, ref.digest): ref
@@ -572,6 +600,8 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     if validate:
         builder.add_node("validate", validate_public_input("execute"))
+    builder.add_node("adapt-fact-baseline", cast(Any, adapt_fact_baseline))
+    builder.add_node("fact-baseline", typed.quality.fact_baseline)
     builder.add_node("adapt-generation", cast(Any, adapt_generation))
     builder.add_node("generation", typed.generation.generation)
     builder.add_node("adapt-execution", cast(Any, adapt_execution))
@@ -594,10 +624,16 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_node("finish-needs-human", cast(Any, _finish_inspection("needs_human")))
     builder.add_node("blocked", cast(Any, blocked))
 
-    first = "validate" if validate else "adapt-generation"
+    first = "validate" if validate else "adapt-fact-baseline"
     builder.add_edge(START, first)
     if validate:
-        builder.add_edge("validate", "adapt-generation")
+        builder.add_edge("validate", "adapt-fact-baseline")
+    builder.add_edge("adapt-fact-baseline", "fact-baseline")
+    builder.add_conditional_edges(
+        "fact-baseline",
+        cast(Callable[..., Any], _route_fact_baseline),
+        {"generation": "adapt-generation", "blocked": "blocked"},
+    )
     builder.add_edge("adapt-generation", "generation")
     builder.add_conditional_edges(
         "generation",
@@ -705,6 +741,7 @@ __all__ = [
     "adapt_diagnostic_report",
     "adapt_execution",
     "adapt_execute_tail_input",
+    "adapt_fact_baseline",
     "adapt_generation",
     "adapt_public_execute_tail",
     "adapt_quality_assess",

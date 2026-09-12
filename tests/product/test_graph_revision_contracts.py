@@ -65,6 +65,7 @@ EXPECTED_RECURSION_LIMITS = {
     "case": 1024,
     "full": 8192,
     "execute": 4096,
+    "init": 512,
     "archive": 512,
     "retro": 2048,
     "issue-review": 512,
@@ -86,7 +87,7 @@ def thin_graphs() -> ThinEntrypointGraphs:
 def test_thin_graphs_and_contracts_have_exact_keys(thin_graphs: ThinEntrypointGraphs) -> None:
     assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
     assert set(thin_graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS) - {"full", "execute"}
-    assert len(thin_graphs.entrypoints) == 12
+    assert len(thin_graphs.entrypoints) == 13
 
 
 def test_entrypoint_digest_changes_with_schema_or_limit_not_compiled_repr() -> None:

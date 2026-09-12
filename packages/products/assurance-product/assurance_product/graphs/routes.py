@@ -93,6 +93,12 @@ def route_prepare(state: Mapping[str, object]) -> str:
     return select_exclusive_route(prepare_named_matches(state), otherwise="failed")
 
 
+def route_init(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure") or state.get("status") == "failed":
+        return "failed"
+    return "initialized"
+
+
 def route_execute(state: Mapping[str, object]) -> str:
     return select_exclusive_route(execute_named_matches(state), otherwise=_BLOCKED)
 
@@ -126,6 +132,7 @@ __all__ = [
     "quality_named_matches",
     "route_applied_repair",
     "route_execute",
+    "route_init",
     "route_prepare",
     "route_quality",
     "route_run",

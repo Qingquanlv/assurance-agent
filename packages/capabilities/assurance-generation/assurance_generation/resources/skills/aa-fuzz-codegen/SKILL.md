@@ -33,8 +33,8 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 - `qa/results/review/fuzz-plan-checks.json`
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
-- `tests/fuzz/**`
-- `tests/testdata/domain/**`
+- `qa/tests/fuzz/**`
+- `qa/tests/testdata/domain/**`
 
 ## Outputs
 

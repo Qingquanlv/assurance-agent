@@ -198,7 +198,15 @@ def skill_graph_fields() -> dict[str, object]:
         "retro_id": "RET-1",
         "owned_evidence_ids": ["PROB-1", "OCC-1"],
         "artifact_paths": ["retro/context.json"],
-        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "capability_leafs": ["auth.session.create"],
         "source_manifest": {
             "issue_slice_sha256": "a",

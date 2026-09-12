@@ -1,116 +1,85 @@
-# Task 4 Report: Physical kernel vs product resource split
+# Task 4 Report: Product inventory (`init` is a public name)
 
 ## Status
 
 DONE_WITH_CONCERNS
 
-## What you implemented
-
-Physically split kernel YAML/JSON/rules/OpenCode plugins out of `assurance_agent/_resources/` into `assurance_agent/_resources_kernel/`. Did not create `packages/assurance-kernel/` (Task 5). Did not change `_PRODUCT_PREFIXES`.
-
-- `git mv` kernel files into `_resources_kernel/{schemas,rules,opencode}`:
-  - `policy-default.yaml`, `ingest-artifact-catalog.yaml`, `explore-advisory.schema.json`, `explore-context.schema.json`
-  - `failure-classification.yaml`
-  - `opencode/plugins/`, `opencode/tools/`, `opencode/INSTALL.md`
-- Left in product `_resources/`: `workflow-schema.yaml`, `execution-contracts.yaml`, `skills/`, `opencode/agents/`
-- `assurance_agent/resources.py`: kernel root is `files("assurance_agent") / "_resources_kernel"`; product prefixes resolve to `_product_root` when set, otherwise packaged `_resources`
-- `ingest_catalog.py`: dropped `Path(__file__).parents[2]` arithmetic; loads via `resources.read_text("schemas", "ingest-artifact-catalog.yaml")`
-
-Commit `8f4d13d` staged only the listed paths. Unrelated dirty skill / agent markdown under `_resources/` was not committed.
-
-## What you tested and test results
-
-TDD: created `tests/unit/resources/test_resource_roots.py` with the brief’s two tests (file did not exist from Tier 2).
-
-- RED: `uv run pytest tests/unit/resources/test_resource_roots.py -v` → **2 failed** (`policy-default.yaml` still under product `_resources/`; ingest catalog still used `__file__` arithmetic).
-- GREEN (brief Step 4): `uv run pytest tests/unit/resources/test_resource_roots.py tests/unit/workflow/graph/test_ingest_catalog.py tests/unit/test_product.py tests/integration/test_cli_workflow_compile.py -q` → **37 passed**.
-- `uv run ruff check` / `ruff format --check` on Task 4 Python files → clean.
-
 ## TDD Evidence
 
-### RED command
+### RED (Step 2)
 
-```text
-uv run pytest tests/unit/resources/test_resource_roots.py -v
+Test inventories were flipped first. Production `FAMILY_EMPTY_ENTRYPOINTS` still omitted `init`.
+
+Command:
+
+```bash
+uv run pytest tests/product/test_product_input.py tests/product/test_product_entrypoints.py tests/product/test_graph_intake_and_triplets.py -v
 ```
 
-Failing output (policy still in product tree; ingest catalog still used `__file__`):
+Output:
 
-```text
-tests/unit/resources/test_resource_roots.py::test_kernel_policy_is_not_under_product_resources FAILED
-tests/unit/resources/test_resource_roots.py::test_ingest_catalog_does_not_use_file_arithmetic FAILED
+```
+FAILED test_empty_family_entrypoints_require_empty_selection[init]
+  ValueError: unknown product entrypoint: init
 
-______________ test_kernel_policy_is_not_under_product_resources _______________
-    def test_kernel_policy_is_not_under_product_resources() -> None:
-        product = Path("assurance_agent/_resources/schemas/policy-default.yaml")
->       assert not product.is_file()
-E       AssertionError: assert not True
+FAILED test_product_entrypoints_are_fifteen_python_roots
+  Extra items in the right set: 'init'
 
-_______________ test_ingest_catalog_does_not_use_file_arithmetic _______________
-    def test_ingest_catalog_does_not_use_file_arithmetic() -> None:
-        source = Path("assurance_agent/workflow/graph/ingest_catalog.py").read_text(encoding="utf-8")
->       assert "_resources/schemas/ingest-artifact-catalog.yaml" not in source
-E       assert '_resources/...catalog.yaml' not in '"""IngestAr...rn catalog\n'
-=========================== short test summary info ============================
-FAILED tests/unit/resources/test_resource_roots.py::test_kernel_policy_is_not_under_product_resources
-FAILED tests/unit/resources/test_resource_roots.py::test_ingest_catalog_does_not_use_file_arithmetic
-========================= 2 failed, 1 warning in 0.04s =========================
+FAILED test_public_entrypoints_are_the_python_product_roots
+  Extra items in the right set: 'init'
+
+ERROR test_product_input_authenticates_resource_refs_against_composition
+  ValueError: semantic attempt registry must contain 46 contracts, got 47
 ```
 
-### GREEN command
+Exit code: 1. Inventory failures matched the missing public name, not typos.
 
-```text
-uv run pytest tests/unit/resources/test_resource_roots.py tests/unit/workflow/graph/test_ingest_catalog.py tests/unit/test_product.py tests/integration/test_cli_workflow_compile.py -q
+### GREEN (Step 4)
+
+Command:
+
+```bash
+uv run pytest tests/product/test_product_input.py tests/product/test_product_entrypoints.py tests/product/test_graph_intake_and_triplets.py -v
 ```
 
-Passing output:
+Output:
 
-```text
-.....................................                                    [100%]
-37 passed, 1 warning in 1.08s
+```
+========================= 56 passed, 1 error in 11.84s =========================
 ```
 
-## Self-review
+`validate_for_entrypoint("init")` passed (empty families, no `case_delta`, no `plan_ref`, no `retro_window`). Set-membership tests assert 15 public names and 13 thin roots. Focused ruff on the eight listed files is clean.
 
-- Product prefixes unchanged from Tier 2 (`workflow-schema.yaml`, `execution-contracts.yaml`, `skills/`, `opencode/agents` only). Plugins/tools are kernel.
-- `aa init` still syncs `opencode/{agents,tools,plugins}` via `resources.exists` / `_sync`; agents come from the product tree, tools/plugins from the kernel tree.
-- `_root_for(("schemas",))` is kernel-only (prefix match is file-specific). `iter_children("schemas")` no longer lists product YAML.
-- Did not add `_resources_kernel/**` to `pyproject.toml` hatch `artifacts`; hatchling still includes non-gitignored package data by default.
+The remaining ERROR is the pre-existing Task 3 leftover `46` vs `47` semantic-attempt count during `opencode_composition` setup. It is outside this task’s file list.
 
-## Concerns
+`test_graph_revision_contracts.py` and `test_cli_langgraph_lifecycle.py` were updated but not executed: the former compiles thin roots; the latter is a lifecycle suite. Factory compile tests were not run (Task 5).
 
-1. `tests/unit/test_opencode_plugin_boundary.py` hardcodes `assurance_agent/_resources/opencode/plugins/aa.mjs`. That suite fails after the move (ERR_MODULE_NOT_FOUND). Not in this task’s file list.
-2. `tests/unit/test_resources.py::test_iter_children_lists_schema_files` expects `workflow-schema.yaml` and `explore-advisory.schema.json` in one `iter_children("schemas")` listing. After the split that listing is kernel-only. Not in this task’s file list.
+## What changed
+
+- `init` is a public `FAMILY_EMPTY` name: no families, no `case_delta`, no `plan_ref`, no `retro_window`.
+- Agent contracts are `()`. Recursion limit is `512`.
+- Closed-set counts are 15 public / 13 thin. Factory still builds 12 thin roots until Task 5.
+- Renamed set-membership tests from fourteen → fifteen. `init` is in `_NON_AGENT_ENTRYPOINTS`.
+
+## Files Changed
+
+| File | Action |
+|------|--------|
+| `assurance_product/models.py` | `"init"` in `FAMILY_EMPTY_ENTRYPOINTS` |
+| `assurance_product/application.py` | `"init": ()`; error text `15 public names` |
+| `assurance_product/graphs/revisions.py` | `"init": 512` |
+| `tests/product/test_product_input.py` | `"init"` in `_FAMILY_EMPTY_ENTRYPOINTS` |
+| `tests/product/test_product_entrypoints.py` | `"init"` in `PUBLIC_ENTRYPOINTS`; `len == 15` / thin `13`; renamed `...fifteen...` |
+| `tests/product/test_graph_intake_and_triplets.py` | `"init"`; `len == 15` |
+| `tests/product/test_cli_langgraph_lifecycle.py` | `"init"` in `_NON_AGENT_ENTRYPOINTS`; `len == 15`; renamed `test_all_fifteen_...` |
+| `tests/product/test_graph_revision_contracts.py` | `"init": 512`; thin length 13 |
 
 ## Commit
 
-`8f4d13d` Split kernel resource files out of the product _resources tree.
+none
 
-## Review findings (follow-up)
+## Concerns
 
-Fixed both Important findings. Did not stage unrelated dirty skill markdown.
-
-### Command
-
-```text
-uv run pytest tests/unit/test_opencode_plugin_boundary.py tests/unit/test_resources.py tests/unit/resources/test_resource_roots.py -q
-```
-
-### Output
-
-```text
-........................................................................ [ 66%]
-....................................                                     [100%]
-=============================== warnings summary ===============================
-assurance_agent/workflow/graph/models.py:70
-  /Users/lvqingquan/agent/assurance-agent/assurance_agent/workflow/graph/models.py:70: UserWarning: Field name "schema" in "CompiledWorkflow" shadows an attribute in parent "BaseModel"
-    class CompiledWorkflow(BaseModel):
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-108 passed, 1 warning in 8.45s
-```
-
-### What changed
-
-- `_PLUGIN` now points at `assurance_agent/_resources_kernel/opencode/plugins/aa.mjs`. The bootstrap test copies that plugin into a project-shaped temp tree (`opencode/plugins` + `skills/`) because the plugin still resolves `../../skills` for the `aa init` layout.
-- `test_iter_children_lists_schema_files` treats `iter_children("schemas")` as kernel-only (`explore-advisory.schema.json` in, `workflow-schema.yaml` not listed) and reads the product schema via `exists` / `read_text`.
+1. **`test_product_input_authenticates_resource_refs_against_composition` still ERRORs** on `semantic attempt registry must contain 46 contracts, got 47`. This is the Task 3 `init_runtime` contract leftover, not an inventory miss. It failed the same way on RED before production edits.
+2. **Factory compile tests will fail until Task 5.** `build_thin_entrypoint_graphs` still requires 12 thin roots. `test_graph_revision_contracts.py` now expects thin length 13 and was not run.
+3. **Out-of-list files still say 14** (`test_product_composition.py`, `test_full_graph_audit.py`, `public_closure.py`, and others). Left as-is.

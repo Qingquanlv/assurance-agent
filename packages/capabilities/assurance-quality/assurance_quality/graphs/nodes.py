@@ -14,6 +14,7 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedC
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
     AssessmentSkillInputV1,
+    FactBaselineSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     FinalizedReportV1,
@@ -144,8 +145,19 @@ def _assessment_skill_input(
     )
 
 
-def select_fact_baseline(state: Mapping[str, object]) -> AssessmentSkillInputV1:
-    return _assessment_skill_input(state, require_fact_baseline=False)
+def select_fact_baseline(state: Mapping[str, object]) -> FactBaselineSkillInputV1:
+    reviewed_case = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
+    return FactBaselineSkillInputV1.model_validate(
+        {
+            "change_id": state.get("change_id"),
+            "coverage_epoch": state.get("coverage_epoch"),
+            "plan_digest": state.get("plan_digest") or reviewed_case.plan_digest,
+            "plan_ref": state.get("plan_ref") or reviewed_case.plan_ref,
+            "capability_leafs": state.get("capability_leafs", ()),
+            "artifact_paths": state.get("artifact_paths") or state.get("allowed_artifact_paths", ()),
+            "reviewed_case": reviewed_case,
+        }
+    )
 
 
 def select_inspect(state: Mapping[str, object]) -> AssessmentSkillInputV1:
@@ -231,6 +243,13 @@ def activation_assess(state: Mapping[str, object]) -> BusinessActivation:
     raise ValueError("assess business activation is not canonical")
 
 
+def activation_fact_baseline(state: Mapping[str, object]) -> BusinessActivation:
+    epoch = state.get("coverage_epoch")
+    if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
+        raise ValueError("fact-baseline coverage_epoch must be a non-negative int")
+    return BusinessActivation.for_trigger(f"coverage.{epoch}.fact-baseline")
+
+
 def activation_materialize_assessment(state: Mapping[str, object]) -> BusinessActivation:
     epoch = state.get("coverage_epoch")
     batch_id = state.get("batch_id")
@@ -273,15 +292,11 @@ def publish_fact_baseline(
 ) -> dict[str, object]:
     del receipt
     finalized = FinalizedFactBaselineV1.model_validate(output)
-    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
-    if finalized.assessment != assessment:
-        raise ValueError("fact baseline was finalized against stale assessment inputs")
+    reviewed_case = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
+    if finalized.reviewed_case != reviewed_case:
+        raise ValueError("fact baseline was finalized against a stale Reviewed Case")
     return {
         "fact_baseline_ref": finalized.fact_baseline_ref.model_dump(mode="json"),
-        "evidence_refs": [
-            *_as_refs(state.get("evidence_refs")),
-            finalized.fact_baseline_ref.model_dump(mode="json"),
-        ],
     }
 
 
@@ -490,6 +505,7 @@ def terminal_done(state: QualityState) -> dict[str, object]:
 
 __all__ = [
     "activation_assess",
+    "activation_fact_baseline",
     "activation_materialize_assessment",
     "activation_one_shot",
     "clear_report_state",

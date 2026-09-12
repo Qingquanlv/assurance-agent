@@ -44,8 +44,8 @@ configuration contract without inspecting credential values.
 - `qa/results/review/performance-plan-checks.json`
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
-- `tests/perf/**`
-- `tests/testdata/domain/**`
+- `qa/tests/perf/**`
+- `qa/tests/testdata/domain/**`
 
 ## Outputs
 

@@ -48,6 +48,7 @@
       "assurance.generation.fuzz.plan-review.prepare",
       "assurance.generation.fuzz.plan.finalize",
       "assurance.generation.fuzz.plan.prepare",
+      "assurance.generation.init-test-runtime.execute",
       "assurance.generation.performance.codegen.finalize",
       "assurance.generation.performance.codegen.prepare",
       "assurance.generation.performance.plan-review.finalize",
@@ -151,6 +152,10 @@
       {
         "contract_id": "assurance.generation.agent.performance.plan.v1",
         "digest": "07deed4b08f0f813d69a2c7a1abf6704c66828e1cda87a706a8608e65189d25d"
+      },
+      {
+        "contract_id": "assurance.generation.init-test-runtime",
+        "digest": "8dc46cba066f60cf2a45e8c7081997163753d12c9202304a23a24ac12e45714d"
       },
       {
         "contract_id": "assurance.generation.publish-cycle",

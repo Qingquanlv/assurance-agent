@@ -155,7 +155,7 @@
     "attempt_contracts": [
       {
         "contract_id": "assurance.quality.agent.fact-baseline.v1",
-        "digest": "b141509194dc352c1c58830e92bb59bf9eb756e449bc0d72dee9b571c08f6195"
+        "digest": "761762ef424a0f1d60902c88d959b7b6e71ce6325e7de1a4abfaaf47405a51af"
       },
       {
         "contract_id": "assurance.quality.agent.inspect.v1",

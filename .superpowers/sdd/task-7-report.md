@@ -1,106 +1,148 @@
-# Task 7 Report — Product identity, allowlist, globs, leftover path strings
+# Task 7 Report: Repo gate for the touched wheels
 
-**Plan:** `docs/superpowers/plans/2026-09-11-qa-flat-workspace.md` Task 7  
-**Branch:** `benchmark-regression` (in-place)
+## Status
 
-## RED
+DONE
 
-Added `tests/product/test_qa_flat_workspace_sweep.py` first.
+## TDD Evidence
 
-```text
-uv run pytest tests/product/test_qa_flat_workspace_sweep.py -v
-→ 3 failed, 1 passed
+The brief is implement-then-verify (focused ruff / pyright / pytest, then leftover init counts). No separate RED flip was required.
+
+### Step 1: Format / lint
+
+Command:
+
+```bash
+uv run ruff check packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product && uv run ruff format packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product
 ```
 
-Failures were real leftovers / missing identity check, not typos.
+First run output:
 
-- Sweep `test_installed_python_has_no_legacy_change_tree` listed **127** Python files still containing `qa/changes/` or `qa/archive/`.
-- `ChangeWorkspace.open` / `prepare_change_workspace` did not refuse when `qa/status.json` `change.change_id` ≠ requested `--change`.
-- Matching identity already passed (no status check yet).
-
-### Leftover-file list from the first sweep fail (127)
-
-First hits (queue used for the mechanical rewrite):
-
-- `packages/products/assurance-product/assurance_product/opencode_agents.py`
-- `packages/products/assurance-product/assurance_product/status.py`
-- `packages/products/assurance-product/assurance_product/graphs/execute.py`
-
-Remainder spanned capability production/tests, adapter tests, `tests/product/**`, `tests/phase4/**`, `tests/agent_runtime/fakes.py`, and other installed Python under `packages/` and `tests/`. The sweep test itself must not contain the literal substrings; tokens are built as `"qa/" + "changes/"` / `"qa/" + "archive/"`.
-
-## GREEN
-
-Sweep + identity now pass. Installed Python under `packages/**/*.py` and `tests/**/*.py` has **0** leftover `qa/changes/` or `qa/archive/` hits.
-
-### Production leftovers cleared
-
-- `qa_join` rejects only prefix `qa/changes`, `qa/archive`, `changes/`, `archive/` (not mid-path `results/archive`).
-- `status.py` `finalize_achieved` writes `qa/status.json` and `qa/apply-manifest.json`.
-- `ChangeWorkspace.open` / `aa start` (`prepare`) fail closed on identity mismatch.
-- `opencode_agents.py` globs: `qa/cases/**`, `qa/tests/**`, `qa/results/**`, `qa/fixtures/**`; deny `qa/.runtime/**`, `qa/.staging/**`, explore context, workflow-state.
-- Boundary plugin execution-view regex no longer matches `qa/changes/<id>/.staging/execution`.
-- `run_item.py`: `case_delta_paths` = `qa/cases/{module}/case.yaml`; `allowed_artifact_paths` = `["qa/cases", "qa/fixtures", "qa/results", "qa/tests"]`.
-- Plan-reviewer skills and `resolve_inputs.py` remapped off `qa/changes/{change_id}/`.
-- Plugin `plugin-declaration.json` files regenerated so live descriptors match static snapshots after contract path changes.
-
-### Tests run
-
-```text
-uv run pytest tests/product/test_qa_flat_workspace_sweep.py \
-  tests/product/test_change_workspace_paths.py \
-  tests/product/test_product_input.py \
-  tests/product/test_execution_view.py \
-  tests/product/test_generated_merge.py \
-  tests/product/test_agent_execution_contracts.py \
-  tests/product/test_achieved_terminal.py
-→ 144 passed
+```
+All checks passed!
+10 files reformatted, 198 files left unchanged
 ```
 
-```text
-uv run pytest tests/product -q --tb=line
-→ 13 failed, 843 passed, 13 skipped  (before last isolation/parser/boundary fixes)
+Exit code: 0
+
+Re-run after count/declaration edits:
+
+```bash
+uv run ruff check packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product && uv run ruff format --check packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product
 ```
 
-After those leftover remaps, isolation + sweep + edited modules were re-run green. Full `tests/product` was not re-run end-to-end after the last parser/view-selector fixes.
+Output:
 
-Capability packages: many tests still fail from mechanical rewrite leftovers (`qa/trace` vs `qa/results/trace`, case-design allowlist vs `qa/.qa.yaml`, skill-doc assertions). Not all capability modules were brought green.
+```
+All checks passed!
+208 files already formatted
+```
+
+Exit code: 0
+
+### Step 2: Typecheck
+
+Command:
+
+```bash
+uv run pyright packages/capabilities/assurance-generation/assurance_generation packages/products/assurance-product/assurance_product
+```
+
+Output:
+
+```
+0 errors, 1 warning, 0 informations
+```
+
+Exit code: 0
+
+The single warning is pre-existing `reportMissingModuleSource` for `jsonschema` in `assurance_generation/resources/test-runtime/tests/schema_validation.py` (wheel harness template). No flood of include-override errors, so repo-root `uv run pyright` was not needed.
+
+### Step 3: Focused pytest
+
+Command:
+
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests/test_init_runtime.py packages/capabilities/assurance-generation/tests/test_init_runtime_graph.py packages/capabilities/assurance-generation/tests/test_generation_graph_factory.py packages/capabilities/assurance-generation/tests/test_plugin.py tests/product/test_product_input.py tests/product/test_product_entrypoints.py tests/product/test_feature_graph_bundles.py tests/product/test_product_stategraph_flow.py tests/product/test_phase5_benchmark_change_layout.py -v
+```
+
+Output (after leftover fixes):
+
+```
+============================= 142 passed in 18.15s =============================
+```
+
+Exit code: 0
+
+Did not run or “fix” `packages/capabilities/assurance-generation/tests/test_plan_consistency.py::test_check_collects_cross_artifact_contradictions_in_one_pass`. Did not start a live `aa run`.
+
+### Extra leftover verification (not in the brief list)
+
+Command:
+
+```bash
+uv run pytest tests/product/test_semantic_attempt_bindings.py tests/product/test_product_composition.py tests/product/test_python_native_cutover.py tests/product/test_wheel_smoke_contract.py tests/product/test_stategraph_entrypoints.py -q
+```
+
+Output:
+
+```
+72 passed in 21.07s
+```
+
+Exit code: 0
+
+`tests/product/test_product_providers.py` (declaration bytes) also passed after regenerating the committed product declaration.
+
+## What changed
+
+- Closed semantic-attempt registry asserts are `47` (32 agent + 15 task). Task count asserts are `15`. Public root asserts are `15`.
+- `GENERATION_GRAPH_CONTRACT_IDS` now includes `assurance.generation.init-test-runtime`.
+- Committed `product-declaration-opencode.json` now lists `init` (regenerated via `write_committed_product_declarations()`). Composition was still serving the 14-root declaration.
+- Stale “twelve thin roots” test names are “thirteen”. `_THIN_EXPORTS` includes `init` → `assurance.generation.init_runtime`; `_CHILD_STATE` includes `GenerationState`.
+- Smoke script and its contract test expect `15 roots` and `47` attempt contracts.
+
+## Files Changed
+
+| File | Action |
+|------|--------|
+| `assurance_generation/contracts/attempts.py` | Append `init-test-runtime` to `GENERATION_GRAPH_CONTRACT_IDS` |
+| `assurance_product/product-declaration-opencode.json` | Regenerated; `init` is a public root |
+| `scripts/assurance_product_wheel_smoke_test.sh` | 14→15 roots; 46→47 attempt contracts |
+| `tests/product/test_semantic_attempt_bindings.py` | Registry 46→47; tasks 14→15 |
+| `tests/product/test_product_composition.py` | Attempt sum 46→47; entrypoints 14→15 |
+| `tests/product/test_python_native_cutover.py` | Boot contracts 46→47 |
+| `tests/product/test_wheel_smoke_contract.py` | Expect 15 roots / 47 in the smoke script |
+| `tests/product/test_stategraph_entrypoints.py` | `_THIN_EXPORTS` + `init`; rename twelve→thirteen |
+| `tests/product/test_product_stategraph_flow.py` | Rename twelve→thirteen |
+
+First `ruff format` also reformatted 10 already-scoped files (style only).
+
+## Commit
+
+none
 
 ## Concerns
 
-- Full `tests/product` still had leftover failures in phase5 gate count, cursor-adapter composition message, and some capability-owned graphs; last isolation/boundary fixes may have cleared several of the 13.
-- Capability test suite: 69 failed / 1559 passed before fixture-sort and declaration regen; remaining failures are rewrite residue, not leftover `qa/changes/` strings.
-- Shared `qa/tests/` means per-family generated isolation is gone; tests now expect last-writer / digest mismatch instead of dual physical trees.
-- Did not add `benchmark/results` contents or eval-fixtures.
+1. Scoped pyright reports one pre-existing warning (`jsonschema` missing in the harness template). Zero errors.
+2. `init` is in `_THIN_EXPORTS` but still not in `_REPRESENTATIVE_THIN_ENTRYPOINTS` invoke tests. Wiring stays covered by factory compile and intake/full stubs.
 
-## Important review findings
+## Final-review fix
 
-Locked `ProductInputV1.allowed_artifact_paths` to the exact sorted tuple
-`("qa/cases", "qa/fixtures", "qa/results", "qa/tests")`. Subsets, supersets
-(including `qa/extra`), and `("tests",)` now fail closed.
+Coverage re-entry now counts `init` the same way as prepare/case (`{"prepare": 1, "init": 1, "case": 2}`). Added `test_full_init_failure_does_not_enter_case`: init stub returns `status="failed"` plus `attempt_failure`; case is never called; full terminal is `{"status": "failed", "reason": "not_achieved"}`. No production wiring change.
 
-Dropped leftover OpenCode glob `**qa/improvements/reviews/**` on
-`assurance-v1-reviewer`. Improvement reviews already live under
-`qa/results/review/**`.
+Command:
 
-Sweep now also fails on slash-free tokens `qa/changes` and `qa/archive`.
-Queue from the first fail (15 files), then cleared:
-
-- intake finalize lock → `["qa/cases", "qa/fixtures", "qa/results", "qa/tests"]`
-- generation / product dummy artifacts → `"path": "qa/results"`
-- explore degraded reason → `historical archive projection is empty or missing`
-  (no longer walks leftover `qa/archive`)
-- contract route assertions rewritten with concatenated tokens
-- loop-helper cleanup target → `"$PWD/qa"`
-
-### Tests
-
-```text
-uv run pytest tests/product/test_qa_flat_workspace_sweep.py \
-  tests/product/test_product_input.py -v
-→ 53 passed
+```bash
+uv run pytest tests/product/test_product_stategraph_flow.py -v
 ```
 
-Also green: edited generation graph/interrupt/join tests, contract route
-assertions, intake finalize lock tests, `test_change_local_output_routing`,
-`test_loop_helpers` cleanup, `test_agent_execution_contracts`,
-`test_opencode_staging_boundary`.
+Output:
+
+```
+============================== 23 passed in 2.04s ==============================
+```
+
+Exit code: 0
+
+Files changed: `tests/product/test_product_stategraph_flow.py` only.

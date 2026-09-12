@@ -32,9 +32,9 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 - baseline tree identity when the graph provides one
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
-- `tests/api/**`
-- `tests/api/adapters/**`
-- `tests/testdata/domain/**`
+- `qa/tests/api/**`
+- `qa/tests/api/adapters/**`
+- `qa/tests/testdata/domain/**`
 
 ## Outputs
 
@@ -108,6 +108,19 @@ including inside async tests. Await requests only when the actual client is
 still require `await cleanup_dept(...)` in the same test; mark that async test
 for the installed pytest async runner. Decide awaitability per call, not per
 test or from a fixture's name.
+
+## Initial administrator login
+
+When administrator authentication is required, use the exact source-proven `admin_username` and
+`admin_password` from the approved plan and review. Never read administrator credentials from
+`qa/tests/config.py`, and never introduce `admin` or any other conventional credential fallback.
+
+Implement the login fixture in an explicitly authorized support output when one exists; otherwise
+define it in the authorized mapped test module. The fixture must authenticate with the reviewed
+initial credential pair and hand the resulting authorization value to the generated requests.
+Do not emit runnable tests or claim readiness when either value is missing, contradictory, or not
+traceable to the product's deterministic startup initialization or seed source. Do not read `.env`
+or `*.env` files to fill the gap.
 
 ## Runtime Contract Closure
 

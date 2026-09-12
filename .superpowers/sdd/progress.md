@@ -87,3 +87,32 @@ Task 9: blocked (scan + ruff green; focused pytest 54 pre-existing failures)
 - Scan of `packages tests` has no `qa/changes` / `qa/archive`
 - `docs/usage.md` rewritten locally but gitignored
 - Red is Task 7–8 rewrite residue (allowlist vs `qa/.qa.yaml`, exact prefixes, `qa/tests/` validators, export/phase5/cursor)
+Task 9: complete (commits a15411a2..05ac59e8, review clean after 05ac59e8; 2483 passed / 1 leftover cursor snapshot)
+- Minor roll-up: DELIVERY_FLOW prefix; product-input-v1.json weaker; goldens; _change_root leftover; retro path-part fallback; docs/usage.md gitignored; workspace metapackage 0.2.0
+
+# SDD Progress — Init Test Runtime
+
+**Plan:** docs/superpowers/plans/2026-09-12-init-test-runtime.md
+**Branch:** benchmark-regression
+**Worktree:** /Users/lvqingquan/agent/assurance-agent (in-place; no extra worktree)
+**Start HEAD:** fe64801e9f9ddbc39e952b0323bc716e1a5f338a
+**Commit policy:** do not commit unless the user asks
+
+## Tasks
+Task 1: complete (uncommitted; review clean)
+- Minor for whole-branch: collector does not dedupe duplicate symbols; notes interpolated into docstrings without escaping; digest-mismatch test omits failure.kind
+Task 2: complete (uncommitted; review clean)
+- Minor for whole-branch: test name still says “two tasks”; init_runtime import order; GENERATION_GRAPH_CONTRACT_IDS omits new contract
+Task 3: complete (uncommitted; review clean)
+- Deferred to Task 5: product GenerationGraphs constructors + IMPLEMENTED_BUNDLE_FIELDS
+- Minor: receipts not on GenerationState; PEP8 blank line; sibling import ignore; redundant status writes
+Task 4: complete (uncommitted; review clean)
+- Deferred: factory still 12/14; stale “14” in unlisted tests; composition 46 vs 47
+Task 5: complete (uncommitted; review clean)
+- Deferred to Task 7: remaining `46` asserts; stale “twelve thin roots” names; init not in `_THIN_EXPORTS`
+Task 6: complete (uncommitted; review clean)
+- Minor: no test for evidence receipt/null semantics
+Task 7: complete (uncommitted; focused gate 142 passed)
+- Minor: pyright jsonschema warning on harness template; init not in representative thin-root invoke list
+Final review: Important fixed (full init count + fail-closed test, 23 passed)
+- Remaining minors: collector/notes escaping; digest-mismatch kind; GenerationState receipts; evidence receipt test; jsonschema warning; identifier check; reads omit .aa; route_init not exclusive

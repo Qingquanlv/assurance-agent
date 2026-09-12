@@ -475,18 +475,45 @@ def _exact_json_object(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as error:
-        decoder = json.JSONDecoder()
-        start = text.find("{")
-        try:
-            candidate, end = decoder.raw_decode(text, start)
-        except (json.JSONDecodeError, ValueError):
-            raise ValueError("terminal text is not one JSON object") from error
-        if not isinstance(candidate, dict) or text[end:].strip():
+        candidate = _sole_trailing_json_object(text)
+        if candidate is None:
             raise ValueError("terminal text is not one JSON object") from error
         return candidate
     if not isinstance(parsed, dict):
         raise ValueError("terminal text is not one JSON object")
     return parsed
+
+
+def _sole_trailing_json_object(text: str) -> dict[str, Any] | None:
+    """Locate the one JSON object that consumes the text through its exact end.
+
+    Model prose sometimes precedes the closed result with a self-review sentence
+    that itself contains brace-shaped text (for example inline-code like
+    `{covered: true}`). That decoy is not valid JSON on its own, so scanning
+    every `{` occurrence left-to-right and keeping the object that reaches the
+    exact end finds the real trailing result. Concatenated objects
+    (`{"ok":true}{"ok":true}`) leave a leftover that still starts with `{` or
+    `[` and stay rejected, as does commentary after the object.
+    """
+    decoder = json.JSONDecoder()
+    trailing: dict[str, Any] | None = None
+    start = text.find("{")
+    while start != -1:
+        try:
+            candidate, end = decoder.raw_decode(text, start)
+        except (json.JSONDecodeError, ValueError):
+            start = text.find("{", start + 1)
+            continue
+        if not isinstance(candidate, dict):
+            start = text.find("{", start + 1)
+            continue
+        leftover = text[end:].strip()
+        if leftover.startswith("{") or leftover.startswith("["):
+            return None
+        if leftover == "":
+            trailing = candidate
+        start = text.find("{", start + 1)
+    return trailing
 
 
 def provider_error_message(

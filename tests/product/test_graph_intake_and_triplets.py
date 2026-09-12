@@ -10,6 +10,7 @@ _PUBLIC_ENTRYPOINTS = (
     "case",
     "full",
     "execute",
+    "init",
     "archive",
     "retro",
     "issue-review",
@@ -25,7 +26,7 @@ _PUBLIC_ENTRYPOINTS = (
 
 def test_public_entrypoints_are_the_python_product_roots() -> None:
     assert set(PRODUCT_ENTRYPOINTS) == set(_PUBLIC_ENTRYPOINTS)
-    assert len(PRODUCT_ENTRYPOINTS) == 14
+    assert len(PRODUCT_ENTRYPOINTS) == 15
 
 
 def test_intake_bundle_exposes_prepare_load_and_case_graphs() -> None:

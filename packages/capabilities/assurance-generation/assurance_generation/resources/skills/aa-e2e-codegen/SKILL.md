@@ -32,8 +32,8 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 - baseline tree identity when the graph provides one
 - `.aa/config.yaml`
 - backend and frontend product source (read-only)
-- `tests/e2e/**`
-- `tests/testdata/domain/**`
+- `qa/tests/e2e/**`
+- `qa/tests/testdata/domain/**`
 
 ## Outputs
 
@@ -95,7 +95,7 @@ test module. Record a support file only when its exact path is in
 `conftest.py` is pytest discovery configuration, not an importable support
 module. Never generate `from conftest import ...` or otherwise import a
 `conftest.py` helper from a test. Keep fixture-only code in `conftest.py`; move
-helpers that a test imports into a regular module under `tests/e2e/**`, import
+helpers that a test imports into a regular module under `qa/tests/e2e/**`, import
 that module by its package path, and record a newly changed helper as `support`
 with `case_ids: []`.
 

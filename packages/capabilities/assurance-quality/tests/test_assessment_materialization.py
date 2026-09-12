@@ -110,6 +110,8 @@ def _workspace_input(
     candidates: tuple[TestFamily, ...] | None = None,
     result_status: Literal["passed", "failed"] = "passed",
     result_message: str = "",
+    selector: str | None = None,
+    evidence_selector: str | None = None,
 ) -> dict[str, Any]:
     plan_document, plan_ref = install_plan(
         root,
@@ -132,7 +134,8 @@ def _workspace_input(
             _case("TC_ITEM_002", "entities.item.constraints.description"),
         ]
     )
-    selector = TEST_SELECTOR.replace("/api/", f"/{family}/")
+    selector = (selector or TEST_SELECTOR).replace("/api/", f"/{family}/")
+    evidence_selector = (evidence_selector or selector).replace("/api/", f"/{family}/")
     mapped_capability = next(iter(cast(dict[str, object], selected_cases[0]["trace"])))
     preparation = _write_text(root, "qa/requirement.md", "# Requirement\n")
     review = _write_json(
@@ -197,6 +200,18 @@ def _workspace_input(
             }
         ],
     }
+    evidence_mapping = {
+        "schema_version": "1",
+        "selected": [evidence_selector],
+        "mappings": [
+            {
+                "test": evidence_selector,
+                "case_id": "TC_ITEM_001",
+                "capability": mapped_capability,
+                "layer": family,
+            }
+        ],
+    }
     mapping_ref = _write_json(root, MAPPING_PATH, mapping)
     evidence = {
         "schema_version": "1",
@@ -212,7 +227,7 @@ def _workspace_input(
             "fuzz": False,
             "performance": False,
         },
-        "mapping": mapping,
+        "mapping": evidence_mapping,
         "mapping_digest": mapping_ref["digest"],
         "baseline_tree_id": "b" * 64,
         "runner_profile_digest": "c" * 64,
@@ -222,7 +237,7 @@ def _workspace_input(
                 {
                     "family": family,
                     **{
-                        "command": ["pytest", selector],
+                        "command": ["pytest", evidence_selector],
                         "exit_code": 0 if result_status == "passed" else 1,
                         "collected": 1,
                         "passed": 1 if result_status == "passed" else 0,
@@ -234,7 +249,7 @@ def _workspace_input(
         },
         "results": [
             {
-                "test": selector,
+                "test": evidence_selector,
                 "status": result_status,
                 "duration_ms": 5,
                 "case_id": "TC_ITEM_001",
@@ -288,6 +303,34 @@ def _workspace_input(
         "policy_sha256": plan_document.policy_digest,
         "execution_at": EXECUTED_AT.isoformat(),
     }
+
+
+_DURABLE_SELECTOR = "qa/tests/api/test_items.py::test_create_item"
+
+
+@pytest.mark.asyncio
+async def test_materialize_accepts_durable_qa_tests_mapping(tmp_path: Path) -> None:
+    request = _workspace_input(tmp_path, selector=_DURABLE_SELECTOR)
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+
+
+@pytest.mark.asyncio
+async def test_materialize_rejects_view_mapping_against_durable_generation(tmp_path: Path) -> None:
+    request = _workspace_input(
+        tmp_path,
+        selector=_DURABLE_SELECTOR,
+        evidence_selector=TEST_SELECTOR,
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "failed"
+    assert result.failure is not None
+    assert result.failure.kind == "invalid_input"
+    assert result.failure.message == "execution evidence mapping differs from the locked generation mapping"
 
 
 @pytest.mark.asyncio

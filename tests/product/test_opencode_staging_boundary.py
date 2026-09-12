@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Mapping
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import pytest
@@ -127,6 +128,20 @@ def _install(project: Path) -> Path:
     return plugin
 
 
+def _edit_action(profile: Mapping[str, object], candidate: str) -> str:
+    permission = profile["permission"]
+    assert isinstance(permission, dict)
+    edit = permission["edit"]
+    assert isinstance(edit, dict)
+    action = "deny"
+    for pattern, rule in edit.items():
+        assert isinstance(pattern, str)
+        assert isinstance(rule, str)
+        if fnmatchcase(candidate, pattern):
+            action = rule
+    return action
+
+
 @pytest.mark.parametrize(
     "name", ["retro", "retro-eval-analysis", "retro-issue-analysis", "retro-workflow-analysis"]
 )
@@ -154,6 +169,40 @@ def test_retro_contract_output_passes_both_profile_and_session_boundaries(tmp_pa
         )
     )
     assert allowed["filePath"] == str(_staged(tmp_path, logical))
+
+
+def test_opencode_edit_rules_allow_remapped_staging_writes() -> None:
+    from assurance_product.opencode_agents import _opencode_config
+
+    agents = json.loads(_opencode_config())["agent"]
+    remapped = "qa/.staging/6940ef04da8847a5d15da2779cccfd81c329144aa660c58a76df25984ceb2e8a/attempt-1"
+    repo_remapped = f"benchmark/vue-fastapi-admin/{remapped}"
+    cases = (
+        ("assurance-v1-doc-author", "qa/requirement.md"),
+        ("assurance-v1-doc-author", "qa/.qa.yaml"),
+        ("assurance-v1-explorer", "qa/results/explore/exploration.json"),
+        ("assurance-v1-test-author", "qa/tests/api/test_dept.py"),
+    )
+    for profile_name, logical in cases:
+        profile = agents[profile_name]
+        assert _edit_action(profile, logical) == "allow"
+        assert _edit_action(profile, f"{remapped}/{logical}") == "allow"
+        assert _edit_action(profile, f"{repo_remapped}/{logical}") == "allow"
+
+    explorer = agents["assurance-v1-explorer"]
+    author = agents["assurance-v1-doc-author"]
+    denied = (
+        (explorer, "qa/results/explore/context.json"),
+        (author, "qa/results/workflow-state.json"),
+        (author, "qa/results/workflow-state.yaml"),
+        (author, "qa/.staging/evil.txt"),
+    )
+    for profile, logical in denied:
+        assert _edit_action(profile, logical) == "deny"
+        if not logical.startswith("qa/.staging/"):
+            assert _edit_action(profile, f"{remapped}/{logical}") == "deny"
+            assert _edit_action(profile, f"{repo_remapped}/{logical}") == "deny"
+    assert _edit_action(author, f"{remapped}/qa/.staging/evil.txt") == "deny"
 
 
 def _task_context(project: Path) -> TaskContext:

@@ -7,6 +7,7 @@ from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from assurance_generation.contracts.agent import CodegenInputV1, PlanInputV1
+from assurance_generation.contracts.init_runtime import InitTestRuntimeInputV1, InitTestRuntimeResultV1
 from assurance_generation.contracts.decisions import advance_review_round, complete_generation
 from assurance_generation.contracts.families import GENERATION_FAMILIES
 from assurance_generation.contracts.workflow import (
@@ -81,6 +82,34 @@ def select_plan(state: Mapping[str, object]) -> PlanInputV1:
             "reviewed_plan": state["reviewed_plan"] if local_round > 0 else None,
         }
     )
+
+
+def select_init_runtime(state: Mapping[str, object]) -> InitTestRuntimeInputV1:
+    return InitTestRuntimeInputV1.model_validate(
+        {
+            "change_id": state["change_id"],
+            "data_knowledge": state["data_knowledge"],
+            "capability_leafs": state.get("capability_leafs") or (),
+            "allowed_artifact_paths": state.get("allowed_artifact_paths") or (),
+        }
+    )
+
+
+def activation_init_runtime(state: Mapping[str, object]) -> BusinessActivation:
+    del state
+    return BusinessActivation.one_shot()
+
+
+def publish_init_runtime(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
+    del state
+    result = InitTestRuntimeResultV1.model_validate(output)
+    published = {
+        "status": "completed",
+        "init_result": result.model_dump(mode="json"),
+    }
+    if receipt is not None:
+        published["receipts"] = [ReceiptRef.model_validate(receipt).model_dump(mode="json")]
+    return published
 
 
 def select_generation_inputs(state: Mapping[str, object]) -> ResolveGenerationInputV1:
@@ -461,6 +490,7 @@ __all__ = [
     "activation_codegen",
     "activation_generation_inputs",
     "activation_generation_cycle",
+    "activation_init_runtime",
     "activation_one_shot",
     "activation_plan",
     "activation_plan_review",
@@ -475,6 +505,7 @@ __all__ = [
     "publish_codegen",
     "publish_generation_inputs",
     "publish_generation_cycle",
+    "publish_init_runtime",
     "publish_plan",
     "publish_plan_review",
     "review_round_advance",
@@ -483,6 +514,7 @@ __all__ = [
     "select_codegen",
     "select_generation_inputs",
     "select_generation_cycle",
+    "select_init_runtime",
     "select_plan",
     "select_plan_review",
     "terminal_done",

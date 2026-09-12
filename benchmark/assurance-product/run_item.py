@@ -39,7 +39,7 @@ _AMBIENT_OVERRIDE_VARS = frozenset(
     }
 )
 _CREDENTIAL_PATTERN = re.compile(
-    r"(?i)(api[_-]?key|authorization|bearer|token|secret)\s*[:=]\s*\S+|sk-[A-Za-z0-9-]+"
+    r"(?i)(api[_-]?key|authorization|bearer|token|secret)\s*[:=](?!=)\s*\S+|sk-[A-Za-z0-9-]+"
 )
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "interrupted"})
 _OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS = 300
@@ -1493,6 +1493,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         sut_root = _resolve_sut(repo, str(item["sut_root"]))
     except SystemExit as error:
         return _fail(str(error))
+    project_dir = sut_root
     change_root = sut_root / "qa"
     run_log = output / "run.log"
     run_log.touch()
@@ -1572,6 +1573,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             evidence["lock_digest"] = status.get("lock_digest") or evidence.get("lock_digest")
             evidence["provider"] = _provider_reference(status, adapter=arguments.adapter, item=item)
         evidence["notes"] = notes
+        receipt = project_dir / "qa" / "results" / "init" / "test-runtime.json"
+        evidence["test_runtime_seed"] = (
+            {"path": "qa/results/init/test-runtime.json", "digest": _sha256(receipt.read_bytes())}
+            if receipt.is_file() and not receipt.is_symlink()
+            else None
+        )
         _write_json(output / "evidence.json", _redact_evidence(evidence))
         _write_evidence_markdown(evidence_md, evidence)
         return code
@@ -1609,7 +1616,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return finish(1, notes=str(error))
     isolated_env["PATH"] = f"{aa_next.parent}{os.pathsep}{isolated_env.get('PATH', '')}"
 
-    project_dir = sut_root
     endpoint = str(item["adapter_binding"]["endpoint"])
     agent_profile_errors = _project_opencode_asset_errors(project_dir)
     agent_profile_errors.extend(_check_opencode_agent_profiles(endpoint, project_dir))

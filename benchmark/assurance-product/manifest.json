@@ -316,11 +316,11 @@
         "intake.explore",
         "intake.case-design",
         "intake.case-review",
+        "quality.fact-baseline",
         "generation.api.plan",
         "generation.api.plan-review",
         "generation.api.codegen",
         "execution.execute",
-        "quality.fact-baseline",
         "quality.inspect",
         "quality.report"
       ],

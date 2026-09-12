@@ -22,10 +22,12 @@ async def test_select_builds_closed_mapping_from_codegen_mappings(tmp_path: Path
     outcome = await execute_task(SelectHandler(), select_request(), tmp_path)
     assert outcome.status == "succeeded"
     mapping = as_object(as_object(outcome.output)["mapping"])
-    assert mapping["selected"] == ["tests/generated_test.py::test_tc_a_001__ok"]
+    assert mapping["selected"] == ["qa/tests/generated_test.py::test_tc_a_001__ok"]
+    assert as_object(mapping["mappings"][0])["test"] == "qa/tests/generated_test.py::test_tc_a_001__ok"
     assert as_object(mapping["mappings"][0])["case_id"] == "TC_A"
     assert as_object(mapping["mappings"][0])["capability"] == "entities.item.create"
     assert "tests/legacy_test.py" not in mapping["selected"]
+    assert "tests/generated_test.py::test_tc_a_001__ok" not in mapping["selected"]
 
 
 @pytest.mark.asyncio
@@ -64,7 +66,7 @@ async def test_select_ignores_unselected_layer_mapping(tmp_path: Path) -> None:
     outcome = await execute_task(SelectHandler(), payload, tmp_path)
     assert outcome.status == "succeeded"
     assert as_object(as_object(outcome.output)["mapping"])["selected"] == [
-        "tests/generated_test.py::test_tc_a_001__ok"
+        "qa/tests/generated_test.py::test_tc_a_001__ok"
     ]
 
 
@@ -87,6 +89,6 @@ async def test_select_keeps_multiple_cases_in_one_test_file_distinct(tmp_path: P
     assert outcome.status == "succeeded"
     selected = as_object(as_object(outcome.output)["mapping"])["selected"]
     assert selected == [
-        "tests/generated_test.py::test_tc_a_001__ok",
-        "tests/generated_test.py::test_tc_b_001__other",
+        "qa/tests/generated_test.py::test_tc_a_001__ok",
+        "qa/tests/generated_test.py::test_tc_b_001__other",
     ]

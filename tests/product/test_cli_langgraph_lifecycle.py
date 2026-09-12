@@ -30,6 +30,7 @@ _NON_AGENT_ENTRYPOINTS = frozenset(
         "improvement-evaluate",
         "improvement-export",
         "improvement-rollback",
+        "init",
     }
 )
 _AGENT_ENTRYPOINTS = frozenset(
@@ -59,14 +60,14 @@ def _load_identity(path: Path) -> dict[str, object]:
     return payload
 
 
-def test_all_fourteen_public_entrypoints_are_current() -> None:
+def test_all_fifteen_public_entrypoints_are_current() -> None:
     from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
     from assurance_product import models
     from assurance_product.models import PRODUCT_ENTRYPOINTS
 
     assert not hasattr(models, "ENTRYPOINT_RUNTIME_CUTOVER")
     assert set(ENTRYPOINT_AGENT_CONTRACT_IDS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(PRODUCT_ENTRYPOINTS) == 14
+    assert len(PRODUCT_ENTRYPOINTS) == 15
     assert set(PRODUCT_ENTRYPOINTS) == _NON_AGENT_ENTRYPOINTS | _AGENT_ENTRYPOINTS
     assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] == () for name in _NON_AGENT_ENTRYPOINTS)
     assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] for name in _AGENT_ENTRYPOINTS)

@@ -20,6 +20,7 @@ from assurance_quality.contracts.attempts import (
 )
 from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
+    FactBaselineSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     FinalizedReportV1,
@@ -77,7 +78,7 @@ def test_quality_owns_five_agent_contracts() -> None:
         assert contract.skill_id == skill_id
         assert contract.agent_profile == profile
         expected_input = {
-            "fact-baseline": AssessmentSkillInputV1,
+            "fact-baseline": FactBaselineSkillInputV1,
             "inspect": AssessmentSkillInputV1,
             "report": ReportSkillInputV1,
         }.get(base, QualitySkillInputV1)

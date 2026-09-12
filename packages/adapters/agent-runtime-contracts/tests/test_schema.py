@@ -8,6 +8,7 @@ from agent_runtime_contracts.schema import (
     bound_redacted_diagnostics,
     canonical_digest,
     canonical_json_bytes,
+    reject_credentials_in_digest_input,
     resolve_result_schema,
     validate_structured_result,
 )
@@ -355,6 +356,22 @@ def test_validate_local_agent_result_forwards_feature_owned_context() -> None:
     assert exact == payload
     assert digest == canonical_digest(payload)
     assert validated.leaf == "e2e"
+
+
+def test_review_prose_is_not_a_digest_credential() -> None:
+    reject_credentials_in_digest_input(
+        {
+            "claim": (
+                'AuthControl.is_authed treats literal token == "dev" as authenticated. '
+                "The API documents a Bearer scheme, not a raw cookie header."
+            )
+        }
+    )
+
+
+def test_bearer_header_is_still_a_digest_credential() -> None:
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input("Authorization: Bearer sk-secret-canary")
 
 
 def test_bound_redacted_diagnostics_redact_before_limiting() -> None:

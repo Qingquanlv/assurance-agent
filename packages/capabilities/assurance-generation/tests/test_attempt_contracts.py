@@ -53,7 +53,11 @@ def test_generation_round_history_routes_include_epoch_and_local_round() -> None
 
 def test_generation_owns_twelve_agent_contracts_and_two_tasks() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 12
-    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("resolve-inputs", "publish-cycle")
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == (
+        "resolve-inputs",
+        "publish-cycle",
+        "init-test-runtime",
+    )
     resolver = TASK_ATTEMPT_CONTRACTS["resolve-inputs"]
     assert resolver.contract_id == "assurance.generation.resolve-inputs"
     assert resolver.handler_id == "assurance.generation.resolve-inputs.execute"

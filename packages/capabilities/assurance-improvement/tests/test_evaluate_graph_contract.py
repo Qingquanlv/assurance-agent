@@ -60,7 +60,15 @@ from improvement_fixtures import (  # pyright: ignore[reportMissingImports]
 _LIFECYCLE_ONLY: dict[str, object] = {
     "change_id": "CH-EVAL-001",
     "capability_leafs": ["entities.item.create"],
-    "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
+    "allowed_artifact_paths": [
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
+    ],
     "evidence_refs": [{"path": "qa/results/report/report.md", "digest": "a" * 64}],
     "lifecycle_state": "approved",
 }
