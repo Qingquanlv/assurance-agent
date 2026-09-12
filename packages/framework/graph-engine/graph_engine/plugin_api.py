@@ -592,7 +592,7 @@ def _validate_resource_parameter_component(value: str) -> str:
 class ResourceClaimTemplate(FrozenModel):
     """Closed, business-neutral resource prefixes resolved from final task input."""
 
-    parameters: Mapping[str, str]
+    parameters: Mapping[str, str] = {}
     reads: tuple[str, ...] = ()
     writes: tuple[str, ...] = ()
     exclusive: tuple[str, ...] = ()
@@ -600,8 +600,6 @@ class ResourceClaimTemplate(FrozenModel):
     @field_validator("parameters")
     @classmethod
     def _validate_parameters(cls, values: Mapping[str, str]) -> Mapping[str, str]:
-        if not values:
-            raise ValueError("resource template parameters must not be empty")
         normalized: dict[str, str] = {}
         for name, pointer in values.items():
             if _RESOURCE_PARAMETER_PATTERN.fullmatch(name) is None:

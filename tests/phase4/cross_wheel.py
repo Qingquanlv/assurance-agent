@@ -270,8 +270,8 @@ def _quality_project_trace_leaf(value: str, *, catalog: object) -> None:
                 "change_id": _CHANGE_ID,
                 "batch_id": _BATCH_ID,
                 "phase": "execution",
-                "closed_mapping": ["tests/generated.py"],
-                "observed": ["tests/generated.py"],
+                "closed_mapping": ["qa/tests/generated.py"],
+                "observed": ["qa/tests/generated.py"],
                 "capability_leafs": tuple(sorted(leafs)),
                 "case_ids": [_CASE_ID],
                 "cases": [
@@ -640,15 +640,17 @@ def _codegen_mapping_payload() -> dict[str, object]:
     return {
         "schema_version": "1",
         "layer": "api",
-        "entries": [{"case_id": _CASE_ID, "symbol": "test_ok", "target_file": "tests/generated.py"}],
+        "entries": [{"case_id": _CASE_ID, "symbol": "test_ok", "target_file": "qa/tests/generated.py"}],
     }
 
 
 def _closed_mapping_payload(leaf: str) -> dict[str, object]:
     return {
         "schema_version": "1",
-        "selected": ["tests/generated.py"],
-        "mappings": [{"test": "tests/generated.py", "case_id": _CASE_ID, "capability": leaf, "layer": "api"}],
+        "selected": ["qa/tests/generated.py"],
+        "mappings": [
+            {"test": "qa/tests/generated.py", "case_id": _CASE_ID, "capability": leaf, "layer": "api"}
+        ],
     }
 
 
@@ -680,7 +682,7 @@ def _evidence_payload(leaf: str) -> dict[str, object]:
         },
         "results": [
             {
-                "test": "tests/generated.py",
+                "test": "qa/tests/generated.py",
                 "status": "passed",
                 "duration_ms": 1,
                 "message": "",

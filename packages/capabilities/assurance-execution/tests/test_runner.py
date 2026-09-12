@@ -23,24 +23,24 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
 async def test_run_tests_executes_only_closed_mapping(tmp_path: Path) -> None:
     write_test(tmp_path / "qa/tests/generated_test.py")
     write_test(tmp_path / "qa/tests/legacy_test.py")
-    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
+    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     outcome = await execute_task(
         RunTestsHandler(process_host=fake_pytest_host()),
-        run_request(selected=["tests/generated_test.py"]),
+        run_request(selected=["qa/tests/generated_test.py"]),
         tmp_path,
     )
     assert outcome.status == "succeeded"
-    assert executed_paths(outcome) == ("tests/generated_test.py",)
+    assert executed_paths(outcome) == ("qa/tests/generated_test.py",)
 
 
 @pytest.mark.asyncio
 async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
     write_test(tmp_path / "qa/tests/generated_test.py")
     (tmp_path / "qa/tests/legacy_test.py").symlink_to(tmp_path / "qa/tests/generated_test.py")
-    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
+    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     linked = await execute_task(
         RunTestsHandler(process_host=fake_pytest_host()),
-        run_request(selected=["tests/legacy_test.py"]),
+        run_request(selected=["qa/tests/legacy_test.py"]),
         tmp_path,
     )
     assert linked.status == "failed"
@@ -49,7 +49,7 @@ async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
     escaped = await execute_task(
         RunTestsHandler(process_host=fake_pytest_host()),
         {
-            **run_request(selected=["tests/generated_test.py"]),
+            **run_request(selected=["qa/tests/generated_test.py"]),
             "mapping": {
                 "selected": ["../secret.py"],
                 "mappings": [
@@ -73,14 +73,14 @@ async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     write_test(tmp_path / "qa/tests/generated_test.py")
-    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
+    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     host = fake_pytest_host()
     outcome = await execute_task(
         RunTestsHandler(process_host=host),
-        run_request(selected=["tests/generated_test.py"]),
+        run_request(selected=["qa/tests/generated_test.py"]),
         tmp_path,
     )
-    assert outcome.status == "succeeded"
+    assert outcome.status == "succeeded", getattr(outcome, "failure", None)
     argv = host.commands[0]
     assert argv[0] == "pytest"
     assert any(item.endswith("tests/generated_test.py") for item in argv)
@@ -92,6 +92,9 @@ async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     assert not report_path.is_absolute()
     assert ".." not in report_path.parts
     assert " " not in argv[1]
+    pythonpath_flags = [item for item in argv if item.startswith("-o=pythonpath=")]
+    assert len(pythonpath_flags) == 1
+    assert pythonpath_flags[0].endswith("/qa")
 
 
 @pytest.mark.asyncio
@@ -185,14 +188,14 @@ async def test_run_tests_and_collect_pr_metrics_uses_selected_only(tmp_path: Pat
 
     write_test(tmp_path / "qa/tests/generated_test.py")
     write_test(tmp_path / "qa/tests/legacy_test.py")
-    materialize_execution_view(tmp_path, ["tests/generated_test.py"])
+    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     outcome = await execute_task(
         RunTestsAndCollectPrMetricsHandler(process_host=fake_pytest_host()),
-        run_request(selected=["tests/generated_test.py"]),
+        run_request(selected=["qa/tests/generated_test.py"]),
         tmp_path,
     )
     assert outcome.status == "succeeded"
-    assert executed_paths(outcome) == ("tests/generated_test.py",)
+    assert executed_paths(outcome) == ("qa/tests/generated_test.py",)
     metric = as_object(as_object(outcome.output)["pr_metric_input"])
-    assert metric["selected"] == ["tests/generated_test.py"]
-    assert as_object(metric["results"][0])["test"] == "tests/generated_test.py"
+    assert metric["selected"] == ["qa/tests/generated_test.py"]
+    assert as_object(metric["results"][0])["test"] == "qa/tests/generated_test.py"

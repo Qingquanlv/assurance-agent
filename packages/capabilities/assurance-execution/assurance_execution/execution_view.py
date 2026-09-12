@@ -276,8 +276,9 @@ def _plan_view_files(
             continue
         planned[target] = _read_regular(project, _durable_from_view_target(target))
     for support, source in collect_test_support_files(project).items():
-        if support not in planned:
-            planned[support] = source
+        target = _view_target_from_durable(support)
+        if target not in planned:
+            planned[target] = source
     return dict(sorted(planned.items()))
 
 
@@ -313,7 +314,14 @@ def _require_test_support(relative: str) -> str:
 
 
 def collect_test_support_files(project: Path) -> dict[str, tuple[bytes, int]]:
-    root = project / "qa" / "fixtures"
+    support: dict[str, tuple[bytes, int]] = {}
+    for root in (project / "qa" / "tests", project / "qa" / "fixtures"):
+        for relative, source in _collect_support_tree(project, root).items():
+            support.setdefault(relative, source)
+    return support
+
+
+def _collect_support_tree(project: Path, root: Path) -> dict[str, tuple[bytes, int]]:
     if not root.exists():
         return {}
     if root.is_symlink() or not root.is_dir():
@@ -335,7 +343,7 @@ def collect_test_support_files(project: Path) -> dict[str, tuple[bytes, int]]:
             if not _is_python_support(name):
                 continue
             source_relative = (current_path / name).relative_to(project).as_posix()
-            relative = _TESTS_PREFIX + (current_path / name).relative_to(root).as_posix()
+            relative = _QA_TESTS_PREFIX + (current_path / name).relative_to(root).as_posix()
             source = _read_regular(project, source_relative)
             payload, _ = source
             if len(payload) > _MAX_SUPPORT_FILE_BYTES:

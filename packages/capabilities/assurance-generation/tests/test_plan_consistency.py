@@ -30,7 +30,7 @@ def _mapping() -> CodegenMapping:
 
 
 def test_check_collects_cross_artifact_contradictions_in_one_pass(tmp_path: Path) -> None:
-    helper = tmp_path / "tests/testdata/domain/item.py"
+    helper = tmp_path / "qa/tests/testdata/domain/item.py"
     helper.parent.mkdir(parents=True)
     helper.write_text("def make_item(): pass\n")
     facts = build_planning_facts(
@@ -38,11 +38,11 @@ def test_check_collects_cross_artifact_contradictions_in_one_pass(tmp_path: Path
         change_id="CH-1",
         capability_leafs=("entities.item.create",),
         families=("api",),
-        target_files=("tests/testdata/domain/item.py",),
+        target_files=("qa/tests/testdata/domain/item.py",),
     )
     images = {
-        "plans/codegen.md": b"## Test Function Mapping\n| Case ID | Test Function | Target File |\n|---|---|---|\n| TC_API_001 | test_tc_api_001__wrong | tests/api/test_users.py |\n",
-        "plans/data.md": b"## Factory Mapping\n| Shared Module | Function | Ownership |\n|---|---|---|\n| tests/testdata/domain/item.py | make_item | create-if-missing |\n\n## Capability Mapping\n| Capability |\n|---|\n| capabilities.adapters.api.invented |\n",
+        "plans/codegen.md": b"## Test Function Mapping\n| Case ID | Test Function | Target File |\n|---|---|---|\n| TC_API_001 | test_tc_api_001__wrong | qa/tests/api/test_users.py |\n",
+        "plans/data.md": b"## Factory Mapping\n| Shared Module | Function | Ownership |\n|---|---|---|\n| qa/tests/testdata/domain/item.py | make_item | create-if-missing |\n\n## Capability Mapping\n| Capability |\n|---|\n| capabilities.adapters.api.invented |\n",
     }
     errors = check_plan_consistency(images, mapping=_mapping(), facts=facts)
     assert len(errors) == 3

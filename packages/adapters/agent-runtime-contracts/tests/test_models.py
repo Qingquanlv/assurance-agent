@@ -206,13 +206,13 @@ def test_agent_run_request_rejects_mutation() -> None:
 def test_agent_workspace_accepts_canonical_relative_write_root_and_sorted_outputs() -> None:
     workspace = _workspace(
         write_root="qa/.staging/task-1/attempt-1",
-        allowed_outputs=("qa/results/cases.yaml", "qa/proposal.md"),
+        allowed_outputs=("qa/proposal.md", "qa/results/cases.yaml"),
     )
     assert workspace.schema_version == "1"
     assert workspace.write_root == "qa/.staging/task-1/attempt-1"
     assert workspace.allowed_outputs == (
-        "qa/results/cases.yaml",
         "qa/proposal.md",
+        "qa/results/cases.yaml",
     )
     expected = canonical_digest(workspace.model_dump(mode="json", exclude={"identity_digest"}))
     assert workspace.identity_digest == expected
@@ -278,7 +278,6 @@ def test_agent_workspace_rejects_noncanonical_read_roots(
         "C:/stage",
         "../escape",
         "qa/../secret",
-        "qa/results/attempt",
         "qa\\changes\\stage",
         "/qa/results/stage",
         "",
@@ -301,7 +300,6 @@ def test_agent_workspace_rejects_absolute_or_parent_write_roots(write_root: str)
         ("/tmp/out.md",),
         ("../escape.md",),
         ("qa/../secret.md",),
-        ("qa/proposal.md",),
         ("qa\\changes\\proposal.md",),
         ("qa/results/proposal.md", "qa/results/cases.yaml"),
         ("qa/results/proposal.md", "qa/results/proposal.md"),
@@ -899,7 +897,6 @@ def test_agent_execution_contract_is_provider_neutral() -> None:
         agent_result_model=IntakeAgentResult,
         output_model=IntakeOutput,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
             writes=("qa/requirement.md",),
         ),

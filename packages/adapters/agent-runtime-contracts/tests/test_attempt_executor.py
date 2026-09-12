@@ -616,7 +616,7 @@ def test_raw_executor_uses_three_disjoint_staging_phases(raw_executor_fixture) -
 def test_phase_write_claims_cover_descendant_files() -> None:
     from agent_runtime_contracts.attempt_executor import _covered_by_claims
 
-    claims = {"qa/results/generated"}
+    claims = {"qa/tests"}
     assert _covered_by_claims("qa/tests/test_a.py", claims)
     assert not _covered_by_claims("qa/cases/api/case.yaml", claims)
 

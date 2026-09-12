@@ -24,7 +24,7 @@ benchmark_eval_setting() {
 
 benchmark_execution_final_status() {
   local change_id="$1"
-  local execution_dir="qa/changes/${change_id}/execution"
+  local execution_dir="qa/results/execution"
   python3 - "$execution_dir/execution-manifest.json" "$execution_dir/quality-gate-result.json" <<'PY'
 import json
 import sys
@@ -313,7 +313,7 @@ promote_batch_knowledge_proposals() {
   local change_id proposal
   local -a proposals=()
   for change_id in "$@"; do
-    proposals=("qa/changes/$change_id"/plans/data-knowledge.proposal.*.yaml)
+    proposals=("qa/results/plans/data-knowledge.proposal."*.yaml)
     proposal="${proposals[0]}"
     [ -e "$proposal" ] || continue
     "$aa_bin" knowledge promote --change "$change_id" --yes || return $?
