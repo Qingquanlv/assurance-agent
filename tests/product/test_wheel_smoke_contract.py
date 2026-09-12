@@ -122,14 +122,14 @@ def test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix(
     assert 'member == "graph_engine/workspace.py"' in smoke_script
 
 
-def test_packaging_smoke_forbids_contracts_and_graph_engine_as_aa_runtime_deps(
+def test_capability_smoke_covers_runtime_dependency_distribution_and_wheel_names(
     repo_root: Path,
 ) -> None:
     script = (repo_root / "scripts/assurance_capability_wheel_smoke_test.sh").read_text(encoding="utf-8")
 
-    # Requires-Dist and installed distribution names (hyphenated).
+    # Distribution names used by build and closure checks (hyphenated).
     assert script.count("agent-runtime-contracts") >= 2
     assert script.count("graph-engine") >= 2
-    # find_spec import names (underscored).
+    # Wheel artifact and import-root spellings (underscored).
     assert "agent_runtime_contracts" in script
     assert "graph_engine" in script
