@@ -13,7 +13,7 @@ from agent_runtime_contracts.schema import bound_redacted_diagnostics, thaw_json
 
 _BEARER_TOKEN = r"\S{8,}"
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)\bauthorization\s*[:=](?!=)[^\r\n]+"),
+    re.compile(r"""(?i)\bauthorization["']?\s*[:=](?!=)[^\r\n]+"""),
     re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
     re.compile(r"sk-[A-Za-z0-9-]+"),

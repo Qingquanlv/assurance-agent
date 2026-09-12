@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 from pydantic import ValidationError
 
@@ -39,6 +40,32 @@ def test_explicit_authorization_is_closed_in_diagnostics_and_digest_inputs(value
     assert bound_redacted_diagnostics((header,)) == ("[redacted]",)
     with pytest.raises(ValueError, match="credential"):
         reject_credentials_in_digest_input({"diagnostic": header})
+
+
+@pytest.mark.parametrize("style", ["json", "repr"])
+@pytest.mark.parametrize("value", ["Bearer x", "Basic x:y"])
+def test_serialized_authorization_cannot_enter_digest_inputs(style: str, value: str) -> None:
+    headers = {"Authorization": value}
+    diagnostic = json.dumps(headers) if style == "json" else repr(headers)
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input({"diagnostic": diagnostic})
+
+
+@pytest.mark.parametrize("style", ["json", "repr"])
+@pytest.mark.parametrize("value", ["Bearer x", "Basic x:y", "Bearer abcdefgh!suffix"])
+def test_serialized_authorization_is_fully_redacted_in_diagnostics(style: str, value: str) -> None:
+    headers = {"Authorization": value}
+    diagnostic = json.dumps(headers) if style == "json" else repr(headers)
+    redacted = bound_redacted_diagnostics((diagnostic,))[0]
+    assert "[redacted]" in redacted
+    assert value not in redacted
+    assert value.split(" ", 1)[1] not in redacted
+
+
+def test_quoted_authorization_comparison_is_not_a_digest_credential() -> None:
+    prose = "'Authorization' == \"Bearer x\" is a comparison, not a header assignment."
+    assert bound_redacted_diagnostics((prose,)) == (prose,)
+    reject_credentials_in_digest_input({"claim": prose})
 
 
 def test_validate_structured_result_accepts_exact_strict_schema() -> None:

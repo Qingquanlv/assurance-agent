@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from io import StringIO
 from pathlib import Path
@@ -45,6 +46,32 @@ def test_explicit_authorization_redacts_and_rejects_the_complete_value(value: st
 
 def test_bare_bearer_redaction_does_not_leave_an_unsupported_suffix() -> None:
     assert redact_text("Bearer abcdefgh!suffix") == "[redacted]"
+
+
+@pytest.mark.parametrize("style", ["json", "repr"])
+@pytest.mark.parametrize("value", ["Bearer x", "Basic x:y"])
+def test_serialized_authorization_is_rejected(style: str, value: str) -> None:
+    headers = {"Authorization": value}
+    diagnostic = json.dumps(headers) if style == "json" else repr(headers)
+    with pytest.raises(ValueError, match="credential"):
+        reject_canaries_in_payload({"diagnostic": diagnostic})
+
+
+@pytest.mark.parametrize("style", ["json", "repr"])
+@pytest.mark.parametrize("value", ["Bearer x", "Basic x:y", "Bearer abcdefgh!suffix"])
+def test_serialized_authorization_is_fully_redacted(style: str, value: str) -> None:
+    headers = {"Authorization": value}
+    diagnostic = json.dumps(headers) if style == "json" else repr(headers)
+    redacted = redact_text(diagnostic)
+    assert "[redacted]" in redacted
+    assert value not in redacted
+    assert value.split(" ", 1)[1] not in redacted
+
+
+def test_quoted_authorization_comparison_remains_prose() -> None:
+    prose = "'Authorization' == \"Bearer x\" is a comparison, not a header assignment."
+    assert redact_text(prose) == prose
+    reject_canaries_in_payload({"claim": prose})
 
 
 def test_authorization_mapping_is_redacted_and_rejected_even_with_a_short_value() -> None:
