@@ -30,16 +30,12 @@ FAMILY_TEST_FILES = {
 
 
 def family_test_file(family: str) -> str:
+    # keep the same leaf names as today (tests/api/test_*.py etc.)
     return FAMILY_TEST_FILES[family]
 
 
-def staged_generated_file(
-    family: str,
-    target: str | None = None,
-    *,
-    change_id: str = "CH-DEMO-001",
-) -> str:
-    return f"qa/changes/{change_id}/generated/{family}/files/{target or family_test_file(family)}"
+def durable_oracle_path(target: str | None = None, family: str = "api") -> str:
+    return target or f"qa/tests/{family_test_file(family).removeprefix('tests/')}"
 
 
 def family_symbol(family: str) -> str:
@@ -47,7 +43,7 @@ def family_symbol(family: str) -> str:
 
 
 def mapping_document(family: str, *, target_file: str | None = None) -> dict[str, Any]:
-    path = target_file or family_test_file(family)
+    path = target_file or durable_oracle_path(family=family)
     return {
         "schema_version": "1",
         "layer": family,
@@ -87,7 +83,9 @@ def codegen_result(
             }
             for path in files
         ],
-        "mapping": mapping_document(family, target_file=files[0] if files else family_test_file(family)),
+        "mapping": mapping_document(
+            family, target_file=files[0] if files else durable_oracle_path(family=family)
+        ),
         "required_capabilities": required_capabilities or ["entities.item.create"],
     }
 
@@ -108,7 +106,7 @@ def codegen_input(family: str) -> dict[str, Any]:
 def generated_candidate(family: str, extra_file: str | None = None) -> CandidateWriteSet:
     if family not in FAMILY_TEST_FILES:
         raise ValueError(f"unknown generation family: {family}")
-    listed = [extra_file] if extra_file is not None else [FAMILY_TEST_FILES[family]]
+    listed = [extra_file] if extra_file is not None else [durable_oracle_path(family=family)]
     return CandidateWriteSet(
         baseline_tree_id="0" * 64,
         candidate_tree_id="1" * 64,
@@ -144,8 +142,8 @@ __all__ = [
     "codegen_result",
     "family_case_id",
     "family_symbol",
+    "durable_oracle_path",
     "family_test_file",
-    "staged_generated_file",
     "fake_agent_result",
     "generated_candidate",
     "mapping_document",

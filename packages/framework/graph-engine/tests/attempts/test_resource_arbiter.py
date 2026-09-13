@@ -171,6 +171,30 @@ async def test_templates_resolve_only_from_validated_task_input(arbiter: Resourc
         await arbiter.acquire(_attempt_key("missing-input"), template, fencing_token=4)
 
 
+def test_parameter_free_template_uses_immutable_validated_default() -> None:
+    template = ResourceClaimTemplate(reads=("qa",))
+    serialized = template.model_dump(mode="json")
+
+    assert serialized["parameters"] == {}
+    with pytest.raises(TypeError):
+        template.parameters["area"] = "/area"  # type: ignore[index]
+    assert template.model_dump(mode="json") == serialized
+
+
+@pytest.mark.parametrize(
+    ("parameters", "reads", "message"),
+    [
+        ({"area": "/area"}, ("qa",), "unused resource template parameter"),
+        ({}, ("qa/{area}",), "unknown resource template parameter"),
+    ],
+)
+def test_resource_template_rejects_unknown_or_unused_explicit_parameters(
+    parameters: dict[str, str], reads: tuple[str, ...], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        ResourceClaimTemplate(parameters=parameters, reads=reads)
+
+
 async def test_acquire_retries_cas_conflict_on_fence_upgrade(
     store: MemoryResourceAuthorizationStore,
     attempt_key: AttemptKey,

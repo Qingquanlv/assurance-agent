@@ -136,7 +136,7 @@ class _ScriptedTaskHost:
 
     def _public_fields(self, extra: Mapping[str, object] | None = None) -> dict[str, JSONValue]:
         payload: dict[str, JSONValue] = {
-            "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+            "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
             "auto_fix_allowed": False,
             "change_id": "CH-DEMO-001",
             "classification": "failed",
@@ -547,7 +547,7 @@ def _product_input(
         "requirement": "Add login",
         "run_mode": "implement",
         "candidate_test_families": selected_test_families,
-        "case_delta_paths": ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
+        "case_delta_paths": ("qa/cases/system/dept/case.yaml",),
         "capability_leafs": (),
         "capability_catalog": {
             "resource_id": "assurance.product.configuration.capability-catalog",
@@ -561,7 +561,15 @@ def _product_input(
             "resource_id": "assurance.product.configuration.data-knowledge",
             "sha256": _SHA,
         },
-        "allowed_artifact_paths": ("qa/changes",),
+        "allowed_artifact_paths": (
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ),
         "budgets": {
             "review_rounds": 1,
             "coverage_rounds": coverage_rounds,

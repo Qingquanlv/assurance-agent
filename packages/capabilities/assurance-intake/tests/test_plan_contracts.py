@@ -56,7 +56,7 @@ def test_plan_budgets_reject_mutable_usage_or_negative_limits() -> None:
 def test_prepared_goal_is_a_definition_without_observed_outcomes() -> None:
     payload = {
         "obligations_ref": EvidenceArtifactRefV1(
-            path="qa/changes/CH-1/explore/exploration.json",
+            path="qa/results/explore/exploration.json",
             digest=_SHA,
         ),
         "source_resource_digests": (
@@ -108,7 +108,7 @@ def test_prepared_goal_rejects_noncanonical_resource_identities(
         PreparedQualityGoalV1.model_validate(
             {
                 "obligations_ref": {
-                    "path": "qa/changes/CH-1/explore/exploration.json",
+                    "path": "qa/results/explore/exploration.json",
                     "digest": _SHA,
                 },
                 "source_resource_digests": source_resource_digests,

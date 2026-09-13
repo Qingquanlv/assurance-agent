@@ -161,7 +161,7 @@ def test_prepare_quality_goal_authenticates_every_source(
     empty_legacy_category: bool,
 ) -> None:
     project = tmp_path
-    explore_path = project / "qa/changes/CH-1/explore/exploration.json"
+    explore_path = project / "qa/results/explore/exploration.json"
     explore_path.parent.mkdir(parents=True)
     mrc: dict[str, object] = {
         "api": ["create_item"],

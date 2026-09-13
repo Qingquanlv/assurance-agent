@@ -88,6 +88,33 @@ def adapt_public_execute_tail(state: ProductState) -> dict[str, object]:
     return adapt_execute_tail_input(state, standalone=True)
 
 
+def adapt_fact_baseline(state: ProductState) -> dict[str, object]:
+    payload = _input_from_state(state)
+    reviewed = ReviewedCaseV1.model_validate(state.get("reviewed_case"))
+    feature_input = {
+        "change_id": payload.change_id,
+        "coverage_epoch": int(state.get("coverage_epoch", 0)),
+        "plan_digest": state.get("plan_digest") or reviewed.plan_digest,
+        "plan_ref": state.get("plan_ref") or reviewed.plan_ref.model_dump(mode="json"),
+        "reviewed_case": reviewed.model_dump(mode="json"),
+        "capability_leafs": list(payload.capability_leafs),
+        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
+    }
+    return {**feature_input, "feature_input": feature_input}
+
+
+def _route_fact_baseline(state: Mapping[str, object]) -> str:
+    if state.get("attempt_failure"):
+        return "blocked"
+    try:
+        ref = EvidenceArtifactRefV1.model_validate(state.get("fact_baseline_ref"))
+    except (TypeError, ValueError):
+        return "blocked"
+    if ref.path != "qa/results/facts/fact-baseline.json":
+        return "blocked"
+    return "generation"
+
+
 def adapt_generation(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
     source_artifacts = state.get("source_artifacts")
@@ -200,6 +227,7 @@ def adapt_quality_assess(state: ProductState) -> dict[str, object]:
         "execution_at": execution.executed_at.isoformat(),
         "healing_ref": state.get("healing_ref"),
         "issue_ref": state.get("issue_ref"),
+        "fact_baseline_ref": state.get("fact_baseline_ref"),
         "activation": {
             "kind": "trigger",
             "value": f"inspect.{execution.coverage_epoch}.{batch_token}.{execution.repair_round}",
@@ -272,9 +300,9 @@ def adapt_issue_analysis(state: ProductState) -> dict[str, object]:
     if not assessment.owned_evidence_ids:
         raise ValueError("blocked inspection has no owned observations")
     generation = GenerationCycleResultV1.model_validate(state.get("generation_result"))
-    # Fact baseline is produced after the immutable analysis bundle. Do not expose
-    # that unbound document to the analyzer as if it were authenticated evidence.
-    fact_baseline_path = f"qa/changes/{inspection.change_id}/facts/fact-baseline.json"
+    # Fact baseline is sealed before generation and is not part of the immutable
+    # execution analysis bundle. Do not expose it to the analyzer as owned evidence.
+    fact_baseline_path = "qa/results/facts/fact-baseline.json"
     refs = {
         (ref.path, ref.digest): ref
         for ref in (
@@ -294,7 +322,8 @@ def adapt_issue_analysis(state: ProductState) -> dict[str, object]:
         "change_id": payload.change_id,
         "batch_id": inspection.batch_id,
         "capability_leafs": list(payload.capability_leafs),
-        "allowed_artifact_paths": [path for path, _digest in sorted(refs)],
+        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
+        "artifact_paths": [path for path, _digest in sorted(refs)],
         "owned_evidence_ids": list(assessment.owned_evidence_ids),
         "evidence_bundle_digest": assessment.evidence_bundle_digest,
         "execution_evidence_digest": assessment.execution_ref.digest,
@@ -317,8 +346,7 @@ def adapt_issue_analysis(state: ProductState) -> dict[str, object]:
 def _issue_analysis_ref(state: ProductState) -> EvidenceArtifactRefV1:
     if state.get("attempt_failure"):
         raise ValueError("failed issue analysis cannot publish evidence")
-    change_id = str(state.get("change_id"))
-    expected = f"qa/changes/{change_id}/inspect/issue-analysis.json"
+    expected = "qa/results/inspect/issue-analysis.json"
     raw_refs = state.get("evidence_refs")
     if not isinstance(raw_refs, list):
         raise ValueError("issue analysis evidence refs must be a list")
@@ -572,6 +600,8 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     if validate:
         builder.add_node("validate", validate_public_input("execute"))
+    builder.add_node("adapt-fact-baseline", cast(Any, adapt_fact_baseline))
+    builder.add_node("fact-baseline", typed.quality.fact_baseline)
     builder.add_node("adapt-generation", cast(Any, adapt_generation))
     builder.add_node("generation", typed.generation.generation)
     builder.add_node("adapt-execution", cast(Any, adapt_execution))
@@ -594,10 +624,16 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_node("finish-needs-human", cast(Any, _finish_inspection("needs_human")))
     builder.add_node("blocked", cast(Any, blocked))
 
-    first = "validate" if validate else "adapt-generation"
+    first = "validate" if validate else "adapt-fact-baseline"
     builder.add_edge(START, first)
     if validate:
-        builder.add_edge("validate", "adapt-generation")
+        builder.add_edge("validate", "adapt-fact-baseline")
+    builder.add_edge("adapt-fact-baseline", "fact-baseline")
+    builder.add_conditional_edges(
+        "fact-baseline",
+        cast(Callable[..., Any], _route_fact_baseline),
+        {"generation": "adapt-generation", "blocked": "blocked"},
+    )
     builder.add_edge("adapt-generation", "generation")
     builder.add_conditional_edges(
         "generation",
@@ -685,6 +721,7 @@ def build_execute_root(
     builder.add_node("adapt-load-plan", cast(Any, adapt_load_plan))
     builder.add_node("load-plan", load_plan)
     builder.add_node("adapt-tail", cast(Any, adapt_public_execute_tail))
+    builder.add_node("resolve-inputs", cast(Any, bundles).generation.resolve_inputs)
     builder.add_node("execute-tail", tail)
     builder.add_node("publish", publish_public_output)
     builder.add_edge(START, "validate")
@@ -695,7 +732,12 @@ def build_execute_root(
         cast(Any, route_prepare),
         {"prepared": "adapt-tail", "failed": "publish"},
     )
-    builder.add_edge("adapt-tail", "execute-tail")
+    builder.add_edge("adapt-tail", "resolve-inputs")
+    builder.add_conditional_edges(
+        "resolve-inputs",
+        cast(Any, lambda state: "failed" if state.get("attempt_failure") else "ready"),
+        {"failed": "publish", "ready": "execute-tail"},
+    )
     builder.add_edge("execute-tail", "publish")
     builder.add_edge("publish", END)
     return context.compile_root(builder)
@@ -705,6 +747,7 @@ __all__ = [
     "adapt_diagnostic_report",
     "adapt_execution",
     "adapt_execute_tail_input",
+    "adapt_fact_baseline",
     "adapt_generation",
     "adapt_public_execute_tail",
     "adapt_quality_assess",

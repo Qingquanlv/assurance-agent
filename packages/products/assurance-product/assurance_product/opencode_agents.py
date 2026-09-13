@@ -52,42 +52,38 @@ _DISABLED_TOOLS = (
 _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
     "assurance-v1-archiver": (),
     "assurance-v1-doc-author": (
-        "**qa/changes/**/.qa.yaml",
-        "**qa/changes/**/cases/**",
-        "**qa/changes/**/facts/**",
-        "**qa/changes/**/healing/**",
-        "**qa/changes/**/plans/**",
-        "**qa/changes/**/proposal.md",
-        "**qa/changes/**/requirement.md",
-        "**qa/changes/**/retro/**",
-        "**qa/changes/**/review/**",
-        "**qa/changes/**/trace/**",
+        "qa/.qa.yaml",
+        "qa/cases/**",
+        "qa/results/facts/**",
+        "qa/results/healing/**",
+        "qa/results/plans/**",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results/retro/**",
+        "qa/results/review/**",
+        "qa/results/trace/**",
     ),
-    "assurance-v1-executor": ("**qa/changes/**/execution/**",),
-    "assurance-v1-explorer": ("**qa/changes/**/explore/**",),
+    "assurance-v1-executor": ("qa/results/execution/**",),
+    "assurance-v1-explorer": ("qa/results/explore/**",),
     "assurance-v1-reporter": (
-        "**qa/changes/**/inspect/**",
-        "**qa/changes/**/issue-review/**",
-        "**qa/changes/**/report/**",
+        "qa/results/inspect/**",
+        "qa/results/issue-review/**",
+        "qa/results/report/**",
     ),
     "assurance-v1-reviewer": (
-        "**qa/changes/**/inspect/**",
-        "**qa/changes/**/review/**",
-        "**qa/improvements/reviews/**",
+        "qa/results/inspect/**",
+        "qa/results/review/**",
     ),
     "assurance-v1-test-author": (
-        "**qa/changes/**/codegen/**",
-        "**qa/changes/**/coverage-repair/**",
-        "**qa/changes/**/healing/**",
-        "**tests/api/**",
-        "**tests/e2e/**",
-        "**tests/fuzz/**",
-        "**tests/perf/**",
-        "**tests/testdata/**",
+        "qa/results/codegen/**",
+        "qa/results/coverage-repair/**",
+        "qa/results/healing/**",
+        "qa/tests/**",
+        "qa/fixtures/**",
     ),
 }
 
-_EXECUTION_VIEW = "**/qa/changes/*/.staging/execution/*"
+_EXECUTION_VIEW = "**/qa/.staging/execution/*"
 _EXECUTOR_COMMANDS = (
     f"npm run test --prefix {_EXECUTION_VIEW} *",
     f"npm test --prefix {_EXECUTION_VIEW} *",
@@ -211,16 +207,35 @@ def bounded_agent_profiles() -> tuple[str, ...]:
     return tuple(sorted(declared))
 
 
+_EDIT_DENY_FILES = (
+    "qa/results/explore/context.json",
+    "qa/results/workflow-state.json",
+    "qa/results/workflow-state.yaml",
+)
+
+
+def _edit_match_patterns(logical: str) -> tuple[str, ...]:
+    if logical.startswith("**/"):
+        return (logical,)
+    # OpenCode serializes permission keys with sort_keys=True and last-match wins.
+    # `**/<logical>` covers repo-prefixed remapped paths. `qa/.staging/**/<logical>`
+    # sorts after both `qa/.staging/**` and directory globs such as
+    # `qa/.staging/**/qa/results/explore/**`.
+    return (logical, f"**/{logical}", f"qa/.staging/**/{logical}")
+
+
 def _agent_definition(agent_profile: str) -> dict[str, object]:
-    edit = {"**": "deny"}
-    edit.update({pattern: "allow" for pattern in _EDIT_RULES[agent_profile]})
-    edit.update(
-        {
-            "**qa/changes/**/explore/context.json": "deny",
-            "**qa/changes/**/workflow-state.json": "deny",
-            "**qa/changes/**/workflow-state.yaml": "deny",
-        }
-    )
+    edit: dict[str, str] = {
+        "**": "deny",
+        "qa/.runtime/**": "deny",
+        "qa/.staging/**": "deny",
+    }
+    for logical in _EDIT_RULES[agent_profile]:
+        for pattern in _edit_match_patterns(logical):
+            edit[pattern] = "allow"
+    for logical in _EDIT_DENY_FILES:
+        for pattern in _edit_match_patterns(logical):
+            edit[pattern] = "deny"
     bash = {"*": "deny"}
     bash.update({command: "allow" for command in _BASH_RULES[agent_profile]})
     tools = {tool: False for tool in _DISABLED_TOOLS}

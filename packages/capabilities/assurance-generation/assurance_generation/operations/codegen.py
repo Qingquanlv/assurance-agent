@@ -28,8 +28,8 @@ from assurance_generation.contracts.codegen import (
     CodegenGeneratedFileAuthoring,
     CodegenMapping,
     CodegenResultV1,
+    durable_test_path,
     family_allows_target,
-    staged_generated_path,
 )
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
@@ -136,12 +136,13 @@ def codegen_outputs(
     *,
     mapping_targets: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
+    del change_id
     ordinary = (
-        f"qa/changes/{change_id}/codegen/{family}-codegen-summary.md",
-        f"qa/changes/{change_id}/codegen/{family}-generated-files.json",
+        f"qa/results/codegen/{family}-codegen-summary.md",
+        f"qa/results/codegen/{family}-generated-files.json",
     )
-    staged = tuple(staged_generated_path(change_id, family, target) for target in mapping_targets)
-    return tuple(sorted((*ordinary, *staged)))
+    durable = tuple(durable_test_path(target) for target in mapping_targets)
+    return tuple(sorted((*ordinary, *durable)))
 
 
 def _closed_mapping(workspace: Path, plan: PlanResultV1, family: Family) -> CodegenMapping:
@@ -242,6 +243,7 @@ def _complete_files(
     family: Family,
     allowed_paths: tuple[str, ...],
 ) -> tuple[GeneratedFileEntryV1, ...]:
+    del change_id
     mapped_targets = {item.target_file for item in mapping.entries}
     if not files and mapped_targets:
         raise OutputError("empty files array is invalid when mapping targets exist")
@@ -256,7 +258,7 @@ def _complete_files(
         if entry.role == "test_entry" and target not in mapped_targets:
             raise OutputError(f"generated test file is absent from the closed mapping: {target}")
         try:
-            staged = staged_generated_path(change_id, family, target)
+            staged = durable_test_path(target)
         except ValueError as error:
             raise OutputError(str(error)) from error
         payload = _workspace_regular_file(workspace, staged).read_bytes()
@@ -321,7 +323,7 @@ def _authenticate_manifest(
     document: CodegenAuthoringV1,
     capability_leafs: tuple[str, ...],
 ) -> None:
-    relative = f"qa/changes/{document.change_id}/codegen/{document.layer}-generated-files.json"
+    relative = f"qa/results/codegen/{document.layer}-generated-files.json"
     try:
         canonical_relative_path(relative)
     except ValueError as error:
@@ -364,7 +366,7 @@ class CodegenPrepareHandler:
             context_payload: dict[str, object] = {
                 "change_id": business.change_id,
                 "family_constraints": business.family_constraints.model_dump(mode="json"),
-                "generated_files_root": f"qa/changes/{business.change_id}/generated/{family}/files",
+                "generated_files_root": "qa/tests",
                 "reviewed_mapping": mapping.model_dump(mode="json"),
             }
             return prepare_codegen_outcome(

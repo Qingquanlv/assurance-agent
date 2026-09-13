@@ -15,7 +15,7 @@ from assurance_healing.contracts.coverage_repair import CoverageRepairApplySumma
 from assurance_healing.contracts.safety import CodegenFixApplySummaryV1
 from assurance_healing.validators.paths import canonical_relative, under_root
 
-_TEST_ROOTS = ("tests/", "qa/changes/", "healing/")
+_TEST_ROOTS = ("qa/tests/", "qa/results/healing/")
 _PRODUCT_ROOTS = ("app/", "src/", "web/src/")
 _OUTSIDE = "repair candidate may write only approved test paths"
 _UNNAMED = "modified file is not named by an approved proposal"

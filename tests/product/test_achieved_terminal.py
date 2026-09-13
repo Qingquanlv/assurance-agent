@@ -13,7 +13,7 @@ from graph_engine.canonical import JSONValue, canonical_digest
 from tests.acg_plan_fixture import install_plan
 
 CHANGE_ID = "CH-DEMO-001"
-TARGET = "tests/api/test_users.py"
+TARGET = "qa/tests/api/test_users.py"
 _SHA = "a" * 64
 _TEST_PLAN_DIGEST = "d" * 64
 _PUBLICATION_STATES = ("not_ready", "ready", "published", "drifted")
@@ -35,7 +35,8 @@ def _write(project: Path, relative: str, content: bytes) -> Path:
 
 
 def _staged_path(family: str, target: str) -> str:
-    return f"qa/changes/{CHANGE_ID}/generated/{family}/files/{target}"
+    del family
+    return target if target.startswith("qa/tests/") else f"qa/tests/{target.removeprefix('tests/')}"
 
 
 def _promote(project: Path, family: str, target: str, content: bytes) -> None:
@@ -43,7 +44,7 @@ def _promote(project: Path, family: str, target: str, content: bytes) -> None:
     digest = _digest(content)
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/codegen/{family}-generated-files.json",
+        f"qa/results/codegen/{family}-generated-files.json",
         json.dumps(
             {
                 "schema_version": "1",
@@ -65,7 +66,7 @@ def _promote(project: Path, family: str, target: str, content: bytes) -> None:
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     (project / "tests" / "api").mkdir(parents=True)
     return project
 
@@ -105,7 +106,7 @@ def _execution_evidence(
 ) -> dict[str, object]:
     if plan_ref is None:
         plan_ref = {
-            "path": (f"qa/changes/{CHANGE_ID}/plan/{plan_digest}/resolved-assurance-plan.json"),
+            "path": (f"qa/results/plan/{plan_digest}/resolved-assurance-plan.json"),
             "digest": "e" * 64,
         }
     mapping: dict[str, object] = {
@@ -184,9 +185,7 @@ class _PlanBinding(TypedDict):
 
 def _plan_binding_for(project: Path) -> _PlanBinding:
     evidence = json.loads(
-        (project / "qa" / "changes" / CHANGE_ID / "execution" / "execute-result.json").read_text(
-            encoding="utf-8"
-        )
+        (project / "qa" / "results/execution" / "execute-result.json").read_text(encoding="utf-8")
     )
     return {
         "plan_digest": cast(str, evidence["plan_digest"]),
@@ -198,7 +197,7 @@ def _ready_change(tmp_path: Path, *, execution_status: str = "passed") -> Path:
     project = _project(tmp_path)
     plan, plan_ref = install_plan(project, CHANGE_ID)
     _promote(project, "api", TARGET, b"generated-candidate\n")
-    (project / TARGET).write_bytes(b"original-sut\n")
+    _write(project, "tests/api/test_users.py", b"original-sut\n")
     evidence = _execution_evidence(
         batch_id="batch-execute",
         status=execution_status,
@@ -207,12 +206,12 @@ def _ready_change(tmp_path: Path, *, execution_status: str = "passed") -> Path:
     )
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/execution/execute-result.json",
+        "qa/results/execution/execute-result.json",
         json.dumps(evidence).encode("utf-8"),
     )
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/inspect/inspection.json",
+        "qa/results/inspect/inspection.json",
         json.dumps(
             {
                 "coverage": {
@@ -225,15 +224,13 @@ def _ready_change(tmp_path: Path, *, execution_status: str = "passed") -> Path:
             }
         ).encode("utf-8"),
     )
-    _write(project, f"qa/changes/{CHANGE_ID}/report/report.md", b"# report\n")
+    _write(project, "qa/results/report/report.md", b"# report\n")
     return project
 
 
 def _execute_gate_for(project: Path) -> dict[str, object]:
     evidence = json.loads(
-        (project / "qa" / "changes" / CHANGE_ID / "execution" / "execute-result.json").read_text(
-            encoding="utf-8"
-        )
+        (project / "qa" / "results/execution" / "execute-result.json").read_text(encoding="utf-8")
     )
     return _execution_gate(evidence, semantic_node_id="execution.execute")
 
@@ -246,7 +243,8 @@ def _quality_gate_for(
     from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
     from graph_engine.attempts.resolutions import ReceiptRef
 
-    prefix = f"qa/changes/{CHANGE_ID}"
+    prefix = "qa"
+    results = f"{prefix}/results"
 
     def ref(relative: str, content: bytes | None = None) -> EvidenceArtifactRefV1:
         path = project / relative
@@ -256,7 +254,7 @@ def _quality_gate_for(
 
     batch_id = cast(str, execution_gate["batch_id"])
     execution_document = json.loads(
-        (project / prefix / "execution" / "execute-result.json").read_text(encoding="utf-8")
+        (project / prefix / "results" / "execution" / "execute-result.json").read_text(encoding="utf-8")
     )
     plan_digest = cast(str, execution_document["plan_digest"])
     plan_ref = EvidenceArtifactRefV1.model_validate(execution_document["plan_ref"])
@@ -272,7 +270,7 @@ def _quality_gate_for(
             )
         ),
         case_refs=(ref(f"{prefix}/cases/items/case.yaml", b"reviewed cases"),),
-        review_ref=ref(f"{prefix}/review/case-review.json", b'{"decision":"pass"}'),
+        review_ref=ref(f"{results}/review/case-review.json", b'{"decision":"pass"}'),
     )
     filename = (
         "run-result.json" if execution_gate["semantic_node_id"] == "execution.run" else "execute-result.json"
@@ -288,8 +286,8 @@ def _quality_gate_for(
         coverage_state="satisfied",
         inspection_receipt=inspection_receipt,
         reviewed_case=reviewed,
-        mapping_ref=ref(f"{prefix}/generation/epochs/0/mapping.json", b"{}"),
-        assessment_refs=(ref(f"{prefix}/execution/{filename}"),),
+        mapping_ref=ref(f"{results}/generation/epochs/0/mapping.json", b"{}"),
+        assessment_refs=(ref(f"{results}/execution/{filename}"),),
         reason_codes=("coverage.satisfied",),
     )
     report = ReportOutcomeV1(
@@ -299,7 +297,7 @@ def _quality_gate_for(
         inspection_receipt=inspection_receipt,
         plan_digest=plan_digest,
         plan_ref=plan_ref,
-        report_refs=(ref(f"{prefix}/report/report.md"),),
+        report_refs=(ref(f"{results}/report/report.md"),),
         report_receipt=ReceiptRef(receipt_id="report", receipt_digest=_SHA),
     )
     return {"inspection": inspection.model_dump(mode="json"), "report": report.model_dump(mode="json")}
@@ -376,7 +374,7 @@ def test_execution_publish_records_checkpoint_authority() -> None:
     assert published["execution_semantic_node_id"] == "execution.run"
 
 
-def test_finalize_achieved_writes_status_and_apply_manifest(tmp_path: Path):
+def test_finalize_achieved_writes_status_without_apply_manifest(tmp_path: Path):
     from assurance_product.status import finalize_achieved
 
     project = _ready_change(tmp_path)
@@ -395,23 +393,18 @@ def test_finalize_achieved_writes_status_and_apply_manifest(tmp_path: Path):
 
     assert status.change.change_id == CHANGE_ID
     assert status.change.state == "achieved"
-    assert status.publication.status == "ready"
-    assert status.apply.file_count == 1
-    assert status.apply.manifest_digest is not None
-    status_path = project / "qa" / "changes" / CHANGE_ID / "status.json"
-    manifest_path = project / "qa" / "changes" / CHANGE_ID / "apply-manifest.json"
+    assert status.publication.status == "not_ready"
+    assert status.apply.file_count == 0
+    assert status.apply.manifest_digest is None
+    status_path = project / "qa" / "status.json"
+    manifest_path = project / "qa" / "apply-manifest.json"
     assert status_path.is_file()
-    assert manifest_path.is_file()
+    assert not manifest_path.exists()
     written_status = json.loads(status_path.read_text(encoding="utf-8"))
-    written_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert written_status["publication"]["status"] == "ready"
+    assert written_status["publication"]["status"] == "not_ready"
     assert written_status["change"]["state"] == "achieved"
-    assert written_manifest["change_id"] == CHANGE_ID
-    assert written_manifest["files"][0]["target_path"] == TARGET
-    assert written_manifest["files"][0]["source_path"] == _staged_path("api", TARGET)
-    assert written_manifest["files"][0]["source_sha256"] == _digest(b"generated-candidate\n")
-    assert written_manifest["files"][0]["baseline_sha256"] == _digest(b"original-sut\n")
     assert (project / TARGET).read_bytes() == original
+    assert (project / "tests" / "api" / "test_users.py").read_bytes() == b"original-sut\n"
     assert not (project / "qa" / "archive").exists()
 
 
@@ -422,7 +415,7 @@ def test_finalize_achieved_accepts_authenticated_successful_rerun(tmp_path: Path
     rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(project))
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/execution/run-result.json",
+        "qa/results/execution/run-result.json",
         json.dumps(rerun).encode("utf-8"),
     )
 
@@ -444,7 +437,7 @@ def test_finalize_achieved_accepts_file_aggregated_execution_counts(tmp_path: Pa
     from assurance_product.status import finalize_achieved
 
     project = _ready_change(tmp_path)
-    path = project / "qa" / "changes" / CHANGE_ID / "execution" / "execute-result.json"
+    path = project / "qa" / "results/execution" / "execute-result.json"
     evidence = json.loads(path.read_text(encoding="utf-8"))
     receipt = cast(dict[str, object], evidence["receipt"])
     command = cast(list[dict[str, object]], receipt["commands"])[0]
@@ -474,7 +467,7 @@ def test_finalize_achieved_rejects_unbound_successful_rerun(tmp_path: Path) -> N
     rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(project))
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/execution/run-result.json",
+        "qa/results/execution/run-result.json",
         json.dumps(rerun).encode("utf-8"),
     )
 
@@ -490,7 +483,7 @@ def test_finalize_achieved_rejects_drifted_rerun_authority(tmp_path: Path, drift
     rerun = _execution_evidence(batch_id="batch-rerun", status="passed", **_plan_binding_for(project))
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/execution/run-result.json",
+        "qa/results/execution/run-result.json",
         json.dumps(rerun).encode("utf-8"),
     )
     gate = _execution_gate(rerun, semantic_node_id="execution.run")
@@ -501,7 +494,7 @@ def test_finalize_achieved_rejects_drifted_rerun_authority(tmp_path: Path, drift
         gate["execution_digest"] = _canonical(rerun)
         _write(
             project,
-            f"qa/changes/{CHANGE_ID}/execution/run-result.json",
+            "qa/results/execution/run-result.json",
             json.dumps(rerun).encode("utf-8"),
         )
     elif drift == "batch":
@@ -513,7 +506,7 @@ def test_finalize_achieved_rejects_drifted_rerun_authority(tmp_path: Path, drift
         gate["execution_digest"] = _canonical(rerun)
         _write(
             project,
-            f"qa/changes/{CHANGE_ID}/execution/run-result.json",
+            "qa/results/execution/run-result.json",
             json.dumps(rerun).encode("utf-8"),
         )
     else:
@@ -524,7 +517,7 @@ def test_finalize_achieved_rejects_drifted_rerun_authority(tmp_path: Path, drift
         gate["execution_digest"] = _canonical(rerun)
         _write(
             project,
-            f"qa/changes/{CHANGE_ID}/execution/run-result.json",
+            "qa/results/execution/run-result.json",
             json.dumps(rerun).encode("utf-8"),
         )
 
@@ -546,22 +539,23 @@ def test_finalize_achieved_rejects_failed_execution_without_writing(tmp_path: Pa
     with pytest.raises(ValueError, match="execution"):
         finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
 
-    change = project / "qa" / "changes" / CHANGE_ID
+    change = project / "qa"
     assert not (change / "status.json").exists()
     assert not (change / "apply-manifest.json").exists()
-    assert (project / TARGET).read_bytes() == b"original-sut\n"
+    assert (project / TARGET).read_bytes() == b"generated-candidate\n"
+    assert (project / "tests" / "api" / "test_users.py").read_bytes() == b"original-sut\n"
 
 
 def test_finalize_achieved_rejects_invalid_merge_without_writing(tmp_path: Path):
     from assurance_product.status import finalize_achieved
 
     project = _ready_change(tmp_path)
-    _write(project, _staged_path("api", "tests/api/extra.py"), b"extra\n")
+    (project / TARGET).write_bytes(b"tampered-generated\n")
 
-    with pytest.raises(ValueError, match="extra"):
+    with pytest.raises(ValueError, match="digest"):
         finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status())
 
-    change = project / "qa" / "changes" / CHANGE_ID
+    change = project / "qa"
     assert not (change / "status.json").exists()
     assert not (change / "apply-manifest.json").exists()
 
@@ -603,7 +597,7 @@ def test_finalize_achieved_rejects_unsatisfied_coverage_without_writing(
     project = _ready_change(tmp_path)
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/inspect/inspection.json",
+        "qa/results/inspect/inspection.json",
         json.dumps({"coverage": coverage, "coverage_state": coverage["coverage_state"]}).encode("utf-8"),
     )
 
@@ -615,7 +609,7 @@ def test_finalize_achieved_rejects_unsatisfied_coverage_without_writing(
             invocation=valid_status(execution_gate=_execute_gate_for(project)),
         )
 
-    change = project / "qa" / "changes" / CHANGE_ID
+    change = project / "qa"
     assert not (change / "status.json").exists()
     assert not (change / "apply-manifest.json").exists()
 
@@ -631,7 +625,7 @@ def test_finalize_achieved_rejects_failed_or_exhausted_invocation(tmp_path: Path
             ("api",),
             invocation=valid_status(terminal_reason="exhausted"),
         )
-    change = project / "qa" / "changes" / CHANGE_ID
+    change = project / "qa"
     assert not (change / "status.json").exists()
     assert not (change / "apply-manifest.json").exists()
 
@@ -642,10 +636,10 @@ def test_finalize_achieved_rejects_missing_report_even_with_improvement_artifact
     project = _ready_change(tmp_path)
     execution_gate = _execute_gate_for(project)
     quality_gate = _quality_gate_for(project, execution_gate)
-    (project / "qa" / "changes" / CHANGE_ID / "report" / "report.md").unlink()
+    (project / "qa" / "results/report" / "report.md").unlink()
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/improvements/delivery.json",
+        "qa/results/improvements/delivery.json",
         b'{"schema_version":"1","improvement_id":"IMP-1"}\n',
     )
 
@@ -657,7 +651,7 @@ def test_finalize_achieved_rejects_missing_report_even_with_improvement_artifact
             invocation=valid_status(execution_gate=execution_gate, quality_gate=quality_gate),
         )
 
-    change = project / "qa" / "changes" / CHANGE_ID
+    change = project / "qa"
     assert not (change / "status.json").exists()
     assert not (change / "apply-manifest.json").exists()
 
@@ -679,6 +673,6 @@ def test_finalize_achieved_requires_terminal_full_success(tmp_path: Path):
     with pytest.raises(ValueError, match="full"):
         finalize_achieved(project, CHANGE_ID, ("api",), invocation=valid_status(entrypoint="archive"))
 
-    change = project / "qa" / "changes" / CHANGE_ID
+    change = project / "qa"
     assert not (change / "status.json").exists()
     assert not (change / "apply-manifest.json").exists()

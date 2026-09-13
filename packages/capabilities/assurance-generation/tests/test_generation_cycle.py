@@ -26,7 +26,7 @@ from graph_engine.testing import committed
 from graph_engine.testing.graph_harness import ScriptedAttempt
 from tests.product.test_change_local_output_routing import execute_task
 from tests.product.test_product_input import valid_product_input
-from codegen_fixtures import codegen_result, family_symbol, family_test_file, fake_agent_result  # pyright: ignore[reportMissingImports]
+from codegen_fixtures import codegen_result, durable_oracle_path, family_symbol, fake_agent_result  # pyright: ignore[reportMissingImports]
 from planning_fixtures import reviewed_cases  # pyright: ignore[reportMissingImports]
 from test_resolve_inputs import _fixture, _write  # pyright: ignore[reportMissingImports]
 
@@ -49,14 +49,14 @@ async def cycle_fixture(
     }
     family_inputs = []
     for family in families:
-        target = family_test_file(family)
-        source = f"qa/changes/CH-DEMO-001/generated/{family}/files/{target}"
+        target = durable_oracle_path(family=family)
+        source = target
         _write(root, source, f"def {family_symbol(family)}():\n    assert True\n".encode())
-        plan = f"qa/changes/CH-DEMO-001/plans/{family}-plan.md"
+        plan = f"qa/results/plans/{family}-plan.md"
         _write(root, plan, b"reviewed test plan\n")
         _write(
             root,
-            f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json",
+            f"qa/results/codegen/{family}-generated-files.json",
             json.dumps(codegen_result([target], family=family)).encode(),
         )
         finalized = await execute_task(
@@ -145,7 +145,15 @@ async def run_generation_boundary(root: Path, coverage_epoch: int = 0):
             "reviewed_case": payload.reviewed_case.model_dump(mode="json"),
             "selected_test_families": ["api", "e2e"],
             "capability_leafs": ["entities.item.create"],
-            "allowed_artifact_paths": [],
+            "allowed_artifact_paths": [
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/fixtures",
+                "qa/proposal.md",
+                "qa/requirement.md",
+                "qa/results",
+                "qa/tests",
+            ],
             "rounds_used": 0,
             "rounds_budget": 2,
         },
@@ -181,12 +189,32 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
     assert feature_input["generation_result"] == result
 
 
+async def test_generation_cycle_requires_results_plan_prefix(tmp_path: Path) -> None:
+    payload, _ = await cycle_fixture(tmp_path)
+    result = complete_generation_cycle(payload, tmp_path, tmp_path / ".stage")
+    assert all(ref.path.startswith("qa/results/plans/") for ref in result.plan_refs)
+
+
+async def test_generation_cycle_rejects_change_scoped_plan_prefix(tmp_path: Path) -> None:
+    payload, _ = await cycle_fixture(tmp_path, families=("api",))
+    old_plan = "/".join(("generated", "plans", "api-plan.md"))
+    (tmp_path / old_plan).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / old_plan).write_bytes(b"legacy plan\n")
+    family = payload.families[0].model_copy(update={"plan_files": (old_plan,)})
+    with pytest.raises(ValueError, match="plan artifacts"):
+        complete_generation_cycle(
+            payload.model_copy(update={"families": (family,)}),
+            tmp_path,
+            tmp_path / ".stage",
+        )
+
+
 @pytest.mark.parametrize("fault", ["changed_source", "stale_epoch", "missing_family", "foreign_case"])
 async def test_generation_cycle_rejects_invalid_family_evidence(tmp_path: Path, fault: str) -> None:
     payload, _ = await cycle_fixture(tmp_path)
     if fault == "changed_source":
-        target = family_test_file("api")
-        (tmp_path / f"qa/changes/CH-DEMO-001/generated/api/files/{target}").write_bytes(b"changed")
+        target = durable_oracle_path()
+        (tmp_path / target).write_bytes(b"changed")
     elif fault == "stale_epoch":
         payload = payload.model_copy(
             update={

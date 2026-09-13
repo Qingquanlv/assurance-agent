@@ -39,10 +39,10 @@ def test_execution_owns_two_agent_contracts() -> None:
         assert contract.retry.interval_seconds == 10
         assert contract.timeout.seconds == 60
         claims = contract.phase_write_claims
-        assert claims.prepare == ("qa/changes/{change_id}/.staging/execution",)
+        assert claims.prepare == ("qa/.staging/execution",)
         assert claims.runtime == ()
         assert claims.finalize == (
-            f"qa/changes/{{change_id}}/execution/{'run' if base == 'run' else 'execute'}-result.json",
+            f"qa/results/execution/{'run' if base == 'run' else 'execute'}-result.json",
         )
         assert set((*claims.prepare, *claims.finalize)) == set(contract.resources.writes)
 

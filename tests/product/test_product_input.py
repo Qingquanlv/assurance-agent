@@ -17,6 +17,7 @@ _SHA = "a" * 64
 _FAMILY_EMPTY_ENTRYPOINTS = (
     "case",
     "execute",
+    "init",
     "archive",
     "retro",
     "issue-review",
@@ -31,7 +32,7 @@ _FAMILY_EMPTY_ENTRYPOINTS = (
 _FAMILY_NONEMPTY_ENTRYPOINTS = ("full", "intake")
 
 _PLAN_REF = {
-    "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
     "digest": _SHA,
 }
 
@@ -57,7 +58,15 @@ def valid_product_input(**overrides: object) -> dict[str, object]:
             "resource_id": "assurance.product.configuration.data-knowledge",
             "sha256": _SHA,
         },
-        "allowed_artifact_paths": ("qa/changes",),
+        "allowed_artifact_paths": (
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ),
         "budgets": {
             "review_rounds": 1,
             "coverage_rounds": 1,
@@ -211,40 +220,54 @@ def test_product_input_requires_sorted_unique_capability_leafs():
         ProductInputV1.model_validate(valid_product_input(capability_leafs=("entities.user", "auth.session")))
 
 
-def test_product_input_requires_sorted_relative_artifact_prefixes():
+def test_product_input_locks_exact_artifact_prefixes():
     from assurance_product.models import ProductInputV1
 
-    value = ProductInputV1.model_validate(
-        valid_product_input(allowed_artifact_paths=("qa/archive", "qa/changes"))
+    locked = (
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
     )
-    assert value.allowed_artifact_paths == ("qa/archive", "qa/changes")
+    leftover = ("/".join(("qa", "changes")), "/".join(("qa", "archive")))
+    value = ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=locked))
+    assert value.allowed_artifact_paths == locked
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=("tests",)))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(
-            valid_product_input(allowed_artifact_paths=("qa/changes", "qa/archive"))
+            valid_product_input(
+                allowed_artifact_paths=("qa/cases", "qa/extra", "qa/fixtures", "qa/results", "qa/tests")
+            )
         )
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=locked[:-1]))
+    with pytest.raises(ValidationError):
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=leftover))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=("/abs/path",)))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=("qa/../secret",)))
     with pytest.raises(ValidationError):
-        ProductInputV1.model_validate(
-            valid_product_input(allowed_artifact_paths=("qa/changes", "qa/changes"))
-        )
+        ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=(leftover[0], leftover[0])))
 
 
 @pytest.mark.parametrize(
     "case_delta_paths",
     [
-        ("qa/changes/CH-SIBLING/cases/system/dept/case.yaml",),
+        ("qa/results/cases/system/dept/case.yaml",),
         (
-            "qa/changes/CH-DEMO-001/cases/system/role/case.yaml",
-            "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",
+            "qa/cases/system/role/case.yaml",
+            "qa/cases/system/dept/case.yaml",
         ),
-        ("qa/changes/CH-DEMO-001/cases/system/dept/not-case.yaml",),
-        ("qa/changes/CH-DEMO-001/cases/case.yaml",),
-        (" qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
-        ("qa/changes/CH-DEMO-001/cases/部门/case.yaml",),
-        ("qa/changes/CH-DEMO-001/cases/system/../../../../CH-SIBLING/cases/x/case.yaml",),
+        ("qa/cases/system/dept/not-case.yaml",),
+        ("qa/cases/case.yaml",),
+        (" qa/cases/system/dept/case.yaml",),
+        ("qa/cases/部门/case.yaml",),
+        ("qa/cases/system/../../../../CH-SIBLING/cases/x/case.yaml",),
     ],
 )
 def test_product_input_requires_exact_current_change_case_delta_paths(
@@ -259,7 +282,7 @@ def test_product_input_requires_exact_current_change_case_delta_paths(
 def test_product_input_accepts_exact_current_change_case_delta_path() -> None:
     from assurance_product.models import ProductInputV1
 
-    path = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+    path = "qa/cases/system/dept/case.yaml"
     value = ProductInputV1.model_validate(valid_product_input(case_delta_paths=(path,)))
     assert value.case_delta_paths == (path,)
 
@@ -271,12 +294,12 @@ def test_case_delta_path_model_matches_public_schema_ascii_shape() -> None:
         .read_text(encoding="utf-8")
     )
     pattern = re.compile(schema["properties"]["case_delta_paths"]["items"]["pattern"])
-    valid = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+    valid = "qa/cases/system/dept/case.yaml"
     invalid = (
         f" {valid}",
-        "qa/changes/CH-DEMO-001/cases/部门/case.yaml",
-        "qa/changes/CH-SIBLING/cases/system/dept/not-case.yaml",
-        ("qa/changes/CH-DEMO-001/cases/system/../../../../CH-SIBLING/cases/x/case.yaml"),
+        "qa/cases/部门/case.yaml",
+        "qa/cases/system/dept/not-case.yaml",
+        ("qa/cases/system/../../../../CH-SIBLING/cases/x/case.yaml"),
     )
     assert pattern.fullmatch(valid)
     assert all(pattern.fullmatch(path) is None for path in invalid)
@@ -324,7 +347,7 @@ def test_resource_ref_sha256_is_lowercase_hex():
 def test_empty_family_entrypoints_require_empty_selection(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
-    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
+    case_delta_paths = ("qa/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
     plan_ref = _PLAN_REF if entrypoint in {"case", "execute"} else None
     value = ProductInputV1.model_validate(
         valid_product_input(case_delta_paths=case_delta_paths, resolved_plan_ref=plan_ref)
@@ -344,7 +367,7 @@ def test_empty_family_entrypoints_require_empty_selection(entrypoint: str):
 def test_plan_creators_require_non_empty_candidates(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
-    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",)
+    case_delta_paths = ("qa/cases/system/dept/case.yaml",)
     ProductInputV1.model_validate(
         valid_product_input(
             candidate_test_families=("api",),
@@ -361,7 +384,7 @@ def test_plan_creators_require_non_empty_candidates(entrypoint: str):
 def test_plan_consumers_require_one_resolved_plan_ref(entrypoint: str) -> None:
     from assurance_product.models import ProductInputV1
 
-    case_delta_paths = ("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
+    case_delta_paths = ("qa/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
     ProductInputV1.model_validate(
         valid_product_input(case_delta_paths=case_delta_paths, resolved_plan_ref=_PLAN_REF)
     ).validate_for_entrypoint(entrypoint)
@@ -380,7 +403,7 @@ def test_plan_creators_reject_imported_plan(entrypoint: str) -> None:
             valid_product_input(
                 candidate_test_families=("api",),
                 resolved_plan_ref=_PLAN_REF,
-                case_delta_paths=("qa/changes/CH-DEMO-001/cases/system/dept/case.yaml",),
+                case_delta_paths=("qa/cases/system/dept/case.yaml",),
             )
         ).validate_for_entrypoint(entrypoint)
 

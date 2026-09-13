@@ -623,19 +623,19 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
         "coverage-repair": (
             "aa-coverage-repair",
             "assurance-v1-test-author",
-            ("qa/changes/{change_id}/healing/coverage-repair.json",),
+            ("qa/results/healing/coverage-repair.json",),
         ),
         "fix-proposal": (
             "aa-fix-proposal",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/healing/fix-proposal.json",),
+            ("qa/results/healing/fix-proposal.json",),
         ),
         "apply-test-repair": (
             "aa-apply-test-repair",
             "assurance-v1-test-author",
             (
-                "qa/changes/{change_id}/generated",
-                "qa/changes/{change_id}/healing/epochs/{coverage_epoch}/rounds/{repair_round}",
+                "qa/results/healing/epochs/{coverage_epoch}/rounds/{repair_round}",
+                "qa/tests",
             ),
         ),
     }
@@ -653,8 +653,8 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
             tuple(
                 sorted(
                     (
-                        "qa/changes/{change_id}/generated",
-                        "qa/changes/{change_id}/healing/epochs",
+                        "qa/results/healing/epochs",
+                        "qa/tests",
                     )
                 )
             )
@@ -666,3 +666,13 @@ def test_healing_agent_job_catalog_is_feature_owned() -> None:
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
+
+
+def test_output_routes_are_flat_qa_paths() -> None:
+    from assurance_healing.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+    assert "qa/" + "changes" not in rendered
+    assert "{change_id}" not in rendered
+    assert "qa/" + "archive" not in rendered
+    assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)

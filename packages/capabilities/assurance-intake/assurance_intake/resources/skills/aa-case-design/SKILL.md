@@ -88,7 +88,7 @@ Build the repair mutation set directly from the reported errors before editing:
    - existing `tests/api/**`
    - existing `tests/e2e/**`
    - existing `qa/knowledge/**`
-   - existing `qa/changes/**`
+   - existing `qa/**`
    If optional QA directories are missing, record a warning and continue as a **new QA asset initialization** path. Do **not** stop solely because `qa/cases/`, `tests/`, or `qa/knowledge/` does not exist.
 5. If graph-owned skill-resolution status is `fail` → **STOP**.
 6. Use files as the sole source of truth.
@@ -127,9 +127,9 @@ Build the repair mutation set directly from the reported errors before editing:
 **After completing work:**
 
 1. Write all required output files:
-   - `qa/changes/<change-id>/.qa.yaml`
-   - `qa/changes/<change-id>/proposal.md`
-   - `qa/changes/<change-id>/trace/minimum-coverage-matrix.json`
+   - `qa/.qa.yaml`
+   - `qa/proposal.md`
+   - `qa/results/trace/minimum-coverage-matrix.json`
    - every exact path in graph-provided `case_delta_paths`
 2. Report a graph-owned state delta after writing files:
    - `phases.case_design.status = done`
@@ -235,7 +235,7 @@ graph-provided `case_delta_paths` file. The final
 assistant response MUST be exactly one JSON object with one field:
 
 ```json
-{"output_files":["qa/changes/<change-id>/.qa.yaml","qa/changes/<change-id>/cases/<trusted-module>/case.yaml","qa/changes/<change-id>/proposal.md","qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}
+{"output_files":["qa/.qa.yaml","qa/cases/<trusted-module>/case.yaml","qa/proposal.md","qa/results/trace/minimum-coverage-matrix.json"]}
 ```
 
 The MRC matrix path is mandatory, and every `case_delta_paths` entry is mandatory,
@@ -273,8 +273,8 @@ Do NOT generate case delta, plan, test code, execution result, review result, or
 4. `proposal.md` records `generation_mode: autonomous` and describes which defaults were used.
 
 After the mode-specific gate passes, this skill MUST:
-1. Write `qa/changes/<change-id>/proposal.md`
-2. Write `qa/changes/<change-id>/cases/<module>/case.yaml`
+1. Write `qa/proposal.md`
+2. Write `qa/cases/<module>/case.yaml`
 
 After the case YAML is written and self-reviewed, the ONLY next workflow is aa-case-reviewer.
 
@@ -296,7 +296,7 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
    - `status=unanswered` is allowed only in `interactive` mode before Step 4; in `autonomous` mode it is a STOP because Explore should have applied `auto_default`.
    Also read propagated `assertion_intent` on `case_design_guidance.priority_hints[]`, `watchlist[]`, and `suggested_scenarios[]` — when present, treat the hint/scenario text as the authoritative test directive (do not reinterpret neutral pitfall wording); also read `test_strategy` (if present) as a **macro plan proposal** for scope/data/layer/approach.
 1. **Derive change ID** — format `<TICKET-ID>-<short-kebab-description>`
-2. **Explore QA context** — check `qa/cases/`, `tests/`, `qa/knowledge/`, `qa/changes/`
+2. **Explore QA context** — check `qa/cases/`, `qa/tests/`, `qa/knowledge/`, `qa/results/`
 3. **Use trusted target modules** — derive them only from exact graph-provided
    `case_delta_paths`; never guess a module or write a different case path.
    - If `exploration` is non-null: use its typed contents as the Explore advisory.
@@ -525,7 +525,7 @@ Do NOT invoke `aa-case-reviewer` directly when running under `the product graph`
 
 ### Step 1: Derive Change ID
 
-Every brainstorm must be tied to a change ID. This ID is the directory name under `qa/changes/`.
+Every brainstorm must be tied to a change ID. This ID is an identity on documents and status, never a directory name.
 
 **Format:**
 
@@ -561,7 +561,7 @@ qa/cases/<likely-module>/case.yaml → existing case IDs, style, naming conventi
 tests/api/                        → current API automation coverage
 tests/e2e/                        → current E2E automation coverage
 qa/knowledge/                     → data factory patterns, natural step conventions
-qa/changes/                       → in-progress or recently archived changes (overlap check)
+qa/                               → current change workspace (overlap check)
 ```
 
 **What to derive:**
@@ -739,7 +739,7 @@ The option list MUST include an explicit Fuzz/Performance opt-in option even if 
 After the user approves the coverage approach, write:
 
 ```
-qa/changes/<change-id>/proposal.md
+qa/proposal.md
 ```
 
 `proposal.md` records the approved QA proposal. It is a **process asset**, not a main asset. It must not be merged into `qa/cases/`. It will be archived with the change.
@@ -896,7 +896,7 @@ After writing `proposal.md`, generate and write the semantic case delta YAML.
 **Output path:**
 
 ```
-qa/changes/<change-id>/cases/<module>/case.yaml
+qa/cases/<module>/case.yaml
 ```
 
 **Target stable case file (for archive merge):**
@@ -924,8 +924,8 @@ Once the YAML passes, show the user a brief summary:
 
 ```
 Files written:
-  qa/changes/<change-id>/proposal.md
-  qa/changes/<change-id>/cases/<module>/case.yaml
+  qa/proposal.md
+  qa/cases/<module>/case.yaml
 
 Case delta:
   ADDED: N cases
@@ -951,7 +951,7 @@ Pass the change ID and case YAML path:
 
 ```
 change-id: <change-id>
-case file: qa/changes/<change-id>/cases/<module>/case.yaml
+case file: qa/cases/<module>/case.yaml
 ```
 
 Do NOT generate plans in this skill. Planning is done by aa-api-plan and aa-e2e-plan after case review passes.
@@ -1000,10 +1000,10 @@ qa/
 
 | Superpowers for QA | OpenSpec |
 |---|---|
-| `qa/changes/<id>/.qa.yaml` | `openspec/changes/<id>/.openspec.yaml` |
-| `qa/changes/<id>/proposal.md` | `openspec/changes/<id>/proposal.md` |
-| `qa/changes/<id>/plans/*.md` | `openspec/changes/<id>/tasks.md` |
-| `qa/changes/<id>/cases/<module>/case.yaml` | `openspec/changes/<id>/specs/<module>/spec.md` |
+| `qa/.qa.yaml` | `openspec/changes/<id>/.openspec.yaml` |
+| `qa/proposal.md` | `openspec/changes/<id>/proposal.md` |
+| `qa/results/plans/*.md` | `openspec/changes/<id>/tasks.md` |
+| `qa/cases/<module>/case.yaml` | `openspec/changes/<id>/specs/<module>/spec.md` |
 | `qa/cases/<module>/case.yaml` | `openspec/specs/<module>/spec.md` |
 | `added / modified / removed` | `ADDED / MODIFIED / REMOVED Requirements` |
 | `aa-archive` | `openspec archive` |
@@ -1013,12 +1013,12 @@ qa/
 | Asset | Type | Merged on archive? |
 |---|---|---|
 | `qa/cases/<module>/case.yaml` | Main asset | — (target of merge) |
-| `qa/changes/<id>/cases/<module>/case.yaml` | Delta (process) | Yes → merged into main |
-| `qa/changes/<id>/proposal.md` | Process asset | No → archived only |
-| `qa/changes/<id>/plans/*.md` | Process asset | No → archived only |
-| `qa/changes/<id>/execution/` | Process asset | No → archived only |
-| `qa/changes/<id>/review/` | Process asset | No → archived only |
-| `qa/changes/<id>/trace/` | Process asset | No → archived only |
+| `qa/cases/<module>/case.yaml` | Delta (process) | Yes → merged into main |
+| `qa/proposal.md` | Process asset | No → archived only |
+| `qa/results/plans/*.md` | Process asset | No → archived only |
+| `qa/results/execution/` | Process asset | No → archived only |
+| `qa/results/review/` | Process asset | No → archived only |
+| `qa/results/trace/` | Process asset | No → archived only |
 
 ---
 
@@ -1042,7 +1042,7 @@ change:
 targets:
   cases:
     - module: warehouse.inbound
-      change_case_file: qa/changes/REQ-001-order-receive/cases/warehouse/inbound/case.yaml
+      change_case_file: qa/cases/warehouse/inbound/case.yaml
       target_case_file: qa/cases/warehouse/inbound/case.yaml
 
 workflow:   # informational only — not a gate source
@@ -1065,7 +1065,7 @@ The generated case delta MUST be YAML. It contains natural language QA cases.
 **Required path:**
 
 ```
-qa/changes/<change-id>/cases/<module>/case.yaml
+qa/cases/<module>/case.yaml
 ```
 
 **Target stable case file:**
@@ -1096,7 +1096,7 @@ closed-category keys. Record an unknown key in `proposal.md` **Data Needs** and
 retain its matrix row as `skipped_by_scope` with a precise reason; do not write a
 knowledge-proposal file or a silent covered matrix entry.
 
-Also write `qa/changes/<change-id>/trace/minimum-coverage-matrix.json`:
+Also write `qa/results/trace/minimum-coverage-matrix.json`:
 
 ```yaml
 - mrc_id: MRC-API-006
@@ -1155,7 +1155,7 @@ reason: <why this case is no longer needed>
 
 ## Delta Operation Rules
 
-When generating `qa/changes/<change-id>/cases/<module>/case.yaml`, decide the operation at generation time.
+When generating `qa/cases/<module>/case.yaml`, decide the operation at generation time.
 
 - Use `added` when the case does not exist in the target case file (`qa/cases/<module>/case.yaml`).
 - Use `modified` when the case already exists and this change updates its content.
@@ -1441,8 +1441,8 @@ Every generated case MUST include a `risk` block (field contract: `assurance_int
 
 After case review passes:
 
-- `aa-api-plan` generates `qa/changes/<change-id>/plans/api-plan.md` (+ related M3 plan files)
-- `aa-e2e-plan` generates `qa/changes/<change-id>/plans/e2e-plan.md` (+ related M4 plan files)
+- `aa-api-plan` generates `qa/results/plans/api-plan.md` (+ related M3 plan files)
+- `aa-e2e-plan` generates `qa/results/plans/e2e-plan.md` (+ related M4 plan files)
 
 **Ownership boundaries:**
 
@@ -1536,8 +1536,8 @@ Before invoking aa-case-reviewer, verify that ALL of these are true. Fix any iss
 
 48. At least one happy path case (P0 or P1) exists in `added` or `modified`.
 48a. **Selected-layer automation closure:** parse `.qa.yaml` `approval.approved_approach`, list every selected automated layer, and verify each has at least one `added` or `modified` case with the same exact `type` and `automation.required: true`. Perform this cross-file check after all case edits; per-case schema checks alone are insufficient.
-49. `proposal.md` exists at `qa/changes/<change-id>/proposal.md`.
-50. `.qa.yaml` exists at `qa/changes/<change-id>/.qa.yaml`.
+49. `proposal.md` exists at `qa/proposal.md`.
+50. `.qa.yaml` exists at `qa/.qa.yaml`.
 51. MRC closed keys: every `data_integrity` / `negative` / journey key in
     `trace/minimum-coverage-matrix.json` cites `.aa/data-knowledge.yaml` or the
     declared journey set; any unavailable key is documented in `proposal.md`
@@ -1557,8 +1557,8 @@ After writing and self-reviewing the case YAML:
 `aa-case-reviewer` reads:
 
 ```
-qa/changes/<change-id>/proposal.md
-qa/changes/<change-id>/cases/<module>/case.yaml
+qa/proposal.md
+qa/cases/<module>/case.yaml
 ```
 
 After case review passes, the orchestrator routes to:
@@ -1574,7 +1574,7 @@ Do NOT generate plans in this skill.
 The traceability matrix is initialized or updated by downstream execution and archive phases (`aa-run` / `aa-archive`), not by `aa-case-design`. It lives at:
 
 ```
-qa/changes/<change-id>/trace/traceability-matrix.yaml
+qa/results/trace/traceability-matrix.yaml
 ```
 
 It implements the full ISTQB traceability chain:
@@ -1595,13 +1595,13 @@ links:
     test_condition_id: COND-USER-AUTH-001
     case_id: TC_USER_AUTH_002
     plan:
-      api: qa/changes/<change-id>/plans/api-plan.md
+      api: qa/results/plans/api-plan.md
       e2e: null
     test_code:
       api: tests/api/test_auth_api.py
       e2e: null
     execution_result:
-      api: qa/changes/<change-id>/execution/api-result.json
+      api: qa/results/execution/api-result.json
       e2e: null
     status: planned | implemented | passed | failed | waived
 ```
@@ -1653,7 +1653,7 @@ Stop and address these before continuing:
 - Always propose 2–3 QA coverage approaches before final confirmation.
 - Always get user confirmation before generating any file.
 - Write `proposal.md` before writing the case YAML.
-- Case YAML MUST be at `qa/changes/<id>/cases/<module>/case.yaml` — never at `qa/cases/` directly.
+- Case YAML MUST be at `qa/cases/<module>/case.yaml` — never at `qa/cases/` directly.
 - case.yaml must NOT contain `change:` or `proposal:` top-level blocks.
 - Cases must be natural language — `objective`, `summary`, `preconditions`, `test_data`, `steps`, `assertions`, `postconditions`, `edge_cases`, `related_cases`.
 - NEVER write `method/path/headers` outside the required Fuzz/Performance endpoint fields, auth tokens, pytest code, Playwright code, locators, execution history, or secrets in case YAML.

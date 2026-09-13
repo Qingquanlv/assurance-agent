@@ -13,11 +13,10 @@ from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
     VALID_LEAFS,
     candidate_with,
+    durable_oracle_path,
     family_case_id,
     family_symbol,
-    family_test_file,
     mapping_document,
-    staged_generated_file,
     validation_context,
 )
 
@@ -30,7 +29,7 @@ def _load(name: str) -> dict[str, Any]:
 
 
 def _valid_files(family: str) -> dict[str, Any]:
-    path = family_test_file(family)
+    path = durable_oracle_path(family=family)
     return {
         "schema_version": "1",
         "change_id": "CH-DEMO-001",
@@ -64,21 +63,21 @@ def test_family_codegen_characterization_missing_extra_and_unknown_leaf(family: 
     missing = _load(f"{family}-codegen-missing-file.json")
     extra = _load(f"{family}-codegen-extra-file.json")
     unknown = _load(f"{family}-codegen-unknown-leaf.json")
-    path = family_test_file(family)
-    staged = staged_generated_file(family, path)
+    path = durable_oracle_path(family=family)
+    staged = path
     mapping = CodegenMapping.model_validate(valid["mapping"])
     accepted = GeneratedFilesValidator(
         family=family,
         mapping=mapping,
         capability_leafs=frozenset(VALID_LEAFS),
         file_bytes={
-            f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json": json.dumps(
+            f"qa/results/codegen/{family}-generated-files.json": json.dumps(
                 valid, separators=(",", ":"), sort_keys=True
             ).encode("utf-8")
         },
-        write_roots=(f"{path.rsplit('/', 1)[0]}/", "tests/testdata/", "qa/changes/"),
+        write_roots=(f"{path.rsplit('/', 1)[0]}/", "qa/tests/testdata/", "qa/results/"),
     ).validate(
-        candidate_with(staged, f"qa/changes/CH-DEMO-001/codegen/{family}-generated-files.json"),
+        candidate_with(staged, f"qa/results/codegen/{family}-generated-files.json"),
         validation_context(),
     )
     assert accepted.accepted is True
@@ -91,7 +90,7 @@ def test_family_codegen_characterization_missing_extra_and_unknown_leaf(family: 
         family=family,
         mapping=CodegenMapping.model_validate(extra["mapping"]),
     ).validate(
-        candidate_with(staged, staged_generated_file(family, extra["extra_file"])),
+        candidate_with(staged, extra["extra_file"]),
         validation_context(),
     )
     assert extra_result.accepted is False

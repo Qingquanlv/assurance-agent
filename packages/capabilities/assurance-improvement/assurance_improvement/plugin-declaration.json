@@ -1,155 +1,33 @@
 {
+  "schema_version": "1",
+  "kind": "plugin",
+  "source": {
+    "distribution": "assurance-improvement",
+    "version": "0.3.0",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "improvement",
+    "entrypoint_value": "assurance_improvement.plugin:ImprovementPlugin",
+    "declaration_path": "assurance_improvement/plugin-declaration.json",
+    "import_roots": [
+      ""
+    ]
+  },
   "descriptor": {
-    "attempt_contracts": [
-      {
-        "contract_id": "assurance.improvement.agent.archive.v1",
-        "digest": "ccae454e08ad1e57ef84714161ae75e310525b08bdc068660765481cdf1e1d36"
-      },
-      {
-        "contract_id": "assurance.improvement.agent.improvement-review.v1",
-        "digest": "acb42bda923673ee9c489cd58c6d15dfe2b2558cf0d07d50dbe2e86874cc9555"
-      },
-      {
-        "contract_id": "assurance.improvement.agent.retro-eval-analysis.v1",
-        "digest": "860bfca706909afd4ee53c57f6d673b8f5de2e3226d4642450c715583e756474"
-      },
-      {
-        "contract_id": "assurance.improvement.agent.retro-issue-analysis.v1",
-        "digest": "b52282b6f4a595e75c6072fa5bc824bb895bf148053ccf9bb2e076a472585849"
-      },
-      {
-        "contract_id": "assurance.improvement.agent.retro-workflow-analysis.v1",
-        "digest": "afb9622f860b473a0334752ba9a6e1163b96782bddb8c5da52c9cf21a08b9935"
-      },
-      {
-        "contract_id": "assurance.improvement.agent.retro.v1",
-        "digest": "35d76dc2518206353059f8937262e897e7fdb3f9c3bbbf4c904e5a03bc38729c"
-      },
-      {
-        "contract_id": "assurance.improvement.retro-build-slices",
-        "digest": "2e52a14f6c99e9b841c451d3748f5fdb684ae9c5a0e98cd5b6470133fd3dea39"
-      },
-      {
-        "contract_id": "assurance.improvement.task.apply-improvement-auto-review",
-        "digest": "c49391127c4f434cce790a73a82f62730093752e992d97f39a0baf8d534569cf"
-      },
-      {
-        "contract_id": "assurance.improvement.task.apply-improvement-review",
-        "digest": "2158e65211136abd8a83e09d8454885cab12225de897fed4cb86df3555ff06b0"
-      },
-      {
-        "contract_id": "assurance.improvement.task.apply-memory-improvement",
-        "digest": "438f35fc8c6f59d583adf1c56f6c1225ff830c3da74fdd5ba0a67f9505a24609"
-      },
-      {
-        "contract_id": "assurance.improvement.task.evaluate-memory-improvement",
-        "digest": "258b556da212c422deb316fb60aec23e4b7f54e82defbd3ae0ec01fb1a633ee3"
-      },
-      {
-        "contract_id": "assurance.improvement.task.export-change-improvement",
-        "digest": "e78c46f7b529e2518c0db8cdfe849cbb3b70c970b929f5d5336602334f52a2d5"
-      },
-      {
-        "contract_id": "assurance.improvement.task.reconcile-improvements",
-        "digest": "c1c81f76bb70c8b0a7351bb90a38c30998b89f145a99a63fa53836441a0041a5"
-      },
-      {
-        "contract_id": "assurance.improvement.task.retro-collect-v3",
-        "digest": "15b96a7780a435e607f58fc36b8f530429fca095f7a6aa41996cfdd680e6dd1f"
-      },
-      {
-        "contract_id": "assurance.improvement.task.rollback-memory-improvement",
-        "digest": "dd54f8a4c04708968bd42f8b7a26749ee7e5deca11fb245c1bffffbe95074a90"
-      }
-    ],
-    "bindings": [],
-    "commit_validators": [
-      "assurance.improvement.validator.archive-integrity.v1",
-      "assurance.improvement.validator.candidates.v3",
-      "assurance.improvement.validator.delivery.v1",
-      "assurance.improvement.validator.review.v1"
-    ],
-    "dependencies": [
-      {
-        "plugin_id": "assurance.intake",
-        "version_specifier": "==0.2.0"
-      },
-      {
-        "plugin_id": "assurance.generation",
-        "version_specifier": "==0.2.0"
-      },
-      {
-        "plugin_id": "assurance.execution",
-        "version_specifier": "==0.2.0"
-      },
-      {
-        "plugin_id": "assurance.healing",
-        "version_specifier": "==0.2.0"
-      },
-      {
-        "plugin_id": "assurance.quality",
-        "version_specifier": "==0.2.0"
-      }
-    ],
-    "effects": [
-      "assurance.improvement.effect.archive.v1",
-      "assurance.improvement.effect.delivery.v1",
-      "assurance.improvement.effect.promotion.v1"
-    ],
-    "engine_api": "2.0",
-    "plugin_id": "assurance.improvement",
-    "plugin_version": "0.2.0",
-    "resources": [
-      "assurance.improvement.persona.archiver.v1",
-      "assurance.improvement.persona.reviewer.v1",
-      "assurance.improvement.prompt.archive-summary.v1",
-      "assurance.improvement.result.archive.v1",
-      "assurance.improvement.result.improvement-review.v1",
-      "assurance.improvement.result.retro-analysis.v3",
-      "assurance.improvement.skill.aa-archive.v1",
-      "assurance.improvement.skill.aa-improvement-reviewer.v1",
-      "assurance.improvement.skill.aa-retro-eval-analysis.v1",
-      "assurance.improvement.skill.aa-retro-issue-analysis.v1",
-      "assurance.improvement.skill.aa-retro-workflow-analysis.v1",
-      "assurance.improvement.skill.aa-retro.v1"
-    ],
     "schema_version": "1",
-    "schemas": [
-      "assurance.improvement.schema.declaration-proposal.v1",
-      "assurance.improvement.schema.improvement-candidates.v3",
-      "assurance.improvement.schema.improvement-delivery.v1",
-      "assurance.improvement.schema.improvement-effect-intent.v1",
-      "assurance.improvement.schema.improvement-effect-receipt.v1",
-      "assurance.improvement.schema.improvement-review.v1",
-      "assurance.improvement.schema.promotion.v1",
-      "assurance.improvement.schema.retro-context.v3",
-      "assurance.improvement.schema.retro-signals.v3",
-      "assurance.improvement.workflow.apply.input.v1",
-      "assurance.improvement.workflow.apply.output.v1",
-      "assurance.improvement.workflow.archive.input.v1",
-      "assurance.improvement.workflow.archive.output.v1",
-      "assurance.improvement.workflow.evaluate.input.v1",
-      "assurance.improvement.workflow.evaluate.output.v1",
-      "assurance.improvement.workflow.export.input.v1",
-      "assurance.improvement.workflow.export.output.v1",
-      "assurance.improvement.workflow.retro.input.v1",
-      "assurance.improvement.workflow.retro.output.v1",
-      "assurance.improvement.workflow.review.input.v1",
-      "assurance.improvement.workflow.review.output.v1",
-      "assurance.improvement.workflow.rollback.input.v1",
-      "assurance.improvement.workflow.rollback.output.v1"
-    ],
     "source": {
-      "declaration_path": "assurance_improvement/plugin-declaration.json",
       "distribution": "assurance-improvement",
+      "version": "0.3.0",
       "entrypoint_group": "graph_engine.plugins",
       "entrypoint_name": "improvement",
       "entrypoint_value": "assurance_improvement.plugin:ImprovementPlugin",
+      "declaration_path": "assurance_improvement/plugin-declaration.json",
       "import_roots": [
         ""
-      ],
-      "version": "0.2.0"
+      ]
     },
+    "plugin_id": "assurance.improvement",
+    "plugin_version": "0.3.0",
+    "engine_api": "2.0",
     "task_handlers": [
       "assurance.improvement.apply-improvement-auto-review",
       "assurance.improvement.apply-improvement-review",
@@ -191,19 +69,141 @@
       "assurance.improvement.select-current-retro-auto-review-items",
       "assurance.improvement.summarize-auto-review-batch",
       "assurance.improvement.validate-improvement-review-assessment"
-    ]
-  },
-  "kind": "plugin",
-  "schema_version": "1",
-  "source": {
-    "declaration_path": "assurance_improvement/plugin-declaration.json",
-    "distribution": "assurance-improvement",
-    "entrypoint_group": "graph_engine.plugins",
-    "entrypoint_name": "improvement",
-    "entrypoint_value": "assurance_improvement.plugin:ImprovementPlugin",
-    "import_roots": [
-      ""
     ],
-    "version": "0.2.0"
+    "commit_validators": [
+      "assurance.improvement.validator.archive-integrity.v1",
+      "assurance.improvement.validator.candidates.v3",
+      "assurance.improvement.validator.delivery.v1",
+      "assurance.improvement.validator.review.v1"
+    ],
+    "dependencies": [
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.execution",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.healing",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.quality",
+        "version_specifier": "==0.3.0"
+      }
+    ],
+    "schemas": [
+      "assurance.improvement.schema.declaration-proposal.v1",
+      "assurance.improvement.schema.improvement-candidates.v3",
+      "assurance.improvement.schema.improvement-delivery.v1",
+      "assurance.improvement.schema.improvement-effect-intent.v1",
+      "assurance.improvement.schema.improvement-effect-receipt.v1",
+      "assurance.improvement.schema.improvement-review.v1",
+      "assurance.improvement.schema.promotion.v1",
+      "assurance.improvement.schema.retro-context.v3",
+      "assurance.improvement.schema.retro-signals.v3",
+      "assurance.improvement.workflow.apply.input.v1",
+      "assurance.improvement.workflow.apply.output.v1",
+      "assurance.improvement.workflow.archive.input.v1",
+      "assurance.improvement.workflow.archive.output.v1",
+      "assurance.improvement.workflow.evaluate.input.v1",
+      "assurance.improvement.workflow.evaluate.output.v1",
+      "assurance.improvement.workflow.export.input.v1",
+      "assurance.improvement.workflow.export.output.v1",
+      "assurance.improvement.workflow.retro.input.v1",
+      "assurance.improvement.workflow.retro.output.v1",
+      "assurance.improvement.workflow.review.input.v1",
+      "assurance.improvement.workflow.review.output.v1",
+      "assurance.improvement.workflow.rollback.input.v1",
+      "assurance.improvement.workflow.rollback.output.v1"
+    ],
+    "resources": [
+      "assurance.improvement.persona.archiver.v1",
+      "assurance.improvement.persona.reviewer.v1",
+      "assurance.improvement.prompt.archive-summary.v1",
+      "assurance.improvement.result.archive.v1",
+      "assurance.improvement.result.improvement-review.v1",
+      "assurance.improvement.result.retro-analysis.v3",
+      "assurance.improvement.skill.aa-archive.v1",
+      "assurance.improvement.skill.aa-improvement-reviewer.v1",
+      "assurance.improvement.skill.aa-retro-eval-analysis.v1",
+      "assurance.improvement.skill.aa-retro-issue-analysis.v1",
+      "assurance.improvement.skill.aa-retro-workflow-analysis.v1",
+      "assurance.improvement.skill.aa-retro.v1"
+    ],
+    "effects": [
+      "assurance.improvement.effect.archive.v1",
+      "assurance.improvement.effect.delivery.v1",
+      "assurance.improvement.effect.promotion.v1"
+    ],
+    "bindings": [],
+    "attempt_contracts": [
+      {
+        "contract_id": "assurance.improvement.agent.archive.v1",
+        "digest": "bcfa63129a7f18adebbe5e7231f5b0f7179e4008486c8a37c18f8f12ced50d76"
+      },
+      {
+        "contract_id": "assurance.improvement.agent.improvement-review.v1",
+        "digest": "9ca8c8cedc92e0c680afc33d5cd2e442b0e1381301dd175ee41d970d0a209bb9"
+      },
+      {
+        "contract_id": "assurance.improvement.agent.retro-eval-analysis.v1",
+        "digest": "50dc66c5b102837e3c7950acbaa3046b053ddbf191e2ef25c5969a092795651c"
+      },
+      {
+        "contract_id": "assurance.improvement.agent.retro-issue-analysis.v1",
+        "digest": "0e1b85c3e3582ea4819fa0ea852eaa483fdb12d8ff0d25c75d033dcfe94e9a20"
+      },
+      {
+        "contract_id": "assurance.improvement.agent.retro-workflow-analysis.v1",
+        "digest": "d3d70f3cbf47fb364609a70e24bb6a447052460c838aacd0d624ba7198a5198a"
+      },
+      {
+        "contract_id": "assurance.improvement.agent.retro.v1",
+        "digest": "8c7139d8b016faafa78927ebce33f9b0c60e4c850fa4b33eb24a3328798d582c"
+      },
+      {
+        "contract_id": "assurance.improvement.retro-build-slices",
+        "digest": "2e52a14f6c99e9b841c451d3748f5fdb684ae9c5a0e98cd5b6470133fd3dea39"
+      },
+      {
+        "contract_id": "assurance.improvement.task.apply-improvement-auto-review",
+        "digest": "c49391127c4f434cce790a73a82f62730093752e992d97f39a0baf8d534569cf"
+      },
+      {
+        "contract_id": "assurance.improvement.task.apply-improvement-review",
+        "digest": "2158e65211136abd8a83e09d8454885cab12225de897fed4cb86df3555ff06b0"
+      },
+      {
+        "contract_id": "assurance.improvement.task.apply-memory-improvement",
+        "digest": "438f35fc8c6f59d583adf1c56f6c1225ff830c3da74fdd5ba0a67f9505a24609"
+      },
+      {
+        "contract_id": "assurance.improvement.task.evaluate-memory-improvement",
+        "digest": "258b556da212c422deb316fb60aec23e4b7f54e82defbd3ae0ec01fb1a633ee3"
+      },
+      {
+        "contract_id": "assurance.improvement.task.export-change-improvement",
+        "digest": "e78c46f7b529e2518c0db8cdfe849cbb3b70c970b929f5d5336602334f52a2d5"
+      },
+      {
+        "contract_id": "assurance.improvement.task.reconcile-improvements",
+        "digest": "a3bd3d4a54f0e229c99dc3b24ea4284a593efae5cd0dd378246ab56be3b7911a"
+      },
+      {
+        "contract_id": "assurance.improvement.task.retro-collect-v3",
+        "digest": "15b96a7780a435e607f58fc36b8f530429fca095f7a6aa41996cfdd680e6dd1f"
+      },
+      {
+        "contract_id": "assurance.improvement.task.rollback-memory-improvement",
+        "digest": "dd54f8a4c04708968bd42f8b7a26749ee7e5deca11fb245c1bffffbe95074a90"
+      }
+    ]
   }
 }

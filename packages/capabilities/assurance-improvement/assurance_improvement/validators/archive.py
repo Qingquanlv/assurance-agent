@@ -9,13 +9,13 @@ from graph_engine.plugin_api import PathWriteSet, ValidationContext, ValidationR
 from assurance_improvement.validators.documents import bytes_match_digest, load_json, rejected
 from assurance_improvement.validators.paths import canonical_relative, under_root
 
-_ROOTS = ("qa/archive/", "qa/changes/", "qa/cases/", "report/", "review/", "cases/")
+_ROOTS = ("qa/results/", "qa/cases/")
 _OUTSIDE = "archive candidate may write only archive, case, and authenticated source paths"
 _REQUIRED = {
-    "subject": "qa/archive/subject.json",
-    "manifest": "qa/archive/artifact-manifest.json",
-    "summary": "qa/archive/archive-summary.md",
-    "pre_archive": "qa/changes/pre-archive-tree.json",
+    "subject": "qa/results/subject.json",
+    "manifest": "qa/results/artifact-manifest.json",
+    "summary": "qa/results/archive-summary.md",
+    "pre_archive": "qa/results/pre-archive-tree.json",
 }
 _MISSING = {key: f"archive is missing the authenticated {key} document" for key in _REQUIRED}
 _MISMATCH = {key: f"archive {key} digest does not match the authenticated document" for key in _REQUIRED}

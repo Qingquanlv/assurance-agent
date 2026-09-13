@@ -15,7 +15,6 @@ from assurance_generation.contracts.agent import under_write_root
 from assurance_generation.contracts.codegen import (
     CodegenMapping,
     CodegenResultV1,
-    family_allows_target,
 )
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.generated_files import GeneratedFilesV1
@@ -32,19 +31,19 @@ def closed_family(family: str) -> Family:
 
 
 FAMILY_TEST_ROOTS: dict[Family, tuple[str, ...]] = {
-    "api": ("tests/api/", "tests/testdata/"),
-    "e2e": ("tests/e2e/", "tests/testdata/"),
-    "fuzz": ("tests/fuzz/", "tests/testdata/"),
-    "performance": ("tests/perf/", "tests/testdata/"),
+    "api": ("qa/tests/api/", "qa/tests/testdata/"),
+    "e2e": ("qa/tests/e2e/", "qa/tests/testdata/"),
+    "fuzz": ("qa/tests/fuzz/", "qa/tests/testdata/"),
+    "performance": ("qa/tests/perf/", "qa/tests/testdata/"),
 }
 ALL_TEST_ROOTS: tuple[str, ...] = (
-    "tests/api/",
-    "tests/e2e/",
-    "tests/fuzz/",
-    "tests/perf/",
-    "tests/testdata/",
+    "qa/tests/api/",
+    "qa/tests/e2e/",
+    "qa/tests/fuzz/",
+    "qa/tests/perf/",
+    "qa/tests/testdata/",
 )
-MAPPING_WRITE_ROOTS: tuple[str, ...] = ("qa/changes/", *ALL_TEST_ROOTS)
+MAPPING_WRITE_ROOTS: tuple[str, ...] = ("qa/results/", *ALL_TEST_ROOTS)
 _OUTSIDE_REASON = "generation candidate may write only declared test paths"
 _UNMAPPED_REASON = "generated test file is absent from the closed mapping: {path}"
 _STALE_REASON = "codegen mapping is stale: {path}"
@@ -62,36 +61,22 @@ def _canonical_relative(path: str) -> bool:
     return True
 
 
-def logical_generated_target(path: str) -> str:
-    parts = path.split("/")
-    if (
-        len(parts) > 6
-        and parts[0] == "qa"
-        and parts[1] == "changes"
-        and parts[3] == "generated"
-        and parts[4] in FAMILIES
-        and parts[5] == "files"
-    ):
-        return "/".join(parts[6:])
-    return path
-
-
 def _is_unprefixed_sut_test(path: str) -> bool:
     return path == "tests" or path.startswith("tests/")
 
 
 def _accepts_generated_write(path: str, write_roots: tuple[str, ...], family: Family | None = None) -> bool:
-    if not _canonical_relative(path) or _is_unprefixed_sut_test(path):
-        return False
-    target = logical_generated_target(path)
-    if not under_write_root(path, write_roots) and not under_write_root(target, write_roots):
-        return False
-    return not (target != path and family is not None and not family_allows_target(family, target))
+    del family
+    return (
+        _canonical_relative(path)
+        and not _is_unprefixed_sut_test(path)
+        and under_write_root(path, write_roots)
+    )
 
 
 def _is_mapping_target_module(path: str) -> bool:
     posix = PurePosixPath(path)
-    if not posix.parts or posix.parts[0] != "tests" or posix.suffix != ".py":
+    if posix.suffix != ".py" or posix.parts[:2] != ("qa", "tests"):
         return False
     stem = posix.stem
     return stem.startswith("test_") or stem.endswith("_test")
@@ -179,9 +164,8 @@ class GeneratedFilesValidator:
         for path in listed:
             if not _canonical_relative(path):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
-            target = logical_generated_target(path)
-            if self._require_mapping and _is_mapping_target_module(target) and target not in mapped:
-                return ValidationResult(accepted=False, reason=_UNMAPPED_REASON.format(path=target))
+            if self._require_mapping and _is_mapping_target_module(path) and path not in mapped:
+                return ValidationResult(accepted=False, reason=_UNMAPPED_REASON.format(path=path))
             if not _accepts_generated_write(path, self._write_roots, self._family):
                 return ValidationResult(accepted=False, reason=_OUTSIDE_REASON)
         extra_bytes = sorted(set(self._file_bytes) - set(listed))
@@ -209,7 +193,7 @@ class GeneratedFilesValidator:
     ) -> ValidationResult | None:
         files = document.files
         writes = {item.path: item for item in candidate.files}
-        writes_by_target = {logical_generated_target(item.path): item for item in candidate.files}
+        writes_by_target = {item.path: item for item in candidate.files}
         if mapping is not None:
             mapped = _mapping_targets(mapping)
             for entry in files:
@@ -280,7 +264,7 @@ def _mapping_closure(
     ids = tuple(item.case_id for item in mapping.entries)
     if len(ids) != len(set(ids)):
         return ValidationResult(accepted=False, reason=_DUPLICATE_REASON)
-    writes = {logical_generated_target(item.path): item for item in candidate.files}
+    writes = {item.path: item for item in candidate.files}
     mapped = _mapping_targets(mapping)
     for path in mapped:
         if not _canonical_relative(path):

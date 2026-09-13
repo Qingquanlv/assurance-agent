@@ -43,8 +43,8 @@ async def test_plan_handoff_preserves_reviewed_decisions_through_codegen(family:
 
     for relative in (
         *family_plan_files(family),
-        "qa/changes/CH-DEMO-001/proposal.md",
-        "qa/changes/CH-DEMO-001/cases/items/case.yaml",
+        "qa/proposal.md",
+        "qa/cases/items/case.yaml",
     ):
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,7 +62,7 @@ async def test_plan_handoff_preserves_reviewed_decisions_through_codegen(family:
         thaw_json(part.json_content) for part in review_request.instructions if part.json_content is not None
     ]
 
-    mapping_path = tmp_path / f"qa/changes/CH-DEMO-001/plans/{family}-codegen-mapping.json"
+    mapping_path = tmp_path / f"qa/results/plans/{family}-codegen-mapping.json"
     mapping_path.parent.mkdir(parents=True, exist_ok=True)
     mapping_path.write_text(json.dumps(mapping_document(family)), encoding="utf-8")
     selected = selected.model_copy(update={"reviewed_cases": business["reviewed_cases"]})
@@ -105,7 +105,7 @@ async def test_plan_retry_handoff_preserves_previous_plan_but_not_across_epochs(
         codegen_readiness="not_ready",
         next_action="human requested rework",
     )
-    review_path = tmp_path / f"qa/changes/CH-DEMO-001/review/{family}-plan-review.json"
+    review_path = tmp_path / f"qa/results/review/{family}-plan-review.json"
     review_path.parent.mkdir(parents=True)
     review_path.write_text(json.dumps(review), encoding="utf-8")
     selected = selected.model_copy(update={"reviewed_cases": business["reviewed_cases"]})

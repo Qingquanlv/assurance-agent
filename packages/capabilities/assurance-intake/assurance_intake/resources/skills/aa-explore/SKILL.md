@@ -25,7 +25,7 @@ Do not rely on prior conversation context.
 
 **After completing work:**
 
-1. Write `qa/changes/<change-id>/explore/exploration.json`
+1. Write `qa/results/explore/exploration.json`
    - Use the native `write` tool directly. Do not call `aa risk`, `aa artifact`,
      `base64`, or any shell command; the explorer agent has no shell write authority.
    - Write the complete advisory in one operation. A placeholder or reduced object is
@@ -34,12 +34,12 @@ Do not rely on prior conversation context.
    - Autonomous, degraded, and no-source runs MUST still write a complete valid
      `exploration.json`. Weak or absent evidence changes the evidence fields and
      confidence, never the required output file.
-2. Immediately read `qa/changes/<change-id>/explore/exploration.json` back. This is a hard
+2. Immediately read `qa/results/explore/exploration.json` back. This is a hard
    completion condition: if the read reports missing/error, continue writing and do
    not return. Native `write` is mandatory in this execution profile; there is no CLI
    or shell fallback. Never use Python, `tee`, a heredoc, `base64`, `aa risk`,
    `aa artifact`, `ast_grep_replace`, or a shell command suffix to create this artifact.
-3. Do **not** write `qa/changes/<change-id>/explore/advisory.md`
+3. Do **not** write `qa/results/explore/advisory.md`
 4. After read-back, verify every field listed under `exploration.json schema (MVP)` and
    `test_strategy` is present and populated. The product finalizer performs the
    authoritative validation after this agent returns.
@@ -64,7 +64,7 @@ Produce the **Explore** artifacts (Phase 0.5) from deterministic historical fact
 ## Step 1 — Read the graph-materialized Explore context
 
 The deterministic prepare node has already written
-`qa/changes/<change-id>/explore/context.json`. Read that file directly with the native
+`qa/results/explore/context.json`. Read that file directly with the native
 `read` tool. Do not run a command to recreate, validate, or replace it.
 Do not use glob to check either Explore path (`context.json` or `exploration.json`).
 Change-local files may be ignored by repository search even though an exact native
@@ -196,7 +196,7 @@ business obligations.
 14. If a `confidence: low` or `confidence: medium` guidance item already contains an assertion direction, it MUST have a linked `open_question` and must not bypass Step 5 resolution. `validate the explore advisory artifact` enforces this.
 15. `context_ref` is a locked artifact-local reference. Set it to the exact string
     `"explore/context.json"`. Do not expand it to
-    `qa/changes/<change-id>/explore/context.json`, an absolute path, or any other
+    `qa/results/explore/context.json`, an absolute path, or any other
     equivalent-looking path; the product finalizer rejects non-canonical values.
 
 ### exploration.json schema (MVP)
@@ -503,7 +503,7 @@ Do not output a user-facing summary, step log, phase delta, or compliance checkl
 After both artifacts are written and read-back validation succeeds, return structured JSON only:
 
 ```json
-{"output_files":["qa/changes/<change-id>/explore/exploration.json"]}
+{"output_files":["qa/results/explore/exploration.json"]}
 ```
 
 Every successful run returns exactly the non-empty receipt above. If missing or

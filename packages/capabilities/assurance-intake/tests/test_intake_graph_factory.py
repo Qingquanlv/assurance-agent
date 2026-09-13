@@ -79,7 +79,7 @@ def intake_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
 
 def intake_graph_input() -> dict[str, object]:
     plan_ref = {
-        "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+        "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
         "digest": _SHA,
     }
     return {
@@ -89,9 +89,17 @@ def intake_graph_input() -> dict[str, object]:
         "selected_test_families": ["api"],
         "plan_digest": _SHA,
         "plan_ref": plan_ref,
-        "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+        "case_delta_paths": ["qa/cases/menus/case.yaml"],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "budgets": {
             "review_rounds": 2,
             "coverage_rounds": 2,
@@ -115,12 +123,12 @@ def intake_graph_input() -> dict[str, object]:
         "rounds_budget": 2,
         "coverage_epoch": 0,
         "preparation_refs": [
-            plan_ref,
+            {"path": "qa/requirement.md", "digest": _SHA},
             {
-                "path": "qa/changes/CH-DEMO-001/explore/exploration.json",
+                "path": "qa/results/explore/exploration.json",
                 "digest": _SHA,
             },
-            {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
+            plan_ref,
         ],
     }
 
@@ -130,7 +138,7 @@ def _receipt() -> ReceiptRef:
 
 
 def _artifact_output() -> ArtifactListResultV1:
-    return ArtifactListResultV1(output_files=("qa/changes/CH-DEMO-001/proposal.md",))
+    return ArtifactListResultV1(output_files=("qa/proposal.md",))
 
 
 def _review_output(
@@ -147,7 +155,7 @@ def _review_output(
         "human_review_required": human_review_required,
         "artifacts": [
             {
-                "path": "qa/changes/CH-DEMO-001/review/case-review.json",
+                "path": "qa/results/review/case-review.json",
                 "digest": _SHA,
             }
         ],
@@ -158,16 +166,16 @@ def _review_output(
 
 def _design_output(*, validation_status: str = "pass") -> dict[str, object]:
     return {
-        "output_files": ["qa/changes/CH-DEMO-001/proposal.md"],
+        "output_files": ["qa/proposal.md"],
         "validation_status": validation_status,
         "validation_attempt": 0 if validation_status == "pass" else 1,
         "validation_error": None if validation_status == "pass" else "authored cases failed validation",
         "artifacts": [
             {
-                "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+                "path": "qa/cases/menus/case.yaml",
                 "digest": _SHA,
             },
-            {"path": "qa/changes/CH-DEMO-001/proposal.md", "digest": _SHA},
+            {"path": "qa/proposal.md", "digest": _SHA},
         ],
     }
 
@@ -294,7 +302,7 @@ async def test_case_graph_runs_primary_and_repair_through_one_composite_attempt_
     assert reviewed["coverage_epoch"] == 0
     assert reviewed["case_refs"] == [
         {
-            "path": "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+            "path": "qa/cases/menus/case.yaml",
             "digest": _SHA,
         }
     ]
@@ -481,13 +489,21 @@ def _case_design_input(*, validation_attempt: int = 0) -> CaseDesignInputV1:
         "change_id": "CH-DEMO-001",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "capability_leafs": ["entities.item.create"],
-        "artifact_paths": ["qa/changes"],
+        "artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "selected_test_families": ["api"],
-        "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+        "case_delta_paths": ["qa/cases/menus/case.yaml"],
         "validation_attempt": validation_attempt,
     }
     if validation_attempt == 1:
@@ -510,11 +526,11 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
 ) -> None:
     del path
     prepared: dict[str, object] = {"prompt": "design cases", "path": semantic_node_id}
-    agent_result = ArtifactListResultV1(output_files=("qa/changes/CH-DEMO-001/proposal.md",))
+    agent_result = ArtifactListResultV1(output_files=("qa/proposal.md",))
     finalized = CaseDesignOutputV1(
         validation_status="pass",
         validation_attempt=validation_attempt,
-        artifacts=(ArtifactDigestV1(path="qa/changes/CH-DEMO-001/proposal.md", digest=_SHA),),
+        artifacts=(ArtifactDigestV1(path="qa/proposal.md", digest=_SHA),),
     )
     prepare = _RecordingPrepare(prepared)
     runtime = _RecordingRuntime(agent_result)

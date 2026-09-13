@@ -19,7 +19,6 @@ from graph_engine.attempts.secret_sources import InvocationRuntimeAuthorization
 
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.export import publish_achieved, select_publish_change
 from assurance_product.invocation_identity import (
     InvocationIdentityRecord,
     RuntimeSelectionError,
@@ -44,7 +43,6 @@ from assurance_product.revision_registry import (
 )
 from assurance_product.runtime_ports import ProductRuntimePorts
 from assurance_product.status import (
-    archive_published,
     finalize_achieved,
     load_persisted_status,
     render_status_from_langgraph,
@@ -84,6 +82,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
         "improvement-export": (),
         "improvement-review": ("assurance.improvement.agent.improvement-review.v1",),
         "improvement-rollback": (),
+        "init": (),
         "intake": (
             "assurance.intake.agent.intake.v1",
             "assurance.intake.agent.explore.v1",
@@ -104,7 +103,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
 
 
 if set(ENTRYPOINT_AGENT_CONTRACT_IDS) != set(PRODUCT_ENTRYPOINTS):
-    raise RuntimeError("entrypoint Agent-contract inventory must cover the 14 public names")
+    raise RuntimeError("entrypoint Agent-contract inventory must cover the 15 public names")
 
 
 _LG_EXIT = {
@@ -455,7 +454,7 @@ class AssuranceProductApplication:
             composition=composition,
             authorization=authorization,
             invocation_id=invocation_id,
-            change_id=workspace.paths.change_root.name,
+            change_id=workspace.change_id,
             record=record,
             status=status,
         )
@@ -612,15 +611,6 @@ class AssuranceProductApplication:
             "lock": product_lock.model_dump(mode="json"),
             "revision": manifest.revision.model_dump(mode="json"),
         }
-
-    def export(self, *, project_dir: Path, change_id: str | None) -> dict[str, object]:
-        project = Path(project_dir).resolve()
-        selected = select_publish_change(project, change_id)
-        ChangeWorkspace.open(project, selected)
-        return publish_achieved(project, selected).model_dump(mode="json")
-
-    def archive(self, *, project_dir: Path, change_id: str) -> dict[str, object]:
-        return archive_published(Path(project_dir).resolve(), change_id)
 
     def bindings_build(self, *, manifest: Path, output_dir: Path) -> dict[str, object]:
         built = build_deployment_wheel(manifest, output_dir)
@@ -918,8 +908,6 @@ def _persisted_achieved_full_status(
     if (
         persisted.status != "completed"
         or persisted.change.state != "achieved"
-        or persisted.apply.manifest_digest is None
-        or persisted.publication.status not in {"ready", "published"}
         or persisted.selected_test_families != families
     ):
         raise RuntimeSelectionError("persisted terminal status is not an achieved full result")

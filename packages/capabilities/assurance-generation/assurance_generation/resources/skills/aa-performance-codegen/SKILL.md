@@ -30,45 +30,45 @@ configuration contract without inspecting credential values.
 - reviewed performance plan (`PlanResultV1`) including scenario identity and
   numeric thresholds
 - frozen case references for the selected performance cases
-- `qa/changes/<change-id>/plans/performance-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/performance-review-summary.md`
-- `qa/changes/<change-id>/review/performance-plan-review.json`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/performance-plan.md`
+- `qa/results/plans/performance-codegen-plan.md`
+- `qa/results/plans/performance-codegen-mapping.json`
+- `qa/results/plans/performance-review-summary.md`
+- `qa/results/review/performance-plan-review.json`
+- `qa/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
 ### optional
 
 - baseline tree identity when the graph provides one
-- `qa/changes/<change-id>/review/performance-plan-checks.json`
+- `qa/results/review/performance-plan-checks.json`
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
-- `tests/perf/**`
-- `tests/testdata/domain/**`
+- `qa/tests/perf/**`
+- `qa/tests/testdata/domain/**`
 
 ## Outputs
 
 ### required
 
-- `qa/changes/<change-id>/codegen/performance-codegen-summary.md`
-- `qa/changes/<change-id>/codegen/performance-generated-files.json`
-- generated or updated test files under `qa/changes/<change-id>/generated/performance/files/tests/perf/**`
+- `qa/results/codegen/performance-codegen-summary.md`
+- `qa/results/codegen/performance-generated-files.json`
+- generated or updated test files under `qa/tests/perf/**`
 
 ### conditional
 
-- `qa/changes/<change-id>/generated/performance/files/tests/testdata/domain/**`
+- `qa/tests/testdata/domain/**`
   when the reviewed plan authorizes a shared builder
 
-The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+The generated-files manifest and mapping keep `target_file` under `qa/tests/`. Do not
 write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized staged files under
-`qa/changes/<change-id>/generated/performance/files/` plus the summary and
-generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
-the logical `tests/perf/**` or `tests/testdata/**` target.
+Write only authorized files under
+`qa/tests/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` are
+the logical and physical `qa/tests/perf/**` or `qa/tests/testdata/**` path.
 
 Do not modify product source.
 

@@ -14,6 +14,7 @@ PUBLIC_ENTRYPOINTS = {
     "intake",
     "case",
     "execute",
+    "init",
     "archive",
     "retro",
     "issue-review",
@@ -27,12 +28,12 @@ PUBLIC_ENTRYPOINTS = {
 }
 
 
-def test_product_entrypoints_are_fourteen_python_roots() -> None:
+def test_product_entrypoints_are_fifteen_python_roots() -> None:
     assert set(PRODUCT_ENTRYPOINTS) == PUBLIC_ENTRYPOINTS
     assert set(ENTRYPOINT_CONTRACTS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(ENTRYPOINT_CONTRACTS) == 14
+    assert len(ENTRYPOINT_CONTRACTS) == 15
     assert set(THIN_ENTRYPOINTS) <= set(PRODUCT_ENTRYPOINTS)
-    assert len(THIN_ENTRYPOINTS) == 12
+    assert len(THIN_ENTRYPOINTS) == 13
 
 
 def test_feature_bundles_cover_six_owners() -> None:

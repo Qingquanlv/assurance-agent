@@ -43,6 +43,15 @@ keys, and distinguish an existing helper amendment from create-if-missing. On re
 check the whole package for consistency while editing only authorized locators;
 if another required edit is outside them, report the scope gap without broadening it.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first. When its `Product Source Verification` section lists
@@ -58,34 +67,34 @@ benchmark requirement without inspecting secret values.
 
 ### required
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
-- `qa/changes/<change-id>/proposal.md`
+- `qa/cases/**/case.yaml`
+- `qa/proposal.md`
+- `qa/results/facts/fact-baseline.json`
 
 ### optional
 
-- `qa/changes/<change-id>/review/performance-plan-review.json`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
+- `qa/results/review/performance-plan-review.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only)
-- `tests/perf/**`
-- `tests/testdata/domain/**`
+- `qa/tests/perf/**`
+- `qa/tests/testdata/domain/**`
 
 ## Outputs
 
 ### required
 
-- `qa/changes/<change-id>/plans/performance-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/performance-review-summary.md`
+- `qa/results/plans/performance-plan.md`
+- `qa/results/plans/performance-codegen-plan.md`
+- `qa/results/plans/performance-codegen-mapping.json`
+- `qa/results/plans/performance-review-summary.md`
 
 ## Closed Codegen Mapping Contract
 
 `performance-codegen-mapping.json` must use this exact JSON shape:
 
 ```json
-{"schema_version":"1","layer":"performance","entries":[{"case_id":"TC_DEPT_PERF_001","symbol":"DeptUser.read_department","target_file":"tests/perf/locustfile_dept.py"}]}
+{"schema_version":"1","layer":"performance","entries":[{"case_id":"TC_DEPT_PERF_001","symbol":"DeptUser.read_department","target_file":"qa/tests/perf/locustfile_dept.py"}]}
 ```
 
 Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are
@@ -121,7 +130,7 @@ Task Mapping is a strict one-to-one execution-entry relation:
   an explicit `## Task Mapping` table with those exact headers.
 - Emit exactly one Task Mapping row for each selected Performance Case ID.
 - Map that row to the primary executable load-test task method under
-  `tests/perf/**`.
+  `qa/tests/perf/**`.
 - Never add separate Task Mapping rows for setup, cleanup, seed helpers,
   factories, adapters, or support functions.
 - A Case ID repeated in Task Mapping is invalid even when the method or target
@@ -172,13 +181,13 @@ Valid example:
 
 | Case ID | Task Method | Target File |
 |---|---|---|
-| TC_ACCOUNT_PERF_001 | AccountListUser.list_accounts | tests/perf/locustfile_account.py |
+| TC_ACCOUNT_PERF_001 | AccountListUser.list_accounts | qa/tests/perf/locustfile_account.py |
 
 ## Seed Lifecycle
 
 | Setup | Cleanup | Support Module |
 |---|---|---|
-| setup_account | cleanup_account | tests/perf/adapters/account_seed.py |
+| setup_account | cleanup_account | qa/tests/perf/adapters/account_seed.py |
 ```
 
 Factory Mapping section (required):
@@ -188,7 +197,7 @@ Factory Mapping section (required):
 
 | Shared Module | Function | Ownership |
 |---|---|---|
-| tests/testdata/domain/account.py | make_account | reuse |
+| qa/tests/testdata/domain/account.py | make_account | reuse |
 ```
 
 The typed plan result must include scenario identity and numeric thresholds

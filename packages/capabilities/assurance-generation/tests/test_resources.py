@@ -452,6 +452,27 @@ def test_api_plan_review_closes_fixture_and_helper_runtime_boundaries_in_first_p
     assert "verify every authorized finding is no longer contradicted" in planner
 
 
+def test_api_generation_closes_source_proven_initial_admin_credentials() -> None:
+    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
+    codegen = " ".join(resource_text("skills/aa-api-codegen/SKILL.md").split())
+
+    assert "`admin_username` and `admin_password`" in planner
+    assert "startup initialization or seed source" in planner
+    assert "Auth Strategy and Run Guidance" in planner
+    assert "Never use a test-runtime credential default" in planner
+
+    assert "independently compare `admin_username` and `admin_password`" in reviewer
+    assert "startup initialization or seed source" in reviewer
+    assert "credential fallback" in reviewer
+    assert "`not_ready`" in reviewer
+
+    assert "source-proven `admin_username` and `admin_password`" in codegen
+    assert "Never read administrator credentials from `qa/tests/config.py`" in codegen
+    assert "authorized mapped test module" in codegen
+    assert "Do not emit runnable tests" in codegen
+
+
 def test_e2e_plan_review_and_repair_are_exhaustive_within_one_round() -> None:
     planner = " ".join(resource_text("skills/aa-e2e-plan/SKILL.md").split())
     reviewer = " ".join(resource_text("skills/aa-e2e-plan-reviewer/SKILL.md").split())
@@ -502,6 +523,39 @@ def test_e2e_codegen_uses_importable_support_modules_instead_of_conftest_imports
     assert "`conftest.py` is pytest discovery configuration, not an importable support module" in skill
     assert "Never generate `from conftest import ...`" in skill
     assert "import that module by its package path" in skill
+
+
+@pytest.mark.parametrize("family", ("api", "e2e", "fuzz", "performance"))
+def test_plan_and_review_skills_keep_durable_qa_tests_targets_on_the_execution_view(
+    family: str,
+) -> None:
+    for role in ("plan", "plan-reviewer"):
+        skill = " ".join(resource_text(f"skills/aa-{family}-{role}/SKILL.md").split())
+        assert "execution view remaps `qa/tests/<rest>` to `tests/<rest>`" in skill
+        assert "Fixtures and support modules live under `qa/tests/`" in skill
+        assert "Treat a missing `qa/tests/**/conftest.py` as fixture unavailability" in skill
+        assert "Do not look up fixtures under the SUT `tests/` tree" in skill
+        assert "Do not retarget mapping rows to `tests/`" in skill
+
+
+@pytest.mark.parametrize(
+    ("family", "target_file"),
+    (
+        ("api", "qa/tests/api/test_dept.py"),
+        ("e2e", "qa/tests/e2e/test_dept.py"),
+        ("fuzz", "qa/tests/fuzz/test_dept.py"),
+        ("performance", "qa/tests/perf/locustfile_dept.py"),
+    ),
+)
+def test_plan_skill_mapping_examples_use_qa_tests(family: str, target_file: str) -> None:
+    skill = resource_text(f"skills/aa-{family}-plan/SKILL.md")
+    compact = "".join(skill.split())
+    assert f'"target_file":"{target_file}"' in compact
+    assert '"case_id"' in compact and '"symbol"' in compact and '"target_file"' in compact
+    if family in {"api", "e2e"}:
+        assert "qa/.qa.yaml" in skill
+    assert "qa/proposal.md" in skill
+    assert "qa/results/facts/" in skill
 
 
 def test_all_planners_use_the_result_contract_as_the_capability_whitelist() -> None:

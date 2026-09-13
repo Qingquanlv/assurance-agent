@@ -25,7 +25,7 @@ from agent_runtime_opencode.redaction import (
     bound_redacted_messages,
     failure_message,
     redact_json,
-    reject_canaries_in_payload,
+    reject_service_canaries_in_result,
 )
 
 
@@ -197,8 +197,7 @@ def _validate_result_candidate(
         schema=schema,
         schema_digest=agent_run.result_contract.schema_digest,
     )
-    reject_credentials_in_digest_input(validated)
-    reject_canaries_in_payload(validated, canaries=canaries)
+    reject_service_canaries_in_result(validated, canaries=canaries)
     return validated
 
 

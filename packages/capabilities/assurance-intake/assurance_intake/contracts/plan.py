@@ -146,7 +146,7 @@ class ResolvedAssurancePlan(FrozenModel):
             raise ValueError("selected_test_families must be candidates")
         if not set(self.quality_goal.required_test_families) <= set(self.selected_test_families):
             raise ValueError("selected_test_families must retain required goal families")
-        expected_exploration = f"qa/changes/{self.change_id}/explore/exploration.json"
+        expected_exploration = "qa/results/explore/exploration.json"
         if self.exploration_ref.path != expected_exploration:
             raise ValueError("exploration_ref must bind the current change")
         if self.quality_goal.obligations_ref != self.exploration_ref:
@@ -213,7 +213,7 @@ class ResolvePlanInputV1(FrozenModel):
             raise ValueError("policy required families must be candidates")
         if not set(self.candidate_test_families) & set(self.family_policy.allowed):
             raise ValueError("candidate and policy allowed families must intersect")
-        expected = f"qa/changes/{self.change_id}/explore/exploration.json"
+        expected = "qa/results/explore/exploration.json"
         if self.exploration_ref.path != expected:
             raise ValueError("exploration_ref must bind the current change")
         return self
@@ -278,7 +278,7 @@ def plan_bytes(plan: ResolvedAssurancePlan) -> bytes:
 def plan_artifact_ref(plan: ResolvedAssurancePlan) -> EvidenceArtifactRefV1:
     data = plan_bytes(plan)
     return EvidenceArtifactRefV1(
-        path=(f"qa/changes/{plan.change_id}/plan/{plan.plan_digest}/resolved-assurance-plan.json"),
+        path=(f"qa/results/plan/{plan.plan_digest}/resolved-assurance-plan.json"),
         digest=hashlib.sha256(data).hexdigest(),
     )
 

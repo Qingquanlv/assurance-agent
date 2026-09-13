@@ -14,7 +14,7 @@ from assurance_execution.contracts.selection import ClosedMappingV1
 
 _OUTSIDE_REASON = "execution candidate may write only tests and change execution paths"
 _MAPPING_REASON = "mapping must equal selected tests"
-_ALLOWED_PREFIXES = ("tests/", "qa/changes/")
+_ALLOWED_PREFIXES = ("qa/tests/", "qa/results/")
 
 
 def _canonical_relative(path: str) -> bool:
@@ -34,7 +34,7 @@ def _allowed_path(path: str) -> bool:
 
 def _is_test_module(path: str) -> bool:
     posix = PurePosixPath(path)
-    if posix.suffix != ".py" or not path.startswith("tests/"):
+    if posix.suffix != ".py" or not path.startswith("qa/tests/"):
         return False
     return posix.stem.startswith("test_") or posix.stem.endswith("_test")
 

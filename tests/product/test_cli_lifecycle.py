@@ -4,9 +4,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.product.cli_support import parse_json_output
-from tests.product.test_result_export import CHANGE_ID, write_achieved
-
 pytestmark = pytest.mark.usefixtures("installed_sources")
 
 
@@ -64,35 +61,6 @@ def test_resume_rejects_new_product_config_or_input(cli_runner, tmp_path: Path):
     )
     assert result.exit_code == 2
     assert "--input" in result.output or "product" in result.output.lower() or "input" in result.output
-
-
-def test_export_command_requires_project_dir(cli_runner, tmp_path: Path):
-    from assurance_product.cli import app
-
-    result = cli_runner.invoke(app, ["export", "--change", "CH-EXPORT-001"])
-    assert result.exit_code == 2
-    assert "--project-dir" in result.output
-
-
-def test_export_uses_project_dir_and_change(cli_runner, tmp_path: Path):
-    from assurance_product.cli import app
-
-    project = write_achieved(tmp_path)
-    result = cli_runner.invoke(
-        app,
-        [
-            "export",
-            "--json",
-            "--project-dir",
-            str(project),
-            "--change",
-            CHANGE_ID,
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    document = parse_json_output(result.stdout)
-    assert document["change_id"] == CHANGE_ID
-    assert document["files"]
 
 
 def test_resume_file_is_mutually_exclusive_with_action_reason(cli_runner, tmp_path: Path):

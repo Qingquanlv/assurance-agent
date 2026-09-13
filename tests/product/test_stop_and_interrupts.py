@@ -133,11 +133,11 @@ def test_revision_mismatch_rejects_drifted_resume(tmp_path: Path) -> None:
 
 
 def test_interrupt_runtime_lives_under_the_change_without_tree_store(tmp_path: Path) -> None:
-    change = tmp_path / "qa" / "changes" / "CH-DEMO-001"
+    change = tmp_path / "qa"
     runtime = change / ".runtime"
     runtime.mkdir(parents=True)
     (runtime / "leases").mkdir()
     names = {path.name for path in change.rglob("*")}
     assert names.isdisjoint(_FORBIDDEN_TREE_NAMES)
-    assert runtime.parent.parent.name == "changes"
-    assert runtime.parent.parent.parent.name == "qa"
+    assert runtime.parent.name == "qa"
+    assert runtime.name == ".runtime"

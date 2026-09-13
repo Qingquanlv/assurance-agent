@@ -5,9 +5,10 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from agent_runtime_contracts import AgentExecutionContract, AgentPhaseWriteClaims
+from agent_runtime_contracts.qa_paths import qa_route
 from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, TaskAttemptContract
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.plugin_api import AttemptContractRef, ResourceClaimTemplate
+from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
@@ -21,6 +22,7 @@ from assurance_quality.contracts.agent import (
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
     AssessmentSkillInputV1,
+    FactBaselineSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     FinalizedReportV1,
@@ -37,7 +39,7 @@ _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{{change_id}}/{suffix}" for suffix in suffixes))
+    return qa_route(*suffixes)
 
 
 def _job(
@@ -60,8 +62,7 @@ def _job(
         input_model=input_model,
         agent_result_model=result_model,
         output_model=output_model or result_model,
-        resources=ResourceClaimTemplate(
-            parameters={"change_id": "/change_id"},
+        resources=ResourceClaims(
             reads=("qa",),
             writes=_paths(*outputs),
         ),
@@ -79,7 +80,7 @@ _JOBS: tuple[tuple[str, str, str, type[Any], tuple[str, ...], type[Any], type[An
         _DOC_AUTHOR,
         FactBaselineResultV1,
         ("facts/fact-baseline.json",),
-        AssessmentSkillInputV1,
+        FactBaselineSkillInputV1,
         FinalizedFactBaselineV1,
     ),
     (
@@ -146,7 +147,6 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
     resources=ResourceClaimTemplate(
         parameters={
             "batch_id": "/execution/batch_id",
-            "change_id": "/reviewed_case/change_id",
             "coverage_epoch": "/coverage_epoch_token",
         },
         reads=(
@@ -154,15 +154,15 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
             ".aa/data-knowledge.yaml",
             ".aa/policy.yaml",
             "issues",
-            "qa/changes/{change_id}",
+            "qa",
         ),
-        writes=(
-            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
-            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
-            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/observations.json",
-            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/issue-evidence-manifest.json",
-            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
-            "qa/changes/{change_id}/inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",
+        writes=_paths(
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/observations.json",
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/issue-evidence-manifest.json",
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",
         ),
     ),
     retry=_TASK_RETRY,
@@ -186,6 +186,7 @@ QUALITY_GRAPH_EXPORTS: tuple[str, ...] = (
     "issue_analyze",
     "issue_reconcile",
     "report",
+    "fact_baseline",
 )
 
 

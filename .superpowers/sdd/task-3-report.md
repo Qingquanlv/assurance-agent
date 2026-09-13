@@ -1,96 +1,80 @@
-# Task 3 Report: Lever 2 — treat v4/v5 resume like v6 (skip topology audit)
+# Task 3 Report: Generation subgraph `init_runtime`
 
-**Status:** DONE  
-**Branch:** `chore/slimming-dead-paths`  
-**Commit:** `d177795` — `fix: skip v4/v5 topology audit on resume`
+## Status
 
-## What was implemented
-
-v4/v5 same-definition resume now takes the v6 short-circuit: `allowed=True`, no topology receipt.
-
-- `evaluate_resume_compatibility` returns the v6 decision for every schema version. The legacy audit body was removed from this function; `audit_topology_for_resume`, receipt helpers, and `assess_remaining_work` stay in the file.
-- Runtime wrappers `_compatibility_decision_readonly` and `_enforce_resume_compatibility` always return `allowed=True` without loading a bundle, receipt, or calling evaluate’s audit path.
-- `supersede.py`, `aa workflow supersede`, and `evaluate_supersede_eligibility` were not changed. `test_supersede.py` still constructs blocked decisions for eligibility unit tests.
-- Same-definition resume still fail-closes on digest drift via `_resolve_bundle` / `assert_live_semantic_compatibility` (unchanged).
-- README + release-note sentences that claimed resume still blocks with `legacy_commit_safety_semantics_unbound` were updated. The reason string remains in the docs corpus (supersede eligibility). `test_docs_contract.py` did not need assertion changes.
+DONE_WITH_CONCERNS
 
 ## TDD Evidence
 
-### RED
+### RED (Step 2)
+
+Factory field tuple and bound-contract counts were updated first. `test_init_runtime_graph.py` was added. Production `GenerationGraphs` still had five fields and did not bind `assurance.generation.init-test-runtime`.
 
 Command:
 
-```
-uv run pytest tests/unit/workflow/graph/test_resume_compatibility.py::test_v4_and_v5_skip_legacy_topology_audit_like_v6 -v
-```
-
-Result: **FAILED** (exit 1)
-
-```
-E           AssertionError: assert False is True
-E            +  where False = ResumeCompatibilityDecision(..., allowed=False, reason='legacy_commit_safety_semantics_unbound', ..., event_schema_version=4, ...).allowed
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests/test_generation_graph_factory.py::test_generation_factory_exports_root_and_four_families packages/capabilities/assurance-generation/tests/test_init_runtime_graph.py -v
 ```
 
-Failure was the missing short-circuit on v4 (pending codegen fixture), not a typo.
-
-### GREEN
-
-After the unconditional skip in `evaluate_resume_compatibility`:
+Output:
 
 ```
-uv run pytest tests/unit/workflow/graph/test_resume_compatibility.py::test_v4_and_v5_skip_legacy_topology_audit_like_v6 -v
+FAILED test_generation_factory_exports_root_and_four_families
+  AssertionError: assert ('generation', 'api', 'e2e', 'fuzz', 'performance')
+                   == ('generation', 'api', 'e2e', 'fuzz', 'performance', 'init_runtime')
+
+FAILED test_init_runtime_is_a_one_attempt_graph
+  AttributeError: 'GenerationGraphs' object has no attribute 'init_runtime'
 ```
 
-Result: **1 passed, 1 warning in 0.56s** (exit 0)
+Exit code: 1. Failures matched the missing field / missing subgraph, not typos.
 
-Covering suite:
+### GREEN (Step 4)
 
-```
-uv run pytest \
-  tests/unit/workflow/graph/test_resume_compatibility.py \
-  tests/unit/workflow/graph/test_supersede.py \
-  tests/unit/test_docs_contract.py \
-  tests/integration/test_graph_runtime.py \
-  tests/integration/test_graph_runtime_faults.py \
-  -v
+Command:
+
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests/test_generation_graph_factory.py packages/capabilities/assurance-generation/tests/test_init_runtime_graph.py -v
 ```
 
-Result: **112 passed, 1 warning in 55.65s** (exit 0)
-
-The one warning is pre-existing and unrelated:
+Output:
 
 ```
-assurance_agent/workflow/graph/models.py:70: UserWarning: Field name "schema" in "CompiledWorkflow" shadows an attribute in parent "BaseModel"
+============================== 20 passed in 1.91s ==============================
 ```
 
-Lint on touched Python: `ruff check` clean, `ruff format --check` clean, `pyright` 0 errors.
+Exit code: 0
 
-## Files changed
+Focused ruff on the new/changed graph files and `test_init_runtime_graph.py` is clean. `test_generation_graph_factory.py` already has a pre-existing `ruff format` wrap on `allowed_artifact_paths`; that line was not reformatted.
 
-Committed (this task only):
+## What changed
 
-| Path | Action |
+- `GenerationGraphs.init_runtime` is the last dataclass field, after `performance`.
+- The subgraph is a one-attempt graph: `generation.init-test-runtime` binds contract id `assurance.generation.init-test-runtime` (not the handler id).
+- `select_init_runtime` / `activation_init_runtime` / `publish_init_runtime` live in `nodes.py` with the brief names and shapes.
+- Local `terminal_done` in `init_runtime.py` sets `status` to `completed` or `failed`. It does not call `generation_done` (that requires `GenerationCycleResultV1`) and does not reuse family `nodes.terminal_done` (that sets `passed`).
+- `route_attempt_result` maps `committed` → `done` and `failed` → `failed`.
+- The family generation root (`_build_root_graph`) was not changed.
+- `GenerationState` gained optional `data_knowledge` and `init_result`.
+
+## Files Changed
+
+| File | Action |
 |------|--------|
-| `assurance_agent/workflow/graph/resume_compatibility.py` | unconditional skip in `evaluate_resume_compatibility` |
-| `assurance_agent/workflow/graph/runtime.py` | wrappers always no-op |
-| `tests/unit/workflow/graph/test_resume_compatibility.py` | new skip test; v4/v5 evaluate tests expect `allowed=True` / `receipt is None` |
-| `README.md` | resume line no longer claims the unbound resume block |
-| `docs/release-notes/2026-08-four-layer-assurance.md` | same-definition resume skip; reason kept for supersede |
+| `assurance_generation/graphs/init_runtime.py` | Created one-attempt subgraph |
+| `assurance_generation/graphs/nodes.py` | `select_init_runtime` / `activation_init_runtime` / `publish_init_runtime` |
+| `assurance_generation/graphs/factory.py` | `init_runtime` field + `build_init_runtime_graph` |
+| `assurance_generation/graphs/state.py` | optional `data_knowledge`, `init_result` |
+| `tests/test_init_runtime_graph.py` | Created; duplicates `recording_context` via `generation_contracts` |
+| `tests/test_generation_graph_factory.py` | field tuple + bound count 14 → 15 |
 
-Not committed (out of scope): `.superpowers/sdd/progress.md`, `.superpowers/sdd/task-3-report.md`
+## Commit
 
-Not modified: `supersede.py`, `evaluate_supersede_eligibility`, `test_docs_contract.py`, `test_supersede.py`
-
-## Self-review
-
-**Completeness:** v4/v5/v6 pending-codegen fixtures now `allowed=True` with `new_receipt is None`. Runtime wrappers never call the audit path. `audit_topology_for_resume` remains. Supersede CLI/eligibility unchanged.
-
-**Quality / discipline:** Evaluate signature kept (callers still pass bundle/receipt args). Audit helpers left in `resume_compatibility.py` rather than a large delete. Runtime `_load_topology_compatibility_receipt` / `_legacy_profile_reconstructable` are now unused; left in place to avoid an extra delete in this slice.
-
-**Testing:** New test failed first on v4 `legacy_commit_safety_semantics_unbound`, then passed. Evaluate-based v4/v5 block tests were rewritten to the skip assertions. Receipt round-trip still uses `build_topology_compatibility_receipt` (evaluate no longer emits receipts). Eligibility tests still construct a blocked decision.
-
-**Findings:** none to fix in production.
+none
 
 ## Concerns
 
-None that affect correctness. Leftover unused runtime helpers (`_load_topology_compatibility_receipt`, `_legacy_profile_reconstructable`) and `_selected_layers` can be deleted in a later slimming slice.
+1. **Product constructors will break until Task 5.** `GenerationGraphs(...)` is constructed without `init_runtime` in `tests/product/test_stategraph_entrypoints.py`, `tests/product/test_product_stategraph_flow.py`, and `tests/product/goal_loop_fixture.py`. The plan already schedules those updates.
+2. **`publish_init_runtime` writes `receipts`, but `GenerationState` does not declare that field.** The brief only asked for optional `data_knowledge` / `init_result`. LangGraph may drop undeclared `receipts` on this subgraph state.
+3. **`GENERATION_GRAPH_CONTRACT_IDS` still omits `assurance.generation.init-test-runtime`.** That tuple lives in `attempts.py`, which is outside this task’s file list (Task 2 leftover).
+4. **No invoke/script test** of the subgraph — only node presence and factory binding counts, as specified.

@@ -20,6 +20,7 @@ from assurance_quality.contracts.attempts import (
 )
 from assurance_quality.contracts.assessment import (
     AssessmentSkillInputV1,
+    FactBaselineSkillInputV1,
     FinalizedFactBaselineV1,
     FinalizedInspectionV1,
     FinalizedReportV1,
@@ -47,15 +48,15 @@ def test_quality_owns_five_agent_contracts() -> None:
         ".aa/data-knowledge.yaml",
         ".aa/policy.yaml",
         "issues",
-        "qa/changes/CH-1",
+        "qa",
     )
     assert resolved.writes == (
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/coverage-gaps.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/metrics.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/observations.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
-        "qa/changes/CH-1/inspect/epochs/2/batches/B-1/trace.json",
+        "qa/results/inspect/epochs/2/batches/B-1/coverage-gaps.json",
+        "qa/results/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
+        "qa/results/inspect/epochs/2/batches/B-1/metrics.json",
+        "qa/results/inspect/epochs/2/batches/B-1/observations.json",
+        "qa/results/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
+        "qa/results/inspect/epochs/2/batches/B-1/trace.json",
     )
     expected = {
         "fact-baseline": ("aa-fact-baseline", "assurance-v1-doc-author", FactBaselineResultV1),
@@ -77,7 +78,7 @@ def test_quality_owns_five_agent_contracts() -> None:
         assert contract.skill_id == skill_id
         assert contract.agent_profile == profile
         expected_input = {
-            "fact-baseline": AssessmentSkillInputV1,
+            "fact-baseline": FactBaselineSkillInputV1,
             "inspect": AssessmentSkillInputV1,
             "report": ReportSkillInputV1,
         }.get(base, QualitySkillInputV1)

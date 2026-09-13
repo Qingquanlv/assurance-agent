@@ -1,92 +1,148 @@
-# Task 7 Report — Inline Durable Effects, Acknowledgements, Retry Sidecar
+# Task 7 Report: Repo gate for the touched wheels
 
-## Status: DONE
+## Status
 
-**Plan:** `docs/superpowers/plans/2026-08-01-four-layer-assurance-verification.md` Task 7  
-**Worktree tip at fix pass start:** `e453b51` (prior land)  
-Edit + test only (no git add/commit). Cursor-loop helpers left alone.
+DONE
 
-## What Was Implemented
+## TDD Evidence
 
-### New modules
-- `assurance_agent/workflow/graph/durable_effects.py` — `DurableEffectIntentV1`, `DurableEffectAcknowledgementV1`, `DurableEffectContext`, `EffectRegistry` / `EffectRegistration`, deterministic `derive_effect_id`, contract cardinality validation, `reconcile_effect`, unacked scan, integrity terminal helper. Production registry is empty.
-- `assurance_agent/workflow/graph/effect_retry.py` — exact D14 `EffectRetryStateV1`, CAS `EffectRetryStore` (`load` / `schedule_next` / `clear_if_acknowledged`), explicit RFC 3339 `Z` parse/format, capped backoff, `RootTerminalFenceStateV1` + `RootEffectFenceStore.guard/prepare_terminal/commit_terminal/abort_prepared`.
+The brief is implement-then-verify (focused ruff / pyright / pytest, then leftover init counts). No separate RED flip was required.
 
-### Wired into runtime
-- `ExecutionContract.durable_effects` defaults `()`; catalog load rejects unregistered kinds against the production registry.
-- `TaskResult.durable_effects` defaults empty; scheduler validates intents **before** one `TaskAttemptSucceededEvent` and embeds full canonical intents inline (no pending record).
-- New graph events: `durable_effect_acknowledged`, `durable_effect_integrity_failed`; success event gains `durable_effects`.
-- Checkpoint fold stores intents, requires commit before ack, idempotent exact duplicate acks, conflicting ack → integrity failure.
-- Planner predecessor readiness: succeeded **and** `outputs_committed` **and** all effect IDs acknowledged.
-- Recovery barrier: pending writes/publications first, then reconcile unacked effects (fence guard, retry sidecar on retryable, integrity terminal on permanent), then materialize/plan.
-- Status exposes `unacknowledged_durable_effects`.
+### Step 1: Format / lint
 
-## Follow-up fixes (this pass)
+Command:
 
-| ID | Fix |
-|----|-----|
-| P1 | `_reconcile_durable_effects` catches `RootTerminalFenceError` from `schedule_next` (same clean no-progress suppress as reconcile path) |
-| P2 | Fold of `durable_effect_acknowledged` requires kind / reconciler_semantics_digest / payload_sha256 match the exact inline intent |
-| P2 | Fan-out `_seed_fan_out` / `_decide_fan_out` / `fan_out_state_updates` use `_task_ready_as_predecessor`; `_has_inflight` treats uncommitted/unacked success as in-flight |
-| P2 | `TaskAttemptStartedEvent.target` + `TaskProjection.target` stamped from `ExecutableTask.target`; recovery builds `DurableEffectContext.target` from that contract/operation identity |
-
-### Regression coverage
-- `test_reconcile_uses_operation_target_and_suppresses_fence_on_retry_schedule`
-- `test_crash_cut_before_success_leaves_no_inline_intent`
-- `test_durable_effect_ack_must_bind_inline_intent_digests`
-- `test_fan_out_waits_for_committed_and_acked_children`
-- Fan-out / planner fixture helpers default `outputs_committed=True` for succeeded tasks
-
-## Dark-ship preserved
-- Production registry length/kinds empty (asserted).
-- Packaged contracts select no `durable_effects`.
-- Existing handlers return no intents; no packaged operation selects an effect.
-- Root fence/retry seam unused by packaged supersede until Task 13; healing kinds register in Task 8.
-
-## Verify
-
-```text
-uv run pytest -q \
-  tests/unit/workflow/graph/test_durable_effects.py \
-  tests/unit/workflow/graph/test_effect_retry.py \
-  tests/unit/workflow/graph/test_contracts.py \
-  tests/unit/workflow/graph/test_scheduler.py \
-  tests/unit/workflow/graph/test_checkpoint.py \
-  tests/integration/test_graph_runtime_faults.py
-→ 226 passed
-
-uv run ruff check assurance_agent/workflow/graph \
-  assurance_agent/workflow/core/graph_events.py \
-  tests/unit/workflow/graph
-→ All checks passed
-
-uv run pyright
-→ 0 errors, 0 warnings, 0 informations
+```bash
+uv run ruff check packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product && uv run ruff format packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product
 ```
 
-Also green locally: `test_fanout_budget.py` + `test_planner.py` (311 with the above extras).
+First run output:
 
-## Files ready to stage (integrator owns commit)
+```
+All checks passed!
+10 files reformatted, 198 files left unchanged
+```
 
-**Uncommitted fix delta (on top of `e453b51`)**
-- `assurance_agent/workflow/core/graph_events.py` — `TaskAttemptStartedEvent.target`
-- `assurance_agent/workflow/graph/models.py` — `TaskProjection.target`
-- `assurance_agent/workflow/graph/scheduler.py` — stamp target on started
-- `assurance_agent/workflow/graph/checkpoint.py` — fold target + ack digest binding
-- `assurance_agent/workflow/graph/runtime.py` — fence catch on schedule_next; context.target from projection
-- `assurance_agent/workflow/graph/planner.py` — fan-out / inflight / reduce readiness
-- `tests/unit/workflow/graph/test_durable_effects.py`
-- `tests/unit/workflow/graph/test_checkpoint.py`
-- `tests/unit/workflow/graph/test_fanout_budget.py`
+Exit code: 0
 
-**Do not stage**
-- `benchmark/.../cursor-loop-helpers.sh`
-- `tests/unit/benchmark/test_cursor_loop_helpers.py`
+Re-run after count/declaration edits:
 
-Suggested follow-up commit message: `fix(graph): harden durable-effect ack, fence, and fan-out readiness`
+```bash
+uv run ruff check packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product && uv run ruff format --check packages/capabilities/assurance-generation packages/products/assurance-product benchmark/assurance-product/run_item.py tests/product
+```
 
-## Self-review
-- Intent validation fails as `invalid_output` before success append.
-- Ack requires matching inline intent digests + committed superstep.
-- Retry sidecar never creates task attempts; fence during retry schedule cannot escape the recovery barrier.
-- Fan-out parent/aggregate/reduce cannot settle on bare succeeded children.
+Output:
+
+```
+All checks passed!
+208 files already formatted
+```
+
+Exit code: 0
+
+### Step 2: Typecheck
+
+Command:
+
+```bash
+uv run pyright packages/capabilities/assurance-generation/assurance_generation packages/products/assurance-product/assurance_product
+```
+
+Output:
+
+```
+0 errors, 1 warning, 0 informations
+```
+
+Exit code: 0
+
+The single warning is pre-existing `reportMissingModuleSource` for `jsonschema` in `assurance_generation/resources/test-runtime/tests/schema_validation.py` (wheel harness template). No flood of include-override errors, so repo-root `uv run pyright` was not needed.
+
+### Step 3: Focused pytest
+
+Command:
+
+```bash
+uv run pytest packages/capabilities/assurance-generation/tests/test_init_runtime.py packages/capabilities/assurance-generation/tests/test_init_runtime_graph.py packages/capabilities/assurance-generation/tests/test_generation_graph_factory.py packages/capabilities/assurance-generation/tests/test_plugin.py tests/product/test_product_input.py tests/product/test_product_entrypoints.py tests/product/test_feature_graph_bundles.py tests/product/test_product_stategraph_flow.py tests/product/test_phase5_benchmark_change_layout.py -v
+```
+
+Output (after leftover fixes):
+
+```
+============================= 142 passed in 18.15s =============================
+```
+
+Exit code: 0
+
+Did not run or “fix” `packages/capabilities/assurance-generation/tests/test_plan_consistency.py::test_check_collects_cross_artifact_contradictions_in_one_pass`. Did not start a live `aa run`.
+
+### Extra leftover verification (not in the brief list)
+
+Command:
+
+```bash
+uv run pytest tests/product/test_semantic_attempt_bindings.py tests/product/test_product_composition.py tests/product/test_python_native_cutover.py tests/product/test_wheel_smoke_contract.py tests/product/test_stategraph_entrypoints.py -q
+```
+
+Output:
+
+```
+72 passed in 21.07s
+```
+
+Exit code: 0
+
+`tests/product/test_product_providers.py` (declaration bytes) also passed after regenerating the committed product declaration.
+
+## What changed
+
+- Closed semantic-attempt registry asserts are `47` (32 agent + 15 task). Task count asserts are `15`. Public root asserts are `15`.
+- `GENERATION_GRAPH_CONTRACT_IDS` now includes `assurance.generation.init-test-runtime`.
+- Committed `product-declaration-opencode.json` now lists `init` (regenerated via `write_committed_product_declarations()`). Composition was still serving the 14-root declaration.
+- Stale “twelve thin roots” test names are “thirteen”. `_THIN_EXPORTS` includes `init` → `assurance.generation.init_runtime`; `_CHILD_STATE` includes `GenerationState`.
+- Smoke script and its contract test expect `15 roots` and `47` attempt contracts.
+
+## Files Changed
+
+| File | Action |
+|------|--------|
+| `assurance_generation/contracts/attempts.py` | Append `init-test-runtime` to `GENERATION_GRAPH_CONTRACT_IDS` |
+| `assurance_product/product-declaration-opencode.json` | Regenerated; `init` is a public root |
+| `scripts/assurance_product_wheel_smoke_test.sh` | 14→15 roots; 46→47 attempt contracts |
+| `tests/product/test_semantic_attempt_bindings.py` | Registry 46→47; tasks 14→15 |
+| `tests/product/test_product_composition.py` | Attempt sum 46→47; entrypoints 14→15 |
+| `tests/product/test_python_native_cutover.py` | Boot contracts 46→47 |
+| `tests/product/test_wheel_smoke_contract.py` | Expect 15 roots / 47 in the smoke script |
+| `tests/product/test_stategraph_entrypoints.py` | `_THIN_EXPORTS` + `init`; rename twelve→thirteen |
+| `tests/product/test_product_stategraph_flow.py` | Rename twelve→thirteen |
+
+First `ruff format` also reformatted 10 already-scoped files (style only).
+
+## Commit
+
+none
+
+## Concerns
+
+1. Scoped pyright reports one pre-existing warning (`jsonschema` missing in the harness template). Zero errors.
+2. `init` is in `_THIN_EXPORTS` but still not in `_REPRESENTATIVE_THIN_ENTRYPOINTS` invoke tests. Wiring stays covered by factory compile and intake/full stubs.
+
+## Final-review fix
+
+Coverage re-entry now counts `init` the same way as prepare/case (`{"prepare": 1, "init": 1, "case": 2}`). Added `test_full_init_failure_does_not_enter_case`: init stub returns `status="failed"` plus `attempt_failure`; case is never called; full terminal is `{"status": "failed", "reason": "not_achieved"}`. No production wiring change.
+
+Command:
+
+```bash
+uv run pytest tests/product/test_product_stategraph_flow.py -v
+```
+
+Output:
+
+```
+============================== 23 passed in 2.04s ==============================
+```
+
+Exit code: 0
+
+Files changed: `tests/product/test_product_stategraph_flow.py` only.

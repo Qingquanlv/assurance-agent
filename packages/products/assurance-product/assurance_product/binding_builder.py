@@ -31,12 +31,12 @@ from assurance_product.models import (
 _WHEEL_EPOCH = (1980, 1, 1, 0, 0, 0)
 _FILE_MODE = 0o644
 _CAPABILITY_DEPENDENCIES: tuple[tuple[str, str], ...] = (
-    ("assurance.intake", "==0.2.0"),
-    ("assurance.generation", "==0.2.0"),
-    ("assurance.execution", "==0.2.0"),
-    ("assurance.healing", "==0.2.0"),
-    ("assurance.quality", "==0.2.0"),
-    ("assurance.improvement", "==0.2.0"),
+    ("assurance.intake", "==0.3.0"),
+    ("assurance.generation", "==0.3.0"),
+    ("assurance.execution", "==0.3.0"),
+    ("assurance.healing", "==0.3.0"),
+    ("assurance.quality", "==0.3.0"),
+    ("assurance.improvement", "==0.3.0"),
 )
 _CAPABILITY_PLUGIN_IMPORTS: tuple[tuple[str, str], ...] = (
     ("assurance_intake.plugin", "IntakePlugin"),
@@ -721,7 +721,7 @@ def _binding_documents(bindings: DeploymentBindingsV1) -> tuple[dict[str, object
 def _metadata_bytes(distribution: str) -> bytes:
     requirements = [
         "graph-engine==0.2.0",
-        *(f"{name}==0.2.0" for name, _ in _CAPABILITY_DEPENDENCIES),
+        *(f"{name}==0.3.0" for name, _ in _CAPABILITY_DEPENDENCIES),
     ]
     lines = [
         "Metadata-Version: 2.1",

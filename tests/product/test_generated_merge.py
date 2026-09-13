@@ -21,12 +21,12 @@ from assurance_product.generated_merge import (
 FAMILIES = ("api", "e2e", "fuzz", "performance")
 CHANGE_ID = "CH-DEMO-001"
 FAMILY_TARGETS = {
-    "api": "tests/api/test_users.py",
-    "e2e": "tests/e2e/test_users.py",
-    "fuzz": "tests/fuzz/test_users.py",
-    "performance": "tests/perf/test_users.py",
+    "api": "qa/tests/api/test_users.py",
+    "e2e": "qa/tests/e2e/test_users.py",
+    "fuzz": "qa/tests/fuzz/test_users.py",
+    "performance": "qa/tests/perf/test_users.py",
 }
-SHARED_TARGET = "tests/testdata/domain/users.py"
+SHARED_TARGET = "qa/tests/testdata/domain/users.py"
 
 
 def _digest(content: bytes) -> str:
@@ -34,7 +34,8 @@ def _digest(content: bytes) -> str:
 
 
 def _staged_path(family: str, target: str, change_id: str = CHANGE_ID) -> str:
-    return f"qa/changes/{change_id}/generated/{family}/files/{target}"
+    del family, change_id
+    return target if target.startswith("qa/tests/") else f"qa/tests/{target.removeprefix('tests/')}"
 
 
 def _write_bytes(root: Path, relative: str, content: bytes, *, mode: int | None = None) -> Path:
@@ -75,7 +76,7 @@ def _write_manifest(
     }
     _write_bytes(
         project,
-        f"qa/changes/{change_id}/codegen/{family}-generated-files.json",
+        f"qa/results/codegen/{family}-generated-files.json",
         json.dumps(document).encode("utf-8"),
     )
 
@@ -119,7 +120,7 @@ def _promote_family(
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     (project / "tests" / "api").mkdir(parents=True)
     return project
 
@@ -165,13 +166,15 @@ def test_merge_generated_rejects_a_manifest_member_missing_on_disk(tmp_path: Pat
         merge_generated(project, CHANGE_ID, ("api",))
 
 
-def test_merge_generated_rejects_extra_on_disk_files(tmp_path: Path) -> None:
+def test_merge_generated_ignores_extra_on_disk_files(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    _promote_family(project, "api", FAMILY_TARGETS["api"], b"api\n")
+    expected = _promote_family(project, "api", FAMILY_TARGETS["api"], b"api\n")
     _write_bytes(project, _staged_path("api", "tests/api/extra.py"), b"extra\n")
 
-    with pytest.raises(ValueError, match="extra"):
-        merge_generated(project, CHANGE_ID, ("api",))
+    merged = merge_generated(project, CHANGE_ID, ("api",))
+
+    assert [item.target_path for item in merged.files] == [expected.target_path]
+    assert (project / "qa" / "tests" / "api" / "extra.py").read_bytes() == b"extra\n"
 
 
 def test_merge_generated_accepts_identical_duplicate_ownership(tmp_path: Path) -> None:
@@ -198,11 +201,16 @@ def test_merge_generated_rejects_conflicting_shared_ownership(tmp_path: Path, fi
     _promote_family(project, "api", SHARED_TARGET, content, operation="generated")
     if field == "bytes":
         _promote_family(project, "e2e", SHARED_TARGET, b"other-bytes\n", operation="generated")
-    elif field == "mode":
+        with pytest.raises(ValueError, match="digest"):
+            merge_generated(project, CHANGE_ID, ("api", "e2e"))
+        return
+    if field == "mode":
         _promote_family(project, "e2e", SHARED_TARGET, content, operation="generated", mode=0o600)
-    else:
-        _promote_family(project, "e2e", SHARED_TARGET, content, operation="updated")
-
+        merged = merge_generated(project, CHANGE_ID, ("api", "e2e"))
+        assert len(merged.files) == 1
+        assert merged.files[0].target_path == SHARED_TARGET
+        return
+    _promote_family(project, "e2e", SHARED_TARGET, content, operation="updated")
     with pytest.raises(ValueError, match="conflict"):
         merge_generated(project, CHANGE_ID, ("api", "e2e"))
 
@@ -254,5 +262,5 @@ def test_merge_generated_does_not_write_the_sut(tmp_path: Path) -> None:
     merged = merge_generated(project, CHANGE_ID, ("api",))
 
     assert original.read_bytes() == b"original-sut\n"
-    assert merged.sources[FAMILY_TARGETS["api"]].startswith(f"qa/changes/{CHANGE_ID}/generated/api/files/")
+    assert merged.sources[FAMILY_TARGETS["api"]].startswith("qa/tests")
     assert (project / merged.sources[FAMILY_TARGETS["api"]]).read_bytes() == b"generated\n"

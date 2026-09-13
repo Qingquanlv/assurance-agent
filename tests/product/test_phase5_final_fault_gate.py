@@ -91,6 +91,12 @@ EXPECTED_SUPERSEDED_FAULT_IDS = (
     "initial-tree-publication-cut",
     "initial-tree-durable-before-intent",
     "repeated-start-seed-drift",
+    "export-file-write",
+    "export-rename",
+    "export-directory-fsync",
+    "export-destination-race",
+    "export-destination-symlink",
+    "export-destination-hardlink",
     "comparison-input-drift",
     "comparison-one-side-running",
     "comparison-partial-report",
@@ -104,7 +110,7 @@ EXPECTED_GAP_FAULT_IDS = (
 EXPECTED_FAULT_GATE_NODE_IDS = {
     "provider_state_loss_replay": (
         "packages/framework/graph-engine/tests/runtime/test_staged_promotion_recovery.py::test_recovery_consumes_durable_promotion_without_reexecuting_handler",
-        "tests/product/test_replay_properties.py::test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",
+        "tests/product/test_replay_properties.py::test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged",
     ),
     "fault_crash_recovery": (
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_create_cuts_never_issue_a_second_post[before_create]",
@@ -114,9 +120,7 @@ EXPECTED_FAULT_GATE_NODE_IDS = {
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[before_prompt_post]",
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_admission_before_response]",
         "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_prompt_cuts_converge_to_one_admission[after_lost_success_response]",
-        "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[prepared]",
-        "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[replacing]",
-        "tests/product/test_publish_recovery.py::test_crash_after_journal_phase_then_resume[committed]",
+        "tests/product/test_cli_fail_closed.py::test_cli_has_no_export_or_archive_commands",
     ),
     "stop_interrupt": (
         "tests/product/test_stop_and_interrupts.py::test_revision_mismatch_rejects_drifted_resume",
@@ -162,7 +166,7 @@ def test_original_task26_fault_rows_have_an_exact_closed_node_mapping() -> None:
         for fault_id in EXPECTED_PHASE5_FAULT_IDS
         if conformance.PHASE5_FAULT_EVIDENCE[fault_id].evidence_kind == "direct"
     )
-    assert len(coverage) == len(set(coverage)) == 63
+    assert len(coverage) == len(set(coverage)) == 57
     selected_nodes = {node_id for category in manifest.values() for node_id in category}
     assert set(coverage.values()) <= selected_nodes
     evidence = conformance.audit_gate_nodes(REPO_ROOT, tuple(dict.fromkeys(coverage.values())))
@@ -177,7 +181,7 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     direct = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "direct")
     superseded = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "superseded")
     gaps = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "gap")
-    assert len(direct) == 63
+    assert len(direct) == 57
     assert superseded == EXPECTED_SUPERSEDED_FAULT_IDS
     assert gaps == EXPECTED_GAP_FAULT_IDS
     assert all(
@@ -191,8 +195,8 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     assert state.release_complete is False
     assert state.superseded_fault_ids == EXPECTED_SUPERSEDED_FAULT_IDS
     assert state.gap_fault_ids == EXPECTED_GAP_FAULT_IDS
-    assert state.direct_count == 63
-    assert state.superseded_count == 8
+    assert state.direct_count == 57
+    assert state.superseded_count == 14
     assert state.gap_count == 2
     assert "blocked" in state.detail.lower()
 

@@ -8,17 +8,27 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts.schema import bound_redacted_diagnostics, thaw_json
+from agent_runtime_contracts.schema import (
+    PASSWORD_ASSIGNMENT_PATTERN,
+    bound_redacted_diagnostics,
+    is_credential_key,
+    thaw_json,
+)
 
 
+_BEARER_TOKEN = r"\S{8,}"
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
-    re.compile(r"(?i)bearer\s+\S+"),
+    PASSWORD_ASSIGNMENT_PATTERN,
+    re.compile(r"""(?i)\bauthorization["']?\s*[:=](?!=)[^\r\n]+"""),
+    re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
     re.compile(r"sk-[A-Za-z0-9-]+"),
-    re.compile(r"(?i)api[_-]?key\s*[=:]\s*\S+"),
+    re.compile(r"(?i)api[_-]?key\s*[=:](?!=)\s*\S+"),
     re.compile(r"(?i)https?://[^/\s:@]+:[^/\s:@]+@"),
-    re.compile(r"(?i)[A-Z0-9_]*(SECRET|TOKEN|PASSWORD|API_KEY)[A-Z0-9_]*\s*=\s*\S+"),
+    re.compile(
+        r"(?i)(?:^|[^A-Za-z0-9_])[A-Z0-9_]*?(?:SECRET|TOKEN|PASSWORD|API_KEY)"
+        r"[A-Z0-9_]*\s*(?<![!=])=(?!=)\s*\S+"
+    ),
 )
 _DEFAULT_LIMIT = 240
 
@@ -76,8 +86,10 @@ def redact_json(value: object, *, canaries: Sequence[str | bytes] = ()) -> objec
         return redact_text(thawed, canaries=canaries)
     if isinstance(thawed, Mapping):
         return {
-            redact_text(key, canaries=canaries) if isinstance(key, str) else key: redact_json(
-                item, canaries=canaries
+            redact_text(key, canaries=canaries) if isinstance(key, str) else key: (
+                "[redacted]"
+                if isinstance(key, str) and is_credential_key(key)
+                else redact_json(item, canaries=canaries)
             )
             for key, item in thawed.items()
         }
@@ -92,6 +104,8 @@ def _payload_contains_canary(value: object, *, canaries: Sequence[str | bytes]) 
         return redact_text(thawed, canaries=canaries) != thawed
     if isinstance(thawed, Mapping):
         for key, item in thawed.items():
+            if isinstance(key, str) and is_credential_key(key):
+                return True
             if isinstance(key, str) and redact_text(key, canaries=canaries) != key:
                 return True
             if _payload_contains_canary(item, canaries=canaries):
@@ -105,6 +119,23 @@ def _payload_contains_canary(value: object, *, canaries: Sequence[str | bytes]) 
 def reject_canaries_in_payload(value: object, *, canaries: Sequence[str | bytes] = ()) -> None:
     if _payload_contains_canary(value, canaries=canaries):
         raise ValueError("structured result contains a credential")
+
+
+def reject_service_canaries_in_result(value: object, *, canaries: Sequence[str | bytes]) -> None:
+    """Reject known service secrets without reinterpreting schema-authorized business fields."""
+    texts = _canary_texts(canaries)
+
+    def contains_canary(item: object) -> bool:
+        if isinstance(item, str):
+            return any(text in item for text in texts)
+        if isinstance(item, Mapping):
+            return any(contains_canary(key) or contains_canary(value) for key, value in item.items())
+        if isinstance(item, list | tuple):
+            return any(contains_canary(value) for value in item)
+        return False
+
+    if contains_canary(value):
+        raise ValueError("structured result contains a service credential")
 
 
 def bound_redacted_messages(

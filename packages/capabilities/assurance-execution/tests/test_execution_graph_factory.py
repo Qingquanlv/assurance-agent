@@ -80,7 +80,7 @@ def execution_graph_input(
         "change_id": change_id,
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/{change_id}/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "batch_id": "20260822T000000Z",
@@ -109,7 +109,7 @@ def execution_evidence(*, change_id: str = "CH-DEMO-001", status: str = "passed"
             "change_id": change_id,
             "plan_digest": _SHA,
             "plan_ref": {
-                "path": f"qa/changes/{change_id}/plan/{_SHA}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
                 "digest": _SHA,
             },
             "batch_id": "20260822T000000Z",
@@ -164,15 +164,15 @@ def execution_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
 
 def generation_result() -> dict[str, object]:
     ref = lambda path: {"path": path, "digest": _SHA}  # noqa: E731
-    plan_ref = ref(f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json")
+    plan_ref = ref(f"qa/results/plan/{_SHA}/resolved-assurance-plan.json")
     reviewed = {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 2,
         "plan_digest": _SHA,
         "plan_ref": plan_ref,
-        "preparation_refs": [plan_ref, ref("qa/changes/CH-DEMO-001/requirement.md")],
-        "case_refs": [ref("qa/changes/CH-DEMO-001/cases/items/case.yaml")],
-        "review_ref": ref("qa/changes/CH-DEMO-001/review/case-review.json"),
+        "preparation_refs": [ref("qa/requirement.md"), plan_ref],
+        "case_refs": [ref("qa/cases/items/case.yaml")],
+        "review_ref": ref("qa/results/review/case-review.json"),
     }
     return {
         "change_id": "CH-DEMO-001",
@@ -180,9 +180,9 @@ def generation_result() -> dict[str, object]:
         "plan_digest": _SHA,
         "plan_ref": plan_ref,
         "reviewed_case": reviewed,
-        "mapping_ref": ref("qa/changes/CH-DEMO-001/codegen/closed-mapping.json"),
-        "source_refs": [ref("qa/changes/CH-DEMO-001/generated/api/files/tests/a.py")],
-        "plan_refs": [ref("qa/changes/CH-DEMO-001/plans/api-plan.md")],
+        "mapping_ref": ref("qa/results/codegen/closed-mapping.json"),
+        "source_refs": [ref("qa/tests/a.py")],
+        "plan_refs": [ref("qa/results/plans/api-plan.md")],
     }
 
 
@@ -314,8 +314,8 @@ def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) ->
         "CH-DEMO-001",
         capability_leafs=("entities.item.create",),
     )
-    mapping_path = "qa/changes/CH-DEMO-001/codegen/closed-mapping.json"
-    source_path = "qa/changes/CH-DEMO-001/generated/api/files/tests/a.py"
+    mapping_path = "qa/results/codegen/closed-mapping.json"
+    source_path = "qa/tests/a.py"
     mapping_bytes = b"{}"
     source_bytes = b"original"
     for relative, content in ((mapping_path, mapping_bytes), (source_path, b"replaced")):
@@ -329,8 +329,8 @@ def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) ->
     reviewed["plan_digest"] = plan.plan_digest
     reviewed["plan_ref"] = plan_ref
     reviewed["preparation_refs"] = [
+        {"path": "qa/requirement.md", "digest": _SHA},
         plan_ref,
-        {"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA},
     ]
     generation["mapping_ref"] = {
         "path": mapping_path,

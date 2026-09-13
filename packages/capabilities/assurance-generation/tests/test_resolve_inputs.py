@@ -52,9 +52,9 @@ def _fixture(
 ) -> tuple[ReviewedCaseV1, EvidenceArtifactRefV1]:
     plan, plan_ref_payload = install_plan(root, "CH-DEMO-001")
     plan_ref = EvidenceArtifactRefV1.model_validate(plan_ref_payload)
-    preparation = _write(root, "qa/changes/CH-DEMO-001/requirement.md", b"requirement")
-    case = _write(root, "qa/changes/CH-DEMO-001/cases/menus/case.yaml", b"case")
-    review = _write(root, "qa/changes/CH-DEMO-001/review/case-review.json", _review(decision))
+    preparation = _write(root, "qa/requirement.md", b"requirement")
+    case = _write(root, "qa/cases/menus/case.yaml", b"case")
+    review = _write(root, "qa/results/review/case-review.json", _review(decision))
     reviewed = ReviewedCaseV1(
         change_id="CH-DEMO-001",
         coverage_epoch=coverage_epoch,
@@ -66,7 +66,7 @@ def _fixture(
     )
     manifest = _write(
         root,
-        "qa/changes/CH-DEMO-001/cases/reviewed-case.json",
+        "qa/cases/reviewed-case.json",
         reviewed.model_dump_json().encode(),
     )
     return reviewed, manifest
@@ -104,7 +104,7 @@ def test_generation_rejects_a_nonpassing_review(tmp_path: Path) -> None:
 
 def test_generation_rejects_case_bytes_changed_after_review(tmp_path: Path) -> None:
     reviewed, manifest = _fixture(tmp_path)
-    (tmp_path / "qa/changes/CH-DEMO-001/cases/menus/case.yaml").write_bytes(b"changed")
+    (tmp_path / "qa/cases/menus/case.yaml").write_bytes(b"changed")
     with pytest.raises(InputError, match="digest changed"):
         resolve_generation_input(
             {

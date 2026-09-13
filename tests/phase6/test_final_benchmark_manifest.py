@@ -25,7 +25,7 @@ RETAINED_COMPARISON_ASSERTIONS = {
     ),
     "replay": (
         "tests/product/test_replay_properties.py",
-        ("test_publish_replay_matches_uninterrupted_projection_for_every_ordered_crash_subset",),
+        ("test_modular_resume_against_legacy_lock_leaves_ledger_bytes_unchanged",),
     ),
     "coverage": (
         "tests/product/test_coverage_loop.py",
@@ -140,11 +140,24 @@ def test_cursor_adapter_packaging_and_live_entries_are_absent(repo_root: Path) -
     assert "agent-runtime-cursor" not in providers.read_text(encoding="utf-8")
 
 
-def test_final_benchmark_keeps_runner_and_projection_layout(repo_root: Path) -> None:
+def test_final_benchmark_keeps_only_the_current_workflow_core(repo_root: Path) -> None:
+    retained_paths = (
+        BENCHMARK_ROOT / "manifest.json",
+        BENCHMARK_ROOT / "run_item.py",
+        BENCHMARK_ROOT / "run-opencode.sh",
+        BENCHMARK_ROOT / "requirements/dept-management.md",
+    )
+    retired_paths = (
+        BENCHMARK_ROOT / "acg_comparison.py",
+        BENCHMARK_ROOT / "eval.py",
+        BENCHMARK_ROOT / "planning-observations.md",
+        BENCHMARK_ROOT / "planning_metrics.py",
+        BENCHMARK_ROOT / "projection.py",
+        repo_root / "benchmark/agent-runtime-phase3",
+    )
+
+    assert all(path.is_file() for path in retained_paths)
+    assert not any(path.exists() for path in retired_paths)
     assert (BENCHMARK_ROOT / "run-opencode.sh").is_file()
     assert not (BENCHMARK_ROOT / "run-cursor.sh").exists()
-    assert (BENCHMARK_ROOT / "run_item.py").is_file()
-    assert (BENCHMARK_ROOT / "eval.py").is_file()
-    assert (BENCHMARK_ROOT / "projection.py").is_file()
-    assert (BENCHMARK_ROOT / "schemas" / "behavioral-projection-v1.json").is_file()
     assert PRODUCT_TESTS.is_dir()

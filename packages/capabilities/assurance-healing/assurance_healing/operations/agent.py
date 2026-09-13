@@ -66,7 +66,7 @@ def agent_workspace(
     try:
         write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        write_root = "qa/changes/_attempt/.staging/write"
+        write_root = "qa/.staging/write"
     if write_root in {".", ""}:
         write_root = ".staging/write"
     payload = {
@@ -216,7 +216,7 @@ class FixProposalPrepareHandler:
                 result_id=FIX_PROPOSAL_RESULT_ID,
                 result_file=_FIX_RESULT_FILE,
                 context=context,
-                allowed_outputs=(f"qa/changes/{business.change_id}/healing/fix-proposal.json",),
+                allowed_outputs=("qa/results/healing/fix-proposal.json",),
             )
         except (InputError, OutputError) as error:
             return failed_input(error)
@@ -251,7 +251,7 @@ class FixProposalFinalizeHandler:
                     if path not in allowed or not _under_root(path, business.allowed_roots):
                         raise OutputError(f"undeclared target file: {path}")
                     _workspace_file(context.project_root, path)
-            relative = f"qa/changes/{business.change_id}/healing/fix-proposal.json"
+            relative = "qa/results/healing/fix-proposal.json"
             staged = _workspace_file(context.write_root, relative)
             try:
                 staged_proposal = FixProposalResultV1.model_validate(
@@ -283,7 +283,7 @@ class CoverageRepairPrepareHandler:
                 result_id=COVERAGE_REPAIR_RESULT_ID,
                 result_file=_REPAIR_RESULT_FILE,
                 context=context,
-                allowed_outputs=(f"qa/changes/{business.change_id}/healing/coverage-repair.json",),
+                allowed_outputs=("qa/results/healing/coverage-repair.json",),
             )
         except InputError as error:
             return failed_input(error)

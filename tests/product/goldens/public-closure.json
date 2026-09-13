@@ -30,7 +30,7 @@
           "artifacts": [
             {
               "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "path": "qa/changes"
+              "path": "qa/results"
             }
           ],
           "decision": "pass"
@@ -61,7 +61,7 @@
           "artifacts": [
             {
               "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "path": "qa/changes"
+              "path": "qa/results"
             }
           ],
           "decision": "pass"

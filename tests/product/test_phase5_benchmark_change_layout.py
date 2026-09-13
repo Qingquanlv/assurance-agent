@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import hashlib
 import importlib.util
 from importlib.resources import files
 import json
@@ -17,12 +16,14 @@ import pytest
 import yaml
 
 from assurance_product.opencode_agents import _opencode_config
+from assurance_product.cli import app
+from click.testing import CliRunner
+from tests.acg_plan_fixture import install_plan
 
 from tests.product.test_phase5_benchmark_manifest import (
     FULL_WORKFLOW_REQUIRED_STEPS,
     REPO,
     RUNNER_PATH,
-    TEST_RUNTIME_SEED_ROOT,
 )
 
 ITEM_ID = "opencode-ret-dept-management"
@@ -161,7 +162,6 @@ def _achieved_status(*, change_id: str) -> dict[str, Any]:
         ],
         "execution_gate": None,
         "quality_gate": None,
-        "publication": {"status": "not_ready"},
     }
 
 
@@ -185,14 +185,11 @@ class _FakeAA:
         sut: Path,
         change_id: str,
         terminal: Mapping[str, Any],
-        export_receipt: Mapping[str, Any] | None,
     ) -> None:
         self.sut = sut
         self.change_id = change_id
         self.terminal = dict(terminal)
-        self.export_receipt = export_receipt
         self.commands: list[list[str]] = []
-        self.export_calls = 0
         self.project_dirs: list[str] = []
 
     def _record(self, command: Sequence[str]) -> None:
@@ -202,7 +199,7 @@ class _FakeAA:
             self.project_dirs.append(recorded[recorded.index("--project-dir") + 1])
 
     def _materialize_change(self) -> Path:
-        change_root = self.sut / "qa" / "changes" / self.change_id
+        change_root = self.sut / "qa"
         change_root.mkdir(parents=True, exist_ok=True)
         (change_root / "status.json").write_text(
             json.dumps(self.terminal, indent=2, sort_keys=True) + "\n",
@@ -213,6 +210,10 @@ class _FakeAA:
     def handle_aa(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         self._record(command)
         verb = command[1] if len(command) > 1 else ""
+        if verb not in app.commands:
+            result = CliRunner().invoke(app, list(command[1:]))
+            assert result.exit_code != 0
+            return _completed(result.exit_code, stderr=result.output)
         if verb == "bindings":
             return _completed(
                 0,
@@ -243,14 +244,6 @@ class _FakeAA:
                     }
                 ),
             )
-        if verb == "export":
-            self.export_calls += 1
-            if self.export_receipt is None:
-                return _completed(1, stderr="export must not run")
-            receipt_path = self.sut / "qa" / "changes" / self.change_id / "publish-receipt.json"
-            receipt_path.parent.mkdir(parents=True, exist_ok=True)
-            receipt_path.write_text(json.dumps(self.export_receipt, indent=2, sort_keys=True) + "\n")
-            return _completed(0, json.dumps(self.export_receipt))
         return _completed(1, stderr=f"unexpected aa command: {command}")
 
     def handle_subprocess(self, command: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -318,104 +311,54 @@ def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path
             sqlite_file=Path("/tmp/fake-sut.sqlite3"),
             backend_log=Path("/tmp/fake-backend.log"),
             frontend_log=Path("/tmp/fake-frontend.log"),
-            seed_receipt={"schema_version": "vue-fastapi-admin-tests-runtime/v1"},
         )
 
     monkeypatch.setattr(runner, "_managed_sut_runtime", ready_runtime)
     monkeypatch.setenv("AA_NEXT_OPENCODE_TOKEN", "test-token")
 
 
-def test_runtime_seed_materializes_support_without_touching_existing_case_tests(
-    tmp_path: Path,
+def test_run_item_does_not_materialize_test_runtime_seed() -> None:
+    runner = _load_runner()
+    assert not hasattr(runner, "_materialize_test_runtime_seed")
+    assert not hasattr(runner, "_TEST_RUNTIME_MANIFEST_SHA256")
+
+
+@pytest.mark.parametrize("preflight_failure", (False, True))
+def test_retained_init_receipt_is_not_current_run_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preflight_failure: bool
 ) -> None:
     runner = _load_runner()
     sut = _make_sut(tmp_path)
-
-    receipt = runner._materialize_test_runtime_seed(
-        seed_root=TEST_RUNTIME_SEED_ROOT,
-        project_dir=sut,
-    )
-    runner._validate_test_runtime_symbols(
-        python=Path(sys.executable),
-        project_dir=sut,
-        symbols=tuple(receipt["symbols"]),
-        env=os.environ,
-    )
-
-    assert receipt["schema_version"] == "vue-fastapi-admin-tests-runtime/v1"
-    assert receipt["manifest_digest"] == "0b06f859331fc617db6e8a257f5860e3d070eebfc03c8348bcb16142907c889c"
-    assert (sut / ORIGINAL_TEST).read_bytes() == ORIGINAL_BYTES
-    assert (sut / "tests" / "config.py").is_file()
-    assert (sut / "tests" / "testdata" / "domain" / "dept.py").is_file()
-
-
-def test_runtime_seed_rejects_undeclared_or_tampered_support(tmp_path: Path) -> None:
-    runner = _load_runner()
-    sut = _make_sut(tmp_path)
-    tampered = tmp_path / "tampered-seed"
-    shutil.copytree(TEST_RUNTIME_SEED_ROOT, tampered)
-    (tampered / "tests" / "config.py").write_text("tampered = True\n", encoding="utf-8")
-
-    with pytest.raises(SystemExit, match="digest mismatch"):
-        runner._materialize_test_runtime_seed(seed_root=tampered, project_dir=sut)
-
-    shutil.copytree(TEST_RUNTIME_SEED_ROOT, tampered, dirs_exist_ok=True)
-    (tampered / "tests" / "api" / "test_hidden_oracle.py").write_text(
-        "def test_hidden(): pass\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(SystemExit, match="undeclared files"):
-        runner._materialize_test_runtime_seed(seed_root=tampered, project_dir=sut)
-
-
-def test_runtime_seed_rejects_rehashed_manifest_and_existing_support_drift(tmp_path: Path) -> None:
-    runner = _load_runner()
-    sut = _make_sut(tmp_path)
-    rehashed = tmp_path / "rehashed-seed"
-    shutil.copytree(TEST_RUNTIME_SEED_ROOT, rehashed)
-    config = rehashed / "tests" / "config.py"
-    config.write_text(config.read_text(encoding="utf-8") + "DRIFT = True\n", encoding="utf-8")
-    manifest_path = rehashed / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["files"]["tests/config.py"] = hashlib.sha256(config.read_bytes()).hexdigest()
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    with pytest.raises(SystemExit, match="manifest digest"):
-        runner._materialize_test_runtime_seed(seed_root=rehashed, project_dir=sut)
-
-    existing = sut / "tests" / "config.py"
-    existing.parent.mkdir(parents=True, exist_ok=True)
-    existing.write_text("project_owned = True\n", encoding="utf-8")
-    with pytest.raises(SystemExit, match="existing test runtime support differs"):
-        runner._materialize_test_runtime_seed(seed_root=TEST_RUNTIME_SEED_ROOT, project_dir=sut)
-
-
-def test_runtime_seed_rejects_symlinked_parents_and_hardlinked_targets_before_writing(
-    tmp_path: Path,
-) -> None:
-    runner = _load_runner()
-    symlinked_sut = _make_sut(tmp_path / "symlink")
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (symlinked_sut / "tests" / "testdata").symlink_to(outside, target_is_directory=True)
-
-    with pytest.raises(SystemExit, match="symbolic link"):
-        runner._materialize_test_runtime_seed(
-            seed_root=TEST_RUNTIME_SEED_ROOT,
-            project_dir=symlinked_sut,
+    receipt = sut / "qa/results/init/test-runtime.json"
+    receipt.parent.mkdir(parents=True)
+    retained = b'{"schema_version":"1","change_id":"previous-run"}\n'
+    receipt.write_bytes(retained)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    fake = _FakeAA(sut=sut, change_id=change_id, terminal=_failed_status(change_id=change_id))
+    _wire_fake(runner, monkeypatch, fake, sut)
+    if preflight_failure:
+        monkeypatch.setattr(runner, "_check_opencode", lambda _endpoint: 1)
+    output = tmp_path / "output"
+    assert (
+        runner.main(
+            [
+                "--item",
+                ITEM_ID,
+                "--adapter",
+                "opencode",
+                "--output",
+                str(output),
+                "--nonce",
+                NONCE,
+                "--stamp",
+                STAMP,
+            ]
         )
-    assert not (symlinked_sut / "tests" / "config.py").exists()
-
-    hardlinked_sut = _make_sut(tmp_path / "hardlink")
-    original = tmp_path / "shared-config.py"
-    config_bytes = (TEST_RUNTIME_SEED_ROOT / "tests" / "config.py").read_bytes()
-    original.write_bytes(config_bytes)
-    os.link(original, hardlinked_sut / "tests" / "config.py")
-    with pytest.raises(SystemExit, match="link count"):
-        runner._materialize_test_runtime_seed(
-            seed_root=TEST_RUNTIME_SEED_ROOT,
-            project_dir=hardlinked_sut,
-        )
-    assert not (hardlinked_sut / "tests" / "e2e" / "conftest.py").exists()
+        != 0
+    )
+    evidence = json.loads((output / "evidence.json").read_text())
+    assert evidence.get("test_runtime_seed") is None
+    assert receipt.read_bytes() == retained
 
 
 def test_limited_role_provisioning_creates_an_unprivileged_role_and_user(
@@ -781,23 +724,17 @@ def test_runtime_environment_contract_is_exact_and_binds_the_run_scoped_database
     ]
 
 
-def test_success_uses_real_sut_change_and_exports_once(
+def test_success_uses_current_cli_and_finishes_at_achieved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _load_runner()
     sut = _make_sut(tmp_path)
     change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
     output = tmp_path / "results" / "opencode-run"
-    receipt = {
-        "schema_version": "1",
-        "change_id": change_id,
-        "status": "published",
-    }
     fake = _FakeAA(
         sut=sut,
         change_id=change_id,
         terminal=_achieved_status(change_id=change_id),
-        export_receipt=receipt,
     )
     _wire_fake(runner, monkeypatch, fake, sut)
 
@@ -816,10 +753,10 @@ def test_success_uses_real_sut_change_and_exports_once(
         ]
     )
 
-    change_root = sut / "qa" / "changes" / change_id
+    change_root = sut / "qa"
     evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
     assert code == 0
-    assert fake.export_calls == 1
+    assert all(command[1] != "export" for command in fake.commands if len(command) > 1)
     assert fake.project_dirs
     assert set(fake.project_dirs) == {str(sut)}
     assert not (output / "project").exists()
@@ -831,19 +768,28 @@ def test_success_uses_real_sut_change_and_exports_once(
     assert not (output / "latest").exists()
     assert not (output / "result-registry.json").exists()
     assert change_root.is_dir()
-    assert (change_root / "publish-receipt.json").is_file()
+    assert not (change_root / "results" / "publish-receipt.json").exists()
     assert evidence["sut_root"] == str(sut)
     assert evidence["change_id"] == change_id
     assert evidence["change_root"] == str(change_root)
     assert evidence["terminal_status"] == "completed"
-    assert evidence["publish_receipt"]["change_id"] == change_id
+    assert "publish_receipt" not in evidence
     assert evidence["provider"]["session"] or evidence["provider"]["process"]
     assert Path(evidence["logs"]["run_log"]).is_file()
     assert evidence.get("result_tree_digest") is None
     assert "auto_archive" not in evidence
 
 
-def test_main_keeps_managed_sut_active_from_start_through_export(
+def test_benchmark_plan_evidence_reads_the_real_producer_layout(tmp_path: Path) -> None:
+    runner = _load_runner()
+    plan, ref = install_plan(tmp_path, "CH-DEMO-001")
+    assert (tmp_path / ref["path"]).is_file()
+    actual_plan, actual_ref = runner._acg_plan(tmp_path / "qa")
+    assert actual_plan == plan.model_dump(mode="json")
+    assert actual_ref == ref
+
+
+def test_main_keeps_managed_sut_active_from_start_through_achieved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _load_runner()
@@ -853,7 +799,6 @@ def test_main_keeps_managed_sut_active_from_start_through_export(
         sut=sut,
         change_id=change_id,
         terminal=_achieved_status(change_id=change_id),
-        export_receipt={"schema_version": "1", "change_id": change_id, "status": "published"},
     )
     _wire_fake(runner, monkeypatch, fake, sut)
     active = False
@@ -872,7 +817,6 @@ def test_main_keeps_managed_sut_active_from_start_through_export(
                 sqlite_file=Path("/tmp/fake-sut.sqlite3"),
                 backend_log=Path("/tmp/fake-backend.log"),
                 frontend_log=Path("/tmp/fake-frontend.log"),
-                seed_receipt={"schema_version": "vue-fastapi-admin-tests-runtime/v1"},
             )
         finally:
             active = False
@@ -881,7 +825,7 @@ def test_main_keeps_managed_sut_active_from_start_through_export(
     original_handle = fake.handle_aa
 
     def require_runtime(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        if len(command) > 1 and command[1] in {"start", "run", "status", "export"}:
+        if len(command) > 1 and command[1] in {"start", "run", "status"}:
             assert active, f"{command[1]} ran outside the managed SUT lifecycle"
         return original_handle(command)
 
@@ -919,7 +863,6 @@ def test_failure_leaves_original_sut_tests_unchanged_and_skips_export(
         sut=sut,
         change_id=change_id,
         terminal=_failed_status(change_id=change_id),
-        export_receipt=None,
     )
     _wire_fake(runner, monkeypatch, fake, sut)
 
@@ -939,15 +882,15 @@ def test_failure_leaves_original_sut_tests_unchanged_and_skips_export(
     )
 
     assert code != 0
-    assert fake.export_calls == 0
+    assert all(command[1] != "export" for command in fake.commands if len(command) > 1)
     assert (sut / ORIGINAL_TEST).read_bytes() == ORIGINAL_BYTES
     assert not (output / "project").exists()
     assert not (output / "export").exists()
     evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
     assert evidence["change_id"] == change_id
-    assert evidence["change_root"] == str(sut / "qa" / "changes" / change_id)
+    assert evidence["change_root"] == str(sut / "qa")
     assert evidence["terminal_status"] == "failed"
-    assert evidence.get("publish_receipt") in (None, {})
+    assert "publish_receipt" not in evidence
 
 
 def test_nonzero_unstructured_run_fails_closed_without_status_polling(
@@ -961,7 +904,6 @@ def test_nonzero_unstructured_run_fails_closed_without_status_polling(
         sut=sut,
         change_id=change_id,
         terminal=_achieved_status(change_id=change_id),
-        export_receipt=None,
     )
     _wire_fake(runner, monkeypatch, fake, sut)
 
@@ -1066,7 +1008,6 @@ def test_stale_project_opencode_asset_blocks_before_start(
         sut=sut,
         change_id=change_id,
         terminal=_achieved_status(change_id=change_id),
-        export_receipt=None,
     )
     _wire_fake(runner, monkeypatch, fake, sut)
     monkeypatch.setattr(

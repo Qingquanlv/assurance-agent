@@ -222,7 +222,7 @@ def test_completed_full_run_fails_closed_without_achieved_terminal_envelope(
     )
 
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
     identity = InvocationIdentityRecord(
@@ -277,9 +277,7 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
     execution = json.loads(
-        (project / "qa" / "changes" / CHANGE_ID / "execution" / "execute-result.json").read_text(
-            encoding="utf-8"
-        )
+        (project / "qa" / "results/execution" / "execute-result.json").read_text(encoding="utf-8")
     )
     snapshot = SimpleNamespace(
         next=(),
@@ -332,18 +330,15 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
         secrets=(),
     )
 
-    assert (workspace.paths.change_root / "status.json").is_file()
-    assert (workspace.paths.change_root / "apply-manifest.json").is_file()
-    persisted = json.loads((workspace.paths.change_root / "status.json").read_text(encoding="utf-8"))
+    assert (workspace.paths.qa_root / "status.json").is_file()
+    assert not (workspace.paths.qa_root / "apply-manifest.json").exists()
+    persisted = json.loads((workspace.paths.qa_root / "status.json").read_text(encoding="utf-8"))
     assert persisted["change"] == {"change_id": CHANGE_ID, "state": "achieved"}
     assert persisted["selected_test_families"] == ["api"]
-    assert persisted["publication"]["status"] == "ready"
+    assert persisted["publication"]["status"] == "not_ready"
     assert result.status == mapped == "completed"
     assert code == 0
-    before = (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
-    )
+    before = (workspace.paths.qa_root / "status.json").read_bytes()
 
     application.run(
         project_dir=project,
@@ -357,36 +352,8 @@ def test_run_terminalizes_achieved_full_from_its_terminal_snapshot(
         secrets=(),
     )
 
-    assert before == (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
-    )
-    from assurance_product.export import publish_achieved
-
-    publish_achieved(project, CHANGE_ID)
-    published = (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
-        (workspace.paths.change_root / "publish-receipt.json").read_bytes(),
-    )
-
-    application.run(
-        project_dir=project,
-        change_id=CHANGE_ID,
-        invocation_id=identity.invocation_id,
-        composition=object(),
-        authorization=object(),  # type: ignore[arg-type]
-        entrypoint=None,
-        input_path=None,
-        workspace=workspace,
-        secrets=(),
-    )
-
-    assert published == (
-        (workspace.paths.change_root / "status.json").read_bytes(),
-        (workspace.paths.change_root / "apply-manifest.json").read_bytes(),
-        (workspace.paths.change_root / "publish-receipt.json").read_bytes(),
-    )
+    assert before == (workspace.paths.qa_root / "status.json").read_bytes()
+    assert not (workspace.paths.qa_root / "apply-manifest.json").exists()
 
 
 def test_status_returns_the_authenticated_persisted_full_terminal_projection(
@@ -420,7 +387,7 @@ def test_status_returns_the_authenticated_persisted_full_terminal_projection(
             publication={"status": "published"},
         )
     )
-    (workspace.paths.change_root / "status.json").write_text(
+    (workspace.paths.qa_root / "status.json").write_text(
         persisted.model_dump_json(indent=2) + "\n",
         encoding="utf-8",
     )
@@ -464,7 +431,7 @@ def test_resume_uses_the_same_achieved_terminalization_path(
     from assurance_product.models import StatusV1
 
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     workspace = ChangeWorkspace.open(project.resolve(), CHANGE_ID)
     workspace.initialize()
     identity = InvocationIdentityRecord(

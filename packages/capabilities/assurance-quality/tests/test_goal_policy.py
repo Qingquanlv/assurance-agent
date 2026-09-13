@@ -127,7 +127,7 @@ def _scope(
             "applicable_goals": goals,
             "applicability_refs": (
                 EvidenceArtifactRefV1(
-                    path="qa/changes/CH-1/preparation/applicability.json",
+                    path="qa/results/preparation/applicability.json",
                     digest=_SHA,
                 ),
             ),

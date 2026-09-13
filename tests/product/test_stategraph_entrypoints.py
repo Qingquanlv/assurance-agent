@@ -19,6 +19,7 @@ from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
 from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS as GENERATION_TASKS
 from assurance_generation.graphs.factory import GenerationGraphs, build_generation_graphs
+from assurance_generation.graphs.state import GenerationState
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS as HEALING_JOBS
 from assurance_healing.graphs.factory import HealingGraphs, build_healing_graphs
 from assurance_improvement.contracts.attempts import AGENT_JOB_CONTRACTS as IMPROVEMENT_JOBS
@@ -59,9 +60,10 @@ from graph_engine.testing import GraphHarness
 from tests.product.test_product_input import valid_product_input
 
 _SHA = "a" * 64
-_CASE_DELTA = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+_CASE_DELTA = "qa/cases/system/dept/case.yaml"
 _THIN_EXPORTS = {
     "intake": ("assurance.intake", "prepare"),
+    "init": ("assurance.generation", "init_runtime"),
     "case": ("assurance.intake", "case"),
     "archive": ("assurance.improvement", "archive"),
     "retro": ("assurance.improvement", "retro"),
@@ -76,6 +78,7 @@ _THIN_EXPORTS = {
 }
 _CHILD_STATE = {
     "assurance.intake": IntakeState,
+    "assurance.generation": GenerationState,
     "assurance.quality": QualityState,
     "assurance.improvement": ImprovementState,
 }
@@ -149,6 +152,11 @@ def _stub_export(state_schema: type, marker: str, *, status: str | None = None) 
             update["artifacts"] = [{"path": marker, "digest": _SHA}]
         elif state_schema is QualityState:
             update["evidence_refs"] = [{"path": marker, "digest": _SHA}]
+            if marker == "quality.fact_baseline":
+                update["fact_baseline_ref"] = {
+                    "path": "qa/results/facts/fact-baseline.json",
+                    "digest": _SHA,
+                }
         elif state_schema is ImprovementState:
             update["receipt_refs"] = [{"receipt_id": marker, "receipt_digest": _SHA}]
         else:
@@ -174,6 +182,8 @@ def _stub_features() -> dict[str, object]:
             e2e=_stub_export(dict, "generation.e2e"),
             fuzz=_stub_export(dict, "generation.fuzz"),
             performance=_stub_export(dict, "generation.performance"),
+            init_runtime=_stub_export(dict, "generation.init_runtime"),
+            resolve_inputs=_stub_export(dict, "generation.resolve_inputs"),
         ),
         "assurance.execution": ExecutionGraphs(
             execute=_stub_export(dict, "execution.execute"),
@@ -185,6 +195,7 @@ def _stub_features() -> dict[str, object]:
             issue_analyze=_stub_export(QualityState, "quality.issue_analyze"),
             issue_reconcile=_stub_export(QualityState, "quality.issue_reconcile"),
             report=_stub_export(QualityState, "quality.report"),
+            fact_baseline=_stub_export(QualityState, "quality.fact_baseline"),
         ),
         "assurance.healing": HealingGraphs(
             repair_failure=_stub_export(dict, "healing.repair_failure"),
@@ -215,7 +226,7 @@ def _public_input(entrypoint: str) -> dict[str, object]:
     candidate = ("api",) if entrypoint == "intake" else ()
     resolved_plan_ref = (
         {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         }
         if entrypoint == "case"
@@ -272,7 +283,7 @@ def test_factory_accepts_exactly_six_owner_ids(
         "improvement",
     }
     assert set(thin_graphs.entrypoints) == set(THIN_ENTRYPOINTS)
-    assert len(thin_graphs.entrypoints) == 12
+    assert len(thin_graphs.entrypoints) == 13
 
 
 def test_factory_rejects_missing_extra_duplicate_and_mistyped_bundles(
@@ -332,7 +343,7 @@ def test_thin_roots_are_independently_compiled_not_a_dispatcher(
                 ):
                     raise AssertionError(f"{path.name} inspects an entrypoint value inside state")
     names = {id(graph) for graph in thin_graphs.entrypoints.values()}
-    assert len(names) == 12
+    assert len(names) == 13
 
 
 _REPRESENTATIVE_THIN_ENTRYPOINTS = ("intake", "archive", "issue-review")
@@ -374,7 +385,7 @@ def test_product_state_inherits_checkpoint_bridge_and_public_io_omits_markers() 
     assert CHECKPOINT_MARKERS_STATE_KEY not in ProductInputV1.model_fields
 
 
-def test_twelve_thin_roots_compile_dry_and_runtime_with_matching_projections(
+def test_thirteen_thin_roots_compile_dry_and_runtime_with_matching_projections(
     real_features: dict[str, object],
 ) -> None:
     saver = InMemorySaver()

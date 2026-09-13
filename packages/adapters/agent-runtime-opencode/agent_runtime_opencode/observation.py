@@ -475,18 +475,35 @@ def _exact_json_object(text: str) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as error:
-        decoder = json.JSONDecoder()
-        start = text.find("{")
-        try:
-            candidate, end = decoder.raw_decode(text, start)
-        except (json.JSONDecodeError, ValueError):
-            raise ValueError("terminal text is not one JSON object") from error
-        if not isinstance(candidate, dict) or text[end:].strip():
+        candidate = _sole_trailing_json_object(text)
+        if candidate is None:
             raise ValueError("terminal text is not one JSON object") from error
         return candidate
     if not isinstance(parsed, dict):
         raise ValueError("terminal text is not one JSON object")
     return parsed
+
+
+def _sole_trailing_json_object(text: str) -> dict[str, Any] | None:
+    """Allow prose before exactly one complete object, never multiple objects."""
+    decoder = json.JSONDecoder()
+    trailing: dict[str, Any] | None = None
+    found = False
+    start = text.find("{")
+    while start != -1:
+        try:
+            candidate, end = decoder.raw_decode(text, start)
+        except (json.JSONDecodeError, ValueError):
+            start = text.find("{", start + 1)
+            continue
+        if found:
+            return None
+        found = True
+        if not text[end:].strip():
+            trailing = candidate
+        # Skip the entire decoded object, including nested objects and strings.
+        start = text.find("{", end)
+    return trailing
 
 
 def provider_error_message(

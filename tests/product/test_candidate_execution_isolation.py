@@ -31,8 +31,8 @@ from assurance_product.generated_merge import (
 
 CHANGE_ID = "CH-DEMO-001"
 BATCH_ID = "20260822T000000Z"
-CANDIDATE_TARGET = "tests/api/test_users.py"
-UNSELECTED_TARGET = "tests/api/test_legacy.py"
+CANDIDATE_TARGET = "qa/tests/api/test_users.py"
+UNSELECTED_TARGET = "qa/tests/api/test_legacy.py"
 
 
 def _digest(content: bytes) -> str:
@@ -47,12 +47,12 @@ def _write(project: Path, relative: str, content: bytes) -> Path:
 
 
 def _promote(project: Path, target: str, content: bytes) -> GeneratedFileV2:
-    staged = f"qa/changes/{CHANGE_ID}/generated/api/files/{target}"
+    staged = target if target.startswith("qa/tests/") else f"qa/tests/{target}"
     path = _write(project, staged, content)
     digest = _digest(content)
     _write(
         project,
-        f"qa/changes/{CHANGE_ID}/codegen/api-generated-files.json",
+        "qa/results/codegen/api-generated-files.json",
         json.dumps(
             {
                 "schema_version": "1",
@@ -82,7 +82,7 @@ def _promote(project: Path, target: str, content: bytes) -> GeneratedFileV2:
 
 def _project(tmp_path: Path) -> Path:
     project = tmp_path / "project"
-    (project / "qa" / "changes" / CHANGE_ID).mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     (project / "tests" / "api").mkdir(parents=True)
     (project / "app").mkdir(parents=True)
     _write(project, "app/main.py", b"APP = 1\n")
@@ -95,7 +95,7 @@ def _run_payload(selected: list[str]) -> dict[str, object]:
         "batch_id": BATCH_ID,
         "plan_digest": "d" * 64,
         "plan_ref": {
-            "path": f"qa/changes/{CHANGE_ID}/plan/{'d' * 64}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{'d' * 64}/resolved-assurance-plan.json",
             "digest": "e" * 64,
         },
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
@@ -182,7 +182,8 @@ def test_unselected_closed_mapping_tests_are_not_executed(tmp_path: Path) -> Non
 
     assert output["executed"] == list(selected)
     assert UNSELECTED_TARGET not in " ".join(host.commands[0])
-    assert not project.joinpath(*view.root.split("/"), *UNSELECTED_TARGET.split("/")).exists()
+    view_unselected = "tests/" + UNSELECTED_TARGET[len("qa/tests/") :]
+    assert not project.joinpath(*view.root.split("/"), *view_unselected.split("/")).exists()
 
 
 def test_pytest_cache_and_hypothesis_storage_stay_outside_the_sut(tmp_path: Path) -> None:
@@ -247,7 +248,7 @@ def test_runner_crash_leaves_view_disposable_and_writes_no_canonical_evidence(tm
         )
 
     assert project.joinpath(*view.root.split("/")).is_dir()
-    assert not (project / "qa" / "changes" / CHANGE_ID / "execution").exists()
+    assert not (project / "qa" / "results/execution").exists()
     discard_execution_view(project, view)
     assert not project.joinpath(*view.root.split("/")).exists()
 
@@ -303,7 +304,7 @@ def test_canonical_evidence_is_written_only_after_validated_output(tmp_path: Pat
         include_pr_metrics=False,
     )
 
-    evidence = project / "qa" / "changes" / CHANGE_ID / "execution" / "execute-result.json"
+    evidence = project / "qa" / "results/execution" / "execute-result.json"
     assert evidence.is_file()
     payload = json.loads(evidence.read_text(encoding="utf-8"))
     assert payload["batch_id"] == BATCH_ID
@@ -376,7 +377,7 @@ class LivePytestHost:
 
 def test_real_pytest_runs_shadowed_view_file_not_failing_sut(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    _write(project, CANDIDATE_TARGET, b'def test_ok():\n    assert False, "SUT_RAN"\n')
+    sut = _write(project, "tests/api/test_users.py", b'def test_ok():\n    assert False, "SUT_RAN"\n')
     _promote(project, CANDIDATE_TARGET, b"def test_ok():\n    assert True\n")
     merged = merge_generated(project, CHANGE_ID, ("api",))
     selected = (f"{CANDIDATE_TARGET}::test_ok",)
@@ -399,10 +400,8 @@ def test_real_pytest_runs_shadowed_view_file_not_failing_sut(tmp_path: Path) -> 
     assert isinstance(evidence, dict)
     assert evidence["status"] == "passed"
     assert "SUT_RAN" not in json.dumps(output)
-    assert (project / CANDIDATE_TARGET).read_text(
-        encoding="utf-8"
-    ) == 'def test_ok():\n    assert False, "SUT_RAN"\n'
-    shadowed = project.joinpath(*view.root.split("/"), *CANDIDATE_TARGET.split("/"))
+    assert sut.read_text(encoding="utf-8") == 'def test_ok():\n    assert False, "SUT_RAN"\n'
+    shadowed = project.joinpath(*view.root.split("/"), "tests", "api", "test_users.py")
     assert shadowed.read_text(encoding="utf-8") == "def test_ok():\n    assert True\n"
 
 
@@ -429,7 +428,7 @@ def _closed_evidence(change_id: str) -> ExecutionEvidenceV1:
         batch_id=BATCH_ID,
         plan_digest="d" * 64,
         plan_ref=EvidenceArtifactRefV1(
-            path=f"qa/changes/{change_id}/plan/{'d' * 64}/resolved-assurance-plan.json",
+            path=f"qa/results/plan/{'d' * 64}/resolved-assurance-plan.json",
             digest="e" * 64,
         ),
         selected_targets={"api": True, "e2e": False, "fuzz": False, "performance": False},
@@ -457,7 +456,7 @@ def _closed_evidence(change_id: str) -> ExecutionEvidenceV1:
 def test_canonical_evidence_change_id_cannot_escape_the_project(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    (project / "qa" / "changes").mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     outside = tmp_path / "outside"
 
     with pytest.raises((InputError, ValueError)):

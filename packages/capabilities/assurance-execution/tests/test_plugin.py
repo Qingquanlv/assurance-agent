@@ -15,8 +15,8 @@ from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
 
 def test_execution_descriptor_has_exact_dependencies() -> None:
     assert ExecutionPlugin.descriptor().dependencies == (
-        PluginDependency("assurance.intake", "==0.2.0"),
-        PluginDependency("assurance.generation", "==0.2.0"),
+        PluginDependency("assurance.intake", "==0.3.0"),
+        PluginDependency("assurance.generation", "==0.3.0"),
     )
 
 
@@ -44,7 +44,7 @@ def test_execution_source_identity() -> None:
     assert source == EXECUTION_SOURCE
     assert source == ProviderSource(
         distribution="assurance-execution",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="execution",
         entrypoint_value="assurance_execution.plugin:ExecutionPlugin",

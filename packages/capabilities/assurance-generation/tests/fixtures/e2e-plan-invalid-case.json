@@ -19,10 +19,10 @@
     }
   ],
   "output_files": [
-    "qa/changes/CH-DEMO-001/plans/e2e-plan.md",
-    "qa/changes/CH-DEMO-001/plans/e2e-test-data-plan.md",
-    "qa/changes/CH-DEMO-001/plans/e2e-codegen-plan.md",
-    "qa/changes/CH-DEMO-001/plans/e2e-codegen-mapping.json",
-    "qa/changes/CH-DEMO-001/plans/m4-review-summary.md"
+    "qa/results/plans/e2e-plan.md",
+    "qa/results/plans/e2e-test-data-plan.md",
+    "qa/results/plans/e2e-codegen-plan.md",
+    "qa/results/plans/e2e-codegen-mapping.json",
+    "qa/results/plans/m4-review-summary.md"
   ]
 }

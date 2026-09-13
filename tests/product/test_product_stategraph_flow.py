@@ -60,7 +60,7 @@ from tests.product.test_stategraph_entrypoints import _real_features, _stub_feat
 
 _SHA = "a" * 64
 _PLAN_DIGEST = "b" * 64
-_CASE_DELTA = "qa/changes/CH-DEMO-001/cases/system/dept/case.yaml"
+_CASE_DELTA = "qa/cases/system/dept/case.yaml"
 _GRAPHS_ROOT = (
     Path(__file__).resolve().parents[2] / "packages/products/assurance-product/assurance_product/graphs"
 )
@@ -85,7 +85,7 @@ def _receipt(name: str) -> ReceiptRef:
 
 def _plan_ref() -> EvidenceArtifactRefV1:
     return _ref(
-        f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+        f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
         "c" * 64,
     )
 
@@ -106,10 +106,10 @@ def _reviewed(epoch: int = 0) -> ReviewedCaseV1:
         plan_ref=_plan_ref(),
         preparation_refs=(
             _plan_ref(),
-            _ref("qa/changes/CH-DEMO-001/preparation/context.json"),
+            _ref("qa/results/preparation/context.json"),
         ),
         case_refs=(_ref(_CASE_DELTA),),
-        review_ref=_ref("qa/changes/CH-DEMO-001/review/case-review.json"),
+        review_ref=_ref("qa/results/review/case-review.json"),
     )
 
 
@@ -125,6 +125,12 @@ def _case(epoch: int = 0) -> dict[str, object]:
     }
 
 
+def _fact_baseline() -> dict[str, object]:
+    return {
+        "fact_baseline_ref": _ref("qa/results/facts/fact-baseline.json").model_dump(mode="json"),
+    }
+
+
 def _generation(epoch: int = 0) -> dict[str, object]:
     result = GenerationCycleResultV1(
         change_id="CH-DEMO-001",
@@ -132,9 +138,9 @@ def _generation(epoch: int = 0) -> dict[str, object]:
         plan_digest=_PLAN_DIGEST,
         plan_ref=_plan_ref(),
         reviewed_case=_reviewed(epoch),
-        mapping_ref=_ref(f"qa/changes/CH-DEMO-001/generation/epochs/{epoch}/mapping.json"),
-        source_refs=(_ref(f"qa/changes/CH-DEMO-001/generated/epochs/{epoch}/tests/test_case.py"),),
-        plan_refs=(_ref(f"qa/changes/CH-DEMO-001/plans/epochs/{epoch}/api.json"),),
+        mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
+        source_refs=(_ref(f"qa/results/generated/epochs/{epoch}/tests/test_case.py"),),
+        plan_refs=(_ref(f"qa/results/plans/epochs/{epoch}/api.json"),),
     )
     return {"generation_result": result.model_dump(mode="json"), "status": "passed"}
 
@@ -150,9 +156,7 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         batch_id=f"20260905T120{epoch}{repair_round}0Z",
         executed_at=datetime(2026, 9, 5, 12, epoch, repair_round, tzinfo=UTC),
         final_status=status,  # type: ignore[arg-type]
-        evidence_ref=_ref(
-            f"qa/changes/CH-DEMO-001/execution/epochs/{epoch}/rounds/{repair_round}/result.json"
-        ),
+        evidence_ref=_ref(f"qa/results/execution/epochs/{epoch}/rounds/{repair_round}/result.json"),
         mapping_ref=generated.mapping_ref,
         source_refs=generated.source_refs,
         receipt=_receipt(f"execution-{epoch}-{repair_round}"),
@@ -162,17 +166,14 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
 
 def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, object]:
     execution = ExecutionCycleResultV1.model_validate(_execution(epoch)["execution_result"])
-    gaps = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/gaps.json")
-    observations = _ref(
-        f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json"
-    )
+    gaps = _ref(f"qa/results/inspect/epochs/{epoch}/gaps.json")
+    observations = _ref(f"qa/results/inspect/epochs/{epoch}/batches/{execution.batch_id}/observations.json")
     issue_manifest = _ref(
-        f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/batches/"
-        f"{execution.batch_id}/issue-evidence-manifest.json"
+        f"qa/results/inspect/epochs/{epoch}/batches/{execution.batch_id}/issue-evidence-manifest.json"
     )
-    trace = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/trace.json")
-    metrics = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/metrics.json")
-    sufficiency = _ref(f"qa/changes/CH-DEMO-001/inspect/epochs/{epoch}/trace-sufficiency.json")
+    trace = _ref(f"qa/results/inspect/epochs/{epoch}/trace.json")
+    metrics = _ref(f"qa/results/inspect/epochs/{epoch}/metrics.json")
+    sufficiency = _ref(f"qa/results/inspect/epochs/{epoch}/trace-sufficiency.json")
     coverage_state = {
         "satisfied": "satisfied",
         "coverage_insufficient": "repair_required",
@@ -240,7 +241,7 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
 
 def _report(epoch: int = 0) -> dict[str, object]:
     inspection = InspectionOutcomeV1.model_validate(_inspection(epoch)["inspection_outcome"])
-    ref = _ref(f"qa/changes/CH-DEMO-001/report/epochs/{epoch}/report.json")
+    ref = _ref(f"qa/results/report/epochs/{epoch}/report.json")
     receipt = _receipt(f"report-{epoch}")
     outcome = ReportOutcomeV1(
         change_id="CH-DEMO-001",
@@ -261,7 +262,7 @@ def _report(epoch: int = 0) -> dict[str, object]:
 
 
 def _diagnostic_report(epoch: int = 0) -> dict[str, object]:
-    ref = _ref(f"qa/changes/CH-DEMO-001/report/epochs/{epoch}/report.json")
+    ref = _ref(f"qa/results/report/epochs/{epoch}/report.json")
     receipt = _receipt(f"diagnostic-report-{epoch}")
     return {
         "report_outcome": {},
@@ -274,7 +275,7 @@ def _diagnostic_report(epoch: int = 0) -> dict[str, object]:
 
 def _analysis_result(classification: str) -> dict[str, object]:
     inspection = cast(dict, _inspection()["inspection_outcome"])
-    ref = {"path": "qa/changes/CH-DEMO-001/inspect/issue-analysis.json", "digest": "a" * 64}
+    ref = {"path": "qa/results/inspect/issue-analysis.json", "digest": "a" * 64}
     return {
         "issue_analysis": {
             "agent_result": {
@@ -310,7 +311,7 @@ def _analysis_result(classification: str) -> dict[str, object]:
 
 
 def _applied(epoch: int = 0, repair_round: int = 1) -> dict[str, object]:
-    source = _ref(f"qa/changes/CH-DEMO-001/generated/epochs/{epoch}/tests/test_case.py")
+    source = _ref(f"qa/results/generated/epochs/{epoch}/tests/test_case.py")
     result = AppliedTestRepairV1(
         change_id="CH-DEMO-001",
         coverage_epoch=epoch,
@@ -319,7 +320,7 @@ def _applied(epoch: int = 0, repair_round: int = 1) -> dict[str, object]:
         plan_ref=_plan_ref(),
         status="applied",
         changed_test_refs=(source,),
-        mapping_ref=_ref(f"qa/changes/CH-DEMO-001/generation/epochs/{epoch}/mapping.json"),
+        mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
         receipt=_receipt(f"repair-{epoch}-{repair_round}"),
     )
     return {
@@ -399,6 +400,7 @@ def _flow_features(
     report: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     retro: Mapping[str, object] | None = None,
     apply: Mapping[str, object] | None = None,
+    init: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     del repair_coverage
     features = _stub_features()
@@ -408,12 +410,15 @@ def _flow_features(
             or {
                 **_plan_update(),
                 "status": "prepared",
-                "preparation_refs": [
-                    _ref("qa/changes/CH-DEMO-001/preparation/context.json").model_dump(mode="json")
-                ],
+                "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
             }
         ),
-        load_plan=_echo({**_plan_update(), "status": "prepared"}),
+        load_plan=_echo(
+            {
+                **_plan_update(),
+                "status": "prepared",
+            }
+        ),
         case=_graph(case or _case()),
     )
     features["assurance.generation"] = GenerationGraphs(
@@ -422,6 +427,8 @@ def _flow_features(
         e2e=_echo({"status": "skipped"}),
         fuzz=_echo({"status": "skipped"}),
         performance=_echo({"status": "skipped"}),
+        init_runtime=_echo(init or {"status": "completed"}),
+        resolve_inputs=_echo({"reviewed_case": _reviewed().model_dump(mode="json")}),
     )
     features["assurance.execution"] = ExecutionGraphs(
         execute=_graph(execute or _execution()),
@@ -433,6 +440,7 @@ def _flow_features(
         issue_analyze=_echo(issue_analyze or {"classification": "test", "fix_eligible": True}),
         issue_reconcile=_echo({"classification": "test", "fix_eligible": True}),
         report=_graph(report or _report()),
+        fact_baseline=_graph(_fact_baseline()),
     )
     features["assurance.healing"] = HealingGraphs(
         repair_failure=_echo(repair_failure or _applied()),
@@ -466,11 +474,11 @@ def _product_graphs(features: Mapping[str, object] | None = None) -> ProductGrap
     return build_product_graphs(context=_build_context(), features=features or _flow_features())
 
 
-def test_build_product_graphs_merges_twelve_thin_roots_plus_execute_and_full() -> None:
+def test_build_product_graphs_merges_thirteen_thin_roots_plus_execute_and_full() -> None:
     graphs = build_product_graphs(context=_build_context(), features=_real_features())
     assert isinstance(graphs, ProductGraphs)
     assert set(graphs.entrypoints) == set(PRODUCT_ENTRYPOINTS)
-    assert len(graphs.entrypoints) == 14
+    assert len(graphs.entrypoints) == 15
     assert graphs.contracts is ENTRYPOINT_CONTRACTS
     assert set(graphs.entrypoints) - {"execute", "full"} == set(
         build_thin_entrypoint_graphs(context=_build_context(), features=_real_features()).entrypoints
@@ -558,7 +566,7 @@ def test_quality_adapter_uses_committed_time_for_hashed_execution_batch() -> Non
 
 
 def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
-    calls = {"prepare": 0, "case": 0}
+    calls = {"prepare": 0, "init": 0, "case": 0}
 
     def counted(name: str, updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
         builder = StateGraph(cast(Any, dict))
@@ -589,20 +597,59 @@ def test_full_reuses_case_subgraph_for_coverage_reentry() -> None:
                 {
                     **_plan_update(),
                     "status": "prepared",
-                    "preparation_refs": [
-                        _ref("qa/changes/CH-DEMO-001/preparation/context.json").model_dump(mode="json")
-                    ],
+                    "preparation_refs": [_ref("qa/results/preparation/context.json").model_dump(mode="json")],
                 },
             ),
         ),
         load_plan=intake.load_plan,
         case=counted("case", (_case(0), _case(1))),
     )
+    generation = cast(GenerationGraphs, features["assurance.generation"])
+    features["assurance.generation"] = GenerationGraphs(
+        generation=generation.generation,
+        api=generation.api,
+        e2e=generation.e2e,
+        fuzz=generation.fuzz,
+        performance=generation.performance,
+        init_runtime=counted("init", ({"status": "completed"},)),
+        resolve_inputs=generation.resolve_inputs,
+    )
     del intake
+    del generation
     result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
     assert result["terminal"] == {"status": "completed", "reason": "achieved"}
     assert result["coverage_epoch"] == 1
-    assert calls == {"prepare": 1, "case": 2}
+    assert calls == {"prepare": 1, "init": 1, "case": 2}
+
+
+def test_full_init_failure_does_not_enter_case() -> None:
+    calls = {"case": 0}
+
+    def counted(name: str, updates: tuple[Mapping[str, object], ...]) -> CompiledStateGraph:
+        builder = StateGraph(cast(Any, dict))
+
+        def node(state: object) -> dict[str, object]:
+            del state
+            index = min(calls[name], len(updates) - 1)
+            calls[name] += 1
+            return dict(updates[index])
+
+        builder.add_node("echo", node)
+        builder.add_edge(START, "echo")
+        builder.add_edge("echo", END)
+        return builder.compile()
+
+    features = _flow_features(init={"status": "failed", "attempt_failure": {"kind": "runtime"}})
+    intake = cast(IntakeGraphs, features["assurance.intake"])
+    features["assurance.intake"] = IntakeGraphs(
+        prepare=intake.prepare,
+        load_plan=intake.load_plan,
+        case=counted("case", (_case(),)),
+    )
+    del intake
+    result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
+    assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
+    assert calls == {"case": 0}
 
 
 @pytest.mark.parametrize("feature", ["retro", "apply"])
@@ -644,7 +691,9 @@ def test_failed_report_never_enters_retro_or_achieved() -> None:
 def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None:
     graphs = _product_graphs()
     assert {"validate", "adapt-tail", "execute-tail", "publish"} <= set(graphs.entrypoints["execute"].nodes)
-    assert {"adapt-case", "advance-coverage", "execute-tail"} <= set(graphs.entrypoints["full"].nodes)
+    assert {"adapt-init", "init", "adapt-case", "advance-coverage", "execute-tail"} <= set(
+        graphs.entrypoints["full"].nodes
+    )
     tail = graphs.entrypoints["full"].nodes["execute-tail"]
     runnable = getattr(tail, "runnable", tail)
     nested = getattr(runnable, "bound", runnable)
@@ -654,7 +703,9 @@ def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None
         nested_nodes = getattr(inner, "nodes", {})
     forbidden = {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
     assert not forbidden.intersection(nested_nodes)
-    assert {"generation", "execute", "quality", "fix-proposal", "run", "report"} <= set(nested_nodes)
+    assert {"fact-baseline", "generation", "execute", "quality", "fix-proposal", "run", "report"} <= set(
+        nested_nodes
+    )
 
 
 def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runtime() -> None:

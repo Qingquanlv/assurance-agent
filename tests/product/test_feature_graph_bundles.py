@@ -61,9 +61,24 @@ EXPECTED_BUNDLE_COUNTS = {
 
 IMPLEMENTED_BUNDLE_FIELDS: dict[str, tuple[str, ...]] = {
     "assurance.intake": ("prepare", "load_plan", "case"),
-    "assurance.generation": ("generation", "api", "e2e", "fuzz", "performance"),
+    "assurance.generation": (
+        "generation",
+        "api",
+        "e2e",
+        "fuzz",
+        "performance",
+        "init_runtime",
+        "resolve_inputs",
+    ),
     "assurance.execution": ("execute", "rerun"),
-    "assurance.quality": ("assess", "issue_review", "issue_analyze", "issue_reconcile", "report"),
+    "assurance.quality": (
+        "assess",
+        "issue_review",
+        "issue_analyze",
+        "issue_reconcile",
+        "report",
+        "fact_baseline",
+    ),
     "assurance.healing": ("repair_failure", "repair_coverage"),
     "assurance.improvement": (
         "archive",

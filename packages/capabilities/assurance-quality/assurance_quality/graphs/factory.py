@@ -7,6 +7,7 @@ from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot.boot import CapabilityBuildContext
 
 from assurance_quality.graphs.assessment import build_assess_graph
+from assurance_quality.graphs.fact_baseline import build_fact_baseline_graph
 from assurance_quality.graphs.issues import build_issue_graph
 from assurance_quality.graphs.report import build_report_graph
 
@@ -18,6 +19,7 @@ class QualityGraphs:
     issue_analyze: CompiledStateGraph
     issue_reconcile: CompiledStateGraph
     report: CompiledStateGraph
+    fact_baseline: CompiledStateGraph
 
 
 def build_quality_graphs(context: CapabilityBuildContext) -> QualityGraphs:
@@ -27,6 +29,7 @@ def build_quality_graphs(context: CapabilityBuildContext) -> QualityGraphs:
         issue_analyze=build_issue_graph(context, export="issue-analyze"),
         issue_reconcile=build_issue_graph(context, export="issue-reconcile"),
         report=build_report_graph(context),
+        fact_baseline=build_fact_baseline_graph(context),
     )
 
 

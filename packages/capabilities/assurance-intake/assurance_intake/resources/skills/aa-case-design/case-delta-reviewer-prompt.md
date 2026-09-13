@@ -5,7 +5,7 @@ You are a QA Case Delta Reviewer for the AA (Assurance Agent) QA workflow.
 Your job is to review the **case delta YAML** file at:
 
 ```
-qa/changes/<change-id>/cases/<module>/case.yaml
+qa/cases/<module>/case.yaml
 ```
 
 against the **target stable case file** at:
@@ -144,8 +144,8 @@ The following must NOT appear in any `case.yaml` field:
 
 ### 10. Related File Checks
 
-- [ ] `proposal.md` exists at `qa/changes/<change-id>/proposal.md`.
-- [ ] `.qa.yaml` exists at `qa/changes/<change-id>/.qa.yaml`.
+- [ ] `proposal.md` exists at `qa/proposal.md`.
+- [ ] `.qa.yaml` exists at `qa/.qa.yaml`.
 
 ---
 
@@ -201,9 +201,9 @@ The following must NOT appear in any `case.yaml` field:
 This prompt is used by the case-review skill. Reference this checklist with:
 
 ```
-Review the case delta at qa/changes/[CHANGE_ID]/cases/[MODULE]/case.yaml.
+Review the case delta at qa/cases/[MODULE]/case.yaml.
 Target stable case file: qa/cases/[MODULE]/case.yaml (or: does not exist yet).
-Proposal: qa/changes/[CHANGE_ID]/proposal.md (or: not available).
+Proposal: qa/proposal.md (or: not available).
 Change ID: [CHANGE_ID]
 Module: [MODULE]
 

@@ -328,6 +328,7 @@ FAMILY_EMPTY_ENTRYPOINTS = frozenset(
     {
         "case",
         "execute",
+        "init",
         "archive",
         "retro",
         "issue-review",
@@ -358,6 +359,17 @@ def _canonical_text(value: str, label: str) -> str:
     return normalized
 
 
+LOCKED_ALLOWED_ARTIFACT_PATHS: tuple[str, ...] = (
+    "qa/.qa.yaml",
+    "qa/cases",
+    "qa/fixtures",
+    "qa/proposal.md",
+    "qa/requirement.md",
+    "qa/results",
+    "qa/tests",
+)
+
+
 def _canonical_artifact_prefixes(values: tuple[str, ...]) -> tuple[str, ...]:
     cleaned = tuple(unicodedata.normalize("NFC", item.strip()) for item in values)
     if any(not item for item in cleaned):
@@ -377,6 +389,8 @@ def _canonical_artifact_prefixes(values: tuple[str, ...]) -> tuple[str, ...]:
             or any(part in {"", ".", ".."} for part in posix.parts)
         ):
             raise ValueError("allowed_artifact_paths must be canonical relative POSIX prefixes")
+        if posix.parts[:2] in {("qa", "changes"), ("qa", "archive")}:
+            raise ValueError("allowed_artifact_paths must not use leftover change or archive prefixes")
     return ordered
 
 
@@ -468,7 +482,11 @@ class ProductInputV1(FrozenModel):
     @field_validator("allowed_artifact_paths")
     @classmethod
     def _allowed_artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _canonical_artifact_prefixes(value)
+        locked = LOCKED_ALLOWED_ARTIFACT_PATHS
+        cleaned = _canonical_artifact_prefixes(value)
+        if cleaned != locked:
+            raise ValueError("allowed_artifact_paths must be the exact product prefixes")
+        return cleaned
 
     @field_validator("case_delta_paths")
     @classmethod
@@ -477,10 +495,10 @@ class ProductInputV1(FrozenModel):
 
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> ProductInputV1:
-        prefix = ("qa", "changes", self.change_id, "cases")
+        prefix = ("qa", "cases")
         for path in self.case_delta_paths:
             parts = PurePosixPath(path).parts
-            if len(parts) < 6 or parts[:4] != prefix or parts[-1] != "case.yaml":
+            if len(parts) < 4 or parts[:2] != prefix or parts[-1] != "case.yaml":
                 raise ValueError(
                     "case_delta_paths must be exact current-change cases/<module>/case.yaml paths"
                 )

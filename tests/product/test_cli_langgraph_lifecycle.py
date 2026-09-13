@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +30,7 @@ _NON_AGENT_ENTRYPOINTS = frozenset(
         "improvement-evaluate",
         "improvement-export",
         "improvement-rollback",
+        "init",
     }
 )
 _AGENT_ENTRYPOINTS = frozenset(
@@ -50,16 +50,7 @@ _AGENT_ENTRYPOINTS = frozenset(
 
 
 def _identity_path(project_dir: Path, change_id: str, invocation_id: str) -> Path:
-    return (
-        project_dir
-        / "qa"
-        / "changes"
-        / change_id
-        / ".runtime"
-        / "langgraph"
-        / "identities"
-        / f"{invocation_id}.json"
-    )
+    return project_dir / "qa" / ".runtime" / "langgraph" / "identities" / f"{invocation_id}.json"
 
 
 def _load_identity(path: Path) -> dict[str, object]:
@@ -69,14 +60,14 @@ def _load_identity(path: Path) -> dict[str, object]:
     return payload
 
 
-def test_all_fourteen_public_entrypoints_are_current() -> None:
+def test_all_fifteen_public_entrypoints_are_current() -> None:
     from assurance_product.application import ENTRYPOINT_AGENT_CONTRACT_IDS
     from assurance_product import models
     from assurance_product.models import PRODUCT_ENTRYPOINTS
 
     assert not hasattr(models, "ENTRYPOINT_RUNTIME_CUTOVER")
     assert set(ENTRYPOINT_AGENT_CONTRACT_IDS) == set(PRODUCT_ENTRYPOINTS)
-    assert len(PRODUCT_ENTRYPOINTS) == 14
+    assert len(PRODUCT_ENTRYPOINTS) == 15
     assert set(PRODUCT_ENTRYPOINTS) == _NON_AGENT_ENTRYPOINTS | _AGENT_ENTRYPOINTS
     assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] == () for name in _NON_AGENT_ENTRYPOINTS)
     assert all(ENTRYPOINT_AGENT_CONTRACT_IDS[name] for name in _AGENT_ENTRYPOINTS)
@@ -120,7 +111,7 @@ def test_leftover_invocation_without_identity_fails_closed(
     (project_dir / "README.md").write_text("seed\n", encoding="utf-8")
     change_id = "CH-LEFTOVER-001"
     ChangeWorkspace.prepare(project_dir, change_id)
-    leftover = project_dir / "qa" / "changes" / change_id / ".runtime" / "invocations"
+    leftover = project_dir / "qa" / ".runtime" / "invocations"
     leftover.mkdir(parents=True, exist_ok=True)
     (leftover / "inv-pre-migration-001").mkdir()
     path = _identity_path(project_dir, change_id, "inv-pre-migration-001")
@@ -198,27 +189,6 @@ def _evaluate_task_payload() -> dict[str, object]:
         "baseline_sha256": None,
         "target_digest": "a" * 64,
     }
-
-
-def _workspace_at(project_root: Path, change_root: Path) -> ChangeWorkspace:
-    from assurance_product.change_workspace import ChangePaths
-
-    runtime = change_root / ".runtime"
-    langgraph = runtime / "langgraph"
-    return ChangeWorkspace(
-        ChangePaths(
-            project_root=project_root.resolve(),
-            change_root=change_root,
-            staging_root=change_root / ".staging",
-            runtime_root=runtime,
-            generated_root=change_root / "generated",
-            apply_manifest=change_root / "apply-manifest.json",
-            langgraph_root=langgraph,
-            langgraph_checkpoints=langgraph / "checkpoints.sqlite3",
-            langgraph_leases=langgraph / "leases",
-            langgraph_identities=langgraph / "identities",
-        )
-    )
 
 
 def _durable_chain(
@@ -316,9 +286,7 @@ def _reject_lifecycle_tampers(
     assert modest.exit_code == 40, modest.output
     identity_path.chmod(0o644)
 
-    checkpoints = (
-        project_dir / "qa" / "changes" / change_id / ".runtime" / "langgraph" / "checkpoints.sqlite3"
-    )
+    checkpoints = project_dir / "qa" / ".runtime" / "langgraph" / "checkpoints.sqlite3"
     if checkpoints.is_file():
         real = checkpoints.with_name("checkpoints.sqlite3.real")
         checkpoints.rename(real)
@@ -348,58 +316,6 @@ def _reject_lifecycle_tampers(
     mutated_network = cli_runner.invoke(app, ["run", *existing])
     assert mutated_network.exit_code == 40, mutated_network.output
     monkeypatch.setattr(ports_mod, "_preflight_selected_root", original_preflight)
-
-
-def _materialize_publication_from_graph_status(
-    project_dir: Path,
-    change_id: str,
-    graph_status: dict[str, Any],
-) -> None:
-    from tests.product.test_result_export import TARGET_A, TARGET_B, _aggregate, _digest, _write
-
-    files = (
-        (TARGET_A, b"generated-a\n", b"original-a\n"),
-        (TARGET_B, b"generated-b\n", b"original-b\n"),
-    )
-    manifest_files = []
-    for target, source, baseline in files:
-        source_path = f"qa/changes/{change_id}/generated/api/files/{target}"
-        _write(project_dir, source_path, source)
-        _write(project_dir, target, baseline)
-        manifest_files.append(
-            {
-                "target_path": target,
-                "source_path": source_path,
-                "source_sha256": _digest(source),
-                "baseline_sha256": _digest(baseline),
-                "mode": 0o644,
-                "operation": "generated",
-            }
-        )
-    manifest_digest = _aggregate(
-        {"change_id": change_id, "files": [item["target_path"] for item in manifest_files]}
-    )
-    manifest = {
-        "schema_version": "1",
-        "change_id": change_id,
-        "digest": manifest_digest,
-        "files": manifest_files,
-    }
-    change_root = project_dir / "qa" / "changes" / change_id
-    _write(
-        project_dir,
-        f"qa/changes/{change_id}/apply-manifest.json",
-        json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
-    )
-    from assurance_product.models import StatusV1
-
-    persisted = StatusV1.model_validate(graph_status).model_dump(mode="json")
-    assert persisted["change"]["state"] == "achieved"
-    assert persisted["publication"]["status"] != "ready"
-    (change_root / "status.json").write_text(
-        json.dumps(persisted, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _authenticate_reopen(
@@ -509,7 +425,6 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     from assurance_product.invocation_identity import InvocationIdentityRecord
     from graph_engine.attempts.resolutions import PendingTaskResult, SystemReference
     from graph_engine.attempts.resource_arbiter import ResourceArbiter
-    from tests.product.test_result_export import CHANGE_ID
 
     monkeypatch.setenv(SECRET_ENV, SECRET_VALUE)
     composition = opencode_composition
@@ -519,13 +434,13 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         composition=composition,
         invocation_id=_EVALUATE_INVOCATION,
         entrypoint="improvement-evaluate",
-        change_id=CHANGE_ID,
+        change_id="CH-PUB-001",
     )
     started = cli_runner.invoke(app, ["start", *args])
     assert started.exit_code == 0, started.output
     assert SECRET_VALUE not in started.output
     started_doc = parse_json_output(started.stdout)
-    runtime = project_dir / "qa" / "changes" / change_id / ".runtime"
+    runtime = project_dir / "qa" / ".runtime"
     for path in runtime.rglob("*"):
         if path.is_file():
             assert SECRET_VALUE.encode() not in path.read_bytes()
@@ -654,14 +569,6 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
     assert achieved["change"]["state"] == "achieved"
     assert achieved["pending_interrupt"] is None
     assert achieved["entrypoint"] == "improvement-evaluate"
-
-    _materialize_publication_from_graph_status(project_dir, CHANGE_ID, achieved)
-    exported = cli_runner.invoke(
-        app, ["export", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID]
-    )
-    assert exported.exit_code == 0, exported.output
-    export_doc = parse_json_output(exported.stdout)
-    assert export_doc["change_id"] == CHANGE_ID
     _durable_chain(
         project_dir=project_dir,
         change_id=change_id,
@@ -669,48 +576,4 @@ def test_non_agent_root_survives_reopen_status_lock_resume_and_publication(
         composition=composition,
         identity=identity,
         expect_attempt_records=True,
-    )
-
-    from assurance_product import status as status_mod
-
-    real_rename = os.rename
-
-    def crash_after_rename(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
-        real_rename(source, destination)
-        os._exit(91)
-
-    process_id = os.fork()
-    if process_id == 0:
-        monkeypatch.setattr(status_mod.os, "rename", crash_after_rename)
-        status_mod.archive_published(project_dir, CHANGE_ID)
-        os._exit(90)
-    _child, wait_status = os.waitpid(process_id, 0)
-    assert os.waitstatus_to_exitcode(wait_status) == 91
-    assert not (project_dir / "qa" / "changes" / CHANGE_ID).exists()
-    assert (project_dir / "qa" / "archive" / CHANGE_ID).is_dir()
-
-    fresh = type(cli_runner)()
-    recovered = fresh.invoke(
-        app,
-        ["archive", "--json", "--project-dir", str(project_dir), "--change", CHANGE_ID],
-    )
-    assert recovered.exit_code == 0, recovered.output
-    recovered_doc = parse_json_output(recovered.stdout)
-    assert recovered_doc["change_id"] == CHANGE_ID
-    assert recovered_doc["archive_root"] == f"qa/archive/{CHANGE_ID}"
-    archived_status = json.loads(
-        (project_dir / "qa" / "archive" / CHANGE_ID / "status.json").read_text(encoding="utf-8")
-    )
-    assert archived_status["entrypoint"] == "improvement-evaluate"
-    assert archived_status["lock_digest"] == identity.product_lock_digest
-    assert archived_status["root_input_digest"] == identity.root_input_digest
-    assert archived_status["invocation_id"] == _EVALUATE_INVOCATION
-    _durable_chain(
-        project_dir=project_dir,
-        change_id=change_id,
-        invocation_id=_EVALUATE_INVOCATION,
-        composition=composition,
-        identity=identity,
-        expect_attempt_records=True,
-        workspace=_workspace_at(project_dir, project_dir / "qa" / "archive" / CHANGE_ID),
     )

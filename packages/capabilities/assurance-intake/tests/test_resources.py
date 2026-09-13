@@ -68,10 +68,10 @@ def test_artifact_list_model_and_result_contracts_reject_an_empty_receipt() -> N
     with pytest.raises(ValidationError, match="at least 1 item"):
         ArtifactListResultV1.model_validate({"output_files": []})
     assert ArtifactListResultV1.model_validate(
-        {"output_files": ["qa/changes/CH-1/.qa.yaml", "qa/changes/CH-1/requirement.md"]}
+        {"output_files": ["qa/.qa.yaml", "qa/requirement.md"]}
     ).output_files == (
-        "qa/changes/CH-1/.qa.yaml",
-        "qa/changes/CH-1/requirement.md",
+        "qa/.qa.yaml",
+        "qa/requirement.md",
     )
 
     for name in ("intake", "explore", "case-design"):

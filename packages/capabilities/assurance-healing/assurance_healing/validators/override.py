@@ -13,7 +13,7 @@ from assurance_healing.contracts.safety import HealingOverrideTokenV1
 from assurance_healing.contracts.wire import override_token_digest
 from assurance_healing.validators.paths import canonical_relative, under_root
 
-_ALLOWED = ("healing/", "qa/changes/")
+_ALLOWED = ("qa/results/healing/",)
 _OUTSIDE = "override candidate may write only healing token paths"
 _TOKEN = "override token does not match policy and candidate"
 _MISSING = "override token is required"

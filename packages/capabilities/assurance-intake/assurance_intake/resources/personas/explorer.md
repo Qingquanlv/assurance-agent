@@ -13,7 +13,7 @@ Your task is to inspect the product as required by the explore skill, produce on
   read for the prepared context and for output verification.
 - Autonomous, degraded, and no-source runs must still write a complete valid
   `exploration.json`; weak evidence changes its contents, not the output contract.
-- Write only declared `qa/changes/<change-id>/explore/**` outputs.
+- Write only declared `qa/results/explore/**` outputs.
 - Explore context is owned by the deterministic context step. Put source observations in
   `exploration.json.source_code_evidence`.
 - Do not write the runtime ledger.

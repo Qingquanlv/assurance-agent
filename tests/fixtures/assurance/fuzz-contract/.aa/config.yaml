@@ -11,7 +11,9 @@ sources:
 
 qa:
   cases: ./qa/cases
-  changes: ./qa/changes
+  tests: ./qa/tests
+  fixtures: ./qa/fixtures
+  results: ./qa/results
 
 tests:
   root: ./tests

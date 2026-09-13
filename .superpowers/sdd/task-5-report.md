@@ -1,70 +1,66 @@
-# Task 5 Report — Resolve Evidence by Pinned Physical Identity
+# Task 5 Report: Product wiring (thin `init`, `full`, `intake`)
 
-## Status: DONE
+## Status
 
-Branch tip at start: `2597e06`. Edit + test only (no commit).
+DONE_WITH_CONCERNS
 
-## What Was Implemented
+## TDD Evidence
 
-### `assurance_agent/workflow/graph/evidence_paths.py` (new)
-- `ResolvedEvidencePath` (`StrictWireModel`) with `physical_relpath`, `repo_relpath`, `ownership`, canonical `logical_aliases`.
-- Pure `resolve_evidence_path(logical_path=, tree_roots=, current_change_repo_path=)` — no FS open, no symlink follow; reuses workspace lexical normalization (`_assert_safe_prefix`, `_physical_for`, `_resolutions`).
-- Ownership by nested physical containment with precedence `current_change > repo > project`; nesting/precedence disagreement → `ambiguous_containment`.
-- Typed `EvidencePathError` with closed codes:
-  `missing_pinned_roots`, `base_tree_roots_mismatch`, `path_traversal`, `absolute_path`, `another_change`, `ambiguous_containment`, `unowned_path`, `unknown_root`, `invalid_logical_path`, `unsafe_root_prefix`.
-- `pinned_write_set_roots` / `verify_write_set_base_tree_roots` for current evidence validation over write-set-bound maps.
+The brief is implement-then-verify (constructor sites, `adapt_init` / `route_init` / roots, then the listed pytest). No separate RED flip was required.
 
-### `assurance_agent/workflow/graph/workspace.py`
-- `WriteSet.base_tree_roots: dict[str, str] | None = None` (historical-compatible).
-- `TreeStore.tree_roots(tree_id) -> Mapping[str, str]` read-only accessor.
-- `freeze_write_set` copies verified base-tree roots into the payload **before** hashing `write_set_id`.
-- `load_write_set` accepts historical manifests without roots; when roots are present, requires exact agreement with `tree_roots(base_tree_id)`.
+### GREEN (Step 4)
 
-## Coverage (Steps 1–2)
-
-Positive:
-- Four private roots (`tests/api|e2e|fuzz|perf`) via `project:…` with project+repo → `.`: one physical path, repo-rel path, both aliases, ownership `repo`.
-- Current-change output → ownership `current_change`.
-
-Fail-closed typed codes:
-- missing pinned map; roots mismatch at load/`verify_write_set_base_tree_roots`; traversal; absolute paths; another change; ambiguous nested-vs-precedence containment; unowned path.
-- Symlink-like pinned prefix cannot rewrite lexical physical identity.
-- Historical write set without roots loads, but `pinned_write_set_roots` fails `missing_pinned_roots`.
-
-## Dark-ship
-
-No packaged contracts, validators, fixer authority, eval, export, or scorer switches.
-
-## Left alone
-
-- `benchmark/vue-fastapi-admin/benchmark/cursor-loop-helpers.sh`
-- `tests/unit/benchmark/test_cursor_loop_helpers.py`
-
-## Verify
+Command:
 
 ```bash
-uv run pytest -q tests/unit/workflow/graph/test_evidence_paths.py tests/unit/workflow/graph/test_workspace.py
-# → 71 passed
-
-uv run ruff check assurance_agent/workflow/graph/evidence_paths.py \
-  assurance_agent/workflow/graph/workspace.py \
-  tests/unit/workflow/graph/test_evidence_paths.py
-# → All checks passed
-
-uv run pyright
-# → 0 errors, 0 warnings, 0 informations
+uv run pytest tests/product/test_feature_graph_bundles.py tests/product/test_product_entrypoints.py tests/product/test_graph_revision_contracts.py tests/product/test_cli_langgraph_lifecycle.py tests/product/test_product_stategraph_flow.py tests/product/test_stategraph_entrypoints.py tests/product/test_full_graph_audit.py -v
 ```
 
-## Files ready to stage (integrator owns commit)
+Output:
 
-- `assurance_agent/workflow/graph/evidence_paths.py`
-- `assurance_agent/workflow/graph/workspace.py`
-- `tests/unit/workflow/graph/test_evidence_paths.py`
-- `tests/unit/workflow/graph/test_workspace.py`
-- `.superpowers/sdd/task-5-report.md` (optional ledger)
+```
+======================== 77 passed in 219.83s (0:03:39) ========================
+```
 
-Suggested commit message: `feat(graph): resolve evidence by pinned physical path`
+Exit code: 0
+
+Focused ruff check/format on the edited graph, factory, runtime-count, and listed test files is clean.
+
+First run was `75 passed, 2 errors`: `opencode_composition` raised `semantic attempt registry must contain 46 contracts, got 47`. Those two listed tests (`test_non_agent_root_survives_reopen_status_lock_resume_and_publication`, `test_factory_composition_has_no_leftover_compiled_workflow`) passed after the in-scope `46` → `47` count updates.
+
+## What changed
+
+- Thin `init` root is `compile_thin_root(..., entrypoint="init", adapt=adapt_init)`.
+- `adapt_init` puts `data_knowledge` on state as `payload.data_knowledge.model_dump(mode="json")` so `select_init_runtime` can read `state["data_knowledge"]`.
+- `route_init` returns `initialized` | `failed` (`attempt_failure` or `status == "failed"`).
+- `full` and `intake` always run `adapt-init` → `init` after prepare succeeds. Prepare `failed` still goes to `not-achieved` / `publish`. `advance-coverage` still edges only to `adapt-case` (does not re-run init).
+- Factory builds 13 thin roots and 15 product roots. `PUBLIC_BUNDLE_FIELDS["assurance.generation"]` stays `("generation",)`; `IMPLEMENTED_BUNDLE_FIELDS` appends `init_runtime`.
+- Every listed `GenerationGraphs(...)` now passes `init_runtime` last.
+
+## Files Changed
+
+| File | Action |
+|------|--------|
+| `assurance_product/graphs/entrypoints.py` | `adapt_init`, `build_init_root`; intake always inits after prepare |
+| `assurance_product/graphs/routes.py` | `route_init` → `initialized` \| `failed` |
+| `assurance_product/graphs/full.py` | `adapt-init` / `init` after prepare; coverage reentry skips init |
+| `assurance_product/graphs/factory.py` | `"init"` thin root; intake gets `init_runtime`; 13 / 15 counts |
+| `assurance_product/runtime_bindings.py` | semantic registry count 46 → 47 |
+| `assurance_product/runtime_ports.py` | composition semantic count 46 → 47 |
+| `tests/product/test_feature_graph_bundles.py` | `IMPLEMENTED_BUNDLE_FIELDS` appends `init_runtime` |
+| `tests/product/test_stategraph_entrypoints.py` | `_stub_features` `init_runtime`; thin count 13 |
+| `tests/product/test_product_stategraph_flow.py` | `_flow_features` `init_runtime`; product count 15; full nodes include `adapt-init` / `init` |
+| `tests/product/goal_loop_fixture.py` | `GenerationGraphs` `init_runtime` last |
+| `tests/product/test_full_graph_audit.py` | `ENTRYPOINT_CONTRACTS` length 14 → 15 |
+
+## Commit
+
+none
 
 ## Concerns
 
-None blocking. Exact `EvidencePathError` code strings were derived from Task 5 failure-mode inventory (design D15 does not enumerate the Literal set); rename is cheap if a later consumer inventory pins different tokens.
+1. **`runtime_bindings.py` / `runtime_ports.py` were not in the brief file list.** Listed composition tests failed on the leftover `46` semantic-contract check after `init-test-runtime`. Updated those two asserts to `47` as the brief allows. Other `== 46` tests (`test_semantic_attempt_bindings.py`, `test_product_composition.py`, `test_python_native_cutover.py`) were not run.
+2. **`test_full_graph_audit.py` was not in the brief file list** but is in the pytest command. Its `ENTRYPOINT_CONTRACTS` length was still `14`; updated to `15`.
+3. **Stale test names** still say “twelve thin roots” (`test_twelve_thin_roots_...`, `test_build_product_graphs_merges_twelve_thin_roots_...`). Counts in those tests are 13 / 15.
+4. **`route_init` is a plain `if`, not an exclusive-route row.** It is not in `PRODUCT_EXCLUSIVE_ROUTES`. The existing `if`/`orelse` AST guard still passes.
+5. **`init` is not in `_THIN_EXPORTS` / representative thin-root invoke tests.** Wiring is covered by factory compile, full-node presence, and intake/full flow stubs.

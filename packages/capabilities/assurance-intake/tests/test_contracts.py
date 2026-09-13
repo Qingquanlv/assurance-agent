@@ -74,7 +74,7 @@ _SHA = "a" * 64
 
 def _reviewed_case() -> ReviewedCaseV1:
     plan_ref = EvidenceArtifactRefV1(
-        path=f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+        path=f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
         digest=_SHA,
     )
     return ReviewedCaseV1(
@@ -83,11 +83,11 @@ def _reviewed_case() -> ReviewedCaseV1:
         plan_digest=_SHA,
         plan_ref=plan_ref,
         preparation_refs=(
+            EvidenceArtifactRefV1(path="qa/requirement.md", digest=_SHA),
             plan_ref,
-            EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/requirement.md", digest=_SHA),
         ),
-        case_refs=(EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/cases/menus/case.yaml", digest=_SHA),),
-        review_ref=EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/review/case-review.json", digest=_SHA),
+        case_refs=(EvidenceArtifactRefV1(path="qa/cases/menus/case.yaml", digest=_SHA),),
+        review_ref=EvidenceArtifactRefV1(path="qa/results/review/case-review.json", digest=_SHA),
     )
 
 
@@ -114,25 +114,25 @@ def test_reviewed_case_requires_all_version_refs(field: str) -> None:
 
 
 def test_case_rework_targets_stay_inside_the_current_change() -> None:
-    gap = EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/inspect/coverage-gaps.json", digest=_SHA)
+    gap = EvidenceArtifactRefV1(path="qa/results/inspect/coverage-gaps.json", digest=_SHA)
     with pytest.raises(ValidationError):
         CaseReworkContextV1(
             previous_case=_reviewed_case(),
             inspect_receipt=ReceiptRef(receipt_id="inspect", receipt_digest=_SHA),
             assessment_refs=(gap,),
             gaps_ref=gap,
-            target_case_paths=("qa/changes/OTHER/cases/menus/case.yaml",),
+            target_case_paths=("qa/results/menus/case.yaml",),
         )
 
 
 def test_case_rework_can_describe_a_missing_requirement_through_gap_evidence() -> None:
-    gap = EvidenceArtifactRefV1(path="qa/changes/CH-DEMO-001/inspect/coverage-gaps.json", digest=_SHA)
+    gap = EvidenceArtifactRefV1(path="qa/results/inspect/coverage-gaps.json", digest=_SHA)
     context = CaseReworkContextV1(
         previous_case=_reviewed_case(),
         inspect_receipt=ReceiptRef(receipt_id="inspect", receipt_digest=_SHA),
         assessment_refs=(gap,),
         gaps_ref=gap,
-        target_case_paths=("qa/changes/CH-DEMO-001/cases/menus/case.yaml",),
+        target_case_paths=("qa/cases/menus/case.yaml",),
     )
     assert context.gaps_ref == gap
 
@@ -539,46 +539,46 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
             "aa-case-design",
             "assurance-v1-doc-author",
             (
-                "qa/changes/{change_id}/.qa.yaml",
-                "qa/changes/{change_id}/cases",
-                "qa/changes/{change_id}/proposal.md",
-                "qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
             ),
             (
-                "qa/changes/{change_id}/.qa.yaml",
-                "qa/changes/{change_id}/proposal.md",
-                "qa/changes/{change_id}/trace/minimum-coverage-matrix.json",
+                "qa/.qa.yaml",
+                "qa/proposal.md",
+                "qa/results/trace/minimum-coverage-matrix.json",
             ),
         ),
         "case-review": (
             "aa-case-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/changes/{change_id}/cases/reviewed-case.json",
-                "qa/changes/{change_id}/cases/reviews",
-                "qa/changes/{change_id}/review/case-review-summary.md",
-                "qa/changes/{change_id}/review/case-review.json",
+                "qa/cases/reviewed-case.json",
+                "qa/cases/reviews",
+                "qa/results/review/case-review-summary.md",
+                "qa/results/review/case-review.json",
             ),
             (
-                "qa/changes/{change_id}/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/changes/{change_id}/review/case-review-summary.md",
-                "qa/changes/{change_id}/review/case-review.json",
+                "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/case-review-summary.md",
+                "qa/results/review/case-review.json",
             ),
         ),
         "explore": (
             "aa-explore",
             "assurance-v1-explorer",
             (
-                "qa/changes/{change_id}/explore/context.json",
-                "qa/changes/{change_id}/explore/exploration.json",
+                "qa/results/explore/context.json",
+                "qa/results/explore/exploration.json",
             ),
-            ("qa/changes/{change_id}/explore/exploration.json",),
+            ("qa/results/explore/exploration.json",),
         ),
         "intake": (
             "aa-intake",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/.qa.yaml", "qa/changes/{change_id}/requirement.md"),
-            ("qa/changes/{change_id}/.qa.yaml", "qa/changes/{change_id}/requirement.md"),
+            ("qa/.qa.yaml", "qa/requirement.md"),
+            ("qa/.qa.yaml", "qa/requirement.md"),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
@@ -597,3 +597,13 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
         assert "opencode" not in dumped
         assert "cursor" not in dumped
     assert forbidden_imports("assurance_intake", "assurance_product") == set()
+
+
+def test_output_routes_are_flat_qa_paths() -> None:
+    from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+    assert "qa/" + "changes" not in rendered
+    assert "{change_id}" not in rendered
+    assert "qa/" + "archive" not in rendered
+    assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)

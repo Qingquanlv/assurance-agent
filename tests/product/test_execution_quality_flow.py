@@ -302,7 +302,7 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
         return builder.compile()
 
     issue_ref = {
-        "path": "qa/changes/CH-DEMO-001/inspect/issue-analysis.json",
+        "path": "qa/results/inspect/issue-analysis.json",
         "digest": "a" * 64,
     }
     features = _flow_features(
@@ -314,6 +314,7 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
     features["assurance.quality"] = QualityGraphs(
         assess=quality.assess,
         issue_review=quality.issue_review,
+        fact_baseline=quality.fact_baseline,
         issue_analyze=recording_graph(
             issue_inputs,
             {

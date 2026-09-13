@@ -21,6 +21,7 @@ from assurance_product.graphs.entrypoints import (
     build_improvement_export_root,
     build_improvement_review_root,
     build_improvement_rollback_root,
+    build_init_root,
     build_intake_root,
     build_issue_analyze_root,
     build_issue_reconcile_root,
@@ -97,8 +98,11 @@ def build_thin_entrypoint_graphs(
 ) -> ThinEntrypointGraphs:
     bundles = coerce_feature_bundles(features)
     entrypoints = {
-        "intake": build_intake_root(context, bundles.intake.prepare, bundles.intake.case),
+        "intake": build_intake_root(
+            context, bundles.intake.prepare, bundles.generation.init_runtime, bundles.intake.case
+        ),
         "case": build_case_root(context, bundles.intake.load_plan, bundles.intake.case),
+        "init": build_init_root(context, bundles.generation.init_runtime),
         "archive": build_archive_root(context, bundles.improvement.archive),
         "retro": build_retro_root(context, bundles.improvement.retro),
         "issue-review": build_issue_review_root(context, bundles.quality.issue_review),
@@ -110,8 +114,8 @@ def build_thin_entrypoint_graphs(
         "improvement-apply": build_improvement_apply_root(context, bundles.improvement.apply),
         "improvement-rollback": build_improvement_rollback_root(context, bundles.improvement.rollback),
     }
-    if set(entrypoints) != set(THIN_ENTRYPOINTS) or len(entrypoints) != 12:
-        raise ValueError("thin roots must be the 12 declared entrypoints")
+    if set(entrypoints) != set(THIN_ENTRYPOINTS) or len(entrypoints) != 13:
+        raise ValueError("thin roots must be the 13 declared entrypoints")
     return ThinEntrypointGraphs(entrypoints=MappingProxyType(entrypoints))
 
 
@@ -133,8 +137,8 @@ def _closed_entrypoints(entrypoints: Mapping[str, CompiledStateGraph]) -> Mappin
         raise ValueError(f"missing product entrypoints: {sorted(missing)}")
     if extra:
         raise ValueError(f"extra product entrypoints: {sorted(extra)}")
-    if len(entrypoints) != 14:
-        raise ValueError("product roots must be the 14 declared entrypoints")
+    if len(entrypoints) != 15:
+        raise ValueError("product roots must be the 15 declared entrypoints")
     return MappingProxyType(dict(entrypoints))
 
 

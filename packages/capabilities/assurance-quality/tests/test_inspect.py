@@ -41,7 +41,7 @@ def execution_document(
             "change_id": CHANGE_ID,
             "plan_digest": HEX_A,
             "plan_ref": {
-                "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_A}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{HEX_A}/resolved-assurance-plan.json",
                 "digest": HEX_A,
             },
             "batch_id": BATCH_ID,
@@ -96,7 +96,7 @@ def missing_asset_execution() -> dict[str, object]:
             "change_id": CHANGE_ID,
             "plan_digest": HEX_A,
             "plan_ref": {
-                "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_A}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{HEX_A}/resolved-assurance-plan.json",
                 "digest": HEX_A,
             },
             "batch_id": BATCH_ID,

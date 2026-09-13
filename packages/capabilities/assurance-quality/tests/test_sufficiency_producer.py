@@ -24,7 +24,7 @@ def _evidence(*, case_id: str = "TC_A", case_type: str = "api") -> ExecutionEvid
             "change_id": "CH-1",
             "plan_digest": _SHA,
             "plan_ref": {
-                "path": f"qa/changes/CH-1/plan/{_SHA}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
                 "digest": _SHA,
             },
             "batch_id": "B-1",

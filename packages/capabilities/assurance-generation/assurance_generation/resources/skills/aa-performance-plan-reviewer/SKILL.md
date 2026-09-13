@@ -66,6 +66,15 @@ bounded finding in `auto_fix_plan`. Independently verify source-backed claims;
 the facts digest binds observations, not semantic truth. Re-review repaired output
 before passing; the desired repair count never changes the acceptance criteria.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first from the locked inputs. When its `Product Source Verification`
@@ -77,29 +86,29 @@ those exact reads and a path-scoped grep both fail.
 The final JSON instruction part contains the mechanically locked
 `review_input_paths`. Use the native read tool to read every listed path
 directly before reviewing. Do not use glob, wildcard search, or ignore-aware
-file discovery under `qa/changes/` to decide whether an input exists. The host
+file discovery under `qa/` to decide whether an input exists. The host
 has already verified these exact paths as regular files.
 
 ### required
 
-- `qa/changes/<change-id>/plans/performance-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-plan.md`
-- `qa/changes/<change-id>/plans/performance-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/performance-review-summary.md`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/performance-plan.md`
+- `qa/results/plans/performance-codegen-plan.md`
+- `qa/results/plans/performance-codegen-mapping.json`
+- `qa/results/plans/performance-review-summary.md`
+- `qa/cases/**/case.yaml`
 
 ### optional
 
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only)
-- `tests/perf/**` and `tests/testdata/domain/**`
+- `qa/tests/perf/**` and `qa/tests/testdata/domain/**`
 
 ## Outputs
 
 ### required
 
-- `qa/changes/<change-id>/review/performance-plan-review.json`
-- `qa/changes/<change-id>/review/performance-plan-review-summary.md`
+- `qa/results/review/performance-plan-review.json`
+- `qa/results/review/performance-plan-review-summary.md`
 
 ## Boundaries
 
@@ -136,7 +145,7 @@ Consume the same Task Mapping structure emitted by the planner:
 - Require exactly one row for every selected Performance Case ID.
 - Reject a Case ID that appears more than once.
 - Require the mapped method to be the primary executable load-test task under
-  `tests/perf/**`.
+  `qa/tests/perf/**`.
 
 For a codegen-ready plan, emit `"decision": "pass"`.
 

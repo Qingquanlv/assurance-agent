@@ -18,6 +18,7 @@ ENTRYPOINT_RECURSION_LIMITS: MappingProxyType[str, int] = MappingProxyType(
         "case": 1024,
         "full": 8192,
         "execute": 4096,
+        "init": 512,
         "archive": 512,
         "retro": 2048,
         "issue-review": 512,

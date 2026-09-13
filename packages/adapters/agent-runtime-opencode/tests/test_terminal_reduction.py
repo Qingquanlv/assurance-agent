@@ -5,9 +5,18 @@ import json
 import pytest
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult, ResultContract
-from agent_runtime_contracts.schema import canonical_digest, thaw_json
+from agent_runtime_contracts.schema import (
+    canonical_digest,
+    thaw_json,
+    validate_local_agent_result,
+    validate_structured_result,
+)
+from assurance_quality.contracts.agent import FactBaselineResultV1
+from assurance_quality.operations.agent_skills import FACT_BASELINE_RESULT_ID
+from assurance_quality.resource_loader import resource_bytes
 from agent_runtime_opencode.observation import classify_provider_state, parse_closed_terminal_result
 from agent_runtime_opencode.reducer import reduce_terminal
+from agent_runtime_opencode.redaction import encoded_canary_forms
 from harness import (  # pyright: ignore[reportMissingImports]
     _completed_engine_invocation,
     _terminal_success_fixture,
@@ -113,12 +122,118 @@ def _intake_messages(payload: object) -> list[dict[str, object]]:
     return _closed_assistant(payload)
 
 
+def _fact_baseline_request() -> AgentRunRequest:
+    schema = json.loads(resource_bytes("result-contracts/fact-baseline.v1.schema.json"))
+    base = agent_run_request()
+    return AgentRunRequest.model_validate(
+        {
+            **base.model_dump(mode="json"),
+            "result_contract": ResultContract(
+                schema_id=FACT_BASELINE_RESULT_ID,
+                schema_digest=canonical_digest(schema),
+                delivery_mode="assistant_json_local_v1",
+                schema_document=schema,
+            ).model_dump(mode="json"),
+        }
+    )
+
+
+def _fact_baseline_payload() -> dict[str, object]:
+    payload = {
+        "source": "seed_file",
+        "schema_version": "1.0",
+        "facts": {"admin_username": "admin", "admin_password": "source pass 123"},
+        "seed_file": "backend/seed.py",
+        "source_evidence_ids": ["seed-admin-initialization"],
+    }
+    run = _fact_baseline_request()
+    assert (
+        validate_structured_result(
+            payload,
+            schema=run.result_contract.schema_document,
+            schema_digest=run.result_contract.schema_digest,
+        )
+        == payload
+    )
+    FactBaselineResultV1.model_validate(payload)
+    return payload
+
+
+def test_real_fact_baseline_terminal_preserves_governed_credentials() -> None:
+    run = _fact_baseline_request()
+    payload = _fact_baseline_payload()
+    messages = _closed_assistant(payload)
+    assert parse_closed_terminal_result(messages) == payload
+    outcome = reduce_terminal(
+        kind="succeeded",
+        session={},
+        messages=messages,
+        agent_run=run,
+        request=task_request(run),
+        diff=None,
+        canaries=(b"opencode-service-canary",),
+    )
+    assert outcome.status == "succeeded", outcome.failure
+    result = AgentRunResult.model_validate(outcome.output)
+    assert thaw_json(result.result_payload) == payload
+    assert result.result_digest == canonical_digest(payload)
+
+
+def test_real_fact_baseline_envelope_preserves_governed_credentials() -> None:
+    payload = _fact_baseline_payload()
+    result = AgentRunResult.model_validate(
+        {
+            "result_payload": payload,
+            "result_digest": canonical_digest(payload),
+            "evidence_digest": "a" * 64,
+            "adapter_id": "runtime.opencode",
+            "adapter_version": "0.1.0",
+        }
+    )
+    assert thaw_json(result.result_payload) == payload
+
+
+def test_real_fact_baseline_local_validation_preserves_governed_credentials() -> None:
+    payload = _fact_baseline_payload()
+    exact, digest, result = validate_local_agent_result(payload, result_model=FactBaselineResultV1)
+    assert exact == payload
+    assert digest == canonical_digest(payload)
+    assert result.facts == payload["facts"]
+    with pytest.raises(ValueError):
+        validate_local_agent_result({**payload, "source": "invented"}, result_model=FactBaselineResultV1)
+    with pytest.raises(ValueError, match="schema_version"):
+        validate_local_agent_result({**payload, "schema_version": None}, result_model=FactBaselineResultV1)
+
+
+@pytest.mark.parametrize("encoded", encoded_canary_forms(b"service-canary/with+symbols"))
+@pytest.mark.parametrize("location", ["value", "key"])
+def test_real_fact_baseline_rejects_service_canaries(encoded: bytes, location: str) -> None:
+    run = _fact_baseline_request()
+    payload = _fact_baseline_payload()
+    leak = encoded.decode("utf-8")
+    payload["facts"] = {"admin_password": leak} if location == "value" else {leak: ["source fact"]}
+    outcome = reduce_terminal(
+        kind="succeeded",
+        session={},
+        messages=_closed_assistant(payload),
+        agent_run=run,
+        request=task_request(run),
+        diff=None,
+        canaries=(b"service-canary/with+symbols",),
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is False
+    assert leak not in outcome.failure.message
+
+
 def test_product_result_schema_missing_document_is_invalid_output() -> None:
     agent_run = agent_run_request(result_schema=_INTAKE_RESULT_SCHEMA)
     outcome = reduce_terminal(
         kind="succeeded",
         session={},
-        messages=_intake_messages({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        messages=_intake_messages({"output_files": ["qa/proposal.md"]}),
         agent_run=agent_run,
         request=task_request(agent_run),
         diff=None,
@@ -147,14 +262,14 @@ def test_product_result_schema_on_contract_validates() -> None:
     outcome = reduce_terminal(
         kind="succeeded",
         session={},
-        messages=_intake_messages({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        messages=_intake_messages({"output_files": ["qa/proposal.md"]}),
         agent_run=agent_run,
         request=task_request(agent_run),
         diff=None,
     )
     assert outcome.status == "succeeded"
     result = AgentRunResult.model_validate(outcome.output)
-    assert thaw_json(result.result_payload) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    assert thaw_json(result.result_payload) == {"output_files": ["qa/proposal.md"]}
 
 
 def test_closed_terminal_accepts_one_json_text_step_pair_and_optional_patch() -> None:
@@ -401,21 +516,21 @@ def test_model_reported_file_manifest_is_not_workspace_proof() -> None:
     outcome = reduce_terminal(
         kind="succeeded",
         session={},
-        messages=_closed_assistant({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        messages=_closed_assistant({"output_files": ["qa/proposal.md"]}),
         agent_run=agent_run,
         request=task_request(agent_run),
         diff=None,
     )
     assert outcome.status == "succeeded"
     result = AgentRunResult.model_validate(outcome.output)
-    assert thaw_json(result.result_payload) == {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    assert thaw_json(result.result_payload) == {"output_files": ["qa/proposal.md"]}
     expected_evidence = {
         "adapter_id": "runtime.opencode",
         "history_digest": canonical_digest([{"id": "asst-1", "role": "assistant"}]),
         "model": "provider_default",
         "provider": "provider_default",
         "provider_diff_digest": None,
-        "result_digest": canonical_digest({"output_files": ["qa/changes/CH-1/proposal.md"]}),
+        "result_digest": canonical_digest({"output_files": ["qa/proposal.md"]}),
         "terminal": "succeeded",
         "tool_digest": canonical_digest([]),
     }

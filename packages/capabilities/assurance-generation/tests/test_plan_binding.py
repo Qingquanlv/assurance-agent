@@ -17,7 +17,7 @@ def test_all_authored_sends_preserve_plan_binding() -> None:
         "selected_test_families": ["api"],
         "plan_digest": "a" * 64,
         "plan_ref": {
-            "path": "qa/changes/CH-1/plan/plan.json",
+            "path": "qa/results/plan/plan.json",
             "digest": "b" * 64,
         },
     }

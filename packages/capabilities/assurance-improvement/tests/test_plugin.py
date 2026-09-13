@@ -15,11 +15,11 @@ from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
 
 def test_improvement_descriptor_declares_exact_dependency_versions() -> None:
     assert ImprovementPlugin.descriptor().dependencies == (
-        PluginDependency("assurance.intake", "==0.2.0"),
-        PluginDependency("assurance.generation", "==0.2.0"),
-        PluginDependency("assurance.execution", "==0.2.0"),
-        PluginDependency("assurance.healing", "==0.2.0"),
-        PluginDependency("assurance.quality", "==0.2.0"),
+        PluginDependency("assurance.intake", "==0.3.0"),
+        PluginDependency("assurance.generation", "==0.3.0"),
+        PluginDependency("assurance.execution", "==0.3.0"),
+        PluginDependency("assurance.healing", "==0.3.0"),
+        PluginDependency("assurance.quality", "==0.3.0"),
     )
 
 
@@ -53,7 +53,7 @@ def test_improvement_source_identity() -> None:
     assert source == IMPROVEMENT_SOURCE
     assert source == ProviderSource(
         distribution="assurance-improvement",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="improvement",
         entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",

@@ -35,6 +35,15 @@ keys, and distinguish an existing helper amendment from create-if-missing. On re
 check the whole package for consistency while editing only authorized locators;
 if another required edit is outside them, report the scope gap without broadening it.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first. When its `Product Source Verification` section lists
@@ -45,18 +54,18 @@ those exact reads and a path-scoped grep both fail.
 
 ### required
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
-- `qa/changes/<change-id>/proposal.md`
+- `qa/cases/**/case.yaml`
+- `qa/proposal.md`
+- `qa/results/facts/fact-baseline.json`
 
 ### optional
 
-- `qa/changes/<change-id>/review/fuzz-plan-review.json`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
+- `qa/results/review/fuzz-plan-review.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - product source under the project source root (read-only)
-- `tests/fuzz/**`
-- `tests/testdata/domain/**`
+- `qa/tests/fuzz/**`
+- `qa/tests/testdata/domain/**`
 
 Before authoring the first plan, build a complete support/runtime inventory and
 exact-read every candidate support module under the mapped test package, every
@@ -102,17 +111,17 @@ handoff and have explicit per-case state discovery and cleanup.
 
 ### required
 
-- `qa/changes/<change-id>/plans/fuzz-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-plan.md`
-- `qa/changes/<change-id>/plans/fuzz-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/fuzz-review-summary.md`
+- `qa/results/plans/fuzz-plan.md`
+- `qa/results/plans/fuzz-codegen-plan.md`
+- `qa/results/plans/fuzz-codegen-mapping.json`
+- `qa/results/plans/fuzz-review-summary.md`
 
 ## Closed Codegen Mapping Contract
 
 `fuzz-codegen-mapping.json` must use this exact JSON shape:
 
 ```json
-{"schema_version":"1","layer":"fuzz","entries":[{"case_id":"TC_DEPT_FUZZ_001","symbol":"test_tc_dept_fuzz_001__behavior","target_file":"tests/fuzz/test_dept.py"}]}
+{"schema_version":"1","layer":"fuzz","entries":[{"case_id":"TC_DEPT_FUZZ_001","symbol":"test_tc_dept_fuzz_001__behavior","target_file":"qa/tests/fuzz/test_dept.py"}]}
 ```
 
 Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are
@@ -160,7 +169,7 @@ and the following four-column mapping shape:
 
 | Case ID | Test Function | Target File | Schema Acquisition |
 |---|---|---|---|
-| TC_DEPT_FUZZ_001 | `test_tc_dept_fuzz_001__create_payload` | `tests/fuzz/test_dept_fuzz.py` | `schemathesis.openapi.from_url(f"{base_url()}/openapi.json"); fallback: schemathesis.openapi.from_dict(app.openapi())` |
+| TC_DEPT_FUZZ_001 | `test_tc_dept_fuzz_001__create_payload` | `qa/tests/fuzz/test_dept_fuzz.py` | `schemathesis.openapi.from_url(f"{base_url()}/openapi.json"); fallback: schemathesis.openapi.from_dict(app.openapi())` |
 ```
 
 Every row must have a non-empty Schema Acquisition cell. Write both the
@@ -193,7 +202,7 @@ Factory Mapping section (required):
 
 | Shared Module | Function | Ownership |
 |---|---|---|
-| tests/testdata/domain/account.py | make_account | reuse |
+| qa/tests/testdata/domain/account.py | make_account | reuse |
 ```
 
 The typed plan result must include an endpoint/property strategy. Every planned

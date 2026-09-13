@@ -84,7 +84,7 @@ class FixProposalInputV1(FrozenModel):
     @model_validator(mode="after")
     def _analysis_belongs_to_change(self) -> FixProposalInputV1:
         if self.issue_analysis_ref is not None and self.issue_analysis_ref.path != (
-            f"qa/changes/{self.change_id}/inspect/issue-analysis.json"
+            "qa/results/inspect/issue-analysis.json"
         ):
             raise ValueError("issue analysis must belong to the repaired change")
         return self

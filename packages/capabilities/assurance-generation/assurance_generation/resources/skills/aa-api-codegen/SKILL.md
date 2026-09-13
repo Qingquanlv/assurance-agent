@@ -18,13 +18,13 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 
 - reviewed API plan (`PlanResultV1`)
 - frozen case references for the selected API cases
-- `qa/changes/<change-id>/plans/api-plan.md`
-- `qa/changes/<change-id>/plans/api-test-data-plan.md`
-- `qa/changes/<change-id>/plans/api-codegen-plan.md`
-- `qa/changes/<change-id>/plans/api-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/m3-review-summary.md`
-- `qa/changes/<change-id>/review/api-plan-review.json`
-- `qa/changes/<change-id>/cases/**/case.yaml`
+- `qa/results/plans/api-plan.md`
+- `qa/results/plans/api-test-data-plan.md`
+- `qa/results/plans/api-codegen-plan.md`
+- `qa/results/plans/api-codegen-mapping.json`
+- `qa/results/plans/m3-review-summary.md`
+- `qa/results/review/api-plan-review.json`
+- `qa/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
 ### optional
@@ -32,32 +32,32 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 - baseline tree identity when the graph provides one
 - `.aa/config.yaml`
 - product source under the project source root (read-only contract evidence)
-- `tests/api/**`
-- `tests/api/adapters/**`
-- `tests/testdata/domain/**`
+- `qa/tests/api/**`
+- `qa/tests/api/adapters/**`
+- `qa/tests/testdata/domain/**`
 
 ## Outputs
 
 ### required
 
-- `qa/changes/<change-id>/codegen/api-codegen-summary.md`
-- `qa/changes/<change-id>/codegen/api-generated-files.json`
-- generated or updated test files under `qa/changes/<change-id>/generated/api/files/tests/api/**`
+- `qa/results/codegen/api-codegen-summary.md`
+- `qa/results/codegen/api-generated-files.json`
+- generated or updated test files under `qa/tests/api/**`
 
 ### conditional
 
-- `qa/changes/<change-id>/generated/api/files/tests/testdata/domain/**` when the
+- `qa/tests/testdata/domain/**` when the
   reviewed plan authorizes a shared builder
 
-The generated-files manifest and mapping keep `target_path="tests/..."`. Do not
+The generated-files manifest and mapping keep `target_file` under `qa/tests/`. Do not
 write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized staged files under
-`qa/changes/<change-id>/generated/api/files/` plus the summary and
-generated-files manifest. Manifest `repo_path` / mapping `target_file` remain
-the logical `tests/api/**` or `tests/testdata/**` target.
+Write only authorized files under
+`qa/tests/` plus the summary and
+generated-files manifest. Manifest `repo_path` / mapping `target_file` are
+the logical and physical `qa/tests/api/**` or `qa/tests/testdata/**` path.
 
 Do not modify product source.
 
@@ -108,6 +108,19 @@ including inside async tests. Await requests only when the actual client is
 still require `await cleanup_dept(...)` in the same test; mark that async test
 for the installed pytest async runner. Decide awaitability per call, not per
 test or from a fixture's name.
+
+## Initial administrator login
+
+When administrator authentication is required, use the exact source-proven `admin_username` and
+`admin_password` from the approved plan and review. Never read administrator credentials from
+`qa/tests/config.py`, and never introduce `admin` or any other conventional credential fallback.
+
+Implement the login fixture in an explicitly authorized support output when one exists; otherwise
+define it in the authorized mapped test module. The fixture must authenticate with the reviewed
+initial credential pair and hand the resulting authorization value to the generated requests.
+Do not emit runnable tests or claim readiness when either value is missing, contradictory, or not
+traceable to the product's deterministic startup initialization or seed source. Do not read `.env`
+or `*.env` files to fill the gap.
 
 ## Runtime Contract Closure
 

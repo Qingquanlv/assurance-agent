@@ -34,7 +34,7 @@ FORBIDDEN_FRAGMENTS = (
     "aa apply",
 )
 
-DELIVERY_FLOW = "`aa run` to achieved, then `aa export`, then optional `aa archive`"
+DELIVERY_FLOW = "`aa run` to achieved"
 OWNERSHIP = "`aa` is owned by `assurance-product`"
 YAML_RULES = (
     "YAML replaces graph",

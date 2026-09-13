@@ -1,16 +1,43 @@
 {
+  "schema_version": "1",
+  "kind": "plugin",
+  "source": {
+    "distribution": "assurance-execution",
+    "version": "0.3.0",
+    "entrypoint_group": "graph_engine.plugins",
+    "entrypoint_name": "execution",
+    "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
+    "declaration_path": "assurance_execution/plugin-declaration.json",
+    "import_roots": [
+      ""
+    ]
+  },
   "descriptor": {
-    "attempt_contracts": [
-      {
-        "contract_id": "assurance.execution.agent.execute.v1",
-        "digest": "1d50b15db83129e6cfccc76396159967cd125f7aaea2ca828fbf61fd425fbe12"
-      },
-      {
-        "contract_id": "assurance.execution.agent.run.v1",
-        "digest": "758ee88b7f828d7bf1c78c86f5ef68d61162760207ffa0fa337f0e9cd708f45c"
-      }
+    "schema_version": "1",
+    "source": {
+      "distribution": "assurance-execution",
+      "version": "0.3.0",
+      "entrypoint_group": "graph_engine.plugins",
+      "entrypoint_name": "execution",
+      "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
+      "declaration_path": "assurance_execution/plugin-declaration.json",
+      "import_roots": [
+        ""
+      ]
+    },
+    "plugin_id": "assurance.execution",
+    "plugin_version": "0.3.0",
+    "engine_api": "2.0",
+    "task_handlers": [
+      "assurance.execution.execute.finalize",
+      "assurance.execution.execute.prepare",
+      "assurance.execution.normalize",
+      "assurance.execution.run-tests",
+      "assurance.execution.run-tests-and-collect-pr-metrics",
+      "assurance.execution.run.finalize",
+      "assurance.execution.run.prepare",
+      "assurance.execution.select"
     ],
-    "bindings": [],
     "commit_validators": [
       "assurance.execution.validator.closed-mapping.v1",
       "assurance.execution.validator.evidence.v1"
@@ -18,24 +45,13 @@
     "dependencies": [
       {
         "plugin_id": "assurance.intake",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       },
       {
         "plugin_id": "assurance.generation",
-        "version_specifier": "==0.2.0"
+        "version_specifier": "==0.3.0"
       }
     ],
-    "effects": [],
-    "engine_api": "2.0",
-    "plugin_id": "assurance.execution",
-    "plugin_version": "0.2.0",
-    "resources": [
-      "assurance.execution.persona.executor.v1",
-      "assurance.execution.result.execution.v1",
-      "assurance.execution.skill.aa-execute.v1",
-      "assurance.execution.skill.aa-run.v1"
-    ],
-    "schema_version": "1",
     "schemas": [
       "assurance.execution.schema.closed-mapping.v1",
       "assurance.execution.schema.execution-evidence.v1",
@@ -46,39 +62,23 @@
       "assurance.execution.workflow.rerun.input.v1",
       "assurance.execution.workflow.rerun.output.v1"
     ],
-    "source": {
-      "declaration_path": "assurance_execution/plugin-declaration.json",
-      "distribution": "assurance-execution",
-      "entrypoint_group": "graph_engine.plugins",
-      "entrypoint_name": "execution",
-      "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
-      "import_roots": [
-        ""
-      ],
-      "version": "0.2.0"
-    },
-    "task_handlers": [
-      "assurance.execution.execute.finalize",
-      "assurance.execution.execute.prepare",
-      "assurance.execution.normalize",
-      "assurance.execution.run-tests",
-      "assurance.execution.run-tests-and-collect-pr-metrics",
-      "assurance.execution.run.finalize",
-      "assurance.execution.run.prepare",
-      "assurance.execution.select"
-    ]
-  },
-  "kind": "plugin",
-  "schema_version": "1",
-  "source": {
-    "declaration_path": "assurance_execution/plugin-declaration.json",
-    "distribution": "assurance-execution",
-    "entrypoint_group": "graph_engine.plugins",
-    "entrypoint_name": "execution",
-    "entrypoint_value": "assurance_execution.plugin:ExecutionPlugin",
-    "import_roots": [
-      ""
+    "resources": [
+      "assurance.execution.persona.executor.v1",
+      "assurance.execution.result.execution.v1",
+      "assurance.execution.skill.aa-execute.v1",
+      "assurance.execution.skill.aa-run.v1"
     ],
-    "version": "0.2.0"
+    "effects": [],
+    "bindings": [],
+    "attempt_contracts": [
+      {
+        "contract_id": "assurance.execution.agent.execute.v1",
+        "digest": "3295120a361b0a0f846dd95a507912c9a30f3dc207be97dbf515b138f7547174"
+      },
+      {
+        "contract_id": "assurance.execution.agent.run.v1",
+        "digest": "7882d2f2397141e9c7a91b8f90532fd97b7d9db55e4de748989ed9299c284e67"
+      }
+    ]
   }
 }

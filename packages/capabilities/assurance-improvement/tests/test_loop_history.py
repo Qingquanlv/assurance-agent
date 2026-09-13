@@ -23,7 +23,7 @@ def _entry(**updates: object) -> dict[str, object]:
         "outcome": "pass",
         "source_refs": [
             {
-                "path": "qa/changes/CH-1/cases/reviews/epochs/1/rounds/0.json",
+                "path": "qa/cases/reviews/epochs/1/rounds/0.json",
                 "digest": SHA,
             }
         ],

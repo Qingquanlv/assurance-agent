@@ -51,10 +51,11 @@ def _canonical_test_families(values: tuple[TestFamily, ...]) -> tuple[TestFamily
 
 
 def _validate_case_delta_paths(change_id: str, paths: tuple[str, ...]) -> tuple[str, ...]:
-    prefix = ("qa", "changes", change_id, "cases")
+    del change_id
+    prefix = ("qa", "cases")
     for path in paths:
         parts = PurePosixPath(path).parts
-        if len(parts) < 6 or parts[:4] != prefix or parts[-1] != "case.yaml":
+        if len(parts) < 4 or parts[:2] != prefix or parts[-1] != "case.yaml":
             raise ValueError("case_delta_paths must be exact current-change cases/<module>/case.yaml paths")
     return paths
 
@@ -275,7 +276,7 @@ class CaseReviewInputV1(_SkillInputV1):
     def _paths_match_change(self) -> CaseReviewInputV1:
         _validate_case_delta_paths(self.change_id, self.case_delta_paths)
         if self.review_input_paths:
-            change_root = f"qa/changes/{self.change_id}"
+            change_root = "qa"
             expected = tuple(
                 sorted(
                     (
@@ -283,7 +284,7 @@ class CaseReviewInputV1(_SkillInputV1):
                         *self.case_delta_paths,
                         f"{change_root}/proposal.md",
                         f"{change_root}/requirement.md",
-                        f"{change_root}/trace/minimum-coverage-matrix.json",
+                        f"{change_root}/results/trace/minimum-coverage-matrix.json",
                     )
                 )
             )

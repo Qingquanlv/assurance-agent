@@ -7,7 +7,7 @@
       ],
       "content_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "disposition": "generated",
-      "repo_path": "tests/fuzz/test_users.py",
+      "repo_path": "qa/tests/fuzz/test_users.py",
       "role": "test_entry"
     }
   ],
@@ -17,7 +17,7 @@
       {
         "case_id": "TC_FUZZ_001",
         "symbol": "test_tc_fuzz_001__happy_path",
-        "target_file": "tests/fuzz/test_users.py"
+        "target_file": "qa/tests/fuzz/test_users.py"
       }
     ],
     "layer": "fuzz",

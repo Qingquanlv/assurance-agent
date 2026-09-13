@@ -1,6 +1,6 @@
 [project]
 name = "assurance-intake"
-version = "0.2.0"
+version = "0.3.0"
 description = "Assurance intake capability wheel"
 requires-python = ">=3.11,<4.0"
 dependencies = [

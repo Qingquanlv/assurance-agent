@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import pytest
 from pydantic import ValidationError
 
@@ -8,6 +9,7 @@ from agent_runtime_contracts.schema import (
     bound_redacted_diagnostics,
     canonical_digest,
     canonical_json_bytes,
+    reject_credentials_in_digest_input,
     resolve_result_schema,
     validate_structured_result,
 )
@@ -24,12 +26,81 @@ _STRICT_SCHEMA = {
 }
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"admin_password": "source pass 123"},
+        '{"admin_password": "source-pass-123"}',
+        "{'admin_password': 'source pass 123'}",
+        'admin_password="source pass 123"',
+    ],
+)
+def test_password_values_cannot_enter_transport_digest_inputs(value: object) -> None:
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input(value)
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        '{"admin_password": "source pass 123"}',
+        "{'password': 'source pass 123'}",
+        'admin_password="source pass 123"',
+    ],
+)
+def test_password_diagnostics_redact_complete_quoted_values(diagnostic: str) -> None:
+    redacted = bound_redacted_diagnostics((diagnostic,))[0]
+    assert "[redacted]" in redacted
+    assert "source" not in redacted
+    assert "123" not in redacted
+
+
+def test_password_comparison_does_not_trigger_transport_redaction() -> None:
+    prose = 'The code checks admin_password == "source pass 123".'
+    assert bound_redacted_diagnostics((prose,)) == (prose,)
+    reject_credentials_in_digest_input({"claim": prose})
+
+
 def test_canonical_encoding_is_stable_and_sorted() -> None:
     value = {"b": 2, "a": [1, {"z": True, "y": None}]}
     expected = b'{"a":[1,{"y":null,"z":true}],"b":2}'
     assert canonical_json_bytes(value) == expected
     assert canonical_digest(value) == canonical_digest({"a": [1, {"y": None, "z": True}], "b": 2})
     assert canonical_json_bytes(value) == canonical_json_bytes({"a": [1, {"y": None, "z": True}], "b": 2})
+
+
+@pytest.mark.parametrize("value", ["Bearer x", "Bearer abcdefgh!suffix", "Basic x:y"])
+def test_explicit_authorization_is_closed_in_diagnostics_and_digest_inputs(value: str) -> None:
+    header = f"Authorization: {value}"
+    assert bound_redacted_diagnostics((header,)) == ("[redacted]",)
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input({"diagnostic": header})
+
+
+@pytest.mark.parametrize("style", ["json", "repr"])
+@pytest.mark.parametrize("value", ["Bearer x", "Basic x:y"])
+def test_serialized_authorization_cannot_enter_digest_inputs(style: str, value: str) -> None:
+    headers = {"Authorization": value}
+    diagnostic = json.dumps(headers) if style == "json" else repr(headers)
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input({"diagnostic": diagnostic})
+
+
+@pytest.mark.parametrize("style", ["json", "repr"])
+@pytest.mark.parametrize("value", ["Bearer x", "Basic x:y", "Bearer abcdefgh!suffix"])
+def test_serialized_authorization_is_fully_redacted_in_diagnostics(style: str, value: str) -> None:
+    headers = {"Authorization": value}
+    diagnostic = json.dumps(headers) if style == "json" else repr(headers)
+    redacted = bound_redacted_diagnostics((diagnostic,))[0]
+    assert "[redacted]" in redacted
+    assert value not in redacted
+    assert value.split(" ", 1)[1] not in redacted
+
+
+def test_quoted_authorization_comparison_is_not_a_digest_credential() -> None:
+    prose = "'Authorization' == \"Bearer x\" is a comparison, not a header assignment."
+    assert bound_redacted_diagnostics((prose,)) == (prose,)
+    reject_credentials_in_digest_input({"claim": prose})
 
 
 def test_validate_structured_result_accepts_exact_strict_schema() -> None:
@@ -206,7 +277,7 @@ def test_validate_structured_result_allows_title_and_description_annotations() -
         **_INTAKE_RESULT_SCHEMA,
         "description": "intake artifact list",
     }
-    payload = {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    payload = {"output_files": ["qa/proposal.md"]}
     assert (
         validate_structured_result(
             payload,
@@ -357,6 +428,22 @@ def test_validate_local_agent_result_forwards_feature_owned_context() -> None:
     assert validated.leaf == "e2e"
 
 
+def test_review_prose_is_not_a_digest_credential() -> None:
+    reject_credentials_in_digest_input(
+        {
+            "claim": (
+                'AuthControl.is_authed treats literal token == "dev" as authenticated. '
+                "The API documents a Bearer scheme, not a raw cookie header."
+            )
+        }
+    )
+
+
+def test_bearer_header_is_still_a_digest_credential() -> None:
+    with pytest.raises(ValueError, match="credential"):
+        reject_credentials_in_digest_input("Authorization: Bearer sk-secret-canary")
+
+
 def test_bound_redacted_diagnostics_redact_before_limiting() -> None:
     messages = bound_redacted_diagnostics(
         (
@@ -369,3 +456,8 @@ def test_bound_redacted_diagnostics_redact_before_limiting() -> None:
     assert len(messages[1]) <= 240
     with pytest.raises(ValueError, match="bound"):
         bound_redacted_diagnostics(tuple(f"note-{index}" for index in range(17)))
+
+
+def test_authorization_mapping_cannot_enter_digest_inputs() -> None:
+    with pytest.raises(ValueError, match="credentials"):
+        reject_credentials_in_digest_input({"headers": {"Authorization": "Bearer x"}})

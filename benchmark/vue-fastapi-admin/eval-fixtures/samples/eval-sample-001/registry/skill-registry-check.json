@@ -1,7 +1,0 @@
-{
-  "schema_version": "1.0",
-  "status": "pass",
-  "healing_available": true,
-  "reason": "fixture: healing skills registered",
-  "required_skills": ["aa-fix-proposal", "aa-api-codegen-fixer", "aa-e2e-codegen-fixer"]
-}

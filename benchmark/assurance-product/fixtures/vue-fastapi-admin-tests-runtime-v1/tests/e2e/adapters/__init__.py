@@ -1,1 +1,0 @@
-"""Browser-to-domain adapters."""

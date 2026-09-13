@@ -79,6 +79,34 @@ async def test_normalize_binds_digests_and_covers_mapping(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_normalize_keeps_durable_qa_tests_mapping_from_view_nodeids(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        NormalizeHandler(),
+        cast(
+            JSONValue,
+            _normalize_input(
+                selected=["qa/tests/generated_test.py::test_tc_a_001__ok"],
+                tests=[
+                    {
+                        "nodeid": "tests/generated_test.py::test_tc_a_001__ok",
+                        "outcome": "passed",
+                        "call": {"outcome": "passed", "duration": 0.01},
+                    }
+                ],
+            ),
+        ),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded"
+    output = as_object(outcome.output)
+    mapping = as_object(output["mapping"])
+    assert mapping["selected"] == ["qa/tests/generated_test.py::test_tc_a_001__ok"]
+    assert tuple(as_object(item)["test"] for item in output["results"]) == (
+        "qa/tests/generated_test.py::test_tc_a_001__ok",
+    )
+
+
+@pytest.mark.asyncio
 async def test_normalize_preserves_case_level_receipt_counts_for_aggregated_selector(
     tmp_path: Path,
 ) -> None:

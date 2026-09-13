@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from pydantic import ValidationError
@@ -60,10 +60,22 @@ def _json(data: bytes, path: str) -> object:
 
 
 def _selected(ref: EvidenceArtifactRefV1, change_ids: frozenset[str]) -> bool:
-    parts = ref.path.split("/")
-    if len(parts) >= 3 and parts[:2] == ["qa", "changes"]:
-        return parts[2] in change_ids
+    del ref, change_ids
     return True
+
+
+def _window_change_id(
+    ref: EvidenceArtifactRefV1,
+    window_ids: Iterable[str],
+    payload: object | None = None,
+) -> str | None:
+    allowed = tuple(window_ids)
+    if isinstance(payload, dict):
+        raw = payload.get("change_id")
+        if isinstance(raw, str) and raw in allowed:
+            return raw
+    parts = PurePosixPath(ref.path).parts
+    return next((change for change in allowed if change in parts), None)
 
 
 def _descriptor(
@@ -184,10 +196,6 @@ def build_retro_slices(
 
     for ref in refs:
         data = _read_ref(project_root, ref)
-        change_id = next(
-            (change for change in request.window.change_ids if f"qa/changes/{change}/" in ref.path),
-            None,
-        )
         if "/rounds/" in ref.path and "/epochs/" in ref.path and ref.path.endswith(".json"):
             history_seen = True
             try:
@@ -261,7 +269,7 @@ def build_retro_slices(
                 _descriptor(
                     kind="report_outcome",
                     ref=ref,
-                    change_id=change_id,
+                    change_id=_window_change_id(ref, request.window.change_ids, payload),
                     plan_binding=_source_plan_binding(
                         payload,
                         source_refs=refs_by_path,
@@ -276,7 +284,7 @@ def build_retro_slices(
                 _descriptor(
                     kind="inspection_outcome",
                     ref=ref,
-                    change_id=change_id,
+                    change_id=_window_change_id(ref, request.window.change_ids, payload),
                     plan_binding=_source_plan_binding(
                         payload,
                         source_refs=refs_by_path,

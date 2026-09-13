@@ -85,12 +85,20 @@ def _family_input(family: str) -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-DEMO-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "selected_test_families": [family],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "family": family,
         "lane_selected": True,
         "rounds_used": 0,
@@ -100,7 +108,7 @@ def _family_input(family: str) -> dict[str, object]:
 
 
 def _plan() -> dict[str, object]:
-    return {"artifacts": [{"path": "qa/changes", "digest": _SHA}]}
+    return {"artifacts": [{"path": "qa/results", "digest": _SHA}]}
 
 
 def _review(
@@ -116,7 +124,7 @@ def _review(
         "auto_fix_allowed": auto_fix,
         "human_review_required": False,
         "codegen_readiness": readiness,
-        "artifacts": [{"path": "qa/changes", "digest": _SHA}],
+        "artifacts": [{"path": "qa/results", "digest": _SHA}],
     }
     if used is not None:
         payload["rounds_used"] = used
@@ -183,7 +191,15 @@ def _join_seed(family: str) -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "selected_test_families": [family],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "family": family,
         "rounds_used": 0,
         "rounds_budget": 2,

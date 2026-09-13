@@ -111,7 +111,7 @@ class ExploreContextV1(BaseModel):
 def build_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV1:
     """Build an honest content-deterministic MRC without consulting ambient state."""
 
-    requirement = workspace / "qa" / "changes" / change_id / "requirement.md"
+    requirement = workspace / "qa" / "requirement.md"
     requirement_summary = None
     if requirement.is_file() and not requirement.is_symlink():
         requirement_summary = requirement.read_text(encoding="utf-8")[:2000]
@@ -126,12 +126,7 @@ def build_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV
         if cases_root.is_dir()
         else []
     )
-    archive_root = workspace / "qa" / "archive"
-    archives = (
-        sorted(path.name for path in archive_root.iterdir() if path.is_dir() and not path.is_symlink())
-        if archive_root.is_dir()
-        else []
-    )
+    archives: list[str] = []
     problems = workspace / "qa" / "issues" / "problems.json"
     has_problem_history = problems.is_file() and not problems.is_symlink() and problems.stat().st_size > 0
 
@@ -152,7 +147,7 @@ def build_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV
             "problem_history_not_projected: problem history exists but no typed projection was supplied"
         )
     if not archives:
-        degraded_reasons.append("no_archives: qa/archive is empty or missing")
+        degraded_reasons.append("no_archives: historical archive projection is empty or missing")
 
     return ExploreContextV1(
         change_id=change_id,

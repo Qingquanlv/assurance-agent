@@ -12,18 +12,15 @@ from assurance_quality.contracts.assessment import InspectionDisposition
 from assurance_quality.graphs.nodes import (
     activation_assess,
     activation_materialize_assessment,
-    publish_fact_baseline,
     publish_inspect,
     publish_materialize_assessment,
     select_materialize_assessment,
-    select_fact_baseline,
     select_inspect,
     terminal_done,
 )
 from assurance_quality.graphs.routes import route_attempt, route_coverage
 from assurance_quality.graphs.state import QualityState
 
-_FACT_BASELINE_ID = "assurance.quality.agent.fact-baseline.v1"
 _INSPECT_ID = "assurance.quality.agent.inspect.v1"
 _MATERIALIZE_ID = "assurance.quality.materialize-assessment-inputs"
 _DISPOSITIONS: tuple[InspectionDisposition, ...] = (
@@ -37,7 +34,7 @@ _DISPOSITIONS: tuple[InspectionDisposition, ...] = (
 _COVERAGE_PATHS: dict[Hashable, str] = {
     name: END if name == "analysis_required" else name for name in (*_DISPOSITIONS, "failed")
 }
-_ATTEMPT_PATHS: dict[Hashable, str] = {"ready": "quality.fact-baseline", "failed": "failed"}
+_ATTEMPT_PATHS: dict[Hashable, str] = {"ready": "quality.inspect", "failed": "failed"}
 
 
 def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
@@ -52,19 +49,6 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
                 activation=activation_materialize_assessment,
                 select=select_materialize_assessment,
                 publish=publish_materialize_assessment,
-            ),
-        ),
-    )
-    builder.add_node(
-        "quality.fact-baseline",
-        cast(
-            Callable[..., Any],
-            context.attempt(
-                _FACT_BASELINE_ID,
-                semantic_node_id="quality.fact-baseline",
-                activation=activation_assess,
-                select=select_fact_baseline,
-                publish=publish_fact_baseline,
             ),
         ),
     )
@@ -91,11 +75,6 @@ def build_assess_graph(context: CapabilityBuildContext) -> CompiledStateGraph:
         "quality.materialize-assessment-inputs",
         cast(Callable[..., Any], route_attempt),
         _ATTEMPT_PATHS,
-    )
-    builder.add_conditional_edges(
-        "quality.fact-baseline",
-        cast(Callable[..., Any], route_attempt),
-        {"ready": "quality.inspect", "failed": "failed"},
     )
     builder.add_conditional_edges(
         "quality.inspect",

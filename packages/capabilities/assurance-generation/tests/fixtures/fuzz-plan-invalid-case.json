@@ -19,10 +19,10 @@
     }
   ],
   "output_files": [
-    "qa/changes/CH-DEMO-001/plans/fuzz-plan.md",
-    "qa/changes/CH-DEMO-001/plans/fuzz-codegen-plan.md",
-    "qa/changes/CH-DEMO-001/plans/fuzz-codegen-mapping.json",
-    "qa/changes/CH-DEMO-001/plans/fuzz-review-summary.md"
+    "qa/results/plans/fuzz-plan.md",
+    "qa/results/plans/fuzz-codegen-plan.md",
+    "qa/results/plans/fuzz-codegen-mapping.json",
+    "qa/results/plans/fuzz-review-summary.md"
   ],
   "fuzz_strategy": {
     "endpoint": "POST /items",

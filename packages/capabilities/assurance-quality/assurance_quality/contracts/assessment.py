@@ -106,8 +106,38 @@ class AssessmentInputsV1(FrozenModel):
         return self
 
 
+class FactBaselineSkillInputV1(FrozenModel):
+    """The authenticated projection shown to the fact-baseline agent after case-review."""
+
+    change_id: str = Field(min_length=1)
+    coverage_epoch: int = Field(ge=0)
+    plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    plan_ref: EvidenceArtifactRefV1
+    capability_leafs: tuple[str, ...]
+    artifact_paths: tuple[str, ...]
+    reviewed_case: ReviewedCaseV1
+
+    @model_validator(mode="after")
+    def _identity_is_closed(self) -> Self:
+        if self.reviewed_case.change_id != self.change_id:
+            raise ValueError("Reviewed Case change_id must match the skill input")
+        if self.reviewed_case.coverage_epoch != self.coverage_epoch:
+            raise ValueError("Reviewed Case epoch must match the skill input")
+        require_same_plan(
+            self.plan_digest,
+            self.plan_ref,
+            self.reviewed_case.plan_digest,
+            self.reviewed_case.plan_ref,
+        )
+        return self
+
+
+class FactBaselineFinalizeInputV1(FactBaselineSkillInputV1):
+    agent_result: AgentRunResult
+
+
 class AssessmentSkillInputV1(FrozenModel):
-    """The authenticated projection shown to fact-baseline and Inspect agents."""
+    """The authenticated projection shown to Inspect agents."""
 
     change_id: str = Field(min_length=1)
     coverage_epoch: int = Field(ge=0)
@@ -154,14 +184,14 @@ class AssessmentFinalizeInputV1(AssessmentSkillInputV1):
 
 class FinalizedFactBaselineV1(FrozenModel):
     agent_result: FactBaselineResultV1
-    assessment: AssessmentInputsV1
+    reviewed_case: ReviewedCaseV1
     fact_baseline_ref: EvidenceArtifactRefV1
 
     @model_validator(mode="after")
-    def _baseline_matches_assessment(self) -> Self:
-        if self.agent_result.change_id != self.assessment.change_id:
-            raise ValueError("fact baseline change_id must match assessment")
-        expected = f"qa/changes/{self.assessment.change_id}/facts/fact-baseline.json"
+    def _baseline_matches_reviewed_case(self) -> Self:
+        if self.agent_result.change_id != self.reviewed_case.change_id:
+            raise ValueError("fact baseline change_id must match the Reviewed Case")
+        expected = "qa/results/facts/fact-baseline.json"
         if self.fact_baseline_ref.path != expected:
             raise ValueError("fact baseline ref must use the current change path")
         return self
@@ -392,7 +422,7 @@ class FinalizedReportV1(FrozenModel):
 
     @model_validator(mode="after")
     def _refs_belong_to_report(self) -> Self:
-        prefix = f"qa/changes/{self.change_id}/report/"
+        prefix = "qa/results/report/"
         if any(not ref.path.startswith(prefix) for ref in self.report_refs):
             raise ValueError("report refs must belong to the current change report directory")
         return self
@@ -415,7 +445,7 @@ class ReportOutcomeV1(FrozenModel):
 
     @model_validator(mode="after")
     def _refs_belong_to_report(self) -> Self:
-        prefix = f"qa/changes/{self.change_id}/report/"
+        prefix = "qa/results/report/"
         if any(not ref.path.startswith(prefix) for ref in self.report_refs):
             raise ValueError("report refs must belong to the current change report directory")
         return self

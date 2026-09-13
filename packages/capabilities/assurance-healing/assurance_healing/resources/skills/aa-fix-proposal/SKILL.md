@@ -37,7 +37,7 @@ fix proposal. Schema truth is `assurance_healing.contracts` for `FixProposalResu
 - Do not select a host adapter or remember prior conversation state.
 - When a proposal needs review, set `needs_review: true` and leave apply to an
   approved receipt.
-- Write the typed result to `qa/changes/<change-id>/healing/fix-proposal.json`.
+- Write the typed result to `qa/results/healing/fix-proposal.json`.
 - Return the typed result and stop.
 
 ## File byte contract

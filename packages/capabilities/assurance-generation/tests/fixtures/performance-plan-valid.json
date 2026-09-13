@@ -19,10 +19,10 @@
     }
   ],
   "output_files": [
-    "qa/changes/CH-DEMO-001/plans/performance-plan.md",
-    "qa/changes/CH-DEMO-001/plans/performance-codegen-plan.md",
-    "qa/changes/CH-DEMO-001/plans/performance-codegen-mapping.json",
-    "qa/changes/CH-DEMO-001/plans/performance-review-summary.md"
+    "qa/results/plans/performance-plan.md",
+    "qa/results/plans/performance-codegen-plan.md",
+    "qa/results/plans/performance-codegen-mapping.json",
+    "qa/results/plans/performance-review-summary.md"
   ],
   "performance_scenarios": [
     {

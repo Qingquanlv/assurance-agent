@@ -405,7 +405,7 @@ def _fixture_agent_request() -> AgentRunRequest:
         "schema_version": "1",
         "agent_profile": "assurance-v1-doc-author",
         "scope_id": "CH-DEMO-001",
-        "write_root": "qa/changes/CH-DEMO-001/.staging/attempt-1",
+        "write_root": "qa/.staging/attempt-1",
         "allowed_outputs": ["review.json"],
         "read_roots": [],
     }
@@ -495,7 +495,7 @@ def _seed_fixture_project(project_root: Path) -> None:
             "layer": "api",
         },
     ]
-    change_root = project_root / "qa/changes/CH-DEMO-001"
+    change_root = project_root / "qa"
     fixture_inputs = {
         change_root / ".qa.yaml": "schema_version: '1.0'\nchange_id: CH-DEMO-001\n",
         change_root / "proposal.md": "# Fixture case proposal\n",

@@ -97,15 +97,17 @@ _PLAN_OUTPUT_NAMES: Mapping[Family, tuple[str, ...]] = {
 
 
 def plan_outputs(change_id: str, family: Family) -> tuple[str, ...]:
-    return tuple(sorted(f"qa/changes/{change_id}/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]))
+    del change_id
+    return tuple(sorted(f"qa/results/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]))
 
 
 def plan_review_outputs(change_id: str, family: Family) -> tuple[str, ...]:
+    del change_id
     return tuple(
         sorted(
             (
-                f"qa/changes/{change_id}/review/{family}-plan-review.json",
-                f"qa/changes/{change_id}/review/{family}-plan-review-summary.md",
+                f"qa/results/review/{family}-plan-review.json",
+                f"qa/results/review/{family}-plan-review-summary.md",
             )
         )
     )
@@ -121,7 +123,7 @@ def agent_workspace(
     try:
         write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        write_root = "qa/changes/_attempt/.staging/write"
+        write_root = "qa/.staging/write"
     if write_root in {".", ""}:
         write_root = ".staging/write"
     payload = {
@@ -305,7 +307,7 @@ def _change_root(workspace: Path, change_id: str) -> Path:
         or PurePosixPath(change_id).name != change_id
     ):
         raise InputError("change_id must be one canonical path component")
-    root = workspace / "qa" / "changes" / change_id
+    root = workspace / "qa"
     try:
         root.resolve().relative_to(workspace.resolve())
     except ValueError as error:
@@ -341,9 +343,14 @@ def load_family_cases(
     capability_leafs: tuple[str, ...],
     case_paths: tuple[str, ...] | None = None,
 ) -> CaseYamlAuthoring:
-    cases_root = _change_root(workspace, change_id) / "cases"
+    _change_root(workspace, change_id)
+    cases_root = workspace / "qa" / "cases"
+    try:
+        cases_root.resolve().relative_to(workspace.resolve())
+    except ValueError as error:
+        raise InputError("reviewed case directory escapes the attempt workspace") from error
     if not cases_root.is_dir() or cases_root.is_symlink():
-        raise InputError(f"reviewed case directory is missing: qa/changes/{change_id}/cases")
+        raise InputError("reviewed case directory is missing: qa/cases")
     selected: dict[str, list[object]] = {"added": [], "modified": []}
     schema_versions: set[str] = set()
     paths = (
@@ -352,7 +359,7 @@ def load_family_cases(
         else tuple(sorted(cases_root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
     )
     if not paths:
-        raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
+        raise InputError("reviewed case files are missing: qa/cases/**/case.yaml")
     for path in paths:
         document = _yaml_document(_regular_input_file(workspace, path))
         version = document.get("schema_version")
@@ -391,17 +398,21 @@ def plan_review_input_paths(
     family: Family,
 ) -> tuple[str, ...]:
     """Return the mechanically locked files a plan reviewer must read exactly."""
-    change_root = _change_root(workspace, change_id)
-    cases_root = change_root / "cases"
+    _change_root(workspace, change_id)
+    cases_root = workspace / "qa" / "cases"
+    try:
+        cases_root.resolve().relative_to(workspace.resolve())
+    except ValueError as error:
+        raise InputError("reviewed case directory escapes the attempt workspace") from error
     if not cases_root.is_dir() or cases_root.is_symlink():
-        raise InputError(f"reviewed case directory is missing: qa/changes/{change_id}/cases")
+        raise InputError("reviewed case directory is missing: qa/cases")
     case_files = tuple(sorted(cases_root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
     if not case_files:
-        raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
+        raise InputError("reviewed case files are missing: qa/cases/**/case.yaml")
 
     relative_paths = (
         *plan_outputs(change_id, family),
-        f"qa/changes/{change_id}/proposal.md",
+        "qa/proposal.md",
         *(path.relative_to(workspace).as_posix() for path in case_files),
     )
     for relative in relative_paths:
@@ -428,7 +439,7 @@ def plan_repair_review(
     """Load the current review for a graph-authorized automatic or human-requested retry."""
     if business.local_round == 0:
         return None
-    relative = f"qa/changes/{business.change_id}/review/{family}-plan-review.json"
+    relative = f"qa/results/review/{family}-plan-review.json"
     path = _regular_input_file(
         workspace,
         workspace.joinpath(*PurePosixPath(relative).parts),
@@ -455,9 +466,10 @@ def plan_repair_review(
 
 
 def constraints_for_cases(*, family: Family, change_id: str, cases: CaseYamlAuthoring) -> FamilyConstraintsV1:
+    del change_id
     entries = tuple((*cases.added, *cases.modified))
     return FamilyConstraintsV1(
-        write_roots=(f"qa/changes/{change_id}/plans/",),
+        write_roots=("qa/results/plans/",),
         operations=tuple(entry.test_condition_id for entry in entries),
         risks=tuple(entry.risk.level for entry in entries),
     )
@@ -534,7 +546,7 @@ def prepare_plan_outcome(
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
     targets: tuple[str, ...] = ()
-    mapping_path = f"qa/changes/{business.change_id}/plans/{family}-codegen-mapping.json"
+    mapping_path = f"qa/results/plans/{family}-codegen-mapping.json"
     try:
         mapping = CodegenMapping.model_validate_json(
             _workspace_file(context.project_root, mapping_path).read_bytes()
@@ -647,7 +659,7 @@ def _authenticate_codegen_mapping(
     family: Family,
     images: Mapping[str, bytes],
 ) -> CodegenMapping:
-    relative = f"qa/changes/{document.change_id}/plans/{family}-codegen-mapping.json"
+    relative = f"qa/results/plans/{family}-codegen-mapping.json"
     try:
         raw = json.loads(images[relative])
         mapping = CodegenMapping.model_validate(raw)

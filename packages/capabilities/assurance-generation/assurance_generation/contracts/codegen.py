@@ -7,7 +7,7 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from assurance_generation.contracts.agent import under_write_root
-from assurance_generation.contracts.families import LAYER_NAMES, LayerName
+from assurance_generation.contracts.families import LayerName
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.plans import canonical_relative_path
 from assurance_intake.contracts import NonEmptyStr
@@ -19,26 +19,18 @@ CodegenDisposition = Literal["generated", "updated", "reused"]
 CodegenFileRole = Literal["test_entry", "support", "shared_builder"]
 
 FAMILY_TARGET_ROOTS: dict[LayerName, tuple[str, ...]] = {
-    "api": ("tests/api/", "tests/testdata/"),
-    "e2e": ("tests/e2e/", "tests/testdata/"),
-    "fuzz": ("tests/fuzz/", "tests/testdata/"),
-    "performance": ("tests/perf/", "tests/testdata/"),
+    "api": ("qa/tests/api/", "qa/tests/testdata/"),
+    "e2e": ("qa/tests/e2e/", "qa/tests/testdata/"),
+    "fuzz": ("qa/tests/fuzz/", "qa/tests/testdata/"),
+    "performance": ("qa/tests/perf/", "qa/tests/testdata/"),
 }
 
 
-def staged_generated_path(change_id: str, family: str, target_path: str) -> str:
-    if (
-        not change_id
-        or change_id in {".", ".."}
-        or "/" in change_id
-        or "\\" in change_id
-        or "\x00" in change_id
-    ):
-        raise ValueError("change_id must be one canonical path component")
-    if family not in LAYER_NAMES:
-        raise ValueError(f"unknown generation family: {family}")
+def durable_test_path(target_path: str) -> str:
     target = canonical_relative_path(target_path)
-    return f"qa/changes/{change_id}/generated/{family}/files/{target}"
+    if not target.startswith("qa/tests/"):
+        raise ValueError("codegen target_path must start with qa/tests/")
+    return target
 
 
 def family_allows_target(family: LayerName, target_path: str) -> bool:
@@ -66,12 +58,7 @@ class CodegenGeneratedFileAuthoring(BaseModel):
 
     model_config = _FROZEN
 
-    repo_path: NonEmptyStr = Field(
-        description=(
-            "Logical target_path under tests/; physical bytes are staged at "
-            "qa/changes/<change-id>/generated/<layer>/files/<repo_path>"
-        )
-    )
+    repo_path: NonEmptyStr = Field(description="logical and physical path, must start with `qa/tests/`")
     disposition: CodegenDisposition
     role: CodegenFileRole
     case_ids: tuple[NonEmptyStr, ...]
@@ -79,7 +66,7 @@ class CodegenGeneratedFileAuthoring(BaseModel):
     @field_validator("repo_path")
     @classmethod
     def _safe_repo_path(cls, value: str) -> str:
-        return _safe_project_relative_path(value)
+        return durable_test_path(_safe_project_relative_path(value))
 
 
 class CodegenGeneratedFilesAuthoring(BaseModel):
@@ -105,7 +92,7 @@ class CodegenMappingEntry(BaseModel):
     @field_validator("target_file")
     @classmethod
     def _safe_target_file(cls, value: str) -> str:
-        return _safe_project_relative_path(value)
+        return durable_test_path(_safe_project_relative_path(value))
 
 
 class CodegenMapping(BaseModel):

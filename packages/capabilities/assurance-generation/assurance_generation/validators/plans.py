@@ -25,7 +25,7 @@ def closed_family(family: str) -> Family:
     return cast(Family, family)
 
 
-_DEFAULT_ROOTS = ("qa/changes/",)
+_DEFAULT_ROOTS = ("qa/results/plans/",)
 _OUTSIDE_REASON = "generation plan candidate may write only declared plan write roots"
 _UNLISTED_REASON = "generation plan candidate contains an unlisted file"
 

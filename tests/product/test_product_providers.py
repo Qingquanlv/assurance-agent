@@ -21,7 +21,7 @@ _RUNTIME_DISTRIBUTIONS = frozenset({"agent-runtime-opencode"})
 _SIX_CAPABILITY_SOURCES = (
     ProviderSource(
         distribution="assurance-intake",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="intake",
         entrypoint_value="assurance_intake.plugin:IntakePlugin",
@@ -30,7 +30,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-generation",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="generation",
         entrypoint_value="assurance_generation.plugin:GenerationPlugin",
@@ -39,7 +39,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-execution",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="execution",
         entrypoint_value="assurance_execution.plugin:ExecutionPlugin",
@@ -48,7 +48,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-healing",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="healing",
         entrypoint_value="assurance_healing.plugin:HealingPlugin",
@@ -57,7 +57,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-quality",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="quality",
         entrypoint_value="assurance_quality.plugin:QualityPlugin",
@@ -66,7 +66,7 @@ _SIX_CAPABILITY_SOURCES = (
     ),
     ProviderSource(
         distribution="assurance-improvement",
-        version="0.2.0",
+        version="0.3.0",
         entrypoint_group="graph_engine.plugins",
         entrypoint_name="improvement",
         entrypoint_value="assurance_improvement.plugin:ImprovementPlugin",
@@ -128,6 +128,19 @@ def test_provider_returns_one_minimal_opencode_manifest() -> None:
         "assurance.quality",
         "runtime.opencode",
     )
+    capability_ids = {
+        "assurance.execution",
+        "assurance.generation",
+        "assurance.healing",
+        "assurance.improvement",
+        "assurance.intake",
+        "assurance.quality",
+    }
+    assert {
+        requirement.plugin_id: requirement.version_specifier
+        for requirement in opencode.plugins
+        if requirement.plugin_id in capability_ids
+    } == {plugin_id: "==0.3.0" for plugin_id in capability_ids}
     assert opencode.product_id == "assurance.product"
     assert opencode.source is not None
     assert opencode.source.declaration_path == "assurance_product/product-declaration-opencode.json"
@@ -157,7 +170,7 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
     from assurance_product.output_routes import OutputRouteCatalog
     from assurance_product.product import AssuranceOpenCodeProductProvider
-    from graph_engine.plugin_api import ResourceClaimTemplate
+    from graph_engine.plugin_api import ResourceClaims, ResourceClaimTemplate
 
     change_id = "CH-CURRENT-001"
     catalog = OutputRouteCatalog()
@@ -169,11 +182,12 @@ def test_provider_loaded_manifests_have_exact_change_local_execute_claims() -> N
     assert manifest.graph_factory_symbol == "assurance_product.graphs.factory:build_product_graphs"
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         resources = contract.resources
-        assert isinstance(resources, ResourceClaimTemplate)
-        assert resources.parameters == {"change_id": "/change_id"}
-        assert resources.resolve({"change_id": change_id}).writes == catalog.resource_claims(
-            contract_id, change_id
-        )
+        if isinstance(resources, ResourceClaimTemplate):
+            writes = resources.resolve({"change_id": change_id}).writes
+        else:
+            assert isinstance(resources, ResourceClaims)
+            writes = resources.writes
+        assert writes == catalog.resource_claims(contract_id, change_id)
 
 
 def _runtime_source() -> ProviderSource:

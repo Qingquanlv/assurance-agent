@@ -107,7 +107,7 @@ def report_input(**overrides: JSONValue) -> JSONValue:
         "batch_id": BATCH_ID,
         "plan_digest": HEX_A,
         "plan_ref": {
-            "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_A}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{HEX_A}/resolved-assurance-plan.json",
             "digest": HEX_B,
         },
         "quality_gate": _gate(),

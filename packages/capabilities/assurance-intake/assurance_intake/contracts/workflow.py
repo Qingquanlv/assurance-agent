@@ -62,8 +62,9 @@ def _canonical_refs(
 
 
 def _case_path(change_id: str, path: str) -> bool:
+    del change_id
     parts = PurePosixPath(path).parts
-    return len(parts) >= 6 and parts[:4] == ("qa", "changes", change_id, "cases") and parts[-1] == "case.yaml"
+    return len(parts) >= 4 and parts[:2] == ("qa", "cases") and parts[-1] == "case.yaml"
 
 
 class ReviewedCaseV1(FrozenModel):
@@ -94,14 +95,14 @@ class ReviewedCaseV1(FrozenModel):
 
     @model_validator(mode="after")
     def _refs_match_change(self) -> Self:
-        plan_path = f"qa/changes/{self.change_id}/plan/{self.plan_digest}/resolved-assurance-plan.json"
+        plan_path = f"qa/results/plan/{self.plan_digest}/resolved-assurance-plan.json"
         if self.plan_ref.path != plan_path:
             raise ValueError("plan_ref must bind the current frozen plan")
         if self.plan_ref not in self.preparation_refs:
             raise ValueError("preparation_refs must include plan_ref")
         if any(not _case_path(self.change_id, item.path) for item in self.case_refs):
             raise ValueError("case_refs must contain exact current-change case.yaml paths")
-        review_path = f"qa/changes/{self.change_id}/review/case-review.json"
+        review_path = "qa/results/review/case-review.json"
         if self.review_ref.path != review_path:
             raise ValueError("review_ref must bind the current case-review.json")
         return self

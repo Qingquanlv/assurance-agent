@@ -25,7 +25,7 @@ _WHEEL_ROOT = _TESTS_ROOT.parent
 VALID_LEAFS = frozenset({"entities.item.create", "auth.session.create"})
 VALID_CASES = frozenset({"TC_A", "TC_B"})
 _PLAN_REF = {
-    "path": f"qa/changes/CH-DEMO-001/plan/{'a' * 64}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{'a' * 64}/resolved-assurance-plan.json",
     "digest": "a" * 64,
 }
 _LEGACY_ROOTS = ("assurance_agent", "assurance_kernel")
@@ -353,12 +353,12 @@ def test_execution_agent_job_catalog_is_feature_owned() -> None:
         "execute": (
             "aa-execute",
             "assurance-v1-executor",
-            ("qa/changes/{change_id}/execution/execute-result.json",),
+            ("qa/results/execution/execute-result.json",),
         ),
         "run": (
             "aa-run",
             "assurance-v1-executor",
-            ("qa/changes/{change_id}/execution/run-result.json",),
+            ("qa/results/execution/run-result.json",),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
@@ -371,10 +371,18 @@ def test_execution_agent_job_catalog_is_feature_owned() -> None:
         assert contract.contract_id == f"assurance.execution.agent.{base}.v1"
         assert contract.skill_id == skill_id
         assert contract.agent_profile == agent_profile
-        assert contract.resources.writes == tuple(
-            sorted(("qa/changes/{change_id}/.staging/execution", *writes))
-        )
+        assert contract.resources.writes == tuple(sorted(("qa/.staging/execution", *writes)))
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
+
+
+def test_output_routes_are_flat_qa_paths() -> None:
+    from assurance_execution.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+    assert "qa/" + "changes" not in rendered
+    assert "{change_id}" not in rendered
+    assert "qa/" + "archive" not in rendered
+    assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)

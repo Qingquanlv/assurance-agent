@@ -67,7 +67,7 @@ def stage_reconciliation(payload: RetroReconcileInputV1, context: TaskContext) -
         result="completed" if payload.context.integrity.status == "complete" else "completed_with_gaps",
         improvement_ids=tuple(reconciliation.improvement_ids),
     )
-    prefix = f"qa/changes/{payload.change_id}/retro"
+    prefix = "qa/results/retro"
     documents = {
         f"{prefix}/context.json": payload.context,
         f"{prefix}/candidates.json": candidates,

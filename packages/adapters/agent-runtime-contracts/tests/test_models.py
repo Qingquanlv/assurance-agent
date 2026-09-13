@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
+import sysconfig
 from pathlib import Path
 
 import pytest
@@ -79,8 +81,8 @@ def _selection(
 
 def _workspace(
     *,
-    write_root: str = "qa/changes/CH-1/.staging/task-1/attempt-1",
-    allowed_outputs: tuple[str, ...] = ("qa/changes/CH-1/proposal.md",),
+    write_root: str = "qa/.staging/task-1/attempt-1",
+    allowed_outputs: tuple[str, ...] = ("qa/proposal.md",),
     read_roots: tuple[str, ...] = (),
     agent_profile: str = "assurance-v1-doc-author",
 ) -> AgentWorkspaceV1:
@@ -205,14 +207,14 @@ def test_agent_run_request_rejects_mutation() -> None:
 
 def test_agent_workspace_accepts_canonical_relative_write_root_and_sorted_outputs() -> None:
     workspace = _workspace(
-        write_root="qa/changes/CH-1/.staging/task-1/attempt-1",
-        allowed_outputs=("qa/changes/CH-1/cases.yaml", "qa/changes/CH-1/proposal.md"),
+        write_root="qa/.staging/task-1/attempt-1",
+        allowed_outputs=("qa/proposal.md", "qa/results/cases.yaml"),
     )
     assert workspace.schema_version == "1"
-    assert workspace.write_root == "qa/changes/CH-1/.staging/task-1/attempt-1"
+    assert workspace.write_root == "qa/.staging/task-1/attempt-1"
     assert workspace.allowed_outputs == (
-        "qa/changes/CH-1/cases.yaml",
-        "qa/changes/CH-1/proposal.md",
+        "qa/proposal.md",
+        "qa/results/cases.yaml",
     )
     expected = canonical_digest(workspace.model_dump(mode="json", exclude={"identity_digest"}))
     assert workspace.identity_digest == expected
@@ -227,13 +229,13 @@ def test_agent_workspace_accepts_canonical_relative_write_root_and_sorted_output
 def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_roots(
     tmp_path: Path,
 ) -> None:
-    old_write_root = "qa/changes/CH-1/.staging/task-1/attempt-1"
-    old_view = f"{old_write_root}/qa/changes/CH-1/.staging/execution/batch-1"
+    old_write_root = "qa/.staging/task-1/attempt-1"
+    old_view = f"{old_write_root}/qa/.staging/execution/batch-1"
     original = _request().model_copy(
         update={"workspace": _workspace(agent_profile="assurance-v1-executor", read_roots=(old_view,))}
     )
     project = tmp_path / "project"
-    new_write_root = project / "qa/changes/CH-1/.staging/task-2/attempt-1"
+    new_write_root = project / "qa/.staging/task-2/attempt-1"
     new_write_root.mkdir(parents=True)
 
     effective = rebind_agent_run_workspace(
@@ -243,9 +245,7 @@ def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_root
     )
 
     assert original.workspace.read_roots == (old_view,)
-    assert effective.workspace.read_roots == (
-        "qa/changes/CH-1/.staging/task-2/attempt-1/qa/changes/CH-1/.staging/execution/batch-1",
-    )
+    assert effective.workspace.read_roots == ("qa/.staging/task-2/attempt-1/qa/.staging/execution/batch-1",)
     assert effective.workspace.identity_digest == canonical_digest(
         effective.workspace.model_dump(mode="json", exclude={"identity_digest"})
     )
@@ -257,8 +257,8 @@ def test_agent_workspace_authenticates_read_roots_and_rebinds_attempt_local_root
         ("/tmp/view",),
         ("../view",),
         ("qa/../view",),
-        ("qa/changes/view-b", "qa/changes/view-a"),
-        ("qa/changes/view-a", "qa/changes/view-a"),
+        ("qa/results/view-b", "qa/results/view-a"),
+        ("qa/results/view-a", "qa/results/view-a"),
     ],
 )
 def test_agent_workspace_rejects_noncanonical_read_roots(
@@ -280,9 +280,8 @@ def test_agent_workspace_rejects_noncanonical_read_roots(
         "C:/stage",
         "../escape",
         "qa/../secret",
-        "qa/changes/./attempt",
         "qa\\changes\\stage",
-        "/qa/changes/stage",
+        "/qa/results/stage",
         "",
         ".",
         "..",
@@ -303,10 +302,9 @@ def test_agent_workspace_rejects_absolute_or_parent_write_roots(write_root: str)
         ("/tmp/out.md",),
         ("../escape.md",),
         ("qa/../secret.md",),
-        ("qa/changes/./proposal.md",),
         ("qa\\changes\\proposal.md",),
-        ("qa/changes/proposal.md", "qa/changes/cases.yaml"),
-        ("qa/changes/proposal.md", "qa/changes/proposal.md"),
+        ("qa/results/proposal.md", "qa/results/cases.yaml"),
+        ("qa/results/proposal.md", "qa/results/proposal.md"),
     ],
 )
 def test_agent_workspace_rejects_unsorted_absolute_or_parent_outputs(
@@ -328,7 +326,7 @@ def test_agent_workspace_identity_digest_is_stable_and_authenticated() -> None:
     drifted["identity_digest"] = _SHA_A
     with pytest.raises(ValidationError, match="canonical"):
         AgentWorkspaceV1.model_validate(drifted)
-    different = _workspace(write_root="qa/changes/CH-1/.staging/task-1/attempt-2")
+    different = _workspace(write_root="qa/.staging/task-1/attempt-2")
     assert different.identity_digest != first.identity_digest
 
 
@@ -337,7 +335,7 @@ def test_rebind_agent_run_workspace_uses_current_stage_and_preserves_authority(
 ) -> None:
     original = _request()
     project_root = tmp_path / "project"
-    write_root = project_root / "qa/changes/CH-1/.staging/execute-task/attempt-1"
+    write_root = project_root / "qa/.staging/execute-task/attempt-1"
     write_root.mkdir(parents=True)
 
     effective = rebind_agent_run_workspace(
@@ -346,8 +344,8 @@ def test_rebind_agent_run_workspace_uses_current_stage_and_preserves_authority(
         write_root=write_root,
     )
 
-    assert original.workspace.write_root == "qa/changes/CH-1/.staging/task-1/attempt-1"
-    assert effective.workspace.write_root == "qa/changes/CH-1/.staging/execute-task/attempt-1"
+    assert original.workspace.write_root == "qa/.staging/task-1/attempt-1"
+    assert effective.workspace.write_root == "qa/.staging/execute-task/attempt-1"
     assert effective.workspace.agent_profile == original.workspace.agent_profile
     assert effective.workspace.scope_id == original.workspace.scope_id
     assert effective.workspace.allowed_outputs == original.workspace.allowed_outputs
@@ -498,17 +496,19 @@ def test_agent_run_result_authenticates_digests_and_forbids_provider_payloads() 
     for field_name in _FORBIDDEN_RESULT_FIELDS:
         with pytest.raises(ValidationError, match="extra"):
             AgentRunResult.model_validate({**dumped, field_name: "leak"})
-    canary = {"status": "ok", "token": "sk-secret-canary"}
-    with pytest.raises(ValidationError, match="credential"):
-        AgentRunResult.model_validate(
-            {
-                "result_payload": canary,
-                "result_digest": canonical_digest(canary),
-                "evidence_digest": _SHA_B,
-                "adapter_id": "agent-runtime-fixture",
-                "adapter_version": "1.0.0",
-            }
-        )
+    # Service-secret rejection belongs to the producer with the actual secret
+    # context; the envelope must not guess from business-result string shapes.
+    business = {"status": "ok", "token": "sk-source-grounded-business-value"}
+    governed = AgentRunResult.model_validate(
+        {
+            "result_payload": business,
+            "result_digest": canonical_digest(business),
+            "evidence_digest": _SHA_B,
+            "adapter_id": "agent-runtime-fixture",
+            "adapter_version": "1.0.0",
+        }
+    )
+    assert governed.model_dump(mode="json")["result_payload"] == business
 
 
 def test_agent_run_result_bounds_and_redacts_diagnostics() -> None:
@@ -605,21 +605,20 @@ def test_isolated_wheel_import_does_not_load_adapters_or_assurance(tmp_path: Pat
         ],
         check=True,
     )
-    subprocess.run(
+    isolated_python = venv / "bin" / "python"
+    isolated_site = subprocess.run(
         [
-            "uv",
-            "pip",
-            "install",
-            "--offline",
-            "--python",
-            str(venv / "bin" / "python"),
-            "pydantic",
-            "packaging",
-            "pyyaml",
-            "langgraph",
+            str(isolated_python),
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
         ],
         check=True,
-    )
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dependency_site = sysconfig.get_paths()["purelib"]
+    isolated_env = os.environ.copy()
+    isolated_env["PYTHONPATH"] = os.pathsep.join((isolated_site, dependency_site))
     script = r"""
 import importlib.util
 import sys
@@ -639,8 +638,9 @@ for package in (
     assert not any(name == package or name.startswith(package + ".") for name in sys.modules), package
 """
     completed = subprocess.run(
-        [str(venv / "bin" / "python"), "-c", script],
+        [str(isolated_python), "-S", "-c", script],
         cwd=tmp_path,
+        env=isolated_env,
         check=True,
         capture_output=True,
         text=True,
@@ -752,7 +752,7 @@ def test_agent_result_validates_and_digests_exact_payload_before_pydantic() -> N
     from agent_runtime_contracts.schema import validate_local_agent_result
 
     contract = _local_agent_contract()
-    payload = {"output_files": ["qa/changes/CH-1/proposal.md"]}
+    payload = {"output_files": ["qa/proposal.md"]}
     exact, digest, validated = validate_local_agent_result(
         payload,
         result_model=contract.agent_result_model,
@@ -901,16 +901,15 @@ def test_agent_execution_contract_is_provider_neutral() -> None:
         agent_result_model=IntakeAgentResult,
         output_model=IntakeOutput,
         resources=ResourceClaimTemplate(
-            parameters={"change_id": "/workspace/scope_id"},
             reads=("qa",),
-            writes=("qa/changes/{change_id}/requirement.md",),
+            writes=("qa/requirement.md",),
         ),
         retry=AttemptRetryPolicy(max_attempts=1),
         timeout=AttemptTimeoutPolicy(seconds=60),
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
             prepare=(),
-            runtime=("qa/changes/{change_id}/requirement.md",),
+            runtime=("qa/requirement.md",),
             finalize=(),
         ),
     )

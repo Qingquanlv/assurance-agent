@@ -26,7 +26,7 @@ from assurance_product.output_routes import OutputRouteCatalog
 
 _SHA = "a" * 64
 _FORBIDDEN_SEGMENTS = frozenset({".runtime", ".staging"})
-_FORBIDDEN_PREFIXES = ("qa/archive", "tests/")
+_FORBIDDEN_PREFIXES = ("/".join(("qa", "archive")), "tests/")
 EXECUTE_ALIASES = tuple(sorted(AGENT_EXECUTION_CONTRACTS))
 BINDING: dict[str, JSONValue] = {
     "agent_profile": "aa-doc-author",
@@ -42,7 +42,8 @@ BINDING: dict[str, JSONValue] = {
 
 
 def dual_roots(project: Path, change_id: str = "CH-DEMO-001") -> tuple[Path, Path]:
-    write_root = project / "qa" / "changes" / change_id / ".staging" / "attempt-1"
+    del change_id
+    write_root = project / "qa" / ".staging" / "attempt-1"
     write_root.mkdir(parents=True, exist_ok=True)
     return project, write_root
 
@@ -179,8 +180,7 @@ def test_output_routes_are_owned_by_the_installed_product_and_are_not_project_co
     from assurance_product.change_workspace import ChangeWorkspace
 
     project = tmp_path / "project"
-    change = project / "qa" / "changes" / "CH-1"
-    change.mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     workspace = ChangeWorkspace.open(project, "CH-1")
 
     catalog = OutputRouteCatalog()
@@ -189,11 +189,9 @@ def test_output_routes_are_owned_by_the_installed_product_and_are_not_project_co
         "CH-1",
     )
     assert workspace.output_route("assurance.intake.agent.explore.v1") == (
-        "qa/changes/CH-1/explore/exploration.json",
+        "qa/results/explore/exploration.json",
     )
-    assert workspace.output_route("assurance.quality.agent.report.v1") == (
-        "qa/changes/CH-1/report/report.md",
-    )
+    assert workspace.output_route("assurance.quality.agent.report.v1") == ("qa/results/report/report.md",)
 
 
 def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_path: Path) -> None:
@@ -207,7 +205,15 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
                 "change_id": "RET-dept-management",
                 "requirement": "Cover department CRUD.",
                 "capability_leafs": [],
-                "artifact_paths": ["qa/changes"],
+                "artifact_paths": [
+                    "qa/.qa.yaml",
+                    "qa/cases",
+                    "qa/fixtures",
+                    "qa/proposal.md",
+                    "qa/requirement.md",
+                    "qa/results",
+                    "qa/tests",
+                ],
             },
             project,
             binding_data=BINDING,
@@ -215,12 +221,11 @@ def test_intake_prepare_injects_the_catalog_route_into_the_agent_request(tmp_pat
         )
     )
     request = AgentRunRequest.model_validate(prepared.output)
-    catalog = OutputRouteCatalog()
-    assert request.workspace.allowed_outputs == catalog.outputs(
-        "assurance.intake.agent.intake.v1",
-        "RET-dept-management",
+    assert request.workspace.allowed_outputs == (
+        "qa/.qa.yaml",
+        "qa/requirement.md",
     )
-    assert request.workspace.write_root == "qa/changes/RET-dept-management/.staging/attempt-1"
+    assert request.workspace.write_root == "qa/.staging/attempt-1"
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
 
 
@@ -228,7 +233,7 @@ def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Pat
     from assurance_intake.operations import ExploreFinalizeHandler
 
     project, write_root = dual_roots(tmp_path)
-    canonical = project / "qa/changes/CH-DEMO-001/explore/exploration.json"
+    canonical = project / "qa/results/explore/exploration.json"
     canonical.parent.mkdir(parents=True, exist_ok=True)
     promoted = b"not-json"
     canonical.write_bytes(promoted)
@@ -240,13 +245,13 @@ def test_failed_explore_validation_does_not_mutate_promoted_output(tmp_path: Pat
                 "agent_result": fake_agent_result(
                     {
                         "output_files": [
-                            "qa/changes/CH-DEMO-001/explore/exploration.json",
+                            "qa/results/explore/exploration.json",
                         ]
                     }
                 ).model_dump(mode="json"),
                 "change_id": "CH-DEMO-001",
                 "capability_leafs": ["entities.item.create"],
-                "artifact_paths": ["qa/changes/CH-DEMO-001/explore/exploration.json"],
+                "artifact_paths": ["qa/results/explore/exploration.json"],
             },
             project,
             write_root=write_root,

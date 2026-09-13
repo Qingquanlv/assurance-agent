@@ -18,11 +18,11 @@ contributes:
 secret_values: forbidden
 depends_on:
   capabilities:
-    - assurance.intake==0.2.0
-    - assurance.generation==0.2.0
-    - assurance.execution==0.2.0
-    - assurance.healing==0.2.0
-    - assurance.quality==0.2.0
-    - assurance.improvement==0.2.0
+    - assurance.intake==0.3.0
+    - assurance.generation==0.3.0
+    - assurance.execution==0.3.0
+    - assurance.healing==0.3.0
+    - assurance.quality==0.3.0
+    - assurance.improvement==0.3.0
   runtime:
     - runtime.opencode==0.1.0

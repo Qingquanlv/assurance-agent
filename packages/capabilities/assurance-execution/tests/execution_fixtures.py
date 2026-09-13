@@ -33,7 +33,7 @@ VALID_CASES = ("TC_A", "TC_B")
 _SHA = "a" * 64
 PLAN_DIGEST = _SHA
 PLAN_REF = {
-    "path": f"qa/changes/CH-DEMO-001/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{PLAN_DIGEST}/resolved-assurance-plan.json",
     "digest": _SHA,
 }
 BINDING: dict[str, Any] = {
@@ -193,7 +193,7 @@ def materialize_execution_view(
     change_id: str = "CH-DEMO-001",
     batch_id: str = "20260822T000000Z",
 ) -> ExecutionView:
-    (project / "qa" / "changes" / change_id).mkdir(parents=True, exist_ok=True)
+    (project / "qa").mkdir(parents=True, exist_ok=True)
     return build_execution_view(
         project,
         change_id=change_id,
@@ -213,7 +213,7 @@ async def execute_task(
     if workspace is None:
         with TemporaryDirectory(prefix="execution-dual-root-") as temporary:
             return await execute_task(handler, payload, Path(temporary), binding_data=binding_data)
-    write_root = workspace / "qa" / "changes" / "CH-DEMO-001" / ".staging" / "attempt-1"
+    write_root = workspace / "qa" / ".staging" / "attempt-1"
     write_root.mkdir(parents=True, exist_ok=True)
     invocation = InvocationMetadata(
         invocation_id="inv-1",
@@ -285,7 +285,7 @@ def validation_context() -> ValidationContext:
 def codegen_mapping(
     *,
     layer: str = "api",
-    target_file: str = "tests/generated_test.py",
+    target_file: str = "qa/tests/generated_test.py",
     case_id: str = "TC_A",
     symbol: str = "test_tc_a_001__ok",
 ) -> dict[str, object]:
@@ -349,7 +349,7 @@ def reviewed_cases(*, case_id: str = "TC_A", leaf: str = "entities.item.create")
 
 def select_request(
     *,
-    target_file: str = "tests/generated_test.py",
+    target_file: str = "qa/tests/generated_test.py",
     selected_targets: dict[str, bool] | None = None,
     extra_mappings: list[dict[str, object]] | None = None,
 ) -> dict[str, Any]:

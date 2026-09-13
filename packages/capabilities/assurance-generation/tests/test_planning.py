@@ -16,7 +16,7 @@ from tests.product.test_change_local_output_routing import (
     task_request,
 )
 
-from assurance_generation.operations.planning import planning_handler
+from assurance_generation.operations.planning import plan_outputs, plan_review_outputs, planning_handler
 from assurance_generation.resource_loader import resource_text
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
@@ -39,8 +39,31 @@ def test_e2e_plan_skill_reentry_reads_family_prefixed_review() -> None:
     assert "review/plan-review.json" not in skill
 
 
+def test_plan_outputs_use_results_plans_and_review() -> None:
+    assert plan_outputs("CH-DEMO-001", "api") == (
+        "qa/results/plans/api-codegen-mapping.json",
+        "qa/results/plans/api-codegen-plan.md",
+        "qa/results/plans/api-plan.md",
+        "qa/results/plans/api-test-data-plan.md",
+        "qa/results/plans/m3-review-summary.md",
+    )
+    assert plan_review_outputs("CH-DEMO-001", "api") == (
+        "qa/results/review/api-plan-review-summary.md",
+        "qa/results/review/api-plan-review.json",
+    )
+    for family in FAMILIES:
+        assert all(path.startswith("qa/results/plans/") for path in plan_outputs("CH-DEMO-001", family))
+        assert all(
+            path.startswith("qa/results/review/") for path in plan_review_outputs("CH-DEMO-001", family)
+        )
+        assert not any(
+            "/".join(("qa", "changes")) + "/" in path
+            for path in (*plan_outputs("CH-DEMO-001", family), *plan_review_outputs("CH-DEMO-001", family))
+        )
+
+
 def _write_reviewed_cases(tmp_path: Path, family: str) -> None:
-    path = tmp_path / "qa/changes/CH-DEMO-001/cases/items/case.yaml"
+    path = tmp_path / "qa/cases/items/case.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(reviewed_cases(family), sort_keys=False), encoding="utf-8")
 
@@ -51,7 +74,7 @@ def _write_plan_package(project: Path, family: str) -> tuple[str, ...]:
         path = project / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ok\n", encoding="utf-8")
-    mapping = project / f"qa/changes/CH-DEMO-001/plans/{family}-codegen-mapping.json"
+    mapping = project / f"qa/results/plans/{family}-codegen-mapping.json"
     mapping.write_text(
         json.dumps(
             {
@@ -62,10 +85,10 @@ def _write_plan_package(project: Path, family: str) -> tuple[str, ...]:
                         "case_id": f"TC_{family.upper()}_001",
                         "symbol": f"test_tc_{family}_001__happy_path",
                         "target_file": {
-                            "api": "tests/api/test_users.py",
-                            "e2e": "tests/e2e/test_users.py",
-                            "fuzz": "tests/fuzz/test_users.py",
-                            "performance": "tests/perf/test_users.py",
+                            "api": "qa/tests/api/test_users.py",
+                            "e2e": "qa/tests/e2e/test_users.py",
+                            "fuzz": "qa/tests/fuzz/test_users.py",
+                            "performance": "qa/tests/perf/test_users.py",
                         }[family],
                     }
                 ],
@@ -144,7 +167,7 @@ async def test_plan_prepare_instruction_order_is_skill_persona_cases_constraints
 @pytest.mark.asyncio
 async def test_plan_retry_injects_authenticated_current_review(tmp_path: Path) -> None:
     _write_reviewed_cases(tmp_path, "api")
-    relative = "qa/changes/CH-DEMO-001/review/api-plan-review.json"
+    relative = "qa/results/review/api-plan-review.json"
     review_path = tmp_path / relative
     review_path.parent.mkdir(parents=True, exist_ok=True)
     review = review_result("api")
@@ -158,7 +181,7 @@ async def test_plan_retry_injects_authenticated_current_review(tmp_path: Path) -
                     "category": "runtime_contract",
                     "message": "Use admin_token and construct the token header locally.",
                     "locator": {
-                        "artifact": "qa/changes/CH-DEMO-001/plans/api-plan.md",
+                        "artifact": "qa/results/plans/api-plan.md",
                         "case_id": "TC_API_001",
                         "key": "Auth Strategy",
                     },
@@ -214,7 +237,7 @@ async def test_plan_retry_fails_closed_without_current_review(tmp_path: Path) ->
 async def test_plan_retry_rejects_invalid_previous_plan_before_dispatch(
     family: str, defect: str, tmp_path: Path
 ) -> None:
-    review_path = tmp_path / f"qa/changes/CH-DEMO-001/review/{family}-plan-review.json"
+    review_path = tmp_path / f"qa/results/review/{family}-plan-review.json"
     review_path.parent.mkdir(parents=True)
     review_path.write_text(json.dumps(review_result(family)), encoding="utf-8")
     previous = valid_plan_result(family)
@@ -254,7 +277,15 @@ async def test_plan_prepare_hydrates_family_input_from_reviewed_workspace_cases(
             "plan_digest": PLAN_DIGEST,
             "plan_ref": PLAN_REF,
             "capability_leafs": list(VALID_LEAFS),
-            "artifact_paths": ["qa/changes"],
+            "artifact_paths": [
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/fixtures",
+                "qa/proposal.md",
+                "qa/requirement.md",
+                "qa/results",
+                "qa/tests",
+            ],
         },
         tmp_path,
         binding_data=BINDING,
@@ -277,7 +308,7 @@ async def test_plan_finalize_classifies_unreadable_output(
 ) -> None:
     project, stage = dual_roots(tmp_path)
     files = _write_plan_package(stage, family)
-    unreadable = stage / f"qa/changes/CH-DEMO-001/plans/{family}-plan.md"
+    unreadable = stage / f"qa/results/plans/{family}-plan.md"
     read_bytes = Path.read_bytes
 
     def read(path: Path) -> bytes:
@@ -321,7 +352,7 @@ async def test_plan_finalize_accepts_typed_family_plan(family: str, tmp_path: Pa
 async def test_plan_retry_reads_unchanged_outputs_from_committed_baseline(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     files = _write_plan_package(project, "api")
-    changed = write_root / "qa/changes/CH-DEMO-001/plans/m3-review-summary.md"
+    changed = write_root / "qa/results/plans/m3-review-summary.md"
     changed.parent.mkdir(parents=True, exist_ok=True)
     changed.write_text("review feedback applied\n", encoding="utf-8")
     finalize_input = fake_agent_result(valid_plan_result("api"), artifact_paths=list(files))
@@ -336,7 +367,7 @@ async def test_plan_retry_reads_unchanged_outputs_from_committed_baseline(tmp_pa
 
     assert executed.status == "succeeded"
     assert changed.is_file()
-    assert not (write_root / "qa/changes/CH-DEMO-001/plans/api-codegen-mapping.json").exists()
+    assert not (write_root / "qa/results/plans/api-codegen-mapping.json").exists()
 
 
 @pytest.mark.asyncio
@@ -365,7 +396,7 @@ async def test_plan_finalize_rejects_malformed_closed_codegen_mapping(tmp_path: 
         path = write_root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("ok\n", encoding="utf-8")
-    mapping = write_root / "qa/changes/CH-DEMO-001/plans/e2e-codegen-mapping.json"
+    mapping = write_root / "qa/results/plans/e2e-codegen-mapping.json"
     mapping.write_text(
         json.dumps(
             {
@@ -440,7 +471,7 @@ async def test_plan_finalize_cannot_skip_file_authentication_without_artifact_ro
 ) -> None:
     _, stage = dual_roots(tmp_path)
     _write_plan_package(stage, family)
-    (stage / f"qa/changes/CH-DEMO-001/plans/{family}-plan.md").unlink()
+    (stage / f"qa/results/plans/{family}-plan.md").unlink()
     outcome = await execute_task(
         planning_handler(family, "finalize"),
         fake_agent_result(valid_plan_result(family)),
@@ -478,7 +509,7 @@ async def test_plan_finalize_accepts_files_below_declared_artifact_root(tmp_path
     _write_plan_package(write_root, "api")
     executed = await execute_task(
         planning_handler("api", "finalize"),
-        fake_agent_result(valid_plan_result("api"), artifact_paths=["qa/changes"]),
+        fake_agent_result(valid_plan_result("api"), artifact_paths=["qa/results"]),
         project,
         write_root=write_root,
     )
@@ -527,7 +558,7 @@ async def test_plan_prepare_rejects_routing_marker_as_invalid_input(family: str,
 @pytest.mark.asyncio
 async def test_failed_plan_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    canonical = project / "qa/changes/CH-DEMO-001/plans/api-plan.md"
+    canonical = project / "qa/results/plans/api-plan.md"
     canonical.parent.mkdir(parents=True)
     original = b"# Canonical API plan\n"
     canonical.write_bytes(original)

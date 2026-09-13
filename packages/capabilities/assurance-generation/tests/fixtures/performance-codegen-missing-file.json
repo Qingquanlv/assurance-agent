@@ -7,7 +7,7 @@
       ],
       "content_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "disposition": "generated",
-      "repo_path": "tests/perf/test_users.py",
+      "repo_path": "qa/tests/perf/test_users.py",
       "role": "test_entry"
     }
   ],
@@ -17,7 +17,7 @@
       {
         "case_id": "TC_PERFORMANCE_001",
         "symbol": "test_tc_performance_001__happy_path",
-        "target_file": "tests/perf/test_users.py"
+        "target_file": "qa/tests/perf/test_users.py"
       }
     ],
     "layer": "performance",

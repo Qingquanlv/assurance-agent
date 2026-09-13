@@ -3,41 +3,27 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import stat
-import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal, cast
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from graph_engine.canonical import JSONValue, canonical_digest
-from graph_engine.errors import GraphEngineError
 
-from assurance_product.change_workspace import ChangeWorkspace, safe_change_id
+from assurance_product.change_workspace import ChangeWorkspace
 from assurance_product.generated_merge import merge_generated
 from assurance_product.models import (
     AdapterEvidenceRefV1,
-    ApplyManifestFileV1,
-    ApplyManifestV1,
     ExecutionGateRefV1,
     GraphStatusV1,
     NodeStatusV1,
     PendingInterruptStatusV1,
-    PublishReceiptV1,
     QualityGateRefV1,
     StatusV1,
 )
 
-_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-_FILE_WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-_RECEIPT_NAME = "publish-receipt.json"
 _STATUS_NAME = "status.json"
-_MANIFEST_NAME = "apply-manifest.json"
-
-
-class ArchiveError(GraphEngineError):
-    """Raised when a published change cannot be archived."""
 
 
 def render_status_from_langgraph(
@@ -89,7 +75,7 @@ def render_status_from_langgraph(
 
 
 def load_persisted_status(workspace: ChangeWorkspace) -> StatusV1 | None:
-    path = workspace.paths.change_root / _STATUS_NAME
+    path = workspace.paths.qa_root / _STATUS_NAME
     if not path.exists():
         return None
     try:
@@ -333,214 +319,13 @@ def finalize_achieved(
 ) -> StatusV1:
     project = Path(project_root)
     _require_terminal_full_success(invocation)
-    merged = merge_generated(project, change_id, families)
+    merge_generated(project, change_id, families)
     execution_gate = _require_execution_gate(project, change_id, invocation)
     _require_quality_gate(project, change_id, invocation, execution_gate)
-    manifest = _apply_manifest(project, change_id, merged)
-    status = _achieved_status(invocation, change_id, manifest)
-    change_root = project / "qa" / "changes" / change_id
-    _write_canonical_json(change_root / "apply-manifest.json", manifest.model_dump(mode="json"))
+    status = _achieved_status(invocation, change_id)
+    change_root = project / "qa"
     _write_canonical_json(change_root / "status.json", status.model_dump(mode="json"))
     return status
-
-
-def archive_published(project_root: Path, change_id: str) -> dict[str, object]:
-    try:
-        workspace = ChangeWorkspace.open(Path(project_root).resolve(), safe_change_id(change_id))
-    except ValueError as error:
-        archived = _existing_archive_without_change(Path(project_root).resolve(), change_id)
-        if archived is not None:
-            return archived
-        raise ArchiveError(str(error)) from error
-    status = _read_archive_status(workspace)
-    if status.change.state != "achieved" or status.change.change_id != workspace.paths.change_root.name:
-        raise ArchiveError("cannot archive a change that is not achieved")
-    if status.publication.status != "published":
-        raise ArchiveError("cannot archive before publish")
-    _authenticate_publish_receipt(workspace)
-    archive_root = _relocate_change(workspace)
-    return {
-        "change_id": workspace.paths.change_root.name,
-        "archive_root": f"qa/archive/{archive_root.name}",
-    }
-
-
-def _existing_archive_without_change(project: Path, change_id: str) -> dict[str, object] | None:
-    try:
-        resolved_id = safe_change_id(change_id)
-    except ValueError:
-        return None
-    destination = project / "qa" / "archive" / resolved_id
-    source = project / "qa" / "changes" / resolved_id
-    if source.exists() or destination.is_symlink() or not destination.is_dir():
-        return None
-    return {
-        "change_id": resolved_id,
-        "archive_root": f"qa/archive/{resolved_id}",
-    }
-
-
-def _read_archive_status(workspace: ChangeWorkspace) -> StatusV1:
-    path = workspace.paths.change_root / _STATUS_NAME
-    try:
-        return StatusV1.model_validate_json(_read_regular_file(path, _STATUS_NAME))
-    except FileNotFoundError as error:
-        raise ArchiveError("achieved status is missing") from error
-    except (OSError, ValueError) as error:
-        raise ArchiveError("achieved status is invalid") from error
-
-
-def _authenticate_publish_receipt(workspace: ChangeWorkspace) -> PublishReceiptV1:
-    path = workspace.paths.change_root / _RECEIPT_NAME
-    if not path.exists():
-        raise ArchiveError("publish receipt is missing")
-    try:
-        receipt = PublishReceiptV1.model_validate_json(_read_regular_file(path, _RECEIPT_NAME))
-        manifest = ApplyManifestV1.model_validate_json(
-            _read_regular_file(workspace.paths.apply_manifest, _MANIFEST_NAME)
-        )
-    except FileNotFoundError as error:
-        raise ArchiveError("publish receipt is missing") from error
-    except (OSError, ValueError) as error:
-        raise ArchiveError("publish receipt is invalid") from error
-    if receipt.change_id != workspace.paths.change_root.name or receipt.change_id != manifest.change_id:
-        raise ArchiveError("publish receipt change_id does not match the change")
-    if receipt.manifest_digest != manifest.digest:
-        raise ArchiveError("publish receipt does not match the apply manifest")
-    receipt_files = {
-        (item.target_path, item.source_path, item.source_sha256, item.baseline_sha256)
-        for item in receipt.files
-    }
-    manifest_files = {
-        (item.target_path, item.source_path, item.source_sha256, item.baseline_sha256)
-        for item in manifest.files
-    }
-    if receipt_files != manifest_files:
-        raise ArchiveError("publish receipt does not match the apply manifest")
-    source_digest = canonical_digest({item.target_path: item.source_sha256 for item in receipt.files})
-    if receipt.source_digest != source_digest or receipt.final_digest != source_digest:
-        raise ArchiveError("publish receipt does not match the apply manifest")
-    for item in receipt.files:
-        target = workspace.paths.project_root / item.target_path
-        if target.is_symlink() or not target.is_file():
-            raise ArchiveError("publish receipt is tampered")
-        actual = hashlib.sha256(target.read_bytes()).hexdigest()
-        recorded = item.final_sha256.removeprefix("sha256:")
-        if actual != recorded:
-            raise ArchiveError("publish receipt is tampered")
-    return receipt
-
-
-def _relocate_change(workspace: ChangeWorkspace) -> Path:
-    source = workspace.paths.change_root
-    archive_parent = _ensure_archive_parent(workspace.paths.project_root)
-    destination = archive_parent / source.name
-    if destination.exists():
-        return _finish_committed_archive(source, destination)
-    if _same_filesystem(source, archive_parent):
-        os.rename(source, destination)
-        _fsync_directory(archive_parent)
-        return destination
-    temporary = archive_parent / f".{source.name}.{uuid.uuid4().hex}.tmp"
-    try:
-        _copy_verified_tree(source, temporary)
-        os.rename(temporary, destination)
-    except Exception:
-        if temporary.exists():
-            shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    try:
-        _fsync_directory(archive_parent)
-    except OSError:
-        pass
-    return _finish_committed_archive(source, destination)
-
-
-def _finish_committed_archive(source: Path, destination: Path) -> Path:
-    if destination.is_symlink() or not destination.is_dir():
-        raise ArchiveError("archive destination already exists")
-    if not source.exists():
-        return destination
-    if _tree_file_bytes(source) != _tree_file_bytes(destination):
-        raise ArchiveError("archive destination already exists")
-    shutil.rmtree(source)
-    return destination
-
-
-def _tree_file_bytes(root: Path) -> dict[str, bytes]:
-    return {relative: content for relative, content, _mode in _collect_regular_files(root)}
-
-
-def _ensure_archive_parent(project: Path) -> Path:
-    parent = project / "qa" / "archive"
-    parent.mkdir(parents=True, exist_ok=True)
-    info = parent.lstat()
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ArchiveError("qa/archive is not a real directory")
-    return parent
-
-
-def _same_filesystem(source: Path, destination_parent: Path) -> bool:
-    return source.stat().st_dev == destination_parent.stat().st_dev
-
-
-def _copy_verified_tree(source: Path, destination: Path) -> None:
-    files = _collect_regular_files(source)
-    destination.mkdir(parents=False, exist_ok=False)
-    created_dirs = {destination}
-    for relative, content, mode in files:
-        target = destination.joinpath(*relative.split("/"))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.parent not in created_dirs:
-            created_dirs.add(target.parent)
-        _write_regular_file(target, content, mode)
-    for directory in sorted(created_dirs, key=lambda item: len(item.parts), reverse=True):
-        _fsync_directory(directory)
-    copied = _collect_regular_files(destination)
-    if [(relative, content) for relative, content, _mode in copied] != [
-        (relative, content) for relative, content, _mode in files
-    ]:
-        raise ArchiveError("archive copy verification failed")
-
-
-def _collect_regular_files(root: Path) -> tuple[tuple[str, bytes, int], ...]:
-    collected: list[tuple[str, bytes, int]] = []
-
-    def walk(directory: Path) -> None:
-        info = directory.lstat()
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise ArchiveError("archive path is not a real directory")
-        with os.scandir(directory) as entries:
-            children = sorted(entries, key=lambda item: item.name)
-        for entry in children:
-            path = Path(entry.path)
-            child = path.lstat()
-            if stat.S_ISLNK(child.st_mode):
-                raise ArchiveError(f"symlink is not allowed: {path.name}")
-            if stat.S_ISDIR(child.st_mode):
-                walk(path)
-                continue
-            _reject_irregular(child, path.name)
-            collected.append(
-                (path.relative_to(root).as_posix(), path.read_bytes(), stat.S_IMODE(child.st_mode))
-            )
-
-    walk(root)
-    return tuple(collected)
-
-
-def _write_regular_file(path: Path, content: bytes, mode: int) -> None:
-    descriptor = os.open(path, _FILE_WRITE_FLAGS, mode)
-    try:
-        view = memoryview(content)
-        while view:
-            written = os.write(descriptor, view)
-            if written == 0:
-                raise ArchiveError(f"failed to write {path.name}")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _read_regular_file(path: Path, label: str) -> bytes:
@@ -551,19 +336,11 @@ def _read_regular_file(path: Path, label: str) -> bytes:
 
 def _reject_irregular(info: os.stat_result, label: str) -> None:
     if stat.S_ISLNK(info.st_mode):
-        raise ArchiveError(f"symlink is not allowed: {label}")
+        raise ValueError(f"symlink is not allowed: {label}")
     if not stat.S_ISREG(info.st_mode):
-        raise ArchiveError(f"path is not a regular file: {label}")
+        raise ValueError(f"path is not a regular file: {label}")
     if info.st_nlink != 1:
-        raise ArchiveError(f"hard link is not allowed: {label}")
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, _DIRECTORY_FLAGS)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        raise ValueError(f"hard link is not allowed: {label}")
 
 
 def _require_terminal_full_success(invocation: Mapping[str, object] | StatusV1) -> None:
@@ -708,7 +485,7 @@ def _require_execution_gate(
         "execution.execute": "execute-result.json",
         "execution.run": "run-result.json",
     }[gate.semantic_node_id]
-    execution_root = project / "qa" / "changes" / change_id / "execution"
+    execution_root = project / "qa" / "results" / "execution"
     payload = _read_json_object(execution_root / filename, "execution evidence")
     evidence, document = _validated_execution_evidence(payload, label="execution evidence")
     if evidence.change_id != change_id or evidence.batch_id != gate.batch_id:
@@ -764,7 +541,7 @@ def _require_quality_gate(
     filename = (
         "run-result.json" if execution_gate.semantic_node_id == "execution.run" else "execute-result.json"
     )
-    execution_path = f"qa/changes/{change_id}/execution/{filename}"
+    execution_path = f"qa/results/execution/{filename}"
     if not any(ref.path == execution_path for ref in inspection.assessment_refs):
         raise ValueError("quality inspection execution reference is missing")
     refs = (
@@ -794,41 +571,14 @@ def _reject_symlink_components(root: Path, target: Path) -> None:
             raise ValueError("quality evidence path is a symlink")
 
 
-def _apply_manifest(project: Path, change_id: str, merged: object) -> ApplyManifestV1:
-    files = []
-    for item in getattr(merged, "files"):
-        target = project.joinpath(*str(item.target_path).split("/"))
-        baseline = None
-        if target.is_file() and not target.is_symlink() and target.stat().st_nlink == 1:
-            baseline = f"sha256:{hashlib.sha256(target.read_bytes()).hexdigest()}"
-        files.append(
-            ApplyManifestFileV1(
-                target_path=item.target_path,
-                source_path=item.staged_path,
-                source_sha256=item.sha256,
-                baseline_sha256=baseline,
-                mode=item.mode,
-                operation=item.operation,
-            )
-        )
-    ordered = tuple(sorted(files, key=lambda item: item.target_path))
-    return ApplyManifestV1(
-        schema_version="1",
-        change_id=change_id,
-        digest=str(getattr(merged, "digest")),
-        files=ordered,
-    )
-
-
 def _achieved_status(
     invocation: Mapping[str, object] | StatusV1,
     change_id: str,
-    manifest: ApplyManifestV1,
 ) -> StatusV1:
     payload = invocation.model_dump(mode="json") if isinstance(invocation, StatusV1) else dict(invocation)
     payload["change"] = {"change_id": change_id, "state": "achieved"}
-    payload["apply"] = {"manifest_digest": manifest.digest, "file_count": len(manifest.files)}
-    payload["publication"] = {"status": "ready"}
+    payload["apply"] = {"manifest_digest": None, "file_count": 0}
+    payload["publication"] = {"status": "not_ready"}
     return StatusV1.model_validate(payload)
 
 

@@ -379,7 +379,7 @@ class _ExecutionLoopHost:
             self._execution_index += 1
             return TaskOutcome.succeeded(
                 {
-                    "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                    "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                     "change_id": change_id,
                     "rounds_budget": rounds_budget,
                     "rounds_used": rounds_used,
@@ -459,9 +459,7 @@ class _ExecutionLoopHost:
         if capability_id == "assurance.quality.agent.report.v1":
             output: dict[str, object] = {
                 "change_id": change_id,
-                "report_refs": [
-                    {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
-                ],
+                "report_refs": [{"path": "qa/results/report/report.md", "digest": _PUBLIC_DIGEST}],
             }
             if isinstance(request_input, Mapping) and isinstance(request_input.get("coverage_state"), str):
                 output["coverage_state"] = request_input["coverage_state"]
@@ -479,7 +477,7 @@ class _ExecutionLoopHost:
                 cast(
                     JSONValue,
                     {
-                        "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                        "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                         "auto_fix_allowed": False,
                         "change_id": change_id,
                         "decision": decision,
@@ -495,7 +493,7 @@ class _ExecutionLoopHost:
                 cast(
                     JSONValue,
                     {
-                        "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                        "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                         "change_id": change_id,
                         "lifecycle_state": "evaluating",
                         "outcome": "passed",
@@ -504,7 +502,7 @@ class _ExecutionLoopHost:
             )
         return TaskOutcome.succeeded(
             {
-                "artifacts": [{"path": "qa/changes", "digest": _PUBLIC_DIGEST}],
+                "artifacts": [{"path": "qa/results", "digest": _PUBLIC_DIGEST}],
                 "auto_fix_allowed": False,
                 "change_id": change_id,
                 "classification": "test",
@@ -519,9 +517,7 @@ class _ExecutionLoopHost:
                 "needs_fix": False,
                 "outcome": "applied",
                 "receipt_refs": [],
-                "report_refs": [
-                    {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _PUBLIC_DIGEST}
-                ],
+                "report_refs": [{"path": "qa/results/report/report.md", "digest": _PUBLIC_DIGEST}],
                 "rounds_budget": rounds_budget,
                 "rounds_used": rounds_used,
                 "status": "passed",

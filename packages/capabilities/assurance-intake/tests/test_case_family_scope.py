@@ -23,9 +23,9 @@ from tests.product.test_change_local_output_routing import dual_roots, execute_t
 
 
 _CHANGE = "CH-DEMO-001"
-_ROOT = f"qa/changes/{_CHANGE}"
-_CASE = f"{_ROOT}/cases/menus/case.yaml"
-_MATRIX = f"{_ROOT}/trace/minimum-coverage-matrix.json"
+_ROOT = "qa"
+_CASE = "qa/cases/menus/case.yaml"
+_MATRIX = "qa/results/trace/minimum-coverage-matrix.json"
 _LEAFS = ("entities.item.create",)
 _FIXTURE = Path(__file__).parent / "fixtures/case-authoring-valid.yaml"
 _Phase = Literal["design", "review"]
@@ -132,8 +132,8 @@ async def _finalize(
             },
         }
         artifacts = (
-            f"{_ROOT}/review/case-review-summary.md",
-            f"{_ROOT}/review/case-review.json",
+            "qa/results/review/case-review-summary.md",
+            "qa/results/review/case-review.json",
         )
         review_path = stage / artifacts[1]
         review_path.parent.mkdir(parents=True, exist_ok=True)

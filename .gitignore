@@ -17,15 +17,11 @@ dist/
 # Benchmark: commit the harness, ignore generated artifacts and the vendored SUT app.
 benchmark/assurance-product/results/
 benchmark/vue-fastapi-admin/*
-!benchmark/vue-fastapi-admin/benchmark/
-!benchmark/vue-fastapi-admin/eval-fixtures/
 # Stable benchmark policy and L1 data; other SUT state remains ignored.
 !benchmark/vue-fastapi-admin/.aa/
 benchmark/vue-fastapi-admin/.aa/*
 !benchmark/vue-fastapi-admin/.aa/data-knowledge.yaml
 !benchmark/vue-fastapi-admin/.aa/policy.yaml
-benchmark/vue-fastapi-admin/benchmark/runs/
-benchmark/vue-fastapi-admin/benchmark/resume-logs/
 # The auth-matrix recorder is repo-owned harness code that has to sit in the SUT's
 # test tree to be importable from generated tests, and tests/unit/benchmark asserts
 # its behaviour — so it is tracked while the rest of that generated tree is not.

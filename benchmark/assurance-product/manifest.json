@@ -316,15 +316,15 @@
         "intake.explore",
         "intake.case-design",
         "intake.case-review",
+        "quality.fact-baseline",
         "generation.api.plan",
         "generation.api.plan-review",
         "generation.api.codegen",
         "execution.execute",
-        "quality.fact-baseline",
         "quality.inspect",
         "quality.report"
       ],
-      "requirement_path": "benchmark/vue-fastapi-admin/benchmark/requirements/dept-management.md",
+      "requirement_path": "benchmark/assurance-product/requirements/dept-management.md",
       "routing_assignments": {
         "assurance.execution.agent.execute.v1": {
           "limits": {

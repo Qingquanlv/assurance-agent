@@ -44,7 +44,7 @@ def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) ->
 
     # The two Intake plan Tasks enter the live registry when Task 11 wires their
     # semantic nodes into the public graphs.
-    assert len(runtime_registry) == 46
+    assert len(runtime_registry) == 47
     assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 32
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
@@ -72,7 +72,7 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 46
+    assert len(composition.semantic_attempt_contracts) == 47
     assert len(AGENT_EXECUTION_CONTRACTS) == 32
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
@@ -126,7 +126,7 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 46
+    assert len(resolved) == 47
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
@@ -173,7 +173,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
     assert len(agents) == 32
-    assert len(tasks) == 14
+    assert len(tasks) == 15
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
     for contract_id in agents:
@@ -544,7 +544,7 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
     )
     from assurance_product.runtime_bindings import InstalledFinalizePhase
 
-    result_payload = {"output_files": ["qa/changes/CH-1/requirement.md"]}
+    result_payload = {"output_files": ["qa/requirement.md"]}
     run_evidence = AgentRunResult.model_validate(
         {
             "result_payload": result_payload,
@@ -557,7 +557,7 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
     validated_input = IntakeInputV1(
         change_id="CH-1",
         capability_leafs=("intake",),
-        artifact_paths=("qa/changes/CH-1/requirement.md",),
+        artifact_paths=("qa/requirement.md",),
         requirement="must not leak into finalize",
     )
     raw = tmp_path / "raw-finalize"
@@ -583,7 +583,7 @@ def test_installed_finalize_projects_the_bundle_to_the_feature_input_model(tmp_p
     assert projected.agent_result == run_evidence
     assert projected.change_id == "CH-1"
     assert projected.capability_leafs == ("intake",)
-    assert projected.artifact_paths == ("qa/changes/CH-1/requirement.md",)
+    assert projected.artifact_paths == ("qa/requirement.md",)
     assert isinstance(handler.input, dict)
     assert "prepared" not in handler.input
     assert "validated_input" not in handler.input
@@ -602,7 +602,7 @@ def test_installed_proposal_finalize_uses_current_input_without_approval_envelop
         plan_ref=cast(
             Any,
             {
-                "path": f"qa/changes/CH-1/plan/{'e' * 64}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{'e' * 64}/resolved-assurance-plan.json",
                 "digest": "f" * 64,
             },
         ),
@@ -613,7 +613,7 @@ def test_installed_proposal_finalize_uses_current_input_without_approval_envelop
         baseline_digest="a" * 64,
         candidate_digest="b" * 64,
         policy_digest="c" * 64,
-        mapping_paths=("qa/changes/CH-1/generated/mapping.json",),
+        mapping_paths=("qa/results/generated/mapping.json",),
         require_approval=True,
         execution_evidence_digest="d" * 64,
     )
@@ -661,9 +661,9 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
         "schema_version": "1",
         "agent_profile": "assurance-v1-executor",
         "scope_id": "CH-1",
-        "write_root": "qa/changes/CH-1/.staging/task/attempt-1",
-        "allowed_outputs": ["qa/changes/CH-1/execution/execute-result.json"],
-        "read_roots": ["qa/changes/CH-1/.staging/task/attempt-1/qa/changes/CH-1/.staging/execution/batch-1"],
+        "write_root": "qa/.staging/task/attempt-1",
+        "allowed_outputs": ["qa/results/execution/execute-result.json"],
+        "read_roots": ["qa/.staging/task/attempt-1/qa/.staging/execution/batch-1"],
     }
     workspace = AgentWorkspaceV1.model_validate(
         {**workspace_payload, "identity_digest": canonical_digest(workspace_payload)}
@@ -675,9 +675,7 @@ def test_installed_finalize_projects_trusted_prepared_business_fields(tmp_path: 
                 {
                     "change_id": "CH-1",
                     "batch_id": "batch-1",
-                    "execution_view_root": (
-                        "qa/changes/CH-1/.staging/task/attempt-1/qa/changes/CH-1/.staging/execution/batch-1"
-                    ),
+                    "execution_view_root": ("qa/.staging/task/attempt-1/qa/.staging/execution/batch-1"),
                 }
             ),
         ),

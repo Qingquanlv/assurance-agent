@@ -70,15 +70,15 @@ def test_family_plan_characterization_accepts_valid_and_rejects_two_invalids(fam
         family,
         capability_leafs=frozenset(VALID_LEAFS),
         case_ids=frozenset({family_case_id(family)}),
-        write_roots=("qa/changes/CH-DEMO-001/plans/",),
+        write_roots=("qa/results/plans/",),
     )
-    valid_path = f"qa/changes/CH-DEMO-001/plans/{family}-plan.json"
+    valid_path = f"qa/results/plans/{family}-plan.json"
     accepted = family_validator(
         family,
         capability_leafs=frozenset(VALID_LEAFS),
         case_ids=frozenset({family_case_id(family)}),
         file_bytes={valid_path: json.dumps(valid, separators=(",", ":"), sort_keys=True).encode("utf-8")},
-        write_roots=("qa/changes/CH-DEMO-001/plans/",),
+        write_roots=("qa/results/plans/",),
     ).validate(_candidate_with(*files, valid_path), _context())
     assert accepted.accepted is True
     for payload in (unknown_case, wrong_family):
@@ -89,7 +89,7 @@ def test_family_plan_characterization_accepts_valid_and_rejects_two_invalids(fam
             file_bytes={
                 valid_path: json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
             },
-            write_roots=("qa/changes/CH-DEMO-001/plans/",),
+            write_roots=("qa/results/plans/",),
         ).validate(_candidate_with(*files, valid_path), _context())
         assert rejected.accepted is False
     assert validator.validate(_candidate_with("src/app.py"), _context()).accepted is False

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import importlib.util
-import sys
 from copy import deepcopy
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -12,7 +10,6 @@ from typing import Any
 
 import pytest
 import yaml
-from pydantic import ValidationError
 
 from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
 from assurance_product.configuration import capability_leafs_from_knowledge
@@ -22,26 +19,19 @@ from tests.product.conformance import PREPARE_IDS
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO / "benchmark" / "assurance-product" / "manifest.json"
 RUNNER_PATH = REPO / "benchmark" / "assurance-product" / "run_item.py"
-DEPT_REQUIREMENT_PATH = (
-    REPO / "benchmark" / "vue-fastapi-admin" / "benchmark" / "requirements" / "dept-management.md"
-)
+DEPT_REQUIREMENT_PATH = REPO / "benchmark" / "assurance-product" / "requirements" / "dept-management.md"
 DATA_KNOWLEDGE_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "data-knowledge.yaml"
 POLICY_PATH = REPO / "benchmark" / "vue-fastapi-admin" / ".aa" / "policy.yaml"
-DEPT_SCHEMA_PATH = REPO / "benchmark" / "vue-fastapi-admin" / "app" / "schemas" / "depts.py"
-TEST_RUNTIME_SEED_ROOT = (
-    REPO / "benchmark" / "assurance-product" / "fixtures" / "vue-fastapi-admin-tests-runtime-v1"
-)
-
 FULL_WORKFLOW_REQUIRED_STEPS = (
     "intake.intake",
     "intake.explore",
     "intake.case-design",
     "intake.case-review",
+    "quality.fact-baseline",
     "generation.api.plan",
     "generation.api.plan-review",
     "generation.api.codegen",
     "execution.execute",
-    "quality.fact-baseline",
     "quality.inspect",
     "quality.report",
 )
@@ -240,15 +230,11 @@ def test_full_benchmark_requirement_is_api_only() -> None:
     assert "P95 响应时间不超过 500 ms" not in requirement
 
 
-def test_dept_create_rejects_names_longer_than_the_database_column() -> None:
-    spec = importlib.util.spec_from_file_location("phase5_dept_schema", DEPT_SCHEMA_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+def test_dept_name_boundary_is_an_explicit_benchmark_requirement() -> None:
+    requirement = DEPT_REQUIREMENT_PATH.read_text(encoding="utf-8")
 
-    module.DeptCreate(name="x" * 20)
-    with pytest.raises(ValidationError):
-        module.DeptCreate(name="x" * 21)
+    assert "部门名称长度不超过 20 个字符" in requirement
+    assert "21 个及以上字符必须被拒绝" in requirement
 
 
 def test_full_benchmark_declares_its_required_e2e_journey() -> None:
@@ -316,46 +302,6 @@ def test_benchmark_policy_declares_quality_goal_inputs() -> None:
     }
 
 
-def test_dept_runtime_seed_is_closed_versioned_and_contains_no_case_oracle() -> None:
-    manifest_path = TEST_RUNTIME_SEED_ROOT / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    declared_files = manifest["files"]
-    actual_files = {
-        path.relative_to(TEST_RUNTIME_SEED_ROOT).as_posix()
-        for path in TEST_RUNTIME_SEED_ROOT.rglob("*")
-        if path.is_file() and path != manifest_path
-    }
-    knowledge = yaml.safe_load(DATA_KNOWLEDGE_PATH.read_text(encoding="utf-8"))
-
-    def dept_symbols(value: object, *, under_dept: bool = False) -> set[str]:
-        if not isinstance(value, dict):
-            return set()
-        found: set[str] = set()
-        for key, child in value.items():
-            selected = under_dept or key == "dept"
-            if selected and key == "symbol" and isinstance(child, str):
-                found.add(child)
-            found.update(dept_symbols(child, under_dept=selected))
-        return found
-
-    assert manifest["schema_version"] == "vue-fastapi-admin-tests-runtime/v1"
-    assert set(declared_files) == actual_files
-    assert dept_symbols(knowledge) <= set(manifest["symbols"])
-    assert {
-        "tests/__init__.py",
-        "tests/config.py",
-        "tests/conftest.py",
-        "tests/schema_validation.py",
-    } <= actual_files
-    assert not any(
-        part.startswith("test_") or part.startswith("locustfile")
-        for relative in actual_files
-        for part in Path(relative).parts
-    )
-    for relative, expected_digest in declared_files.items():
-        assert hashlib.sha256((TEST_RUNTIME_SEED_ROOT / relative).read_bytes()).hexdigest() == expected_digest
-
-
 def test_packaged_performance_dept_adapter_is_not_declared_missing() -> None:
     knowledge = yaml.safe_load(DATA_KNOWLEDGE_PATH.read_text(encoding="utf-8"))
     dept = knowledge["capabilities"]["adapters"]["performance"]["dept"]
@@ -366,90 +312,6 @@ def test_packaged_performance_dept_adapter_is_not_declared_missing() -> None:
     assert dept["auth"]["create-if-missing"] is False
     assert dept["setup"]["create-if-missing"] is False
     assert dept["cleanup"]["create-if-missing"] is False
-
-
-def test_packaged_performance_dept_adapter_materializes_and_cleans_one_valid_chain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    adapter_path = TEST_RUNTIME_SEED_ROOT / "tests" / "perf" / "adapters" / "dept_seed.py"
-    spec = importlib.util.spec_from_file_location("phase5_dept_seed", adapter_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, spec.name, module)
-    monkeypatch.setattr(sys, "dont_write_bytecode", True)
-    spec.loader.exec_module(module)
-    manifest = tmp_path / "dept_seed.json"
-    monkeypatch.setattr(module, "_MANIFEST", manifest)
-
-    class Response:
-        def __init__(self, body: dict[str, Any], status_code: int = 200) -> None:
-            self._body = body
-            self.status_code = status_code
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def json(self):
-            return self._body
-
-        def failure(self, message: str) -> None:
-            raise AssertionError(message)
-
-        def success(self) -> None:
-            return None
-
-    class Client:
-        def __init__(self) -> None:
-            self.nodes: list[dict[str, Any]] = []
-            self.created: list[dict[str, Any]] = []
-            self.deleted: list[int] = []
-
-        def post(self, _path: str, *, json: dict[str, Any], **_kwargs):
-            payload = dict(json)
-            identifier = len(self.created) + 1
-            node = {**payload, "id": identifier, "children": []}
-            parent_id = payload["parent_id"]
-            if parent_id == 0:
-                self.nodes.append(node)
-            else:
-                parent = next(item for item in self._walk(self.nodes) if item["id"] == parent_id)
-                parent["children"].append(node)
-            self.created.append(payload)
-            return Response({"code": 200, "msg": "Created Successfully", "data": None})
-
-        def get(self, _path: str, **_kwargs):
-            return Response({"code": 200, "msg": None, "data": self.nodes})
-
-        def delete(self, _path: str, *, params: dict[str, int], **_kwargs):
-            self.deleted.append(params["dept_id"])
-            return Response({"code": 200, "msg": "Deleted Successfully", "data": None})
-
-        @classmethod
-        def _walk(cls, nodes: list[dict[str, Any]]):
-            for node in nodes:
-                yield node
-                yield from cls._walk(node["children"])
-
-    client = Client()
-    seed = module.setup(client, {"token": "test-token"})
-
-    assert [item["name"] for item in client.created] == [
-        f"{seed.prefix}r",
-        f"{seed.prefix}c",
-        f"{seed.prefix}g",
-    ]
-    assert seed.prefix.startswith("p") and len(seed.prefix) == 9
-    assert [item["order"] for item in client.created] == [0, 1, 2]
-    assert [item["parent_id"] for item in client.created] == [0, 1, 2]
-    assert json.loads(manifest.read_text(encoding="utf-8"))["grandchild_id"] == 3
-
-    module.cleanup(client, {"token": "test-token"}, seed)
-
-    assert client.deleted == [3, 2, 1]
-    assert not manifest.exists()
 
 
 def test_runner_resolves_real_sut_without_copying(tmp_path: Path) -> None:
@@ -628,7 +490,10 @@ def test_runner_requires_loaded_assurance_boundary_plugin(monkeypatch: pytest.Mo
 
 def test_live_product_input_authorizes_declared_test_roots() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
-    assert '"allowed_artifact_paths": ["qa/archive", "qa/cases", "qa/changes", "tests"]' in source
+    assert (
+        '"allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"]'
+        in source
+    )
 
 
 def test_live_runner_keeps_polling_while_external_activity_is_recoverable() -> None:

@@ -42,7 +42,7 @@ from assurance_healing.validators.test_tree import TestTreeValidator
 
 HEALING_SOURCE = ProviderSource(
     distribution="assurance-healing",
-    version="0.2.0",
+    version="0.3.0",
     entrypoint_group="graph_engine.plugins",
     entrypoint_name="healing",
     entrypoint_value="assurance_healing.plugin:HealingPlugin",
@@ -51,9 +51,9 @@ HEALING_SOURCE = ProviderSource(
 )
 
 HEALING_DEPENDENCIES: tuple[PluginDependency, ...] = (
-    PluginDependency("assurance.intake", "==0.2.0"),
-    PluginDependency("assurance.generation", "==0.2.0"),
-    PluginDependency("assurance.execution", "==0.2.0"),
+    PluginDependency("assurance.intake", "==0.3.0"),
+    PluginDependency("assurance.generation", "==0.3.0"),
+    PluginDependency("assurance.execution", "==0.3.0"),
 )
 
 ALLOCATION_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=30.0, backoff_seconds=1.0)
@@ -141,7 +141,7 @@ _HANDLERS = healing_task_handlers()
 class HealingPlugin(CapabilityPlugin):
     spec = CapabilitySpec(
         plugin_id="assurance.healing",
-        version="0.2.0",
+        version="0.3.0",
         engine_api=ENGINE_API_VERSION,
         source=HEALING_SOURCE,
         resource_bytes=resource_bytes,

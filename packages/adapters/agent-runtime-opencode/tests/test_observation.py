@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import json
 
 import pytest
 from agent_runtime_contracts import InstructionPart
@@ -12,6 +13,7 @@ from agent_runtime_opencode.observation import (
     provider_error_is_transient,
     provider_error_message,
 )
+from agent_runtime_opencode.redaction import failure_message
 from harness import _bound_fixture, agent_run_request  # pyright: ignore[reportMissingImports]
 
 
@@ -45,6 +47,20 @@ def test_nested_opencode_provider_error_message_is_transient() -> None:
 
     assert provider_error_message({}, messages) == "unknown certificate verification error"
     assert provider_error_is_transient({}, messages) is True
+
+
+@pytest.mark.parametrize("style", ["json", "repr"])
+@pytest.mark.parametrize("value", ["Bearer x", "Basic x:y"])
+@pytest.mark.parametrize("source", ["session", "message"])
+def test_serialized_authorization_provider_failure_is_redacted(style: str, value: str, source: str) -> None:
+    headers = {"Authorization": value}
+    diagnostic = json.dumps(headers) if style == "json" else repr(headers)
+    session = {"error": {"message": diagnostic}} if source == "session" else {}
+    messages = [{"info": {"error": {"data": {"message": diagnostic}}}}] if source == "message" else []
+    redacted = failure_message(provider_error_message(session, messages))
+    assert "[redacted]" in redacted
+    assert value not in redacted
+    assert value.split(" ", 1)[1] not in redacted
 
 
 def test_cyber_policy_rejection_that_invites_rephrasing_is_retryable() -> None:
@@ -587,6 +603,37 @@ def _live_shaped_terminal(text: str) -> list[dict[str, object]]:
             ],
         },
     ]
+
+
+def test_leading_prose_with_non_json_brace_snippet_still_finds_trailing_json() -> None:
+    text = (
+        "Self-review passed: 15 cases use `{covered: true}` in the matrix. "
+        '{"output_files": ["qa/proposal.md"]}'
+    )
+
+    assert parse_closed_terminal_result(_live_shaped_terminal(text)) == {"output_files": ["qa/proposal.md"]}
+
+
+def test_trailing_commentary_after_the_json_object_is_still_rejected() -> None:
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(_live_shaped_terminal('{"ok": true} and some commentary'))
+
+
+def test_concatenated_json_objects_are_still_rejected() -> None:
+    with pytest.raises(ValueError):
+        parse_closed_terminal_result(_live_shaped_terminal('{"ok":true}{"ok":true}'))
+
+
+@pytest.mark.parametrize("separator", [" and then ", "\nSelf-review passed.\n"])
+def test_multiple_json_objects_with_intervening_prose_are_rejected(separator: str) -> None:
+    with pytest.raises(ValueError, match="one JSON object"):
+        parse_closed_terminal_result(_live_shaped_terminal('{"ok":false}' + separator + '{"ok":true}'))
+
+
+def test_nested_objects_in_the_one_trailing_result_remain_valid() -> None:
+    assert parse_closed_terminal_result(_live_shaped_terminal('Review done. {"result":{"ok":true}}')) == {
+        "result": {"ok": True}
+    }
 
 
 def test_reasoning_beside_the_terminal_text_is_a_closed_result() -> None:

@@ -925,7 +925,10 @@ def test_installed_snapshot_rejects_selected_file_replacement_before_open_withou
         lambda entrypoint: loaded.append(entrypoint.name),
     )
 
-    with pytest.raises(SourceSnapshotError, match="changed while opening|regular no-follow"):
+    with pytest.raises(
+        SourceSnapshotError,
+        match="changed while opening|regular no-follow|directories changed while it was captured",
+    ):
         snapshot_wheel_source(WheelPluginSource(distribution="toy-runtime", entrypoint_name="toy.runtime"))
     assert loaded == []
 

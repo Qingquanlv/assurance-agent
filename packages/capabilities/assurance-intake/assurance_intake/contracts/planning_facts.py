@@ -20,6 +20,26 @@ _MAX_BYTES = 256 * 1024
 _MAX_FILES = 64
 _SOURCE_PATH = re.compile(r"(?<![\w./-])(?:[A-Za-z_][\w-]*/)+[\w.-]+\.(?:py|tsx?|jsx?|vue)(?![\w/])")
 _FAMILY_ROOTS = {"api": "api", "e2e": "e2e", "fuzz": "fuzz", "performance": "perf"}
+_QA_TESTS_PREFIX = "qa/tests/"
+_TESTS_PREFIX = "tests/"
+_FACTS_LIMITS = (
+    "Static observations only; unknown is not absent. Environment names are "
+    "references, not proof of availability or necessity. Independently verify "
+    "source behavior and owner-defined oracles. Fixtures and support modules "
+    "live under qa/tests/. The execution view remaps qa/tests/ to tests/ for "
+    "pytest collection."
+)
+
+
+def _durable_test_path(relative: str) -> str | None:
+    path = PurePosixPath(relative)
+    if path.is_absolute() or path.as_posix() != relative or ".." in path.parts:
+        return None
+    if relative.startswith(_QA_TESTS_PREFIX):
+        return relative
+    if relative.startswith(_TESTS_PREFIX):
+        return _QA_TESTS_PREFIX + relative[len(_TESTS_PREFIX) :]
+    return None
 
 
 def _read(root: Path, relative: str) -> tuple[bytes | None, str | None]:
@@ -145,11 +165,10 @@ def build_planning_facts(
     participates. The digest binds observations, not their semantic correctness.
     """
     root = workspace.resolve()
-    candidates = {"tests/conftest.py", "tests/config.py"}
-    candidates.update(f"tests/{_FAMILY_ROOTS[f]}/conftest.py" for f in families if f in _FAMILY_ROOTS)
+    candidates = {"qa/tests/conftest.py", "qa/tests/config.py"}
+    candidates.update(f"qa/tests/{_FAMILY_ROOTS[f]}/conftest.py" for f in families if f in _FAMILY_ROOTS)
     inputs: list[dict[str, str]] = []
-    for suffix in ("requirement.md", "proposal.md", "explore/exploration.json"):
-        relative = f"qa/changes/{change_id}/{suffix}"
+    for relative in ("qa/requirement.md", "qa/proposal.md", "qa/results/explore/exploration.json"):
         data, _ = _read(root, relative)
         if data is None:
             continue
@@ -176,16 +195,19 @@ def build_planning_facts(
         module, _, name = symbol.rpartition(".")
         if module.split(".")[1] in excluded_roots:
             continue
-        relative = module.replace(".", "/") + ".py"
+        relative = _durable_test_path(module.replace(".", "/") + ".py")
+        if relative is None:
+            continue
         candidates.add(relative)
         declared.append({"capability": capability, "symbol": symbol, "path": relative, "name": name})
     for relative in target_files:
-        path = PurePosixPath(relative)
-        if path.parts and path.parts[0] == "tests" and ".." not in path.parts:
-            candidates.add(relative)
-            for parent in path.parents:
-                if parent.as_posix() != ".":
-                    candidates.add(f"{parent}/conftest.py")
+        durable = _durable_test_path(relative)
+        if durable is None:
+            continue
+        candidates.add(durable)
+        for parent in PurePosixPath(durable).parents:
+            if parent.as_posix() != ".":
+                candidates.add(f"{parent}/conftest.py")
     files: list[dict[str, Any]] = []
     for relative in sorted(candidates)[:_MAX_FILES]:
         data, reason = _read(root, relative)
@@ -207,7 +229,7 @@ def build_planning_facts(
         "files": files,
         "declared_symbols": declared,
         "uninspected_paths": sorted(candidates)[_MAX_FILES:],
-        "limits": "Static observations only; unknown is not absent. Environment names are references, not proof of availability or necessity. Independently verify source behavior and owner-defined oracles.",
+        "limits": _FACTS_LIMITS,
     }
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {**payload, "digest": digest}

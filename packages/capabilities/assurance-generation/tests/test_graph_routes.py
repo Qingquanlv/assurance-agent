@@ -85,7 +85,15 @@ def valid_input() -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "selected_test_families": ["api", "e2e"],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "rounds_used": 0,
         "rounds_budget": 2,
     }
@@ -96,7 +104,15 @@ def input_with_missing_lane() -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "selected_test_families": [],
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
     }
 
 

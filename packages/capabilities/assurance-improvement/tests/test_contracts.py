@@ -355,32 +355,32 @@ def test_improvement_agent_job_catalog_is_feature_owned() -> None:
         "archive": (
             "aa-archive",
             "assurance-v1-archiver",
-            ("qa/changes/{change_id}/archive/archive-receipt.json",),
+            ("qa/results/archive/archive-receipt.json",),
         ),
         "improvement-review": (
             "aa-improvement-reviewer",
             "assurance-v1-reviewer",
-            ("qa/changes/{change_id}/review/improvement-review.json",),
+            ("qa/results/review/improvement-review.json",),
         ),
         "retro-eval-analysis": (
             "aa-retro-eval-analysis",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/retro/retro-eval-analysis.json",),
+            ("qa/results/retro/retro-eval-analysis.json",),
         ),
         "retro-issue-analysis": (
             "aa-retro-issue-analysis",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/retro/retro-issue-analysis.json",),
+            ("qa/results/retro/retro-issue-analysis.json",),
         ),
         "retro-workflow-analysis": (
             "aa-retro-workflow-analysis",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/retro/retro-workflow-analysis.json",),
+            ("qa/results/retro/retro-workflow-analysis.json",),
         ),
         "retro": (
             "aa-retro",
             "assurance-v1-doc-author",
-            ("qa/changes/{change_id}/retro/retro.json",),
+            ("qa/results/retro/retro.json",),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
@@ -398,6 +398,16 @@ def test_improvement_agent_job_catalog_is_feature_owned() -> None:
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped
         assert "cursor" not in dumped
+
+
+def test_output_routes_are_flat_qa_paths() -> None:
+    from assurance_improvement.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
+
+    rendered = "\n".join(path for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
+    assert "qa/" + "changes" not in rendered
+    assert "{change_id}" not in rendered
+    assert "qa/" + "archive" not in rendered
+    assert all(path.startswith("qa/") for paths in OUTPUT_ROUTE_TEMPLATES.values() for path in paths)
 
 
 def test_delivery_receipts_are_data_only_shapes() -> None:

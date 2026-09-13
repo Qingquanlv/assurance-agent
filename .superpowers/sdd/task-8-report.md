@@ -1,62 +1,75 @@
-# Task 8 Report — Normalize Healing Events and Dark-Ship Graph-Owned Healing Ops
+# Task 8 Report: Version bump to 0.3.0
 
-## Status: DONE
+## Status
 
-**Plan:** `docs/superpowers/plans/2026-08-01-four-layer-assurance-verification.md` Task 8  
-**Worktree tip at start of fix pass:** `231d496`  
-Edit + test only (no git add/commit). Cursor-loop helpers left alone. Packaged topology stays dark-shipped.
+DONE_WITH_CONCERNS
 
-## Fix pass (P1 / P2 / P3)
+## TDD Evidence
 
-| Priority | Item | Resolution |
-|----------|------|------------|
-| P1 | High-risk approval digest binding | `_bind_approval_to_snapshot_artifacts` binds proposal/authority/baseline/policy sha256 + targets/paths to snapshot artifacts; forged digests → `CandidateValidationError` |
-| P1 | record verifies candidate receipt | `operation_record_codegen_fix_apply` loads CAS receipt, checks identity/`bind_receipt_to_success_event`, on-disk intent digest, then `verify_candidate_receipt`; fail closed if missing/wrong |
-| P1 | Allocate authority from write-set/snapshot | `allocate_authority_bindings_from_artifacts` binds generated/updated after digests from codegen write set; reused under private root; imported → `unverified`; `with.authority_bindings` remains test seam only when artifacts absent |
-| P2 | Reused allocate authority fail-closed | Reused paths no longer fall back to manifest `content_sha256` when snapshot digest is missing; missing/mismatched snapshot → `unverified`; matching snapshot → ready (`test_reused_authority_fail_closed_without_or_mismatched_snapshot`) |
-| P2 | before-digest on modify | generated/updated authority before-digest enforced on content-`modify` (not only add-with-before) |
-| P2 | Healing conformance mutation table | Emits `missing_approval_interrupt`, `missing_record_join`, `missing_hard_outputs`, `inactive_target_required`, plus prior codes; positive controls for API-only / E2E-only / both |
-| P2 | Registry compatibility | `CodegenFixApplySummaryV1.applied` + aggregate SafetyCheck boolean shims so legacy `ApplySummary` / `SafetyCheck` must_compat readers accept new ops output (no colliding registry flip) |
-| P3 | AST consumer-set | Guards raw `heal_record_apply` alongside legacy baseline/allocation names |
+### RED (Step 2)
 
-## What was already landed (first pass)
+Flipped `tests/product/test_product_providers.py` first: six-wheel catalog versions and capability `version_specifier` to `==0.3.0`. Production still advertised `0.2.0`.
 
-- Projection / consumers, durable effects + v2 events, dark-ship ops, `codegen_fix_candidate/v1`, `diff_safety.py`, production effect registry registration
-- Packaged YAML / contracts unchanged
+Command:
 
-## Verify (latest: reused fail-closed)
-
-```text
-uv run pytest -q \
-  tests/unit/healing/test_authority_allocate.py \
-  tests/unit/healing/test_episode_projection.py \
-  tests/integration/test_codegen_fixer_record.py \
-  tests/unit/workflow/graph/test_precommit_validation.py \
-  tests/unit/workflow/graph/test_healing_topology_mutations.py
-→ 35 passed
-
-uv run ruff check assurance_agent/workflow/healing/operations.py → All checks passed
-uv run pyright → 0 errors
-
-Prior full fix-pass suite: 161 passed; ruff/pyright clean.
-
-uv run pyright → 0 errors
+```bash
+uv run pytest tests/product/test_product_providers.py -v
 ```
 
-## Files ready to stage (integrator owns commit)
+Output:
 
-**Created / notably extended in fix pass**
-- `tests/unit/healing/test_authority_allocate.py`
-- Updates to `precommit.py`, `operations.py`, `healing_conformance.py`, `healing_codegen.py`
-- `tests/integration/test_codegen_fixer_record.py`, `test_healing_topology_mutations.py`, `test_episode_projection.py`, `test_healing_codegen.py`, `test_precommit_validation.py` (forged approval)
+```
+FAILED test_source_catalog_is_six_wheels_plus_opencode
+  version='0.2.0' != version='0.3.0'
 
-**Do not stage**
-- `benchmark/.../cursor-loop-helpers.sh`
-- `tests/unit/benchmark/test_cursor_loop_helpers.py`
+FAILED test_provider_returns_one_minimal_opencode_manifest
+  {'assurance.execution': '==0.2.0', ...} != {'assurance.execution': '==0.3.0', ...}
 
-Suggested commit message: `feat(healing): normalize episodes and stage graph-owned records`
+2 failed, 3 passed
+```
 
-## Notes
-- Record verification uses `TreeStore(context.change_dir)` (invocation object store), not the materialized task workspace copy.
-- Aggregate `FixerSafetyCheckV1` remains unregistered on the legacy SafetyCheck path; emitted JSON includes legacy required booleans so finalize readers stay must_compat.
-- Packaged topology/YAML still dark-shipped until Task 15.
+Exit code: 1
+
+The brief `-k "plugin or 0.2.0 or version_specifier"` filter does not select these pin tests (names lack those tokens) and was green before the bump. Failure reason was stale `0.2.0` pins, not a typo.
+
+### GREEN (Step 4)
+
+Command:
+
+```bash
+uv run pytest tests/product -k "plugin or 0.2.0 or version_specifier" -v
+uv run pytest tests/product/test_product_providers.py \
+  tests/product/test_project_configuration.py \
+  tests/product/test_cli_compile.py \
+  tests/product/test_product_composition.py \
+  tests/product/test_binding_builder.py \
+  tests/product/test_product_packaging.py \
+  tests/product/test_project_configuration_security.py -v
+uv run pytest packages/capabilities/*/tests/test_plugin.py -v
+```
+
+Output:
+
+```
+19 passed, 850 deselected   # -k plugin filter
+62 passed, 1 failed         # composition set (see concerns)
+94 passed                   # six plugin tests + pin + config security
+```
+
+Pin / compile / packaging / configuration / capability plugin tests are green.
+
+## What changed
+
+- Six capability wheels and `assurance-product` are `0.3.0`. Inter-wheel and product capability pins are `==0.3.0`.
+- `graph-engine` stays `0.2.0` (product dependency and binding-wheel METADATA).
+- Regenerated `product-declaration-opencode.json` and capability `plugin-declaration.json` files.
+- Updated project-config and phase4 fixtures that pinned the six plugins at `==0.2.0`.
+- `docs/usage.md` §8 now says `==0.3.0` (file is gitignored under `docs/`).
+- `uv.lock` records the new workspace versions.
+
+## Concerns
+
+- Full `tests/product -v` was not run (869 tests; earlier tasks still had leftover failures).
+- `test_unselected_adapter_source_is_rejected_before_provider_import` still fails with `wheel declaration path is absent from the authenticated snapshot` instead of `runtime.cursor|agent-runtime-cursor`. Looks pre-existing, not pin-related.
+- Historical `benchmark/assurance-product/results/**/plugin.yaml` and `graph-engine` boot fixture still say `==0.2.0`.
+- `docs/usage.md` update cannot be committed (`docs/` is gitignored).

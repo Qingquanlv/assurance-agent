@@ -54,7 +54,7 @@ def test_case_validator_rejects_traversal_and_absolute_paths() -> None:
 
 
 def test_case_validator_rejects_legacy_minimal_case_entry() -> None:
-    path = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    path = "qa/cases/menus/case.yaml"
     payload = yaml.safe_dump(
         {
             "schema_version": "1.0",
@@ -82,7 +82,7 @@ def test_case_validator_rejects_legacy_minimal_case_entry() -> None:
 
 
 def test_case_validator_accepts_change_case_yaml_with_exact_leaf() -> None:
-    path = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    path = "qa/cases/menus/case.yaml"
     payload = (_FIXTURES / "case-authoring-valid.yaml").read_bytes()
     result = CaseCandidateValidator(
         capability_leafs=frozenset({"entities.item.create", "auth.session.create"}),
@@ -96,7 +96,7 @@ def test_plugin_contributed_validators_allowlist_registered_paths() -> None:
     candidate = contribution.commit_validators["assurance.intake.validator.case-candidate.v1"]
     references = contribution.commit_validators["assurance.intake.validator.case-references.v1"]
     context = validation_context()
-    allowed = candidate_with("qa/changes/CH-DEMO-001/cases/menus/case.yaml")
+    allowed = candidate_with("qa/cases/menus/case.yaml")
     assert candidate.validate(allowed, context) == ValidationResult(accepted=True)
     assert references.validate(allowed, context) == ValidationResult(accepted=True)
     rejected = candidate.validate(candidate_with("src/app.py"), context)
@@ -108,7 +108,7 @@ def test_plugin_contributed_validators_allowlist_registered_paths() -> None:
 
 
 def test_case_reference_validator_rejects_missing_related_case() -> None:
-    path = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    path = "qa/cases/menus/case.yaml"
     raw = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     raw["added"][0]["related_cases"] = ["qa/cases/menus/missing.yaml"]
     payload = yaml.safe_dump(raw, sort_keys=False).encode("utf-8")

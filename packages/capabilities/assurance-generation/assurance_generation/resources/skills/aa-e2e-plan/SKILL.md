@@ -35,6 +35,15 @@ keys, and distinguish an existing helper amendment from create-if-missing. On re
 check the whole package for consistency while editing only authorized locators;
 if another required edit is outside them, report the scope gap without broadening it.
 
+## Durable mapping and the execution view
+
+Closed mapping `target_file` values must stay under `qa/tests/`. The
+execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
+collection. Fixtures and support modules live under `qa/tests/`.
+Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
+Do not look up fixtures under the SUT `tests/` tree.
+Do not retarget mapping rows to `tests/`.
+
 ## Inputs
 
 Read `proposal.md` first. When its `Product Source Verification` section lists
@@ -45,38 +54,38 @@ those exact reads and a path-scoped grep both fail.
 
 ### required
 
-- `qa/changes/<change-id>/cases/**/case.yaml`
-- `qa/changes/<change-id>/.qa.yaml`
-- `qa/changes/<change-id>/proposal.md`
+- `qa/cases/**/case.yaml`
+- `qa/.qa.yaml`
+- `qa/proposal.md`
+- `qa/results/facts/fact-baseline.json`
 
 ### optional
 
-- `qa/changes/<change-id>/review/e2e-plan-review.json`
-- `qa/changes/<change-id>/facts/fact-baseline.json`
+- `qa/results/review/e2e-plan-review.json`
 - `.aa/config.yaml`
 - `.aa/data-knowledge.yaml`
 - backend and frontend product source (read-only)
-- `tests/testdata/domain/**`
-- `tests/e2e/**`
-- `tests/config.py`
-- `tests/conftest.py`
+- `qa/tests/testdata/domain/**`
+- `qa/tests/e2e/**`
+- `qa/tests/config.py`
+- `qa/tests/conftest.py`
 
 ## Outputs
 
 ### required
 
-- `qa/changes/<change-id>/plans/e2e-plan.md`
-- `qa/changes/<change-id>/plans/e2e-test-data-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-plan.md`
-- `qa/changes/<change-id>/plans/e2e-codegen-mapping.json`
-- `qa/changes/<change-id>/plans/m4-review-summary.md`
+- `qa/results/plans/e2e-plan.md`
+- `qa/results/plans/e2e-test-data-plan.md`
+- `qa/results/plans/e2e-codegen-plan.md`
+- `qa/results/plans/e2e-codegen-mapping.json`
+- `qa/results/plans/m4-review-summary.md`
 
 ## Closed Codegen Mapping Contract
 
 `e2e-codegen-mapping.json` must use this exact JSON shape:
 
 ```json
-{"schema_version":"1","layer":"e2e","entries":[{"case_id":"TC_DEPT_E2E_001","symbol":"test_tc_dept_e2e_001__behavior","target_file":"tests/e2e/test_dept.py"}]}
+{"schema_version":"1","layer":"e2e","entries":[{"case_id":"TC_DEPT_E2E_001","symbol":"test_tc_dept_e2e_001__behavior","target_file":"qa/tests/e2e/test_dept.py"}]}
 ```
 
 Use `schema_version: "1"`, not `"1.0"`. The only top-level keys are
@@ -87,7 +96,7 @@ exactly once, and no other Case ID.
 
 ### conditional
 
-- `qa/changes/<change-id>/plans/data-knowledge.proposal.e2e.yaml`
+- `qa/results/plans/data-knowledge.proposal.e2e.yaml`
 
 When a proposal is required, write the complete data-knowledge proposal envelope
 and validate the whole envelope against the runtime contract.
@@ -115,8 +124,8 @@ as a reason to block codegen.
 
 For every exact L1-declared Python symbol, translate its module path to an exact
 `.py` path and exact-read that file before assigning `missing` or
-`create-if-missing`. For example, inspect `tests/e2e/conftest.py` for
-`tests.e2e.conftest.e2e_login_admin` and `tests/testdata/domain/dept.py` for
+`create-if-missing`. For example, inspect `qa/tests/e2e/conftest.py` for
+`tests.e2e.conftest.e2e_login_admin` and `qa/tests/testdata/domain/dept.py` for
 `tests.testdata.domain.dept.unique_dept_name`. Glob, search, and repository
 status do not prove an ignored helper is absent. Only mark the implementation
 missing after the exact read fails or the exact-readable file does not define

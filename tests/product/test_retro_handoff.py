@@ -38,7 +38,7 @@ def test_retro_root_preserves_selection_into_build_slices(explicit_window: bool)
             "selection": {"mode": "change_ids", "requested_change_ids": list(expected_changes)},
             "change_ids": list(expected_changes),
         }
-    ref = {"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": "a" * 64}
+    ref = {"path": "qa/results/report/report.md", "digest": "a" * 64}
     payload["artifacts"] = [ref]
 
     invoke_product_root(_product_graphs(features), "retro", payload)

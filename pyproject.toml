@@ -56,7 +56,7 @@ extend-exclude = [
 ]
 
 [tool.pyright]
-include = ["packages/framework/graph-engine/graph_engine", "packages/adapters/agent-runtime-contracts/agent_runtime_contracts", "packages/adapters/agent-runtime-opencode/agent_runtime_opencode", "examples/agent-runtime-fixture/agent_runtime_fixture", "packages/capabilities/assurance-intake", "packages/capabilities/assurance-generation", "packages/capabilities/assurance-execution", "packages/capabilities/assurance-healing", "packages/capabilities/assurance-quality", "packages/capabilities/assurance-improvement", "packages/products/assurance-product", "tests", "benchmark/agent-runtime-phase3"]
+include = ["packages/framework/graph-engine/graph_engine", "packages/adapters/agent-runtime-contracts/agent_runtime_contracts", "packages/adapters/agent-runtime-opencode/agent_runtime_opencode", "examples/agent-runtime-fixture/agent_runtime_fixture", "packages/capabilities/assurance-intake", "packages/capabilities/assurance-generation", "packages/capabilities/assurance-execution", "packages/capabilities/assurance-healing", "packages/capabilities/assurance-quality", "packages/capabilities/assurance-improvement", "packages/products/assurance-product", "tests"]
 extraPaths = ["."]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"

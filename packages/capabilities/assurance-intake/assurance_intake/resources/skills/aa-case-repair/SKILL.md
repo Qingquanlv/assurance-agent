@@ -70,7 +70,7 @@ locators, return failure rather than changing unrelated data.
 After all bounded edits, return structured JSON only:
 
 ```json
-{"output_files":["qa/changes/<change-id>/.qa.yaml","qa/changes/<change-id>/cases/<module>/case.yaml","qa/changes/<change-id>/proposal.md","qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}
+{"output_files":["qa/.qa.yaml","qa/cases/<module>/case.yaml","qa/proposal.md","qa/results/trace/minimum-coverage-matrix.json"]}
 ```
 
 `output_files` must contain exactly every graph-declared case-design output,

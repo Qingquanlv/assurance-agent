@@ -323,6 +323,10 @@ def _scenario_features(
         e2e=_echo({}),
         fuzz=_echo({}),
         performance=_echo({}),
+        init_runtime=_echo({"status": "completed"}),
+        resolve_inputs=_echo(
+            {"reviewed_case": _bind_plan(_reviewed().model_dump(mode="json"), plan, plan_ref)}
+        ),
     )
     features["assurance.execution"] = ExecutionGraphs(
         execute=_recording_graph(
@@ -385,9 +389,7 @@ def _scenario_features(
                     **_analysis_result("product_bug"),
                     "classification": "product_bug",
                     "fix_eligible": False,
-                    "evidence_refs": [
-                        _ref("qa/changes/CH-DEMO-001/inspect/issue-analysis.json").model_dump(mode="json")
-                    ],
+                    "evidence_refs": [_ref("qa/results/inspect/issue-analysis.json").model_dump(mode="json")],
                     "status": "passed",
                 },
             ),
@@ -418,6 +420,18 @@ def _scenario_features(
             dispatches=dispatches,
             attempt_keys=attempt_keys,
             select_index=lambda state: 0,
+        ),
+        fact_baseline=_recording_graph(
+            root=root,
+            label="fact-baseline",
+            semantic_id="quality.fact-baseline",
+            updates=(
+                {"fact_baseline_ref": _ref("qa/results/facts/fact-baseline.json").model_dump(mode="json")},
+            ),
+            visits=visits,
+            dispatches=dispatches,
+            attempt_keys=attempt_keys,
+            select_index=_state_epoch,
         ),
     )
     repair = (

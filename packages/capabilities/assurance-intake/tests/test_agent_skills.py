@@ -35,7 +35,7 @@ from assurance_intake.resource_loader import resource_text
 _SHA = "a" * 64
 _PLAN_DIGEST = "31e8e6ccff373c935bf09f5f83763f327bd54bc3c96a11b9db3bca1b7b22fa00"
 _PLAN_REF: dict[str, JSONValue] = {
-    "path": f"qa/changes/CH-DEMO-001/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
+    "path": f"qa/results/plan/{_PLAN_DIGEST}/resolved-assurance-plan.json",
     "digest": "a50f41ee57345754b5d4f2f3609baef0d8fe1ba9c0e50abaf09902d37e4150e2",
 }
 _FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -54,11 +54,11 @@ BINDING: dict[str, JSONValue] = {
 CASE_INPUT: dict[str, JSONValue] = {
     "change_id": "CH-DEMO-001",
     "capability_leafs": list(VALID_LEAFS),
-    "artifact_paths": ["qa/changes/CH-DEMO-001/explore/advisory.json"],
+    "artifact_paths": ["qa/results/explore/advisory.json"],
     "selected_test_families": ["api"],
     "plan_digest": _PLAN_DIGEST,
     "plan_ref": _PLAN_REF,
-    "case_delta_paths": ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+    "case_delta_paths": ["qa/cases/menus/case.yaml"],
 }
 CASE_REVIEW_INPUT: dict[str, JSONValue] = {
     key: value for key, value in CASE_INPUT.items() if key != "selected_test_families"
@@ -67,7 +67,15 @@ INTAKE_INPUT: dict[str, JSONValue] = {
     "change_id": "RET-dept-management",
     "requirement": "Cover department CRUD and the department tree page.",
     "capability_leafs": [],
-    "artifact_paths": ["qa/changes"],
+    "artifact_paths": [
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
+    ],
 }
 
 
@@ -79,7 +87,7 @@ async def run_prepare(
     write_root: Path | None = None,
 ) -> Any:
     if type(handler).__name__.startswith("Case"):
-        exploration = workspace / "qa/changes/CH-DEMO-001/explore/exploration.json"
+        exploration = workspace / "qa/results/explore/exploration.json"
         minimum_required_coverage = None
         mismatched_exploration: bytes | None = None
         if exploration.is_file():
@@ -151,7 +159,7 @@ def test_intake_skill_requires_direct_change_write() -> None:
     skill = resource_text("skills/aa-intake/SKILL.md")
     normalized = " ".join(skill.split())
     persona = resource_text("personas/intake-host.md")
-    assert "qa/changes/<change-id>" in skill
+    assert "`qa/` is allowed to be missing" in skill
     assert "must not ask" in skill.lower() or "do not ask" in skill.lower()
     assert "must not require" in skill.lower() or "do not require" in skill.lower()
     assert "initialize" in skill.lower()
@@ -170,7 +178,7 @@ def test_explore_skill_returns_the_locked_result_contract() -> None:
     assert "schemas/explore-advisory.schema.json" not in skill
     assert 'Set it to the exact string\n    `"explore/context.json"`' in skill
     assert "Do not expand it to" in skill
-    assert '{"output_files":["qa/changes/<change-id>/explore/exploration.json"]}' in skill
+    assert '{"output_files":["qa/results/explore/exploration.json"]}' in skill
 
 
 def test_explore_skill_requires_evidence_ids_on_every_layer_recommendation() -> None:
@@ -230,13 +238,13 @@ def test_case_design_skill_returns_the_locked_file_receipt_contract() -> None:
     assert "Emit a knowledge proposal" not in skill
     assert "Never inspect `.qa.yaml` for Explore state" in skill
     assert (
-        '{"output_files":["qa/changes/<change-id>/.qa.yaml",'
-        '"qa/changes/<change-id>/cases/<trusted-module>/case.yaml",'
-        '"qa/changes/<change-id>/proposal.md",'
-        '"qa/changes/<change-id>/trace/minimum-coverage-matrix.json"]}'
+        '{"output_files":["qa/.qa.yaml",'
+        '"qa/cases/<trusted-module>/case.yaml",'
+        '"qa/proposal.md",'
+        '"qa/results/trace/minimum-coverage-matrix.json"]}'
     ) in skill
     assert "every written `cases/**/case.yaml`" not in skill
-    assert '"qa/changes/<change-id>/trace/minimum-coverage-matrix.json"' in skill
+    assert '"qa/results/trace/minimum-coverage-matrix.json"' in skill
     assert "The MRC matrix path is mandatory" in skill
     assert "deterministic finalize step" in skill
     assert "json.dumps(yaml.safe_load" not in skill
@@ -457,13 +465,13 @@ async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
     assert request.workspace.allowed_outputs == (
-        "qa/changes/RET-dept-management/.qa.yaml",
-        "qa/changes/RET-dept-management/requirement.md",
+        "qa/.qa.yaml",
+        "qa/requirement.md",
     )
     skill, persona, business = request.instructions
     assert "Capability-owned intake" in (skill.text_content or "")
     assert "Do not ask" in (skill.text_content or "")
-    assert "qa/changes/<change-id>" in (skill.text_content or "")
+    assert "`qa/` is allowed to be missing" in (skill.text_content or "")
     assert "Do not ask" in (persona.text_content or "")
     payload = cast(Mapping[str, object], business.json_content)
     assert payload["change_id"] == "RET-dept-management"
@@ -473,17 +481,25 @@ async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path
 @pytest.mark.asyncio
 async def test_explore_prepare_materializes_deterministic_graph_context(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    requirement = project / "qa/changes/CH-DEMO-001/requirement.md"
+    requirement = project / "qa/requirement.md"
     requirement.parent.mkdir(parents=True, exist_ok=True)
     requirement.write_text("# Requirement\n\nCover item creation.\n", encoding="utf-8")
     payload = {
         "change_id": "CH-DEMO-001",
         "capability_leafs": list(VALID_LEAFS),
-        "artifact_paths": ["qa/changes"],
+        "artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
     }
 
     first = await run_prepare(ExplorePrepareHandler(), payload, BINDING, project, write_root)
-    context_path = write_root / "qa/changes/CH-DEMO-001/explore/context.json"
+    context_path = write_root / "qa/results/explore/context.json"
     first_bytes = context_path.read_bytes()
     second = await run_prepare(ExplorePrepareHandler(), payload, BINDING, project, write_root)
 
@@ -502,13 +518,13 @@ async def test_case_design_prepare_is_canonical_and_provider_neutral(tmp_path: P
     request = AgentRunRequest.model_validate(first.output)
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
     assert request.workspace.allowed_outputs == (
-        "qa/changes/CH-DEMO-001/.qa.yaml",
-        "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
-        "qa/changes/CH-DEMO-001/proposal.md",
-        "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+        "qa/.qa.yaml",
+        "qa/cases/menus/case.yaml",
+        "qa/proposal.md",
+        "qa/results/trace/minimum-coverage-matrix.json",
     )
     assert not any("**" in path for path in request.workspace.allowed_outputs)
-    assert request.workspace.allowed_outputs.count("qa/changes/CH-DEMO-001/cases/menus/case.yaml") == 1
+    assert request.workspace.allowed_outputs.count("qa/cases/menus/case.yaml") == 1
 
 
 @pytest.mark.asyncio
@@ -565,7 +581,7 @@ async def test_case_design_prepare_rejects_action_repair_alias(tmp_path: Path) -
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     _write_case_design_outputs(tmp_path, authored)
     _write_fixable_case_review(tmp_path, allowed_key="title")
-    review_path = tmp_path / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = tmp_path / "qa/results/review/case-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
     review["auto_fix_plan"][0].pop("case_id")
     review["auto_fix_plan"][0]["action"] = review["auto_fix_plan"][0].pop("edits")[0]
@@ -585,9 +601,9 @@ async def test_case_design_prepare_accepts_exact_document_section_repair_locator
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     _write_case_design_outputs(tmp_path, authored)
     _write_fixable_case_review(tmp_path, allowed_key="title")
-    review_path = tmp_path / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = tmp_path / "qa/results/review/case-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
-    artifact = "qa/changes/CH-DEMO-001/proposal.md"
+    artifact = "qa/proposal.md"
     review["findings"][0]["locator"] = {
         "artifact": artifact,
         "case_id": None,
@@ -616,7 +632,7 @@ async def test_case_design_prepare_accepts_exact_document_section_repair_locator
 async def test_case_design_prepare_rejects_bare_proposal_section_locator(tmp_path: Path) -> None:
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     _write_case_design_outputs(tmp_path, authored)
-    artifact = "qa/changes/CH-DEMO-001/proposal.md"
+    artifact = "qa/proposal.md"
     _write_fixable_case_review(
         tmp_path,
         allowed_key="Test Conditions",
@@ -638,7 +654,7 @@ async def test_case_design_prepare_rejects_qa_yaml_automatic_repair(tmp_path: Pa
     _write_fixable_case_review(
         tmp_path,
         allowed_key="approval.mode",
-        artifact="qa/changes/CH-DEMO-001/.qa.yaml",
+        artifact="qa/.qa.yaml",
         case_id=None,
     )
 
@@ -656,7 +672,7 @@ async def test_case_design_prepare_rejects_mrc_field_selector_locator(tmp_path: 
     _write_fixable_case_review(
         tmp_path,
         allowed_key="MRC-API-001.status",
-        artifact="qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+        artifact="qa/results/trace/minimum-coverage-matrix.json",
         case_id=None,
     )
 
@@ -671,7 +687,7 @@ async def test_case_design_prepare_rejects_mrc_field_selector_locator(tmp_path: 
 async def test_case_design_prepare_preserves_mrc_locator_baseline_order(tmp_path: Path) -> None:
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     _write_case_design_outputs(tmp_path, authored)
-    artifact = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    artifact = "qa/results/trace/minimum-coverage-matrix.json"
     matrix_path = tmp_path / artifact
     rows = json.loads(matrix_path.read_text(encoding="utf-8"))
     second = deepcopy(rows[0])
@@ -698,7 +714,7 @@ async def test_case_design_prepare_preserves_mrc_locator_baseline_order(tmp_path
 
 @pytest.mark.asyncio
 async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp_path: Path) -> None:
-    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    relative = "qa/results/explore/exploration.json"
     path = tmp_path / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     advisory = _valid_explore_advisory()
@@ -731,7 +747,7 @@ async def test_case_design_prepare_reads_plan_bound_exploration_for_standalone_c
 
 @pytest.mark.asyncio
 async def test_case_design_prepare_rejects_mismatched_exploration_identity(tmp_path: Path) -> None:
-    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    relative = "qa/results/explore/exploration.json"
     path = tmp_path / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     advisory = _valid_explore_advisory()
@@ -748,15 +764,15 @@ async def test_case_design_prepare_rejects_mismatched_exploration_identity(tmp_p
 
 @pytest.mark.asyncio
 async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: Path) -> None:
-    change_root = tmp_path / "qa/changes/CH-DEMO-001"
-    (change_root / "trace").mkdir(parents=True)
+    change_root = tmp_path / "qa"
+    (change_root / "results" / "trace").mkdir(parents=True)
     (change_root / "cases/menus").mkdir(parents=True)
     (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
     (change_root / "requirement.md").write_text(
         "# Requirement\n\nP95 must be at most 500 ms.\n", encoding="utf-8"
     )
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
-    (change_root / "trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    (change_root / "results/trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
     (change_root / "cases/menus/case.yaml").write_text(
         "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
         encoding="utf-8",
@@ -767,13 +783,13 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
     business = cast(Mapping[str, object], request.instructions[2].json_content)
-    assert business["case_delta_paths"] == ("qa/changes/CH-DEMO-001/cases/menus/case.yaml",)
+    assert business["case_delta_paths"] == ("qa/cases/menus/case.yaml",)
     assert business["review_input_paths"] == (
-        "qa/changes/CH-DEMO-001/.qa.yaml",
-        "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
-        "qa/changes/CH-DEMO-001/proposal.md",
-        "qa/changes/CH-DEMO-001/requirement.md",
-        "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+        "qa/.qa.yaml",
+        "qa/cases/menus/case.yaml",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results/trace/minimum-coverage-matrix.json",
     )
 
 
@@ -784,12 +800,12 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
 ) -> None:
     from assurance_intake.graphs.nodes import publish_case_design, select_case_review
 
-    change = "qa/changes/CH-DEMO-001"
+    change = "qa"
     content = {
         ".qa.yaml": "change_id: CH-DEMO-001\n",
         "requirement.md": "# Owner requirement\n",
         "proposal.md": "# Proposal\n",
-        "trace/minimum-coverage-matrix.json": "[]\n",
+        "results/trace/minimum-coverage-matrix.json": "[]\n",
         "cases/menus/case.yaml": "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
     }
     for relative, text in content.items():
@@ -805,7 +821,15 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
 
     state: dict[str, object] = {
         **CASE_REVIEW_INPUT,
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "preparation_refs": [ref(".qa.yaml"), ref("requirement.md")],
     }
     original_refs = deepcopy(state["preparation_refs"])
@@ -850,14 +874,14 @@ async def test_case_review_prepare_rejects_missing_locked_input(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_case_review_prepare_rejects_intermediate_directory_symlink(tmp_path: Path) -> None:
-    change_root = tmp_path / "qa/changes/CH-DEMO-001"
-    sibling_cases = tmp_path / "qa/changes/CH-SIBLING/cases/menus"
-    (change_root / "trace").mkdir(parents=True)
+    change_root = tmp_path / "qa"
+    sibling_cases = tmp_path / "outside-menus"
+    (change_root / "results" / "trace").mkdir(parents=True)
     (change_root / "cases").mkdir()
     sibling_cases.mkdir(parents=True)
     (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
-    (change_root / "trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    (change_root / "results/trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
     (sibling_cases / "case.yaml").write_text(
         "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
         encoding="utf-8",
@@ -913,13 +937,13 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_case_author_and_reviewer_observe_same_source_snapshot(tmp_path: Path) -> None:
-    change = tmp_path / "qa/changes/CH-DEMO-001"
+    change = tmp_path / "qa"
     (change / "cases/menus").mkdir(parents=True)
     for relative in (
         ".qa.yaml",
         "requirement.md",
         "proposal.md",
-        "trace/minimum-coverage-matrix.json",
+        "results/trace/minimum-coverage-matrix.json",
         "cases/menus/case.yaml",
     ):
         path = change / relative
@@ -1018,7 +1042,7 @@ def _write_review_matrix(workspace: Path, *, missing: list[str]) -> None:
                 "layer": "api",
             }
         )
-    path = workspace / "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    path = workspace / "qa/results/trace/minimum-coverage-matrix.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rows), encoding="utf-8")
 
@@ -1064,11 +1088,7 @@ async def _finalize_files(
         "case_delta_paths": (
             case_delta_paths
             if case_delta_paths is not None
-            else (
-                ["qa/changes/CH-DEMO-001/cases/menus/case.yaml"]
-                if isinstance(handler, CaseDesignFinalizeHandler)
-                else []
-            )
+            else (["qa/cases/menus/case.yaml"] if isinstance(handler, CaseDesignFinalizeHandler) else [])
         ),
         **({"change_id": change_id} if change_id is not None else {}),
         **({"validation_attempt": validation_attempt} if validation_attempt is not None else {}),
@@ -1093,7 +1113,7 @@ async def _finalize_files(
 
 
 def _write_case_delta(workspace: Path, document: object) -> str:
-    relative = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    relative = "qa/cases/menus/case.yaml"
     path = workspace / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
@@ -1107,12 +1127,12 @@ async def _finalize_review_with_written_cases(
     _, write_root = dual_roots(workspace)
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     case_relative = _write_case_delta(workspace, authored)
-    matrix_relative = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
-    review_relative = "qa/changes/CH-DEMO-001/review/case-review.json"
+    matrix_relative = "qa/results/trace/minimum-coverage-matrix.json"
+    review_relative = "qa/results/review/case-review.json"
     review_path = write_root / review_relative
     review_path.parent.mkdir(parents=True, exist_ok=True)
     review_path.write_text(json.dumps(document), encoding="utf-8")
-    summary_relative = "qa/changes/CH-DEMO-001/review/case-review-summary.md"
+    summary_relative = "qa/results/review/case-review-summary.md"
     (write_root / summary_relative).write_text("# Case review\n", encoding="utf-8")
     executed = await _finalize_files(
         CaseReviewFinalizeHandler(),
@@ -1139,12 +1159,12 @@ async def _finalize_review_with_written_cases(
 
 
 def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
-    change_root = workspace / "qa/changes/CH-DEMO-001"
+    change_root = workspace / "qa"
     change_root.mkdir(parents=True, exist_ok=True)
     (change_root / ".qa.yaml").write_text("approval:\n  mode: autonomous\n", encoding="utf-8")
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     relative = _write_case_delta(workspace, document)
-    matrix_relative = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    matrix_relative = "qa/results/trace/minimum-coverage-matrix.json"
     matrix_path = workspace / matrix_relative
     matrix_path.parent.mkdir(parents=True)
     matrix_path.write_text(
@@ -1165,8 +1185,8 @@ def _write_case_design_outputs(workspace: Path, document: object) -> list[str]:
         encoding="utf-8",
     )
     return [
-        "qa/changes/CH-DEMO-001/.qa.yaml",
-        "qa/changes/CH-DEMO-001/proposal.md",
+        "qa/.qa.yaml",
+        "qa/proposal.md",
         matrix_relative,
         relative,
     ]
@@ -1176,7 +1196,7 @@ def _write_fixable_case_review(
     workspace: Path,
     *,
     allowed_key: str,
-    artifact: str = "qa/changes/CH-DEMO-001/cases/menus/case.yaml",
+    artifact: str = "qa/cases/menus/case.yaml",
     case_id: str | None = "TC_MENU_001",
 ) -> None:
     document = cast(dict[str, Any], _case_review_document(missing=[]))
@@ -1210,7 +1230,7 @@ def _write_fixable_case_review(
             "auto_fix_allowed": True,
         }
     )
-    path = workspace / "qa/changes/CH-DEMO-001/review/case-review.json"
+    path = workspace / "qa/results/review/case-review.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document), encoding="utf-8")
 
@@ -1296,7 +1316,7 @@ def _valid_explore_advisory() -> dict[str, Any]:
 @pytest.mark.asyncio
 async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    relative = "qa/results/explore/exploration.json"
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(_valid_explore_advisory()).encode()
@@ -1308,7 +1328,15 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
             "agent_result": result.model_dump(mode="json"),
             "change_id": "CH-DEMO-001",
             "capability_leafs": list(VALID_LEAFS),
-            "artifact_paths": ["qa/changes"],
+            "artifact_paths": [
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/fixtures",
+                "qa/proposal.md",
+                "qa/requirement.md",
+                "qa/results",
+                "qa/tests",
+            ],
         },
         project,
         write_root=write_root,
@@ -1327,7 +1355,7 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    relative = "qa/results/explore/exploration.json"
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -1362,7 +1390,7 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
     tmp_path: Path,
 ) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    relative = "qa/results/explore/exploration.json"
 
     executed = await _finalize_files(
         ExploreFinalizeHandler(),
@@ -1383,7 +1411,7 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
 @pytest.mark.asyncio
 async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/changes/RET-dept-management/requirement.md"
+    relative = "qa/cases/system/dept/case.yaml"
     payload = b"# RET-dept-management\n\nCover department CRUD.\n"
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1393,7 +1421,15 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
         IntakeFinalizeHandler(),
         {"output_files": [relative]},
         project,
-        ["qa/archive", "qa/cases", "qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         write_root=write_root,
     )
     assert executed.status == "succeeded"
@@ -1413,7 +1449,15 @@ async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path
         IntakeFinalizeHandler(),
         {"output_files": [relative]},
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         write_root=write_root,
     )
     assert executed.status == "failed"
@@ -1425,7 +1469,7 @@ async def test_intake_finalize_rejects_file_outside_locked_prefix(tmp_path: Path
 @pytest.mark.asyncio
 async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/changes/CH-DEMO-001/explore/advisory.json"
+    relative = "qa/results/explore/advisory.json"
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = b'{"ok":true}'
@@ -1449,7 +1493,7 @@ async def test_intake_finalize_rejects_stale_canonical_file_when_candidate_is_mi
     tmp_path: Path,
 ) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/changes/CH-DEMO-001/requirement.md"
+    relative = "qa/requirement.md"
     stale = project / relative
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("stale canonical content\n", encoding="utf-8")
@@ -1480,7 +1524,15 @@ async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> N
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1507,7 +1559,15 @@ async def test_case_design_validation_repair_reads_unchanged_outputs_from_baseli
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1517,10 +1577,10 @@ async def test_case_design_validation_repair_reads_unchanged_outputs_from_baseli
     assert executed.status == "succeeded"
     assert executed.output["validation_status"] == "pass"
     assert [artifact["path"] for artifact in executed.output["artifacts"]] == sorted(outputs)
-    assert (write_root / "qa/changes/CH-DEMO-001/cases/menus/case.yaml").is_file()
-    assert not (write_root / "qa/changes/CH-DEMO-001/.qa.yaml").exists()
-    assert not (write_root / "qa/changes/CH-DEMO-001/proposal.md").exists()
-    assert not (write_root / "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json").exists()
+    assert (write_root / "qa/cases/menus/case.yaml").is_file()
+    assert not (write_root / "qa/.qa.yaml").exists()
+    assert not (write_root / "qa/proposal.md").exists()
+    assert not (write_root / "qa/results/trace/minimum-coverage-matrix.json").exists()
 
 
 @pytest.mark.asyncio
@@ -1537,7 +1597,15 @@ async def test_case_design_finalize_accepts_only_the_review_locator_change(tmp_p
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1565,7 +1633,7 @@ async def test_case_design_finalize_accepts_exact_review_authorized_case_additio
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
     _write_fixable_case_review(project, allowed_key="added", case_id="TC_MENU_002")
-    review_path = project / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = project / "qa/results/review/case-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
     review["auto_fix_plan"][0]["edits"] = ["Add TC_MENU_002 under added."]
     review_path.write_text(json.dumps(review), encoding="utf-8")
@@ -1577,7 +1645,15 @@ async def test_case_design_finalize_accepts_exact_review_authorized_case_additio
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1606,7 +1682,7 @@ async def test_case_design_finalize_accepts_exact_review_authorized_case_removal
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
     _write_fixable_case_review(project, allowed_key="added", case_id="TC_MENU_002")
-    review_path = project / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = project / "qa/results/review/case-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
     review["auto_fix_plan"][0]["edits"] = ["Remove TC_MENU_002 from added."]
     review_path.write_text(json.dumps(review), encoding="utf-8")
@@ -1618,7 +1694,15 @@ async def test_case_design_finalize_accepts_exact_review_authorized_case_removal
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1653,7 +1737,15 @@ async def test_case_design_finalize_rejects_unreviewed_case_addition(tmp_path: P
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1681,7 +1773,7 @@ async def test_case_design_finalize_rejects_unreviewed_case_removal(tmp_path: Pa
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
     _write_fixable_case_review(project, allowed_key="added", case_id="TC_MENU_002")
-    review_path = project / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = project / "qa/results/review/case-review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
     review["auto_fix_plan"][0]["edits"] = ["Remove TC_MENU_002 from added."]
     review_path.write_text(json.dumps(review), encoding="utf-8")
@@ -1693,7 +1785,15 @@ async def test_case_design_finalize_rejects_unreviewed_case_removal(tmp_path: Pa
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1721,7 +1821,15 @@ async def test_case_design_finalize_reads_unchanged_review_outputs_from_baseline
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1731,10 +1839,10 @@ async def test_case_design_finalize_reads_unchanged_review_outputs_from_baseline
     assert executed.status == "succeeded"
     assert executed.output["validation_status"] == "pass"
     assert [artifact["path"] for artifact in executed.output["artifacts"]] == sorted(outputs)
-    assert (write_root / "qa/changes/CH-DEMO-001/cases/menus/case.yaml").is_file()
-    assert not (write_root / "qa/changes/CH-DEMO-001/.qa.yaml").exists()
-    assert not (write_root / "qa/changes/CH-DEMO-001/proposal.md").exists()
-    assert not (write_root / "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json").exists()
+    assert (write_root / "qa/cases/menus/case.yaml").is_file()
+    assert not (write_root / "qa/.qa.yaml").exists()
+    assert not (write_root / "qa/proposal.md").exists()
+    assert not (write_root / "qa/results/trace/minimum-coverage-matrix.json").exists()
 
 
 @pytest.mark.asyncio
@@ -1742,12 +1850,12 @@ async def test_case_design_finalize_accepts_only_the_named_proposal_section(tmp_
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    proposal = project / "qa/changes/CH-DEMO-001/proposal.md"
+    proposal = project / "qa/proposal.md"
     proposal.write_text(
         "# Proposal\n\n## Data Needs\n- old need\n\n## Other\n- unchanged\n",
         encoding="utf-8",
     )
-    artifact = "qa/changes/CH-DEMO-001/proposal.md"
+    artifact = "qa/proposal.md"
     _write_fixable_case_review(
         project,
         allowed_key="## Data Needs",
@@ -1766,7 +1874,15 @@ async def test_case_design_finalize_accepts_only_the_named_proposal_section(tmp_
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1784,12 +1900,12 @@ async def test_case_design_finalize_rejects_proposal_change_outside_named_sectio
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    proposal = project / "qa/changes/CH-DEMO-001/proposal.md"
+    proposal = project / "qa/proposal.md"
     proposal.write_text(
         "# Proposal\n\n## Data Needs\n- old need\n\n## Other\n- unchanged\n",
         encoding="utf-8",
     )
-    artifact = "qa/changes/CH-DEMO-001/proposal.md"
+    artifact = "qa/proposal.md"
     _write_fixable_case_review(
         project,
         allowed_key="## Data Needs",
@@ -1808,7 +1924,15 @@ async def test_case_design_finalize_rejects_proposal_change_outside_named_sectio
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1828,12 +1952,12 @@ async def test_case_design_finalize_treats_h1_as_end_of_named_proposal_section(
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    proposal = project / "qa/changes/CH-DEMO-001/proposal.md"
+    proposal = project / "qa/proposal.md"
     proposal.write_text(
         "# Proposal\n\n## Data Needs\n- old need\n\n# Appendix\n- unchanged\n",
         encoding="utf-8",
     )
-    artifact = "qa/changes/CH-DEMO-001/proposal.md"
+    artifact = "qa/proposal.md"
     _write_fixable_case_review(
         project,
         allowed_key="## Data Needs",
@@ -1852,7 +1976,15 @@ async def test_case_design_finalize_treats_h1_as_end_of_named_proposal_section(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1870,12 +2002,12 @@ async def test_case_design_finalize_ignores_heading_inside_proposal_fence(tmp_pa
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    proposal = project / "qa/changes/CH-DEMO-001/proposal.md"
+    proposal = project / "qa/proposal.md"
     proposal.write_text(
         "# Proposal\n\n```md\n## Data Needs\nexample\n```\n\n## Data Needs\n- old need\n",
         encoding="utf-8",
     )
-    artifact = "qa/changes/CH-DEMO-001/proposal.md"
+    artifact = "qa/proposal.md"
     _write_fixable_case_review(
         project,
         allowed_key="## Data Needs",
@@ -1894,7 +2026,15 @@ async def test_case_design_finalize_ignores_heading_inside_proposal_fence(tmp_pa
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1909,7 +2049,7 @@ async def test_case_design_finalize_accepts_only_named_mrc_rows(tmp_path: Path) 
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    artifact = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    artifact = "qa/results/trace/minimum-coverage-matrix.json"
     matrix_path = project / artifact
     rows = json.loads(matrix_path.read_text(encoding="utf-8"))
     rows[0].update({"covered_by_cases": [], "status": "skipped_by_scope", "skip_reason": "not mapped"})
@@ -1930,7 +2070,15 @@ async def test_case_design_finalize_accepts_only_named_mrc_rows(tmp_path: Path) 
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1946,7 +2094,7 @@ async def test_case_design_finalize_rejects_mrc_change_outside_named_rows(tmp_pa
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    artifact = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    artifact = "qa/results/trace/minimum-coverage-matrix.json"
     matrix_path = project / artifact
     rows = json.loads(matrix_path.read_text(encoding="utf-8"))
     rows[0].update({"covered_by_cases": [], "status": "skipped_by_scope", "skip_reason": "not mapped"})
@@ -1971,7 +2119,15 @@ async def test_case_design_finalize_rejects_mrc_change_outside_named_rows(tmp_pa
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -1995,7 +2151,7 @@ async def test_case_design_finalize_rejects_review_receipt_outside_frozen_output
     repair = await _prepared_review_repair(project)
     authored["added"][0]["title"] = "create menu with validated response"
     _write_case_delta(write_root, authored)
-    extra = "qa/changes/CH-DEMO-001/repair-notes.txt"
+    extra = "qa/results/repair-notes.txt"
     extra_path = write_root / extra
     extra_path.parent.mkdir(parents=True, exist_ok=True)
     extra_path.write_text("unauthorized expansion\n", encoding="utf-8")
@@ -2004,7 +2160,15 @@ async def test_case_design_finalize_rejects_review_receipt_outside_frozen_output
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": sorted([*outputs, extra])}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2028,13 +2192,21 @@ async def test_case_design_finalize_rejects_non_regular_staged_review_output(
     repair = await _prepared_review_repair(project)
     authored["added"][0]["title"] = "create menu with validated response"
     _write_case_delta(write_root, authored)
-    (write_root / "qa/changes/CH-DEMO-001/proposal.md").mkdir(parents=True)
+    (write_root / "qa/proposal.md").mkdir(parents=True)
 
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2062,7 +2234,15 @@ async def test_case_design_finalize_accepts_exact_dotted_trace_leaf_repair(tmp_p
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2084,13 +2264,21 @@ async def test_case_design_finalize_rejects_review_repair_that_rewrites_non_targ
     repair = await _prepared_review_repair(project)
     authored["added"][0]["title"] = "create menu with validated response"
     _write_case_delta(write_root, authored)
-    (write_root / "qa/changes/CH-DEMO-001/proposal.md").write_text("# Replanned proposal\n", encoding="utf-8")
+    (write_root / "qa/proposal.md").write_text("# Replanned proposal\n", encoding="utf-8")
 
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2120,7 +2308,15 @@ async def test_case_design_finalize_rejects_review_repair_outside_allowed_case_f
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2140,7 +2336,7 @@ async def test_case_design_finalize_rejects_invalid_first_review_repair_without_
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    case_relative = "qa/changes/CH-DEMO-001/cases/menus/case.yaml"
+    case_relative = "qa/cases/menus/case.yaml"
     baseline = (project / case_relative).read_bytes()
     _write_fixable_case_review(project, allowed_key="title")
     repair = await _prepared_review_repair(project)
@@ -2152,7 +2348,15 @@ async def test_case_design_finalize_rejects_invalid_first_review_repair_without_
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2187,7 +2391,15 @@ async def test_case_design_finalize_rejects_review_repair_that_adds_case_top_lev
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2215,7 +2427,15 @@ async def test_case_design_finalize_returns_one_bounded_repair_for_first_invalid
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2238,14 +2458,22 @@ async def test_case_design_finalize_rejects_unlocked_module_or_sibling_case(tmp_
     outputs = _write_case_design_outputs(write_root, authored)
 
     for locked in (
-        ["qa/changes/CH-DEMO-001/cases/roles/case.yaml"],
-        ["qa/changes/CH-SIBLING/cases/menus/case.yaml"],
+        ["qa/cases/roles/case.yaml"],
+        ["qa/cases/menus/other/case.yaml"],
     ):
         executed = await _finalize_files(
             CaseDesignFinalizeHandler(),
             cast(JSONValue, {"output_files": outputs}),
             project,
-            ["qa/changes"],
+            [
+                "qa/.qa.yaml",
+                "qa/cases",
+                "qa/fixtures",
+                "qa/proposal.md",
+                "qa/requirement.md",
+                "qa/results",
+                "qa/tests",
+            ],
             change_id="CH-DEMO-001",
             selected_test_families=["api"],
             write_root=write_root,
@@ -2264,14 +2492,22 @@ async def test_case_design_finalize_requires_minimum_coverage_matrix(tmp_path: P
     )
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
-    matrix = "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"
+    matrix = "qa/results/trace/minimum-coverage-matrix.json"
     outputs.remove(matrix)
 
     executed = await _finalize_files(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2295,7 +2531,15 @@ async def test_case_design_finalize_rejects_missing_selected_family(tmp_path: Pa
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api", "fuzz"],
         write_root=write_root,
@@ -2318,7 +2562,15 @@ async def test_case_design_finalize_rejects_legacy_full_delta_result(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, authored),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2338,9 +2590,9 @@ async def test_case_design_finalize_requires_every_locked_case_yaml(
     project, write_root = dual_roots(tmp_path)
     outputs = _write_case_design_outputs(project, authored)
     catalog = [
-        "qa/changes/CH-DEMO-001/.qa.yaml",
-        "qa/changes/CH-DEMO-001/proposal.md",
-        "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+        "qa/.qa.yaml",
+        "qa/proposal.md",
+        "qa/results/trace/minimum-coverage-matrix.json",
     ]
     assert set(catalog) == set(outputs) - {outputs[-1]}
 
@@ -2348,7 +2600,15 @@ async def test_case_design_finalize_requires_every_locked_case_yaml(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": catalog}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,
@@ -2373,7 +2633,15 @@ async def test_case_design_finalize_rejects_invalid_written_case_yaml(tmp_path: 
         CaseDesignFinalizeHandler(),
         cast(JSONValue, {"output_files": outputs}),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api", "performance"],
         write_root=write_root,
@@ -2402,14 +2670,14 @@ async def test_case_review_finalize_accepts_typed_review(tmp_path: Path) -> None
 async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     _write_review_matrix(project, missing=[])
-    change_root = project / "qa/changes/CH-DEMO-001"
+    change_root = project / "qa"
     requirement = change_root / "requirement.md"
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
     review_document = _case_review_document(missing=[])
-    review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = write_root / "qa/results/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
     review_path.write_text(json.dumps(review_document), encoding="utf-8")
     (review_path.parent / "case-review-summary.md").write_text("# Case review\n", encoding="utf-8")
@@ -2419,9 +2687,9 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
             "digest": hashlib.sha256(requirement.read_bytes()).hexdigest(),
         },
         {
-            "path": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+            "path": "qa/results/trace/minimum-coverage-matrix.json",
             "digest": hashlib.sha256(
-                (change_root / "trace/minimum-coverage-matrix.json").read_bytes()
+                (change_root / "results/trace/minimum-coverage-matrix.json").read_bytes()
             ).hexdigest(),
         },
     ]
@@ -2436,7 +2704,15 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         case_delta_paths=[case_path.relative_to(project).as_posix()],
         preparation_refs=preparation_refs,
@@ -2448,7 +2724,7 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
     output = cast(dict[str, object], executed.output)
     reviewed = cast(dict[str, object], output["reviewed_case"])
     assert reviewed["case_refs"] == case_refs
-    manifest = write_root / "qa/changes/CH-DEMO-001/cases/reviewed-case.json"
+    manifest = write_root / "qa/cases/reviewed-case.json"
     assert json.loads(manifest.read_bytes()) == reviewed
 
 
@@ -2458,14 +2734,14 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
 ) -> None:
     project, write_root = dual_roots(tmp_path)
     _write_review_matrix(project, missing=[])
-    change_root = project / "qa/changes/CH-DEMO-001"
+    change_root = project / "qa"
     requirement = change_root / "requirement.md"
     requirement.write_text("# Requirement\n", encoding="utf-8")
     case_path = change_root / "cases/menus/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_bytes((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
     review_document = _case_review_document(missing=[])
-    review_path = write_root / "qa/changes/CH-DEMO-001/review/case-review.json"
+    review_path = write_root / "qa/results/review/case-review.json"
     review_path.parent.mkdir(parents=True, exist_ok=True)
     review_path.write_text(json.dumps(review_document), encoding="utf-8")
     (review_path.parent / "case-review-summary.md").write_text("# Case review\n", encoding="utf-8")
@@ -2475,9 +2751,9 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
             "digest": hashlib.sha256(requirement.read_bytes()).hexdigest(),
         },
         {
-            "path": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json",
+            "path": "qa/results/trace/minimum-coverage-matrix.json",
             "digest": hashlib.sha256(
-                (change_root / "trace/minimum-coverage-matrix.json").read_bytes()
+                (change_root / "results/trace/minimum-coverage-matrix.json").read_bytes()
             ).hexdigest(),
         },
     ]
@@ -2492,7 +2768,15 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
@@ -2502,13 +2786,21 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         write_root=write_root,
     )
     assert first.status == "succeeded", first.failure
-    first_history_path = write_root / "qa/changes/CH-DEMO-001/cases/reviews/epochs/0/rounds/0.json"
+    first_history_path = write_root / "qa/cases/reviews/epochs/0/rounds/0.json"
     first_history_bytes = first_history_path.read_bytes()
     resumed = await _finalize_files(
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
@@ -2521,7 +2813,15 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         coverage_epoch=1,
         review_round=0,
@@ -2533,14 +2833,14 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
 
     assert first.status == resumed.status == second.status == "succeeded"
     assert first_history_path.read_bytes() == first_history_bytes
-    first_history = write_root / "qa/changes/CH-DEMO-001/cases/reviews/epochs/0/rounds/0.json"
-    second_history = write_root / "qa/changes/CH-DEMO-001/cases/reviews/epochs/1/rounds/0.json"
+    first_history = write_root / "qa/cases/reviews/epochs/0/rounds/0.json"
+    second_history = write_root / "qa/cases/reviews/epochs/1/rounds/0.json"
     assert json.loads(first_history.read_bytes())["coverage_epoch"] == 0
     assert json.loads(second_history.read_bytes())["coverage_epoch"] == 1
-    manifest = json.loads((write_root / "qa/changes/CH-DEMO-001/cases/reviewed-case.json").read_bytes())
+    manifest = json.loads((write_root / "qa/cases/reviewed-case.json").read_bytes())
     assert manifest["coverage_epoch"] == 1
     assert cast(dict[str, object], second.output)["history_ref"] == {
-        "path": "qa/changes/CH-DEMO-001/cases/reviews/epochs/1/rounds/0.json",
+        "path": "qa/cases/reviews/epochs/1/rounds/0.json",
         "digest": hashlib.sha256(second_history.read_bytes()).hexdigest(),
     }
 
@@ -2560,7 +2860,7 @@ async def test_case_review_finalize_rejects_auto_fix_outside_case_design_write_s
                     "severity": "medium",
                     "category": "minimum_coverage",
                     "message": "closed key needs a bounded repair",
-                    "locator": {"artifact": "qa/changes/CH-DEMO-001/trace/minimum-coverage-matrix.json"},
+                    "locator": {"artifact": "qa/results/trace/minimum-coverage-matrix.json"},
                     "auto_fix_allowed": True,
                     "human_review_required": False,
                 }
@@ -2583,7 +2883,7 @@ async def test_case_review_finalize_rejects_auto_fix_outside_case_design_write_s
         tmp_path,
         [],
         change_id="CH-DEMO-001",
-        case_delta_paths=["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+        case_delta_paths=["qa/cases/menus/case.yaml"],
     )
 
     assert executed.status == "failed"
@@ -2602,9 +2902,7 @@ async def test_case_review_finalize_rejects_auto_fix_without_an_exact_field_loca
     _write_case_design_outputs(tmp_path, authored)
     _write_review_matrix(tmp_path, missing=[])
     _write_fixable_case_review(tmp_path, allowed_key="title")
-    document = json.loads(
-        (tmp_path / "qa/changes/CH-DEMO-001/review/case-review.json").read_text(encoding="utf-8")
-    )
+    document = json.loads((tmp_path / "qa/results/review/case-review.json").read_text(encoding="utf-8"))
     document["findings"][0]["locator"]["key"] = None
 
     executed = await _finalize_files(
@@ -2613,7 +2911,7 @@ async def test_case_review_finalize_rejects_auto_fix_without_an_exact_field_loca
         tmp_path,
         [],
         change_id="CH-DEMO-001",
-        case_delta_paths=["qa/changes/CH-DEMO-001/cases/menus/case.yaml"],
+        case_delta_paths=["qa/cases/menus/case.yaml"],
     )
 
     assert executed.status == "failed"
@@ -2627,9 +2925,7 @@ async def test_case_review_finalize_rejects_case_id_as_a_mutable_field_locator(
 ) -> None:
     _write_review_matrix(tmp_path, missing=[])
     _write_fixable_case_review(tmp_path, allowed_key="case_id")
-    document = json.loads(
-        (tmp_path / "qa/changes/CH-DEMO-001/review/case-review.json").read_text(encoding="utf-8")
-    )
+    document = json.loads((tmp_path / "qa/results/review/case-review.json").read_text(encoding="utf-8"))
 
     outcome = await _finalize_review_with_written_cases(tmp_path, cast(JSONValue, document))
 
@@ -2660,7 +2956,7 @@ async def test_case_review_finalize_replaces_projection_drift_from_authenticated
 @pytest.mark.asyncio
 async def test_explore_finalize_rejects_empty_artifact_paths(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/changes/CH-DEMO-001/explore/exploration.json"
+    relative = "qa/results/explore/exploration.json"
     path = project / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_valid_explore_advisory()), encoding="utf-8")
@@ -2687,7 +2983,7 @@ async def test_explore_finalize_rejects_path_escape(tmp_path: Path) -> None:
         ExploreFinalizeHandler(),
         {"output_files": ["../secret.json"]},
         workspace,
-        ["qa/changes/CH-DEMO-001/explore/exploration.json"],
+        ["qa/results/explore/exploration.json"],
         change_id="CH-DEMO-001",
     )
     assert executed.status == "failed"
@@ -2701,7 +2997,7 @@ async def test_explore_finalize_rejects_path_escape(tmp_path: Path) -> None:
 async def test_failed_case_design_validation_leaves_canonical_outputs_unchanged(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
-    canonical = project / "qa/changes/CH-DEMO-001/proposal.md"
+    canonical = project / "qa/proposal.md"
     canonical.parent.mkdir(parents=True, exist_ok=True)
     original = b"# Canonical proposal\n"
     canonical.write_bytes(original)
@@ -2710,7 +3006,15 @@ async def test_failed_case_design_validation_leaves_canonical_outputs_unchanged(
         CaseDesignFinalizeHandler(),
         cast(JSONValue, authored),
         project,
-        ["qa/changes"],
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         change_id="CH-DEMO-001",
         selected_test_families=["api"],
         write_root=write_root,

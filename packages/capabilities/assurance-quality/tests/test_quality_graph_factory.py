@@ -61,7 +61,7 @@ _GRAPHS_ROOT = Path(__file__).resolve().parents[1] / "assurance_quality" / "grap
 def _plan_ref() -> dict[str, str]:
     digest = "2" * 64
     return {
-        "path": f"qa/changes/CH-DEMO-001/plan/{digest}/resolved-assurance-plan.json",
+        "path": f"qa/results/plan/{digest}/resolved-assurance-plan.json",
         "digest": _SHA,
     }
 
@@ -101,8 +101,16 @@ def quality_graph_input(
         "owned_evidence_ids": ["OBS-DEMO-001"],
         "evidence_bundle_digest": f"sha256:{_SHA}",
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
-        "evidence_refs": [{"path": "qa/changes/CH-DEMO-001/execution/result.json", "digest": _SHA}],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        "evidence_refs": [{"path": "qa/results/execution/result.json", "digest": _SHA}],
         "execution_status": "passed",
         "budgets": {"coverage_rounds": 2, "failure_rounds": 1},
         "rounds_budget": 2,
@@ -131,11 +139,11 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
         "plan_digest": "2" * 64,
         "plan_ref": _plan_ref(),
         "preparation_refs": [
+            ref("qa/requirement.md"),
             _plan_ref(),
-            ref("qa/changes/CH-DEMO-001/requirement.md"),
         ],
-        "case_refs": [ref("qa/changes/CH-DEMO-001/cases/items/case.yaml")],
-        "review_ref": ref("qa/changes/CH-DEMO-001/review/case-review.json"),
+        "case_refs": [ref("qa/cases/items/case.yaml")],
+        "review_ref": ref("qa/results/review/case-review.json"),
     }
     generation = {
         "change_id": "CH-DEMO-001",
@@ -143,9 +151,9 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
         "plan_digest": "2" * 64,
         "plan_ref": _plan_ref(),
         "reviewed_case": reviewed,
-        "mapping_ref": ref("qa/changes/CH-DEMO-001/codegen/closed-mapping.json"),
-        "source_refs": [ref("qa/changes/CH-DEMO-001/generated/api/files/tests/a.py")],
-        "plan_refs": [ref("qa/changes/CH-DEMO-001/plans/api-plan.md")],
+        "mapping_ref": ref("qa/results/codegen/closed-mapping.json"),
+        "source_refs": [ref("qa/tests/a.py")],
+        "plan_refs": [ref("qa/results/plans/api-plan.md")],
     }
     payload.update(
         {
@@ -161,7 +169,7 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
                 "batch_id": "20260822T000000Z",
                 "executed_at": "2026-08-22T00:00:00Z",
                 "final_status": "PASS",
-                "evidence_ref": ref("qa/changes/CH-DEMO-001/execution/execute-result.json"),
+                "evidence_ref": ref("qa/results/execution/execute-result.json"),
                 "mapping_ref": generation["mapping_ref"],
                 "source_refs": generation["source_refs"],
                 "receipt": {"receipt_id": "execution", "receipt_digest": _SHA},
@@ -171,6 +179,10 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
             "execution_at": "2026-08-22T00:00:00Z",
             "healing_ref": None,
             "issue_ref": None,
+            "fact_baseline_ref": {
+                "path": "qa/results/facts/fact-baseline.json",
+                "digest": _SHA,
+            },
         }
     )
     return payload
@@ -181,16 +193,17 @@ def _receipt() -> ReceiptRef:
 
 
 def _fact_baseline_output() -> dict[str, object]:
-    baseline = {"path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json", "digest": _SHA}
+    source = assess_graph_input()
+    baseline = {"path": "qa/results/facts/fact-baseline.json", "digest": _SHA}
     return {
         "agent_result": {"source": "unavailable", "change_id": "CH-DEMO-001"},
-        "assessment": _assessment_output(),
+        "reviewed_case": source["reviewed_case"],
         "fact_baseline_ref": baseline,
     }
 
 
 def _assessment_output() -> dict[str, object]:
-    base = "qa/changes/CH-DEMO-001/inspect/epochs/2/batches/20260822T000000Z"
+    base = "qa/results/inspect/epochs/2/batches/20260822T000000Z"
     return {
         "change_id": "CH-DEMO-001",
         "coverage_epoch": 2,
@@ -203,7 +216,7 @@ def _assessment_output() -> dict[str, object]:
             "required_case_ids": ["TC_ITEM_001"],
             "selected_families": ["api"],
             "applicable_goals": ["constraint_coverage"],
-            "applicability_refs": [{"path": "qa/changes/CH-DEMO-001/requirement.md", "digest": _SHA}],
+            "applicability_refs": [{"path": "qa/requirement.md", "digest": _SHA}],
             "risk_tier": "high",
             "policy_digest": _SHA,
         },
@@ -220,7 +233,7 @@ def _assessment_output() -> dict[str, object]:
         "metrics_ref": {"path": f"{base}/metrics.json", "digest": _SHA},
         "sufficiency_ref": {"path": f"{base}/trace-sufficiency.json", "digest": _SHA},
         "execution_ref": {
-            "path": "qa/changes/CH-DEMO-001/execution/execute-result.json",
+            "path": "qa/results/execution/execute-result.json",
             "digest": _SHA,
         },
         "observations_ref": {"path": f"{base}/observations.json", "digest": _SHA},
@@ -320,7 +333,7 @@ def _inspect_output() -> dict[str, object]:
             "analysis_required": False,
         },
         "fact_baseline_ref": {
-            "path": "qa/changes/CH-DEMO-001/facts/fact-baseline.json",
+            "path": "qa/results/facts/fact-baseline.json",
             "digest": _SHA,
         },
         "reason_codes": [],
@@ -331,7 +344,7 @@ def _issue_output(*, classification: str = "test", fix_eligible: bool = True) ->
     return {
         "classification": classification,
         "fix_eligible": fix_eligible,
-        "evidence_refs": [{"path": "qa/changes/CH-DEMO-001/inspect/issue-analysis.json", "digest": _SHA}],
+        "evidence_refs": [{"path": "qa/results/inspect/issue-analysis.json", "digest": _SHA}],
         "rounds_budget": 2,
         "rounds_used": 0,
     }
@@ -367,7 +380,7 @@ def _finalized_issue_analysis_output() -> dict[str, object]:
         },
         "candidate_digest": f"sha256:{_SHA}",
         "issue_analysis_ref": {
-            "path": "qa/changes/CH-DEMO-001/inspect/issue-analysis.json",
+            "path": "qa/results/inspect/issue-analysis.json",
             "digest": _SHA,
         },
     }
@@ -421,7 +434,7 @@ def _report_output() -> dict[str, object]:
         "change_id": "CH-DEMO-001",
         "batch_id": "20260822T000000Z",
         "coverage_state": "satisfied",
-        "report_refs": [{"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _SHA}],
+        "report_refs": [{"path": "qa/results/report/report.md", "digest": _SHA}],
         **_skill_digests(),
     }
 
@@ -471,6 +484,7 @@ def test_quality_factory_exports_five_public_graphs(recording_context) -> None:
         "issue_analyze",
         "issue_reconcile",
         "report",
+        "fact_baseline",
     )
     assert isinstance(bundle, QualityGraphs)
     assert not hasattr(bundle, "nodes")
@@ -489,6 +503,7 @@ def test_target_graphs_contain_no_phase_nodes_or_private_table(recording_context
         bundle.issue_analyze,
         bundle.issue_reconcile,
         bundle.report,
+        bundle.fact_baseline,
     ):
         names.update(_node_names(graph))
     assert names.isdisjoint(_PHASE_NODES)
@@ -523,18 +538,15 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
         input=assess_graph_input(),
         script={
             "quality.materialize-assessment-inputs": [committed(_assessment_output(), receipt)],
-            "quality.fact-baseline": [committed(_fact_baseline_output(), receipt)],
             "quality.inspect": [committed(_inspect_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
         "quality.materialize-assessment-inputs",
-        "quality.fact-baseline",
         "quality.inspect",
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
         _MATERIALIZE_ID,
-        _FACT_BASELINE_ID,
         _INSPECT_ID,
     ]
     published = result.published_update
@@ -554,7 +566,7 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     assert result.terminal is not None
 
 
-async def test_assess_stops_before_fact_baseline_when_materialization_fails() -> None:
+async def test_assess_stops_before_inspect_when_materialization_fails() -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
     bundle = build_quality_graphs(context)
@@ -571,6 +583,26 @@ async def test_assess_stops_before_fact_baseline_when_materialization_fails() ->
         "quality.materialize-assessment-inputs"
     ]
     assert result.terminal is not None
+
+
+async def test_fact_baseline_export_publishes_the_committed_ref() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
+    bundle = build_quality_graphs(context)
+    receipt = _receipt()
+    result = await harness.run(
+        bundle.fact_baseline,
+        input=assess_graph_input(),
+        script={"quality.fact-baseline": [committed(_fact_baseline_output(), receipt)]},
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == ["quality.fact-baseline"]
+    assert [call.contract_id for call in result.semantic_calls] == [_FACT_BASELINE_ID]
+    published = result.published_update
+    assert published is not None
+    assert published["fact_baseline_ref"] == {
+        "path": "qa/results/facts/fact-baseline.json",
+        "digest": _SHA,
+    }
 
 
 @pytest.mark.parametrize(
@@ -615,7 +647,7 @@ async def test_report_rejects_coverage_flag_and_preexisting_report_references() 
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
     bundle = build_quality_graphs(context)
-    report_refs = [{"path": "qa/changes/CH-DEMO-001/report/report.md", "digest": _SHA}]
+    report_refs = [{"path": "qa/results/report/report.md", "digest": _SHA}]
     payload = quality_graph_input(coverage_state="satisfied", report_refs=report_refs)
     with pytest.raises(ValidationError):
         await harness.run(

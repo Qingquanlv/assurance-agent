@@ -74,9 +74,9 @@ def _coverage_brief(*, change_id: str = "CH-COV-002") -> dict[str, object]:
 
 
 def failure_graph_input(**overrides: object) -> dict[str, object]:
-    source = "qa/changes/CH-FIX-001/generated/api/files/tests/api/test_items.py"
+    source = "qa/tests/api/test_items.py"
     plan_ref = {
-        "path": f"qa/changes/CH-FIX-001/plan/{_SHA}/resolved-assurance-plan.json",
+        "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
         "digest": _SHA,
     }
     payload: dict[str, object] = {
@@ -84,7 +84,15 @@ def failure_graph_input(**overrides: object) -> dict[str, object]:
         "plan_digest": _SHA,
         "plan_ref": plan_ref,
         "capability_leafs": ["entities.item.create"],
-        "allowed_artifact_paths": ["qa/changes"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "classification": "test",
         "fix_eligible": True,
         "kind": "failure",
@@ -93,12 +101,20 @@ def failure_graph_input(**overrides: object) -> dict[str, object]:
         "budgets": {"coverage_rounds": 2, "failure_rounds": 1},
         "activation": {"kind": "round", "value": "1"},
         "owner_id": "assurance.healing",
-        "allowed_paths": ["qa/changes"],
+        "allowed_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "allowed_roots": ["qa"],
         "baseline_digest": "b" * 64,
         "candidate_digest": "c" * 64,
         "policy_digest": "d" * 64,
-        "mapping_paths": ["qa/changes/CH-FIX-001/plans/api-codegen-mapping.json"],
+        "mapping_paths": ["qa/results/plans/api-codegen-mapping.json"],
         "execution_evidence_digest": "e" * 64,
         "coverage_epoch": 0,
         "reviewed_case": {
@@ -107,29 +123,29 @@ def failure_graph_input(**overrides: object) -> dict[str, object]:
             "plan_digest": _SHA,
             "plan_ref": plan_ref,
             "preparation_refs": [
-                {"path": "qa/changes/CH-FIX-001/intake/prepare.json", "digest": _SHA},
+                {"path": "qa/results/intake/prepare.json", "digest": _SHA},
                 plan_ref,
             ],
-            "case_refs": [{"path": "qa/changes/CH-FIX-001/cases/api/case.yaml", "digest": _SHA}],
+            "case_refs": [{"path": "qa/cases/api/case.yaml", "digest": _SHA}],
             "review_ref": {
-                "path": "qa/changes/CH-FIX-001/review/case-review.json",
+                "path": "qa/results/review/case-review.json",
                 "digest": _SHA,
             },
         },
         "proposal_ref": {
-            "path": "qa/changes/CH-FIX-001/healing/fix-proposal.json",
+            "path": "qa/results/healing/fix-proposal.json",
             "digest": _SHA,
         },
         "approval_ref": {
-            "path": "qa/changes/CH-FIX-001/healing/approval.json",
+            "path": "qa/results/healing/approval.json",
             "digest": _SHA,
         },
         "execution_ref": {
-            "path": "qa/changes/CH-FIX-001/execution/execute-result.json",
+            "path": "qa/results/execution/execute-result.json",
             "digest": _SHA,
         },
         "mapping_ref": {
-            "path": "qa/changes/CH-FIX-001/generated/mapping.json",
+            "path": "qa/results/generated/mapping.json",
             "digest": _SHA,
         },
         "source_refs": [{"path": source, "digest": _SHA}],
@@ -143,7 +159,15 @@ def coverage_graph_input(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "change_id": "CH-COV-002",
         "capability_leafs": ["auth.session.create"],
-        "allowed_artifact_paths": ["qa/archive"],
+        "allowed_artifact_paths": [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
         "classification": "repair_required",
         "fix_eligible": True,
         "kind": "coverage",
@@ -178,7 +202,7 @@ def test_proposal_publisher_exposes_the_committed_proposal_reference() -> None:
     output = failure_agent_output()
     published = publish_proposal(failure_graph_input(), output, _receipt())
     assert published["proposal_ref"] == {
-        "path": "qa/changes/CH-FIX-001/healing/fix-proposal.json",
+        "path": "qa/results/healing/fix-proposal.json",
         "digest": hashlib.sha256(canonical_json_bytes(cast(JSONValue, output)) + b"\n").hexdigest(),
     }
 
@@ -188,19 +212,19 @@ def application_output() -> dict[str, object]:
         "change_id": "CH-FIX-001",
         "plan_digest": _SHA,
         "plan_ref": {
-            "path": f"qa/changes/CH-FIX-001/plan/{_SHA}/resolved-assurance-plan.json",
+            "path": f"qa/results/plan/{_SHA}/resolved-assurance-plan.json",
             "digest": _SHA,
         },
         "coverage_epoch": 0,
         "repair_round": 1,
         "changed_test_refs": [
             {
-                "path": "qa/changes/CH-FIX-001/generated/api/files/tests/api/test_items.py",
+                "path": "qa/tests/api/test_items.py",
                 "digest": _SHA,
             }
         ],
         "mapping_ref": {
-            "path": "qa/changes/CH-FIX-001/generated/mapping.json",
+            "path": "qa/results/generated/mapping.json",
             "digest": _SHA,
         },
     }

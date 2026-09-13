@@ -4,7 +4,7 @@ plugin_version: 1.0.0
 engine_api: "2.0"
 dependencies:
   - plugin_id: assurance.intake
-    version_specifier: ==0.2.0
+    version_specifier: ==0.3.0
   - plugin_id: runtime.opencode
     version_specifier: ==0.1.0
 files:

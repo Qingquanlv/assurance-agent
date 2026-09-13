@@ -51,7 +51,7 @@ def validation_context() -> ValidationContext:
 
 def _plan_bytes(family: str, payload: dict[str, Any] | None = None) -> dict[str, bytes]:
     document = payload if payload is not None else valid_plan_result(family)
-    path = f"qa/changes/CH-DEMO-001/plans/{family}-plan.json"
+    path = f"qa/results/plans/{family}-plan.json"
     return {path: json.dumps(document, separators=(",", ":"), sort_keys=True).encode("utf-8")}
 
 
@@ -61,7 +61,7 @@ def _validator(family: str, file_bytes: dict[str, bytes]) -> FamilyPlanValidator
         capability_leafs=frozenset(VALID_LEAFS),
         case_ids=frozenset({family_case_id(family)}),
         file_bytes=file_bytes,
-        write_roots=("qa/changes/CH-DEMO-001/plans/",),
+        write_roots=("qa/results/plans/",),
     )
 
 
@@ -138,7 +138,7 @@ def test_family_validator_rejects_path_traversal_and_outside_write_root() -> Non
     validator = FamilyPlanValidator(
         "api",
         capability_leafs=frozenset(VALID_LEAFS),
-        write_roots=("qa/changes/CH-DEMO-001/plans/",),
+        write_roots=("qa/results/plans/",),
     )
     context = validation_context()
     assert validator.validate(candidate_with("../secret.md"), context).accepted is False
@@ -179,7 +179,7 @@ def test_plan_mechanical_dispatches_closed_family_table() -> None:
         capability_leafs=frozenset(VALID_LEAFS),
         case_ids=frozenset({family_case_id("api")}),
         file_bytes=file_bytes,
-        write_roots=("qa/changes/CH-DEMO-001/plans/",),
+        write_roots=("qa/results/plans/",),
     )
     assert validator.validate(candidate_with(*files, *file_bytes), validation_context()) == ValidationResult(
         accepted=True
@@ -195,7 +195,7 @@ def test_plan_mechanical_rejects_family_discriminator_mismatch() -> None:
         capability_leafs=frozenset(VALID_LEAFS),
         case_ids=frozenset({family_case_id("api")}),
         file_bytes=file_bytes,
-        write_roots=("qa/changes/CH-DEMO-001/plans/",),
+        write_roots=("qa/results/plans/",),
     )
     result = validator.validate(candidate_with(*files, *file_bytes), validation_context())
     assert result.accepted is False
@@ -208,7 +208,7 @@ def test_plugin_contributed_plan_validators_allowlist_registered_paths() -> None
     validator = contribution.commit_validators["assurance.generation.validator.api-plan.v1"]
     mechanical = contribution.commit_validators["assurance.generation.validator.plan-mechanical.v1"]
     context = validation_context()
-    allowed = candidate_with("qa/changes/CH-DEMO-001/plans/api-plan.md")
+    allowed = candidate_with("qa/results/plans/api-plan.md")
     assert validator.validate(allowed, context) == ValidationResult(accepted=True)
     assert mechanical.validate(allowed, context) == ValidationResult(accepted=True)
     rejected = validator.validate(candidate_with("src/app.py"), context)

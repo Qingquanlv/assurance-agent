@@ -182,7 +182,7 @@ def archive_result(**overrides: object) -> dict[str, object]:
         "issue_risk": "clear",
         "issue_risk_rationale": "no active issues" if risk in {None, "clear"} else "1 active issue",
         "summary": f"# Archive {CHANGE_ID}\n",
-        "artifact_paths": ["qa/archive/CH-DEMO-001/archive-summary.md"],
+        "artifact_paths": ["qa/results/archive-summary.md"],
         "invocation_id": INVOCATION_ID,
         "archive_digest": ARCHIVE_DIGEST,
     }
@@ -289,7 +289,7 @@ def locked_archive_input(structured_result: JSONValue, **locks: JSONValue) -> JS
         structured_result,
         quality_report=cast(JSONValue, report),
         quality_report_digest=digest,
-        artifact_paths=["qa/archive/CH-DEMO-001/archive-summary.md"],
+        artifact_paths=["qa/results/archive-summary.md"],
     )
     if isinstance(payload, dict):
         payload.update(locks)
@@ -360,7 +360,7 @@ def quality_report_payload(*, issue_risk: str = "clear") -> dict[str, object]:
         "plan": {
             "plan_digest": HEX_A,
             "plan_ref": {
-                "path": f"qa/changes/{CHANGE_ID}/plan/{HEX_A}/resolved-assurance-plan.json",
+                "path": f"qa/results/plan/{HEX_A}/resolved-assurance-plan.json",
                 "digest": HEX_B,
             },
         },

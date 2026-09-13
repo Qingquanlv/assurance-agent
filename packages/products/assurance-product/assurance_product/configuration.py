@@ -41,12 +41,12 @@ _ALLOWED_DECLARED_RESOURCE_IDS = frozenset(
     {_POLICY_RESOURCE_ID, _KNOWLEDGE_RESOURCE_ID, _CATALOG_RESOURCE_ID, _ENVELOPE_RESOURCE_ID}
 )
 _REQUIRED_DEPENDENCIES = (
-    ("assurance.intake", "==0.2.0"),
-    ("assurance.generation", "==0.2.0"),
-    ("assurance.execution", "==0.2.0"),
-    ("assurance.healing", "==0.2.0"),
-    ("assurance.quality", "==0.2.0"),
-    ("assurance.improvement", "==0.2.0"),
+    ("assurance.intake", "==0.3.0"),
+    ("assurance.generation", "==0.3.0"),
+    ("assurance.execution", "==0.3.0"),
+    ("assurance.healing", "==0.3.0"),
+    ("assurance.quality", "==0.3.0"),
+    ("assurance.improvement", "==0.3.0"),
 )
 _AUTHORITY_KEYS = frozenset(
     {

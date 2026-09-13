@@ -46,7 +46,7 @@ class InterruptState(TypedDict, total=False):
 
 def _workspace(tmp_path: Path) -> ChangeWorkspace:
     project = (tmp_path / "project").resolve()
-    (project / "qa" / "changes" / "CH-1").mkdir(parents=True)
+    (project / "qa").mkdir(parents=True)
     return ChangeWorkspace.prepare(project, "CH-1")
 
 

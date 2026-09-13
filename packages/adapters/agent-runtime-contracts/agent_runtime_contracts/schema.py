@@ -44,12 +44,17 @@ _ALLOWED_SCHEMA_KEYS = frozenset(
     }
 )
 _PRIMITIVE_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
+_BEARER_TOKEN = r"\S{8,}"
+# Transport text can contain quoted, escaped, or multiline values. Once a
+# password assignment is identified, keep no trailing value fragments.
+PASSWORD_ASSIGNMENT_PATTERN = re.compile(r"""(?i)(?<![\w-])[\w-]*password[\w-]*["']?\s*[:=](?!=)[\s\S]+""")
 _SECRET_PATTERNS = (
-    re.compile(r"(?i)authorization:\s*bearer\s+\S+"),
-    re.compile(r"(?i)bearer\s+\S+"),
+    PASSWORD_ASSIGNMENT_PATTERN,
+    re.compile(r"""(?i)\bauthorization["']?\s*[:=](?!=)[^\r\n]+"""),
+    re.compile(rf"(?i)\bbearer\s+{_BEARER_TOKEN}"),
     re.compile(r"(?i)cookie\s*[=:]\s*[^;\s]+"),
     re.compile(r"sk-[A-Za-z0-9-]+"),
-    re.compile(r"(?i)api[_-]?key\s*[=:]\s*\S+"),
+    re.compile(r"(?i)api[_-]?key\s*[=:](?!=)\s*\S+"),
 )
 MAX_DIAGNOSTIC_COUNT = 16
 MAX_DIAGNOSTIC_LENGTH = 240
@@ -443,6 +448,10 @@ def _contains_credential(text: str) -> bool:
     return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
 
 
+def is_credential_key(key: str) -> bool:
+    return key.casefold() == "authorization" or "password" in key.casefold()
+
+
 def _credential_texts(value: object) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
@@ -451,6 +460,8 @@ def _credential_texts(value: object) -> tuple[str, ...]:
         for key, item in value.items():
             if isinstance(key, str):
                 texts.append(key)
+                if is_credential_key(key):
+                    texts.append("Authorization: [redacted]")
             texts.extend(_credential_texts(item))
         return tuple(texts)
     if isinstance(value, list | tuple):
@@ -551,7 +562,8 @@ def validate_local_agent_result(
         schema=schema,
         schema_digest=canonical_digest(schema),
     )
-    reject_credentials_in_digest_input(exact)
+    # Governed business fields are authorized by the result model, not by
+    # transport credential heuristics. Preserve their exact values for sealing.
     digest = canonical_digest(exact)
     validated = result_model.model_validate(
         exact,

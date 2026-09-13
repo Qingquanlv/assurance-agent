@@ -1,15 +1,15 @@
 [project]
 name = "assurance-improvement"
-version = "0.2.0"
+version = "0.3.0"
 description = "Assurance improvement capability wheel"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "agent-runtime-contracts",
-    "assurance-intake==0.2.0",
-    "assurance-generation==0.2.0",
-    "assurance-execution==0.2.0",
-    "assurance-healing==0.2.0",
-    "assurance-quality==0.2.0",
+    "assurance-intake==0.3.0",
+    "assurance-generation==0.3.0",
+    "assurance-execution==0.3.0",
+    "assurance-healing==0.3.0",
+    "assurance-quality==0.3.0",
     "graph-engine",
     "langgraph==1.2.11",
     "pydantic>=2.7",

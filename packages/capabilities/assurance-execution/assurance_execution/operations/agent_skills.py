@@ -13,6 +13,7 @@ from pydantic import ValidationError
 import yaml
 
 from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
+from agent_runtime_contracts.qa_paths import qa_join
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -188,7 +189,7 @@ def _agent_workspace(
     try:
         write_root = context.write_root.resolve().relative_to(context.project_root.resolve()).as_posix()
     except ValueError:
-        write_root = "qa/changes/_attempt/.staging/write"
+        write_root = "qa/.staging/write"
     if write_root in {".", ""}:
         write_root = ".staging/write"
     payload = {
@@ -267,15 +268,14 @@ def _authenticate_generation_sources(root: ExecutionPrepareInputV1, workspace: P
 def _reviewed_cases(
     workspace: Path,
     *,
-    change_id: str,
     capability_leafs: tuple[str, ...],
 ) -> CaseYamlAuthoring:
-    root = workspace / "qa" / "changes" / change_id / "cases"
+    root = workspace / "qa" / "cases"
     if not root.is_dir() or root.is_symlink():
-        raise InputError(f"reviewed case directory is missing: qa/changes/{change_id}/cases")
+        raise InputError("reviewed case directory is missing: qa/cases")
     paths = tuple(sorted(root.glob("**/case.yaml"), key=lambda item: item.as_posix()))
     if not paths:
-        raise InputError(f"reviewed case files are missing: qa/changes/{change_id}/cases/**/case.yaml")
+        raise InputError("reviewed case files are missing: qa/cases/**/case.yaml")
     added: list[object] = []
     modified: list[object] = []
     versions: set[str] = set()
@@ -461,7 +461,7 @@ def assemble_execution_input(
     )
     mappings: list[dict[str, object]] = []
     for family in root.selected_test_families:
-        relative = f"qa/changes/{root.change_id}/codegen/{family}-generated-files.json"
+        relative = qa_join(f"codegen/{family}-generated-files.json")
         try:
             document = CodegenAuthoringV1.model_validate(
                 _json_document(_regular_input_file(workspace, relative)),
@@ -474,7 +474,6 @@ def assemble_execution_input(
         mappings.append(document.mapping.model_dump(mode="json"))
     cases = _reviewed_cases(
         workspace,
-        change_id=root.change_id,
         capability_leafs=root.capability_leafs,
     )
     case_ids = tuple(
@@ -559,7 +558,7 @@ def _discard_execution_view(
     project_root: Path,
     write_root: Path,
 ) -> None:
-    relative = execution_view_relative(payload.change_id, payload.batch_id)
+    relative = execution_view_relative(payload.batch_id)
     expected = write_root.joinpath(*PurePosixPath(relative).parts)
     try:
         project_relative = expected.resolve().relative_to(project_root.resolve()).as_posix()
@@ -589,9 +588,7 @@ def _commit_execution_evidence(
 ) -> None:
     output = resolve_canonical_evidence(write_root, evidence.change_id, filename)
     expected = json.dumps(evidence.model_dump(mode="json"), indent=2).encode("utf-8") + b"\n"
-    view = write_root.joinpath(
-        *PurePosixPath(execution_view_relative(payload.change_id, payload.batch_id)).parts
-    )
+    view = write_root.joinpath(*PurePosixPath(execution_view_relative(payload.batch_id)).parts)
     if output.exists():
         if (
             output.is_symlink()

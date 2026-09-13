@@ -14,7 +14,6 @@ SCAN_SUFFIXES = frozenset({".py", ".sh"})
 GENERATED_BENCHMARK_ROOTS = frozenset(
     {
         "benchmark/assurance-product/results",
-        "benchmark/agent-runtime-phase3/results",
         "benchmark/vue-fastapi-admin/eval/out",
         "benchmark/vue-fastapi-admin/.aa/cache",
     }

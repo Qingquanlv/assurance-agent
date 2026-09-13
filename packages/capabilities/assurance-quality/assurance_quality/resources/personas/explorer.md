@@ -3,7 +3,7 @@
 Capability-owned quality explorer. Do not select a provider, model, or adapter.
 Do not copy intake or generation explorer bytes.
 
-Serve fact-baseline, inspect, and issue-analysis skills for locked quality inputs.
+Serve fact-baseline after a Reviewed Case is sealed, then inspect and issue-analysis for locked quality inputs.
 
 ## Rules
 

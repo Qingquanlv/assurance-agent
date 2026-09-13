@@ -61,12 +61,12 @@ def _skill_input() -> dict[str, Any]:
 
 def _prepare_input(project: Path) -> dict[str, Any]:
     change_id = "CH-DEMO-001"
-    target = "tests/api/test_generated.py"
+    target = "qa/tests/api/test_generated.py"
     content = b"def test_tc_a_001__ok():\n    assert True\n"
-    generated = project / "qa" / "changes" / change_id / "generated" / "api" / "files" / target
+    generated = project / "qa" / "tests" / "api" / "test_generated.py"
     generated.parent.mkdir(parents=True, exist_ok=True)
     generated.write_bytes(content)
-    manifest = project / "qa" / "changes" / change_id / "codegen" / "api-generated-files.json"
+    manifest = project / "qa" / "results" / "codegen" / "api-generated-files.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_text(
         json.dumps(
@@ -98,7 +98,7 @@ def _prepare_input(project: Path) -> dict[str, Any]:
         ),
         encoding="utf-8",
     )
-    cases = project / "qa" / "changes" / change_id / "cases" / "items" / "case.yaml"
+    cases = project / "qa" / "cases" / "items" / "case.yaml"
     cases.parent.mkdir(parents=True, exist_ok=True)
     cases.write_text(yaml.safe_dump(reviewed_cases(), sort_keys=False), encoding="utf-8")
     plan, plan_ref = install_plan(
@@ -255,8 +255,8 @@ async def test_execute_prepare_materializes_an_authenticated_attempt_local_view(
     assert isinstance(view_digest, str) and len(view_digest) == 64
     executed_at = datetime.fromisoformat(cast(str, business["executed_at"]).replace("Z", "+00:00"))
     assert executed_at.utcoffset() is not None
-    assert view_root.startswith("qa/changes/CH-DEMO-001/.staging/attempt-1/")
-    assert "/qa/changes/CH-DEMO-001/.staging/execution/" in view_root
+    assert view_root.startswith("qa/.staging/attempt-1/")
+    assert "/qa/.staging/execution/" in view_root
     materialized = tmp_path.joinpath(*view_root.split("/"), "tests/api/test_generated.py")
     assert materialized.read_bytes() == b"def test_tc_a_001__ok():\n    assert True\n"
     assert request.workspace.allowed_outputs == ()
@@ -294,7 +294,7 @@ async def test_prepare_baseline_ignores_dependency_and_runtime_noise(tmp_path: P
     app_logs.mkdir(parents=True)
     (app_logs / "server.log").write_text("runtime log\n", encoding="utf-8")
     (tmp_path / "app" / "runtime.sqlite3").write_bytes(b"runtime database\n")
-    runtime = tmp_path / "qa" / "changes" / "CH-DEMO-001" / ".runtime" / "langgraph"
+    runtime = tmp_path / "qa" / ".runtime" / "langgraph"
     runtime.mkdir(parents=True)
     (runtime / "checkpoints.sqlite3").write_bytes(b"runtime checkpoint\n")
     evaluation = tmp_path / "eval-out"
@@ -324,17 +324,8 @@ async def test_prepare_baseline_binds_closed_source_and_execution_inputs(tmp_pat
         tmp_path / "pyproject.toml",
         tmp_path / "uv.lock",
         tmp_path / "web" / "package.json",
-        tmp_path / "tests" / "config.py",
-        tmp_path
-        / "qa"
-        / "changes"
-        / "CH-DEMO-001"
-        / "generated"
-        / "api"
-        / "files"
-        / "tests"
-        / "api"
-        / "test_generated.py",
+        tmp_path / "qa" / "fixtures" / "config.py",
+        tmp_path / "qa" / "tests" / "api" / "test_generated.py",
     )
     baselines: list[object] = []
     initial = await execute_task(ExecutePrepareHandler(), payload, tmp_path, binding_data=BINDING)
@@ -509,7 +500,7 @@ async def test_execute_finalize_accepts_typed_evidence(tmp_path: Path) -> None:
     outcome = await execute_task(ExecuteFinalizeHandler(), payload, tmp_path)
     assert outcome.status == "succeeded"
     results = as_object(outcome.output)["results"]
-    assert as_object(results[0])["test"] == "tests/api/test_generated.py::test_tc_a_001__ok"
+    assert as_object(results[0])["test"] == "qa/tests/api/test_generated.py::test_tc_a_001__ok"
     assert as_object(outcome.output)["executed_at"] == payload["executed_at"]
     assert not tmp_path.joinpath(*view_root.split("/")).exists()
 

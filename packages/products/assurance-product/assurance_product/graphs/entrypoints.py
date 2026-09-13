@@ -10,7 +10,7 @@ from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.application.status import TerminalEnvelope
 from graph_engine.stategraph.checkpoint_bridge import omit_checkpoint_bridge_fields
 
-from assurance_product.graphs.routes import route_prepare
+from assurance_product.graphs.routes import route_init, route_prepare
 from assurance_product.graphs.state import ProductState
 from assurance_product.models import ProductInputV1, ProductPublicOutput, ProductReceiptRefV1
 from assurance_improvement.contracts.retro import RetroSelectionSnapshot, RetroWindow
@@ -181,6 +181,17 @@ _IMPROVEMENT_TASK_KEYS = (
 )
 
 
+def adapt_init(state: ProductState) -> dict[str, object]:
+    payload = _input_from_state(state)
+    feature_input = {
+        "change_id": payload.change_id,
+        "data_knowledge": payload.data_knowledge.model_dump(mode="json"),
+        "capability_leafs": list(payload.capability_leafs),
+        "allowed_artifact_paths": list(payload.allowed_artifact_paths),
+    }
+    return {**feature_input, "feature_input": feature_input}
+
+
 def adapt_improvement(state: ProductState) -> dict[str, object]:
     payload = _input_from_state(state)
     extras = {key: state.get(key) for key in _IMPROVEMENT_TASK_KEYS if key in state}
@@ -338,15 +349,22 @@ def compile_thin_root(
     return context.compile_root(builder)
 
 
+def build_init_root(context: GraphBuildContext, child: CompiledStateGraph) -> CompiledStateGraph:
+    return compile_thin_root(context, child, entrypoint="init", adapt=adapt_init)
+
+
 def build_intake_root(
     context: GraphBuildContext,
     prepare: CompiledStateGraph,
+    init: CompiledStateGraph,
     case: CompiledStateGraph,
 ) -> CompiledStateGraph:
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     builder.add_node("validate", validate_public_input("intake"))
     builder.add_node("adapt", cast(Any, adapt_prepare))
     builder.add_node("prepare", prepare)
+    builder.add_node("adapt-init", cast(Any, adapt_init))
+    builder.add_node("init", init)
     builder.add_node("adapt-case", cast(Any, adapt_case))
     builder.add_node("case", case)
     builder.add_node("publish", publish_public_output)
@@ -356,7 +374,13 @@ def build_intake_root(
     builder.add_conditional_edges(
         "prepare",
         cast(Any, route_prepare),
-        {"prepared": "adapt-case", "failed": "publish"},
+        {"prepared": "adapt-init", "failed": "publish"},
+    )
+    builder.add_edge("adapt-init", "init")
+    builder.add_conditional_edges(
+        "init",
+        cast(Any, route_init),
+        {"initialized": "adapt-case", "failed": "publish"},
     )
     builder.add_edge("adapt-case", "case")
     builder.add_edge("case", "publish")
@@ -441,6 +465,7 @@ def build_improvement_rollback_root(
 __all__ = [
     "adapt_feature_status",
     "adapt_improvement",
+    "adapt_init",
     "adapt_retro",
     "adapt_case",
     "adapt_load_plan",
@@ -448,6 +473,7 @@ __all__ = [
     "adapt_quality",
     "build_archive_root",
     "build_case_root",
+    "build_init_root",
     "build_improvement_apply_root",
     "build_improvement_evaluate_root",
     "build_improvement_export_root",
