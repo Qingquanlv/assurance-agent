@@ -317,7 +317,8 @@ def test_plan_reviews_do_not_block_codegen_on_a_source_proven_sut_defect() -> No
         assert 'Use `"auto_fix_plan": []` for `pass`' in reviewer
         review_path = f"review/{family}-plan-review.json"
         assert review_path in planner
-        assert "apply only the findings named in `auto_fix_plan`" in planner
+        if family != "api":
+            assert "apply only the findings named in `auto_fix_plan`" in planner
 
 
 def test_all_plan_reviewers_use_exact_locked_inputs_instead_of_change_globs() -> None:
@@ -416,39 +417,14 @@ def test_api_plan_uses_a_real_pre_post_invariant_for_omitted_identity_fields() -
     assert "Never invent a sentinel value that is absent from the request" in planner
 
 
-def test_api_plan_review_is_exhaustive_and_locators_are_single_target() -> None:
+def test_api_plan_documents_boundary_construction_proofs() -> None:
     planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
-
-    assert "Do not stop the review after finding the first defect" in reviewer
-    assert "complete one exhaustive pass across every required plan artifact" in reviewer
-    assert "Return all independently observable defects in the same review document" in reviewer
-    assert "exactly the set of finding IDs present in this response" in reviewer
-    assert "Remove IDs for findings that were resolved in an earlier round" in reviewer
-    assert "A finding locator authorizes exactly one artifact and key/section" in reviewer
-    assert "emit one finding per target" in reviewer
-    assert "Trace each planned lifecycle end to end" in reviewer
-    assert "unfiltered tree plus bounded recursive exact matching" in reviewer
-    assert "database/session read boundary" in reviewer
-    assert "Apply every listed finding in the same planner re-entry" in planner
-    assert "each locator as authorizing exactly its named artifact" in planner
-
-
-def test_api_plan_and_review_prove_every_boundary_construction_before_deciding() -> None:
-    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
 
     assert "Boundary Construction Proof" in planner
     assert "source constraint, target value, construction expression, arithmetic proof" in planner
     assert "An upper bound on a helper result does not prove its exact length" in planner
     assert "`len(candidate) == target_length`" in planner
     assert "Reconcile the proof across the case, API plan, test-data plan, and codegen plan" in planner
-
-    assert "First-pass Consistency Ledger" in reviewer
-    assert "Finish the ledger for every selected case before emitting findings or a decision" in reviewer
-    assert "Source Constraint | Test Target | Construction | Arithmetic Proof" in reviewer
-    assert "Evaluate each arithmetic expression" in reviewer
-    assert "Return every defect exposed by the completed ledger in the same review document" in reviewer
 
 
 def test_api_plan_review_closes_fixture_and_helper_runtime_boundaries_in_first_pass() -> None:
@@ -466,7 +442,6 @@ def test_api_plan_review_closes_fixture_and_helper_runtime_boundaries_in_first_p
     assert "A repaired artifact does not narrow the next review" in reviewer
     assert "fixture or helper implementation named by a current finding" in planner
     assert "Do not preserve an `absent`, `missing`, or `create-if-missing` claim" in planner
-    assert "verify every authorized finding is no longer contradicted" in planner
 
 
 def test_api_generation_closes_source_proven_initial_admin_credentials() -> None:

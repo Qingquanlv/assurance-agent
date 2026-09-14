@@ -24,6 +24,9 @@ from assurance_generation.operations.planning import (
     failed_output,
     evidence_ref,
     leafs_of,
+    load_family_cases,
+    planning_facts_for,
+    review_input_images,
     plan_review_outputs,
     plan_review_input_paths,
     prepare_plan_outcome,
@@ -32,6 +35,7 @@ from assurance_generation.operations.planning import (
     validate_plan_input,
     validate_reviewed_plan,
 )
+from assurance_generation.operations.review_audit import api_review_requirements, validate_api_review_audit
 
 _REVIEW_SKILL_FILES: dict[Family, str] = {
     "api": "skills/aa-api-plan-reviewer/SKILL.md",
@@ -99,6 +103,48 @@ class PlanReviewFinalizeHandler:
             expected = f"{family}-plan"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
+            if family == "api":
+                if document.review_audit is None:
+                    raise OutputError("review_audit is required for API plan review in every round")
+                paths = plan_review_input_paths(
+                    context.project_root, change_id=document.change_id, family=family
+                )
+                images = review_input_images(context.project_root, paths)
+                facts = planning_facts_for(
+                    context.project_root,
+                    change_id=document.change_id,
+                    family=family,
+                    capability_leafs=payload.capability_leafs,
+                )
+                cases = load_family_cases(
+                    context.project_root,
+                    change_id=document.change_id,
+                    family=family,
+                    capability_leafs=payload.capability_leafs,
+                    case_paths=tuple(ref.path for ref in payload.reviewed_case.case_refs)
+                    if payload.reviewed_case is not None
+                    else None,
+                )
+                try:
+                    validate_api_review_audit(
+                        document,
+                        requirements=api_review_requirements(
+                            case_ids=tuple(case.case_id for case in (*cases.added, *cases.modified)),
+                            facts=facts,
+                            images=images,
+                        ),
+                        facts=facts,
+                        images=images,
+                    )
+                    raw_path = "qa/results/review/api-plan-review.json"
+                    raw = PlanReviewAuthoring.model_validate_json(
+                        review_input_images(context.write_root, (raw_path,))[raw_path],
+                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    )
+                    if raw != document:
+                        raise ValueError("review artifact must match the validated review result")
+                except ValueError as error:
+                    raise OutputError(str(error)) from error
             extra: dict[str, object] = {
                 "public_outcome": normalize_public_review_outcome(
                     document.decision,

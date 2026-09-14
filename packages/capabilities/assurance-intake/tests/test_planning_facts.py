@@ -125,3 +125,30 @@ def test_runtime_targets_observe_the_same_qa_tests_ancestor_fixtures(tmp_path: P
     runtime_paths = {file["path"] for file in runtime["files"] if file["path"].endswith("conftest.py")}
     assert durable_paths == runtime_paths
     assert "qa/tests/api/dept/conftest.py" in durable_paths
+
+
+def test_helper_kind_and_actual_async_shape_are_distinct_facts(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        ".aa/data-knowledge.yaml",
+        "capabilities:\n  domain_factories:\n    dept:\n"
+        "      rows:\n        kind: helper\n        symbol: tests.testdata.domain.dept.rows\n"
+        "      make:\n        kind: async_factory\n        symbol: tests.testdata.domain.dept.make\n",
+    )
+    _write(
+        tmp_path,
+        "qa/tests/testdata/domain/dept.py",
+        "async def rows():\n    return []\n\n"
+        "async def make():\n    raise NotImplementedError('fill in during codegen')\n",
+    )
+    facts = _facts(
+        tmp_path, "capabilities.domain_factories.dept.rows", "capabilities.domain_factories.dept.make"
+    )
+    declared = {item["name"]: item for item in facts["declared_symbols"]}
+    assert declared["rows"]["kind"] == "helper"
+    assert declared["make"]["kind"] == "async_factory"
+    source = next(file for file in facts["files"] if file["path"].endswith("/dept.py"))
+    symbols = {item["name"]: item for item in source["symbols"]}
+    assert symbols["rows"]["is_async"] is True
+    assert symbols["rows"]["is_stub"] is False
+    assert symbols["make"]["is_stub"] is True

@@ -38,23 +38,44 @@ invocation against the test-runner configuration and check that the combined
 assertion logic, including all alternative success paths, preserves the frozen
 case oracle, reporting all source-supported defects in the current round.
 
-## First-pass Consistency Ledger
+## Verifiable review coverage
 
-Before the deeper runtime inventory, build a working ledger with one row for
-every selected case and these columns:
+The locked instruction includes `review_requirements`: exact selected Case IDs,
+input refs/digests and helper observations prepared by Python. Return `review_audit`
+in both the review JSON artifact and your final JSON result, in every round and for
+every decision (including `needs_fix`). Copy its `input_refs` and
+`planning_facts_digest` from the requirements, never invent hashes.
 
-`Case ID | Method/Path | Auth | Setup/Cleanup | Source Constraint | Test Target | Construction | Arithmetic Proof | Expected Response | Plan References`
+For each selected Case ID, emit exactly one `cases` row with all six `checks`:
+`request`, `auth`, `setup`, `assertion`, `cleanup`, `helpers`. Each result is
+`pass`, `finding` or `not_applicable`; request and assertion are always applicable.
+Include `evidence_paths`, `finding_ids` and a concise `rationale` explaining the
+checks, especially any not-applicable result. Evidence paths must be locked inputs
+or observed source paths from `planning_facts`. A finding result links to IDs in
+this review. Complete every row before deciding, even when an early row fails.
 
-Finish the ledger for every selected case before emitting findings or a
-decision. Populate it from all required plan artifacts and the approved case;
-do not stop after the first mismatch. Evaluate each arithmetic expression and
-derived value rather than accepting its narrative label. In particular, an
-upper bound on a helper result is not an exact base length, and a boundary
-construction is consistent only when its expression proves the declared test
-target. Compare the ledger row across the API plan, test-data plan, codegen
-plan, mapping, and summary. Return every defect exposed by the completed ledger
-in the same review document, then continue with the runtime inventory below so
-that the first review also includes source and execution-boundary defects.
+For every helper in `review_requirements.helpers`, emit exactly one `helpers` row.
+Copy `capability`, `symbol`, `declared_kind`, `target_file`, `observed_signature`
+and `observed_async` exactly. `null` means unobserved, not absent. The L1 kind and
+the actual Python definition are separate facts: `helper` alone does not imply
+sync, and `async_factory` must not be invented for a helper. Inspect the source
+and specify the intended `invocation` (`sync`, `async`, or `unknown`).
+
+Classify `implementation` as `existing`, `planned`, or `unresolved`. An existing
+implementation needs its observed source in `evidence_paths` and must not be a
+stub. A planned creation or amendment needs `plan_location` (`artifact`, exact
+`section` heading) naming its target in Target Files, Codegen Scope, Output File
+Candidates or Factory Mapping; an import alone is not a generated-target contract.
+An unresolved helper links a finding and prevents `pass`. Always cite
+`.aa/data-knowledge.yaml` for the declaration; include `finding_ids` and a concise
+`rationale` for lifecycle, fixture and environment handoff. Module references can
+include transitive helpers, such as a role adapter importing a domain factory;
+check their generated targets and provisioning as part of the same review.
+
+Evaluate boundary expressions rather than accepting narrative labels. An upper
+bound is not an exact length. Compare constructions, expected responses and
+runtime assertions across every plan table and summary. The audit makes omissions
+and source contradictions checkable; it does not replace semantic source review.
 
 Before the first decision in every round, close this runtime inventory for the
 whole package, not only for the section most recently edited:
@@ -91,9 +112,10 @@ Check original source for behavior, auth semantics and oracle claims. Keep owner
 requirements and frozen assertion intent distinct from observed implementation;
 a source defect must not weaken the expected test behavior.
 
-For each defect, inspect its references across the complete package and emit a
-separate locator for every affected artifact/section in this review. Include every
-bounded finding in `auto_fix_plan`. Independently verify source-backed claims;
+For each defect, inspect its references across the complete package. Give the
+finding a precise locator and describe all related occurrences that must change
+within the authorized plan package. Include every bounded finding in `auto_fix_plan`.
+Independently verify source-backed claims;
 the facts digest binds observations, not semantic truth. Re-review repaired output
 before passing; the desired repair count never changes the acceptance criteria.
 
@@ -150,11 +172,11 @@ does not permit the reviewer to edit plan files. Each automatic finding must
 point to an exact plan artifact and bounded key/section that the planner can
 revise from observed source.
 
-A finding locator authorizes exactly one artifact and key/section. When one
-conceptual defect requires edits in multiple artifacts or sections, emit one
-finding per target, give each finding its own locator, and include every finding
-ID in `auto_fix_plan`. Never request an edit to an artifact that is not named by
-the matching finding's locator.
+A finding locator anchors the observed defect. Planner re-entry may synchronize
+that same finding's related occurrences throughout its locked plan-package write
+set, including removal of stale repair notes. Do not split one conceptual defect
+into a new finding solely for each occurrence. This permission does not extend to
+unrelated decisions, frozen case oracles, product code, tests or knowledge files.
 
 Do not write plan Markdown, tests, or knowledge files.
 
