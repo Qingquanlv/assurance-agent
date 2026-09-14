@@ -22,6 +22,16 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
 )
 
 
+@pytest.mark.asyncio
+async def test_api_review_cannot_finish_without_check_coverage(tmp_path: Path) -> None:
+    outcome = await execute_task(
+        review_finalize_handler("api"), fake_agent_result(review_result("api")), tmp_path
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert "review_audit is required" in outcome.failure.message
+
+
 @pytest.mark.parametrize(
     "skill_id",
     (
@@ -68,9 +78,14 @@ async def test_plan_review_finalize_rejects_prefix_leaf(family: str, tmp_path: P
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: Path) -> None:
+    review = review_result(family)
+    if family == "api":
+        from review_audit_fixtures import audited_review  # pyright: ignore[reportMissingImports]
+
+        review, _, _ = await audited_review(tmp_path)
     executed = await execute_task(
         review_finalize_handler(family),
-        fake_agent_result(review_result(family)),
+        fake_agent_result(review),
         tmp_path,
     )
     assert executed.status == "succeeded"
@@ -112,23 +127,11 @@ async def test_plan_review_requires_complete_unique_repair_set(fix_ids: list[str
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path) -> None:
+    from review_audit_fixtures import audited_review  # pyright: ignore[reportMissingImports]
+
     family = "api"
-    cases_root = tmp_path / "qa/cases/items"
-    cases_root.mkdir(parents=True)
-    (cases_root / "case.yaml").write_text(
-        "schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "qa").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "qa/proposal.md").write_text("# Proposal\n", encoding="utf-8")
-    for relative in family_plan_files(family):
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("locked plan input\n", encoding="utf-8")
-    review = review_result(family)
+    review, _, _ = await audited_review(tmp_path)
     latest = tmp_path / "qa/results/review/api-plan-review.json"
-    latest.parent.mkdir(parents=True)
-    latest.write_text(json.dumps(review), encoding="utf-8")
     envelope = fake_agent_result(review)
     stage = tmp_path / ".stage"
     staged_review = stage / latest.relative_to(tmp_path)
@@ -208,17 +211,15 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
         "auth.session.create",
         "entities.item.create",
     )
-    assert locked_inputs.json_content == {
-        "review_input_paths": tuple(
-            sorted(
-                (
-                    *family_plan_files(family),
-                    "qa/cases/items/case.yaml",
-                    "qa/proposal.md",
-                )
+    assert cast(dict, locked_inputs.json_content)["review_input_paths"] == tuple(
+        sorted(
+            (
+                *family_plan_files(family),
+                "qa/cases/items/case.yaml",
+                "qa/proposal.md",
             )
         )
-    }
+    )
     schema = request.result_contract.schema_document
     assert schema is not None
     thawed_schema = cast(dict[str, object], schema)

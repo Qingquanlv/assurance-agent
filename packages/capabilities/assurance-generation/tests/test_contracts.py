@@ -52,7 +52,7 @@ _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.generation.schema.plan-review.v1": (
         "1",
-        "bcb4a32846cfc04bc6c5f52347e05f06b36a96e1babd3c621711bc6fb0054918",
+        "9d43a8de92583e756d497ac67458406ea781c4dc3627d929208ec846160225ce",
     ),
     "assurance.generation.workflow.generate.input.v1": (
         "1",
