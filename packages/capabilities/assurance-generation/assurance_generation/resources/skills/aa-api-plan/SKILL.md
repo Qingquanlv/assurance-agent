@@ -43,6 +43,26 @@ keys, and distinguish an existing helper amendment from create-if-missing. On re
 check the whole package for consistency while editing only authorized locators;
 if another required edit is outside them, report the scope gap without broadening it.
 
+## Boundary Construction Proof
+
+Before authoring or repairing the plan package, inventory every selected case
+whose input, output, count, ordering, or payload has a source-proven numeric or
+length boundary. For each boundary, carry one proof with these fields through
+the relevant plan tables and notes: source constraint, target value,
+construction expression, arithmetic proof, runtime assertion, and expected
+response. Reconcile the proof across the case, API plan, test-data plan, and
+codegen plan before returning.
+
+An upper bound on a helper result does not prove its exact length. Normalize a
+variable-length helper result to the required length instead of adding a suffix
+to an assumed base length. For example, when a non-empty unique base is at most
+20 characters and the required invalid value is exactly 21 characters, use an
+explicit construction such as `candidate = (base + "x" * 21)[:21]`, record the
+proof `len(candidate) = 21`, and require codegen to check
+`len(candidate) == target_length` before issuing the request. Apply the same
+proof discipline to minimums, maximums, off-by-one cases, collection sizes,
+timeouts, and other numeric boundaries.
+
 ## Durable mapping and the execution view
 
 Closed mapping `target_file` values must stay under `qa/tests/`. The
@@ -205,6 +225,11 @@ preserve an `absent`, `missing`, or `create-if-missing` claim after the exact
 referenced file opens and proves the symbol exists. After the edits, exact-read
 all required plan outputs and verify every authorized finding is no longer
 contradicted in its located section before returning.
+
+For a repair finding about a boundary value, rewrite the located construction
+and its arithmetic proof first, then re-read every cross-artifact occurrence of
+that case. Do not treat a narrative label such as "21-character value" as proof
+when the construction expression produces a different length.
 
 On every return, `output_files` is the complete plan-package manifest. List all
 required output paths above, including required files that were unchanged in
