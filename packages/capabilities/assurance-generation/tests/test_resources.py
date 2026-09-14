@@ -434,6 +434,23 @@ def test_api_plan_review_is_exhaustive_and_locators_are_single_target() -> None:
     assert "each locator as authorizing exactly its named artifact" in planner
 
 
+def test_api_plan_and_review_prove_every_boundary_construction_before_deciding() -> None:
+    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
+
+    assert "Boundary Construction Proof" in planner
+    assert "source constraint, target value, construction expression, arithmetic proof" in planner
+    assert "An upper bound on a helper result does not prove its exact length" in planner
+    assert "`len(candidate) == target_length`" in planner
+    assert "Reconcile the proof across the case, API plan, test-data plan, and codegen plan" in planner
+
+    assert "First-pass Consistency Ledger" in reviewer
+    assert "Finish the ledger for every selected case before emitting findings or a decision" in reviewer
+    assert "Source Constraint | Test Target | Construction | Arithmetic Proof" in reviewer
+    assert "Evaluate each arithmetic expression" in reviewer
+    assert "Return every defect exposed by the completed ledger in the same review document" in reviewer
+
+
 def test_api_plan_review_closes_fixture_and_helper_runtime_boundaries_in_first_pass() -> None:
     planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
     reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
