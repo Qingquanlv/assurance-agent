@@ -38,6 +38,24 @@ invocation against the test-runner configuration and check that the combined
 assertion logic, including all alternative success paths, preserves the frozen
 case oracle, reporting all source-supported defects in the current round.
 
+## First-pass Consistency Ledger
+
+Before the deeper runtime inventory, build a working ledger with one row for
+every selected case and these columns:
+
+`Case ID | Method/Path | Auth | Setup/Cleanup | Source Constraint | Test Target | Construction | Arithmetic Proof | Expected Response | Plan References`
+
+Finish the ledger for every selected case before emitting findings or a
+decision. Populate it from all required plan artifacts and the approved case;
+do not stop after the first mismatch. Evaluate each arithmetic expression and
+derived value rather than accepting its narrative label. In particular, an
+upper bound on a helper result is not an exact base length, and a boundary
+construction is consistent only when its expression proves the declared test
+target. Compare the ledger row across the API plan, test-data plan, codegen
+plan, mapping, and summary. Return every defect exposed by the completed ledger
+in the same review document, then continue with the runtime inventory below so
+that the first review also includes source and execution-boundary defects.
+
 Before the first decision in every round, close this runtime inventory for the
 whole package, not only for the section most recently edited:
 
