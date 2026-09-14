@@ -38,6 +38,7 @@ from assurance_intake.contracts import (
 from assurance_intake.contracts.planning_facts import build_planning_facts
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.operations.plan_consistency import check_plan_consistency
+from assurance_generation.operations.review_audit import api_review_requirements
 
 Family = LayerName
 FAMILIES: tuple[Family, ...] = LAYER_NAMES
@@ -181,8 +182,12 @@ def result_contract(
     schema_id: str,
     *,
     capability_leafs: tuple[str, ...] | None = None,
+    require_review_audit: bool = False,
 ) -> ResultContract:
     payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
+    if require_review_audit:
+        payload["required"] = [*payload["required"], "review_audit"]
+        payload["properties"]["review_audit"] = {"$ref": "#/$defs/PlanReviewAudit"}
     if capability_leafs is not None:
         closed_arrays = 0
 
@@ -458,11 +463,20 @@ def plan_repair_review(
         raise InputError("plan repair review change_id does not match the locked change_id")
     if review.review_type != f"{family}-plan":
         raise InputError(f"plan repair review_type does not match {family}-plan")
-    return {
+    repair = {
         "review_path": relative,
         "review_digest": hashlib.sha256(data).hexdigest(),
         "plan_repair_review": review.model_dump(mode="json"),
     }
+    if family == "api":
+        repair["plan_repair_scope"] = {
+            "allowed_artifacts": list(plan_outputs(business.change_id, family)),
+            "finding_ids": list(review.auto_fix_plan),
+            "related_consistency_edits": True,
+            "preserve_case_scope_and_oracles": True,
+            "mapping_changes_require_explicit_finding": True,
+        }
+    return repair
 
 
 def constraints_for_cases(*, family: Family, change_id: str, cases: CaseYamlAuthoring) -> FamilyConstraintsV1:
@@ -528,6 +542,34 @@ def validate_plan_input(
     return business, cases
 
 
+def planning_facts_for(
+    workspace: Path, *, change_id: str, family: Family, capability_leafs: tuple[str, ...]
+) -> dict[str, Any]:
+    targets: tuple[str, ...] = ()
+    mapping_path = f"qa/results/plans/{family}-codegen-mapping.json"
+    try:
+        mapping = CodegenMapping.model_validate_json(_workspace_file(workspace, mapping_path).read_bytes())
+        targets = tuple(entry.target_file for entry in mapping.entries)
+    except (OSError, ValidationError):
+        pass
+    except OutputError as error:
+        raise InputError(f"invalid planning index input: {error}") from error
+    return build_planning_facts(
+        workspace,
+        change_id=change_id,
+        capability_leafs=capability_leafs,
+        families=(family,),
+        target_files=targets,
+    )
+
+
+def review_input_images(workspace: Path, paths: tuple[str, ...]) -> dict[str, bytes]:
+    return {
+        path: _regular_input_file(workspace, workspace / path, label="review input").read_bytes()
+        for path in paths
+    }
+
+
 def prepare_plan_outcome(
     *,
     family: Family,
@@ -545,25 +587,11 @@ def prepare_plan_outcome(
 ) -> TaskOutcome:
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
-    targets: tuple[str, ...] = ()
-    mapping_path = f"qa/results/plans/{family}-codegen-mapping.json"
-    try:
-        mapping = CodegenMapping.model_validate_json(
-            _workspace_file(context.project_root, mapping_path).read_bytes()
-        )
-        targets = tuple(entry.target_file for entry in mapping.entries)
-    except (OSError, ValidationError):
-        # Initial planning has no mapping. An invalid mapping is rejected by
-        # finalize; an index miss is never evidence that its targets are absent.
-        pass
-    except OutputError as error:
-        raise InputError(f"invalid planning index input: {error}") from error
-    facts = build_planning_facts(
+    facts = planning_facts_for(
         context.project_root,
         change_id=business.change_id,
         capability_leafs=business.capability_leafs,
-        families=(family,),
-        target_files=targets,
+        family=family,
     )
     instructions = (
         InstructionPart.text("text/plain", resource_text(skill_path)),
@@ -577,9 +605,16 @@ def prepare_plan_outcome(
         ),
     )
     if review_input_paths:
+        review_inputs: dict[str, Any] = {"review_input_paths": list(review_input_paths)}
+        if family == "api":
+            review_inputs["review_requirements"] = api_review_requirements(
+                case_ids=tuple(case.case_id for case in (*cases.added, *cases.modified)),
+                facts=facts,
+                images=review_input_images(context.project_root, review_input_paths),
+            )
         instructions = (
             *instructions,
-            InstructionPart.from_json({"review_input_paths": list(review_input_paths)}),
+            InstructionPart.from_json(review_inputs),
         )
     if business.reviewed_plan is not None:
         instructions = (
@@ -593,6 +628,7 @@ def prepare_plan_outcome(
         result_contract=result_contract(
             result_schema_id,
             capability_leafs=business.capability_leafs if close_result_capabilities else None,
+            require_review_audit=family == "api" and bool(review_input_paths),
         ),
         execution=binding.execution,
         workspace=agent_workspace(

@@ -81,6 +81,24 @@ def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return f"{node.name}({ast.unparse(args)})"
 
 
+def _is_stub(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    body = list(node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        if isinstance(body[0].value.value, str):
+            body.pop(0)
+    if len(body) != 1:
+        return False
+    statement = body[0]
+    if isinstance(statement, ast.Pass):
+        return True
+    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
+        return statement.value.value is Ellipsis
+    if isinstance(statement, ast.Raise):
+        exception = statement.exc.func if isinstance(statement.exc, ast.Call) else statement.exc
+        return isinstance(exception, ast.Name) and exception.id == "NotImplementedError"
+    return False
+
+
 def _python_facts(data: bytes, relative: str) -> dict[str, Any]:
     try:
         tree = ast.parse(data, filename=relative)
@@ -133,6 +151,8 @@ def _python_facts(data: bytes, relative: str) -> dict[str, Any]:
                 "line": node.lineno,
                 "signature": _signature(node),
                 "fixture_name": fixture_name,
+                "is_async": isinstance(node, ast.AsyncFunctionDef),
+                "is_stub": _is_stub(node),
             }
         )
     environment: set[str] = set()
@@ -189,7 +209,9 @@ def build_planning_facts(
         leaf = knowledge
         for part in capability.split("."):
             leaf = leaf.get(part) if isinstance(leaf, dict) else None
-        symbol = leaf.get("symbol") if isinstance(leaf, dict) else None
+        if not isinstance(leaf, dict):
+            continue
+        symbol = leaf.get("symbol")
         if not isinstance(symbol, str) or not re.fullmatch(r"tests(?:\.[A-Za-z_]\w*){2,}", symbol):
             continue
         module, _, name = symbol.rpartition(".")
@@ -199,7 +221,15 @@ def build_planning_facts(
         if relative is None:
             continue
         candidates.add(relative)
-        declared.append({"capability": capability, "symbol": symbol, "path": relative, "name": name})
+        declared.append(
+            {
+                "capability": capability,
+                "symbol": symbol,
+                "path": relative,
+                "name": name,
+                "kind": leaf.get("kind") if isinstance(leaf.get("kind"), str) else None,
+            }
+        )
     for relative in target_files:
         durable = _durable_test_path(relative)
         if durable is None:

@@ -40,8 +40,8 @@ a source defect must not weaken the expected test behavior.
 Use exact indexed identifiers when applicable. Before returning, reconcile the
 closed mapping with every displayed Test Function Mapping, validate table capability
 keys, and distinguish an existing helper amendment from create-if-missing. On repair,
-check the whole package for consistency while editing only authorized locators;
-if another required edit is outside them, report the scope gap without broadening it.
+reconcile the same finding throughout the authorized plan package, including tables,
+import/setup/cleanup notes and summaries that describe the affected contract.
 
 ## Boundary Construction Proof
 
@@ -207,15 +207,20 @@ explicit review items or blockers; they are never guessed.
 
 On planner re-entry, the final JSON instruction's `plan_repair_review` is the
 authoritative current review. Do not glob for or read any other plan-review
-file; apply only the findings named in `auto_fix_plan` and only their `locator`
-targets. Apply
-every listed finding in the same planner re-entry; do not return after repairing
-only the first finding. Treat each locator as authorizing exactly its named
-artifact and key/section, and do not infer permission to edit a second artifact
-from prose in another finding. Do not rewrite unmentioned plan sections or
-mapping rows. Keep
-`plans/api-codegen-mapping.json` as the closed Case ID → symbol → target file
-contract; the markdown plan is narrative only.
+file. Apply every finding named in `auto_fix_plan` in the same re-entry.
+`plan_repair_scope.allowed_artifacts` is the closed repair write set. A finding's
+locator identifies where the defect was observed; it does not restrict fixes to
+that one paragraph. Trace the same contract through all authorized artifacts and
+update its related occurrences together. For example, correcting an ID-absence
+construction also updates Data Setup Mapping, codegen obligations and the summary.
+Remove obsolete explanations during that same repair; do not leave a known
+contradiction with an instruction to ignore it or a residual-scope disclaimer.
+
+Keep unrelated plan decisions, selected cases and frozen assertion intent unchanged.
+Only change closed Case ID → symbol → target-file mapping entries when a finding
+explicitly identifies a mapping defect. Related edits never authorize case, product,
+test implementation or knowledge-file changes. Describe the finding and its related
+edits in the existing review summary so the next reviewer can follow the repair.
 
 Before editing an authorized section, exact-read every fixture or helper
 implementation named by a current finding. Resolve dotted Python symbols to
@@ -223,8 +228,8 @@ their `.py` modules, read ancestor `conftest.py` files for mapped pytest
 targets, and inspect any named configuration or environment boundary. Do not
 preserve an `absent`, `missing`, or `create-if-missing` claim after the exact
 referenced file opens and proves the symbol exists. After the edits, exact-read
-all required plan outputs and verify every authorized finding is no longer
-contradicted in its located section before returning.
+all required plan outputs and verify every repaired contract is consistent across
+the package before returning.
 
 For a repair finding about a boundary value, rewrite the located construction
 and its arithmetic proof first, then re-read every cross-artifact occurrence of

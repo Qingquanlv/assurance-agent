@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
 
 from assurance_intake.contracts import NonEmptyStr, RiskTier
+from assurance_generation.contracts.review_audit import PlanReviewAudit
 
 ReviewDecision = Literal["pass", "needs_fix", "needs_human_review", "reject"]
 PublicReviewOutcome = Literal["pass", "needs_fix", "needs_human", "reject"]
@@ -195,6 +196,7 @@ class Review(BaseModel):
     layer_applicable: bool | None = None
     auto_fix_plan: list[Any] | None = None
     next_action: str | None = None
+    review_audit: PlanReviewAudit | None = None
 
     @model_validator(mode="after")
     def _require_capabilities_for_plan_reviews(self, info: ValidationInfo) -> Review:
@@ -291,6 +293,7 @@ class PlanReviewAuthoring(BaseModel):
     public_outcome: PublicReviewOutcome | None = None
     rounds_used: int | None = None
     rounds_budget: int | None = None
+    review_audit: PlanReviewAudit | None = None
 
     @field_validator("findings")
     @classmethod
