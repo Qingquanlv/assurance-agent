@@ -88,6 +88,23 @@ def test_plan_reviewer_skills_do_not_instruct_removed_decisions(skill_id: str) -
     assert "changes_requested" not in skill
 
 
+@pytest.mark.parametrize(
+    "skill_id",
+    (
+        "aa-api-codegen-reviewer",
+        "aa-e2e-codegen-reviewer",
+        "aa-fuzz-codegen-reviewer",
+        "aa-performance-codegen-reviewer",
+    ),
+)
+def test_codegen_reviewer_skills_do_not_require_review_audit(skill_id: str) -> None:
+    skill = resource_text(f"skills/{skill_id}/SKILL.md")
+    assert "review_audit" not in skill
+    assert "review_requirements" not in skill
+    assert "plan_location" not in skill
+    assert "edit plan files" not in skill
+
+
 def test_e2e_reviewer_skill_outputs_use_family_prefixed_names() -> None:
     skill = resource_text("skills/aa-e2e-codegen-reviewer/SKILL.md")
     assert "qa/results/review/e2e-codegen-review.json" in skill
