@@ -64,6 +64,15 @@ def family_allows_target(family: LayerName, target_path: str) -> bool:
     return under_write_root(target_path, FAMILY_TARGET_ROOTS[family])
 
 
+class LockedModuleV1(BaseModel):
+    model_config = _FROZEN
+
+    module: NonEmptyStr
+    case_ids: tuple[NonEmptyStr, ...]
+    test_file: NonEmptyStr
+    testdata_file: NonEmptyStr
+
+
 class CodegenScopeV1(BaseModel):
     """Host-built closed set of cases, capabilities, and write roots for codegen."""
 
@@ -76,6 +85,8 @@ class CodegenScopeV1(BaseModel):
     required_capabilities: tuple[NonEmptyStr, ...]
     coverage: tuple[PlanCoverageRow, ...]
     write_roots: tuple[NonEmptyStr, ...]
+    locked_modules: tuple[LockedModuleV1, ...]
+    locked_outputs: tuple[NonEmptyStr, ...]
     fuzz_strategy: FuzzStrategyV1 | None = None
     performance_scenarios: tuple[PerformanceScenarioV1, ...] = ()
 
@@ -120,6 +131,27 @@ class CodegenScopeV1(BaseModel):
                     raise ValueError(f"unknown capability leaf: {scenario.capability}")
         elif self.performance_scenarios:
             raise ValueError("performance_scenarios is only valid for performance scopes")
+        covered_lock = tuple(sorted(case_id for row in self.locked_modules for case_id in row.case_ids))
+        if covered_lock != self.case_ids:
+            raise ValueError("locked_modules case_ids must match scope.case_ids exactly once")
+        generated = []
+        for row in self.locked_modules:
+            if row.test_file != locked_test_file(self.family, row.module):
+                raise ValueError(f"locked test_file does not match host rule: {row.test_file}")
+            if row.testdata_file != locked_testdata_file(self.family, row.module):
+                raise ValueError(f"locked testdata_file does not match host rule: {row.testdata_file}")
+            generated.extend((row.test_file, row.testdata_file))
+        expected_outputs = tuple(
+            sorted(
+                (
+                    *generated,
+                    f"qa/results/codegen/{self.family}-codegen-summary.md",
+                    f"qa/results/codegen/{self.family}-generated-files.json",
+                )
+            )
+        )
+        if self.locked_outputs != expected_outputs:
+            raise ValueError("locked_outputs must be the sorted generated files plus codegen sidecars")
         return self
 
 
