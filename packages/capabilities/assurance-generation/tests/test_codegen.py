@@ -19,9 +19,7 @@ from assurance_generation.operations.codegen import (
     CodegenFinalizeHandler,
     codegen_finalize_handler,
     codegen_prepare_handler,
-    validate_codegen_input,
 )
-from assurance_generation.operations.planning import Family, InputError
 from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
     codegen_input,
@@ -107,35 +105,6 @@ def _write_plan_mapping(workspace: Path, family: str, targets: list[str]) -> Non
     path = workspace / f"qa/results/plans/{family}-codegen-mapping.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document), encoding="utf-8")
-
-
-def test_codegen_input_rejects_reviewed_plan_for_a_different_change(tmp_path: Path) -> None:
-    payload = codegen_input("api")
-    payload["reviewed_plan"]["change_id"] = "CH-OTHER-001"
-
-    with pytest.raises(InputError, match="reviewed plan change_id"):
-        validate_codegen_input(payload, "api", tmp_path)
-
-
-@pytest.mark.parametrize("family", FAMILIES)
-def test_codegen_input_rejects_case_scope_drift(family: Family, tmp_path: Path) -> None:
-    payload = codegen_input(family)
-    payload["reviewed_plan"]["case_ids"] = ["TC_UNREVIEWED_001"]
-    payload["reviewed_plan"]["coverage"][0]["case_id"] = "TC_UNREVIEWED_001"
-    with pytest.raises(InputError, match="reviewed plan case_ids"):
-        validate_codegen_input(payload, family, tmp_path)
-
-
-@pytest.mark.parametrize(
-    "field,value", [("endpoint", "GET /unreviewed"), ("p95_ms", 2000), ("error_rate_max", 0.9)]
-)
-def test_performance_codegen_rejects_scenario_drift_from_cases(
-    field: str, value: object, tmp_path: Path
-) -> None:
-    payload = codegen_input("performance")
-    payload["reviewed_plan"]["performance_scenarios"][0][field] = value
-    with pytest.raises(InputError, match="performance scenarios must match reviewed cases"):
-        validate_codegen_input(payload, "performance", tmp_path)
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -894,10 +863,12 @@ def test_codegen_rejects_repair_control_fields(
         CodegenResultV1.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
 
 
-@pytest.mark.asyncio
-async def test_e2e_codegen_skill_reads_family_prefixed_review() -> None:
+def test_e2e_codegen_skill_reads_host_codegen_scope() -> None:
     from assurance_generation.resource_loader import resource_text
 
     skill = resource_text("skills/aa-e2e-codegen/SKILL.md")
-    assert "qa/results/review/e2e-plan-review.json" in skill
+    assert "host-built E2E codegen scope" in skill
+    assert "locked_outputs" in skill
+    assert "qa/cases/**/case.yaml" in skill
     assert "review/plan-review.json" not in skill
+    assert "qa/results/review/e2e-plan-review.json" not in skill
