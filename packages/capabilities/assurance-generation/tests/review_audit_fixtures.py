@@ -8,17 +8,17 @@ from agent_runtime_contracts import AgentRunRequest
 from graph_engine.frozen_json import thaw_json
 from assurance_generation.operations.review import review_prepare_handler
 from tests.product.test_change_local_output_routing import execute_task
+from codegen_fixtures import codegen_result, locked_oracle_paths  # pyright: ignore[reportMissingImports]
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
-    family_plan_files,
     plan_input,
     review_result,
-    valid_plan_result,
 )
 
 HELPER = "capabilities.domain_factories.item.rows"
 HELPER_PATH = "qa/tests/testdata/domain/item.py"
-PLAN_PATH = "qa/results/plans/api-codegen-plan.md"
+PLAN_PATH = "qa/results/codegen/api-codegen-summary.md"
+GENERATED_TEST = "qa/tests/api/items/test_items.py"
 
 
 def write(root: Path, path: str, content: str) -> None:
@@ -28,18 +28,45 @@ def write(root: Path, path: str, content: str) -> None:
 
 
 def write_review(root: Path, review: dict[str, Any]) -> None:
-    write(root, "qa/results/review/api-plan-review.json", json.dumps(review))
-    write(root / "qa/.staging/attempt-1", "qa/results/review/api-plan-review.json", json.dumps(review))
+    write(root, "qa/results/review/api-codegen-review.json", json.dumps(review))
+    write(root / "qa/.staging/attempt-1", "qa/results/review/api-codegen-review.json", json.dumps(review))
+
+
+def write_codegen_artifacts(
+    root: Path,
+    family: str = "api",
+    *,
+    summary: str | None = None,
+    helper_mention: str | None = None,
+    generated_target: bool = True,
+) -> dict[str, Any]:
+    test_path, data_path = locked_oracle_paths(family)
+    manifest = codegen_result(files=[test_path, data_path], family=family)
+    body = summary
+    if body is None:
+        mention = helper_mention or ""
+        target_line = f"- `{HELPER_PATH}`: implement rows.\n" if generated_target else "None.\n"
+        body = f"# Codegen\n\n## Import Strategy\n{mention}\n\n## Target Files\n{target_line}"
+    write(root, f"qa/results/codegen/{family}-codegen-summary.md", body)
+    write(root, f"qa/results/codegen/{family}-generated-files.json", json.dumps(manifest))
+    write(root, data_path, "helper\n")
+    return manifest
+
+
+def review_prepare_input(family: str, business: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(business or plan_input(family))
+    test_path, data_path = locked_oracle_paths(family)
+    payload["codegen_output"] = codegen_result(files=[test_path, data_path], family=family)
+    return payload
 
 
 async def audited_review(
     root: Path, *, helper: bool = False, source: str | None = None, generated_target: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any], AgentRunRequest]:
     business = plan_input("api")
-    for path in family_plan_files("api"):
-        write(root, path, "# Plan\n")
     write(root, "qa/proposal.md", "# Proposal\n")
     write(root, "qa/cases/items/case.yaml", json.dumps(business["reviewed_cases"]))
+    helper_mention = ""
     if helper:
         business["capability_leafs"] = [*business["capability_leafs"], HELPER]
         write(
@@ -48,19 +75,37 @@ async def audited_review(
             "capabilities:\n  domain_factories:\n    item:\n      rows:\n"
             "        kind: helper\n        symbol: tests.testdata.domain.item.rows\n",
         )
-        write(
-            root,
-            PLAN_PATH,
-            "# Codegen\n\n## Import Strategy\n"
-            f"Consume `{HELPER}` and `tests.testdata.domain.item.rows`.\n\n"
-            "## Target Files\n"
-            + (f"- `{HELPER_PATH}`: implement rows.\n" if generated_target else "None.\n"),
-        )
+        helper_mention = f"Consume `{HELPER}` and `tests.testdata.domain.item.rows`."
         if source is not None:
             write(root, HELPER_PATH, source)
+    write_codegen_artifacts(
+        root,
+        "api",
+        helper_mention=helper_mention,
+        generated_target=generated_target,
+    )
+    write(root, GENERATED_TEST, "def test_tc_api_001__happy_path():\n    assert True\n")
+    if helper:
+        write(
+            root,
+            "qa/results/plans/api-codegen-mapping.json",
+            json.dumps(
+                {
+                    "schema_version": "1",
+                    "layer": "api",
+                    "entries": [
+                        {
+                            "case_id": "TC_API_001",
+                            "symbol": "test_tc_api_001__happy_path",
+                            "target_file": HELPER_PATH if generated_target else GENERATED_TEST,
+                        }
+                    ],
+                }
+            ),
+        )
     prepared = await execute_task(
         review_prepare_handler("api"),
-        {**business, "reviewed_plan": valid_plan_result("api")},
+        review_prepare_input("api", business),
         root,
         binding_data=BINDING,
     )
@@ -82,7 +127,7 @@ async def audited_review(
                 "checks": {
                     area: "pass" for area in ("request", "auth", "setup", "assertion", "cleanup", "helpers")
                 },
-                "evidence_paths": ["qa/results/plans/api-plan.md"],
+                "evidence_paths": [PLAN_PATH],
                 "finding_ids": [],
                 "rationale": "Request, setup, oracle and cleanup agree.",
             }

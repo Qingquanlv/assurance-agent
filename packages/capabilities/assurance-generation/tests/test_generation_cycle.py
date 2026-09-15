@@ -26,7 +26,13 @@ from graph_engine.testing import committed
 from graph_engine.testing.graph_harness import ScriptedAttempt
 from tests.product.test_change_local_output_routing import execute_task
 from tests.product.test_product_input import valid_product_input
-from codegen_fixtures import codegen_result, durable_oracle_path, family_symbol, fake_agent_result  # pyright: ignore[reportMissingImports]
+from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
+    codegen_result,
+    durable_oracle_path,
+    family_symbol,
+    fake_agent_result,
+    locked_oracle_paths,
+)
 from planning_fixtures import reviewed_cases  # pyright: ignore[reportMissingImports]
 from test_resolve_inputs import _fixture, _write  # pyright: ignore[reportMissingImports]
 
@@ -35,10 +41,13 @@ async def cycle_fixture(
     root: Path, families: tuple[LayerName, ...] = ("api", "e2e"), *, coverage_epoch: int = 0
 ):
     reviewed, _ = _fixture(root, coverage_epoch=coverage_epoch)
+    placeholder = root / "qa/cases/menus/case.yaml"
+    if placeholder.is_file():
+        placeholder.unlink()
     cases = {"schema_version": "1.0", "added": [], "modified": [], "removed": []}
     for family in families:
         cases["added"].extend(reviewed_cases(family)["added"])  # type: ignore[union-attr]
-    case_ref = _write(root, reviewed.case_refs[0].path, yaml.safe_dump(cases).encode())
+    case_ref = _write(root, "qa/cases/items/case.yaml", yaml.safe_dump(cases).encode())
     reviewed = reviewed.model_copy(update={"case_refs": (case_ref,)})
     script = {
         "generation.resolve-inputs": [
@@ -49,30 +58,29 @@ async def cycle_fixture(
     }
     family_inputs = []
     for family in families:
-        target = durable_oracle_path(family=family)
-        source = target
-        _write(root, source, f"def {family_symbol(family)}():\n    assert True\n".encode())
+        target, data_path = locked_oracle_paths(family)
+        _write(root, target, f"def {family_symbol(family)}():\n    assert True\n".encode())
+        _write(root, data_path, b"helper\n")
         plan = f"qa/results/plans/{family}-plan.md"
         _write(root, plan, b"reviewed test plan\n")
+        _write(root, f"qa/results/codegen/{family}-codegen-summary.md", b"reviewed codegen summary\n")
+        authored = codegen_result([target, data_path], family=family)
         _write(
             root,
             f"qa/results/codegen/{family}-generated-files.json",
-            json.dumps(codegen_result([target], family=family)).encode(),
+            json.dumps(authored).encode(),
         )
         finalized = await execute_task(
             CodegenFinalizeHandler(family),
-            fake_agent_result(codegen_result([target], family=family)),
+            fake_agent_result(authored),
             root,
             write_root=root,
         )
         assert finalized.status == "succeeded", finalized.failure
         output = cast(dict[str, Any], finalized.output)
         receipt = ReceiptRef(receipt_id=f"codegen-{family}", receipt_digest="a" * 64)
-        script[f"generation.{family}.plan"] = [committed({"output_files": [plan]}, receipt)]
-        script[f"generation.{family}.plan-review"] = [
-            committed({"decision": "pass", "codegen_readiness": "ready"}, receipt)
-        ]
         script[f"generation.{family}.codegen"] = [committed(output, receipt)]
+        script[f"generation.{family}.codegen-review"] = [committed({"route": "codegen"}, receipt)]
         family_inputs.append(
             {
                 "family": family,
@@ -180,8 +188,19 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
     assert result["coverage_epoch"] == coverage_epoch
     mapping = json.loads((project / result["mapping_ref"]["path"]).read_bytes())
     assert {entry["layer"] for entry in mapping["mappings"]} == {"api", "e2e"}
-    assert len(result["source_refs"]) == 2
-    assert len(result["plan_refs"]) == 2
+    assert {ref["path"] for ref in result["source_refs"]} == {
+        "qa/tests/api/items/test_items.py",
+        "qa/tests/testdata/api/items.py",
+        "qa/tests/e2e/items/test_items.py",
+        "qa/tests/testdata/e2e/items.py",
+    }
+    assert len(result["plan_refs"]) == 4
+    assert {ref["path"] for ref in result["plan_refs"]} == {
+        "qa/results/codegen/api-codegen-summary.md",
+        "qa/results/codegen/api-generated-files.json",
+        "qa/results/codegen/e2e-codegen-summary.md",
+        "qa/results/codegen/e2e-generated-files.json",
+    }
     assert state["generation_receipt"]["receipt_digest"] != "a" * 64
     assert executor.dispatch_count == 1
     adapted = adapt_execution(cast(ProductState, {**valid_product_input(), **state}))
@@ -192,7 +211,10 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
 async def test_generation_cycle_requires_results_plan_prefix(tmp_path: Path) -> None:
     payload, _ = await cycle_fixture(tmp_path)
     result = complete_generation_cycle(payload, tmp_path, tmp_path / ".stage")
-    assert all(ref.path.startswith("qa/results/plans/") for ref in result.plan_refs)
+    assert all(
+        ref.path.startswith("qa/results/plans/") or ref.path.startswith("qa/results/codegen/")
+        for ref in result.plan_refs
+    )
 
 
 async def test_generation_cycle_rejects_change_scoped_plan_prefix(tmp_path: Path) -> None:

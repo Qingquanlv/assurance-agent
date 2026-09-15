@@ -11,7 +11,6 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     fake_agent_result as planning_agent_result,
     plan_input,
     reviewed_cases,
-    valid_plan_result,
 )
 
 _SHA = "a" * 64
@@ -34,8 +33,20 @@ def family_test_file(family: str) -> str:
     return FAMILY_TEST_FILES[family]
 
 
+def locked_oracle_paths(family: str, module: str = "items") -> tuple[str, str]:
+    directory = "perf" if family == "performance" else family
+    return (
+        f"qa/tests/{directory}/{module}/test_{module.rsplit('/', 1)[-1]}.py",
+        f"qa/tests/testdata/{directory}/{module}.py",
+    )
+
+
+def _is_testdata_path(path: str) -> bool:
+    return path.startswith("qa/tests/testdata/")
+
+
 def durable_oracle_path(target: str | None = None, family: str = "api") -> str:
-    return target or f"qa/tests/{family_test_file(family).removeprefix('tests/')}"
+    return target or locked_oracle_paths(family)[0]
 
 
 def family_symbol(family: str) -> str:
@@ -59,7 +70,11 @@ def mapping_document(family: str, *, target_file: str | None = None) -> dict[str
 
 def fake_agent_result(structured_result: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
     result = planning_agent_result(structured_result, **kwargs)
-    result["reviewed_mapping"] = mapping_document(structured_result["layer"])
+    mapping = structured_result.get("mapping")
+    if isinstance(mapping, dict) and isinstance(mapping.get("entries"), list):
+        result["scope_case_ids"] = sorted(
+            {item["case_id"] for item in mapping["entries"] if isinstance(item, dict) and "case_id" in item}
+        )
     return result
 
 
@@ -70,6 +85,10 @@ def codegen_result(
     required_capabilities: list[str] | None = None,
 ) -> dict[str, Any]:
     case_id = family_case_id(family)
+    mapping_target = next(
+        (path for path in files if not _is_testdata_path(path)),
+        durable_oracle_path(family=family),
+    )
     return {
         "schema_version": "1",
         "change_id": "CH-DEMO-001",
@@ -78,14 +97,12 @@ def codegen_result(
             {
                 "repo_path": path,
                 "disposition": "generated",
-                "role": "test_entry",
-                "case_ids": [case_id],
+                "role": "support" if _is_testdata_path(path) else "test_entry",
+                "case_ids": [] if _is_testdata_path(path) else [case_id],
             }
             for path in files
         ],
-        "mapping": mapping_document(
-            family, target_file=files[0] if files else durable_oracle_path(family=family)
-        ),
+        "mapping": mapping_document(family, target_file=mapping_target),
         "required_capabilities": required_capabilities or ["entities.item.create"],
     }
 
@@ -97,7 +114,6 @@ def codegen_input(family: str) -> dict[str, Any]:
         "plan_digest": payload["plan_digest"],
         "plan_ref": payload["plan_ref"],
         "capability_leafs": payload["capability_leafs"],
-        "reviewed_plan": valid_plan_result(family),
         "reviewed_cases": reviewed_cases(family),
         "family_constraints": payload["family_constraints"],
     }
@@ -143,6 +159,7 @@ __all__ = [
     "family_case_id",
     "family_symbol",
     "durable_oracle_path",
+    "locked_oracle_paths",
     "family_test_file",
     "fake_agent_result",
     "generated_candidate",

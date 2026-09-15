@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -21,7 +21,6 @@ from assurance_generation.contracts.agent import (
     AgentFinalizeInputV1,
     CodegenInputV1,
     FamilyConstraintsV1,
-    under_write_root,
 )
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
@@ -30,7 +29,6 @@ from assurance_generation.contracts.codegen import (
     CodegenResultV1,
     CodegenScopeV1,
     durable_test_path,
-    family_allows_target,
 )
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.plans import canonical_relative_path
@@ -212,9 +210,9 @@ def _complete_files(
     *,
     change_id: str,
     family: Family,
-    allowed_paths: tuple[str, ...],
+    allowed_paths: Collection[str],
 ) -> tuple[GeneratedFileEntryV1, ...]:
-    del change_id
+    del change_id, family
     mapped_targets = {item.target_file for item in mapping.entries}
     if not files and mapped_targets:
         raise OutputError("empty files array is invalid when mapping targets exist")
@@ -222,9 +220,7 @@ def _complete_files(
     listed_test_entries: set[str] = set()
     for entry in files:
         target = entry.repo_path
-        if not family_allows_target(family, target):
-            raise OutputError(f"generated target is outside family policy: {target}")
-        if allowed_paths and not under_write_root(target, allowed_paths):
+        if target not in allowed_paths:
             raise OutputError(f"undeclared generated/modified test file: {target}")
         if entry.role == "test_entry" and target not in mapped_targets:
             raise OutputError(f"generated test file is absent from the closed mapping: {target}")
@@ -250,8 +246,8 @@ def _complete_files(
             )
         )
     for target in sorted(mapped_targets):
-        if not family_allows_target(family, target):
-            raise OutputError(f"generated target is outside family policy: {target}")
+        if target not in allowed_paths:
+            raise OutputError(f"undeclared generated/modified test file: {target}")
         if target not in listed_test_entries:
             raise OutputError(f"codegen mapping is missing: {target}")
     return tuple(sorted(completed, key=lambda item: item.repo_path))
@@ -370,14 +366,43 @@ class CodegenFinalizeHandler:
             family = resolve_family(self._family, request)
             payload = AgentFinalizeInputV1.model_validate(request.input)
             document = _finalize_authoring(payload, family)
-            allowed = payload.allowed_paths or payload.artifact_paths
+            _, scope, _ = validate_codegen_input(
+                {
+                    "change_id": payload.change_id or document.change_id,
+                    "plan_digest": payload.plan_digest,
+                    "plan_ref": payload.plan_ref.model_dump(mode="json"),
+                    "capability_leafs": list(payload.capability_leafs),
+                    "reviewed_case": None
+                    if payload.reviewed_case is None
+                    else payload.reviewed_case.model_dump(mode="json"),
+                },
+                family,
+                context.project_root,
+            )
+            locked_generated = {path for path in scope.locked_outputs if path.startswith("qa/tests/")}
+            test_by_case = {
+                case_id: row.test_file for row in scope.locked_modules for case_id in row.case_ids
+            }
+            receipt_tests = {entry.repo_path for entry in document.files}
+            if receipt_tests != locked_generated:
+                raise OutputError(
+                    "codegen receipt test paths do not match locked outputs; "
+                    f"missing={sorted(locked_generated - receipt_tests)}, "
+                    f"unexpected={sorted(receipt_tests - locked_generated)}"
+                )
+            for item in document.mapping.entries:
+                expected = test_by_case.get(item.case_id)
+                if expected is None or item.target_file != expected:
+                    raise OutputError(
+                        f"mapping target_file must equal the locked test file for {item.case_id}"
+                    )
             files = _complete_files(
                 context.write_root,
                 document.files,
                 document.mapping,
                 change_id=document.change_id,
                 family=family,
-                allowed_paths=allowed,
+                allowed_paths=locked_generated,
             )
             result = CodegenResultV1.model_validate(
                 {
