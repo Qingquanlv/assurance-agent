@@ -161,7 +161,7 @@ def family_constraints(family: str) -> dict[str, Any]:
                 "performance": ("qa/tests/perf/", "qa/tests/testdata/perf/"),
             }[family]
         ),
-        "operations": ["COND-1"],
+        "operations": ["create"],
         "risks": ["high"],
     }
 
@@ -217,12 +217,15 @@ def valid_plan_result(family: str) -> dict[str, Any]:
 def review_result(family: str, leaf: str = "entities.item.create") -> dict[str, Any]:
     return {
         "schema_version": "1.0",
-        "review_type": f"{family}-codegen",
+        "review_type": f"{family}-plan",
         "change_id": "CH-DEMO-001",
-        "route": "codegen",
+        "decision": "pass",
         "findings": [],
-        "finding_ids": [],
+        "auto_fix_plan": [],
         "next_action": "proceed to codegen",
+        "auto_fix_allowed": False,
+        "human_review_required": False,
+        "codegen_readiness": "ready",
         "risk_level": "medium",
         "required_capabilities": [leaf],
     }
