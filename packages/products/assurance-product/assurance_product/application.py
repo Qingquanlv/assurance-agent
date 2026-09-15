@@ -773,6 +773,14 @@ class AssuranceProductApplication:
                     root_input_digest=record.root_input_digest,
                 ),
             )
+            if record.entrypoint != "retro":
+                from assurance_product.retro_evidence import export_runtime_evidence
+
+                await export_runtime_evidence(
+                    workspace,
+                    ports.attempt_journal.read_records,
+                    invocation_id=invocation_id,
+                )
             return result.status
 
     async def _resume_langgraph(
@@ -805,6 +813,14 @@ class AssuranceProductApplication:
                 ),
                 resume=resume,
             )
+            if record.entrypoint != "retro":
+                from assurance_product.retro_evidence import export_runtime_evidence
+
+                await export_runtime_evidence(
+                    workspace,
+                    ports.attempt_journal.read_records,
+                    invocation_id=invocation_id,
+                )
             return result.status
 
     async def _status_langgraph(

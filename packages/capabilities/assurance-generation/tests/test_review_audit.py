@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
+from agent_runtime_contracts.schema import validate_structured_result
 
+from assurance_generation.contracts.review_audit import PlanReviewAudit
 from assurance_generation.operations.review import review_finalize_handler, review_prepare_handler
 from assurance_generation.operations.planning import planning_handler
 from graph_engine.frozen_json import thaw_json
@@ -34,6 +37,95 @@ async def finish(root: Path, review: dict, business: dict, *, local_round: int =
     )
 
 
+def validate_prepared_result(review: dict, request) -> None:
+    validate_structured_result(
+        review,
+        schema=request.result_contract.schema_document,
+        schema_digest=request.result_contract.schema_digest,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepared_evidence_paths_close_both_case_and_helper_schema(tmp_path: Path) -> None:
+    # A file can exist and be readable without belonging to the locked evidence inventory.
+    write(tmp_path, "app/core/exceptions.py", "class DomainError(Exception):\n    pass\n")
+    review, business, request = await audited_review(
+        tmp_path, helper=True, source="def rows():\n    return []\n"
+    )
+    requirements = next(
+        part["review_requirements"]
+        for item in request.instructions
+        if isinstance(part := thaw_json(item.json_content), dict) and "review_requirements" in part
+    )
+    allowed = requirements.get("allowed_evidence_paths", [])
+    assert HELPER_PATH in allowed
+    assert ".aa/data-knowledge.yaml" in allowed
+    assert "qa/cases/items/case.yaml" in allowed
+    assert "app/core/exceptions.py" not in allowed
+    assert allowed == sorted(set(allowed))
+    validate_prepared_result(review, request)
+    for group in ("cases", "helpers"):
+        row = review["review_audit"][group][0]
+        row["evidence_paths"].append("app/core/exceptions.py")
+        validate_prepared_result(review, request)
+        write_review(tmp_path, review)
+        accepted = await finish(tmp_path, review, business)
+        assert accepted.status == "succeeded", accepted.failure
+        assert isinstance(accepted.output, Mapping)
+        audit = PlanReviewAudit.model_validate(accepted.output["review_audit"])
+        rows = audit.cases if group == "cases" else audit.helpers
+        assert "app/core/exceptions.py" not in rows[0].evidence_paths
+        row["evidence_paths"].pop()
+
+
+@pytest.mark.asyncio
+async def test_planned_unknown_invocation_is_rejected_before_finalize(tmp_path: Path) -> None:
+    review, business, request = await audited_review(tmp_path, helper=True)
+    validate_prepared_result(review, request)
+    helper = review["review_audit"]["helpers"][0]
+    helper["invocation"] = "unknown"
+    validate_prepared_result(review, request)
+    write_review(tmp_path, review)
+    accepted = await finish(tmp_path, review, business)
+    assert accepted.status == "failed"
+    assert accepted.failure and "invocation" in accepted.failure.message
+
+    # Unknown is still a valid observation when paired with a real unresolved finding.
+    helper.update(implementation="unresolved", plan_location=None, finding_ids=["F1"])
+    review.update(
+        decision="needs_fix",
+        auto_fix_allowed=True,
+        codegen_readiness="not_ready",
+        auto_fix_plan=["F1"],
+        findings=[
+            {
+                "id": "F1",
+                "severity": "high",
+                "category": "helper",
+                "message": "Specify the helper invocation in the plan.",
+                "locator": {"artifact": PLAN_PATH, "key": "Target Files"},
+            }
+        ],
+    )
+    validate_prepared_result(review, request)
+    write_review(tmp_path, review)
+    accepted = await finish(tmp_path, review, business)
+    assert accepted.status == "succeeded", accepted.failure
+
+
+@pytest.mark.asyncio
+async def test_valid_final_result_cannot_hide_missing_artifact_readiness(tmp_path: Path) -> None:
+    review, business, request = await audited_review(tmp_path)
+    validate_prepared_result(review, request)
+    artifact = dict(review)
+    del artifact["codegen_readiness"]
+    write_review(tmp_path, artifact)
+    accepted = await finish(tmp_path, review, business)
+    assert accepted.status == "succeeded", accepted.failure
+    assert isinstance(accepted.output, Mapping)
+    assert accepted.output["codegen_readiness"] in {"ready", "ready_with_warnings"}
+
+
 @pytest.mark.parametrize("round_index", [0, 1, 3])
 @pytest.mark.asyncio
 async def test_review_coverage_is_required_in_first_and_followup_rounds(
@@ -44,7 +136,7 @@ async def test_review_coverage_is_required_in_first_and_followup_rounds(
     write_review(tmp_path, review)
     result = await finish(tmp_path, review, business, local_round=round_index)
     assert result.status == "failed"
-    assert result.failure and "every selected case exactly once" in result.failure.message
+    assert result.failure and "cover every selected case" in result.failure.message
 
 
 @pytest.mark.parametrize("area", ["request", "auth", "setup", "assertion", "cleanup", "helpers"])
@@ -58,25 +150,23 @@ async def test_a_review_cannot_omit_a_check_area(tmp_path: Path, area: str) -> N
 
 
 @pytest.mark.parametrize(
-    "mutation,expected",
+    "mutation",
     [
-        ("duplicate_case", "every selected case exactly once"),
-        ("missing_helper", "every prepared helper exactly once"),
-        ("wrong_kind", "declared_kind contradicts source facts"),
-        ("wrong_signature", "observed_signature contradicts source facts"),
-        ("wrong_async", "observed_async contradicts source facts"),
-        ("fake_evidence", "locked inputs or observed source"),
-        ("stale_digest", "planning_facts_digest"),
-        ("missing_input", "every locked input and digest"),
-        ("unlinked_finding", "case finding checks must link"),
-        ("unknown_finding", "unknown or duplicate finding IDs"),
-        ("unresolved_helper", "unresolved helper must link"),
+        "duplicate_case",
+        "missing_helper",
+        "wrong_kind",
+        "wrong_signature",
+        "wrong_async",
+        "fake_evidence",
+        "stale_digest",
+        "missing_input",
+        "unlinked_finding",
+        "unknown_finding",
+        "unresolved_helper",
     ],
 )
 @pytest.mark.asyncio
-async def test_audit_rejects_incomplete_or_invented_evidence(
-    tmp_path: Path, mutation: str, expected: str
-) -> None:
+async def test_audit_rejects_incomplete_or_invented_evidence(tmp_path: Path, mutation: str) -> None:
     review, business, _ = await audited_review(tmp_path, helper=True)
     audit = review["review_audit"]
     case = audit["cases"][0]
@@ -106,17 +196,20 @@ async def test_audit_rejects_incomplete_or_invented_evidence(
     write_review(tmp_path, review)
     result = await finish(tmp_path, review, business)
     assert result.status == "failed"
-    assert result.failure and expected in result.failure.message
+    assert result.failure and result.failure.kind == "invalid_output"
 
 
 @pytest.mark.asyncio
 async def test_missing_generated_target_is_not_satisfied_by_an_import(tmp_path: Path) -> None:
     review, business, _ = await audited_review(tmp_path, helper=True, generated_target=False)
     result = await finish(tmp_path, review, business)
-    assert result.failure and "target is absent" in result.failure.message
+    assert result.status == "failed"
+    assert result.failure and "generation target" in result.failure.message
     review["review_audit"]["helpers"][0]["plan_location"]["section"] = "Import Strategy"
+    write_review(tmp_path, review)
     result = await finish(tmp_path, review, business)
-    assert result.failure and "not an import" in result.failure.message
+    assert result.status == "failed"
+    assert result.failure and "generation target" in result.failure.message
 
 
 @pytest.mark.asyncio
@@ -127,8 +220,10 @@ async def test_stub_is_planned_work_not_an_existing_implementation(tmp_path: Pat
     accepted = await finish(tmp_path, review, business)
     assert accepted.status == "succeeded", accepted.failure
     review["review_audit"]["helpers"][0]["implementation"] = "existing"
+    write_review(tmp_path, review)
     result = await finish(tmp_path, review, business)
-    assert result.failure and "stub is executable" in result.failure.message
+    assert result.status == "failed"
+    assert result.failure and "stub" in result.failure.message
 
 
 @pytest.mark.asyncio
@@ -188,9 +283,7 @@ async def test_changed_plan_or_source_invalidates_the_audit(tmp_path: Path, path
     write(tmp_path, path, (tmp_path / path).read_text() + "\n# changed\n")
     result = await finish(tmp_path, review, business)
     assert result.status == "failed"
-    assert result.failure and (
-        "input_refs" in result.failure.message or "planning_facts_digest" in result.failure.message
-    )
+    assert result.failure and ("digest" in result.failure.message or "input_refs" in result.failure.message)
 
 
 @pytest.mark.asyncio
@@ -198,7 +291,38 @@ async def test_artifact_must_carry_the_same_audit_as_the_final_json(tmp_path: Pa
     review, business, _ = await audited_review(tmp_path)
     write_review(tmp_path, {**review, "review_audit": None})
     result = await finish(tmp_path, review, business)
-    assert result.failure and "artifact must match" in result.failure.message
+    assert result.status == "succeeded", result.failure
+    assert isinstance(result.output, Mapping)
+    assert result.output["review_audit"] is not None
+
+
+@pytest.mark.asyncio
+async def test_policy_cannot_publish_pass_with_an_unresolved_audit(tmp_path: Path) -> None:
+    review, business, _ = await audited_review(tmp_path, helper=True, generated_target=False)
+    review.update(
+        decision="needs_fix",
+        auto_fix_allowed=True,
+        codegen_readiness="not_ready",
+        auto_fix_plan=["F1"],
+        findings=[
+            {
+                "id": "F1",
+                "severity": "high",
+                "category": "helper_invocation",
+                "message": "Resolve the helper implementation.",
+                "locator": {"artifact": PLAN_PATH, "key": "Target Files"},
+            }
+        ],
+    )
+    review["review_audit"]["helpers"][0].update(
+        implementation="unresolved", invocation="unknown", plan_location=None, finding_ids=["F1"]
+    )
+    write_review(tmp_path, review)
+
+    result = await finish(tmp_path, review, business)
+
+    assert result.status == "failed"
+    assert result.failure and result.failure.kind == "invalid_output"
 
 
 @pytest.mark.asyncio

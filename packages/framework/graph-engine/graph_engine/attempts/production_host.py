@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import select
+import shutil
 import signal
 import subprocess
 import sys
@@ -1189,14 +1190,26 @@ def _process_is_in_group(process_id: int, process_group: int) -> bool:
         return False
 
 
+def _lsof_executable() -> str | None:
+    for candidate in (shutil.which("lsof"), "/usr/sbin/lsof", "/usr/bin/lsof"):
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _collect_workspace_writers(attempt_root: Path) -> tuple[str, ...]:
     resolved = attempt_root.resolve()
     writers: set[str] = set()
     completed: subprocess.CompletedProcess[str] | None = None
-    for timeout in (2.0, 10.0):
+    lsof = _lsof_executable() or "lsof"
+    for command, timeout in (
+        ([lsof, "-F", "p", "+D", str(resolved)], 2.0),
+        ([lsof, "-F", "p", "+D", str(resolved)], 10.0),
+        ([lsof, "-F", "p", "+d", str(resolved)], 5.0),
+    ):
         try:
             completed = subprocess.run(
-                ["lsof", "-F", "p", "+D", str(resolved)],
+                command,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -1205,7 +1218,8 @@ def _collect_workspace_writers(attempt_root: Path) -> tuple[str, ...]:
         except subprocess.TimeoutExpired:
             continue
         except OSError:
-            pass
+            completed = None
+            break
         break
     if completed is None:
         if sys.platform.startswith("linux"):

@@ -431,15 +431,16 @@ def test_api_plan_review_closes_fixture_and_helper_runtime_boundaries_in_first_p
     planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
     reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
 
+    assert "wheel-owned pytest runner" in planner
     assert "Before authoring the first plan, close a complete support/runtime inventory" in planner
     assert "exact-read every candidate support module" in planner
     assert "read every ancestor `conftest.py`" in planner
     assert "compare each helper's real signature" in planner
     assert "unexpectedly persists" in planner
-    assert "resolve each consumed dotted Python symbol to its `.py` module" in reviewer
-    assert "read every ancestor `conftest.py`" in reviewer
-    assert "environment variables, credentials, and database or session paths" in reviewer
-    assert "A repaired artifact does not narrow the next review" in reviewer
+    assert "Do not emit needs_fix for the wheel-owned pytest runner contract" in reviewer
+    assert "asyncio_mode" in reviewer
+    assert "must not add finding IDs" in reviewer
+    assert "A prior pass is sticky" in reviewer
     assert "fixture or helper implementation named by a current finding" in planner
     assert "Do not preserve an `absent`, `missing`, or `create-if-missing` claim" in planner
 
@@ -523,7 +524,7 @@ def test_plan_and_review_skills_keep_durable_qa_tests_targets_on_the_execution_v
 ) -> None:
     for role in ("plan", "plan-reviewer"):
         skill = " ".join(resource_text(f"skills/aa-{family}-{role}/SKILL.md").split())
-        assert "execution view remaps `qa/tests/<rest>` to `tests/<rest>`" in skill
+        assert "Execute runs durable `qa/tests/` in place with `pythonpath=qa`" in skill
         assert "Fixtures and support modules live under `qa/tests/`" in skill
         assert "Treat a missing `qa/tests/**/conftest.py` as fixture unavailability" in skill
         assert "Do not look up fixtures under the SUT `tests/` tree" in skill

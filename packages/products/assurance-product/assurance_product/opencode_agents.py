@@ -83,19 +83,19 @@ _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
     ),
 }
 
-_EXECUTION_VIEW = "**/qa/.staging/execution/*"
+_DURABLE_TESTS = "qa/tests/**"
 _EXECUTOR_COMMANDS = (
-    f"npm run test --prefix {_EXECUTION_VIEW} *",
-    f"npm test --prefix {_EXECUTION_VIEW} *",
-    f"npx playwright test --config={_EXECUTION_VIEW} *",
-    f"pnpm --dir {_EXECUTION_VIEW} run test *",
-    f"pnpm --dir {_EXECUTION_VIEW} test *",
+    "npm run test --prefix qa *",
+    "npm test --prefix qa *",
+    f"npx playwright test --config={_DURABLE_TESTS} *",
+    "pnpm --dir qa run test *",
+    "pnpm --dir qa test *",
     (
         "PYTHONDONTWRITEBYTECODE=1 "
         "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
-        f"uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir {_EXECUTION_VIEW} *"
+        "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa *"
     ),
-    f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile {_EXECUTION_VIEW} *",
+    f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile {_DURABLE_TESTS} *",
 )
 
 _BASH_RULES: Mapping[str, tuple[str, ...]] = {

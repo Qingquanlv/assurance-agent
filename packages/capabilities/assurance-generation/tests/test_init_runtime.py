@@ -49,6 +49,16 @@ def test_generic_runtime_settings_do_not_define_admin_credentials(
     assert not hasattr(settings, "admin_password")
 
 
+def test_test_runtime_conftest_owns_asyncio_mode() -> None:
+    conftest = (
+        Path(__file__).resolve().parent.parent
+        / "assurance_generation/resources/test-runtime/tests/conftest.py"
+    )
+    text = conftest.read_text(encoding="utf-8")
+    assert "asyncio_mode" in text
+    assert "auto" in text
+
+
 def _knowledge() -> dict[str, object]:
     return {
         "version": 1,

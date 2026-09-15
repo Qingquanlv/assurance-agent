@@ -72,6 +72,29 @@ Product tests live in `tests/product/`. The live OpenCode benchmark lives in
 `benchmark/assurance-product/`; it is an optional operator/research tool, not a
 merge or release gate.
 
+### Retro evidence
+
+The `retro` entrypoint reads only explicit SHA-256-bound `artifacts` references.
+Include `qa/results/execution/execute-result.json` and its exact `plan_ref`, alongside
+the review histories, inspection and report. Test verdicts come from execution;
+inspection `analyzed` only means classification finished. Inspection must bind the
+same execution digest, change and batch. Report-only evidence is incomplete.
+
+Non-Retro `aa run` and `aa resume` export a redacted Kernel journal projection to
+`qa/results/workflow/<invocation-id-digest>/workflow-evidence.json`. Include its exact
+file digest in the Retro input to retain technical failures, even after recovery.
+The projection contains message fingerprints, not raw prompts or error messages.
+Running the same invocation again updates it; refresh its artifact reference.
+`workflow_evidence_export_failed` warns that export failed without overriding the
+main result; an older projection cannot establish complete coverage of that run.
+
+Missing runtime history, execution evidence or formal issue ledgers remain explicit
+integrity gaps. There is currently no complete skill-adherence audit source, so
+`skill_drift_evidence_absent` is retained: review rework is not proof of drift, and
+missing audit evidence is not proof of compliance. Available facts still produce
+signals; `completed_with_gaps` does not mean no problems. Rebuild and deploy updated
+wheels before a live rerun; existing benchmark environments do not update themselves.
+
 ## Python wheels own topology
 
 Python wheels own `StateGraph` topology and semantic Agent contracts. OpenCode

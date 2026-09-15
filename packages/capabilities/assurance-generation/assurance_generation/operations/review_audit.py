@@ -12,7 +12,16 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from assurance_generation.contracts.review_audit import PlanReviewAudit
 from assurance_generation.contracts.reviews import PlanReviewAuthoring
+
+_TARGET_SECTIONS = frozenset({"target files", "codegen scope", "output file candidates", "factory mapping"})
+
+
+def _evidence_paths(facts: Mapping[str, Any], images: Mapping[str, bytes]) -> list[str]:
+    return sorted(
+        set(images) | {item["path"] for item in (*facts["inputs"], *facts["files"]) if "digest" in item}
+    )
 
 
 def api_review_requirements(
@@ -53,6 +62,7 @@ def api_review_requirements(
             for path, data in sorted(images.items())
         ],
         "planning_facts_digest": facts["digest"],
+        "allowed_evidence_paths": _evidence_paths(facts, images),
         "helpers": helpers,
     }
 
@@ -73,6 +83,30 @@ def _section(text: str, heading: str) -> str:
         )
         return "\n".join(lines[start:end])
     return ""
+
+
+def repair_api_review_audit(
+    document: PlanReviewAuthoring,
+    *,
+    requirements: Mapping[str, Any],
+    facts: Mapping[str, Any],
+    images: Mapping[str, bytes],
+) -> tuple[PlanReviewAuthoring, tuple[str, ...]]:
+    """Drop extraneous citations, but never invent checks, facts or input identities."""
+    if document.review_audit is None:
+        raise ValueError("review_audit is required for API plan review in every round")
+    known = set(_evidence_paths(facts, images))
+    raw = document.review_audit.model_dump(mode="json")
+    warnings: set[str] = set()
+    for row in (*raw["cases"], *raw["helpers"]):
+        paths = row["evidence_paths"]
+        if set(paths) - known:
+            warnings.add("evidence_paths")
+            row["evidence_paths"] = [path for path in paths if path in known]
+    audit = PlanReviewAudit.model_validate(raw)
+    repaired = document.model_copy(update={"review_audit": audit})
+    validate_api_review_audit(repaired, requirements=requirements, facts=facts, images=images)
+    return repaired, tuple(sorted(warnings))
 
 
 def validate_api_review_audit(
@@ -96,9 +130,7 @@ def validate_api_review_audit(
     if sorted(row.capability for row in audit.helpers) != sorted(expected_helpers):
         raise ValueError("review_audit must cover every prepared helper exactly once")
     findings = {item["id"] for item in document.findings}
-    known_paths = set(images) | {
-        item["path"] for item in (*facts["inputs"], *facts["files"]) if "digest" in item
-    }
+    known_paths = set(_evidence_paths(facts, images))
     for row in (*audit.cases, *audit.helpers):
         if not set(row.evidence_paths) <= known_paths:
             raise ValueError("review_audit evidence_paths must reference locked inputs or observed source")
@@ -131,13 +163,12 @@ def validate_api_review_audit(
             if location is None or location.artifact not in images or "/plans/" not in location.artifact:
                 raise ValueError("review_audit planned helper needs a bounded plan location")
             heading = re.sub(r"^\d+[.)]?\s*", "", location.section).casefold()
-            if heading not in {"target files", "codegen scope", "output file candidates", "factory mapping"}:
+            if heading not in _TARGET_SECTIONS:
                 raise ValueError(
                     "review_audit planned helper needs a generation target section, not an import"
                 )
-            section = _section(images[location.artifact].decode("utf-8"), location.section)
-            if row.target_file not in section:
-                raise ValueError("review_audit planned helper target is absent from the cited plan section")
+            if row.target_file not in _section(images[location.artifact].decode("utf-8"), location.section):
+                raise ValueError("review_audit planned helper is missing from its generation target section")
             if location.artifact not in row.evidence_paths:
                 raise ValueError("review_audit planned helper needs its plan as evidence")
             if row.invocation == "unknown":

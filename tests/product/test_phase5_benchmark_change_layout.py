@@ -174,6 +174,9 @@ def _failed_status(*, change_id: str) -> dict[str, Any]:
     return status
 
 
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
 def _completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
 
@@ -250,6 +253,8 @@ class _FakeAA:
         recorded = [str(part) for part in command]
         self.commands.append(recorded)
         joined = " ".join(recorded)
+        if recorded and Path(recorded[0]).name == "git":
+            return _REAL_SUBPROCESS_RUN(command, **kwargs)
         if "install_opencode_agents" in joined or "OpenCode agent" in joined:
             raise AssertionError("live run must not install OpenCode configuration")
         if "validate_export.py" in joined:
@@ -301,6 +306,11 @@ def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path
     )
     monkeypatch.setattr(runner.subprocess, "run", fake.handle_subprocess)
     monkeypatch.setattr(runner, "_load_opencode_secret", lambda _name: None)
+    monkeypatch.setattr(
+        runner,
+        "_prepare_sut_worktree",
+        lambda **kwargs: kwargs["sut_root"],
+    )
 
     @contextmanager
     def ready_runtime(**_kwargs):
@@ -314,6 +324,76 @@ def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path
         )
 
     monkeypatch.setattr(runner, "_managed_sut_runtime", ready_runtime)
+
+
+def test_explicit_project_runs_without_touching_retained_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _load_runner()
+    original = _make_sut(tmp_path / "original")
+    retained = original / "qa/results/report/report.md"
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(b"retained departmental evidence\n")
+    isolated = _make_sut(tmp_path / "isolated")
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    fake = _FakeAA(sut=isolated, change_id=change_id, terminal=_achieved_status(change_id=change_id))
+    real_resolver = runner._resolve_sut
+    _wire_fake(runner, monkeypatch, fake, isolated)
+
+    def resolve(repo, relative):
+        assert relative == str(isolated)
+        return real_resolver(repo, relative)
+
+    monkeypatch.setattr(runner, "_resolve_sut", resolve)
+    output = tmp_path / "new-result"
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--project-dir",
+            str(isolated),
+            "--output",
+            str(output),
+            "--stamp",
+            STAMP,
+            "--nonce",
+            NONCE,
+        ]
+    )
+    assert code == 0
+    evidence = json.loads((output / "evidence.json").read_text())
+    assert evidence["change_root"] == str(isolated / "qa")
+    assert (isolated / "qa/status.json").is_file()
+    assert retained.read_bytes() == b"retained departmental evidence\n"
+    assert not (original / "qa/status.json").exists()
+
+
+def test_explicit_project_refuses_existing_qa_without_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    retained = sut / "qa/status.json"
+    retained.parent.mkdir()
+    retained.write_bytes(b"old identity\n")
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--project-dir",
+            str(sut),
+            "--output",
+            str(tmp_path / "result"),
+        ]
+    )
+    assert code != 0
+    assert retained.read_bytes() == b"old identity\n"
     monkeypatch.setenv("AA_NEXT_OPENCODE_TOKEN", "test-token")
 
 
@@ -1045,3 +1125,118 @@ def test_run_scripts_drive_real_adapter_entrypoints() -> None:
     opencode_text = opencode.read_text(encoding="utf-8")
     assert "--adapter opencode" in opencode_text
     assert "run_item.py" in opencode_text
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _make_git_sut(root: Path) -> Path:
+    sut = _make_sut(root)
+    (sut / "web" / "node_modules" / ".bin").mkdir(parents=True)
+    vite = sut / "web" / "node_modules" / ".bin" / "vite"
+    vite.write_text("#!/bin/sh\n", encoding="utf-8")
+    vite.chmod(0o755)
+    (sut / "web" / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
+    (sut / "migrations").mkdir()
+    (sut / "migrations" / ".keep").write_text("keep\n", encoding="utf-8")
+    (sut / ".gitignore").write_text("web/node_modules/\nmigrations/\n", encoding="utf-8")
+    _git(sut, "init")
+    _git(sut, "add", "-A")
+    _git(sut, "-c", "user.email=t@t.test", "-c", "user.name=t", "commit", "-m", "init")
+    return sut
+
+
+def test_prepare_sut_worktree_checks_out_outside_the_sut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_git_sut(tmp_path / "source")
+    home = tmp_path / "worktrees"
+    monkeypatch.setattr(runner, "_sut_worktree_home", lambda _repo: home)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+
+    worktree = runner._prepare_sut_worktree(repo=tmp_path, sut_root=sut, change_id=change_id)
+
+    assert worktree == (home / sut.name / change_id).resolve()
+    assert worktree.is_dir()
+    assert not worktree.is_relative_to(sut.resolve())
+    assert (worktree / "app").is_dir()
+    assert not (worktree / "qa").exists()
+    assert (worktree / ".opencode" / "plugins" / "assurance-boundary.mjs").is_file()
+    assert (worktree / "opencode.json").read_text(encoding="utf-8") == _opencode_config()
+    assert not (worktree / "web" / "node_modules").exists()
+    assert (worktree / "migrations" / ".keep").read_text(encoding="utf-8") == "keep\n"
+    assert runner._frontend_web_root(worktree) == (sut / "web").resolve()
+    listed = _git(sut, "worktree", "list", "--porcelain").stdout
+    assert str(worktree) in listed
+    assert _git(sut, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != f"bench/{change_id}"
+    _git(sut, "worktree", "remove", "--force", str(worktree))
+
+
+def test_prepare_sut_worktree_refuses_parent_repo_root(tmp_path: Path) -> None:
+    runner = _load_runner()
+    parent = tmp_path / "aa"
+    sut = _make_sut(parent / "benchmark")
+    _git(parent, "init")
+    _git(parent, "add", "-A")
+    _git(parent, "-c", "user.email=t@t.test", "-c", "user.name=t", "commit", "-m", "parent")
+
+    with pytest.raises(SystemExit, match="refuse to worktree the parent repo"):
+        runner._prepare_sut_worktree(
+            repo=parent,
+            sut_root=sut,
+            change_id=runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE),
+        )
+
+
+def test_main_without_project_dir_runs_in_a_fresh_sut_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_git_sut(tmp_path / "source")
+    leftover = sut / "qa" / ".qa.yaml"
+    leftover.parent.mkdir()
+    leftover.write_text("change:\n  change_id: BENCH-leftover-dept\n", encoding="utf-8")
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    home = tmp_path / "worktrees"
+    worktree = home / sut.name / change_id
+    fake = _FakeAA(
+        sut=worktree,
+        change_id=change_id,
+        terminal=_achieved_status(change_id=change_id),
+    )
+    real_prepare = runner._prepare_sut_worktree
+    _wire_fake(runner, monkeypatch, fake, sut)
+    monkeypatch.setattr(runner, "_prepare_sut_worktree", real_prepare)
+    monkeypatch.setattr(runner, "_sut_worktree_home", lambda _repo: home)
+
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--output",
+            str(tmp_path / "output"),
+            "--nonce",
+            NONCE,
+            "--stamp",
+            STAMP,
+        ]
+    )
+
+    evidence = json.loads((tmp_path / "output" / "evidence.json").read_text(encoding="utf-8"))
+    assert code == 0
+    assert evidence["sut_root"] == str(worktree.resolve())
+    assert evidence["change_root"] == str(worktree.resolve() / "qa")
+    assert set(fake.project_dirs) == {str(worktree.resolve())}
+    assert leftover.read_text(encoding="utf-8") == "change:\n  change_id: BENCH-leftover-dept\n"
+    assert not (sut / "qa" / "status.json").exists()
+    _git(sut, "worktree", "remove", "--force", str(worktree.resolve()))

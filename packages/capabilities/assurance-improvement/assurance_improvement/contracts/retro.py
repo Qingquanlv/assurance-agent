@@ -245,8 +245,8 @@ class TaskFailureEvidenceEntry(_WorkflowEvidenceBase):
     node_id: NonEmptyStr
     error_kind: NonEmptyStr
     message_fingerprint: NonEmptyStr
-    recovered: bool
-    ts: NonEmptyStr
+    recovered: bool | None
+    ts: NonEmptyStr | None = None
 
 
 class HealingOutcomeEvidenceEntry(_WorkflowEvidenceBase):
@@ -299,6 +299,27 @@ WorkflowEvidenceEntry = Annotated[
     | LoopRoundEvidenceEntry,
     Field(discriminator="entry_kind"),
 ]
+
+
+class WorkflowRuntimeEvidenceV1(BaseModel):
+    """Redacted projection of one invocation's Kernel attempt journal, not a transcript."""
+
+    model_config = _FROZEN
+
+    schema_version: Literal["1"] = "1"
+    change_id: NonEmptyStr
+    invocation_id: NonEmptyStr
+    journal_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    entries: tuple[TaskFailureEvidenceEntry, ...] = ()
+    integrity: RetroIntegrity
+
+    @model_validator(mode="after")
+    def _validate_entries(self) -> Self:
+        if any(entry.change_id != self.change_id for entry in self.entries):
+            raise ValueError("runtime evidence entries must belong to the document change")
+        if len({entry.evidence_id for entry in self.entries}) != len(self.entries):
+            raise ValueError("runtime evidence IDs must be unique")
+        return self
 
 
 class _SignalBase(BaseModel):
@@ -392,7 +413,7 @@ class EvalEvidenceEntry(BaseModel):
     suite: NonEmptyStr
     verdict: NonEmptyStr
     failure_signature: NonEmptyStr | None = None
-    started_at: NonEmptyStr
+    started_at: NonEmptyStr | None
     source_change_ids: tuple[str, ...] | None = None
     sample_ids: tuple[str, ...] = ()
 

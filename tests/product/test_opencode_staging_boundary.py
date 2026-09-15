@@ -661,11 +661,11 @@ def test_binding_session_and_digest_must_match(tmp_path: Path) -> None:
 _EXECUTOR_VIEW_COMMAND = (
     "PYTHONDONTWRITEBYTECODE=1 "
     "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-1 "
-    "uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir "
-    f"{_EXECUTION_VIEW} {_EXECUTION_VIEW}/tests/api/test_generated.py::test_ok"
+    "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa "
+    "qa/tests/api/test_generated.py::test_ok"
 )
-_PLAYWRIGHT_VIEW_COMMAND = f"npx playwright test --config={_EXECUTION_VIEW}"
-_NPM_VIEW_COMMAND = f"npm test --prefix {_EXECUTION_VIEW}"
+_PLAYWRIGHT_VIEW_COMMAND = "npx playwright test --config=qa/tests/e2e/playwright.config.ts"
+_NPM_VIEW_COMMAND = "npm test --prefix qa"
 _CWD_RENAME = (
     "python -c \"__import__('os').rename(__import__('os').getcwd(), __import__('os').getcwd()+'.bak')\""
 )
@@ -680,12 +680,102 @@ def test_executor_execution_view_shell_is_allowed(tmp_path: Path) -> None:
         _binding_title(
             project,
             agent_profile="assurance-v1-executor",
-            read_roots=(_EXECUTION_VIEW,),
+            read_roots=("qa",),
         ),
         agent="assurance-v1-executor",
     )
     args = _allowed(_run(plugin, session=session, tool="bash", args={"command": _EXECUTOR_VIEW_COMMAND}))
     assert args["command"] == _EXECUTOR_VIEW_COMMAND
+
+
+@pytest.mark.parametrize(
+    "output_flag",
+    [
+        "--junitxml=qa/tests/api/test_existing.py",
+        '--junitxm""l=qa/tests/api/test_existing.py',
+        "--junitxm''l=qa/tests/api/test_existing.py",
+        "'--junitxm'l=qa/tests/api/test_existing.py",
+        '--basetem""p qa/tests/api',
+        "--junitxm${AA_UNUSED}l=qa/tests/api/test_existing.py",
+        r"--junitxm\l=qa/tests/api/test_existing.py",
+        "--junitxml=qa/tests/report=qa/tests/durable.xml",
+        "--basetemp=qa/tests/temp=qa/tests",
+        "--override-ini=cache_dir=qa/tests/temp=qa/tests",
+        "--junitxml qa/results/execution/execute-result.json",
+        "--basetemp qa/tests/api",
+        "--basetemp=qa/tests/api",
+        "--output=qa/results/execution",
+        "--log-file=qa/tests/config.py",
+        "--json-report-file=qa/results/execution/execute-result.json",
+        "-o cache_dir=qa/tests",
+    ],
+)
+def test_executor_read_permission_does_not_authorize_runner_outputs(tmp_path: Path, output_flag: str) -> None:
+    plugin = _install(tmp_path)
+    session = _session(
+        tmp_path,
+        _binding_title(
+            tmp_path,
+            agent_profile="assurance-v1-executor",
+            allowed_outputs=(),
+            read_roots=("qa",),
+        ),
+        agent="assurance-v1-executor",
+    )
+    _denied(
+        _run(
+            plugin,
+            session=session,
+            tool="bash",
+            args={"command": f"{_EXECUTOR_VIEW_COMMAND} {output_flag}"},
+        ),
+        "shell",
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"{_EXECUTOR_VIEW_COMMAND} --output=/tmp/aa-playwright-batch-1",
+        f'{_EXECUTOR_VIEW_COMMAND} --output="/tmp/aa-playwright-batch-1"',
+        f'{_EXECUTOR_VIEW_COMMAND} "qa/tests/api/test_generated.py::test_ok[param one]"',
+        "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile "
+        "qa/tests/performance/locustfile_generated.py --headless -u 1 -r 1 -t 1s",
+        "pnpm --dir qa test",
+    ],
+)
+def test_executor_keeps_canonical_input_paths_and_external_outputs(tmp_path: Path, command: str) -> None:
+    plugin = _install(tmp_path)
+    session = _session(
+        tmp_path,
+        _binding_title(
+            tmp_path,
+            agent_profile="assurance-v1-executor",
+            allowed_outputs=(),
+            read_roots=("qa",),
+        ),
+        agent="assurance-v1-executor",
+    )
+    assert (
+        _allowed(_run(plugin, session=session, tool="bash", args={"command": command}))["command"] == command
+    )
+
+
+@pytest.mark.parametrize("flag", ["--csv", '--cs""v', "--cs''v"])
+def test_executor_cannot_write_locust_csv_into_readable_tests(tmp_path: Path, flag: str) -> None:
+    plugin = _install(tmp_path)
+    session = _session(
+        tmp_path,
+        _binding_title(
+            tmp_path, agent_profile="assurance-v1-executor", allowed_outputs=(), read_roots=("qa",)
+        ),
+        agent="assurance-v1-executor",
+    )
+    command = (
+        "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile "
+        f"qa/tests/performance/locustfile_generated.py --headless {flag}=qa/tests/results"
+    )
+    _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
 
 
 def test_executor_playwright_config_view_shell_is_allowed(tmp_path: Path) -> None:
@@ -697,7 +787,7 @@ def test_executor_playwright_config_view_shell_is_allowed(tmp_path: Path) -> Non
         _binding_title(
             project,
             agent_profile="assurance-v1-executor",
-            read_roots=(_EXECUTION_VIEW,),
+            read_roots=("qa",),
         ),
         agent="assurance-v1-executor",
     )
@@ -714,12 +804,17 @@ def test_executor_shell_rejects_a_sibling_attempt_execution_view(tmp_path: Path)
         _binding_title(
             project,
             agent_profile="assurance-v1-executor",
-            read_roots=(_EXECUTION_VIEW,),
+            read_roots=("qa",),
         ),
         agent="assurance-v1-executor",
     )
     sibling = _EXECUTION_VIEW.replace("attempt-1", "attempt-2")
-    command = _EXECUTOR_VIEW_COMMAND.replace(_EXECUTION_VIEW, sibling)
+    command = (
+        "PYTHONDONTWRITEBYTECODE=1 "
+        "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-1 "
+        "uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir "
+        f"{sibling} {sibling}/tests/api/test_generated.py::test_ok"
+    )
 
     _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
 
@@ -733,32 +828,32 @@ def test_executor_cannot_overwrite_the_authenticated_execution_view(tmp_path: Pa
         _binding_title(
             project,
             agent_profile="assurance-v1-executor",
-            read_roots=(_EXECUTION_VIEW,),
+            read_roots=("qa",),
         ),
         agent="assurance-v1-executor",
     )
 
     _denied(
-        _run(plugin, session=session, tool="write", args={"filePath": _EXECUTION_VIEW}),
+        _run(plugin, session=session, tool="write", args={"filePath": "qa/tests/api/test_generated.py"}),
         "path",
     )
 
 
 def test_executor_read_is_confined_to_the_authenticated_execution_view(tmp_path: Path) -> None:
     project = tmp_path / "project"
-    selected = project / _EXECUTION_VIEW / "tests/api/test_generated.py"
+    selected = project / "qa/tests/api/test_generated.py"
     selected.parent.mkdir(parents=True)
     selected.write_text("def test_ok(): pass\n", encoding="utf-8")
-    sibling = Path(str(selected).replace("attempt-1", "attempt-2"))
-    sibling.parent.mkdir(parents=True)
-    sibling.write_text("def test_sibling(): pass\n", encoding="utf-8")
+    outside = project / "app/main.py"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("APP = 1\n", encoding="utf-8")
     plugin = _install(project)
     session = _session(
         project,
         _binding_title(
             project,
             agent_profile="assurance-v1-executor",
-            read_roots=(_EXECUTION_VIEW,),
+            read_roots=("qa",),
         ),
         agent="assurance-v1-executor",
     )
@@ -777,7 +872,7 @@ def test_executor_read_is_confined_to_the_authenticated_execution_view(tmp_path:
             plugin,
             session=session,
             tool="read",
-            args={"filePath": sibling.relative_to(project).as_posix()},
+            args={"filePath": outside.relative_to(project).as_posix()},
         ),
         "path",
     )
@@ -791,10 +886,10 @@ def test_tampered_execution_read_root_is_rejected_by_binding_digest(tmp_path: Pa
         _binding_title(
             project,
             agent_profile="assurance-v1-executor",
-            read_roots=(_EXECUTION_VIEW,),
+            read_roots=("qa",),
         ).split(":", 1)[1]
     )
-    document["read_roots"] = [_EXECUTION_VIEW.replace("attempt-1", "attempt-2")]
+    document["read_roots"] = ["app"]
     title = "aa-workspace-binding-v1:" + canonical_json_bytes(document).decode("utf-8")
 
     _denied(
@@ -816,10 +911,10 @@ def test_signed_noncanonical_execution_read_roots_are_rejected(tmp_path: Path) -
         _binding_title(
             project,
             agent_profile="assurance-v1-executor",
-            read_roots=(_EXECUTION_VIEW,),
+            read_roots=("qa",),
         ).split(":", 1)[1]
     )
-    document["read_roots"] = [_EXECUTION_VIEW, _EXECUTION_VIEW]
+    document["read_roots"] = ["qa", "qa"]
     document["digest"] = canonical_digest({key: value for key, value in document.items() if key != "digest"})
     title = "aa-workspace-binding-v1:" + canonical_json_bytes(document).decode("utf-8")
 

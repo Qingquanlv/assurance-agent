@@ -35,10 +35,10 @@ Schema truth is `assurance_execution.contracts`.
 The public handler accepts only canonical data. Do not read ambient runner
 configuration and do not expand a shell.
 
-Resolve every selected path underneath the supplied `execution_view_root`.
-Reject traversal, symbolic links, non-regular files, another Attempt's view,
-and project-tree paths. Pass that exact root to the family runner and spawn
-only after the selected set equals the closed mapping.
+Run the locked selectors in place under durable `qa/tests/`.
+Reject traversal, symbolic links, non-regular files, remapped staging copies,
+and project-tree paths outside that tree. Spawn only after the selected set
+equals the closed mapping.
 
 Unmapped existing tests are neither discovered nor run.
 
@@ -49,20 +49,19 @@ other dependency environment inside the attempt workspace. Use only these
 canonical command forms and keep the shown option order. Each Bash tool input
 is one physical line: replace the visual line wrapping below with spaces and
 never include a newline, `&&`, `;`, pipe, redirect, shell wrapper, or setup
-command. `<mapped-selector>` is the locked pytest node id prefixed by
-`<execution_view_root>/`:
+command. `<mapped-selector>` is the locked pytest node id under `qa/tests/`:
 
 - API and Fuzz: `PYTHONDONTWRITEBYTECODE=1
   HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id> uv run --isolated
-  pytest -p no:cacheprovider --tb=line --rootdir <execution_view_root>
-  <execution_view_root>/<mapped-selector> ...`.
+  pytest -p no:cacheprovider --tb=line -o pythonpath=qa
+  <mapped-selector> ...`.
 - E2E: `PYTHONDONTWRITEBYTECODE=1
   HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id> uv run --isolated
-  pytest -p no:cacheprovider --tb=line --rootdir <execution_view_root>
+  pytest -p no:cacheprovider --tb=line -o pythonpath=qa
   --output=/tmp/aa-playwright-<batch_id>
-  <execution_view_root>/<mapped-selector> ...`.
+  <mapped-selector> ...`.
 - Performance: `PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile
-  <execution_view_root>/<mapped-locustfile> --headless ...`, with bounded load
+  <mapped-locustfile> --headless ...`, with bounded load
 parameters from the reviewed plan.
 
 Every pytest command must include `--tb=line`; line-only tracebacks prevent

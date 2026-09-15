@@ -45,9 +45,9 @@ if another required edit is outside them, report the scope gap without broadenin
 
 ## Durable mapping and the execution view
 
-Closed mapping `target_file` values must stay under `qa/tests/`. The
-execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
-collection. Fixtures and support modules live under `qa/tests/`.
+Closed mapping `target_file` values must stay under `qa/tests/`.
+Execute runs durable `qa/tests/` in place with `pythonpath=qa`.
+Fixtures and support modules live under `qa/tests/`.
 Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
 Do not look up fixtures under the SUT `tests/` tree.
 Do not retarget mapping rows to `tests/`.

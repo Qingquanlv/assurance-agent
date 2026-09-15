@@ -162,6 +162,118 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
     assert history_ref["path"] == history_path.relative_to(stage).as_posix()
 
 
+def _runner_finding() -> dict[str, object]:
+    return {
+        "id": "API-PLAN-001",
+        "severity": "high",
+        "category": "test-runner",
+        "message": "Markers: none required contradicts asyncio_mode = strict",
+        "locator": {"artifact": "qa/results/plans/api-codegen-plan.md", "key": "7. Run Guidance"},
+    }
+
+
+def _semantic_finding(finding_id: str = "API-PLAN-002") -> dict[str, object]:
+    return {
+        "id": finding_id,
+        "severity": "medium",
+        "category": "coverage",
+        "message": "TC_DEPT_006 must construct the empty-string name",
+        "locator": {
+            "artifact": "qa/results/plans/api-plan.md",
+            "case_id": "TC_DEPT_006",
+            "key": "4. Request Strategy",
+        },
+    }
+
+
+def _as_needs_fix(review: dict[str, object], *findings: dict[str, object]) -> dict[str, object]:
+    updated = dict(review)
+    updated.update(
+        {
+            "decision": "needs_fix",
+            "auto_fix_allowed": True,
+            "human_review_required": False,
+            "codegen_readiness": "not_ready",
+            "findings": list(findings),
+            "auto_fix_plan": [str(item["id"]) for item in findings],
+            "next_action": "run api planner",
+        }
+    )
+    return updated
+
+
+@pytest.mark.asyncio
+async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Path) -> None:
+    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
+
+    review, _, _ = await audited_review(tmp_path)
+    review = _as_needs_fix(review, _runner_finding())
+    write_review(tmp_path, review)
+    executed = await execute_task(
+        review_finalize_handler("api"),
+        {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 0},
+        tmp_path,
+    )
+    assert executed.status == "succeeded", executed.failure
+    output = cast(dict[str, object], executed.output)
+    assert output["decision"] == "pass"
+    assert output["findings"] == []
+
+
+@pytest.mark.asyncio
+async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) -> None:
+    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
+
+    review, _, _ = await audited_review(tmp_path)
+    first = _as_needs_fix(review, _semantic_finding())
+    write_review(tmp_path, first)
+    first_pass = await execute_task(
+        review_finalize_handler("api"),
+        {**fake_agent_result(first), "change_id": "CH-DEMO-001", "coverage_epoch": 1},
+        tmp_path,
+    )
+    assert first_pass.status == "succeeded", first_pass.failure
+    assert cast(dict[str, object], first_pass.output)["decision"] == "needs_fix"
+
+    second = _as_needs_fix(review, _semantic_finding(), _semantic_finding("API-PLAN-004"))
+    write_review(tmp_path, second)
+    retried = await execute_task(
+        review_finalize_handler("api"),
+        {**fake_agent_result(second), "change_id": "CH-DEMO-001", "coverage_epoch": 1},
+        tmp_path,
+    )
+    assert retried.status == "succeeded", retried.failure
+    output = cast(dict[str, object], retried.output)
+    assert output["decision"] == "needs_fix"
+    assert [item["id"] for item in cast(list[dict[str, object]], output["findings"])] == ["API-PLAN-002"]
+
+
+@pytest.mark.asyncio
+async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
+    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
+
+    review, _, _ = await audited_review(tmp_path)
+    write_review(tmp_path, review)
+    passed = await execute_task(
+        review_finalize_handler("api"),
+        {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 4},
+        tmp_path,
+    )
+    assert passed.status == "succeeded", passed.failure
+    assert cast(dict[str, object], passed.output)["decision"] == "pass"
+
+    later = _as_needs_fix(review, _semantic_finding())
+    write_review(tmp_path, later)
+    retried = await execute_task(
+        review_finalize_handler("api"),
+        {**fake_agent_result(later), "change_id": "CH-DEMO-001", "coverage_epoch": 4},
+        tmp_path,
+    )
+    assert retried.status == "succeeded", retried.failure
+    assert cast(dict[str, object], retried.output)["decision"] == "pass"
+    assert cast(dict[str, object], retried.output)["findings"] == []
+
+
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_plan_review_finalize_rejects_wrong_family(family: str, tmp_path: Path) -> None:

@@ -41,9 +41,9 @@ Schema truth is `assurance_execution.contracts` for runner facts and mapping,
 Run only the selected mapping. Existing tests that are not in the mapping are
 neither discovered nor executed.
 
-Resolve every selected test underneath the supplied `execution_view_root` and
-pass that exact root to the family runner. Never execute a project-tree path,
-another Attempt's execution view, or a sibling of the supplied root.
+Run the locked selectors in place under durable `qa/tests/`. Never execute a
+project-tree path outside that tree, a remapped staging copy, or an unmapped
+existing test.
 
 Do not invent collection counts, durations, or failure text.
 
@@ -73,23 +73,23 @@ the authenticated candidate tree. Do not shorten, omit, or redirect those
 settings back into the project.
 
 Use only these canonical command forms. `<mapped-selector>` is the locked
-pytest node id prefixed by `<execution_view_root>/`; `<mapped-locustfile>` is
-the locked performance file relative to that same root. Each Bash tool input
-is one physical line: replace the visual line wrapping below with spaces and
-never include a newline, `&&`, `;`, pipe, redirect, shell wrapper, or setup
-command. Keep the shown option order:
+pytest node id under `qa/tests/`; `<mapped-locustfile>` is the locked
+performance file under `qa/tests/`. Each Bash tool input is one physical line:
+replace the visual line wrapping below with spaces and never include a newline,
+`&&`, `;`, pipe, redirect, shell wrapper, or setup command. Keep the shown
+option order:
 
 - API and Fuzz: `PYTHONDONTWRITEBYTECODE=1
   HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id> uv run --isolated
-  pytest -p no:cacheprovider --tb=line --rootdir <execution_view_root>
-  <execution_view_root>/<mapped-selector> ...`.
+  pytest -p no:cacheprovider --tb=line -o pythonpath=qa
+  <mapped-selector> ...`.
 - E2E: `PYTHONDONTWRITEBYTECODE=1
   HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id> uv run --isolated
-  pytest -p no:cacheprovider --tb=line --rootdir <execution_view_root>
+  pytest -p no:cacheprovider --tb=line -o pythonpath=qa
   --output=/tmp/aa-playwright-<batch_id>
-  <execution_view_root>/<mapped-selector> ...`.
+  <mapped-selector> ...`.
 - Performance: `PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile
-  <execution_view_root>/<mapped-locustfile> --headless ...` with bounded users,
+  <mapped-locustfile> --headless ...` with bounded users,
   spawn rate, and duration from the reviewed plan. Never ask pytest to import
   or collect a Locust file.
 

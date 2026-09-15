@@ -21,24 +21,23 @@ const WRITE_TOOLS = new Set(["apply_patch", "artifact_write", "edit", "write"]);
 const READ_TOOLS = new Set(["read", "glob", "grep"]);
 const SHELL_TOOLS = new Set(["bash", "interactive_bash"]);
 const EXECUTOR_PROFILE = "assurance-v1-executor";
-const EXECUTION_VIEW_RELATIVE = /^qa\/\.staging\/execution\/[^/]+$/;
 const HYPOTHESIS_CACHE = /^\/tmp\/aa-hypothesis-[A-Za-z0-9._-]+$/;
 const SHELL_UNSAFE = /[;\n\r`<>]|&&|\|\||(?<!\$)\||\$\(|<\(|>\(/;
-const EXECUTION_VIEW_PATTERN = String.raw`(?:[A-Za-z0-9._-]+/)*qa/\.staging/execution/[A-Za-z0-9._-]+`;
-const EXECUTION_VIEW_FILE_PATTERN = String.raw`${EXECUTION_VIEW_PATTERN}/[A-Za-z0-9._/-]+`;
+const DURABLE_QA = String.raw`qa`;
+const DURABLE_TESTS_FILE = String.raw`qa/tests/[A-Za-z0-9._/-]+`;
 const HYPOTHESIS_PATTERN = String.raw`/tmp/aa-hypothesis-[A-Za-z0-9._-]+`;
 const PLAYWRIGHT_OUTPUT = /^\/tmp\/aa-playwright-[A-Za-z0-9._-]+$/;
 const EXECUTOR_GRAMMARS = [
-  new RegExp(String.raw`^npm run test --prefix ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
-  new RegExp(String.raw`^npm test --prefix ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
-  new RegExp(String.raw`^npx playwright test --config=${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
-  new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} run test(?:\s+\S+)*$`),
-  new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} test(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npm run test --prefix ${DURABLE_QA}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npm test --prefix ${DURABLE_QA}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npx playwright test --config=${DURABLE_TESTS_FILE}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^pnpm --dir ${DURABLE_QA} run test(?:\s+\S+)*$`),
+  new RegExp(String.raw`^pnpm --dir ${DURABLE_QA} test(?:\s+\S+)*$`),
   new RegExp(
-    String.raw`^PYTHONDONTWRITEBYTECODE=1 HYPOTHESIS_STORAGE_DIRECTORY=${HYPOTHESIS_PATTERN} uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`,
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 HYPOTHESIS_STORAGE_DIRECTORY=${HYPOTHESIS_PATTERN} uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa(?:\s+\S+)*$`,
   ),
   new RegExp(
-    String.raw`^PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile ${EXECUTION_VIEW_FILE_PATTERN}(?:\s+\S+)*$`,
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile ${DURABLE_TESTS_FILE}(?:\s+\S+)*$`,
   ),
 ];
 const PATCH_HEADERS = /^(Add File|Update File|Delete File|Move to): /;
@@ -346,34 +345,58 @@ const rewriteNativeWrites = (args, rewrite) => {
 };
 
 const tokenizeShell = (command) => {
-  const tokens = [];
-  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let match = pattern.exec(command);
-  while (match !== null) {
-    tokens.push(match[1] ?? match[2] ?? match[3]);
-    match = pattern.exec(command);
+  // The closed runner grammar accepts literal words, not expansion or escapes.
+  if (/[$\\]/.test(command)) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
   }
+  const tokens = [];
+  let value = "";
+  let quote = null;
+  let started = false;
+  for (const char of command) {
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      else value += char;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) tokens.push(value);
+      value = "";
+      started = false;
+    } else {
+      value += char;
+      started = true;
+    }
+  }
+  if (quote !== null) {
+    throw new Error("Assurance write boundary: shell escape is not allowed");
+  }
+  if (started) tokens.push(value);
   return tokens;
 };
 
 const looksLikePath = (value) => value.includes("/") || value.includes("\\") || value === "." || value === "..";
 
-const assignmentValue = (token) => {
+const assignment = (token) => {
   const eq = token.indexOf("=");
   if (eq <= 0) return null;
+  let key = token.slice(0, eq);
   let value = token.slice(eq + 1);
-  while (value.includes("=")) {
-    value = value.slice(value.indexOf("=") + 1);
+  if ((key === "-o" || key === "--override-ini") && value.includes("=")) {
+    const nested = value.indexOf("=");
+    key = value.slice(0, nested);
+    value = value.slice(nested + 1);
   }
-  return value;
+  return { key, value };
 };
 
 const pathCandidates = (command) => {
   const found = [];
   for (const token of tokenizeShell(command)) {
     if (token.includes("=")) {
-      const value = assignmentValue(token);
-      if (value !== null && looksLikePath(value)) found.push(value);
+      const parsed = assignment(token);
+      if (parsed !== null && looksLikePath(parsed.value)) found.push(parsed.value);
       continue;
     }
     if (looksLikePath(token)) found.push(token);
@@ -381,19 +404,16 @@ const pathCandidates = (command) => {
   return found;
 };
 
-const OUTPUT_FLAG = /(?:output|file|log|html|xml|dir|cache|basetemp|junit|result)$/i;
-
-const isOutputDestinationFlag = (token) => (
-  token.startsWith("-") && !token.includes("=") && OUTPUT_FLAG.test(token.replace(/^-+/, ""))
+const OUTPUT_FLAG = /(?:output|file|log|html|xml|csv|dir|cache|basetemp|junit|result)$/i;
+// These canonical runner options select inputs, not output destinations.
+const INPUT_PATH_FLAGS = new Set(["dir", "locustfile"]);
+const isOutputKey = (key) => (
+  OUTPUT_FLAG.test(key) && !INPUT_PATH_FLAGS.has(key.replace(/^-+/, ""))
 );
 
-const boundExecutionView = (binding) => {
-  const prefix = `${binding.write_root}/`;
-  const candidates = binding.read_roots.filter((item) => (
-    item.startsWith(prefix) && EXECUTION_VIEW_RELATIVE.test(item.slice(prefix.length))
-  ));
-  return candidates.length === 1 ? candidates[0] : null;
-};
+const isOutputDestinationFlag = (token) => (
+  token.startsWith("-") && !token.includes("=") && isOutputKey(token)
+);
 
 const projectCommandPath = (value, root) => {
   const candidate = value.split("::", 1)[0];
@@ -407,18 +427,15 @@ const projectCommandPath = (value, root) => {
   return projectRelative(candidate) ? candidate : null;
 };
 
-const isAllowedOutputTarget = (value, root, binding) => (
+const isAllowedOutputTarget = (value) => (
   HYPOTHESIS_CACHE.test(value)
   || PLAYWRIGHT_OUTPUT.test(value)
-  || isExecutionViewPath(value, root, binding)
 );
 
 const isExecutionViewPath = (value, root, binding) => {
-  const expected = boundExecutionView(binding);
   const relative = projectCommandPath(value, root);
-  return expected !== null
-    && relative !== null
-    && (relative === expected || relative.startsWith(`${expected}/`));
+  return relative !== null
+    && binding.read_roots.some((item) => relative === item || relative.startsWith(`${item}/`));
 };
 
 const outputParents = (binding) => new Set(
@@ -446,26 +463,23 @@ const isDeniedLocation = (value, root, binding) => {
 const matchesExecutorGrammar = (command) => EXECUTOR_GRAMMARS.some((pattern) => pattern.test(command));
 
 const isCwdRelativeOutput = (token, root, binding) => {
-  const value = assignmentValue(token);
-  if (value === null) {
+  const parsed = assignment(token);
+  if (parsed === null) {
     return token === "." || token === ".." || token.startsWith("./") || token.startsWith("../");
   }
+  const { key, value } = parsed;
   if (!value) return true;
-  if (isAllowedOutputTarget(value, root, binding)) {
+  if (isAllowedOutputTarget(value)) {
     return false;
   }
-  const lastEq = token.lastIndexOf("=");
-  const before = token.slice(0, lastEq);
-  const prevEq = before.lastIndexOf("=");
-  const key = prevEq >= 0 ? before.slice(prevEq + 1) : before;
-  return OUTPUT_FLAG.test(key) || looksLikePath(value);
+  return isOutputKey(key) || (looksLikePath(value) && !isExecutionViewPath(value, root, binding));
 };
 
-const hasDeniedTwoTokenOutput = (tokens, root, binding) => {
+const hasDeniedTwoTokenOutput = (tokens) => {
   for (let index = 0; index < tokens.length; index += 1) {
     if (!isOutputDestinationFlag(tokens[index])) continue;
     const next = tokens[index + 1];
-    if (next === undefined || next.startsWith("-") || !isAllowedOutputTarget(next, root, binding)) {
+    if (next === undefined || next.startsWith("-") || !isAllowedOutputTarget(next)) {
       return true;
     }
   }
@@ -486,7 +500,7 @@ const assertExecutorShell = (binding, root, args) => {
   }
   if (
     tokens.some((token) => isCwdRelativeOutput(token, root, binding))
-    || hasDeniedTwoTokenOutput(tokens, root, binding)
+    || hasDeniedTwoTokenOutput(tokens)
   ) {
     throw new Error("Assurance write boundary: shell escape is not allowed");
   }

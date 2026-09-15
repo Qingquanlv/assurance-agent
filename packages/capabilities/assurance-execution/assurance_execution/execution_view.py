@@ -19,7 +19,9 @@ from assurance_execution.generated_merge import MergedGeneratedSet
 
 _TESTS_PREFIX = "tests/"
 _QA_TESTS_PREFIX = "qa/tests/"
+_DURABLE_ROOT = "qa"
 _PREPARATION_FILE = ".assurance/execution-prepared-v1.json"
+_DURABLE_LOCK_FILE = "durable-execution-v1.json"
 _IGNORED_SUPPORT_DIRECTORIES = frozenset(
     {
         ".hypothesis",
@@ -44,6 +46,14 @@ class ExecutionViewPreparation(FrozenModel):
     change_id: str
     batch_id: str
     executed_at: AwareDatetime
+
+
+class DurableExecutionLock(FrozenModel):
+    schema_version: Literal["1"] = "1"
+    change_id: str
+    batch_id: str
+    executed_at: AwareDatetime
+    content_digest: str
 
 
 class ExecutionView(FrozenModel):
@@ -75,6 +85,85 @@ def build_execution_view(
         raise ValueError(f"conflict: execution view already exists: {view.root}")
     _materialize(view_root, planned)
     return view
+
+
+def lock_durable_execution(
+    project_root: Path,
+    *,
+    write_root: Path,
+    change_id: str,
+    batch_id: str,
+    merged: MergedGeneratedSet,
+    selected: tuple[str, ...],
+) -> ExecutionView:
+    project = Path(project_root)
+    destination = Path(write_root)
+    closed_change = _safe_component(change_id, label="change_id")
+    closed_batch = _safe_component(batch_id, label="batch_id")
+    selected_targets = tuple(selected)
+    planned = _plan_durable_files(project, merged, selected_targets)
+    digest = _planned_digest(planned)
+    lock_dir = _join(destination, qa_join(".staging/execution"))
+    lock_path = lock_dir / _DURABLE_LOCK_FILE
+    if lock_path.exists():
+        lock = _read_durable_lock(lock_path, change_id=closed_change)
+        if lock.batch_id == closed_batch and lock.content_digest != digest:
+            raise ValueError("durable execution digest drifted")
+        if lock.content_digest == digest and lock.batch_id == closed_batch:
+            executed_at = lock.executed_at
+        else:
+            executed_at = datetime.now(UTC)
+            _write_durable_lock(
+                lock_path,
+                DurableExecutionLock(
+                    change_id=closed_change,
+                    batch_id=closed_batch,
+                    executed_at=executed_at,
+                    content_digest=digest,
+                ),
+            )
+    else:
+        executed_at = datetime.now(UTC)
+        _write_durable_lock(
+            lock_path,
+            DurableExecutionLock(
+                change_id=closed_change,
+                batch_id=closed_batch,
+                executed_at=executed_at,
+                content_digest=digest,
+            ),
+        )
+    return ExecutionView(
+        batch_id=closed_batch,
+        root=_DURABLE_ROOT,
+        selected_targets=selected_targets,
+        digest=digest,
+        executed_at=executed_at,
+    )
+
+
+def authenticate_durable_execution(
+    project_root: Path,
+    *,
+    write_root: Path,
+    change_id: str,
+    view: ExecutionView,
+    merged: MergedGeneratedSet,
+) -> None:
+    """Reject evidence if the prepared identity or its test inputs have drifted."""
+    if view.root != _DURABLE_ROOT:
+        raise ValueError("execution view root is not the durable qa tree")
+    lock_path = _join(write_root, qa_join(".staging/execution")) / _DURABLE_LOCK_FILE
+    lock = _read_durable_lock(lock_path, change_id=change_id)
+    if (lock.batch_id, lock.content_digest, lock.executed_at) != (
+        view.batch_id,
+        view.digest,
+        view.executed_at,
+    ):
+        raise ValueError("durable execution lock identity drifted")
+    planned = _plan_durable_files(project_root, merged, view.selected_targets)
+    if _planned_digest(planned) != lock.content_digest:
+        raise ValueError("durable execution digest drifted")
 
 
 def build_or_authenticate_execution_view(
@@ -260,6 +349,55 @@ def _batch_id_from_root(root: str) -> str:
     return _safe_component(parts[3], label="batch_id")
 
 
+def _plan_durable_files(
+    project: Path,
+    merged: MergedGeneratedSet,
+    selected: tuple[str, ...],
+) -> dict[str, tuple[bytes, int]]:
+    planned: dict[str, tuple[bytes, int]] = {}
+    selected_files = tuple(dict.fromkeys(selected_test_file(item) for item in selected))
+    for item in merged.files:
+        planned[item.target_path] = _read_regular(project, item.staged_path)
+    for relative in selected_files:
+        if relative not in planned:
+            planned[relative] = _read_regular(project, relative)
+    for support, source in collect_test_support_files(project, preserve_paths=True).items():
+        planned.setdefault(support, source)
+    return dict(sorted(planned.items()))
+
+
+def _write_durable_lock(path: Path, lock: DurableExecutionLock) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            path.chmod(0o644)
+            path.unlink()
+        path.write_bytes(canonical_json_bytes(cast(JSONValue, lock.model_dump(mode="json"))))
+        path.chmod(0o444)
+    except OSError as error:
+        raise ValueError("could not persist durable execution lock") from error
+
+
+def _read_durable_lock(
+    path: Path,
+    *,
+    change_id: str,
+) -> DurableExecutionLock:
+    if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+        raise ValueError("durable execution lock is missing")
+    payload = path.read_bytes()
+    try:
+        lock = DurableExecutionLock.model_validate_json(payload)
+    except ValueError as error:
+        raise ValueError("durable execution lock is invalid") from error
+    canonical = canonical_json_bytes(cast(JSONValue, lock.model_dump(mode="json")))
+    if payload != canonical:
+        raise ValueError("durable execution lock is not canonical")
+    if lock.change_id != change_id:
+        raise ValueError("durable execution lock identity drifted")
+    return lock
+
+
 def _plan_view_files(
     project: Path,
     merged: MergedGeneratedSet,
@@ -313,15 +451,18 @@ def _require_test_support(relative: str) -> str:
     return relative
 
 
-def collect_test_support_files(project: Path) -> dict[str, tuple[bytes, int]]:
+def collect_test_support_files(
+    project: Path, *, preserve_paths: bool = False
+) -> dict[str, tuple[bytes, int]]:
+    """Keep physical namespaces for durable execution; legacy views overlay fixtures."""
     support: dict[str, tuple[bytes, int]] = {}
     for root in (project / "qa" / "tests", project / "qa" / "fixtures"):
-        for relative, source in _collect_support_tree(project, root).items():
+        for relative, source in _collect_support_tree(project, root, preserve_paths=preserve_paths).items():
             support.setdefault(relative, source)
     return support
 
 
-def _collect_support_tree(project: Path, root: Path) -> dict[str, tuple[bytes, int]]:
+def _collect_support_tree(project: Path, root: Path, *, preserve_paths: bool) -> dict[str, tuple[bytes, int]]:
     if not root.exists():
         return {}
     if root.is_symlink() or not root.is_dir():
@@ -343,7 +484,11 @@ def _collect_support_tree(project: Path, root: Path) -> dict[str, tuple[bytes, i
             if not _is_python_support(name):
                 continue
             source_relative = (current_path / name).relative_to(project).as_posix()
-            relative = _QA_TESTS_PREFIX + (current_path / name).relative_to(root).as_posix()
+            relative = (
+                source_relative
+                if preserve_paths
+                else _QA_TESTS_PREFIX + (current_path / name).relative_to(root).as_posix()
+            )
             source = _read_regular(project, source_relative)
             payload, _ = source
             if len(payload) > _MAX_SUPPORT_FILE_BYTES:
@@ -390,8 +535,10 @@ def _planned_digest(planned: dict[str, tuple[bytes, int]]) -> str:
 
 
 __all__ = [
+    "DurableExecutionLock",
     "ExecutionView",
     "ExecutionViewPreparation",
+    "authenticate_durable_execution",
     "authenticate_execution_view",
     "build_execution_view",
     "build_or_authenticate_execution_view",
@@ -399,4 +546,5 @@ __all__ = [
     "discard_authenticated_execution_view",
     "discard_execution_view",
     "execution_view_relative",
+    "lock_durable_execution",
 ]

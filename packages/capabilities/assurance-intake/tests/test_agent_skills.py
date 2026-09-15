@@ -1540,6 +1540,7 @@ async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> N
     assert executed.status == "succeeded", executed.failure
     assert executed.output["validation_status"] == "pass"
     assert [artifact["path"] for artifact in executed.output["artifacts"]] == sorted(outputs)
+    assert not (write_root / "qa/results/case-index.json").exists()
     assert "added" not in executed.output
     AGENT_JOB_CONTRACTS["case-design"].output_model.model_validate(executed.output)
 
