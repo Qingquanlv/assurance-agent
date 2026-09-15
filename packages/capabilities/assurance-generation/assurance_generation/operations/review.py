@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import PurePosixPath
 from typing import cast
 
@@ -14,7 +13,7 @@ from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.agent import AgentBindingDataV1, AgentFinalizeInputV1
-from assurance_generation.contracts.reviews import PlanReviewAuthoring, normalize_public_review_outcome
+from assurance_generation.contracts.reviews import PlanReviewAuthoring, public_review_outcome
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_REVIEW_RESULT_ID,
@@ -27,33 +26,23 @@ from assurance_generation.operations.planning import (
     failed_output,
     evidence_ref,
     leafs_of,
-    load_family_cases,
-    planning_facts_for,
-    review_input_images,
     plan_review_outputs,
     plan_review_input_paths,
     prepare_plan_outcome,
     persist_loop_round_history,
+    plan_repair_review,
     resolve_family,
-    validate_plan_input,
-    validate_reviewed_plan,
 )
 from assurance_generation.operations.plan_review_policy import (
     apply_plan_review_policy,
-    load_finding_scope,
     write_finding_scope,
-)
-from assurance_generation.operations.review_audit import (
-    api_review_requirements,
-    repair_api_review_audit,
-    validate_api_review_audit,
 )
 
 _REVIEW_SKILL_FILES: dict[Family, str] = {
-    "api": "skills/aa-api-plan-reviewer/SKILL.md",
-    "e2e": "skills/aa-e2e-plan-reviewer/SKILL.md",
-    "fuzz": "skills/aa-fuzz-plan-reviewer/SKILL.md",
-    "performance": "skills/aa-performance-plan-reviewer/SKILL.md",
+    "api": "skills/aa-api-codegen-reviewer/SKILL.md",
+    "e2e": "skills/aa-e2e-codegen-reviewer/SKILL.md",
+    "fuzz": "skills/aa-fuzz-codegen-reviewer/SKILL.md",
+    "performance": "skills/aa-performance-codegen-reviewer/SKILL.md",
 }
 
 
@@ -64,14 +53,34 @@ class PlanReviewPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             family = resolve_family(self._family, request)
-            business, cases = validate_plan_input(
+            from assurance_generation.contracts.agent import PlanInputV1
+            from assurance_generation.operations.codegen import validate_codegen_input
+
+            codegen_business, scope, cases = validate_codegen_input(
                 request.input,
-                family=family,
-                workspace=context.project_root,
+                family,
+                context.project_root,
             )
-            if business.reviewed_plan is None:
-                raise InputError("reviewed_plan is required for plan review")
-            validate_reviewed_plan(business, family, cases)
+            if codegen_business.codegen_output is None:
+                raise InputError("codegen_output is required for codegen review")
+            business = PlanInputV1.model_validate(
+                {
+                    "change_id": codegen_business.change_id,
+                    "plan_digest": codegen_business.plan_digest,
+                    "plan_ref": codegen_business.plan_ref.model_dump(mode="json"),
+                    "capability_leafs": list(codegen_business.capability_leafs),
+                    "artifact_paths": list(codegen_business.artifact_paths),
+                    "reviewed_cases": cases.model_dump(mode="json"),
+                    "family_constraints": codegen_business.family_constraints.model_dump(mode="json")
+                    if codegen_business.family_constraints is not None
+                    else None,
+                    "coverage_epoch": codegen_business.coverage_epoch,
+                    "local_round": codegen_business.local_round,
+                    "reviewed_case": None
+                    if codegen_business.reviewed_case is None
+                    else codegen_business.reviewed_case.model_dump(mode="json"),
+                }
+            )
             binding = AgentBindingDataV1.model_validate(request.binding_data)
             review_inputs = plan_review_input_paths(
                 context.project_root,
@@ -90,6 +99,15 @@ class PlanReviewPrepareHandler:
                 allowed_outputs=plan_review_outputs(business.change_id, family),
                 close_result_capabilities=True,
                 review_input_paths=review_inputs,
+                extra_json={
+                    "codegen_scope": scope.model_dump(mode="json"),
+                    "codegen_output": codegen_business.codegen_output,
+                },
+                repair_review=plan_repair_review(
+                    context.project_root,
+                    business=business,
+                    family=family,
+                ),
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
@@ -105,81 +123,25 @@ class PlanReviewFinalizeHandler:
         try:
             family = resolve_family(self._family, request)
             payload = AgentFinalizeInputV1.model_validate(request.input)
+            raw = thaw_json(payload.agent_result.result_payload)
+            if isinstance(raw, dict):
+                raw.pop("review_audit", None)
             try:
                 document = PlanReviewAuthoring.model_validate(
-                    thaw_json(payload.agent_result.result_payload),
+                    raw,
                     context={"capability_leafs": leafs_of(payload.capability_leafs)},
                 )
             except ValidationError as error:
                 raise OutputError(str(error)) from error
-            expected = f"{family}-plan"
+            expected = f"{family}-codegen"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
-            audit_inputs = None
-            if family == "api":
-                if document.review_audit is None:
-                    raise OutputError("review_audit is required for API plan review in every round")
-                paths = plan_review_input_paths(
-                    context.project_root, change_id=document.change_id, family=family
-                )
-                images = review_input_images(context.project_root, paths)
-                facts = planning_facts_for(
-                    context.project_root,
-                    change_id=document.change_id,
-                    family=family,
-                    capability_leafs=payload.capability_leafs,
-                )
-                cases = load_family_cases(
-                    context.project_root,
-                    change_id=document.change_id,
-                    family=family,
-                    capability_leafs=payload.capability_leafs,
-                    case_paths=tuple(ref.path for ref in payload.reviewed_case.case_refs)
-                    if payload.reviewed_case is not None
-                    else None,
-                )
-                try:
-                    requirements = api_review_requirements(
-                        case_ids=tuple(case.case_id for case in (*cases.added, *cases.modified)),
-                        facts=facts,
-                        images=images,
-                    )
-                    document, warnings = repair_api_review_audit(
-                        document,
-                        requirements=requirements,
-                        facts=facts,
-                        images=images,
-                    )
-                    audit_inputs = (requirements, facts, images)
-                    if warnings:
-                        logging.getLogger(__name__).warning(
-                            "api_review_audit_normalized (%s)", ",".join(warnings)
-                        )
-                except ValueError as error:
-                    raise OutputError(str(error)) from error
-            previous = None
-            if payload.change_id is not None:
-                previous = load_finding_scope(
-                    context.write_root,
-                    family=family,
-                    coverage_epoch=payload.coverage_epoch,
-                ) or load_finding_scope(
-                    context.project_root,
-                    family=family,
-                    coverage_epoch=payload.coverage_epoch,
-                )
             document = PlanReviewAuthoring.model_validate(
-                apply_plan_review_policy(document.model_dump(mode="json"), previous=previous),
+                apply_plan_review_policy(document.model_dump(mode="json"), previous=None),
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
-            if audit_inputs is not None:
-                requirements, facts, images = audit_inputs
-                try:
-                    validate_api_review_audit(document, requirements=requirements, facts=facts, images=images)
-                except ValueError as error:
-                    raise OutputError(str(error)) from error
-            if family == "api" and document.review_audit is not None:
-                raw_path = "qa/results/review/api-plan-review.json"
+            if family == "api":
+                raw_path = "qa/results/review/api-codegen-review.json"
                 sealed = context.write_root.joinpath(*PurePosixPath(raw_path).parts)
                 sealed.parent.mkdir(parents=True, exist_ok=True)
                 sealed.write_text(
@@ -187,11 +149,7 @@ class PlanReviewFinalizeHandler:
                     encoding="utf-8",
                 )
             extra: dict[str, object] = {
-                "public_outcome": normalize_public_review_outcome(
-                    document.decision,
-                    document.auto_fix_allowed,
-                    document.human_review_required,
-                ),
+                "public_outcome": public_review_outcome(document.route),
             }
             if payload.change_id is not None:
                 if payload.change_id != document.change_id:
@@ -204,10 +162,10 @@ class PlanReviewFinalizeHandler:
                 input_refs = tuple(evidence_ref(context.project_root, path) for path in input_paths)
                 review_ref = evidence_ref(
                     context.write_root,
-                    f"qa/results/review/{family}-plan-review.json",
+                    f"qa/results/review/{family}-codegen-review.json",
                 )
                 history_relative = (
-                    f"qa/results/plan/{family}/reviews/epochs/"
+                    f"qa/results/codegen/{family}/reviews/epochs/"
                     f"{payload.coverage_epoch}/rounds/{payload.local_round}.json"
                 )
                 history_ref = persist_loop_round_history(
@@ -228,12 +186,8 @@ class PlanReviewFinalizeHandler:
                     family=family,
                     coverage_epoch=payload.coverage_epoch,
                     change_id=document.change_id,
-                    decision=document.decision,
-                    finding_ids=tuple(
-                        str(item["id"])
-                        for item in document.findings
-                        if isinstance(item, dict) and item.get("id")
-                    ),
+                    route=document.route,
+                    finding_ids=tuple(str(item) for item in document.finding_ids),
                 )
                 scope_ref = evidence_ref(context.write_root, scope_relative)
                 extra["artifacts"] = [
@@ -244,7 +198,10 @@ class PlanReviewFinalizeHandler:
                 cast(
                     JSONValue,
                     {
-                        **document.model_dump(mode="json", exclude={"rounds_used", "rounds_budget"}),
+                        **document.model_dump(
+                            mode="json",
+                            exclude={"rounds_used", "rounds_budget", "review_audit"},
+                        ),
                         **extra,
                     },
                 )

@@ -11,34 +11,62 @@ from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_generation.operations.review import review_finalize_handler, review_prepare_handler
 from assurance_generation.resource_loader import resource_text
+from review_audit_fixtures import (  # pyright: ignore[reportMissingImports]
+    PLAN_PATH,
+    review_prepare_input,
+    write_codegen_artifacts,
+)
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     FAMILIES,
-    family_plan_files,
     fake_agent_result,
     plan_input,
     review_result,
-    valid_plan_result,
 )
+from test_contracts import valid_plan_review  # pyright: ignore[reportMissingImports]
 
 
 @pytest.mark.asyncio
-async def test_api_review_cannot_finish_without_check_coverage(tmp_path: Path) -> None:
+async def test_api_review_finalizes_without_review_audit(tmp_path: Path) -> None:
     outcome = await execute_task(
-        review_finalize_handler("api"), fake_agent_result(review_result("api")), tmp_path
+        review_finalize_handler("api"),
+        fake_agent_result(valid_plan_review()),
+        tmp_path,
     )
-    assert outcome.status == "failed"
-    assert outcome.failure is not None
-    assert "review_audit is required" in outcome.failure.message
+    assert outcome.status == "succeeded", outcome.failure
+    output = cast(dict[str, object], outcome.output)
+    assert output["route"] == "codegen"
+    assert "review_audit" not in output
+
+
+@pytest.mark.asyncio
+async def test_api_review_finalize_strips_leftover_review_audit(tmp_path: Path) -> None:
+    leftover = {
+        **valid_plan_review(),
+        "review_audit": {
+            "input_refs": [],
+            "planning_facts_digest": "0" * 64,
+            "cases": [],
+            "helpers": [],
+        },
+    }
+    outcome = await execute_task(
+        review_finalize_handler("api"),
+        fake_agent_result(leftover),
+        tmp_path,
+    )
+    assert outcome.status == "succeeded", outcome.failure
+    output = cast(dict[str, object], outcome.output)
+    assert "review_audit" not in output
 
 
 @pytest.mark.parametrize(
     "skill_id",
     (
-        "aa-api-plan-reviewer",
-        "aa-e2e-plan-reviewer",
-        "aa-fuzz-plan-reviewer",
-        "aa-performance-plan-reviewer",
+        "aa-api-codegen-reviewer",
+        "aa-e2e-codegen-reviewer",
+        "aa-fuzz-codegen-reviewer",
+        "aa-performance-codegen-reviewer",
     ),
 )
 def test_plan_reviewer_skills_do_not_instruct_removed_decisions(skill_id: str) -> None:
@@ -48,9 +76,9 @@ def test_plan_reviewer_skills_do_not_instruct_removed_decisions(skill_id: str) -
 
 
 def test_e2e_reviewer_skill_outputs_use_family_prefixed_names() -> None:
-    skill = resource_text("skills/aa-e2e-plan-reviewer/SKILL.md")
-    assert "qa/results/review/e2e-plan-review.json" in skill
-    assert "qa/results/review/e2e-plan-review-summary.md" in skill
+    skill = resource_text("skills/aa-e2e-codegen-reviewer/SKILL.md")
+    assert "qa/results/review/e2e-codegen-review.json" in skill
+    assert "qa/results/review/e2e-codegen-review-summary.md" in skill
     assert "qa/results/review/plan-review.json" not in skill
     assert "qa/results/review/plan-review-summary.md" not in skill
 
@@ -90,8 +118,8 @@ async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: 
     )
     assert executed.status == "succeeded"
     output = cast(dict[str, object], executed.output)
-    assert output["review_type"] == f"{family}-plan"
-    assert output["decision"] == "pass"
+    assert output["review_type"] == f"{family}-codegen"
+    assert output["route"] == "codegen"
     assert output["required_capabilities"] == ["entities.item.create"]
     assert "rounds_used" not in output
     assert "rounds_budget" not in output
@@ -103,26 +131,27 @@ async def test_plan_review_requires_complete_unique_repair_set(fix_ids: list[str
     review = review_result("api")
     review.update(
         {
-            "decision": "needs_fix",
-            "auto_fix_allowed": True,
-            "codegen_readiness": "not_ready",
+            "route": "auto_fix",
             "findings": [
                 {
                     "id": name,
                     "severity": "medium",
                     "category": "consistency",
                     "message": "Repair this affected section",
-                    "locator": {"artifact": f"qa/results/plans/{file}", "key": "Factory Mapping"},
+                    "locator": {"artifact": artifact, "key": "Factory Mapping"},
                 }
-                for name, file in (("F1", "api-codegen-plan.md"), ("F2", "api-test-data-plan.md"))
+                for name, artifact in (
+                    ("F1", "qa/results/codegen/api-codegen-summary.md"),
+                    ("F2", "qa/tests/api/test_users.py"),
+                )
             ],
-            "auto_fix_plan": fix_ids,
+            "finding_ids": fix_ids,
         }
     )
     outcome = await execute_task(review_finalize_handler("api"), fake_agent_result(review), tmp_path)
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "every finding exactly once" in outcome.failure.message
+    assert "finding_ids" in outcome.failure.message or "unique" in outcome.failure.message
 
 
 @pytest.mark.asyncio
@@ -131,7 +160,7 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
 
     family = "api"
     review, _, _ = await audited_review(tmp_path)
-    latest = tmp_path / "qa/results/review/api-plan-review.json"
+    latest = tmp_path / "qa/results/review/api-codegen-review.json"
     envelope = fake_agent_result(review)
     stage = tmp_path / ".stage"
     staged_review = stage / latest.relative_to(tmp_path)
@@ -151,7 +180,7 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
     )
 
     assert executed.status == "succeeded", executed.failure
-    history_path = stage / "qa/results/plan/api/reviews/epochs/2/rounds/1.json"
+    history_path = stage / "qa/results/codegen/api/reviews/epochs/2/rounds/1.json"
     history = json.loads(history_path.read_bytes())
     assert history["loop_kind"] == "plan_review"
     assert history["family"] == "api"
@@ -168,7 +197,7 @@ def _runner_finding() -> dict[str, object]:
         "severity": "high",
         "category": "test-runner",
         "message": "Markers: none required contradicts asyncio_mode = strict",
-        "locator": {"artifact": "qa/results/plans/api-codegen-plan.md", "key": "7. Run Guidance"},
+        "locator": {"artifact": PLAN_PATH, "key": "7. Run Guidance"},
     }
 
 
@@ -179,23 +208,20 @@ def _semantic_finding(finding_id: str = "API-PLAN-002") -> dict[str, object]:
         "category": "coverage",
         "message": "TC_DEPT_006 must construct the empty-string name",
         "locator": {
-            "artifact": "qa/results/plans/api-plan.md",
+            "artifact": PLAN_PATH,
             "case_id": "TC_DEPT_006",
             "key": "4. Request Strategy",
         },
     }
 
 
-def _as_needs_fix(review: dict[str, object], *findings: dict[str, object]) -> dict[str, object]:
+def _as_auto_fix(review: dict[str, object], *findings: dict[str, object]) -> dict[str, object]:
     updated = dict(review)
     updated.update(
         {
-            "decision": "needs_fix",
-            "auto_fix_allowed": True,
-            "human_review_required": False,
-            "codegen_readiness": "not_ready",
+            "route": "auto_fix",
             "findings": list(findings),
-            "auto_fix_plan": [str(item["id"]) for item in findings],
+            "finding_ids": [str(item["id"]) for item in findings],
             "next_action": "run api planner",
         }
     )
@@ -207,7 +233,7 @@ async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Pa
     from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
 
     review, _, _ = await audited_review(tmp_path)
-    review = _as_needs_fix(review, _runner_finding())
+    review = _as_auto_fix(review, _runner_finding())
     write_review(tmp_path, review)
     executed = await execute_task(
         review_finalize_handler("api"),
@@ -216,8 +242,8 @@ async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Pa
     )
     assert executed.status == "succeeded", executed.failure
     output = cast(dict[str, object], executed.output)
-    assert output["decision"] == "pass"
-    assert output["findings"] == []
+    assert output["route"] == "auto_fix"
+    assert [item["id"] for item in cast(list[dict[str, object]], output["findings"])] == ["API-PLAN-001"]
 
 
 @pytest.mark.asyncio
@@ -225,7 +251,7 @@ async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) 
     from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
 
     review, _, _ = await audited_review(tmp_path)
-    first = _as_needs_fix(review, _semantic_finding())
+    first = _as_auto_fix(review, _semantic_finding())
     write_review(tmp_path, first)
     first_pass = await execute_task(
         review_finalize_handler("api"),
@@ -233,9 +259,9 @@ async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) 
         tmp_path,
     )
     assert first_pass.status == "succeeded", first_pass.failure
-    assert cast(dict[str, object], first_pass.output)["decision"] == "needs_fix"
+    assert cast(dict[str, object], first_pass.output)["route"] == "auto_fix"
 
-    second = _as_needs_fix(review, _semantic_finding(), _semantic_finding("API-PLAN-004"))
+    second = _as_auto_fix(review, _semantic_finding(), _semantic_finding("API-PLAN-004"))
     write_review(tmp_path, second)
     retried = await execute_task(
         review_finalize_handler("api"),
@@ -244,8 +270,11 @@ async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) 
     )
     assert retried.status == "succeeded", retried.failure
     output = cast(dict[str, object], retried.output)
-    assert output["decision"] == "needs_fix"
-    assert [item["id"] for item in cast(list[dict[str, object]], output["findings"])] == ["API-PLAN-002"]
+    assert output["route"] == "auto_fix"
+    assert [item["id"] for item in cast(list[dict[str, object]], output["findings"])] == [
+        "API-PLAN-002",
+        "API-PLAN-004",
+    ]
 
 
 @pytest.mark.asyncio
@@ -260,9 +289,9 @@ async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
         tmp_path,
     )
     assert passed.status == "succeeded", passed.failure
-    assert cast(dict[str, object], passed.output)["decision"] == "pass"
+    assert cast(dict[str, object], passed.output)["route"] == "codegen"
 
-    later = _as_needs_fix(review, _semantic_finding())
+    later = _as_auto_fix(review, _semantic_finding())
     write_review(tmp_path, later)
     retried = await execute_task(
         review_finalize_handler("api"),
@@ -270,8 +299,10 @@ async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
         tmp_path,
     )
     assert retried.status == "succeeded", retried.failure
-    assert cast(dict[str, object], retried.output)["decision"] == "pass"
-    assert cast(dict[str, object], retried.output)["findings"] == []
+    assert cast(dict[str, object], retried.output)["route"] == "auto_fix"
+    assert [item["id"] for item in cast(list[dict[str, object]], retried.output["findings"])] == [
+        "API-PLAN-002"
+    ]
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -279,7 +310,7 @@ async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
 async def test_plan_review_finalize_rejects_wrong_family(family: str, tmp_path: Path) -> None:
     other = "e2e" if family == "api" else "api"
     payload = review_result(family)
-    payload["review_type"] = f"{other}-plan"
+    payload["review_type"] = f"{other}-codegen"
     executed = await execute_task(
         review_finalize_handler(family),
         fake_agent_result(payload),
@@ -296,25 +327,22 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
     proposal_path = tmp_path / "qa/proposal.md"
     proposal_path.parent.mkdir(parents=True, exist_ok=True)
     proposal_path.write_text("# Proposal\n", encoding="utf-8")
-    for relative in family_plan_files(family):
-        path = tmp_path / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("locked plan input\n", encoding="utf-8")
+    write_codegen_artifacts(tmp_path, family)
     case_path = tmp_path / "qa/cases/items/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
 
     prepared = await execute_task(
         review_prepare_handler(family),
-        {**plan_input(family), "reviewed_plan": valid_plan_result(family)},
+        review_prepare_input(family, plan_input(family)),
         tmp_path,
         binding_data=BINDING,
     )
-    assert prepared.status == "succeeded"
+    assert prepared.status == "succeeded", prepared.failure
     request = AgentRunRequest.model_validate(prepared.output)
     assert len(request.instructions) == 6
-    skill, persona, reviewed, constraints, locked_inputs, _typed_plan = request.instructions
-    assert f"{family} plan review" in (skill.text_content or "").lower()
+    skill, persona, reviewed, constraints, locked_inputs, extra = request.instructions
+    assert f"{family} codegen review" in (skill.text_content or "").lower()
     assert "reviewer persona" in (persona.text_content or "").lower()
     assert reviewed.media_type == "application/json"
     assert constraints.media_type == "application/json"
@@ -326,12 +354,16 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
     assert cast(dict, locked_inputs.json_content)["review_input_paths"] == tuple(
         sorted(
             (
-                *family_plan_files(family),
+                f"qa/results/codegen/{family}-codegen-summary.md",
+                f"qa/results/codegen/{family}-generated-files.json",
                 "qa/cases/items/case.yaml",
                 "qa/proposal.md",
             )
         )
     )
+    extra_payload = cast(dict[str, object], extra.json_content)
+    assert "codegen_output" in extra_payload
+    assert "codegen_scope" in extra_payload
     schema = request.result_contract.schema_document
     assert schema is not None
     thawed_schema = cast(dict[str, object], schema)
@@ -352,7 +384,7 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
 
     prepared = await execute_task(
         review_prepare_handler("api"),
-        {**plan_input("api"), "reviewed_plan": valid_plan_result("api")},
+        review_prepare_input("api"),
         tmp_path,
         binding_data=BINDING,
     )
@@ -361,19 +393,19 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
     assert "plan input is not a regular single-link file" in prepared.failure.message
-    assert "qa/results/plans/api-" in prepared.failure.message
+    assert "qa/results/codegen/api-" in prepared.failure.message
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_plan_review_prepare_requires_the_published_typed_plan(family: str, tmp_path: Path) -> None:
+async def test_plan_review_prepare_requires_codegen_output(family: str, tmp_path: Path) -> None:
     outcome = await execute_task(
         review_prepare_handler(family), plan_input(family), tmp_path, binding_data=BINDING
     )
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert "reviewed_plan is required" in outcome.failure.message
+    assert "codegen_output is required" in outcome.failure.message
 
 
 @pytest.mark.parametrize("family", FAMILIES)
