@@ -274,17 +274,21 @@ def _finalize_authoring(payload: AgentFinalizeInputV1, family: Family) -> Codege
     if payload.change_id is not None and document.change_id != payload.change_id:
         raise OutputError("codegen change_id does not match locked change_id")
     if payload.required_capabilities is None:
-        raise InputError("reviewed plan required_capabilities are missing")
+        raise InputError("host codegen scope required_capabilities are missing")
     if tuple(document.required_capabilities) != payload.required_capabilities:
-        raise OutputError("required_capabilities must exactly match the reviewed plan")
-    if payload.reviewed_mapping is None:
-        raise InputError("reviewed plan mapping is missing")
-    try:
-        reviewed_mapping = CodegenMapping.model_validate(payload.reviewed_mapping)
-    except ValidationError as error:
-        raise InputError(f"reviewed plan mapping is invalid: {error}") from error
-    if document.mapping != reviewed_mapping:
-        raise OutputError("mapping must exactly match the reviewed plan")
+        raise OutputError("required_capabilities must exactly match the host codegen scope")
+    mapped_ids = tuple(sorted(item.case_id for item in document.mapping.entries))
+    if payload.scope_case_ids is None:
+        raise InputError("host codegen scope case_ids are missing")
+    if mapped_ids != payload.scope_case_ids:
+        raise OutputError("mapping case IDs must exactly match the host codegen scope")
+    if payload.reviewed_mapping is not None:
+        try:
+            reviewed_mapping = CodegenMapping.model_validate(payload.reviewed_mapping)
+        except ValidationError as error:
+            raise InputError(f"reviewed plan mapping is invalid: {error}") from error
+        if document.mapping != reviewed_mapping:
+            raise OutputError("mapping must exactly match the reviewed plan")
     return document
 
 
