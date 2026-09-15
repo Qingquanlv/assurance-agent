@@ -30,6 +30,8 @@ from assurance_execution.contracts.agent import (
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
 from assurance_execution.execution_view import (
+    ExecutionView,
+    authenticate_durable_execution,
     collect_test_support_files,
     lock_durable_execution,
 )
@@ -322,7 +324,7 @@ def _workspace_tree_id(
     for relative_root in _BASELINE_SOURCE_ROOTS:
         _add_baseline_tree(workspace, relative_root, excluded=excluded, manifest=manifest)
     try:
-        support_files = collect_test_support_files(workspace)
+        support_files = collect_test_support_files(workspace, preserve_paths=True)
     except ValueError as error:
         raise InputError(str(error)) from error
     for relative, source in support_files.items():
@@ -562,6 +564,23 @@ def _commit_execution_evidence(
         write_root.resolve().relative_to(project_root.resolve())
     except ValueError as error:
         raise OutputError("execution evidence escapes the authenticated attempt workspace") from error
+    try:
+        families = tuple(dict.fromkeys(item.layer for item in payload.mapping.mappings))
+        authenticate_durable_execution(
+            project_root,
+            write_root=write_root,
+            change_id=payload.change_id,
+            view=ExecutionView(
+                batch_id=payload.batch_id,
+                root=payload.execution_view_root,
+                selected_targets=payload.mapping.selected,
+                digest=payload.execution_view_digest,
+                executed_at=payload.executed_at,
+            ),
+            merged=merge_generated(project_root, payload.change_id, families),
+        )
+    except (OSError, ValueError) as error:
+        raise OutputError(str(error)) from error
     output = resolve_canonical_evidence(write_root, evidence.change_id, filename)
     expected = json.dumps(evidence.model_dump(mode="json"), indent=2).encode("utf-8") + b"\n"
     if output.exists():

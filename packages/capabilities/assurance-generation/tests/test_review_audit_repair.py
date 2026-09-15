@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 from graph_engine.frozen_json import thaw_json
 
+from assurance_generation.contracts.review_audit import PlanReviewAudit
 from assurance_generation.contracts.reviews import PlanReviewAuthoring
 from assurance_generation.operations.review_audit import (
     api_review_requirements,
@@ -15,7 +18,6 @@ from assurance_generation.operations.review_audit import (
 from assurance_generation.operations.review import review_finalize_handler
 from planning_fixtures import fake_agent_result  # pyright: ignore[reportMissingImports]
 from review_audit_fixtures import (  # pyright: ignore[reportMissingImports]
-    HELPER,
     PLAN_PATH,
     audited_review,
     write_review,
@@ -50,7 +52,8 @@ async def test_repair_strips_unobserved_evidence_and_keeps_pass(tmp_path: Path) 
     write_review(tmp_path, review)
     accepted = await finish(tmp_path, review, business)
     assert accepted.status == "succeeded", accepted.failure
-    audit = accepted.output["review_audit"]
+    assert isinstance(accepted.output, Mapping)
+    audit = PlanReviewAudit.model_validate(accepted.output["review_audit"])
     allowed = set(
         next(
             part["review_requirements"]["allowed_evidence_paths"]
@@ -58,47 +61,43 @@ async def test_repair_strips_unobserved_evidence_and_keeps_pass(tmp_path: Path) 
             if isinstance(part := thaw_json(item.json_content), dict) and "review_requirements" in part
         )
     )
-    assert "app/core/exceptions.py" not in audit["cases"][0]["evidence_paths"]
-    assert set(audit["cases"][0]["evidence_paths"]) <= allowed
+    assert "app/core/exceptions.py" not in audit.cases[0].evidence_paths
+    assert set(audit.cases[0].evidence_paths) <= allowed
 
 
 @pytest.mark.asyncio
-async def test_repair_fills_missing_helper_and_case_rows(tmp_path: Path) -> None:
+async def test_repair_does_not_fill_missing_helper_and_case_rows(tmp_path: Path) -> None:
     review, business, _ = await audited_review(tmp_path, helper=True)
     review["review_audit"]["helpers"] = []
     review["review_audit"]["cases"] = []
     write_review(tmp_path, review)
     accepted = await finish(tmp_path, review, business)
-    assert accepted.status == "succeeded", accepted.failure
-    audit = accepted.output["review_audit"]
-    assert [row["case_id"] for row in audit["cases"]]
-    assert {row["capability"] for row in audit["helpers"]} == {HELPER}
+    assert accepted.status == "failed"
+    assert accepted.failure and "cover every selected case" in accepted.failure.message
 
 
 @pytest.mark.asyncio
-async def test_repair_rewrites_import_section_and_unknown_invocation(tmp_path: Path) -> None:
+async def test_repair_does_not_invent_a_plan_location_or_invocation(tmp_path: Path) -> None:
     review, business, _ = await audited_review(tmp_path, helper=True)
     helper = review["review_audit"]["helpers"][0]
     helper["invocation"] = "unknown"
     helper["plan_location"] = {"artifact": PLAN_PATH, "section": "Import Strategy"}
     write_review(tmp_path, review)
     accepted = await finish(tmp_path, review, business)
-    assert accepted.status == "succeeded", accepted.failure
-    repaired = accepted.output["review_audit"]["helpers"][0]
-    assert repaired["invocation"] in {"sync", "async"}
-    assert repaired["plan_location"]["section"] != "Import Strategy"
+    assert accepted.status == "failed"
+    assert accepted.failure and "generation target" in accepted.failure.message
 
 
 @pytest.mark.asyncio
-async def test_repair_downgrades_stub_claimed_as_existing(tmp_path: Path) -> None:
+async def test_repair_rejects_stub_claimed_as_existing(tmp_path: Path) -> None:
     review, business, _ = await audited_review(
         tmp_path, helper=True, source="def rows():\n    raise NotImplementedError\n"
     )
     review["review_audit"]["helpers"][0]["implementation"] = "existing"
     write_review(tmp_path, review)
     accepted = await finish(tmp_path, review, business)
-    assert accepted.status == "succeeded", accepted.failure
-    assert accepted.output["review_audit"]["helpers"][0]["implementation"] == "planned"
+    assert accepted.status == "failed"
+    assert accepted.failure and "stub" in accepted.failure.message
 
 
 def test_repair_function_drops_foreign_paths_without_raising() -> None:
@@ -117,8 +116,13 @@ def test_repair_function_drops_foreign_paths_without_raising() -> None:
             "risk_level": "medium",
             "required_capabilities": ["entities.item.create"],
             "review_audit": {
-                "input_refs": [{"path": "qa/results/plans/api-plan.md", "digest": "a" * 64}],
-                "planning_facts_digest": "b" * 64,
+                "input_refs": [
+                    {
+                        "path": "qa/results/plans/api-plan.md",
+                        "digest": hashlib.sha256(b"# Plan\n").hexdigest(),
+                    }
+                ],
+                "planning_facts_digest": "c" * 64,
                 "cases": [
                     {
                         "case_id": "TC_API_001",
@@ -153,5 +157,6 @@ def test_repair_function_drops_foreign_paths_without_raising() -> None:
         document, requirements=requirements, facts=facts, images=images
     )
     validate_api_review_audit(repaired, requirements=requirements, facts=facts, images=images)
+    assert repaired.review_audit is not None
     assert "app/core/exceptions.py" not in repaired.review_audit.cases[0].evidence_paths
     assert any("evidence_paths" in item for item in warnings)

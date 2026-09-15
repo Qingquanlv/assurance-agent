@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from assurance_generation.contracts.reviews import PlanReviewAuthoring
 from assurance_generation.operations.plan_review_policy import (
     apply_plan_review_policy,
     is_runner_contract_finding,
@@ -149,3 +152,23 @@ def test_finding_scope_roundtrip(tmp_path) -> None:
         "finding_ids": ["API-PLAN-002"],
     }
     assert load_finding_scope(tmp_path, family="api", coverage_epoch=3) is None
+
+
+@pytest.mark.parametrize("previous", [None, {"decision": "pass", "finding_ids": []}])
+@pytest.mark.parametrize("category", ["oracle", "runner_contract"])
+def test_policy_preserves_human_required_needs_fix(previous, category: str) -> None:
+    raw = _needs_fix(_finding("F1", category, "A human must resolve the oracle ambiguity."))
+    raw.update(auto_fix_allowed=False, human_review_required=True, auto_fix_plan=[])
+    context = {"capability_leafs": frozenset({"entities.item.create"})}
+    original = PlanReviewAuthoring.model_validate(raw, context=context)
+    assert original.public_outcome == "needs_human"
+
+    result = PlanReviewAuthoring.model_validate(
+        apply_plan_review_policy(original.model_dump(mode="json"), previous=previous), context=context
+    )
+
+    assert result.public_outcome == "needs_human"
+    assert result.human_review_required is True
+    assert result.auto_fix_allowed is False
+    assert result.auto_fix_plan == []
+    assert result.findings == original.findings

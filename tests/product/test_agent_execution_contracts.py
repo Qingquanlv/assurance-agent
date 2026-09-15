@@ -139,9 +139,7 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
         == "allow"
     )
     assert all(
-        "qa/.staging/execution" not in command
-        for command in executor["permission"]["bash"]
-        if command != "*"
+        "qa/.staging/execution" not in command for command in executor["permission"]["bash"] if command != "*"
     )
     assert "uv run --isolated pytest *" not in executor["permission"]["bash"]
     assert "uv run --isolated locust *" not in executor["permission"]["bash"]

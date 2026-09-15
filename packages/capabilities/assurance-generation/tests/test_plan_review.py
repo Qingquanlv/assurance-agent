@@ -204,7 +204,7 @@ def _as_needs_fix(review: dict[str, object], *findings: dict[str, object]) -> di
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Path) -> None:
-    from review_audit_fixtures import audited_review, write_review
+    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
 
     review, _, _ = await audited_review(tmp_path)
     review = _as_needs_fix(review, _runner_finding())
@@ -222,7 +222,7 @@ async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) -> None:
-    from review_audit_fixtures import audited_review, write_review
+    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
 
     review, _, _ = await audited_review(tmp_path)
     first = _as_needs_fix(review, _semantic_finding())
@@ -250,7 +250,7 @@ async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
-    from review_audit_fixtures import audited_review, write_review
+    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
 
     review, _, _ = await audited_review(tmp_path)
     write_review(tmp_path, review)

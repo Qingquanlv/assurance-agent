@@ -688,6 +688,96 @@ def test_executor_execution_view_shell_is_allowed(tmp_path: Path) -> None:
     assert args["command"] == _EXECUTOR_VIEW_COMMAND
 
 
+@pytest.mark.parametrize(
+    "output_flag",
+    [
+        "--junitxml=qa/tests/api/test_existing.py",
+        '--junitxm""l=qa/tests/api/test_existing.py',
+        "--junitxm''l=qa/tests/api/test_existing.py",
+        "'--junitxm'l=qa/tests/api/test_existing.py",
+        '--basetem""p qa/tests/api',
+        "--junitxm${AA_UNUSED}l=qa/tests/api/test_existing.py",
+        r"--junitxm\l=qa/tests/api/test_existing.py",
+        "--junitxml=qa/tests/report=qa/tests/durable.xml",
+        "--basetemp=qa/tests/temp=qa/tests",
+        "--override-ini=cache_dir=qa/tests/temp=qa/tests",
+        "--junitxml qa/results/execution/execute-result.json",
+        "--basetemp qa/tests/api",
+        "--basetemp=qa/tests/api",
+        "--output=qa/results/execution",
+        "--log-file=qa/tests/config.py",
+        "--json-report-file=qa/results/execution/execute-result.json",
+        "-o cache_dir=qa/tests",
+    ],
+)
+def test_executor_read_permission_does_not_authorize_runner_outputs(tmp_path: Path, output_flag: str) -> None:
+    plugin = _install(tmp_path)
+    session = _session(
+        tmp_path,
+        _binding_title(
+            tmp_path,
+            agent_profile="assurance-v1-executor",
+            allowed_outputs=(),
+            read_roots=("qa",),
+        ),
+        agent="assurance-v1-executor",
+    )
+    _denied(
+        _run(
+            plugin,
+            session=session,
+            tool="bash",
+            args={"command": f"{_EXECUTOR_VIEW_COMMAND} {output_flag}"},
+        ),
+        "shell",
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        f"{_EXECUTOR_VIEW_COMMAND} --output=/tmp/aa-playwright-batch-1",
+        f'{_EXECUTOR_VIEW_COMMAND} --output="/tmp/aa-playwright-batch-1"',
+        f'{_EXECUTOR_VIEW_COMMAND} "qa/tests/api/test_generated.py::test_ok[param one]"',
+        "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile "
+        "qa/tests/performance/locustfile_generated.py --headless -u 1 -r 1 -t 1s",
+        "pnpm --dir qa test",
+    ],
+)
+def test_executor_keeps_canonical_input_paths_and_external_outputs(tmp_path: Path, command: str) -> None:
+    plugin = _install(tmp_path)
+    session = _session(
+        tmp_path,
+        _binding_title(
+            tmp_path,
+            agent_profile="assurance-v1-executor",
+            allowed_outputs=(),
+            read_roots=("qa",),
+        ),
+        agent="assurance-v1-executor",
+    )
+    assert (
+        _allowed(_run(plugin, session=session, tool="bash", args={"command": command}))["command"] == command
+    )
+
+
+@pytest.mark.parametrize("flag", ["--csv", '--cs""v', "--cs''v"])
+def test_executor_cannot_write_locust_csv_into_readable_tests(tmp_path: Path, flag: str) -> None:
+    plugin = _install(tmp_path)
+    session = _session(
+        tmp_path,
+        _binding_title(
+            tmp_path, agent_profile="assurance-v1-executor", allowed_outputs=(), read_roots=("qa",)
+        ),
+        agent="assurance-v1-executor",
+    )
+    command = (
+        "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile "
+        f"qa/tests/performance/locustfile_generated.py --headless {flag}=qa/tests/results"
+    )
+    _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
+
+
 def test_executor_playwright_config_view_shell_is_allowed(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

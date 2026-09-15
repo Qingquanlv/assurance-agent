@@ -508,6 +508,59 @@ async def test_execute_finalize_accepts_typed_evidence(tmp_path: Path) -> None:
     assert replay.output == outcome.output
 
 
+@pytest.mark.parametrize("handler", [ExecuteFinalizeHandler, RunFinalizeHandler])
+@pytest.mark.parametrize("relative", ["qa/tests/api/test_generated.py", "qa/tests/support.py"])
+@pytest.mark.asyncio
+async def test_finalize_rejects_durable_test_or_support_drift(tmp_path: Path, handler, relative: str) -> None:
+    support = tmp_path / "qa/tests/support.py"
+    support.parent.mkdir(parents=True)
+    support.write_text("VALUE = 1\n", encoding="utf-8")
+    payload, _ = await _prepared_finalize_payload(tmp_path)
+    (tmp_path / relative).write_text("VALUE = 2\n", encoding="utf-8")
+
+    outcome = await execute_task(handler(), payload, tmp_path)
+
+    assert outcome.status == "failed"
+    assert outcome.failure and outcome.failure.kind == "invalid_output"
+    assert "drift" in outcome.failure.message
+    assert not (tmp_path / "qa/.staging/attempt-1/qa/results/execution").exists()
+
+
+@pytest.mark.parametrize("mutation", ["missing", "batch_id", "content_digest", "executed_at"])
+@pytest.mark.asyncio
+async def test_finalize_authenticates_the_durable_execution_lock(tmp_path: Path, mutation: str) -> None:
+    payload, _ = await _prepared_finalize_payload(tmp_path)
+    lock = tmp_path / "qa/.staging/attempt-1/qa/.staging/execution/durable-execution-v1.json"
+    if mutation == "missing":
+        lock.unlink()
+    else:
+        document = json.loads(lock.read_bytes())
+        document[mutation] = "2020-01-01T00:00:00Z" if mutation == "executed_at" else "0" * 64
+        lock.chmod(0o644)
+        lock.write_bytes(canonical_json_bytes(document))
+
+    outcome = await execute_task(ExecuteFinalizeHandler(), payload, tmp_path)
+
+    assert outcome.status == "failed"
+    assert outcome.failure and outcome.failure.kind == "invalid_output"
+    assert not (tmp_path / "qa/.staging/attempt-1/qa/results/execution").exists()
+
+
+@pytest.mark.asyncio
+async def test_finalize_does_not_hide_a_fixture_behind_a_same_named_test_support_file(tmp_path: Path) -> None:
+    for relative in ("qa/tests/support.py", "qa/fixtures/support.py"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("VALUE = 1\n", encoding="utf-8")
+    payload, _ = await _prepared_finalize_payload(tmp_path)
+    (tmp_path / "qa/fixtures/support.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    outcome = await execute_task(ExecuteFinalizeHandler(), payload, tmp_path)
+
+    assert outcome.status == "failed"
+    assert outcome.failure and "drift" in outcome.failure.message
+
+
 def test_execution_resources_forbid_legacy_and_provider_names() -> None:
     required = (
         "skills/aa-execute/SKILL.md",
@@ -546,17 +599,13 @@ def test_execution_skills_keep_tool_environments_outside_candidate_and_use_famil
         assert "PYTHONDONTWRITEBYTECODE=1" in normalized
         assert "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id>" in normalized
         assert "-p no:cacheprovider" in normalized
-        assert (
-            "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa"
-        ) in normalized
+        assert ("uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa") in normalized
         assert "--rootdir <execution_view_root>" not in normalized
         assert "<execution_view_root>/<mapped-selector>" not in normalized
         assert "tokenized argv array" in normalized
         assert "Never return the whole Bash tool input as one array element" in normalized
         assert "--output=/tmp/aa-playwright-<batch_id>" in normalized
-        assert (
-            "uv run --isolated locust --locustfile <mapped-locustfile> --headless"
-        ) in normalized
+        assert ("uv run --isolated locust --locustfile <mapped-locustfile> --headless") in normalized
         assert "Never" in normalized and "Locust file" in normalized and "pytest" in normalized
         assert (
             "For every family, the command receipt's passed, failed, and skipped counts must each be "

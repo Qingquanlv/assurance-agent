@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import PurePosixPath
 from typing import cast
 
@@ -114,6 +115,7 @@ class PlanReviewFinalizeHandler:
             expected = f"{family}-plan"
             if document.review_type != expected:
                 raise OutputError(f"review_type {document.review_type!r} does not match {expected}")
+            audit_inputs = None
             if family == "api":
                 if document.review_audit is None:
                     raise OutputError("review_audit is required for API plan review in every round")
@@ -142,18 +144,17 @@ class PlanReviewFinalizeHandler:
                         facts=facts,
                         images=images,
                     )
-                    document, _warnings = repair_api_review_audit(
+                    document, warnings = repair_api_review_audit(
                         document,
                         requirements=requirements,
                         facts=facts,
                         images=images,
                     )
-                    validate_api_review_audit(
-                        document,
-                        requirements=requirements,
-                        facts=facts,
-                        images=images,
-                    )
+                    audit_inputs = (requirements, facts, images)
+                    if warnings:
+                        logging.getLogger(__name__).warning(
+                            "api_review_audit_normalized (%s)", ",".join(warnings)
+                        )
                 except ValueError as error:
                     raise OutputError(str(error)) from error
             previous = None
@@ -171,6 +172,12 @@ class PlanReviewFinalizeHandler:
                 apply_plan_review_policy(document.model_dump(mode="json"), previous=previous),
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
+            if audit_inputs is not None:
+                requirements, facts, images = audit_inputs
+                try:
+                    validate_api_review_audit(document, requirements=requirements, facts=facts, images=images)
+                except ValueError as error:
+                    raise OutputError(str(error)) from error
             if family == "api" and document.review_audit is not None:
                 raw_path = "qa/results/review/api-plan-review.json"
                 sealed = context.write_root.joinpath(*PurePosixPath(raw_path).parts)

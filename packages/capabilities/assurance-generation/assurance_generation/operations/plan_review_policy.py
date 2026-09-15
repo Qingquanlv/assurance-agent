@@ -56,7 +56,7 @@ def apply_plan_review_policy(
     updated = dict(payload)
     updated.pop("public_outcome", None)
     decision = str(updated.get("decision") or "")
-    if decision in {"reject", "needs_human_review"}:
+    if decision in {"reject", "needs_human_review"} or updated.get("human_review_required") is True:
         return updated
     findings = [dict(item) for item in updated.get("findings") or [] if isinstance(item, Mapping)]
     findings = [item for item in findings if not is_runner_contract_finding(item)]
