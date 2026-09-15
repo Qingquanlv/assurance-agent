@@ -152,10 +152,16 @@ def reviewed_cases(family: str) -> dict[str, Any]:
 
 
 def family_constraints(family: str) -> dict[str, Any]:
-    del family
     return {
-        "write_roots": [family_write_root()],
-        "operations": ["create"],
+        "write_roots": list(
+            {
+                "api": ("qa/tests/api/", "qa/tests/testdata/api/"),
+                "e2e": ("qa/tests/e2e/", "qa/tests/testdata/e2e/"),
+                "fuzz": ("qa/tests/fuzz/", "qa/tests/testdata/fuzz/"),
+                "performance": ("qa/tests/perf/", "qa/tests/testdata/perf/"),
+            }[family]
+        ),
+        "operations": ["COND-1"],
         "risks": ["high"],
     }
 
@@ -211,15 +217,12 @@ def valid_plan_result(family: str) -> dict[str, Any]:
 def review_result(family: str, leaf: str = "entities.item.create") -> dict[str, Any]:
     return {
         "schema_version": "1.0",
-        "review_type": f"{family}-plan",
+        "review_type": f"{family}-codegen",
         "change_id": "CH-DEMO-001",
-        "decision": "pass",
+        "route": "codegen",
         "findings": [],
-        "auto_fix_plan": [],
+        "finding_ids": [],
         "next_action": "proceed to codegen",
-        "auto_fix_allowed": False,
-        "human_review_required": False,
-        "codegen_readiness": "ready",
         "risk_level": "medium",
         "required_capabilities": [leaf],
     }
