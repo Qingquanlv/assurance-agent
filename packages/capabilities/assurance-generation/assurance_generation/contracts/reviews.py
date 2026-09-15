@@ -7,55 +7,41 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
 
 from assurance_intake.contracts import NonEmptyStr, RiskTier
-from assurance_generation.contracts.review_audit import PlanReviewAudit
 
 ReviewDecision = Literal["pass", "needs_fix", "needs_human_review", "reject"]
+PlanReviewRoute = Literal["codegen", "auto_fix", "human", "reject"]
 PublicReviewOutcome = Literal["pass", "needs_fix", "needs_human", "reject"]
 PUBLIC_REVIEW_OUTCOMES: tuple[PublicReviewOutcome, ...] = ("pass", "needs_fix", "needs_human", "reject")
 FindingSeverity = Literal["low", "medium", "high", "critical", "blocking"]
 
-_PASS_DECISIONS = frozenset({"pass"})
-_FIX_DECISIONS = frozenset({"needs_fix"})
-_HUMAN_DECISIONS = frozenset({"needs_human_review"})
-_REJECT_DECISIONS = frozenset({"reject"})
+_ROUTE_PUBLIC_OUTCOME: dict[str, PublicReviewOutcome] = {
+    "codegen": "pass",
+    "auto_fix": "needs_fix",
+    "human": "needs_human",
+    "reject": "reject",
+}
+_REMOVED_ROUTING_FIELDS = (
+    "decision",
+    "auto_fix_allowed",
+    "human_review_required",
+    "auto_fix_plan",
+    "codegen_readiness",
+)
 
 
-def normalize_public_review_outcome(
-    decision: str,
-    auto_fix_allowed: bool,
-    human_review_required: bool,
-) -> PublicReviewOutcome:
-    if decision in _PASS_DECISIONS:
-        if auto_fix_allowed or human_review_required:
-            raise ValueError("pass review cannot request auto-fix or human review")
-        return "pass"
-    if decision in _FIX_DECISIONS:
-        if auto_fix_allowed and not human_review_required:
-            return "needs_fix"
-        if human_review_required and not auto_fix_allowed:
-            return "needs_human"
-        raise ValueError("needs_fix review must be either auto-fixable or human-required")
-    if decision in _HUMAN_DECISIONS:
-        if auto_fix_allowed or not human_review_required:
-            raise ValueError("needs_human_review must require human review and forbid auto-fix")
-        return "needs_human"
-    if decision in _REJECT_DECISIONS:
-        if auto_fix_allowed or human_review_required:
-            raise ValueError("reject review cannot request auto-fix or human review")
-        return "reject"
-    raise ValueError(f"unsupported review decision: {decision}")
+def normalize_public_review_outcome(route: str) -> PublicReviewOutcome:
+    try:
+        return _ROUTE_PUBLIC_OUTCOME[route]
+    except KeyError as error:
+        raise ValueError(f"unsupported plan review route: {route}") from error
 
 
-def public_review_outcome(
-    decision: str,
-    auto_fix_allowed: bool,
-    human_review_required: bool,
-) -> PublicReviewOutcome:
-    return normalize_public_review_outcome(decision, auto_fix_allowed, human_review_required)
+def public_review_outcome(route: str) -> PublicReviewOutcome:
+    return normalize_public_review_outcome(route)
 
 
-_CAPABILITY_GATED_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan"})
-_PLAN_REVIEW_TYPES = frozenset({"api-plan", "e2e-plan", "fuzz-plan", "performance-plan"})
+_CAPABILITY_GATED_REVIEW_TYPES = frozenset({"api-codegen", "e2e-codegen"})
+_CODEGEN_REVIEW_TYPES = frozenset({"api-codegen", "e2e-codegen", "fuzz-codegen", "performance-codegen"})
 
 _L1_CAPABILITY_ROOTS = (
     "auth.",
@@ -141,62 +127,63 @@ def _coerce_authoring_findings(findings: list[Any]) -> list[dict[str, Any]]:
     return coerced
 
 
+def _reject_removed_routing_fields(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    present = [name for name in _REMOVED_ROUTING_FIELDS if name in data]
+    if present:
+        raise ValueError("plan review routing fields are route and finding_ids; remove " + ", ".join(present))
+    return data
+
+
 def _validate_plan_review_routing(
     *,
-    decision: ReviewDecision,
+    route: PlanReviewRoute,
     findings: list[Any],
-    auto_fix_plan: list[Any],
-    auto_fix_allowed: bool,
-    human_review_required: bool,
+    finding_ids: list[Any],
 ) -> None:
-    finding_ids = {
+    reported = {
         finding["id"]
         for finding in findings
         if isinstance(finding, dict) and isinstance(finding.get("id"), str)
     }
-    if len(finding_ids) != len(findings):
+    if len(reported) != len(findings):
         raise ValueError("plan review finding IDs must be unique")
-    for index, finding_id in enumerate(auto_fix_plan):
+    ids: list[str] = []
+    for index, finding_id in enumerate(finding_ids):
         if not isinstance(finding_id, str) or not finding_id.strip():
-            raise ValueError(f"auto_fix_plan[{index}] must be a non-empty finding id")
-        if finding_id not in finding_ids:
-            raise ValueError(f"auto_fix_plan references unknown finding id: {finding_id}")
-    if auto_fix_plan and not auto_fix_allowed:
-        raise ValueError("auto_fix_plan requires auto_fix_allowed")
-    if decision in _FIX_DECISIONS:
-        if auto_fix_allowed:
-            if human_review_required:
-                raise ValueError("bounded automatic repair cannot also require human review")
-            if not auto_fix_plan:
-                raise ValueError("bounded automatic repair requires a non-empty auto_fix_plan")
-            if len(auto_fix_plan) != len(finding_ids) or set(auto_fix_plan) != finding_ids:
-                raise ValueError("auto_fix_plan must include every finding exactly once")
-        elif not human_review_required:
-            raise ValueError("non-automatic plan repair must require human review")
-    if decision == "needs_human_review":
-        if auto_fix_allowed or auto_fix_plan or not human_review_required:
-            raise ValueError("needs_human_review must route exclusively to human review")
-    if decision in _PASS_DECISIONS and human_review_required:
-        raise ValueError("a passing plan review cannot require human review")
+            raise ValueError(f"finding_ids[{index}] must be a non-empty finding id")
+        if finding_id not in reported:
+            raise ValueError(f"finding_ids references unknown finding id: {finding_id}")
+        ids.append(finding_id)
+    if len(ids) != len(set(ids)):
+        raise ValueError("finding_ids must be unique")
+    if route == "auto_fix":
+        if not ids:
+            raise ValueError("auto_fix requires a non-empty finding_ids list")
+        if set(ids) != reported:
+            raise ValueError("finding_ids must include every finding exactly once")
+        return
+    if route in {"codegen", "human", "reject"}:
+        if ids:
+            raise ValueError(f"{route} route requires an empty finding_ids list")
+        return
+    raise ValueError(f"unsupported plan review route: {route}")
 
 
 class Review(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     schema_version: Literal["1.0"]
-    decision: ReviewDecision
     findings: list[Any]
     review_type: str | None = None
     change_id: str | None = None
-    auto_fix_allowed: bool | None = None
-    human_review_required: bool | None = None
-    codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"] | None = None
+    route: PlanReviewRoute | None = None
+    finding_ids: list[Any] | None = None
     risk_level: RiskTier | None = None
     required_capabilities: list[str] | None = None
     layer_applicable: bool | None = None
-    auto_fix_plan: list[Any] | None = None
     next_action: str | None = None
-    review_audit: PlanReviewAudit | None = None
 
     @model_validator(mode="after")
     def _require_capabilities_for_plan_reviews(self, info: ValidationInfo) -> Review:
@@ -230,33 +217,34 @@ class PlanReview(Review):
         },
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_routing(cls, data: Any) -> Any:
+        return _reject_removed_routing_fields(data)
+
     @model_validator(mode="after")
     def _require_cross_skill_fields(self, info: ValidationInfo) -> PlanReview:
         required = (
             "review_type",
             "change_id",
-            "auto_fix_allowed",
-            "human_review_required",
-            "codegen_readiness",
+            "route",
+            "finding_ids",
             "risk_level",
             "required_capabilities",
-            "auto_fix_plan",
             "next_action",
         )
         missing = [name for name in required if getattr(self, name) is None]
         if missing:
             raise ValueError("plan review missing cross-skill fields: " + ", ".join(missing))
-        if self.review_type not in _PLAN_REVIEW_TYPES:
-            raise ValueError(f"unsupported plan review_type {self.review_type!r}")
+        if self.review_type not in _CODEGEN_REVIEW_TYPES:
+            raise ValueError(f"unsupported codegen review_type {self.review_type!r}")
         _validate_nonblank_finding_ids(self.findings)
         _validate_fully_qualified_capabilities(self.required_capabilities)
         _require_exact_capability_leafs(self.required_capabilities, info)
         _validate_plan_review_routing(
-            decision=self.decision,
+            route=self.route,  # type: ignore[arg-type]
             findings=self.findings,
-            auto_fix_plan=self.auto_fix_plan or [],
-            auto_fix_allowed=bool(self.auto_fix_allowed),
-            human_review_required=bool(self.human_review_required),
+            finding_ids=self.finding_ids or [],
         )
         return self
 
@@ -268,9 +256,11 @@ class PlanReviewAuthoring(BaseModel):
         extra="allow",
         json_schema_extra={
             "prompt_notes": [
+                "routing fields are only route and finding_ids",
+                "route is codegen, auto_fix, human, or reject",
                 "each findings item requires id, severity, category, message, and locator",
                 "locator.artifact is a change- or repo-relative path; locator.case_id / locator.key are optional",
-                "auto_fix_plan items must reference an existing findings id",
+                "finding_ids items must reference an existing findings id",
                 "required_capabilities must be a non-empty list of fully qualified C4 leaf keys",
                 "use auth.*, accounts.*, entities.*, capabilities.domain_factories.*, "
                 "capabilities.adapters.*, or capabilities.cleanup.* exactly as rooted in L1",
@@ -279,21 +269,22 @@ class PlanReviewAuthoring(BaseModel):
     )
 
     schema_version: Literal["1.0"]
-    review_type: Literal["api-plan", "e2e-plan", "fuzz-plan", "performance-plan"]
+    review_type: Literal["api-codegen", "e2e-codegen", "fuzz-codegen", "performance-codegen"]
     change_id: NonEmptyStr
-    decision: ReviewDecision
+    route: PlanReviewRoute
     findings: list[Any]
-    auto_fix_plan: list[Any]
+    finding_ids: list[Any]
     next_action: NonEmptyStr
-    auto_fix_allowed: bool
-    human_review_required: bool
-    codegen_readiness: Literal["ready", "ready_with_warnings", "not_ready"]
     risk_level: RiskTier
     required_capabilities: list[NonEmptyStr]
     public_outcome: PublicReviewOutcome | None = None
     rounds_used: int | None = None
     rounds_budget: int | None = None
-    review_audit: PlanReviewAudit | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_routing(cls, data: Any) -> Any:
+        return _reject_removed_routing_fields(data)
 
     @field_validator("findings")
     @classmethod
@@ -306,20 +297,11 @@ class PlanReviewAuthoring(BaseModel):
         _validate_fully_qualified_capabilities(list(self.required_capabilities))
         _require_exact_capability_leafs(list(self.required_capabilities), info)
         _validate_plan_review_routing(
-            decision=self.decision,
+            route=self.route,
             findings=self.findings,
-            auto_fix_plan=self.auto_fix_plan,
-            auto_fix_allowed=self.auto_fix_allowed,
-            human_review_required=self.human_review_required,
+            finding_ids=self.finding_ids,
         )
-        if self.decision in _PASS_DECISIONS:
-            outcome: PublicReviewOutcome = "pass"
-        else:
-            outcome = normalize_public_review_outcome(
-                self.decision,
-                self.auto_fix_allowed,
-                self.human_review_required,
-            )
+        outcome = normalize_public_review_outcome(self.route)
         if self.public_outcome is not None and self.public_outcome != outcome:
-            raise ValueError("public_outcome does not match the normalized review decision")
+            raise ValueError("public_outcome does not match the normalized review route")
         return self.model_copy(update={"public_outcome": outcome})

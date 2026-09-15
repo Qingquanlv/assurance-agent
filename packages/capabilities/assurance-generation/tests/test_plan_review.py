@@ -29,6 +29,36 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
 from test_contracts import valid_plan_review  # pyright: ignore[reportMissingImports]
 
 
+def test_review_audit_modules_are_gone() -> None:
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("assurance_generation.operations.review_audit")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("assurance_generation.contracts.review_audit")
+
+
+def test_plan_review_schema_has_no_review_audit() -> None:
+    from assurance_generation.resource_loader import resource_bytes
+
+    for relative in (
+        "result-contracts/plan-review.v1.schema.json",
+        "schemas/plan-review.v1.schema.json",
+    ):
+        schema = json.loads(resource_bytes(relative))
+        assert "review_audit" not in schema["properties"]
+        assert "review_audit" not in schema["required"]
+        defs = schema.get("$defs", {})
+        for name in (
+            "PlanReviewAudit",
+            "CaseReviewChecks",
+            "CaseReviewCoverage",
+            "HelperReviewEvidence",
+            "HelperPlanLocation",
+        ):
+            assert name not in defs
+
+
 def _write_review_workspace(tmp_path: Path, family: str = "api") -> None:
     proposal_path = tmp_path / "qa/proposal.md"
     proposal_path.parent.mkdir(parents=True, exist_ok=True)
