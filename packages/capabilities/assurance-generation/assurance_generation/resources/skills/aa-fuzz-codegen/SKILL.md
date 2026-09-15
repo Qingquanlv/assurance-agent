@@ -3,27 +3,22 @@
 Capability-owned fuzz codegen skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 
-Turn a reviewed fuzz plan and frozen case references into generated property
+Turn a host-built fuzz codegen scope and frozen case references into generated property
 tests plus a closed mapping. Schema truth is `assurance_generation.contracts`
 for generated files and mapping, and `assurance_intake.contracts` for reviewed
 cases.
 
 ## Inputs
 
-Read every exact product-source path cited by the approved plan before any discovery.
+Read every exact product-source path cited by the host scope and reviewed cases before any discovery.
 A glob result of `No files found` is not evidence that product source is absent;
 ignored source files remain exact-readable. Use path-scoped grep only after the
-exact reads, and never replace source-backed plan facts with guesses from naming.
+exact reads, and never replace source-backed case facts with guesses from naming.
 
 ### required
 
-- reviewed fuzz plan (`PlanResultV1`) including endpoint/property strategy
+- host-built fuzz codegen scope (`CodegenScopeV1`)
 - frozen case references for the selected fuzz cases
-- `qa/results/plans/fuzz-plan.md`
-- `qa/results/plans/fuzz-codegen-plan.md`
-- `qa/results/plans/fuzz-codegen-mapping.json`
-- `qa/results/plans/fuzz-review-summary.md`
-- `qa/results/review/fuzz-plan-review.json`
 - `qa/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
@@ -42,22 +37,21 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 
 - `qa/results/codegen/fuzz-codegen-summary.md`
 - `qa/results/codegen/fuzz-generated-files.json`
-- generated or updated test files under `qa/tests/fuzz/**`
+- generated or updated test files listed in the host `locked_outputs`
 
 ### conditional
 
-- `qa/tests/testdata/domain/**` when the
-  reviewed plan authorizes a shared builder
+- the locked testdata file when the host `locked_outputs` include it
 
-The generated-files manifest and mapping keep `target_file` under `qa/tests/`. Do not
+Write only host `locked_outputs`. `target_file` must equal the locked test file
+for that case; testdata must be the locked testdata file. Do not
 write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized files under
-`qa/tests/` plus the summary and
-generated-files manifest. Manifest `repo_path` / mapping `target_file` are
-the logical and physical `qa/tests/fuzz/**` or `qa/tests/testdata/**` path.
+Write only host `locked_outputs`. Manifest `repo_path` / mapping `target_file`
+must equal the locked test file for that case; testdata must be the locked
+testdata file.
 
 Do not modify product source.
 
@@ -86,7 +80,7 @@ Schemathesis v4. When generation should come from the operation schema, use
 
 ## Frozen Inputs and Completion Check
 
-Plan, case, and review inputs are immutable. Read them as approved evidence;
+The host-built scope and reviewed cases are immutable. Read them as approved evidence;
 never rewrite, repair, or supersede them during codegen.
 
 The runtime `allowed_outputs` list is the exact write whitelist and overrides

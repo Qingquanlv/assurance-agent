@@ -3,17 +3,17 @@
 Capability-owned performance codegen skill. Do not select a provider, model, or
 adapter. Do not look up a global skill catalog.
 
-Turn a reviewed performance plan and frozen case references into generated load
+Turn a host-built performance codegen scope and frozen case references into generated load
 tests plus a closed mapping. Schema truth is `assurance_generation.contracts`
 for generated files and mapping, and `assurance_intake.contracts` for reviewed
 cases.
 
 ## Inputs
 
-Read every exact product-source path cited by the approved plan before any discovery.
+Read every exact product-source path cited by the host scope and reviewed cases before any discovery.
 A glob result of `No files found` is not evidence that product source is absent;
 ignored source files remain exact-readable. Use path-scoped grep only after the
-exact reads, and never replace source-backed plan facts with guesses from naming.
+exact reads, and never replace source-backed case facts with guesses from naming.
 
 Before any glob or directory discovery, convert every declared Python symbol
 for setup, cleanup, authentication, and shared support into its exact module
@@ -27,14 +27,8 @@ configuration contract without inspecting credential values.
 
 ### required
 
-- reviewed performance plan (`PlanResultV1`) including scenario identity and
-  numeric thresholds
+- host-built performance codegen scope (`CodegenScopeV1`)
 - frozen case references for the selected performance cases
-- `qa/results/plans/performance-plan.md`
-- `qa/results/plans/performance-codegen-plan.md`
-- `qa/results/plans/performance-codegen-mapping.json`
-- `qa/results/plans/performance-review-summary.md`
-- `qa/results/review/performance-plan-review.json`
 - `qa/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
@@ -53,22 +47,21 @@ configuration contract without inspecting credential values.
 
 - `qa/results/codegen/performance-codegen-summary.md`
 - `qa/results/codegen/performance-generated-files.json`
-- generated or updated test files under `qa/tests/perf/**`
+- generated or updated test files listed in the host `locked_outputs`
 
 ### conditional
 
-- `qa/tests/testdata/domain/**`
-  when the reviewed plan authorizes a shared builder
+- the locked testdata file when the host `locked_outputs` include it
 
-The generated-files manifest and mapping keep `target_file` under `qa/tests/`. Do not
+Write only host `locked_outputs`. `target_file` must equal the locked test file
+for that case; testdata must be the locked testdata file. Do not
 write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized files under
-`qa/tests/` plus the summary and
-generated-files manifest. Manifest `repo_path` / mapping `target_file` are
-the logical and physical `qa/tests/perf/**` or `qa/tests/testdata/**` path.
+Write only host `locked_outputs`. Manifest `repo_path` / mapping `target_file`
+must equal the locked test file for that case; testdata must be the locked
+testdata file.
 
 Do not modify product source.
 
@@ -101,7 +94,7 @@ use its returned headers. Do not replace that call with a direct token lookup.
 
 ## Frozen Inputs and Completion Check
 
-Plan, case, and review inputs are immutable. Read them as approved evidence;
+The host-built scope and reviewed cases are immutable. Read them as approved evidence;
 never rewrite, repair, or supersede them during codegen.
 
 The runtime `allowed_outputs` list is the exact write whitelist and overrides

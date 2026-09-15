@@ -45,16 +45,10 @@ FAMILIES: tuple[Family, ...] = LAYER_NAMES
 PrepareKind = Literal["prepare", "finalize"]
 
 PLAN_RESULT_ID = "assurance.generation.result.plan.v1"
-PLAN_REVIEW_RESULT_ID = "assurance.generation.result.plan-review.v1"
+PLAN_REVIEW_RESULT_ID = "assurance.generation.result.codegen-review.v1"
 _RESULT_FILES: Mapping[str, str] = {
     PLAN_RESULT_ID: "result-contracts/plan.v1.schema.json",
     PLAN_REVIEW_RESULT_ID: "result-contracts/plan-review.v1.schema.json",
-}
-_SKILL_FILES: Mapping[Family, str] = {
-    "api": "skills/aa-api-plan/SKILL.md",
-    "e2e": "skills/aa-e2e-plan/SKILL.md",
-    "fuzz": "skills/aa-fuzz-plan/SKILL.md",
-    "performance": "skills/aa-performance-plan/SKILL.md",
 }
 PLAN_PERSONA = "personas/test-author.md"
 REVIEW_PERSONA = "personas/reviewer.md"
@@ -107,8 +101,8 @@ def plan_review_outputs(change_id: str, family: Family) -> tuple[str, ...]:
     return tuple(
         sorted(
             (
-                f"qa/results/review/{family}-plan-review.json",
-                f"qa/results/review/{family}-plan-review-summary.md",
+                f"qa/results/review/{family}-codegen-review.json",
+                f"qa/results/review/{family}-codegen-review-summary.md",
             )
         )
     )
@@ -340,14 +334,14 @@ def _yaml_document(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], document)
 
 
-def load_family_cases(
+def load_family_case_modules(
     workspace: Path,
     *,
     change_id: str,
     family: Family,
     capability_leafs: tuple[str, ...],
     case_paths: tuple[str, ...] | None = None,
-) -> CaseYamlAuthoring:
+) -> tuple[CaseYamlAuthoring, dict[str, tuple[str, ...]]]:
     _change_root(workspace, change_id)
     cases_root = workspace / "qa" / "cases"
     try:
@@ -358,6 +352,7 @@ def load_family_cases(
         raise InputError("reviewed case directory is missing: qa/cases")
     selected: dict[str, list[object]] = {"added": [], "modified": []}
     schema_versions: set[str] = set()
+    grouped: dict[str, list[str]] = {}
     paths = (
         tuple(workspace.joinpath(*PurePosixPath(path).parts) for path in case_paths)
         if case_paths is not None
@@ -365,20 +360,29 @@ def load_family_cases(
     )
     if not paths:
         raise InputError("reviewed case files are missing: qa/cases/**/case.yaml")
-    for path in paths:
+    relatives = (
+        case_paths
+        if case_paths is not None
+        else tuple(path.relative_to(workspace).as_posix() for path in paths)
+    )
+    for path, relative in zip(paths, relatives, strict=True):
         document = _yaml_document(_regular_input_file(workspace, path))
         version = document.get("schema_version")
         if isinstance(version, str) and version.strip():
             schema_versions.add(version)
+        ids: list[str] = []
         for section in ("added", "modified"):
             entries = document.get(section)
             if not isinstance(entries, list):
                 raise InputError(f"{path}: {section} must be a list")
-            selected[section].extend(
-                entry
-                for entry in entries
-                if isinstance(entry, Mapping) and entry.get("type") == _CASE_TYPES[family]
-            )
+            for entry in entries:
+                if not (isinstance(entry, Mapping) and entry.get("type") == _CASE_TYPES[family]):
+                    continue
+                selected[section].append(entry)
+                case_id = entry.get("case_id")
+                if isinstance(case_id, str):
+                    ids.append(case_id)
+        grouped[relative] = ids
     if len(schema_versions) != 1:
         raise InputError("reviewed case files must use one non-empty schema_version")
     payload = {
@@ -388,12 +392,31 @@ def load_family_cases(
         "removed": [],
     }
     try:
-        return CaseYamlAuthoring.model_validate(
+        cases = CaseYamlAuthoring.model_validate(
             payload,
             context={"capability_leafs": leafs_of(capability_leafs)},
         )
     except ValidationError as error:
         raise InputError(str(error)) from error
+    return cases, {path: tuple(ids) for path, ids in grouped.items()}
+
+
+def load_family_cases(
+    workspace: Path,
+    *,
+    change_id: str,
+    family: Family,
+    capability_leafs: tuple[str, ...],
+    case_paths: tuple[str, ...] | None = None,
+) -> CaseYamlAuthoring:
+    cases, _ = load_family_case_modules(
+        workspace,
+        change_id=change_id,
+        family=family,
+        capability_leafs=capability_leafs,
+        case_paths=case_paths,
+    )
+    return cases
 
 
 def plan_review_input_paths(
@@ -416,7 +439,8 @@ def plan_review_input_paths(
         raise InputError("reviewed case files are missing: qa/cases/**/case.yaml")
 
     relative_paths = (
-        *plan_outputs(change_id, family),
+        f"qa/results/codegen/{family}-codegen-summary.md",
+        f"qa/results/codegen/{family}-generated-files.json",
         "qa/proposal.md",
         *(path.relative_to(workspace).as_posix() for path in case_files),
     )
@@ -444,7 +468,7 @@ def plan_repair_review(
     """Load the current review for a graph-authorized automatic or human-requested retry."""
     if business.local_round == 0:
         return None
-    relative = f"qa/results/review/{family}-plan-review.json"
+    relative = f"qa/results/review/{family}-codegen-review.json"
     path = _regular_input_file(
         workspace,
         workspace.joinpath(*PurePosixPath(relative).parts),
@@ -461,8 +485,8 @@ def plan_repair_review(
         raise InputError(f"plan repair review is invalid: {relative}: {error}") from error
     if review.change_id != business.change_id:
         raise InputError("plan repair review change_id does not match the locked change_id")
-    if review.review_type != f"{family}-plan":
-        raise InputError(f"plan repair review_type does not match {family}-plan")
+    if review.review_type != f"{family}-codegen":
+        raise InputError(f"codegen repair review_type does not match {family}-codegen")
     repair = {
         "review_path": relative,
         "review_digest": hashlib.sha256(data).hexdigest(),
@@ -470,8 +494,11 @@ def plan_repair_review(
     }
     if family == "api":
         repair["plan_repair_scope"] = {
-            "allowed_artifacts": list(plan_outputs(business.change_id, family)),
-            "finding_ids": list(review.auto_fix_plan),
+            "allowed_artifacts": [
+                f"qa/results/codegen/{family}-codegen-summary.md",
+                f"qa/results/codegen/{family}-generated-files.json",
+            ],
+            "finding_ids": list(review.finding_ids),
             "related_consistency_edits": True,
             "preserve_case_scope_and_oracles": True,
             "mapping_changes_require_explicit_finding": True,
@@ -480,10 +507,12 @@ def plan_repair_review(
 
 
 def constraints_for_cases(*, family: Family, change_id: str, cases: CaseYamlAuthoring) -> FamilyConstraintsV1:
+    from assurance_generation.contracts.codegen import FAMILY_TARGET_ROOTS
+
     del change_id
     entries = tuple((*cases.added, *cases.modified))
     return FamilyConstraintsV1(
-        write_roots=("qa/results/plans/",),
+        write_roots=FAMILY_TARGET_ROOTS[family],
         operations=tuple(entry.test_condition_id for entry in entries),
         risks=tuple(entry.risk.level for entry in entries),
     )
@@ -584,6 +613,7 @@ def prepare_plan_outcome(
     close_result_capabilities: bool = False,
     review_input_paths: tuple[str, ...] = (),
     repair_review: Mapping[str, object] | None = None,
+    extra_json: Mapping[str, object] | None = None,
 ) -> TaskOutcome:
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
@@ -625,6 +655,8 @@ def prepare_plan_outcome(
         )
     if repair_review is not None:
         instructions = (*instructions, InstructionPart.from_json(dict(repair_review)))
+    if extra_json is not None:
+        instructions = (*instructions, InstructionPart.from_json(dict(extra_json)))
     agent_request = AgentRunRequest(
         instructions=instructions,
         result_contract=result_contract(
@@ -719,46 +751,6 @@ def _authenticate_codegen_mapping(
     return mapping
 
 
-class PlanPrepareHandler:
-    def __init__(self, family: Family | None = None) -> None:
-        self._family: Family | None = None if family is None else closed_family(family)
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            family = resolve_family(self._family, request)
-            business, cases = validate_plan_input(
-                request.input,
-                family=family,
-                workspace=context.project_root,
-            )
-            if business.local_round > 0:
-                try:
-                    validate_reviewed_plan(business, family, cases)
-                except InputError as error:
-                    raise InputError(f"previous plan is invalid for retry: {error}") from error
-            binding = AgentBindingDataV1.model_validate(request.binding_data)
-            repair_review = plan_repair_review(
-                context.project_root,
-                business=business,
-                family=family,
-            )
-            return prepare_plan_outcome(
-                family=family,
-                skill_path=_SKILL_FILES[family],
-                persona_path=PLAN_PERSONA,
-                business=business,
-                cases=cases,
-                binding=binding,
-                result_schema_id=PLAN_RESULT_ID,
-                context=context,
-                allowed_outputs=plan_outputs(business.change_id, family),
-                close_result_capabilities=True,
-                repair_review=repair_review,
-            )
-        except (InputError, ValidationError) as error:
-            return failed_input(error)
-
-
 class PlanFinalizeHandler:
     input_model = AgentFinalizeInputV1
 
@@ -833,8 +825,6 @@ class PlanFinalizeHandler:
 
 def planning_handler(family: str, kind: PrepareKind) -> TaskHandler:
     closed = closed_family(family)
-    if kind == "prepare":
-        return PlanPrepareHandler(closed)
     if kind == "finalize":
         return PlanFinalizeHandler(closed)
     raise ValueError(f"unknown planning handler kind: {kind}")
@@ -850,12 +840,12 @@ __all__ = [
     "InputError",
     "OutputError",
     "PlanFinalizeHandler",
-    "PlanPrepareHandler",
     "closed_family",
     "failed_input",
     "failed_output",
     "evidence_ref",
     "leafs_of",
+    "load_family_case_modules",
     "planning_handler",
     "plan_review_input_paths",
     "persist_loop_round_history",

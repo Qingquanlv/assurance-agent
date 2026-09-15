@@ -161,6 +161,7 @@ async def test_codegen_finalize_rejects_claimed_but_missing_file(tmp_path: Path)
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     handler = codegen_prepare_handler(family)
     first = await execute_task(handler, codegen_input(family), tmp_path, binding_data=PLAN_BINDING)
@@ -172,6 +173,7 @@ async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tm
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     payload = codegen_input(family)
     payload["artifact_paths"] = [
@@ -197,6 +199,7 @@ async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_pa
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_uses_reviewed_plan_and_constraints(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     prepared = await execute_task(
         codegen_prepare_handler(family),
@@ -243,11 +246,43 @@ async def test_codegen_prepare_uses_reviewed_plan_and_constraints(family: str, t
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
+async def test_codegen_prepare_authorizes_locked_outputs_only(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
+    prepared = await execute_task(
+        codegen_prepare_handler(family),
+        codegen_input(family),
+        tmp_path,
+        binding_data=PLAN_BINDING,
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    directory = "perf" if family == "performance" else family
+    locked_test = f"qa/tests/{directory}/items/test_items.py"
+    locked_data = f"qa/tests/testdata/{directory}/items.py"
+    allowed = request.workspace.allowed_outputs
+    assert allowed == tuple(
+        sorted(
+            (
+                f"qa/results/codegen/{family}-codegen-summary.md",
+                f"qa/results/codegen/{family}-generated-files.json",
+                locked_test,
+                locked_data,
+            )
+        )
+    )
+    assert "qa/tests/api" not in allowed
+    assert "qa/tests/testdata" not in allowed
+    assert f"qa/tests/{directory}" not in allowed
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
 async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: str, tmp_path: Path) -> None:
     mapped = durable_oracle_path(family=family)
     extra = (
         f"qa/tests/{family}/test_unmapped.py" if family != "performance" else "qa/tests/perf/test_unmapped.py"
     )
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [mapped])
 
     prepared = await execute_task(
@@ -259,10 +294,13 @@ async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: s
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    assert mapped in request.workspace.allowed_outputs
+    directory = "perf" if family == "performance" else family
+    locked_test = f"qa/tests/{directory}/items/test_items.py"
+    assert locked_test in request.workspace.allowed_outputs
     context_payload = cast(dict[str, object], request.instructions[4].json_content)
     assert context_payload["allowed_outputs"] == request.workspace.allowed_outputs
     assert extra not in request.workspace.allowed_outputs
+    assert mapped not in request.workspace.allowed_outputs
     assert all("**" not in path for path in request.workspace.allowed_outputs)
     assert all(not path.startswith("tests/") for path in request.workspace.allowed_outputs)
     assert f"qa/results/codegen/{family}-generated-files.json" in request.workspace.allowed_outputs
@@ -270,7 +308,8 @@ async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: s
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_rejects_missing_mapping(family: str, tmp_path: Path) -> None:
+async def test_codegen_prepare_succeeds_without_mapping(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     prepared = await execute_task(
         codegen_prepare_handler(family),
         codegen_input(family),
@@ -278,15 +317,12 @@ async def test_codegen_prepare_rejects_missing_mapping(family: str, tmp_path: Pa
         binding_data=PLAN_BINDING,
     )
 
-    assert prepared.status == "failed"
-    assert prepared.failure is not None
-    assert "closed codegen mapping is missing" in prepared.failure.message
+    assert prepared.status == "succeeded"
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_rejects_missing_reviewed_plan(family: str, tmp_path: Path) -> None:
-    _write_reviewed_cases(tmp_path, family)
+async def test_codegen_prepare_rejects_missing_reviewed_cases(family: str, tmp_path: Path) -> None:
     prepared = await execute_task(
         codegen_prepare_handler(family),
         {
@@ -300,7 +336,7 @@ async def test_codegen_prepare_rejects_missing_reviewed_plan(family: str, tmp_pa
     )
     assert prepared.status == "failed"
     assert prepared.failure is not None
-    assert "reviewed_plan" in prepared.failure.message
+    assert "reviewed case" in prepared.failure.message
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -667,6 +703,7 @@ async def test_codegen_prepare_rejects_routing_marker(family: str, tmp_path: Pat
             "provider_model": "primary,fallback",
         },
     }
+    _write_reviewed_cases(tmp_path, family)
     prepared = await execute_task(
         codegen_prepare_handler(family),
         codegen_input(family),

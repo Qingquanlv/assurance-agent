@@ -3,27 +3,21 @@
 Capability-owned API codegen skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 
-Turn a reviewed API plan and frozen case references into generated tests plus a
+Turn a host-built API codegen scope and frozen case references into generated tests plus a
 closed mapping. Schema truth is `assurance_generation.contracts` for generated
 files and mapping, and `assurance_intake.contracts` for reviewed cases.
 
 ## Inputs
 
-Read every exact product-source path cited by the approved plan before any discovery.
+Read every exact product-source path cited by the host scope and reviewed cases before any discovery.
 A glob result of `No files found` is not evidence that product source is absent;
 ignored source files remain exact-readable. Use path-scoped grep only after the
-exact reads, and never replace source-backed plan facts with guesses from naming.
+exact reads, and never replace source-backed case facts with guesses from naming.
 
 ### required
 
-- reviewed API plan (`PlanResultV1`)
+- host-built API codegen scope (`CodegenScopeV1`)
 - frozen case references for the selected API cases
-- `qa/results/plans/api-plan.md`
-- `qa/results/plans/api-test-data-plan.md`
-- `qa/results/plans/api-codegen-plan.md`
-- `qa/results/plans/api-codegen-mapping.json`
-- `qa/results/plans/m3-review-summary.md`
-- `qa/results/review/api-plan-review.json`
 - `qa/cases/**/case.yaml`
 - `.aa/data-knowledge.yaml`
 
@@ -42,22 +36,21 @@ exact reads, and never replace source-backed plan facts with guesses from naming
 
 - `qa/results/codegen/api-codegen-summary.md`
 - `qa/results/codegen/api-generated-files.json`
-- generated or updated test files under `qa/tests/api/**`
+- generated or updated test files listed in the host `locked_outputs`
 
 ### conditional
 
-- `qa/tests/testdata/domain/**` when the
-  reviewed plan authorizes a shared builder
+- the locked testdata file when the host `locked_outputs` include it
 
-The generated-files manifest and mapping keep `target_file` under `qa/tests/`. Do not
+Write only host `locked_outputs`. `target_file` must equal the locked test file
+for that case; testdata must be the locked testdata file. Do not
 write generated tests into the original `tests/**` tree.
 
 ## Boundaries
 
-Write only authorized files under
-`qa/tests/` plus the summary and
-generated-files manifest. Manifest `repo_path` / mapping `target_file` are
-the logical and physical `qa/tests/api/**` or `qa/tests/testdata/**` path.
+Write only host `locked_outputs`. Manifest `repo_path` / mapping `target_file`
+must equal the locked test file for that case; testdata must be the locked
+testdata file.
 
 Do not modify product source.
 
@@ -69,7 +62,7 @@ Framework is pytest. Keep Case ID → symbol → target file traceability exact.
 
 ## Frozen Inputs and Completion Check
 
-Plan, case, and review inputs are immutable. Read them as approved evidence;
+The host-built scope and reviewed cases are immutable. Read them as approved evidence;
 never rewrite, repair, or supersede them during codegen.
 
 The runtime `allowed_outputs` list is the exact write whitelist and overrides
