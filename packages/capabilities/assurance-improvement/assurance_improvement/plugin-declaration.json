@@ -170,7 +170,7 @@
       },
       {
         "contract_id": "assurance.improvement.retro-build-slices",
-        "digest": "2e52a14f6c99e9b841c451d3748f5fdb684ae9c5a0e98cd5b6470133fd3dea39"
+        "digest": "c5a4e366fff03524088f699dc14f232c4ebb264db44c6aa8f666b9742a037f4c"
       },
       {
         "contract_id": "assurance.improvement.task.apply-improvement-auto-review",
@@ -198,7 +198,7 @@
       },
       {
         "contract_id": "assurance.improvement.task.retro-collect-v3",
-        "digest": "15b96a7780a435e607f58fc36b8f530429fca095f7a6aa41996cfdd680e6dd1f"
+        "digest": "a46be5fbbeef21dc282352ab3fb1322e35d5755580442d3fbffa47508daf3e0f"
       },
       {
         "contract_id": "assurance.improvement.task.rollback-memory-improvement",

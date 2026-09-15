@@ -492,6 +492,52 @@ def test_workspace_writer_probe_retries_a_transient_lsof_timeout(
     assert timeouts == [2.0, 10.0]
 
 
+def test_workspace_writer_probe_falls_back_to_one_level_after_recursive_timeouts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeouts: list[float] = []
+
+    def run_lsof(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        command = list(args[0])  # type: ignore[arg-type]
+        timeout = float(kwargs["timeout"])
+        timeouts.append(timeout)
+        if "+D" in command:
+            raise subprocess.TimeoutExpired("lsof", timeout)
+        return subprocess.CompletedProcess(["lsof"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(production_host.subprocess, "run", run_lsof)
+
+    assert production_host._collect_workspace_writers(tmp_path) == ()
+    assert timeouts == [2.0, 10.0, 5.0]
+
+
+def test_lsof_executable_falls_back_to_usr_sbin_when_not_on_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(production_host.shutil, "which", lambda _name: None)
+    executable = production_host._lsof_executable()
+    if not Path("/usr/sbin/lsof").is_file():
+        pytest.skip("/usr/sbin/lsof is not installed")
+    assert executable == "/usr/sbin/lsof"
+
+
+def test_workspace_writer_probe_uses_resolved_lsof_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+
+    def run_lsof(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        seen.append(list(args[0]))  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(["lsof"], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(production_host, "_lsof_executable", lambda: "/usr/sbin/lsof")
+    monkeypatch.setattr(production_host.subprocess, "run", run_lsof)
+
+    assert production_host._collect_workspace_writers(tmp_path) == ()
+    assert seen[0][:3] == ["/usr/sbin/lsof", "-F", "p"]
+
+
 def test_worker_rejects_substituted_project_root_before_handler_execution(tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()

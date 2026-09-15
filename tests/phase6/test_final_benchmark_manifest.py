@@ -108,12 +108,16 @@ def test_comparison_only_surface_is_removed(repo_root: Path) -> None:
     assert not (repo_root / "benchmark/assurance-product-phase5").exists()
 
 
-def test_final_live_manifest_has_exactly_one_opencode_item(repo_root: Path) -> None:
+def test_final_live_manifest_has_management_opencode_items(repo_root: Path) -> None:
     document = json.loads((repo_root / MANIFEST_PATH.relative_to(repo_root)).read_text(encoding="utf-8"))
     assert document["schema_version"] == "1"
     items = document["items"]
     assert isinstance(items, list)
-    assert len(items) == 1
+    assert {item["id"] for item in items} == {
+        "opencode-ret-dept-management",
+        "opencode-ret-user-management",
+        "opencode-ret-permission-management",
+    }
     item = items[0]
     assert item["sut_item_id"] == "RET-dept-management"
     assert item["id"] == "opencode-ret-dept-management"
@@ -146,6 +150,8 @@ def test_final_benchmark_keeps_only_the_current_workflow_core(repo_root: Path) -
         BENCHMARK_ROOT / "run_item.py",
         BENCHMARK_ROOT / "run-opencode.sh",
         BENCHMARK_ROOT / "requirements/dept-management.md",
+        BENCHMARK_ROOT / "requirements/user-management.md",
+        BENCHMARK_ROOT / "requirements/permission-management.md",
     )
     retired_paths = (
         BENCHMARK_ROOT / "acg_comparison.py",

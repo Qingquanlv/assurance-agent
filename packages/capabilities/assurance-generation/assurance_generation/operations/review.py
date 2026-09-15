@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import PurePosixPath
 from typing import cast
 
 from pydantic import ValidationError
@@ -35,7 +37,16 @@ from assurance_generation.operations.planning import (
     validate_plan_input,
     validate_reviewed_plan,
 )
-from assurance_generation.operations.review_audit import api_review_requirements, validate_api_review_audit
+from assurance_generation.operations.plan_review_policy import (
+    apply_plan_review_policy,
+    load_finding_scope,
+    write_finding_scope,
+)
+from assurance_generation.operations.review_audit import (
+    api_review_requirements,
+    repair_api_review_audit,
+    validate_api_review_audit,
+)
 
 _REVIEW_SKILL_FILES: dict[Family, str] = {
     "api": "skills/aa-api-plan-reviewer/SKILL.md",
@@ -126,25 +137,48 @@ class PlanReviewFinalizeHandler:
                     else None,
                 )
                 try:
-                    validate_api_review_audit(
-                        document,
-                        requirements=api_review_requirements(
-                            case_ids=tuple(case.case_id for case in (*cases.added, *cases.modified)),
-                            facts=facts,
-                            images=images,
-                        ),
+                    requirements = api_review_requirements(
+                        case_ids=tuple(case.case_id for case in (*cases.added, *cases.modified)),
                         facts=facts,
                         images=images,
                     )
-                    raw_path = "qa/results/review/api-plan-review.json"
-                    raw = PlanReviewAuthoring.model_validate_json(
-                        review_input_images(context.write_root, (raw_path,))[raw_path],
-                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    document, _warnings = repair_api_review_audit(
+                        document,
+                        requirements=requirements,
+                        facts=facts,
+                        images=images,
                     )
-                    if raw != document:
-                        raise ValueError("review artifact must match the validated review result")
+                    validate_api_review_audit(
+                        document,
+                        requirements=requirements,
+                        facts=facts,
+                        images=images,
+                    )
                 except ValueError as error:
                     raise OutputError(str(error)) from error
+            previous = None
+            if payload.change_id is not None:
+                previous = load_finding_scope(
+                    context.write_root,
+                    family=family,
+                    coverage_epoch=payload.coverage_epoch,
+                ) or load_finding_scope(
+                    context.project_root,
+                    family=family,
+                    coverage_epoch=payload.coverage_epoch,
+                )
+            document = PlanReviewAuthoring.model_validate(
+                apply_plan_review_policy(document.model_dump(mode="json"), previous=previous),
+                context={"capability_leafs": leafs_of(payload.capability_leafs)},
+            )
+            if family == "api" and document.review_audit is not None:
+                raw_path = "qa/results/review/api-plan-review.json"
+                sealed = context.write_root.joinpath(*PurePosixPath(raw_path).parts)
+                sealed.parent.mkdir(parents=True, exist_ok=True)
+                sealed.write_text(
+                    json.dumps(document.model_dump(mode="json"), indent=2) + "\n",
+                    encoding="utf-8",
+                )
             extra: dict[str, object] = {
                 "public_outcome": normalize_public_review_outcome(
                     document.decision,
@@ -182,7 +216,23 @@ class PlanReviewFinalizeHandler:
                     source_refs=(*input_refs, review_ref),
                 )
                 extra["history_ref"] = history_ref.model_dump(mode="json")
-                extra["artifacts"] = [history_ref.model_dump(mode="json")]
+                scope_relative = write_finding_scope(
+                    context.write_root,
+                    family=family,
+                    coverage_epoch=payload.coverage_epoch,
+                    change_id=document.change_id,
+                    decision=document.decision,
+                    finding_ids=tuple(
+                        str(item["id"])
+                        for item in document.findings
+                        if isinstance(item, dict) and item.get("id")
+                    ),
+                )
+                scope_ref = evidence_ref(context.write_root, scope_relative)
+                extra["artifacts"] = [
+                    history_ref.model_dump(mode="json"),
+                    scope_ref.model_dump(mode="json"),
+                ]
             return TaskOutcome.succeeded(
                 cast(
                     JSONValue,

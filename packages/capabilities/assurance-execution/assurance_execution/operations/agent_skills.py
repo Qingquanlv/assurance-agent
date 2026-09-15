@@ -30,11 +30,8 @@ from assurance_execution.contracts.agent import (
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
 from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTargets
 from assurance_execution.execution_view import (
-    ExecutionView,
-    build_or_authenticate_execution_view,
     collect_test_support_files,
-    discard_authenticated_execution_view,
-    execution_view_relative,
+    lock_durable_execution,
 )
 from assurance_execution.generated_merge import merge_generated
 from assurance_execution.operations.common import (
@@ -511,7 +508,7 @@ def assemble_execution_input(
                 "runner_profile_digest": runner_profile_digest,
             }
         )
-        view = build_or_authenticate_execution_view(
+        view = lock_durable_execution(
             workspace,
             write_root=write_root,
             change_id=root.change_id,
@@ -519,10 +516,9 @@ def assemble_execution_input(
             merged=merged,
             selected=closed.selected,
         )
-        physical_view = write_root.joinpath(*PurePosixPath(view.root).parts)
-        execution_view_root = physical_view.resolve().relative_to(workspace.resolve()).as_posix()
+        execution_view_root = view.root
         if view.executed_at is None:
-            raise ValueError("execution view preparation time is missing")
+            raise ValueError("durable execution lock time is missing")
     except ValueError as error:
         raise InputError(str(error)) from error
     return model(
@@ -552,32 +548,6 @@ def _finalize_payload(
     return validate_input(AgentFinalizeInputV1, data)
 
 
-def _discard_execution_view(
-    payload: AgentFinalizeInputV1,
-    *,
-    project_root: Path,
-    write_root: Path,
-) -> None:
-    relative = execution_view_relative(payload.batch_id)
-    expected = write_root.joinpath(*PurePosixPath(relative).parts)
-    try:
-        project_relative = expected.resolve().relative_to(project_root.resolve()).as_posix()
-    except ValueError as error:
-        raise OutputError("execution view escapes the authenticated attempt workspace") from error
-    if payload.execution_view_root != project_relative:
-        raise OutputError("execution view root does not match the authenticated attempt workspace")
-    view = ExecutionView(
-        batch_id=payload.batch_id,
-        root=relative,
-        selected_targets=payload.mapping.selected,
-        digest=payload.execution_view_digest,
-    )
-    try:
-        discard_authenticated_execution_view(write_root, view)
-    except ValueError as error:
-        raise OutputError(str(error)) from error
-
-
 def _commit_execution_evidence(
     payload: AgentFinalizeInputV1,
     evidence: ExecutionEvidenceV1,
@@ -586,9 +556,14 @@ def _commit_execution_evidence(
     write_root: Path,
     filename: str,
 ) -> None:
+    if payload.execution_view_root != "qa":
+        raise OutputError("execution view root is not the durable qa tree")
+    try:
+        write_root.resolve().relative_to(project_root.resolve())
+    except ValueError as error:
+        raise OutputError("execution evidence escapes the authenticated attempt workspace") from error
     output = resolve_canonical_evidence(write_root, evidence.change_id, filename)
     expected = json.dumps(evidence.model_dump(mode="json"), indent=2).encode("utf-8") + b"\n"
-    view = write_root.joinpath(*PurePosixPath(execution_view_relative(payload.batch_id)).parts)
     if output.exists():
         if (
             output.is_symlink()
@@ -597,16 +572,8 @@ def _commit_execution_evidence(
             or output.read_bytes() != expected
         ):
             raise OutputError("prepared execution evidence drifted before finalize recovery")
-    else:
-        if not view.is_dir() or view.is_symlink():
-            raise OutputError("execution view is missing before first finalize")
-        write_canonical_evidence(write_root, evidence, filename=filename)
-    if view.exists():
-        _discard_execution_view(
-            payload,
-            project_root=project_root,
-            write_root=write_root,
-        )
+        return
+    write_canonical_evidence(write_root, evidence, filename=filename)
 
 
 def _canonical_relative(path: str) -> bool:

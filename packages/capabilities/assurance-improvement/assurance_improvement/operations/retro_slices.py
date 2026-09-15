@@ -11,7 +11,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from graph_engine.attempts import AuthorizedAttemptScope, ExecutedAttemptResult
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.retro import (
@@ -25,8 +25,14 @@ from assurance_improvement.contracts.retro import (
     RetroCollectInput,
     RetroIntegrity,
     RetroSourceDescriptor,
+    TaskFailureEvidenceEntry,
+    TaskFailureSignal,
+    WorkflowEvidenceEntry,
     WorkflowEvidenceSlice,
+    WorkflowRuntimeEvidenceV1,
 )
+from assurance_improvement.contracts.improvements import ImprovementSourceRefs
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_intake.contracts import EvidenceArtifactRefV1, LoopRoundHistoryV1
 from assurance_intake.contracts.plan import decode_plan
 from assurance_quality.contracts.agent import InspectionResultV1
@@ -138,14 +144,55 @@ def _history_entry(history: LoopRoundHistoryV1) -> LoopRoundEvidenceEntry:
     )
 
 
-def _inspection_entry(document: InspectionResultV1) -> EvalEvidenceEntry:
+def _execution_entry(document: ExecutionEvidenceV1) -> EvalEvidenceEntry:
+    failed = tuple(item for item in document.results if item.status == "failed")
+    verdict = "failed" if document.receipt.exit_code != 0 or failed else "passed"
+    signature = (
+        canonical_digest(
+            cast(
+                JSONValue,
+                {
+                    "exit_code": document.receipt.exit_code,
+                    "failures": sorted(
+                        {hashlib.sha256(item.message.encode()).hexdigest() for item in failed}
+                    ),
+                },
+            )
+        )
+        if verdict == "failed"
+        else None
+    )
     return EvalEvidenceEntry(
         run_id=document.batch_id,
-        suite="assurance-quality-inspect",
-        verdict=document.status,
-        failure_signature="inspection_failed" if document.status == "failed" else None,
-        started_at=document.batch_id,
+        suite="assurance-execution",
+        verdict=verdict,
+        failure_signature=signature,
+        started_at=document.executed_at.isoformat() if document.executed_at is not None else None,
         source_change_ids=(document.change_id,),
+        sample_ids=tuple(sorted(item.test for item in failed)),
+    )
+
+
+def _failure_signals(entries: Iterable[WorkflowEvidenceEntry]) -> tuple[TaskFailureSignal, ...]:
+    groups: dict[tuple[str, str, str], list[TaskFailureEvidenceEntry]] = {}
+    for entry in entries:
+        if isinstance(entry, TaskFailureEvidenceEntry):
+            groups.setdefault((entry.node_id, entry.error_kind, entry.message_fingerprint), []).append(entry)
+    return tuple(
+        TaskFailureSignal(
+            signal_id=f"task-failure-{canonical_digest(list(key))}",
+            node_id=key[0],
+            error_kind=key[1],
+            message_fingerprint=key[2],
+            summary=f"{len(group)} technical failure(s) at {key[0]} ({key[1]}); recovery does not erase failures.",
+            occurrence_count=len(group),
+            recommended_change="Review the node's contract and failure fingerprint before proposing a targeted correction.",
+            source_refs=ImprovementSourceRefs(
+                workflow_evidence_ids=tuple(sorted(item.evidence_id for item in group))
+            ),
+            confidence="high",
+        )
+        for key, group in sorted(groups.items())
     )
 
 
@@ -187,15 +234,75 @@ def build_retro_slices(
     issue_entries: list[IssueEvidenceEntry] = []
     workflow_sources: list[RetroSourceDescriptor] = []
     eval_sources: list[RetroSourceDescriptor] = []
-    workflow_entries: list[LoopRoundEvidenceEntry] = []
+    workflow_entries: list[WorkflowEvidenceEntry] = []
     eval_entries: list[EvalEvidenceEntry] = []
     issue_reasons: list[str] = []
     workflow_reasons: list[str] = []
     eval_reasons: list[str] = []
     history_seen = False
+    runtime_changes: set[str] = set()
+    executions: dict[str, ExecutionEvidenceV1] = {}
+    inspections: list[InspectionResultV1] = []
+    seen_runs: dict[tuple[str, str], str] = {}
 
     for ref in refs:
         data = _read_ref(project_root, ref)
+        if ref.path.endswith("/workflow-evidence.json"):
+            try:
+                runtime = WorkflowRuntimeEvidenceV1.model_validate(_json(data, ref.path))
+            except (ValidationError, RetroSlicesInputError):
+                workflow_reasons.append("runtime_evidence_corrupt")
+                continue
+            if runtime.change_id not in selected_changes:
+                workflow_reasons.append("runtime_evidence_window_mismatch")
+                continue
+            runtime_changes.add(runtime.change_id)
+            workflow_reasons.extend(runtime.integrity.reasons)
+            if runtime.integrity.status == "incomplete":
+                workflow_reasons.append("runtime_evidence_incomplete")
+            workflow_entries.extend(runtime.entries)
+            workflow_sources.append(
+                _descriptor(
+                    kind="workflow_ledger",
+                    ref=ref,
+                    change_id=runtime.change_id,
+                    evidence_ids=(entry.evidence_id for entry in runtime.entries),
+                )
+            )
+            continue
+        if ref.path.endswith("/execute-result.json"):
+            try:
+                payload = _json(data, ref.path)
+                execution = ExecutionEvidenceV1.model_validate(payload)
+            except (ValidationError, RetroSlicesInputError):
+                eval_reasons.append("execution_evidence_corrupt")
+                continue
+            if execution.change_id not in selected_changes:
+                eval_reasons.append("execution_window_mismatch")
+                continue
+            plan_binding = _source_plan_binding(payload, source_refs=refs_by_path, project_root=project_root)
+            entry = _execution_entry(execution)
+            if execution.status != entry.verdict:
+                eval_reasons.append("execution_status_mismatch")
+            if execution.executed_at is None:
+                eval_reasons.append("execution_time_missing")
+            key = (execution.change_id, execution.batch_id)
+            if key in seen_runs and seen_runs[key] != ref.digest:
+                raise RetroSlicesInputError("conflicting execution evidence for the same run")
+            if key not in seen_runs:
+                eval_entries.append(entry)
+            seen_runs[key] = ref.digest
+            executions[ref.digest] = execution
+            eval_sources.append(
+                _descriptor(
+                    kind="eval_run",
+                    ref=ref,
+                    change_id=execution.change_id,
+                    evidence_ids=(entry.run_id,),
+                    plan_binding=plan_binding,
+                )
+            )
+            continue
         if "/rounds/" in ref.path and "/epochs/" in ref.path and ref.path.endswith(".json"):
             history_seen = True
             try:
@@ -227,14 +334,12 @@ def build_retro_slices(
             if inspection.change_id not in selected_changes:
                 eval_reasons.append("inspection_window_mismatch")
                 continue
-            entry = _inspection_entry(inspection)
-            eval_entries.append(entry)
+            inspections.append(inspection)
             eval_sources.append(
                 _descriptor(
                     kind="inspection_outcome",
                     ref=ref,
                     change_id=inspection.change_id,
-                    evidence_ids=(entry.run_id,),
                     plan_binding=_source_plan_binding(
                         payload,
                         source_refs=refs_by_path,
@@ -295,18 +400,37 @@ def build_retro_slices(
 
     if not history_seen:
         workflow_reasons.append("loop_history_missing")
+    if not selected_changes.issubset(runtime_changes):
+        workflow_reasons.append("task_failure_evidence_absent")
+    # Loop outcomes and runtime errors do not establish adherence to a skill.
+    workflow_reasons.append("skill_drift_evidence_absent")
     if not issue_sources:
         issue_reasons.append("issue_evidence_absent")
-    if not eval_sources:
+    if not eval_entries:
         eval_reasons.append("evaluation_evidence_absent")
+
+    for inspection in inspections:
+        execution = executions.get(inspection.execution_digest)
+        if execution is None:
+            eval_reasons.append("inspection_execution_missing")
+        elif (execution.change_id, execution.batch_id) != (inspection.change_id, inspection.batch_id):
+            eval_reasons.append("inspection_execution_identity_mismatch")
+
+    unique_workflow: dict[str, WorkflowEvidenceEntry] = {}
+    for workflow_entry in workflow_entries:
+        previous = unique_workflow.setdefault(workflow_entry.evidence_id, workflow_entry)
+        if previous != workflow_entry:
+            raise RetroSlicesInputError("conflicting workflow evidence for the same evidence ID")
+    workflow_entries = list(unique_workflow.values())
 
     workflow_entries.sort(
         key=lambda item: (
             item.change_id,
-            item.coverage_epoch,
-            item.loop_kind,
-            item.family or "",
-            item.round_index,
+            item.entry_kind,
+            item.coverage_epoch if isinstance(item, LoopRoundEvidenceEntry) else 0,
+            item.loop_kind if isinstance(item, LoopRoundEvidenceEntry) else "",
+            (item.family or "") if isinstance(item, LoopRoundEvidenceEntry) else "",
+            item.round_index if isinstance(item, LoopRoundEvidenceEntry) else 0,
             item.evidence_id,
         )
     )
@@ -344,6 +468,7 @@ def build_retro_slices(
             sources=tuple(workflow_sources),
             integrity=integrity(workflow_reasons),
             entries=tuple(workflow_entries),
+            deterministic_signals=_failure_signals(workflow_entries),
         ),
         eval_slice=EvalEvidenceSlice(
             retro_id=request.retro_id,

@@ -26,8 +26,8 @@ _FACTS_LIMITS = (
     "Static observations only; unknown is not absent. Environment names are "
     "references, not proof of availability or necessity. Independently verify "
     "source behavior and owner-defined oracles. Fixtures and support modules "
-    "live under qa/tests/. The execution view remaps qa/tests/ to tests/ for "
-    "pytest collection."
+    "live under qa/tests/. Execute runs durable qa/tests/ in place with "
+    "pythonpath=qa."
 )
 
 

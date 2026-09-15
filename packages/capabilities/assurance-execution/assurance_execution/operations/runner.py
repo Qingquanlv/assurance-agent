@@ -29,7 +29,6 @@ from assurance_execution.operations.common import (
 from assurance_execution.operations.normalize import normalize_evidence
 from assurance_execution.operations.paths import (
     resolve_canonical_evidence,
-    resolve_execution_view,
     resolve_selected_file,
 )
 
@@ -186,27 +185,6 @@ def _project_config(project_root: Path) -> Path | None:
     return None
 
 
-def _view_relative_selector(item: str) -> str:
-    path, separator, symbol = item.partition("::")
-    if path.startswith("qa/tests/"):
-        path = "tests/" + path[len("qa/tests/") :]
-    return f"{path}{separator}{symbol}" if separator else path
-
-
-def _view_prefixed_selectors(
-    selected: tuple[str, ...],
-    *,
-    rootdir: Path,
-    project_root: Path,
-) -> tuple[str, ...]:
-    prefix = rootdir.relative_to(project_root).as_posix()
-    prefixed: list[str] = []
-    for item in selected:
-        view_item = _view_relative_selector(item)
-        prefixed.append(view_item if view_item.startswith(f"{prefix}/") else f"{prefix}/{view_item}")
-    return tuple(prefixed)
-
-
 def build_pytest_argv(
     selected: tuple[str, ...],
     *,
@@ -215,25 +193,19 @@ def build_pytest_argv(
     batch_id: str | None = None,
     config: Path | None = None,
 ) -> tuple[str, ...]:
-    targets = selected
-    if rootdir is not None and project_root is not None:
-        targets = _view_prefixed_selectors(selected, rootdir=rootdir, project_root=project_root)
-    argv: list[str] = ["pytest", *targets, "-p", "no:cacheprovider"]
+    argv: list[str] = ["pytest", *selected, "-p", "no:cacheprovider"]
     if rootdir is not None:
         argv.append(f"--rootdir={rootdir}")
         argv.append(f"--confcutdir={rootdir}")
     if project_root is not None:
-        pythonpath = str(rootdir) if rootdir is not None else str(project_root)
-        argv.append(f"-o=pythonpath={pythonpath}")
+        argv.append(f"-o=pythonpath={str((project_root / 'qa').resolve())}")
         resolved_config = config or _project_config(project_root)
         if resolved_config is not None:
             argv.append(f"-c={resolved_config}")
+        argv.append("-o=asyncio_mode=auto")
     if batch_id is not None:
         argv.append(f"--assurance-batch-id={batch_id}")
-    report = _JSON_REPORT_FILE
-    if rootdir is not None and project_root is not None:
-        report = f"{rootdir.relative_to(project_root).as_posix()}/{_JSON_REPORT_FILE}"
-    argv.extend(("--json-report", f"--json-report-file={report}"))
+    argv.extend(("--json-report", f"--json-report-file={_JSON_REPORT_FILE}"))
     return tuple(argv)
 
 
@@ -281,11 +253,9 @@ def run_closed_mapping(
     selected = tuple(mapping.selected)
     if not selected:
         raise InputError("execution mapping must contain at least one selected test")
-    view_root = resolve_execution_view(workspace, payload.change_id, payload.batch_id)
-    selected = _authenticate_selected(view_root, mapping)
+    selected = _authenticate_selected(workspace, mapping)
     argv = build_pytest_argv(
         selected,
-        rootdir=view_root,
         project_root=workspace,
         batch_id=payload.batch_id,
     )

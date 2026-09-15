@@ -182,10 +182,10 @@ def result_contract(
     schema_id: str,
     *,
     capability_leafs: tuple[str, ...] | None = None,
-    require_review_audit: bool = False,
+    review_requirements: Mapping[str, Any] | None = None,
 ) -> ResultContract:
     payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
-    if require_review_audit:
+    if review_requirements is not None:
         payload["required"] = [*payload["required"], "review_audit"]
         payload["properties"]["review_audit"] = {"$ref": "#/$defs/PlanReviewAudit"}
     if capability_leafs is not None:
@@ -604,14 +604,16 @@ def prepare_plan_outcome(
             }
         ),
     )
+    review_requirements = None
     if review_input_paths:
         review_inputs: dict[str, Any] = {"review_input_paths": list(review_input_paths)}
         if family == "api":
-            review_inputs["review_requirements"] = api_review_requirements(
+            review_requirements = api_review_requirements(
                 case_ids=tuple(case.case_id for case in (*cases.added, *cases.modified)),
                 facts=facts,
                 images=review_input_images(context.project_root, review_input_paths),
             )
+            review_inputs["review_requirements"] = review_requirements
         instructions = (
             *instructions,
             InstructionPart.from_json(review_inputs),
@@ -628,7 +630,7 @@ def prepare_plan_outcome(
         result_contract=result_contract(
             result_schema_id,
             capability_leafs=business.capability_leafs if close_result_capabilities else None,
-            require_review_audit=family == "api" and bool(review_input_paths),
+            review_requirements=review_requirements,
         ),
         execution=binding.execution,
         workspace=agent_workspace(

@@ -126,20 +126,23 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
     assert doc_author["tools"]["apply_patch"] is True
     assert "tool literally named `write` is available" in doc_author["prompt"]
     executor = config["agent"]["assurance-v1-executor"]
-    execution_view = "**/qa/.staging/execution/*"
     pytest_command = (
         "PYTHONDONTWRITEBYTECODE=1 "
         "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
-        f"uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir {execution_view} *"
+        "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa *"
     )
     assert executor["permission"]["bash"][pytest_command] == "allow"
     assert (
         executor["permission"]["bash"][
-            f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile {execution_view} *"
+            "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile qa/tests/** *"
         ]
         == "allow"
     )
-    assert all(execution_view in command for command in executor["permission"]["bash"] if command != "*")
+    assert all(
+        "qa/.staging/execution" not in command
+        for command in executor["permission"]["bash"]
+        if command != "*"
+    )
     assert "uv run --isolated pytest *" not in executor["permission"]["bash"]
     assert "uv run --isolated locust *" not in executor["permission"]["bash"]
     assert "pytest *" not in executor["permission"]["bash"]
@@ -311,8 +314,7 @@ def test_opencode_boundary_allows_the_canonical_locust_command(tmp_path: Path) -
     project.mkdir()
     _config, plugin = install_opencode_agents(project)
     write_root = "qa/.staging/task-1/attempt-1"
-    execution_view = f"{write_root}/qa/.staging/execution/batch-1"
-    locustfile = project / execution_view / "tests/perf/locustfile_dept.py"
+    locustfile = project / "qa/tests/perf/locustfile_dept.py"
     locustfile.parent.mkdir(parents=True)
     locustfile.write_text("# bounded input\n", encoding="utf-8")
     title = workspace_binding_title(
@@ -324,7 +326,7 @@ def test_opencode_boundary_allows_the_canonical_locust_command(tmp_path: Path) -
         task_id="task-1",
         attempt=1,
         attempt_id="attempt-1",
-        read_roots=(execution_view,),
+        read_roots=("qa",),
     )
     driver = r"""
 import { pathToFileURL } from "node:url";
@@ -347,7 +349,7 @@ try {
 """
     command = (
         "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile "
-        f"{execution_view}/tests/perf/locustfile_dept.py "
+        "qa/tests/perf/locustfile_dept.py "
         "--headless --users 10 --spawn-rate 2 --run-time 60s"
     )
 

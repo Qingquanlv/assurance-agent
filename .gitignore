@@ -15,7 +15,9 @@ dist/
 .DS_Store
 
 # Benchmark: commit the harness, ignore generated artifacts and the vendored SUT app.
+# The SUT is its own git repository (worktrees are created from that root).
 benchmark/assurance-product/results/
+benchmark/vue-fastapi-admin/.git
 benchmark/vue-fastapi-admin/*
 # Stable benchmark policy and L1 data; other SUT state remains ignored.
 !benchmark/vue-fastapi-admin/.aa/

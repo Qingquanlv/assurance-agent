@@ -21,24 +21,23 @@ const WRITE_TOOLS = new Set(["apply_patch", "artifact_write", "edit", "write"]);
 const READ_TOOLS = new Set(["read", "glob", "grep"]);
 const SHELL_TOOLS = new Set(["bash", "interactive_bash"]);
 const EXECUTOR_PROFILE = "assurance-v1-executor";
-const EXECUTION_VIEW_RELATIVE = /^qa\/\.staging\/execution\/[^/]+$/;
 const HYPOTHESIS_CACHE = /^\/tmp\/aa-hypothesis-[A-Za-z0-9._-]+$/;
 const SHELL_UNSAFE = /[;\n\r`<>]|&&|\|\||(?<!\$)\||\$\(|<\(|>\(/;
-const EXECUTION_VIEW_PATTERN = String.raw`(?:[A-Za-z0-9._-]+/)*qa/\.staging/execution/[A-Za-z0-9._-]+`;
-const EXECUTION_VIEW_FILE_PATTERN = String.raw`${EXECUTION_VIEW_PATTERN}/[A-Za-z0-9._/-]+`;
+const DURABLE_QA = String.raw`qa`;
+const DURABLE_TESTS_FILE = String.raw`qa/tests/[A-Za-z0-9._/-]+`;
 const HYPOTHESIS_PATTERN = String.raw`/tmp/aa-hypothesis-[A-Za-z0-9._-]+`;
 const PLAYWRIGHT_OUTPUT = /^\/tmp\/aa-playwright-[A-Za-z0-9._-]+$/;
 const EXECUTOR_GRAMMARS = [
-  new RegExp(String.raw`^npm run test --prefix ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
-  new RegExp(String.raw`^npm test --prefix ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
-  new RegExp(String.raw`^npx playwright test --config=${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`),
-  new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} run test(?:\s+\S+)*$`),
-  new RegExp(String.raw`^pnpm --dir ${EXECUTION_VIEW_PATTERN} test(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npm run test --prefix ${DURABLE_QA}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npm test --prefix ${DURABLE_QA}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^npx playwright test --config=${DURABLE_TESTS_FILE}(?:\s+\S+)*$`),
+  new RegExp(String.raw`^pnpm --dir ${DURABLE_QA} run test(?:\s+\S+)*$`),
+  new RegExp(String.raw`^pnpm --dir ${DURABLE_QA} test(?:\s+\S+)*$`),
   new RegExp(
-    String.raw`^PYTHONDONTWRITEBYTECODE=1 HYPOTHESIS_STORAGE_DIRECTORY=${HYPOTHESIS_PATTERN} uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir ${EXECUTION_VIEW_PATTERN}(?:\s+\S+)*$`,
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 HYPOTHESIS_STORAGE_DIRECTORY=${HYPOTHESIS_PATTERN} uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa(?:\s+\S+)*$`,
   ),
   new RegExp(
-    String.raw`^PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile ${EXECUTION_VIEW_FILE_PATTERN}(?:\s+\S+)*$`,
+    String.raw`^PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile ${DURABLE_TESTS_FILE}(?:\s+\S+)*$`,
   ),
 ];
 const PATCH_HEADERS = /^(Add File|Update File|Delete File|Move to): /;
@@ -387,14 +386,6 @@ const isOutputDestinationFlag = (token) => (
   token.startsWith("-") && !token.includes("=") && OUTPUT_FLAG.test(token.replace(/^-+/, ""))
 );
 
-const boundExecutionView = (binding) => {
-  const prefix = `${binding.write_root}/`;
-  const candidates = binding.read_roots.filter((item) => (
-    item.startsWith(prefix) && EXECUTION_VIEW_RELATIVE.test(item.slice(prefix.length))
-  ));
-  return candidates.length === 1 ? candidates[0] : null;
-};
-
 const projectCommandPath = (value, root) => {
   const candidate = value.split("::", 1)[0];
   if (path.isAbsolute(candidate) || /^file:/i.test(candidate)) {
@@ -414,11 +405,9 @@ const isAllowedOutputTarget = (value, root, binding) => (
 );
 
 const isExecutionViewPath = (value, root, binding) => {
-  const expected = boundExecutionView(binding);
   const relative = projectCommandPath(value, root);
-  return expected !== null
-    && relative !== null
-    && (relative === expected || relative.startsWith(`${expected}/`));
+  return relative !== null
+    && binding.read_roots.some((item) => relative === item || relative.startsWith(`${item}/`));
 };
 
 const outputParents = (binding) => new Set(

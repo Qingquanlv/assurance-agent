@@ -27,7 +27,15 @@ for `RetroAnalysisResultV3` with `domain=eval`.
 
 - Treat deterministic slice signals as already included. Analyze entries for additional
   `eval_trend` patterns. Do not copy or re-emit a deterministic signal.
-- Aggregate runs by `suite + verdict + failure_signature`. Never emit one signal per run.
+- Aggregate runs by `suite + verdict + failure_signature`. A failed group is actionable
+  even with one run: emit one `eval_trend` for the group, cite its `eval_run_ids`, and
+  use `consecutive_count: 0` unless ordered comparable runs establish a streak.
+  Describe a single run as a failure observation, not a regression trend or product bug.
+- Execution verdicts come from authenticated execution evidence. Inspect `analyzed`
+  means classification completed; it is not a passing test verdict. Failure fingerprints
+  identify groups without exposing raw diagnostic messages; do not guess their contents.
+- Analyze usable entries even with integrity gaps. Missing execution identity or time
+  is unknown, not a healthy run; `started_at: null` must not be sorted as a real timestamp.
 - Each `signal_id` may occur only once.
 - On failure write `analysis_status: failed`, a non-empty `failure_reason`, and no signals.
 - Never write `slice_sha256` or calculate a digest.

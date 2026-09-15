@@ -17,7 +17,6 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
     execute_task,
     executed_paths,
     fake_pytest_host,
-    materialize_execution_view,
     run_request,
     write_test,
 )
@@ -27,7 +26,6 @@ from execution_fixtures import (  # pyright: ignore[reportMissingImports]
 async def test_run_tests_executes_only_closed_mapping(tmp_path: Path) -> None:
     write_test(tmp_path / "qa/tests/generated_test.py")
     write_test(tmp_path / "qa/tests/legacy_test.py")
-    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     outcome = await execute_task(
         RunTestsHandler(process_host=fake_pytest_host()),
         run_request(selected=["qa/tests/generated_test.py"]),
@@ -41,7 +39,6 @@ async def test_run_tests_executes_only_closed_mapping(tmp_path: Path) -> None:
 async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
     write_test(tmp_path / "qa/tests/generated_test.py")
     (tmp_path / "qa/tests/legacy_test.py").symlink_to(tmp_path / "qa/tests/generated_test.py")
-    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     linked = await execute_task(
         RunTestsHandler(process_host=fake_pytest_host()),
         run_request(selected=["qa/tests/legacy_test.py"]),
@@ -77,7 +74,6 @@ async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     write_test(tmp_path / "qa/tests/generated_test.py")
-    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     host = fake_pytest_host()
     outcome = await execute_task(
         RunTestsHandler(process_host=host),
@@ -87,7 +83,10 @@ async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     assert outcome.status == "succeeded", getattr(outcome, "failure", None)
     argv = host.commands[0]
     assert argv[0] == "pytest"
-    assert any(item.endswith("tests/generated_test.py") for item in argv)
+    assert "-o=asyncio_mode=auto" in argv
+    assert "qa/tests/generated_test.py" in argv
+    assert any(item.startswith("-o=pythonpath=") and item.endswith("/qa") for item in argv)
+    assert not any("--rootdir=" in item and ".staging/execution" in item for item in argv)
     assert "-p" in argv and "no:cacheprovider" in argv
     assert "--json-report" in argv
     report_flags = [item for item in argv if item.startswith("--json-report-file=")]
@@ -98,18 +97,15 @@ async def test_run_tests_builds_argv_without_shell(tmp_path: Path) -> None:
     assert " " not in argv[1]
 
 
-def test_runner_argv_imports_projected_support_from_execution_view(tmp_path: Path) -> None:
-    write_test(tmp_path / "qa/fixtures/__init__.py", body="")
-    write_test(tmp_path / "qa/fixtures/support.py", body="VALUE = 1\n")
+def test_runner_argv_imports_support_from_durable_qa_tests(tmp_path: Path) -> None:
+    write_test(tmp_path / "qa/tests/__init__.py", body="")
+    write_test(tmp_path / "qa/tests/support.py", body="VALUE = 1\n")
     write_test(
         tmp_path / "qa/tests/api/test_generated.py",
         body="from tests.support import VALUE\n\n\ndef test_ok():\n    assert VALUE == 1\n",
     )
-    view = materialize_execution_view(tmp_path, ["qa/tests/api/test_generated.py"])
-    rootdir = tmp_path.joinpath(*view.root.split("/"))
     argv = build_pytest_argv(
         ("qa/tests/api/test_generated.py",),
-        rootdir=rootdir,
         project_root=tmp_path,
     )
     argv_without_report = tuple(
@@ -218,7 +214,6 @@ async def test_run_tests_and_collect_pr_metrics_uses_selected_only(tmp_path: Pat
 
     write_test(tmp_path / "qa/tests/generated_test.py")
     write_test(tmp_path / "qa/tests/legacy_test.py")
-    materialize_execution_view(tmp_path, ["qa/tests/generated_test.py"])
     outcome = await execute_task(
         RunTestsAndCollectPrMetricsHandler(process_host=fake_pytest_host()),
         run_request(selected=["qa/tests/generated_test.py"]),

@@ -113,21 +113,22 @@ def phase5_manifest() -> Phase5Manifest:
     return Phase5Manifest(loaded)
 
 
-def test_opencode_benchmark_is_one_full_locked_item(phase5_manifest):
+@pytest.mark.parametrize("module", ["dept", "user", "permission"])
+def test_opencode_benchmark_has_full_locked_items(phase5_manifest, module):
     document = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     items = document["items"]
     assert isinstance(items, list)
-    assert len(items) == 1
+    assert len(items) == 3
     assert items[0]["id"] == "opencode-ret-dept-management"
     assert items[0]["sut_item_id"] == "RET-dept-management"
     assert items[0]["adapter_binding"]["protocol_profile"] == "opencode-http-v1"
     assert all("cursor" not in str(entry.get("id", "")).lower() for entry in items)
-    item = phase5_manifest.item("opencode-ret-dept-management")
-    assert item.sut_item_id == "RET-dept-management"
+    item = phase5_manifest.item(f"opencode-ret-{module}-management")
+    assert item.sut_item_id == f"RET-{module}-management"
     assert item.product == "assurance-opencode"
     assert item.entrypoint == "full"
     assert item.selected_test_families == ("api",)
-    assert item.case_modules == ("system/dept",)
+    assert item.case_modules == (f"system/{module}",)
     assert item.adapter_version == "0.1.0"
     assert item.expected_terminal == "completed"
     assert item.required_steps == FULL_WORKFLOW_REQUIRED_STEPS

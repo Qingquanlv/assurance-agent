@@ -239,7 +239,7 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_execute_prepare_materializes_an_authenticated_attempt_local_view(
+async def test_execute_prepare_locks_durable_qa_tests_without_a_copied_view(
     tmp_path: Path,
 ) -> None:
     payload = _prepare_input(tmp_path)
@@ -255,12 +255,12 @@ async def test_execute_prepare_materializes_an_authenticated_attempt_local_view(
     assert isinstance(view_digest, str) and len(view_digest) == 64
     executed_at = datetime.fromisoformat(cast(str, business["executed_at"]).replace("Z", "+00:00"))
     assert executed_at.utcoffset() is not None
-    assert view_root.startswith("qa/.staging/attempt-1/")
-    assert "/qa/.staging/execution/" in view_root
-    materialized = tmp_path.joinpath(*view_root.split("/"), "tests/api/test_generated.py")
-    assert materialized.read_bytes() == b"def test_tc_a_001__ok():\n    assert True\n"
+    assert view_root == "qa"
+    durable = tmp_path / "qa/tests/api/test_generated.py"
+    assert durable.read_bytes() == b"def test_tc_a_001__ok():\n    assert True\n"
+    assert not any((tmp_path / "qa/.staging").rglob("tests/api/test_generated.py"))
     assert request.workspace.allowed_outputs == ()
-    assert request.workspace.read_roots == (view_root,)
+    assert request.workspace.read_roots == ("qa",)
 
 
 @pytest.mark.asyncio
@@ -408,19 +408,18 @@ async def test_prepare_baseline_enforces_file_count_cap(
 
 
 @pytest.mark.asyncio
-async def test_execute_prepare_replay_rejects_a_drifted_execution_view(tmp_path: Path) -> None:
+async def test_execute_prepare_relocks_when_durable_qa_tests_change(tmp_path: Path) -> None:
     payload = _prepare_input(tmp_path)
     first = await execute_task(ExecutePrepareHandler(), payload, tmp_path, binding_data=BINDING)
     business = _business_payload(AgentRunRequest.model_validate(first.output))
-    view = tmp_path.joinpath(*cast(str, business["execution_view_root"]).split("/"))
-    (view / "tests/api/test_generated.py").write_text("def test_drift(): pass\n", encoding="utf-8")
+    (tmp_path / "qa/tests/api/test_generated.py").write_text("def test_drift(): pass\n", encoding="utf-8")
 
     replay = await execute_task(ExecutePrepareHandler(), payload, tmp_path, binding_data=BINDING)
 
-    assert replay.status == "failed"
-    assert replay.failure is not None
-    assert replay.failure.kind == "invalid_input"
-    assert "execution view digest drifted" in replay.failure.message
+    assert replay.status == "succeeded"
+    replay_business = _business_payload(AgentRunRequest.model_validate(replay.output))
+    assert replay_business["execution_view_digest"] != business["execution_view_digest"]
+    assert replay_business["execution_view_root"] == "qa"
 
 
 @pytest.mark.asyncio
@@ -496,13 +495,13 @@ async def test_finalize_rejects_command_receipt_for_an_unselected_family(tmp_pat
 @pytest.mark.asyncio
 async def test_execute_finalize_accepts_typed_evidence(tmp_path: Path) -> None:
     payload, _ = await _prepared_finalize_payload(tmp_path)
-    view_root = cast(str, payload["execution_view_root"])
     outcome = await execute_task(ExecuteFinalizeHandler(), payload, tmp_path)
     assert outcome.status == "succeeded"
     results = as_object(outcome.output)["results"]
     assert as_object(results[0])["test"] == "qa/tests/api/test_generated.py::test_tc_a_001__ok"
     assert as_object(outcome.output)["executed_at"] == payload["executed_at"]
-    assert not tmp_path.joinpath(*view_root.split("/")).exists()
+    assert (tmp_path / "qa/tests/api/test_generated.py").is_file()
+    assert not any((tmp_path / "qa/.staging").rglob("tests/api/test_generated.py"))
 
     replay = await execute_task(ExecuteFinalizeHandler(), payload, tmp_path)
     assert replay.status == "succeeded"
@@ -548,13 +547,15 @@ def test_execution_skills_keep_tool_environments_outside_candidate_and_use_famil
         assert "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-<batch_id>" in normalized
         assert "-p no:cacheprovider" in normalized
         assert (
-            "uv run --isolated pytest -p no:cacheprovider --tb=line --rootdir <execution_view_root>"
+            "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa"
         ) in normalized
+        assert "--rootdir <execution_view_root>" not in normalized
+        assert "<execution_view_root>/<mapped-selector>" not in normalized
         assert "tokenized argv array" in normalized
         assert "Never return the whole Bash tool input as one array element" in normalized
         assert "--output=/tmp/aa-playwright-<batch_id>" in normalized
         assert (
-            "uv run --isolated locust --locustfile <execution_view_root>/<mapped-locustfile> --headless"
+            "uv run --isolated locust --locustfile <mapped-locustfile> --headless"
         ) in normalized
         assert "Never" in normalized and "Locust file" in normalized and "pytest" in normalized
         assert (

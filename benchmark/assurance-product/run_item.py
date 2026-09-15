@@ -217,6 +217,93 @@ def _resolve_sut(repo: Path, relative: str) -> Path:
     raise SystemExit(f"live SUT is missing at {relative}")
 
 
+def _sut_worktree_home(repo: Path) -> Path:
+    return repo / ".worktrees"
+
+
+def _sut_git_root(sut_root: Path) -> Path:
+    completed = subprocess.run(
+        ["git", "-C", str(sut_root), "rev-parse", "--show-toplevel"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(f"SUT is not a git repository: {sut_root}")
+    root = Path(completed.stdout.strip()).resolve()
+    if root != sut_root.resolve():
+        raise SystemExit(
+            f"SUT git root is {root}, not {sut_root.resolve()}; refuse to worktree the parent repo"
+        )
+    return root
+
+
+def _seed_worktree_runtime(source: Path, dest: Path) -> None:
+    from assurance_product.opencode_agents import _opencode_config
+
+    config = dest / "opencode.json"
+    config.write_text(_opencode_config(), encoding="utf-8")
+    plugin = dest / ".opencode" / "plugins" / "assurance-boundary.mjs"
+    plugin.parent.mkdir(parents=True, exist_ok=True)
+    plugin.write_bytes(
+        files("assurance_product").joinpath("resources", "opencode", "assurance-boundary.mjs").read_bytes()
+    )
+    source_migrations = source / "migrations"
+    dest_migrations = dest / "migrations"
+    if source_migrations.is_dir() and not dest_migrations.exists():
+        shutil.copytree(source_migrations, dest_migrations)
+
+
+def _primary_worktree_root(project_dir: Path) -> Path | None:
+    completed = subprocess.run(
+        ["git", "-C", str(project_dir), "worktree", "list", "--porcelain"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    for line in completed.stdout.splitlines():
+        if line.startswith("worktree "):
+            return Path(line[len("worktree ") :]).resolve()
+    return None
+
+
+def _frontend_web_root(project_dir: Path) -> Path:
+    candidates = [project_dir / "web"]
+    primary = _primary_worktree_root(project_dir)
+    if primary is not None:
+        primary_web = primary / "web"
+        if primary_web.resolve() != candidates[0].resolve():
+            candidates.append(primary_web)
+    for web in candidates:
+        vite = web / "node_modules" / ".bin" / "vite"
+        lockfile = web / "pnpm-lock.yaml"
+        if vite.is_file() and os.access(vite, os.X_OK) and lockfile.is_file():
+            return web.resolve()
+    raise SystemExit("managed SUT frontend requires pinned pnpm dependencies and executable Vite")
+
+
+def _prepare_sut_worktree(*, repo: Path, sut_root: Path, change_id: str) -> Path:
+    source = _sut_git_root(sut_root)
+    dest = (_sut_worktree_home(repo) / source.name / change_id).resolve()
+    if dest == source or source in dest.parents:
+        raise SystemExit(f"worktree destination must be outside the SUT checkout: {dest}")
+    if dest.exists():
+        raise SystemExit(f"worktree destination must be fresh: {dest}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    added = subprocess.run(
+        ["git", "-C", str(source), "worktree", "add", "-b", f"bench/{change_id}", str(dest)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if added.returncode != 0:
+        raise SystemExit(f"SUT worktree add failed: {added.stderr.strip() or added.stdout.strip()}")
+    _seed_worktree_runtime(source, dest)
+    return dest
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -687,10 +774,8 @@ def _managed_sut_runtime(
     frontend_log = output / "sut-frontend.log"
     runtime_env = dict(env)
     runtime_env.update(_required_runtime_environment(output))
-    vite = project_dir / "web" / "node_modules" / ".bin" / "vite"
-    lockfile = project_dir / "web" / "pnpm-lock.yaml"
-    if not vite.is_file() or not os.access(vite, os.X_OK) or not lockfile.is_file():
-        raise SystemExit("managed SUT frontend requires pinned pnpm dependencies and executable Vite")
+    web = _frontend_web_root(project_dir)
+    vite = web / "node_modules" / ".bin" / "vite"
     backend: subprocess.Popen[bytes] | None = None
     frontend: subprocess.Popen[bytes] | None = None
     body_failed = False
@@ -730,8 +815,8 @@ def _managed_sut_runtime(
         runtime_env["QA_LIMITED_PASSWORD"] = limited_password
         frontend = _spawn_managed_process(
             label="frontend",
-            command=(str(vite), "--host", "127.0.0.1", "--port", "3100", "--strictPort"),
-            cwd=project_dir / "web",
+            command=(str(vite), "--host", "127.0.0.1", "--port", "3100", "--strictPort", "--no-open"),
+            cwd=web,
             env=runtime_env,
             log_path=frontend_log,
         )
@@ -1443,6 +1528,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--item", required=True)
     parser.add_argument("--adapter", choices=("opencode",), required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--project-dir",
+        type=Path,
+        help="Use this SUT checkout as-is (must not contain qa/). Default: a fresh SUT git worktree",
+    )
     parser.add_argument("--poll-seconds", type=int, default=30)
     parser.add_argument("--timeout-seconds", type=int, default=28800)
     parser.add_argument("--nonce")
@@ -1468,11 +1558,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     output.mkdir(parents=True, exist_ok=True)
 
     try:
-        sut_root = _resolve_sut(repo, str(item["sut_root"]))
+        sut_root = _resolve_sut(repo, str(arguments.project_dir or item["sut_root"]))
     except SystemExit as error:
         return _fail(str(error))
+    if arguments.project_dir is not None and (sut_root / "qa").exists():
+        return _fail("explicit project must not contain qa; retained evidence will not be overwritten")
     project_dir = sut_root
-    change_root = sut_root / "qa"
+    if arguments.project_dir is None:
+        try:
+            project_dir = _prepare_sut_worktree(repo=repo, sut_root=sut_root, change_id=change_id)
+        except SystemExit as error:
+            return _fail(str(error))
+        sut_root = project_dir
+    change_root = project_dir / "qa"
     run_log = output / "run.log"
     run_log.touch()
 
@@ -1588,7 +1686,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SystemExit as error:
         evidence["outcome"] = "blocked"
         return finish(1, notes=str(error))
-    isolated_env["PATH"] = f"{aa_next.parent}{os.pathsep}{isolated_env.get('PATH', '')}"
+    isolated_env["PATH"] = os.pathsep.join(
+        (
+            str(aa_next.parent),
+            isolated_env.get("PATH", ""),
+            "/usr/sbin",
+            "/usr/bin",
+            "/bin",
+        )
+    )
 
     endpoint = str(item["adapter_binding"]["endpoint"])
     agent_profile_errors = _project_opencode_asset_errors(project_dir)

@@ -65,9 +65,9 @@ timeouts, and other numeric boundaries.
 
 ## Durable mapping and the execution view
 
-Closed mapping `target_file` values must stay under `qa/tests/`. The
-execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
-collection. Fixtures and support modules live under `qa/tests/`.
+Closed mapping `target_file` values must stay under `qa/tests/`.
+Execute runs durable `qa/tests/` in place with `pythonpath=qa`.
+Fixtures and support modules live under `qa/tests/`.
 Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
 Do not look up fixtures under the SUT `tests/` tree.
 Do not retarget mapping rows to `tests/`.
@@ -286,7 +286,11 @@ Authoring tables (keep column names exact):
 - Assertion Mapping uses `Case ID | Assertions`.
 - Data Setup Mapping uses `Case ID | Setup | Capability`.
 - Cleanup Mapping uses `Case ID | Cleanup | Capability`.
-- Run Guidance uses `Target | Pytest Args | Markers | Environment`.
+- Run Guidance uses `Target | Pytest Args | Markers | Environment`. The
+  wheel-owned pytest runner sets `asyncio_mode=auto`; do not author
+  `@pytest.mark.asyncio`, `pytest_asyncio.fixture`, or a Markers column that
+  contradicts that contract. Codegen consumes Auth Strategy and environment
+  values from this table, not pytest-asyncio invocation.
 
 Every planned case must have operation and risk coverage. Capability keys must
 be exact typed leaves. Plan output paths must stay under the declared write

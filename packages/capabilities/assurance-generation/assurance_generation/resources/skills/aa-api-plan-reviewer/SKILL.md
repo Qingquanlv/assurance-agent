@@ -29,14 +29,21 @@ findings that were resolved in an earlier round. Immediately before returning,
 compare the two sets and correct the response if they differ.
 
 Do not stop the review after finding the first defect. Before choosing a
-decision, complete one exhaustive pass across every required plan artifact,
-every mapping row, and every source-backed runtime boundary used by the plan.
-Return all independently observable defects in the same review document so a
-single bounded planner re-entry can repair the whole package.
-During the existing full-package review, verify every mapped helper's sync/async
-invocation against the test-runner configuration and check that the combined
-assertion logic, including all alternative success paths, preserves the frozen
-case oracle, reporting all source-supported defects in the current round.
+decision, complete one exhaustive pass across every required plan artifact
+and every selected case. Review case semantics only: request bodies, auth,
+setup data, assertion oracles, and cleanup. Return all independently
+observable case-semantic defects in the same review document so a single
+bounded planner re-entry can repair the whole package.
+
+Do not emit needs_fix for the wheel-owned pytest runner contract. The host
+sets `asyncio_mode=auto`. Missing `@pytest.mark.asyncio`,
+`pytest_asyncio.fixture`, Run Guidance Markers, Tortoise/session fixtures,
+or sync-versus-async invocation wording are not plan defects.
+
+On a planner re-entry, review only the finding IDs listed in the previous
+`auto_fix_plan`. A repaired artifact narrows the next review to those IDs;
+the reviewer must not add finding IDs. A prior pass is sticky: do not
+convert it to `needs_fix` because a later pass noticed a new defect.
 
 ## Verifiable review coverage
 
@@ -46,13 +53,21 @@ in both the review JSON artifact and your final JSON result, in every round and 
 every decision (including `needs_fix`). Copy its `input_refs` and
 `planning_facts_digest` from the requirements, never invent hashes.
 
+The host owns the coverage table. Missing rows, foreign `evidence_paths`,
+stale digests, Import Strategy locations, `unknown` planned invocation, and
+stub-as-existing claims are repaired at finalize and do not veto the review.
+Mark `finding` or `pass` for case semantics; do not spend the review on
+bookkeeping.
+
 For each selected Case ID, emit exactly one `cases` row with all six `checks`:
 `request`, `auth`, `setup`, `assertion`, `cleanup`, `helpers`. Each result is
 `pass`, `finding` or `not_applicable`; request and assertion are always applicable.
 Include `evidence_paths`, `finding_ids` and a concise `rationale` explaining the
-checks, especially any not-applicable result. Evidence paths must be locked inputs
-or observed source paths from `planning_facts`. A finding result links to IDs in
-this review. Complete every row before deciding, even when an early row fails.
+checks, especially any not-applicable result. Prefer `evidence_paths` from
+`review_requirements.allowed_evidence_paths`. A source file being readable
+does not add it to that inventory; the host drops unknown paths. A finding
+result links to IDs in this review. Complete every row before deciding, even
+when an early row fails.
 
 For every helper in `review_requirements.helpers`, emit exactly one `helpers` row.
 Copy `capability`, `symbol`, `declared_kind`, `target_file`, `observed_signature`
@@ -66,7 +81,14 @@ implementation needs its observed source in `evidence_paths` and must not be a
 stub. A planned creation or amendment needs `plan_location` (`artifact`, exact
 `section` heading) naming its target in Target Files, Codegen Scope, Output File
 Candidates or Factory Mapping; an import alone is not a generated-target contract.
-An unresolved helper links a finding and prevents `pass`. Always cite
+A `planned` helper also needs a plan-supported `invocation` of `sync` or `async`.
+For a pytest fixture this describes the fixture implementation (`def` or
+`async def`), not a direct call by the test; pytest injects the resulting value.
+Keep unobserved signature/async fields `null` even when the plan specifies a
+future implementation. If its invocation cannot be established, classify it as
+`unresolved` and link a finding asking the planner to specify it; `unknown` is
+not a codegen-ready planned invocation. An unresolved helper links a finding and
+prevents `pass`. Always cite
 `.aa/data-knowledge.yaml` for the declaration; include `finding_ids` and a concise
 `rationale` for lifecycle, fixture and environment handoff. Module references can
 include transitive helpers, such as a role adapter importing a domain factory;
@@ -77,28 +99,11 @@ bound is not an exact length. Compare constructions, expected responses and
 runtime assertions across every plan table and summary. The audit makes omissions
 and source contradictions checkable; it does not replace semantic source review.
 
-Before the first decision in every round, close this runtime inventory for the
-whole package, not only for the section most recently edited:
-
-- Exact-read `.aa/data-knowledge.yaml`, resolve each consumed dotted Python
-  symbol to its `.py` module, and read that module before classifying the symbol
-  as present, absent, reusable, or create-if-missing.
-- For every mapped pytest target and fixture parameter, read every ancestor
-  `conftest.py` from the target directory through the test root. Verify the
-  fixture's real name and the value-to-header or value-to-request handoff; do
-  not infer a wrapper fixture from the capability name.
-- Read implementations of every mapped helper and account for their required
-  environment variables, credentials, and database or session paths in the run
-  guidance. A helper that opens persistence directly is not executable from a
-  base URL alone.
-- For every concrete runtime-support path or dotted Python symbol named by a
-  plan, call the native read tool on that exact path before any glob or grep.
-  Gitignored files remain exact-readable. If that exact read was not attempted,
-  do not emit an absence finding from glob or grep output.
-- Reconcile those facts across every plan artifact and summary before emitting
-  findings. A repaired artifact does not narrow the next review: repeat this
-  complete checklist on every retry and report newly observable defects in the
-  same round as any remaining repair defects.
+Before the first decision, exact-read the locked plan package and each
+selected case. Check request, assertion, and cleanup fidelity against the
+frozen case oracle and independently read product source. Do not reopen the
+wheel-owned pytest runner contract. On retry, only the previous
+`auto_fix_plan` IDs remain in scope.
 
 ## Prepared source observations
 
@@ -121,12 +126,16 @@ before passing; the desired repair count never changes the acceptance criteria.
 
 ## Durable mapping and the execution view
 
-Closed mapping `target_file` values must stay under `qa/tests/`. The
-execution view remaps `qa/tests/<rest>` to `tests/<rest>` for pytest
-collection. Fixtures and support modules live under `qa/tests/`.
+Closed mapping `target_file` values must stay under `qa/tests/`.
+Execute runs durable `qa/tests/` in place with `pythonpath=qa`.
+Fixtures and support modules live under `qa/tests/`.
 Treat a missing `qa/tests/**/conftest.py` as fixture unavailability.
 Do not look up fixtures under the SUT `tests/` tree.
 Do not retarget mapping rows to `tests/`.
+For every concrete runtime-support path or dotted Python symbol named by a
+plan, call the native read tool on that exact path before any glob or grep.
+Gitignored files remain exact-readable. If that exact read was not attempted,
+do not emit an absence finding from glob or grep output.
 
 ## Inputs
 
@@ -164,6 +173,16 @@ has already verified these exact paths as regular files.
 
 - `qa/results/review/api-plan-review.json`
 - `qa/results/review/api-plan-review-summary.md`
+
+The JSON file and final assistant JSON are two deliveries of the same complete
+`PlanReviewAuthoring` object. Build that object once using every required field
+in the supplied result schema, including `codegen_readiness` and `review_audit`.
+Write the entire object to `api-plan-review.json`, then read and parse that exact
+file. Check its required fields and audit evidence-path membership before
+returning the parsed object as the final JSON. After any correction, rewrite and
+re-read the file first; a corrected final response alone does not repair the
+staged artifact. The Markdown summary is the human-readable summary, not a
+replacement or reduced shape for the JSON file.
 
 ## Boundaries
 

@@ -189,15 +189,8 @@ def test_unselected_closed_mapping_tests_are_not_executed(tmp_path: Path) -> Non
 def test_pytest_cache_and_hypothesis_storage_stay_outside_the_sut(tmp_path: Path) -> None:
     project = _project(tmp_path)
     _promote(project, CANDIDATE_TARGET, b"def test_ok():\n    assert True\n")
-    merged = merge_generated(project, CHANGE_ID, ("api",))
+    merge_generated(project, CHANGE_ID, ("api",))
     selected = (f"{CANDIDATE_TARGET}::test_ok",)
-    view = build_execution_view(
-        project,
-        change_id=CHANGE_ID,
-        batch_id=BATCH_ID,
-        merged=merged,
-        selected=selected,
-    )
     host = RecordingHost()
 
     run_closed_mapping(
@@ -210,11 +203,9 @@ def test_pytest_cache_and_hypothesis_storage_stay_outside_the_sut(tmp_path: Path
     argv = host.commands[0]
     joined = " ".join(argv)
     env = runner_environment(BATCH_ID)
-    assert any(
-        item == f"--rootdir={project.joinpath(*view.root.split('/'))}"
-        or item == str(project.joinpath(*view.root.split("/")))
-        for item in argv
-    )
+    assert any(item.startswith("-o=pythonpath=") and item.endswith("/qa") for item in argv)
+    assert not any("--rootdir=" in item and ".staging/execution" in item for item in argv)
+    assert CANDIDATE_TARGET in argv or f"{CANDIDATE_TARGET}::test_ok" in argv
     assert "-p" in argv and "no:cacheprovider" in argv
     assert str(project) in joined
     assert env["HYPOTHESIS_STORAGE_DIRECTORY"] == f"/tmp/aa-hypothesis-{BATCH_ID}"
