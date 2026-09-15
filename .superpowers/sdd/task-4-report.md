@@ -1,85 +1,129 @@
-# Task 4 Report: Product inventory (`init` is a public name)
+# Task 4 Report: Finalize exact lock, no path rewrite
 
-## Status
+**Status:** DONE
 
-DONE_WITH_CONCERNS
+**Commit:** `83a87635` `feat(generation): reject codegen writes outside the host lock`
 
-## TDD Evidence
+**Review fix:** `729f4608` `fix(generation): drop obsolete reviewed_plan codegen tests`
 
-### RED (Step 2)
+**Branch:** `codex/durable-qa-execute` (in-place, no worktree)
 
-Test inventories were flipped first. Production `FAMILY_EMPTY_ENTRYPOINTS` still omitted `init`.
+## What landed
 
-Command:
+- Finalize rebuilds the host lock via `validate_codegen_input(..., context.project_root)` after `_finalize_authoring`.
+- Receipt `files[].repo_path` must equal `scope.locked_outputs` under `qa/tests/` exactly. Testdata is required. Extra files such as `qa/tests/api/conftest.py` are illegal.
+- Mapping `target_file` must equal the locked test file for that case. No `target_file` / `repo_path` rewrite.
+- `_complete_files` uses exact membership in `locked_generated` instead of `family_allows_target` / `under_write_root`.
+- Invalid on-disk case path (`qa/cases/dept.yaml`, no `**/case.yaml`) is `InputError`.
+- `reviewed_mapping` stays optional exact-match. `scope_case_ids` / `required_capabilities` checks are unchanged.
+- Fixtures: `durable_oracle_path` / `locked_oracle_paths` / `codegen_result` follow the `items` lock. Testdata is `support` with empty `case_ids`.
 
-```bash
-uv run pytest tests/product/test_product_input.py tests/product/test_product_entrypoints.py tests/product/test_graph_intake_and_triplets.py -v
-```
+## TDD RED
 
-Output:
-
-```
-FAILED test_empty_family_entrypoints_require_empty_selection[init]
-  ValueError: unknown product entrypoint: init
-
-FAILED test_product_entrypoints_are_fifteen_python_roots
-  Extra items in the right set: 'init'
-
-FAILED test_public_entrypoints_are_the_python_product_roots
-  Extra items in the right set: 'init'
-
-ERROR test_product_input_authenticates_resource_refs_against_composition
-  ValueError: semantic attempt registry must contain 46 contracts, got 47
-```
-
-Exit code: 1. Inventory failures matched the missing public name, not typos.
-
-### GREEN (Step 4)
-
-Command:
-
-```bash
-uv run pytest tests/product/test_product_input.py tests/product/test_product_entrypoints.py tests/product/test_graph_intake_and_triplets.py -v
-```
-
-Output:
+Added the five brief tests plus `_write_locked_generated`. Rewrote `test_codegen_finalize_keeps_support_as_extra_hashed_entry` so testdata is the only support file.
 
 ```
-========================= 56 passed, 1 error in 11.84s =========================
+uv run pytest ...::test_codegen_finalize_accepts_host_locked_paths \
+  ...::test_codegen_finalize_rejects_write_root_as_file \
+  ...::test_codegen_finalize_rejects_missing_testdata \
+  ...::test_codegen_finalize_rejects_target_file_mismatch \
+  ...::test_codegen_finalize_rejects_invalid_case_path -v
 ```
 
-`validate_for_entrypoint("init")` passed (empty families, no `case_delta`, no `plan_ref`, no `retro_window`). Set-membership tests assert 15 public names and 13 thin roots. Focused ruff on the eight listed files is clean.
+**Result:** 3 failed, 2 passed.
 
-The remaining ERROR is the pre-existing Task 3 leftover `46` vs `47` semantic-attempt count during `opencode_composition` setup. It is outside this task’s file list.
+| Test | RED result |
+|---|---|
+| `accepts_host_locked_paths` | PASSED immediately (prefix allowlist already accepted testdata) |
+| `rejects_write_root_as_file` | FAILED: `qa/tests/api` still succeeded via `family_allows_target` |
+| `rejects_missing_testdata` | FAILED: receipt without testdata still succeeded |
+| `rejects_target_file_mismatch` | PASSED already (`_complete_files` mapping check) |
+| `rejects_invalid_case_path` | FAILED: `invalid_output` (no host rebuild), not `invalid_input` |
 
-`test_graph_revision_contracts.py` and `test_cli_langgraph_lifecycle.py` were updated but not executed: the former compiles thin roots; the latter is a lifecycle suite. Factory compile tests were not run (Task 5).
+This matches the brief's intent: testdata was not required; write-root paths still passed prefix policy.
 
-## What changed
+## GREEN implementation
 
-- `init` is a public `FAMILY_EMPTY` name: no families, no `case_delta`, no `plan_ref`, no `retro_window`.
-- Agent contracts are `()`. Recursion limit is `512`.
-- Closed-set counts are 15 public / 13 thin. Factory still builds 12 thin roots until Task 5.
-- Renamed set-membership tests from fourteen → fifteen. `init` is in `_NON_AGENT_ENTRYPOINTS`.
+`CodegenFinalizeHandler.execute` calls `validate_codegen_input` with the brief payload, then enforces receipt set equality and `target_file` lock match as `OutputError`. `_complete_files(allowed_paths=locked_generated)` rejects any path not in that set.
 
-## Files Changed
+Existing finalize tests now write `qa/cases/items/case.yaml` and list testdata. Cycle / handoff / review-audit fixtures follow the same lock.
 
-| File | Action |
-|------|--------|
-| `assurance_product/models.py` | `"init"` in `FAMILY_EMPTY_ENTRYPOINTS` |
-| `assurance_product/application.py` | `"init": ()`; error text `15 public names` |
-| `assurance_product/graphs/revisions.py` | `"init": 512` |
-| `tests/product/test_product_input.py` | `"init"` in `_FAMILY_EMPTY_ENTRYPOINTS` |
-| `tests/product/test_product_entrypoints.py` | `"init"` in `PUBLIC_ENTRYPOINTS`; `len == 15` / thin `13`; renamed `...fifteen...` |
-| `tests/product/test_graph_intake_and_triplets.py` | `"init"`; `len == 15` |
-| `tests/product/test_cli_langgraph_lifecycle.py` | `"init"` in `_NON_AGENT_ENTRYPOINTS`; `len == 15`; renamed `test_all_fifteen_...` |
-| `tests/product/test_graph_revision_contracts.py` | `"init": 512`; thin length 13 |
+## TDD GREEN
 
-## Commit
+```
+uv run pytest packages/capabilities/assurance-generation/tests/test_codegen.py \
+  packages/capabilities/assurance-generation/tests/test_codegen_scope.py -v
+```
 
-none
+**Result:** 123 passed, 9 failed. All finalize and scope tests passed. Failures are pre-existing Task 3 leftovers, not lock regressions:
+
+- `test_codegen_input_rejects_*` / performance scenario drift: `KeyError: 'reviewed_plan'`
+- `test_e2e_codegen_skill_reads_family_prefixed_review`: still looks for `qa/results/review/e2e-plan-review.json`
+
+```
+uv run pytest packages/capabilities/assurance-generation/tests -q
+```
+
+**Result:** 570 passed, 72 failed. Failures outside this task: plan-review routing / `review_audit`, graph factory, review-audit helpers. Generation cycle and reviewed-plan handoff were updated to the `items` lock and pass.
 
 ## Concerns
 
-1. **`test_product_input_authenticates_resource_refs_against_composition` still ERRORs** on `semantic attempt registry must contain 46 contracts, got 47`. This is the Task 3 `init_runtime` contract leftover, not an inventory miss. It failed the same way on RED before production edits.
-2. **Factory compile tests will fail until Task 5.** `build_thin_entrypoint_graphs` still requires 12 thin roots. `test_graph_revision_contracts.py` now expects thin length 13 and was not run.
-3. **Out-of-list files still say 14** (`test_product_composition.py`, `test_full_graph_audit.py`, `public_closure.py`, and others). Left as-is.
+1. **RED accept test did not fail.** Prefix policy already allowed the locked testdata pair. Missing-testdata and write-root-as-file were the real RED proofs.
+2. **Pre-existing `test_codegen.py` failures left untouched** (reviewed plan field, e2e skill path). Same set Task 3 reported.
+3. **Full generation suite still red** on plan-review / codegen-review / review-audit (parallel work; spec says graph / codegen-review unchanged).
+4. **Ruff collapsed** the brief's multiline `locked_generated` / `test_by_case` literals. Behavior is unchanged.
+
+## Files committed
+
+- `packages/capabilities/assurance-generation/assurance_generation/operations/codegen.py`
+- `packages/capabilities/assurance-generation/tests/test_codegen.py`
+- `packages/capabilities/assurance-generation/tests/codegen_fixtures.py`
+- `packages/capabilities/assurance-generation/tests/test_generation_cycle.py`
+- `packages/capabilities/assurance-generation/tests/test_codegen_characterization.py`
+- `packages/capabilities/assurance-generation/tests/review_audit_fixtures.py`
+- `packages/capabilities/assurance-generation/tests/test_reviewed_plan_handoff.py`
+
+## Review fix
+
+Deleted eight `CodegenInputV1` tests that still indexed `reviewed_plan` (`KeyError`). Host `codegen_scope` / on-disk cases already own that lock. Rewrote the leftover e2e skill assertion to host `codegen_scope` / `locked_outputs` / `qa/cases/**/case.yaml`.
+
+```
+uv run pytest packages/capabilities/assurance-generation/tests/test_codegen.py packages/capabilities/assurance-generation/tests/test_codegen_scope.py -q
+```
+
+```
+........................................................................ [ 58%]
+....................................................                     [100%]
+124 passed in 1.30s
+```
+
+## Critical review fix
+
+Mapping case IDs now lock to the rebuilt host `scope.case_ids`, not `payload.scope_case_ids`. Dropped the `scope_case_ids is None → InputError` gate. Four `aa-*-codegen` skills list testdata as required (host `locked_outputs` always include it).
+
+### TDD RED
+
+```
+uv run pytest packages/capabilities/assurance-generation/tests/test_codegen.py::test_codegen_finalize_succeeds_without_scope_case_ids packages/capabilities/assurance-generation/tests/test_codegen.py::test_codegen_finalize_rejects_mapping_that_omits_host_scope_case -v
+```
+
+**Result:** 2 failed.
+
+| Test | RED result |
+|---|---|
+| `succeeds_without_scope_case_ids` | FAILED: `invalid_input` / `host codegen scope case_ids are missing` |
+| `rejects_mapping_that_omits_host_scope_case` | FAILED: `invalid_input` instead of `invalid_output` |
+
+### TDD GREEN
+
+Moved the check to after `validate_codegen_input`. `fake_agent_result(..., include_scope_case_ids=False)` leaves the host lock as the source of truth.
+
+```
+uv run pytest packages/capabilities/assurance-generation/tests/test_codegen.py packages/capabilities/assurance-generation/tests/test_codegen_scope.py -q
+```
+
+```
+........................................................................ [ 55%]
+..........................................................               [100%]
+130 passed in 1.81s
+```

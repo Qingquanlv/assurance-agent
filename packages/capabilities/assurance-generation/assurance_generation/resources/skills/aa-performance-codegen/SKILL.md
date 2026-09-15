@@ -48,10 +48,7 @@ configuration contract without inspecting credential values.
 - `qa/results/codegen/performance-codegen-summary.md`
 - `qa/results/codegen/performance-generated-files.json`
 - generated or updated test files listed in the host `locked_outputs`
-
-### conditional
-
-- the locked testdata file when the host `locked_outputs` include it
+- the locked testdata file (host `locked_outputs` always include it)
 
 Write only host `locked_outputs`. `target_file` must equal the locked test file
 for that case; testdata must be the locked testdata file. Do not

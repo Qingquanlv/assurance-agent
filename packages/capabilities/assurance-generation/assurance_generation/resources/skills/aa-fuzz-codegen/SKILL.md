@@ -38,10 +38,7 @@ exact reads, and never replace source-backed case facts with guesses from naming
 - `qa/results/codegen/fuzz-codegen-summary.md`
 - `qa/results/codegen/fuzz-generated-files.json`
 - generated or updated test files listed in the host `locked_outputs`
-
-### conditional
-
-- the locked testdata file when the host `locked_outputs` include it
+- the locked testdata file (host `locked_outputs` always include it)
 
 Write only host `locked_outputs`. `target_file` must equal the locked test file
 for that case; testdata must be the locked testdata file. Do not

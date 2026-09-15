@@ -273,11 +273,6 @@ def _finalize_authoring(payload: AgentFinalizeInputV1, family: Family) -> Codege
         raise InputError("host codegen scope required_capabilities are missing")
     if tuple(document.required_capabilities) != payload.required_capabilities:
         raise OutputError("required_capabilities must exactly match the host codegen scope")
-    mapped_ids = tuple(sorted(item.case_id for item in document.mapping.entries))
-    if payload.scope_case_ids is None:
-        raise InputError("host codegen scope case_ids are missing")
-    if mapped_ids != payload.scope_case_ids:
-        raise OutputError("mapping case IDs must exactly match the host codegen scope")
     if payload.reviewed_mapping is not None:
         try:
             reviewed_mapping = CodegenMapping.model_validate(payload.reviewed_mapping)
@@ -379,6 +374,9 @@ class CodegenFinalizeHandler:
                 family,
                 context.project_root,
             )
+            mapped_ids = tuple(sorted(item.case_id for item in document.mapping.entries))
+            if mapped_ids != scope.case_ids:
+                raise OutputError("mapping case IDs must exactly match the host codegen scope")
             locked_generated = {path for path in scope.locked_outputs if path.startswith("qa/tests/")}
             test_by_case = {
                 case_id: row.test_file for row in scope.locked_modules for case_id in row.case_ids

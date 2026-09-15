@@ -68,10 +68,15 @@ def mapping_document(family: str, *, target_file: str | None = None) -> dict[str
     }
 
 
-def fake_agent_result(structured_result: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+def fake_agent_result(
+    structured_result: dict[str, Any],
+    *,
+    include_scope_case_ids: bool = True,
+    **kwargs: Any,
+) -> dict[str, Any]:
     result = planning_agent_result(structured_result, **kwargs)
     mapping = structured_result.get("mapping")
-    if isinstance(mapping, dict) and isinstance(mapping.get("entries"), list):
+    if include_scope_case_ids and isinstance(mapping, dict) and isinstance(mapping.get("entries"), list):
         result["scope_case_ids"] = sorted(
             {item["case_id"] for item in mapping["entries"] if isinstance(item, dict) and "case_id" in item}
         )

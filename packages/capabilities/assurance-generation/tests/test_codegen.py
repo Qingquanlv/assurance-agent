@@ -338,6 +338,44 @@ async def test_codegen_finalize_accepts_host_locked_paths(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_codegen_finalize_succeeds_without_scope_case_ids(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    authored = codegen_result(files=[test_path, data_path], family="api")
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored, include_scope_case_ids=False),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "succeeded", outcome.failure
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_mapping_that_omits_host_scope_case(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    authored = codegen_result(files=[test_path, data_path], family="api")
+    authored["mapping"]["entries"][0]["case_id"] = "TC_OTHER_001"
+    authored["files"][0]["case_ids"] = ["TC_OTHER_001"]
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored, include_scope_case_ids=False),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is True
+    assert "mapping case IDs must exactly match the host codegen scope" in outcome.failure.message
+
+
+@pytest.mark.asyncio
 async def test_codegen_finalize_rejects_write_root_as_file(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
     _write_reviewed_cases(project, "api")
@@ -492,7 +530,7 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
     assert executed.failure.retryable is True
-    assert "mapping target_file must equal the locked test file for TC_API_002" in executed.failure.message
+    assert "mapping case IDs must exactly match the host codegen scope" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -872,3 +910,12 @@ def test_e2e_codegen_skill_reads_host_codegen_scope() -> None:
     assert "qa/cases/**/case.yaml" in skill
     assert "review/plan-review.json" not in skill
     assert "qa/results/review/e2e-plan-review.json" not in skill
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_codegen_skill_requires_locked_testdata(family: str) -> None:
+    from assurance_generation.resource_loader import resource_text
+
+    skill = resource_text(f"skills/aa-{family}-codegen/SKILL.md")
+    assert "the locked testdata file (host `locked_outputs` always include it)" in skill
+    assert "### conditional" not in skill
