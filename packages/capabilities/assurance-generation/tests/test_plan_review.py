@@ -125,33 +125,41 @@ async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: 
     assert "rounds_budget" not in output
 
 
-@pytest.mark.parametrize("fix_ids", (["F1"], ["F1", "F1", "F2"]))
+@pytest.mark.parametrize(
+    ("fix_ids", "expected"),
+    (
+        (["F1"], "finding_ids must include every finding exactly once"),
+        (["F1", "F1", "F2"], "finding_ids must be unique"),
+    ),
+)
 @pytest.mark.asyncio
-async def test_plan_review_requires_complete_unique_repair_set(fix_ids: list[str], tmp_path: Path) -> None:
-    review = review_result("api")
-    review.update(
-        {
-            "route": "auto_fix",
-            "findings": [
-                {
-                    "id": name,
-                    "severity": "medium",
-                    "category": "consistency",
-                    "message": "Repair this affected section",
-                    "locator": {"artifact": artifact, "key": "Factory Mapping"},
-                }
-                for name, artifact in (
-                    ("F1", "qa/results/codegen/api-codegen-summary.md"),
-                    ("F2", "qa/tests/api/test_users.py"),
-                )
-            ],
-            "finding_ids": fix_ids,
-        }
-    )
+async def test_plan_review_requires_complete_unique_repair_set(
+    fix_ids: list[str], expected: str, tmp_path: Path
+) -> None:
+    review = {
+        **valid_plan_review(),
+        "route": "auto_fix",
+        "findings": [
+            {
+                "id": name,
+                "severity": "medium",
+                "category": "consistency",
+                "message": "Repair this affected section",
+                "locator": {"artifact": artifact, "key": "Factory Mapping"},
+            }
+            for name, artifact in (
+                ("F1", "qa/results/codegen/api-codegen-summary.md"),
+                ("F2", "qa/tests/api/test_users.py"),
+            )
+        ],
+        "finding_ids": fix_ids,
+    }
     outcome = await execute_task(review_finalize_handler("api"), fake_agent_result(review), tmp_path)
     assert outcome.status == "failed"
     assert outcome.failure is not None
-    assert "finding_ids" in outcome.failure.message or "unique" in outcome.failure.message
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is True
+    assert expected in outcome.failure.message
 
 
 @pytest.mark.asyncio
