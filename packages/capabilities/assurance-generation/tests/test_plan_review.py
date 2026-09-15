@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 
 from agent_runtime_contracts import AgentRunRequest
+from graph_engine.frozen_json import thaw_json
 from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_generation.operations.review import review_finalize_handler, review_prepare_handler
@@ -15,6 +16,7 @@ from review_audit_fixtures import (  # pyright: ignore[reportMissingImports]
     PLAN_PATH,
     review_prepare_input,
     write_codegen_artifacts,
+    write_review,
 )
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
@@ -22,8 +24,19 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     fake_agent_result,
     plan_input,
     review_result,
+    reviewed_cases,
 )
 from test_contracts import valid_plan_review  # pyright: ignore[reportMissingImports]
+
+
+def _write_review_workspace(tmp_path: Path, family: str = "api") -> None:
+    proposal_path = tmp_path / "qa/proposal.md"
+    proposal_path.parent.mkdir(parents=True, exist_ok=True)
+    proposal_path.write_text("# Proposal\n", encoding="utf-8")
+    write_codegen_artifacts(tmp_path, family)
+    case_path = tmp_path / "qa/cases/items/case.yaml"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text(json.dumps(reviewed_cases(family)), encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -106,11 +119,7 @@ async def test_plan_review_finalize_rejects_prefix_leaf(family: str, tmp_path: P
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: Path) -> None:
-    review = review_result(family)
-    if family == "api":
-        from review_audit_fixtures import audited_review  # pyright: ignore[reportMissingImports]
-
-        review, _, _ = await audited_review(tmp_path)
+    review = valid_plan_review() if family == "api" else {**valid_plan_review(), "review_type": f"{family}-codegen"}
     executed = await execute_task(
         review_finalize_handler(family),
         fake_agent_result(review),
@@ -164,10 +173,10 @@ async def test_plan_review_requires_complete_unique_repair_set(
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path) -> None:
-    from review_audit_fixtures import audited_review  # pyright: ignore[reportMissingImports]
-
     family = "api"
-    review, _, _ = await audited_review(tmp_path)
+    review = valid_plan_review()
+    _write_review_workspace(tmp_path)
+    write_review(tmp_path, review)
     latest = tmp_path / "qa/results/review/api-codegen-review.json"
     envelope = fake_agent_result(review)
     stage = tmp_path / ".stage"
@@ -238,9 +247,9 @@ def _as_auto_fix(review: dict[str, object], *findings: dict[str, object]) -> dic
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Path) -> None:
-    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
-
-    review, _, _ = await audited_review(tmp_path)
+    review = valid_plan_review()
+    _write_review_workspace(tmp_path)
+    write_review(tmp_path, review)
     review = _as_auto_fix(review, _runner_finding())
     write_review(tmp_path, review)
     executed = await execute_task(
@@ -256,9 +265,9 @@ async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) -> None:
-    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
-
-    review, _, _ = await audited_review(tmp_path)
+    review = valid_plan_review()
+    _write_review_workspace(tmp_path)
+    write_review(tmp_path, review)
     first = _as_auto_fix(review, _semantic_finding())
     write_review(tmp_path, first)
     first_pass = await execute_task(
@@ -287,9 +296,8 @@ async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
-    from review_audit_fixtures import audited_review, write_review  # pyright: ignore[reportMissingImports]
-
-    review, _, _ = await audited_review(tmp_path)
+    review = valid_plan_review()
+    _write_review_workspace(tmp_path)
     write_review(tmp_path, review)
     passed = await execute_task(
         review_finalize_handler("api"),
@@ -338,7 +346,7 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
     write_codegen_artifacts(tmp_path, family)
     case_path = tmp_path / "qa/cases/items/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
-    case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
+    case_path.write_text(json.dumps(reviewed_cases(family)), encoding="utf-8")
 
     prepared = await execute_task(
         review_prepare_handler(family),
@@ -388,7 +396,7 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
     proposal_path.write_text("# Proposal\n", encoding="utf-8")
     case_path = tmp_path / "qa/cases/items/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
-    case_path.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
+    case_path.write_text(json.dumps(reviewed_cases("api")), encoding="utf-8")
 
     prepared = await execute_task(
         review_prepare_handler("api"),
@@ -407,6 +415,9 @@ async def test_plan_review_prepare_fails_closed_when_locked_plan_input_is_missin
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_plan_review_prepare_requires_codegen_output(family: str, tmp_path: Path) -> None:
+    case_path = tmp_path / "qa/cases/items/case.yaml"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text(json.dumps(reviewed_cases(family)), encoding="utf-8")
     outcome = await execute_task(
         review_prepare_handler(family), plan_input(family), tmp_path, binding_data=BINDING
     )
@@ -424,3 +435,29 @@ async def test_plan_review_finalize_rejects_malformed_input(family: str, tmp_pat
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
     assert executed.failure.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_api_review_prepare_does_not_require_review_audit(tmp_path: Path) -> None:
+    proposal_path = tmp_path / "qa/proposal.md"
+    proposal_path.parent.mkdir(parents=True, exist_ok=True)
+    proposal_path.write_text("# Proposal\n", encoding="utf-8")
+    write_codegen_artifacts(tmp_path, "api")
+    case_path = tmp_path / "qa/cases/items/case.yaml"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text(json.dumps(reviewed_cases("api")), encoding="utf-8")
+
+    prepared = await execute_task(
+        review_prepare_handler("api"),
+        review_prepare_input("api", plan_input("api")),
+        tmp_path,
+        binding_data=BINDING,
+    )
+    assert prepared.status == "succeeded", prepared.failure
+    request = AgentRunRequest.model_validate(prepared.output)
+    schema = cast(dict[str, object], request.result_contract.schema_document)
+    assert "review_audit" not in cast(list[object], schema["required"])
+    parts = [thaw_json(part.json_content) for part in request.instructions if part.json_content is not None]
+    assert all(
+        not (isinstance(part, dict) and "review_requirements" in part) for part in parts
+    )

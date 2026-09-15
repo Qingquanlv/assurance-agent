@@ -38,7 +38,6 @@ from assurance_intake.contracts import (
 from assurance_intake.contracts.planning_facts import build_planning_facts
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.operations.plan_consistency import check_plan_consistency
-from assurance_generation.operations.review_audit import api_review_requirements
 
 Family = LayerName
 FAMILIES: tuple[Family, ...] = LAYER_NAMES
@@ -176,12 +175,8 @@ def result_contract(
     schema_id: str,
     *,
     capability_leafs: tuple[str, ...] | None = None,
-    review_requirements: Mapping[str, Any] | None = None,
 ) -> ResultContract:
     payload = json.loads(resource_bytes(_RESULT_FILES[schema_id]))
-    if review_requirements is not None:
-        payload["required"] = [*payload["required"], "review_audit"]
-        payload["properties"]["review_audit"] = {"$ref": "#/$defs/PlanReviewAudit"}
     if capability_leafs is not None:
         closed_arrays = 0
 
@@ -634,19 +629,10 @@ def prepare_plan_outcome(
             }
         ),
     )
-    review_requirements = None
     if review_input_paths:
-        review_inputs: dict[str, Any] = {"review_input_paths": list(review_input_paths)}
-        if family == "api":
-            review_requirements = api_review_requirements(
-                case_ids=tuple(case.case_id for case in (*cases.added, *cases.modified)),
-                facts=facts,
-                images=review_input_images(context.project_root, review_input_paths),
-            )
-            review_inputs["review_requirements"] = review_requirements
         instructions = (
             *instructions,
-            InstructionPart.from_json(review_inputs),
+            InstructionPart.from_json({"review_input_paths": list(review_input_paths)}),
         )
     if business.reviewed_plan is not None:
         instructions = (
@@ -662,7 +648,6 @@ def prepare_plan_outcome(
         result_contract=result_contract(
             result_schema_id,
             capability_leafs=business.capability_leafs if close_result_capabilities else None,
-            review_requirements=review_requirements,
         ),
         execution=binding.execution,
         workspace=agent_workspace(
