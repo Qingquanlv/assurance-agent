@@ -544,6 +544,128 @@ const rewriteRead = (tool, args, binding, root) => {
   args[key] = path.resolve(root, logical);
 };
 
+// Presentation only: never use this mapping to authorize a read or write. In
+// particular, another attempt's staging path must not become an allowed path.
+const modelPath = (candidate, binding, root) => {
+  if (typeof candidate !== "string") return candidate;
+  let value = candidate;
+  if (/^file:/i.test(value)) {
+    try { value = fileURLToPath(value); } catch { return candidate; }
+  }
+  if (value.includes("\\") || value.split("/").includes("..")) return candidate;
+  if (value === root) return ".";
+  if (value.startsWith(`${root}/`)) value = value.slice(root.length + 1);
+  else if (path.isAbsolute(value)) return candidate;
+  if (value === binding.write_root) return ".";
+  if (value.startsWith(`${binding.write_root}/`)) value = value.slice(binding.write_root.length + 1);
+  if (value.startsWith("qa/.staging/")) return candidate;
+  return value;
+};
+
+const modelDiff = (text, display) => {
+  if (typeof text !== "string") return text;
+  let inHunk = false;
+  return text.split("\n").map((line) => {
+    if (line.startsWith("Index: ")) {
+      inHunk = false;
+      return `Index: ${display(line.slice(7))}`;
+    }
+    if (line.startsWith("@@")) inHunk = true;
+    if (!inHunk) return line.replace(/^(--- |\+\+\+ )([^\t]+)(.*)$/, (_, prefix, file, suffix) => (
+      `${prefix}${display(file)}${suffix}`
+    ));
+    return line;
+  }).join("\n");
+};
+
+const MODEL_PATH_KEYS = new Set([...nativeWriteKeys, "file", "filepath", "relativePath", "movePath"]);
+
+const modelMetadata = (metadata, display) => {
+  if (Array.isArray(metadata)) return metadata.map((item) => modelMetadata(item, display));
+  if (metadata === null || typeof metadata !== "object") return metadata;
+  return Object.fromEntries(Object.entries(metadata).map(([key, value]) => {
+    if (MODEL_PATH_KEYS.has(key)) return [key, display(value)];
+    if (key === "diff" || key === "patch") return [key, modelDiff(value, display)];
+    // OpenCode's instruction deduplication uses absolute loaded paths from this
+    // same history. They are bookkeeping, not serialized model content.
+    if (key === "loaded") return [key, value];
+    if (key === "diagnostics" && value && typeof value === "object") {
+      return [key, Object.fromEntries(Object.entries(value).map(([file, issues]) => [display(file), issues]))];
+    }
+    return [key, modelMetadata(value, display)];
+  }));
+};
+
+const modelToolText = (tool, text, display) => {
+  if (typeof text !== "string") return text;
+  // Do not replace arbitrary substrings: file contents, grep matches and edit
+  // oldString/newString may themselves contain physical paths as literal data.
+  if (tool === "read") return text.replace(/^<path>([^\n]*)<\/path>/, (_, file) => `<path>${display(file)}</path>`);
+  if (tool === "glob") return text.split("\n").map(display).join("\n");
+  if (tool === "grep") return text.replace(/^(\S[^\n]*):$/gm, (_, file) => `${display(file)}:`);
+  return text
+    .replace(/^(\s*<diagnostics file=")([^"]+)(">)/gm, (_, prefix, file, suffix) => `${prefix}${display(file)}${suffix}`)
+    .replace(/^([AMD] )([^\n]+)$/gm, (_, prefix, file) => `${prefix}${display(file)}`)
+    .replace(/^(LSP errors detected in )(.+)(, please fix:)$/gm, (_, prefix, file, suffix) => `${prefix}${display(file)}${suffix}`);
+};
+
+const modelToolError = (text, display) => text
+  .replace(
+    /^((?:Error: )?(?:File not found|Cannot read binary file|glob path must be a directory|Path is a directory, not a file|apply_patch verification failed: Failed to read file to update): )([^\n]+)/,
+    (_, prefix, file) => `${prefix}${display(file)}`,
+  )
+  .replace(/^((?:Error: )?File )([^\n]+)( not found)$/, (_, prefix, file, suffix) => `${prefix}${display(file)}${suffix}`)
+  .replace(
+    /^((?:Error: )?apply_patch verification failed: (?:Error: )?Failed to find expected lines in )([^\n]+)(:\n)/,
+    (_, prefix, file, suffix) => `${prefix}${display(file)}${suffix}`,
+  )
+  .replace(
+    /^((?:Error: )?apply_patch verification failed: (?:Error: )?Failed to find context '[^\n]*' in )([^\n]+)$/,
+    (_, prefix, file) => `${prefix}${display(file)}`,
+  )
+  .replace(
+    /^((?:Error: )?File not found:[^\n]+\n\nDid you mean one of these\?\n)([\s\S]+)$/,
+    (_, prefix, suggestions) => `${prefix}${suggestions.split("\n").map(display).join("\n")}`,
+  );
+
+const modelToolResult = (tool, result, display) => ({
+  ...result,
+  ...(typeof result.title === "string" && {
+    title: tool === "grep" ? result.title : modelToolText(tool, display(result.title), display),
+  }),
+  ...(typeof result.output === "string" && { output: modelToolText(tool, result.output, display) }),
+  ...(typeof result.error === "string" && { error: modelToolError(result.error, display) }),
+  ...(result.metadata && { metadata: modelMetadata(result.metadata, display) }),
+});
+
+const modelToolArgs = (tool, args, display) => {
+  const result = { ...args };
+  for (const key of nativeWriteKeys) {
+    if (typeof result[key] === "string") result[key] = display(result[key]);
+  }
+  if (tool === "apply_patch" && typeof result.patchText === "string") {
+    result.patchText = result.patchText.replace(
+      /^(\*\*\* (?:Add File|Update File|Delete File|Move to): )([^\n]+)$/gm,
+      (_, prefix, file) => `${prefix}${display(file)}`,
+    );
+  }
+  return result;
+};
+
+const sessionBoundary = async (client, sessionID) => {
+  if (typeof client?.session?.get !== "function") {
+    throw new Error("Assurance path boundary: session lookup unavailable");
+  }
+  const response = await client.session.get({ path: { id: sessionID } });
+  const session = response?.data ?? response;
+  if (!session || typeof session.directory !== "string" || typeof session.agent !== "string") {
+    throw new Error("Assurance path boundary: session identity is missing");
+  }
+  const root = canonicalize(session.directory, session.directory);
+  const binding = parseBinding(session, root);
+  return { root, binding, display: (candidate) => modelPath(candidate, binding, root) };
+};
+
 export default async ({ client }) => ({
   tool: {
     assurance_boundary_v1: {
@@ -557,16 +679,7 @@ export default async ({ client }) => ({
   "tool.execute.before": async (input, output) => {
     const tool = input.tool.toLowerCase();
     if (!WRITE_TOOLS.has(tool) && !READ_TOOLS.has(tool) && !SHELL_TOOLS.has(tool)) return;
-    if (typeof client?.session?.get !== "function") {
-      throw new Error("Assurance path boundary: session lookup unavailable");
-    }
-    const response = await client.session.get({ path: { id: input.sessionID } });
-    const session = response?.data ?? response;
-    if (!session || typeof session.directory !== "string" || typeof session.agent !== "string") {
-      throw new Error("Assurance path boundary: session identity is missing");
-    }
-    const root = canonicalize(session.directory, session.directory);
-    const binding = parseBinding(session, root);
+    const { root, binding } = await sessionBoundary(client, input.sessionID);
     if (SHELL_TOOLS.has(tool)) {
       if (tool !== "bash") {
         throw new Error("Assurance write boundary: shell escape is not allowed");
@@ -594,5 +707,38 @@ export default async ({ client }) => ({
       return;
     }
     rewriteNativeWrites(output.args, (candidate) => rewrite(candidate, tool === "edit"));
+  },
+  "tool.execute.after": async (input, output) => {
+    const tool = input.tool.toLowerCase();
+    if (!WRITE_TOOLS.has(tool) && !READ_TOOLS.has(tool)) return;
+    const { display } = await sessionBoundary(client, input.sessionID);
+    Object.assign(output, modelToolResult(tool, output, display));
+  },
+  "experimental.chat.messages.transform": async (_input, output) => {
+    const boundaries = new Map();
+    // OpenCode consumes the original messages array after this hook. Replace
+    // its entries, not the array itself, and never mutate borrowed audit parts.
+    for (let index = 0; index < output.messages.length; index++) {
+      const message = output.messages[index];
+      const parts = [];
+      for (const part of message.parts) {
+        const tool = part.type === "tool" ? part.tool.toLowerCase() : "";
+        if (!WRITE_TOOLS.has(tool) && !READ_TOOLS.has(tool)) {
+          parts.push(part);
+          continue;
+        }
+        const sessionID = part.sessionID ?? message.info.sessionID;
+        if (!boundaries.has(sessionID)) boundaries.set(sessionID, await sessionBoundary(client, sessionID));
+        const { display } = boundaries.get(sessionID);
+        parts.push({
+          ...part,
+          state: {
+            ...modelToolResult(tool, part.state, display),
+            input: modelToolArgs(tool, part.state.input, display),
+          },
+        });
+      }
+      output.messages[index] = { ...message, parts };
+    }
   },
 });
