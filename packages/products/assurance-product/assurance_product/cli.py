@@ -24,9 +24,11 @@ from graph_engine.attempts.secret_sources import (
     runtime_authorization_digest,
 )
 
+from assurance_improvement.operations.retro_dashboard import build_retro_dashboard
+
 from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
-from assurance_product.change_workspace import ChangeWorkspace
+from assurance_product.change_workspace import ChangeWorkspace, require_real_directory
 from assurance_product.models import PRODUCT_ENTRYPOINTS
 from assurance_product.product import (
     AssuranceCompositionError,
@@ -501,6 +503,28 @@ def lock_show(
     except Exception as error:
         _fail(str(error), 40)
     _emit(document)
+
+
+@app.group("retro")
+def retro() -> None:
+    """Read-only retro run dashboard commands."""
+
+
+@retro.command("show")
+@click.option("--project-dir", type=click.Path())
+@click.option("--change")
+@click.option("--json", "as_json", is_flag=True)
+def retro_show(project_dir: str | None, change: str | None, as_json: bool) -> None:
+    del as_json
+    _require_options({"project_dir": project_dir}, ("project_dir",))
+    try:
+        root = require_real_directory(Path(cast(str, project_dir)))
+        dashboard = build_retro_dashboard(root, change_id=change)
+    except CommandError as error:
+        _fail(str(error), error.code)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(dashboard.model_dump(mode="json"))
 
 
 def _require_options(values: Mapping[str, object], names: Sequence[str]) -> None:
