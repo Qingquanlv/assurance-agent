@@ -20,7 +20,6 @@ from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskR
 from assurance_generation.contracts.agent import (
     AgentBindingDataV1,
     AgentFinalizeInputV1,
-    CodegenInputV1,
     FamilyConstraintsV1,
     PlanInputV1,
     under_write_root,
@@ -272,7 +271,7 @@ def leafs_of(values: tuple[str, ...]) -> frozenset[str]:
 
 
 def validate_reviewed_plan(
-    business: PlanInputV1 | CodegenInputV1, family: Family, cases: CaseYamlAuthoring
+    business: PlanInputV1, family: Family, cases: CaseYamlAuthoring
 ) -> PlanResultV1:
     try:
         plan = PlanResultV1.model_validate(

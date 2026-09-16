@@ -22,6 +22,7 @@ from assurance_generation.contracts import (
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
 from assurance_generation.contracts.reviews import PUBLIC_REVIEW_OUTCOMES, public_review_outcome
 from assurance_generation.plugin import GenerationPlugin
+from planning_fixtures import valid_plan_review  # pyright: ignore[reportMissingImports]
 
 _TESTS_ROOT = Path(__file__).resolve().parent
 _WHEEL_ROOT = _TESTS_ROOT.parent
@@ -96,20 +97,6 @@ def forbidden_generation_imports() -> set[str]:
             if module_name == "assurance_product" or module_name.startswith("assurance_product."):
                 found.add(module_name)
     return found
-
-
-def valid_plan_review(*, required_capabilities: list[str] | None = None) -> dict[str, object]:
-    return {
-        "schema_version": "1.0",
-        "review_type": "api-codegen",
-        "change_id": "CH-DEMO-001",
-        "route": "codegen",
-        "findings": [],
-        "finding_ids": [],
-        "next_action": "proceed to codegen",
-        "risk_level": "medium",
-        "required_capabilities": required_capabilities or ["entities.item.create"],
-    }
 
 
 def _imported_modules(tree: ast.AST) -> tuple[str, ...]:

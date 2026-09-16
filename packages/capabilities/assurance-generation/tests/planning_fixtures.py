@@ -35,6 +35,20 @@ _FRAMEWORK = {
 }
 
 
+def valid_plan_review(*, required_capabilities: list[str] | None = None) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "review_type": "api-codegen",
+        "change_id": "CH-DEMO-001",
+        "route": "codegen",
+        "findings": [],
+        "finding_ids": [],
+        "next_action": "proceed to codegen",
+        "risk_level": "medium",
+        "required_capabilities": required_capabilities or ["entities.item.create"],
+    }
+
+
 def family_case_id(family: str) -> str:
     return f"TC_{family.upper()}_001"
 

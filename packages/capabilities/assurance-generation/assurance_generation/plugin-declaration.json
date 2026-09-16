@@ -75,6 +75,7 @@
       "assurance.generation.persona.test-author.v1",
       "assurance.generation.result.codegen-review.v1",
       "assurance.generation.result.codegen.v1",
+      "assurance.generation.result.plan.v1",
       "assurance.generation.skill.aa-api-codegen-reviewer.v1",
       "assurance.generation.skill.aa-api-codegen.v1",
       "assurance.generation.skill.aa-e2e-codegen-reviewer.v1",

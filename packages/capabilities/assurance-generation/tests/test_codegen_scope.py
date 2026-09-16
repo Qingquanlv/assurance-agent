@@ -11,12 +11,13 @@ from assurance_generation.contracts.codegen import (
     locked_testdata_file,
     locked_test_file,
 )
+from assurance_generation.contracts.families import LayerName
 from assurance_generation.operations.codegen_scope import build_codegen_scope
 from assurance_intake.contracts import CaseYamlAuthoring
-from planning_fixtures import VALID_LEAFS, reviewed_cases
+from planning_fixtures import VALID_LEAFS, reviewed_cases  # pyright: ignore[reportMissingImports]
 
 
-def _cases(family: str) -> CaseYamlAuthoring:
+def _cases(family: LayerName) -> CaseYamlAuthoring:
     return CaseYamlAuthoring.model_validate(
         reviewed_cases(family),
         context={"capability_leafs": frozenset(VALID_LEAFS)},
@@ -55,7 +56,7 @@ def test_case_module_from_path_rejects_non_case_yaml() -> None:
 
 
 @pytest.mark.parametrize("family", ("api", "e2e", "fuzz", "performance"))
-def test_host_builds_codegen_scope_from_reviewed_cases(family: str) -> None:
+def test_host_builds_codegen_scope_from_reviewed_cases(family: LayerName) -> None:
     cases = _cases(family)
     scope = build_codegen_scope(
         family=family,
@@ -107,7 +108,7 @@ def test_host_scope_rejects_unknown_capability_leaf() -> None:
 
 
 @pytest.mark.parametrize("family", ("api", "e2e", "fuzz", "performance"))
-def test_host_scope_locks_module_test_and_testdata(family: str) -> None:
+def test_host_scope_locks_module_test_and_testdata(family: LayerName) -> None:
     cases = _cases(family)
     ids = _case_ids(cases)
     scope = build_codegen_scope(

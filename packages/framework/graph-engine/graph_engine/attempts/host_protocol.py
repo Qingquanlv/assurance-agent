@@ -257,7 +257,7 @@ class TaskHostTerminalReceipt(FrozenModel):
     @field_validator("started_at", "completed_at")
     @classmethod
     def _validate_timestamp(cls, value: str, info: ValidationInfo) -> str:
-        _aware_utc_timestamp(value, info.field_name)
+        _aware_utc_timestamp(value, info.field_name or "timestamp")
         return value
 
     @model_validator(mode="after")

@@ -37,6 +37,7 @@ GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.persona.test-author.v1": "personas/test-author.md",
     "assurance.generation.result.codegen.v1": "result-contracts/codegen.v1.schema.json",
     "assurance.generation.result.codegen-review.v1": "result-contracts/plan-review.v1.schema.json",
+    "assurance.generation.result.plan.v1": "result-contracts/plan.v1.schema.json",
     "assurance.generation.skill.aa-api-codegen.v1": "skills/aa-api-codegen/SKILL.md",
     "assurance.generation.skill.aa-api-codegen-reviewer.v1": "skills/aa-api-codegen-reviewer/SKILL.md",
     "assurance.generation.skill.aa-e2e-codegen.v1": "skills/aa-e2e-codegen/SKILL.md",

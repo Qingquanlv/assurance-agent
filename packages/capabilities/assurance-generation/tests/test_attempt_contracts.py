@@ -26,7 +26,6 @@ from assurance_generation.contracts.decisions import (
     advance_review_round,
     complete_generation,
 )
-from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
 from assurance_generation.operations.workflow_state import (
     GenerationCompleteHandler,

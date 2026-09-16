@@ -473,13 +473,16 @@ async def test_request_rework_validates_after_restart_and_advances_once() -> Non
     builder.add_edge("codegen-human-review", END)
     graph = builder.compile(checkpointer=backend)
     await graph.ainvoke(
-        {
-            "family": "api",
-            "rounds_used": 0,
-            "rounds_budget": 2,
-            "decision": "needs_human_review",
-            "review_stage": "codegen",
-        },
+        cast(
+            Any,
+            {
+                "family": "api",
+                "rounds_used": 0,
+                "rounds_budget": 2,
+                "decision": "needs_human_review",
+                "review_stage": "codegen",
+            },
+        ),
         config=_config("api"),
     )
     resumed = await graph.ainvoke(Command(resume={"action": "request_rework"}), config=_config("api"))

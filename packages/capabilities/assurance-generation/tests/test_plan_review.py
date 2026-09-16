@@ -25,8 +25,8 @@ from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     plan_input,
     review_result,
     reviewed_cases,
+    valid_plan_review,
 )
-from test_contracts import valid_plan_review  # pyright: ignore[reportMissingImports]
 
 
 def test_review_audit_modules_are_gone() -> None:
@@ -362,10 +362,10 @@ async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
         tmp_path,
     )
     assert retried.status == "succeeded", retried.failure
-    assert cast(dict[str, object], retried.output)["route"] == "auto_fix"
-    assert [item["id"] for item in cast(list[dict[str, object]], retried.output["findings"])] == [
-        "API-PLAN-002"
-    ]
+    retried_output = cast(dict[str, object], retried.output)
+    assert retried_output["route"] == "auto_fix"
+    findings = cast(list[dict[str, object]], retried_output["findings"])
+    assert [item["id"] for item in findings] == ["API-PLAN-002"]
 
 
 @pytest.mark.parametrize("family", FAMILIES)
