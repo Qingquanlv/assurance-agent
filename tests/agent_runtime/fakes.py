@@ -530,6 +530,8 @@ class ConfinedTestHost:
                 terminal_proof_digest=None,
                 quiescence_proof_digest=quiescence,
                 host_call_id=sink.host_call_id,
+                started_at="2026-09-16T03:00:00+00:00",
+                completed_at="2026-09-16T03:00:01+00:00",
             )
         )
 

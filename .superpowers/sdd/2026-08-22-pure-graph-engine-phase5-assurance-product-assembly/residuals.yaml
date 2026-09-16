@@ -1,7 +1,0 @@
-allowed_until_phase6:
-  - legacy_aa_command
-  - legacy_runtime
-  - legacy_product
-  - comparison_baseline
-new_runtime_dependencies_on_residuals: []
-compatibility_bridge: false

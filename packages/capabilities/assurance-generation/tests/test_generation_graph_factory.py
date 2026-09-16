@@ -106,7 +106,7 @@ def family_graph_input(family: str, *, selected: bool = True) -> dict[str, objec
         **generation_graph_input(selected=(family,) if selected else ("api",)),
         "family": family,
         "lane_selected": selected,
-        "review_stage": "plan",
+        "review_stage": "codegen",
     }
 
 
@@ -119,19 +119,14 @@ def _plan_output() -> dict[str, object]:
 
 
 def _review_output(
-    decision: str = "pass",
+    route: str = "codegen",
     *,
-    auto_fix: bool = False,
-    human: bool = False,
-    readiness: str = "ready",
     used: int | None = 0,
     budget: int | None = 2,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "decision": decision,
-        "auto_fix_allowed": auto_fix,
-        "human_review_required": human,
-        "codegen_readiness": readiness,
+        "route": route,
+        "finding_ids": [],
         "artifacts": [{"path": "qa/results", "digest": _SHA}],
     }
     if used is not None:
@@ -199,8 +194,8 @@ def test_generation_factory_exports_root_and_four_families(recording_context) ->
     )
     assert isinstance(bundle, GenerationGraphs)
     unique = tuple(dict.fromkeys(recording_context.bound_contract_ids))
-    assert len(recording_context.bound_contract_ids) == 16
-    assert len(unique) == 15
+    assert len(unique) == 11
+    assert set(recording_context.bound_contract_ids) == set(unique)
     assert set(unique) == {
         *(contract.contract_id for contract in AGENT_JOB_CONTRACTS.values()),
         *(contract.contract_id for contract in TASK_ATTEMPT_CONTRACTS.values()),
@@ -249,8 +244,8 @@ def test_root_factory_does_not_ainvoke_family_graphs(recording_context) -> None:
     assert "e2e" in _node_names(bundle.generation)
     assert "fuzz" in _node_names(bundle.generation)
     assert "performance" in _node_names(bundle.generation)
-    assert "plan-human-review" in _node_names(bundle.generation)
-    assert "plan-human-review-retry" in _node_names(bundle.generation)
+    assert "codegen-human-review" in _node_names(bundle.generation)
+    assert "codegen-human-review-retry" in _node_names(bundle.generation)
 
 
 def test_terminal_done_without_family_does_not_write_api_lane() -> None:
@@ -333,15 +328,15 @@ def test_pure_nodes_match_existing_handlers_for_valid_and_invalid_inputs() -> No
         )
 
     advanced = advance_review_round_node(
-        {"family": "api", "review_stage": "plan", "rounds_used": 0, "rounds_budget": 2}
+        {"family": "api", "review_stage": "codegen", "rounds_used": 0, "rounds_budget": 2}
     )
     expected_advance = advance_review_round(
-        {"family": "api", "stage": "plan", "rounds_used": 0, "rounds_budget": 2}
+        {"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2}
     )
     assert advanced["rounds_used"] == expected_advance.rounds_used == 1
     with pytest.raises((ValidationError, ValueError)):
         advance_review_round_node(
-            {"family": "api", "review_stage": "plan", "rounds_used": 2, "rounds_budget": 2}
+            {"family": "api", "review_stage": "codegen", "rounds_used": 2, "rounds_budget": 2}
         )
 
 
@@ -354,20 +349,17 @@ async def test_selected_family_runs_plan_review_codegen_without_phase_nodes() ->
         bundle.api,
         input=family_graph_input("api"),
         script={
-            _semantic("api", "plan"): [committed(_plan_output(), receipt)],
-            _semantic("api", "plan-review"): [committed(_review_output(), receipt)],
             _semantic("api", "codegen"): [committed(_codegen_output(), receipt)],
+            _semantic("api", "codegen-review"): [committed(_review_output(), receipt)],
         },
     )
     assert [call.semantic_node_id for call in result.semantic_calls] == [
-        _semantic("api", "plan"),
-        _semantic("api", "plan-review"),
         _semantic("api", "codegen"),
+        _semantic("api", "codegen-review"),
     ]
     assert [call.contract_id for call in result.semantic_calls] == [
-        "assurance.generation.agent.api.plan.v1",
-        "assurance.generation.agent.api.plan-review.v1",
         "assurance.generation.agent.api.codegen.v1",
+        "assurance.generation.agent.api.codegen-review.v1",
     ]
     terminal = result.terminal
     assert isinstance(terminal, dict)
@@ -383,13 +375,14 @@ async def test_selected_family_plan_failure_stops_before_plan_review() -> None:
         bundle.e2e,
         input=family_graph_input("e2e"),
         script={
-            _semantic("e2e", "plan"): [PermanentTaskFailure(kind="transient", message="provider TLS failed")],
-            _semantic("e2e", "plan-review"): [committed(_review_output(), receipt)],
-            _semantic("e2e", "codegen"): [committed(_codegen_output(), receipt)],
+            _semantic("e2e", "codegen"): [
+                PermanentTaskFailure(kind="transient", message="provider TLS failed")
+            ],
+            _semantic("e2e", "codegen-review"): [committed(_review_output(), receipt)],
         },
     )
 
-    assert [call.semantic_node_id for call in result.semantic_calls] == [_semantic("e2e", "plan")]
+    assert [call.semantic_node_id for call in result.semantic_calls] == [_semantic("e2e", "codegen")]
     terminal = result.terminal
     assert isinstance(terminal, Mapping)
     assert terminal["status"] == "failed"
@@ -429,9 +422,8 @@ async def test_authenticated_codegen_finishes_without_a_repair_verdict(family: A
     assert isinstance(generated_output, Mapping)
     assert generated_output["files"] == output["files"]
     assert [call.semantic_node_id for call in result.semantic_calls] == [
-        _semantic(family, "plan"),
-        _semantic(family, "plan-review"),
         _semantic(family, "codegen"),
+        _semantic(family, "codegen-review"),
     ]
 
 

@@ -12,7 +12,6 @@ from assurance_generation.operations.codegen import (
 from assurance_generation.operations.planning import (
     FAMILIES,
     PlanFinalizeHandler,
-    PlanPrepareHandler,
     planning_handler,
 )
 from assurance_generation.operations.review import (
@@ -35,10 +34,8 @@ from assurance_generation.operations.init_runtime import InitTestRuntimeHandler
 def planning_handlers() -> Mapping[str, TaskHandler]:
     handlers: dict[str, TaskHandler] = {}
     for family in FAMILIES:
-        handlers[f"assurance.generation.{family}.plan.prepare"] = PlanPrepareHandler(family)
-        handlers[f"assurance.generation.{family}.plan.finalize"] = PlanFinalizeHandler(family)
-        handlers[f"assurance.generation.{family}.plan-review.prepare"] = PlanReviewPrepareHandler(family)
-        handlers[f"assurance.generation.{family}.plan-review.finalize"] = PlanReviewFinalizeHandler(family)
+        handlers[f"assurance.generation.{family}.codegen-review.prepare"] = PlanReviewPrepareHandler(family)
+        handlers[f"assurance.generation.{family}.codegen-review.finalize"] = PlanReviewFinalizeHandler(family)
     return MappingProxyType(handlers)
 
 
@@ -74,7 +71,6 @@ __all__ = [
     "CodegenFinalizeHandler",
     "CodegenPrepareHandler",
     "PlanFinalizeHandler",
-    "PlanPrepareHandler",
     "PlanReviewFinalizeHandler",
     "PlanReviewPrepareHandler",
     "codegen_finalize_handler",

@@ -19,9 +19,7 @@ from assurance_generation.operations.codegen import (
     CodegenFinalizeHandler,
     codegen_finalize_handler,
     codegen_prepare_handler,
-    validate_codegen_input,
 )
-from assurance_generation.operations.planning import Family, InputError
 from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     FAMILIES,
     codegen_input,
@@ -29,11 +27,12 @@ from codegen_fixtures import (  # pyright: ignore[reportMissingImports]
     durable_oracle_path,
     family_case_id,
     fake_agent_result,
+    locked_oracle_paths,
     mapping_document,
 )
 from planning_fixtures import BINDING as PLAN_BINDING  # pyright: ignore[reportMissingImports]
 from planning_fixtures import PLAN_DIGEST, PLAN_REF  # pyright: ignore[reportMissingImports]
-from planning_fixtures import VALID_LEAFS, reviewed_cases  # pyright: ignore[reportMissingImports]
+from planning_fixtures import VALID_LEAFS, reviewed_case, reviewed_cases  # pyright: ignore[reportMissingImports]
 
 CHANGE_ID = "CH-DEMO-001"
 
@@ -74,10 +73,22 @@ def _write_manifest(root: Path, payload: Mapping[str, object]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _write_reviewed_cases(tmp_path: Path, family: str) -> None:
+def _write_reviewed_cases(tmp_path: Path, family: str, *, extra_case: bool = False) -> None:
+    document = reviewed_cases(family)
+    if extra_case:
+        second = reviewed_case(family)
+        second["case_id"] = f"TC_{family.upper()}_002"
+        document["added"].append(second)
     path = tmp_path / "qa/cases/items/case.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(reviewed_cases(family), sort_keys=False), encoding="utf-8")
+    path.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+
+def _write_locked_generated(write_root: Path, family: str, module: str = "items") -> tuple[str, str]:
+    test_path, data_path = locked_oracle_paths(family, module)
+    _write_generated(write_root, family, test_path)
+    _write_generated(write_root, family, data_path, b"helper\n")
+    return test_path, data_path
 
 
 def _write_plan_mapping(workspace: Path, family: str, targets: list[str]) -> None:
@@ -96,45 +107,16 @@ def _write_plan_mapping(workspace: Path, family: str, targets: list[str]) -> Non
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
-def test_codegen_input_rejects_reviewed_plan_for_a_different_change(tmp_path: Path) -> None:
-    payload = codegen_input("api")
-    payload["reviewed_plan"]["change_id"] = "CH-OTHER-001"
-
-    with pytest.raises(InputError, match="reviewed plan change_id"):
-        validate_codegen_input(payload, "api", tmp_path)
-
-
-@pytest.mark.parametrize("family", FAMILIES)
-def test_codegen_input_rejects_case_scope_drift(family: Family, tmp_path: Path) -> None:
-    payload = codegen_input(family)
-    payload["reviewed_plan"]["case_ids"] = ["TC_UNREVIEWED_001"]
-    payload["reviewed_plan"]["coverage"][0]["case_id"] = "TC_UNREVIEWED_001"
-    with pytest.raises(InputError, match="reviewed plan case_ids"):
-        validate_codegen_input(payload, family, tmp_path)
-
-
-@pytest.mark.parametrize(
-    "field,value", [("endpoint", "GET /unreviewed"), ("p95_ms", 2000), ("error_rate_max", 0.9)]
-)
-def test_performance_codegen_rejects_scenario_drift_from_cases(
-    field: str, value: object, tmp_path: Path
-) -> None:
-    payload = codegen_input("performance")
-    payload["reviewed_plan"]["performance_scenarios"][0][field] = value
-    with pytest.raises(InputError, match="performance scenarios must match reviewed cases"):
-        validate_codegen_input(payload, "performance", tmp_path)
-
-
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_mapping_order_has_no_semantic_effect(family: str, tmp_path: Path) -> None:
-    target = durable_oracle_path(family=family)
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, target)
-    authored = codegen_result(files=[target], family=family)
+    _write_reviewed_cases(project, family, extra_case=True)
+    test_path, data_path = _write_locked_generated(write_root, family)
+    authored = codegen_result(files=[test_path, data_path], family=family)
     second_id = f"TC_{family.upper()}_002"
     authored["mapping"]["entries"].append(
-        {"case_id": second_id, "symbol": "test_second_case", "target_file": target}
+        {"case_id": second_id, "symbol": "test_second_case", "target_file": test_path}
     )
     authored["files"][0]["case_ids"].append(second_id)
     _write_manifest(write_root, authored)
@@ -149,9 +131,11 @@ async def test_codegen_mapping_order_has_no_semantic_effect(family: str, tmp_pat
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_claimed_but_missing_file(tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, "api")
+    test_path, data_path = locked_oracle_paths("api")
     outcome = await execute_task(
         CodegenFinalizeHandler("api"),
-        fake_agent_result(codegen_result(files=[durable_oracle_path()])),
+        fake_agent_result(codegen_result(files=[test_path, data_path])),
         tmp_path,
     )
     assert outcome.failure is not None
@@ -161,6 +145,7 @@ async def test_codegen_finalize_rejects_claimed_but_missing_file(tmp_path: Path)
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     handler = codegen_prepare_handler(family)
     first = await execute_task(handler, codegen_input(family), tmp_path, binding_data=PLAN_BINDING)
@@ -172,6 +157,7 @@ async def test_codegen_prepare_is_deterministic_for_every_family(family: str, tm
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     payload = codegen_input(family)
     payload["artifact_paths"] = [
@@ -197,6 +183,7 @@ async def test_codegen_prepare_accepts_product_artifact_lock(family: str, tmp_pa
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_prepare_uses_reviewed_plan_and_constraints(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [durable_oracle_path(family=family)])
     prepared = await execute_task(
         codegen_prepare_handler(family),
@@ -243,11 +230,42 @@ async def test_codegen_prepare_uses_reviewed_plan_and_constraints(family: str, t
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: str, tmp_path: Path) -> None:
-    mapped = durable_oracle_path(family=family)
-    extra = (
-        f"qa/tests/{family}/test_unmapped.py" if family != "performance" else "qa/tests/perf/test_unmapped.py"
+async def test_codegen_prepare_authorizes_locked_outputs_only(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
+    prepared = await execute_task(
+        codegen_prepare_handler(family),
+        codegen_input(family),
+        tmp_path,
+        binding_data=PLAN_BINDING,
     )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    directory = "perf" if family == "performance" else family
+    locked_test = f"qa/tests/{directory}/items/test_items.py"
+    locked_data = f"qa/tests/testdata/{directory}/items.py"
+    allowed = request.workspace.allowed_outputs
+    assert allowed == tuple(
+        sorted(
+            (
+                f"qa/results/codegen/{family}-codegen-summary.md",
+                f"qa/results/codegen/{family}-generated-files.json",
+                locked_test,
+                locked_data,
+            )
+        )
+    )
+    assert "qa/tests/api" not in allowed
+    assert "qa/tests/testdata" not in allowed
+    assert f"qa/tests/{directory}" not in allowed
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.asyncio
+async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: str, tmp_path: Path) -> None:
+    directory = "perf" if family == "performance" else family
+    mapped = f"qa/tests/{directory}/test_users.py"
+    extra = f"qa/tests/{directory}/test_unmapped.py"
+    _write_reviewed_cases(tmp_path, family)
     _write_plan_mapping(tmp_path, family, [mapped])
 
     prepared = await execute_task(
@@ -259,10 +277,12 @@ async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: s
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    assert mapped in request.workspace.allowed_outputs
+    locked_test = f"qa/tests/{directory}/items/test_items.py"
+    assert locked_test in request.workspace.allowed_outputs
     context_payload = cast(dict[str, object], request.instructions[4].json_content)
     assert context_payload["allowed_outputs"] == request.workspace.allowed_outputs
     assert extra not in request.workspace.allowed_outputs
+    assert mapped not in request.workspace.allowed_outputs
     assert all("**" not in path for path in request.workspace.allowed_outputs)
     assert all(not path.startswith("tests/") for path in request.workspace.allowed_outputs)
     assert f"qa/results/codegen/{family}-generated-files.json" in request.workspace.allowed_outputs
@@ -270,7 +290,8 @@ async def test_codegen_prepare_authorizes_exact_staged_mapping_targets(family: s
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_rejects_missing_mapping(family: str, tmp_path: Path) -> None:
+async def test_codegen_prepare_succeeds_without_mapping(family: str, tmp_path: Path) -> None:
+    _write_reviewed_cases(tmp_path, family)
     prepared = await execute_task(
         codegen_prepare_handler(family),
         codegen_input(family),
@@ -278,15 +299,12 @@ async def test_codegen_prepare_rejects_missing_mapping(family: str, tmp_path: Pa
         binding_data=PLAN_BINDING,
     )
 
-    assert prepared.status == "failed"
-    assert prepared.failure is not None
-    assert "closed codegen mapping is missing" in prepared.failure.message
+    assert prepared.status == "succeeded"
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_codegen_prepare_rejects_missing_reviewed_plan(family: str, tmp_path: Path) -> None:
-    _write_reviewed_cases(tmp_path, family)
+async def test_codegen_prepare_rejects_missing_reviewed_cases(family: str, tmp_path: Path) -> None:
     prepared = await execute_task(
         codegen_prepare_handler(family),
         {
@@ -300,7 +318,140 @@ async def test_codegen_prepare_rejects_missing_reviewed_plan(family: str, tmp_pa
     )
     assert prepared.status == "failed"
     assert prepared.failure is not None
-    assert "reviewed_plan" in prepared.failure.message
+    assert "reviewed case" in prepared.failure.message
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_accepts_host_locked_paths(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    authored = codegen_result(files=[test_path, data_path], family="api")
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "succeeded", outcome.failure
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_succeeds_without_scope_case_ids(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    authored = codegen_result(files=[test_path, data_path], family="api")
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored, include_scope_case_ids=False),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "succeeded", outcome.failure
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_mapping_that_omits_host_scope_case(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    authored = codegen_result(files=[test_path, data_path], family="api")
+    authored["mapping"]["entries"][0]["case_id"] = "TC_OTHER_001"
+    authored["files"][0]["case_ids"] = ["TC_OTHER_001"]
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored, include_scope_case_ids=False),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is True
+    assert "mapping case IDs must exactly match the host codegen scope" in outcome.failure.message
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_write_root_as_file(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    bad = "qa/tests/api"
+    _write_generated(write_root, "api", bad)
+    authored = codegen_result(files=[bad], family="api")
+    authored["mapping"]["entries"][0]["target_file"] = bad
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_missing_testdata(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    test_path, _ = locked_oracle_paths("api")
+    _write_generated(write_root, "api", test_path)
+    authored = codegen_result(files=[test_path], family="api")
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_target_file_mismatch(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    authored = codegen_result(files=[test_path, data_path], family="api")
+    authored["mapping"]["entries"][0]["target_file"] = "qa/tests/api/other/test_other.py"
+    _write_manifest(write_root, authored)
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(authored),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_codegen_finalize_rejects_invalid_case_path(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    bad = project / "qa/cases/dept.yaml"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text("schema_version: '1.0'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
+    outcome = await execute_task(
+        codegen_finalize_handler("api"),
+        fake_agent_result(codegen_result(files=["qa/tests/api/dept/test_dept.py"])),
+        project,
+        write_root=write_root,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert outcome.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -308,10 +459,10 @@ async def test_codegen_prepare_rejects_missing_reviewed_plan(family: str, tmp_pa
 async def test_codegen_finalize_rejects_symbol_drift_from_reviewed_mapping(
     family: str, tmp_path: Path
 ) -> None:
-    target = durable_oracle_path(family=family)
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, target)
-    authored = codegen_result(files=[target], family=family)
+    _write_reviewed_cases(project, family)
+    test_path, data_path = _write_locked_generated(write_root, family)
+    authored = codegen_result(files=[test_path, data_path], family=family)
     authored["mapping"]["entries"][0]["symbol"] = "different_unreviewed_symbol"
     _write_manifest(write_root, authored)
     payload = fake_agent_result(authored)
@@ -323,21 +474,22 @@ async def test_codegen_finalize_rejects_symbol_drift_from_reviewed_mapping(
     assert "mapping must exactly match the reviewed plan" in outcome.failure.message
 
 
-@pytest.mark.parametrize("field", ("reviewed_mapping", "required_capabilities"))
+@pytest.mark.parametrize("field", ("required_capabilities",))
 @pytest.mark.asyncio
-async def test_codegen_missing_trusted_input_does_not_retry_the_agent(field: str, tmp_path: Path) -> None:
+async def test_codegen_missing_trusted_input_is_retryable_invalid_input(field: str, tmp_path: Path) -> None:
     payload = fake_agent_result(codegen_result(files=[durable_oracle_path()]))
     del payload[field]
     outcome = await execute_task(codegen_finalize_handler("api"), payload, tmp_path)
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
 
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_empty_files_when_mapping_is_live(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", durable_oracle_path())
+    _write_reviewed_cases(project, "api")
+    _write_locked_generated(write_root, "api")
     executed = await execute_task(
         codegen_finalize_handler("api"),
         fake_agent_result(codegen_result(files=[])),
@@ -352,12 +504,12 @@ async def test_codegen_finalize_rejects_empty_files_when_mapping_is_live(tmp_pat
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) -> None:
-    first = durable_oracle_path()
     second = "qa/tests/api/test_orders.py"
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", first)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
     _write_generated(write_root, "api", second)
-    payload = codegen_result(files=[first])
+    payload = codegen_result(files=[test_path, data_path])
     payload["mapping"]["entries"] = [
         payload["mapping"]["entries"][0],
         {
@@ -378,25 +530,17 @@ async def test_codegen_finalize_rejects_partial_mapping_listing(tmp_path: Path) 
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
     assert executed.failure.retryable is True
-    assert f"codegen mapping is missing: {second}" in executed.failure.message
+    assert "mapping case IDs must exactly match the host codegen scope" in executed.failure.message
 
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Path) -> None:
-    mapped = durable_oracle_path()
-    support = "qa/tests/api/conftest.py"
     project, write_root = dual_roots(tmp_path)
-    mapped_digest = _write_generated(write_root, "api", mapped)
-    support_digest = _write_generated(write_root, "api", support, b"fixture\n")
-    payload = codegen_result(files=[mapped])
-    payload["files"].append(
-        {
-            "repo_path": support,
-            "disposition": "generated",
-            "role": "support",
-            "case_ids": [],
-        }
-    )
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = locked_oracle_paths("api")
+    mapped_digest = _write_generated(write_root, "api", test_path)
+    support_digest = _write_generated(write_root, "api", data_path, b"helper\n")
+    payload = codegen_result(files=[test_path, data_path])
     _write_manifest(write_root, payload)
     executed = await execute_task(
         codegen_finalize_handler("api"),
@@ -407,24 +551,26 @@ async def test_codegen_finalize_keeps_support_as_extra_hashed_entry(tmp_path: Pa
     assert executed.status == "succeeded"
     output = cast(dict[str, object], executed.output)
     files = {item["repo_path"]: item for item in cast(list[dict[str, object]], output["files"])}
-    assert files[mapped]["content_sha256"] == mapped_digest
-    assert files[mapped]["role"] == "test_entry"
-    assert files[mapped]["case_ids"] == [family_case_id("api")]
-    assert files[support]["content_sha256"] == support_digest
-    assert files[support]["role"] == "support"
-    assert files[support]["case_ids"] == []
+    assert files[test_path]["content_sha256"] == mapped_digest
+    assert files[test_path]["role"] == "test_entry"
+    assert files[test_path]["case_ids"] == [family_case_id("api")]
+    assert files[data_path]["content_sha256"] == support_digest
+    assert files[data_path]["role"] == "support"
+    assert files[data_path]["case_ids"] == []
     mapping = cast(dict[str, object], output["mapping"])
     targets = [item["target_file"] for item in cast(list[dict[str, object]], mapping["entries"])]
-    assert targets == [mapped]
+    assert targets == [test_path]
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_path: Path) -> None:
-    relative = durable_oracle_path(family=family)
     project, write_root = dual_roots(tmp_path)
-    digest = _write_generated(write_root, family, relative)
-    payload = codegen_result(files=[relative], family=family)
+    _write_reviewed_cases(project, family)
+    test_path, data_path = locked_oracle_paths(family)
+    digest = _write_generated(write_root, family, test_path)
+    _write_generated(write_root, family, data_path, b"helper\n")
+    payload = codegen_result(files=[test_path, data_path], family=family)
     _write_manifest(write_root, payload)
     executed = await execute_task(
         codegen_finalize_handler(family),
@@ -437,21 +583,20 @@ async def test_codegen_finalize_authenticates_workspace_bytes(family: str, tmp_p
     assert output["schema_version"] == "1"
     assert {"verdict", "repair", "needs_fix"}.isdisjoint(output)
     assert output["layer"] == family
-    files = cast(list[dict[str, object]], output["files"])
-    assert files[0]["repo_path"] == relative
-    assert files[0]["content_sha256"] == digest
-    assert files[0]["case_ids"] == [family_case_id(family)]
+    files = {item["repo_path"]: item for item in cast(list[dict[str, object]], output["files"])}
+    assert files[test_path]["content_sha256"] == digest
+    assert files[test_path]["case_ids"] == [family_case_id(family)]
 
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_missing_staged_manifest(tmp_path: Path) -> None:
-    relative = durable_oracle_path()
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", relative)
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
 
     executed = await execute_task(
         codegen_finalize_handler("api"),
-        fake_agent_result(codegen_result(files=[relative])),
+        fake_agent_result(codegen_result(files=[test_path, data_path])),
         project,
         write_root=write_root,
     )
@@ -464,10 +609,10 @@ async def test_codegen_finalize_rejects_missing_staged_manifest(tmp_path: Path) 
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_manifest_that_differs_from_result(tmp_path: Path) -> None:
-    relative = durable_oracle_path()
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", relative)
-    payload = codegen_result(files=[relative])
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    payload = codegen_result(files=[test_path, data_path])
     manifest = dict(payload)
     manifest["required_capabilities"] = ["auth.session.create"]
     manifest_path = write_root / "qa/results/codegen/api-generated-files.json"
@@ -489,10 +634,10 @@ async def test_codegen_finalize_rejects_manifest_that_differs_from_result(tmp_pa
 
 @pytest.mark.asyncio
 async def test_codegen_finalize_accepts_files_below_declared_artifact_roots(tmp_path: Path) -> None:
-    relative = durable_oracle_path()
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, "api", relative)
-    payload = codegen_result(files=[relative])
+    _write_reviewed_cases(project, "api")
+    test_path, data_path = _write_locked_generated(write_root, "api")
+    payload = codegen_result(files=[test_path, data_path])
     _write_manifest(write_root, payload)
     executed = await execute_task(
         codegen_finalize_handler("api"),
@@ -575,17 +720,17 @@ async def test_codegen_finalize_rejects_capabilities_dropped_from_reviewed_plan(
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert "required_capabilities must exactly match the reviewed plan" in executed.failure.message
+    assert "required_capabilities must exactly match the host codegen scope" in executed.failure.message
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_finalize_canonicalizes_capability_order(family: str, tmp_path: Path) -> None:
-    relative = durable_oracle_path(family=family)
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, relative)
+    _write_reviewed_cases(project, family)
+    test_path, data_path = _write_locked_generated(write_root, family)
     payload = codegen_result(
-        files=[relative],
+        files=[test_path, data_path],
         family=family,
         required_capabilities=["entities.item.create", "auth.session.create"],
     )
@@ -634,21 +779,22 @@ async def test_codegen_finalize_rejects_legacy_wrapped_input(
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
-    assert executed.failure.retryable is False
+    assert executed.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_undeclared_file(family: str, tmp_path: Path) -> None:
-    relative = durable_oracle_path(family=family)
-    extra = "qa/tests/unmapped_test.py"
+    directory = "perf" if family == "performance" else family
+    extra = f"qa/tests/{directory}/conftest.py"
     project, write_root = dual_roots(tmp_path)
-    _write_generated(write_root, family, relative)
+    _write_reviewed_cases(project, family)
+    test_path, data_path = _write_locked_generated(write_root, family)
     _write_generated(write_root, family, extra)
-    payload = codegen_result(files=[relative, extra], family=family)
+    payload = codegen_result(files=[test_path, data_path, extra], family=family)
     executed = await execute_task(
         codegen_finalize_handler(family),
-        fake_agent_result(payload, artifact_paths=[relative]),
+        fake_agent_result(payload),
         project,
         write_root=write_root,
     )
@@ -667,6 +813,7 @@ async def test_codegen_prepare_rejects_routing_marker(family: str, tmp_path: Pat
             "provider_model": "primary,fallback",
         },
     }
+    _write_reviewed_cases(tmp_path, family)
     prepared = await execute_task(
         codegen_prepare_handler(family),
         codegen_input(family),
@@ -676,7 +823,7 @@ async def test_codegen_prepare_rejects_routing_marker(family: str, tmp_path: Pat
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
-    assert prepared.failure.retryable is False
+    assert prepared.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -686,28 +833,31 @@ async def test_codegen_finalize_rejects_malformed_input(family: str, tmp_path: P
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
-    assert executed.failure.retryable is False
+    assert executed.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_codegen_finalize_rejects_bytes_written_only_under_tests(family: str, tmp_path: Path) -> None:
-    relative = durable_oracle_path(family=family)
     project, write_root = dual_roots(tmp_path)
-    sut_leaf = f"tests/{relative.removeprefix('qa/tests/')}"
-    direct = write_root.joinpath(*sut_leaf.split("/"))
-    direct.parent.mkdir(parents=True, exist_ok=True)
-    direct.write_bytes(b"test\n")
+    _write_reviewed_cases(project, family)
+    test_path, data_path = locked_oracle_paths(family)
+    for relative in (test_path, data_path):
+        sut_leaf = f"tests/{relative.removeprefix('qa/tests/')}"
+        direct = write_root.joinpath(*sut_leaf.split("/"))
+        direct.parent.mkdir(parents=True, exist_ok=True)
+        direct.write_bytes(b"test\n")
     executed = await execute_task(
         codegen_finalize_handler(family),
-        fake_agent_result(codegen_result(files=[relative], family=family)),
+        fake_agent_result(codegen_result(files=[test_path, data_path], family=family)),
         project,
         write_root=write_root,
     )
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert not (project / relative).exists()
+    assert not (project / test_path).exists()
+    assert not (project / data_path).exists()
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -751,10 +901,21 @@ def test_codegen_rejects_repair_control_fields(
         CodegenResultV1.model_validate(payload, context={"capability_leafs": frozenset(VALID_LEAFS)})
 
 
-@pytest.mark.asyncio
-async def test_e2e_codegen_skill_reads_family_prefixed_review() -> None:
+def test_e2e_codegen_skill_reads_host_codegen_scope() -> None:
     from assurance_generation.resource_loader import resource_text
 
     skill = resource_text("skills/aa-e2e-codegen/SKILL.md")
-    assert "qa/results/review/e2e-plan-review.json" in skill
+    assert "host-built E2E codegen scope" in skill
+    assert "locked_outputs" in skill
+    assert "qa/cases/**/case.yaml" in skill
     assert "review/plan-review.json" not in skill
+    assert "qa/results/review/e2e-plan-review.json" not in skill
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+def test_codegen_skill_requires_locked_testdata(family: str) -> None:
+    from assurance_generation.resource_loader import resource_text
+
+    skill = resource_text(f"skills/aa-{family}-codegen/SKILL.md")
+    assert "the locked testdata file (host `locked_outputs` always include it)" in skill
+    assert "### conditional" not in skill

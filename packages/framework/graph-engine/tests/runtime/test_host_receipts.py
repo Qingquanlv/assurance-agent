@@ -95,6 +95,8 @@ def _receipt(
     *,
     staged: StagedWriteSet | None = None,
     host_call_id: int,
+    started_at: str = "2026-09-16T03:00:00+00:00",
+    completed_at: str = "2026-09-16T03:00:01+00:00",
 ) -> TaskHostTerminalReceipt:
     assert identity.activity_id is not None
     workspace_identity = activity.workspace_identity
@@ -128,6 +130,8 @@ def _receipt(
         terminal_proof_digest=None,
         quiescence_proof_digest=quiescence,
         host_call_id=host_call_id,
+        started_at=started_at,
+        completed_at=completed_at,
     )
 
 
@@ -237,6 +241,21 @@ def test_terminal_receipt_rejects_stale_fence(tmp_path: Path) -> None:
     sink.install(_receipt(identity, activity, _outcome(), prove_call_quiescent(), host_call_id=1))
     with pytest.raises(TerminalReceiptError, match="foreign|stale"):
         store.authenticate(_identity(fencing_token=1))
+
+
+def test_terminal_receipt_rejects_completed_before_started() -> None:
+    identity = _identity()
+    activity = _prepared_snapshot()
+    with pytest.raises(ValueError, match="completed_at"):
+        _receipt(
+            identity,
+            activity,
+            _outcome(),
+            prove_call_quiescent(),
+            host_call_id=1,
+            started_at="2026-09-16T03:00:00+00:00",
+            completed_at="2026-09-16T02:59:59+00:00",
+        )
 
 
 def test_prior_receipt_schema_is_not_parsed(tmp_path: Path) -> None:

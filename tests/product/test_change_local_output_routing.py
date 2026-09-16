@@ -18,8 +18,8 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from tests.phase4.agent_harness import FakeAgentAdapter
-from tests.phase4.conformance import ExecutedTask
+from tests.capabilities.agent_harness import FakeAgentAdapter
+from tests.capabilities.conformance import ExecutedTask
 
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 from assurance_product.output_routes import OutputRouteCatalog
@@ -73,7 +73,7 @@ def task_context(project: Path, write_root: Path) -> TaskContext:
             invocation_id="inv-1",
             lock_digest=_SHA,
             composition_digest=_SHA,
-            entrypoint="phase5",
+            entrypoint="product",
         ),
     )
 
@@ -82,19 +82,19 @@ def task_request(
     payload: JSONValue,
     *,
     binding_data: JSONValue = None,
-    capability_id: str = "test.phase5.capability",
+    capability_id: str = "test.product.capability",
 ) -> TaskRequest:
     invocation = InvocationMetadata(
         invocation_id="inv-1",
         lock_digest=_SHA,
         composition_digest=_SHA,
-        entrypoint="phase5",
+        entrypoint="product",
     )
     return TaskRequest(
         invocation_id=invocation.invocation_id,
-        task_id="phase5-task",
-        graph_instance_id="phase5-graph",
-        node_id="phase5-node",
+        task_id="product-task",
+        graph_instance_id="product-graph",
+        node_id="product-node",
         capability_id=capability_id,
         binding_data=binding_data,
         invocation=invocation,
@@ -110,10 +110,10 @@ async def execute_task(
     *,
     binding_data: JSONValue = None,
     write_root: Path | None = None,
-    capability_id: str = "test.phase5.capability",
+    capability_id: str = "test.product.capability",
 ) -> ExecutedTask:
     if workspace is None:
-        with TemporaryDirectory(prefix="phase5-dual-root-") as temporary:
+        with TemporaryDirectory(prefix="product-dual-root-") as temporary:
             return await execute_task(
                 handler,
                 payload,
@@ -158,7 +158,7 @@ def fake_agent_result(structured_result: JSONValue) -> AgentRunResult:
 def test_every_agent_triplet_has_a_closed_output_route_that_stays_inside_the_change() -> None:
     catalog = OutputRouteCatalog()
 
-    assert len(EXECUTE_ALIASES) == 32
+    assert len(EXECUTE_ALIASES) == 28
     assert catalog.aliases() == EXECUTE_ALIASES
 
     for alias in EXECUTE_ALIASES:

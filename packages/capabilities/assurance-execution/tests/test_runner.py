@@ -68,7 +68,7 @@ async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
     assert escaped.status == "failed"
     assert escaped.failure is not None
     assert escaped.failure.kind == "invalid_input"
-    assert escaped.failure.retryable is False
+    assert escaped.failure.retryable is True
 
 
 @pytest.mark.asyncio

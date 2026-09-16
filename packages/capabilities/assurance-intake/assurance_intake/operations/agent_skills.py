@@ -344,7 +344,7 @@ def prepare_outcome(
 
 
 def failed_input(error: Exception) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+    return TaskOutcome.failed("invalid_input", str(error), retryable=True)
 
 
 class IntakePrepareHandler:

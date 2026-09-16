@@ -11,7 +11,7 @@ from graph_engine.plugin_api import PluginDependency, PluginDescriptor, Provider
 from assurance_generation.plugin import GENERATION_SOURCE, GenerationPlugin
 from assurance_generation.operations import generation_handlers
 from assurance_generation.resource_loader import resource_bytes
-from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
+from tests.capabilities.conformance import PluginExpectation, assert_plugin_conforms
 
 
 def test_generation_descriptor_declares_only_intake_dependency() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import CandidateFile, CandidateWriteSet, ResourceClaims, ValidationContext
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from assurance_healing.plugin import HealingPlugin
 from assurance_healing.validators.override import OverrideValidator
@@ -32,10 +32,10 @@ def candidate(*paths: str) -> CandidateWriteSet:
 
 def validation_context() -> ValidationContext:
     return ValidationContext(
-        invocation_id="phase4-test",
-        task_id="phase4-task",
-        graph_instance_id="phase4-graph",
-        node_id="phase4-node",
+        invocation_id="capabilities-test",
+        task_id="capabilities-task",
+        graph_instance_id="capabilities-graph",
+        node_id="capabilities-node",
         resources=ResourceClaims(),
     )
 

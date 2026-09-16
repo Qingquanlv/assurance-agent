@@ -44,6 +44,7 @@ from graph_engine.attempts.host_protocol import (
     TaskHostTerminalReceipt,
     _MAX_STDERR_BYTES,
     current_bound_identity,
+    utc_now_iso,
     decode_authenticated_frame,
     derive_wire_session_key,
     encode_authenticated_frame,
@@ -252,6 +253,7 @@ class _ProductionTaskExecutionHost:
         )
         if identity.activity_id is None:
             raise ProductionHostError("phase receipt requires an activity id")
+        started_at = utc_now_iso()
         sink = self._bound.receipts.sink_for(identity)
         receipt = TaskHostTerminalReceipt(
             host_implementation_digest=identity.host_implementation_digest,
@@ -279,6 +281,8 @@ class _ProductionTaskExecutionHost:
             outcome_digest=canonical_digest(cast(JSONValue, outcome.model_dump(mode="json"))),
             quiescence_proof_digest=prove_call_quiescent(),
             host_call_id=sink.host_call_id,
+            started_at=started_at,
+            completed_at=utc_now_iso(),
         )
         sink.install(receipt)
         return TerminalReceiptRef(
@@ -328,6 +332,7 @@ class _ProductionTaskExecutionHost:
         _host_fault_cut("host-before-worker-spawn")
         secrets: dict[str, bytes] = {}
         process: _WorkerProcess | None = None
+        started_at = utc_now_iso()
         try:
             secrets = self._resolve_authorized_secrets(call.authorized_secret_handles)
             process = supervisor.spawn(attempt_root=workspace.write_root, call_digest=call_digest)
@@ -340,6 +345,7 @@ class _ProductionTaskExecutionHost:
                 session_key,
                 workspace,
                 secrets,
+                started_at,
             )
         finally:
             _revoke_secrets(secrets)
@@ -357,6 +363,7 @@ class _ProductionTaskExecutionHost:
         session_key: bytes,
         workspace: TaskWorkspaceBinding,
         secrets: dict[str, bytes],
+        started_at: str,
     ) -> TaskHostCallResult:
         assert process.stdin is not None and process.stdout is not None
         deadline = time.monotonic() + float(call.timeout_seconds)
@@ -411,6 +418,7 @@ class _ProductionTaskExecutionHost:
             result,
             workspace=workspace,
             quiescence=quiescence,
+            started_at=started_at,
         )
         return result
 
@@ -607,6 +615,7 @@ class _ProductionTaskExecutionHost:
         *,
         workspace: TaskWorkspaceBinding,
         quiescence: str,
+        started_at: str,
     ) -> None:
         if call.identity.activity_id is None:
             return
@@ -660,6 +669,8 @@ class _ProductionTaskExecutionHost:
                 terminal_proof_digest=None,
                 quiescence_proof_digest=quiescence,
                 host_call_id=sink.host_call_id,
+                started_at=started_at,
+                completed_at=utc_now_iso(),
             )
         )
 

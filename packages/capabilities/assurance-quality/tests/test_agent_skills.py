@@ -12,7 +12,7 @@ from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
-from tests.phase4.agent_harness import FakeAgentAdapter
+from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import execute_task
 
 from assurance_quality.contracts.agent import (
@@ -411,7 +411,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
 
 
 @pytest.mark.asyncio

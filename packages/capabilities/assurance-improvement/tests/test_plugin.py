@@ -10,7 +10,7 @@ from graph_engine.plugin_api import PluginDependency, PluginDescriptor, Provider
 
 from assurance_improvement.plugin import IMPROVEMENT_SOURCE, ImprovementPlugin
 from assurance_improvement.resource_loader import resource_bytes
-from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
+from tests.capabilities.conformance import PluginExpectation, assert_plugin_conforms
 
 
 def test_improvement_descriptor_declares_exact_dependency_versions() -> None:

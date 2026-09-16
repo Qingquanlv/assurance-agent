@@ -10,8 +10,8 @@ from assurance_generation.contracts.families import (
     validate_selected_families,
 )
 
-ReviewStage = Literal["plan"]
-_STAGES: tuple[ReviewStage, ...] = ("plan",)
+ReviewStage = Literal["codegen"]
+_STAGES: tuple[ReviewStage, ...] = ("codegen",)
 
 
 class GenerationBranchCompletion(BaseModel):

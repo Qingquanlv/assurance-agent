@@ -25,7 +25,7 @@ from assurance_healing.operations.application import (
 )
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from tests.phase4.agent_harness import FakeAgentAdapter
+from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import BINDING, execute_task
 from tests.acg_plan_fixture import install_plan
 

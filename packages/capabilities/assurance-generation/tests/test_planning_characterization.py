@@ -37,10 +37,10 @@ def _candidate_with(*paths: str) -> CandidateWriteSet:
 
 def _context() -> ValidationContext:
     return ValidationContext(
-        invocation_id="phase4-test",
-        task_id="phase4-task",
-        graph_instance_id="phase4-graph",
-        node_id="phase4-node",
+        invocation_id="capabilities-test",
+        task_id="capabilities-task",
+        graph_instance_id="capabilities-graph",
+        node_id="capabilities-node",
         resources=ResourceClaims(),
     )
 
@@ -55,7 +55,7 @@ def test_generation_rejects_unknown_leaf(family: str) -> None:
 @pytest.mark.parametrize("family", FAMILIES)
 def test_generation_rejects_invalid_review_decision(family: str) -> None:
     raw = review_result(family)
-    raw["decision"] = "approved"
+    raw["route"] = "approved"
     with pytest.raises(ValidationError):
         PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": frozenset(VALID_LEAFS)})
 

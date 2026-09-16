@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 from graph_engine.canonical import JSONValue
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_healing.contracts.status import HealingStatusV1

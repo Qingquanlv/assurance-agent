@@ -22,6 +22,7 @@ from assurance_generation.contracts import (
 from assurance_generation.contracts.families import GENERATION_FAMILIES, validate_selected_families
 from assurance_generation.contracts.reviews import PUBLIC_REVIEW_OUTCOMES, public_review_outcome
 from assurance_generation.plugin import GenerationPlugin
+from planning_fixtures import valid_plan_review  # pyright: ignore[reportMissingImports]
 
 _TESTS_ROOT = Path(__file__).resolve().parent
 _WHEEL_ROOT = _TESTS_ROOT.parent
@@ -52,7 +53,7 @@ _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.generation.schema.plan-review.v1": (
         "1",
-        "9d43a8de92583e756d497ac67458406ea781c4dc3627d929208ec846160225ce",
+        "7dc96dc5ee821aaf8f6e1e0adbd19ec563b9f8594ca20f96af5dae003a993ca8",
     ),
     "assurance.generation.workflow.generate.input.v1": (
         "1",
@@ -98,23 +99,6 @@ def forbidden_generation_imports() -> set[str]:
     return found
 
 
-def valid_plan_review(*, required_capabilities: list[str] | None = None) -> dict[str, object]:
-    return {
-        "schema_version": "1.0",
-        "review_type": "api-plan",
-        "change_id": "CH-DEMO-001",
-        "decision": "pass",
-        "findings": [],
-        "auto_fix_plan": [],
-        "next_action": "proceed to codegen",
-        "auto_fix_allowed": True,
-        "human_review_required": False,
-        "codegen_readiness": "ready",
-        "risk_level": "medium",
-        "required_capabilities": required_capabilities or ["entities.item.create"],
-    }
-
-
 def _imported_modules(tree: ast.AST) -> tuple[str, ...]:
     names: list[str] = []
     for node in ast.walk(tree):
@@ -143,7 +127,7 @@ def test_generation_product_lock_schema_mapping_is_current_only() -> None:
 def test_plan_review_rejects_approved() -> None:
     with pytest.raises(ValidationError):
         PlanReview.model_validate(
-            {**valid_plan_review(), "decision": "approved"},
+            {**valid_plan_review(), "route": "approved"},
             context={"capability_leafs": VALID_LEAFS},
         )
 
@@ -161,43 +145,23 @@ def test_plan_review_rejects_prefix_leaf() -> None:
 
 
 @pytest.mark.parametrize(
-    ("decision", "auto_fix_allowed", "human_review_required", "expected"),
+    ("route", "expected"),
     [
-        ("pass", False, False, "pass"),
-        ("needs_fix", True, False, "needs_fix"),
-        ("needs_fix", False, True, "needs_human"),
-        ("needs_human_review", False, True, "needs_human"),
-        ("reject", False, False, "reject"),
+        ("codegen", "pass"),
+        ("auto_fix", "needs_fix"),
+        ("human", "needs_human"),
+        ("reject", "reject"),
     ],
 )
-def test_plan_review_normalizes_public_outcomes(
-    decision: str,
-    auto_fix_allowed: bool,
-    human_review_required: bool,
-    expected: str,
-) -> None:
-    assert public_review_outcome(decision, auto_fix_allowed, human_review_required) == expected
+def test_plan_review_normalizes_public_outcomes(route: str, expected: str) -> None:
+    assert public_review_outcome(route) == expected
     assert expected in PUBLIC_REVIEW_OUTCOMES
 
 
-@pytest.mark.parametrize(
-    ("decision", "auto_fix_allowed", "human_review_required"),
-    [
-        ("pass", True, False),
-        ("needs_fix", True, True),
-        ("needs_fix", False, False),
-        ("needs_human_review", True, True),
-        ("reject", True, False),
-        ("reject", False, True),
-    ],
-)
-def test_plan_review_rejects_contradictory_public_outcomes(
-    decision: str,
-    auto_fix_allowed: bool,
-    human_review_required: bool,
-) -> None:
+@pytest.mark.parametrize("route", ["pass", "needs_fix", "approved"])
+def test_plan_review_rejects_contradictory_public_outcomes(route: str) -> None:
     with pytest.raises(ValueError):
-        public_review_outcome(decision, auto_fix_allowed, human_review_required)
+        public_review_outcome(route)
 
 
 def test_selected_families_reject_empty_duplicate_and_unknown() -> None:
@@ -221,8 +185,8 @@ def test_performance_plan_review_accepts_bounded_automatic_repair() -> None:
     raw = valid_plan_review(required_capabilities=["entities.item.create"])
     raw.update(
         {
-            "review_type": "performance-plan",
-            "decision": "needs_fix",
+            "review_type": "performance-codegen",
+            "route": "auto_fix",
             "findings": [
                 {
                     "id": "PERF-PLAN-001",
@@ -236,18 +200,15 @@ def test_performance_plan_review_accepts_bounded_automatic_repair() -> None:
                     },
                 }
             ],
-            "auto_fix_plan": ["PERF-PLAN-001"],
+            "finding_ids": ["PERF-PLAN-001"],
             "next_action": "repair the bounded seed lookup",
-            "auto_fix_allowed": True,
-            "human_review_required": False,
-            "codegen_readiness": "not_ready",
         }
     )
 
     model = PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": VALID_LEAFS})
 
-    assert model.decision == "needs_fix"
-    assert model.auto_fix_plan == ["PERF-PLAN-001"]
+    assert model.route == "auto_fix"
+    assert model.finding_ids == ["PERF-PLAN-001"]
 
 
 def test_generation_contracts_import_only_intake_contracts() -> None:
@@ -268,24 +229,13 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
                 "qa/results/codegen/api-generated-files.json",
             ),
         ),
-        "api.plan-review": (
-            "aa-api-plan-reviewer",
+        "api.codegen-review": (
+            "aa-api-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/results/review/api-plan-review-summary.md",
-                "qa/results/review/api-plan-review.json",
-            ),
-        ),
-        "api.plan": (
-            "aa-api-plan",
-            "assurance-v1-doc-author",
-            (
-                "qa/results/plans/api-codegen-mapping.json",
-                "qa/results/plans/api-codegen-plan.md",
-                "qa/results/plans/api-plan.md",
-                "qa/results/plans/api-test-data-plan.md",
-                "qa/results/plans/m3-review-summary.md",
+                "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/api-codegen-review-summary.md",
+                "qa/results/review/api-codegen-review.json",
             ),
         ),
         "e2e.codegen": (
@@ -296,24 +246,13 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
                 "qa/results/codegen/e2e-generated-files.json",
             ),
         ),
-        "e2e.plan-review": (
-            "aa-e2e-plan-reviewer",
+        "e2e.codegen-review": (
+            "aa-e2e-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/plan/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/results/review/e2e-plan-review-summary.md",
-                "qa/results/review/e2e-plan-review.json",
-            ),
-        ),
-        "e2e.plan": (
-            "aa-e2e-plan",
-            "assurance-v1-doc-author",
-            (
-                "qa/results/plans/e2e-codegen-mapping.json",
-                "qa/results/plans/e2e-codegen-plan.md",
-                "qa/results/plans/e2e-plan.md",
-                "qa/results/plans/e2e-test-data-plan.md",
-                "qa/results/plans/m4-review-summary.md",
+                "qa/results/codegen/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/e2e-codegen-review-summary.md",
+                "qa/results/review/e2e-codegen-review.json",
             ),
         ),
         "fuzz.codegen": (
@@ -324,23 +263,13 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
                 "qa/results/codegen/fuzz-generated-files.json",
             ),
         ),
-        "fuzz.plan-review": (
-            "aa-fuzz-plan-reviewer",
+        "fuzz.codegen-review": (
+            "aa-fuzz-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/plan/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/results/review/fuzz-plan-review-summary.md",
-                "qa/results/review/fuzz-plan-review.json",
-            ),
-        ),
-        "fuzz.plan": (
-            "aa-fuzz-plan",
-            "assurance-v1-doc-author",
-            (
-                "qa/results/plans/fuzz-codegen-mapping.json",
-                "qa/results/plans/fuzz-codegen-plan.md",
-                "qa/results/plans/fuzz-plan.md",
-                "qa/results/plans/fuzz-review-summary.md",
+                "qa/results/codegen/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/fuzz-codegen-review-summary.md",
+                "qa/results/review/fuzz-codegen-review.json",
             ),
         ),
         "performance.codegen": (
@@ -351,29 +280,19 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
                 "qa/results/codegen/performance-generated-files.json",
             ),
         ),
-        "performance.plan-review": (
-            "aa-performance-plan-reviewer",
+        "performance.codegen-review": (
+            "aa-performance-codegen-reviewer",
             "assurance-v1-reviewer",
             (
-                "qa/results/plan/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
-                "qa/results/review/performance-plan-review-summary.md",
-                "qa/results/review/performance-plan-review.json",
-            ),
-        ),
-        "performance.plan": (
-            "aa-performance-plan",
-            "assurance-v1-doc-author",
-            (
-                "qa/results/plans/performance-codegen-mapping.json",
-                "qa/results/plans/performance-codegen-plan.md",
-                "qa/results/plans/performance-plan.md",
-                "qa/results/plans/performance-review-summary.md",
+                "qa/results/codegen/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/review/performance-codegen-review-summary.md",
+                "qa/results/review/performance-codegen-review.json",
             ),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
     assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
-    assert len(AGENT_JOB_CONTRACTS) == 12
+    assert len(AGENT_JOB_CONTRACTS) == 8
     assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
     assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
     for base, (skill_id, agent_profile, writes) in expected.items():
@@ -392,8 +311,8 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
                 for path in expected_claims
                 if "{coverage_epoch}" not in path and "{review_round}" not in path
             )
-        if stage == "plan-review":
-            expected_claims = tuple(sorted((*expected_claims, f"qa/results/plan/{family}/reviews")))
+        if stage == "codegen-review":
+            expected_claims = tuple(sorted((*expected_claims, f"qa/results/codegen/{family}/reviews")))
         assert contract.resources.writes == expected_claims
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()

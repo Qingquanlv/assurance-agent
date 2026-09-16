@@ -179,7 +179,7 @@ def publish_generation_cycle(
 
 
 def select_plan_review(state: Mapping[str, object]) -> PlanInputV1:
-    return select_plan(state).model_copy(update={"reviewed_plan": state["reviewed_plan"]})
+    return select_plan(state).model_copy(update={"reviewed_plan": state.get("reviewed_plan")})
 
 
 def select_codegen(state: Mapping[str, object]) -> CodegenInputV1:
@@ -189,13 +189,17 @@ def select_codegen(state: Mapping[str, object]) -> CodegenInputV1:
             "plan_digest": state["plan_digest"],
             "plan_ref": state["plan_ref"],
             "capability_leafs": state["capability_leafs"],
-            "reviewed_plan": state["reviewed_plan"],
+            "codegen_output": state.get("codegen_output"),
             "artifact_paths": state.get("allowed_artifact_paths") or (),
             "coverage_epoch": state.get("coverage_epoch", 0),
             "local_round": state.get("rounds_used", 0),
             "reviewed_case": state.get("reviewed_case"),
         }
     )
+
+
+def select_codegen_review(state: Mapping[str, object]) -> CodegenInputV1:
+    return select_codegen(state)
 
 
 def activation_plan(state: Mapping[str, object]) -> BusinessActivation:
@@ -208,6 +212,10 @@ def activation_plan_review(state: Mapping[str, object]) -> BusinessActivation:
 
 def activation_codegen(state: Mapping[str, object]) -> BusinessActivation:
     return _epoch_activation(state, "codegen")
+
+
+def activation_codegen_review(state: Mapping[str, object]) -> BusinessActivation:
+    return _epoch_activation(state, "codegen-review")
 
 
 def _epoch_activation(state: Mapping[str, object], stage: str) -> BusinessActivation:
@@ -237,14 +245,18 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     }
 
 
+def publish_codegen_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
+    return publish_plan_review(state, output, receipt)
+
+
 def publish_plan_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del receipt
     payload = _output_payload(output)
+    raw_ids = payload.get("finding_ids")
+    finding_ids = [str(item) for item in raw_ids] if isinstance(raw_ids, list | tuple) else []
     return {
-        "decision": payload.get("decision", "pass"),
-        "auto_fix_allowed": bool(payload.get("auto_fix_allowed", False)),
-        "human_review_required": bool(payload.get("human_review_required", False)),
-        "codegen_readiness": payload.get("codegen_readiness", "ready"),
+        "route": payload.get("route", "codegen"),
+        "finding_ids": finding_ids,
         "artifacts": payload.get("artifacts") or [],
         "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
         "rounds_budget": _published_int(payload, "rounds_budget", state.get("rounds_budget", 3)),
@@ -253,9 +265,20 @@ def publish_plan_review(state: Mapping[str, object], output: object, receipt: ob
 
 def publish_codegen(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del state
+    payload = _output_payload(output)
+    family = payload.get("layer")
+    plan_files = (
+        [
+            f"qa/results/codegen/{family}-codegen-summary.md",
+            f"qa/results/codegen/{family}-generated-files.json",
+        ]
+        if isinstance(family, str) and family
+        else []
+    )
     return {
-        "codegen_output": _output_payload(output),
+        "codegen_output": payload,
         "codegen_receipt": ReceiptRef.model_validate(receipt).model_dump(mode="json"),
+        "plan_files": plan_files,
     }
 
 
@@ -322,13 +345,13 @@ def advance_review_round_node(state: Mapping[str, object]) -> dict[str, object]:
 
 
 def review_round_advance(state: Mapping[str, object]) -> dict[str, object]:
-    advanced = advance_review_round_node({**dict(state), "review_stage": "plan"})
-    return {**advanced, **offer_advance({**dict(state), **advanced}, "plan-review-round-advance")}
+    advanced = advance_review_round_node({**dict(state), "review_stage": "codegen"})
+    return {**advanced, **offer_advance({**dict(state), **advanced}, "codegen-review-round-advance")}
 
 
 def review_round_advance_retry(state: Mapping[str, object]) -> dict[str, object]:
-    advanced = advance_review_round_node({**dict(state), "review_stage": "plan"})
-    return {**advanced, **offer_advance({**dict(state), **advanced}, "plan-review-round-advance-retry")}
+    advanced = advance_review_round_node({**dict(state), "review_stage": "codegen"})
+    return {**advanced, **offer_advance({**dict(state), **advanced}, "codegen-review-round-advance-retry")}
 
 
 def plan_round_join(state: Mapping[str, object]) -> dict[str, object]:
@@ -463,9 +486,9 @@ def _interrupt_payload(state: Mapping[str, object], *, retry: bool) -> dict[str,
     family = str(state.get("family") or "api")
     suffix = "-retry" if retry else ""
     return {
-        "reason": f"{family}_plan_needs_human_review",
+        "reason": f"{family}_codegen_needs_human_review",
         "actions": list(HUMAN_REVIEW_ACTIONS),
-        "interrupt_id": f"{family}-plan-human-review{suffix}",
+        "interrupt_id": f"{family}-codegen-human-review{suffix}",
         "ordinal": 1 if retry else 0,
         "rounds_used": state.get("rounds_used", 0),
         "rounds_budget": state.get("rounds_budget", 3),
@@ -488,6 +511,7 @@ __all__ = [
     "HUMAN_REVIEW_ACTIONS",
     "HumanReviewDecision",
     "activation_codegen",
+    "activation_codegen_review",
     "activation_generation_inputs",
     "activation_generation_cycle",
     "activation_init_runtime",
@@ -503,6 +527,7 @@ __all__ = [
     "join_selected",
     "plan_round_join",
     "publish_codegen",
+    "publish_codegen_review",
     "publish_generation_inputs",
     "publish_generation_cycle",
     "publish_init_runtime",
@@ -512,6 +537,7 @@ __all__ = [
     "review_round_advance_retry",
     "route_generation_completion",
     "select_codegen",
+    "select_codegen_review",
     "select_generation_inputs",
     "select_generation_cycle",
     "select_init_runtime",

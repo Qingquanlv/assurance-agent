@@ -24,17 +24,13 @@ EXPECTED_AGENT_PROFILES = {
     "assurance.intake.agent.explore.v1": "assurance-v1-explorer",
     "assurance.intake.agent.intake.v1": "assurance-v1-doc-author",
     "assurance.generation.agent.api.codegen.v1": "assurance-v1-test-author",
-    "assurance.generation.agent.api.plan-review.v1": "assurance-v1-reviewer",
-    "assurance.generation.agent.api.plan.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.api.codegen-review.v1": "assurance-v1-reviewer",
     "assurance.generation.agent.e2e.codegen.v1": "assurance-v1-test-author",
-    "assurance.generation.agent.e2e.plan-review.v1": "assurance-v1-reviewer",
-    "assurance.generation.agent.e2e.plan.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.e2e.codegen-review.v1": "assurance-v1-reviewer",
     "assurance.generation.agent.fuzz.codegen.v1": "assurance-v1-test-author",
-    "assurance.generation.agent.fuzz.plan-review.v1": "assurance-v1-reviewer",
-    "assurance.generation.agent.fuzz.plan.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.fuzz.codegen-review.v1": "assurance-v1-reviewer",
     "assurance.generation.agent.performance.codegen.v1": "assurance-v1-test-author",
-    "assurance.generation.agent.performance.plan-review.v1": "assurance-v1-reviewer",
-    "assurance.generation.agent.performance.plan.v1": "assurance-v1-doc-author",
+    "assurance.generation.agent.performance.codegen-review.v1": "assurance-v1-reviewer",
     "assurance.execution.agent.execute.v1": "assurance-v1-executor",
     "assurance.execution.agent.run.v1": "assurance-v1-executor",
     "assurance.healing.agent.coverage-repair.v1": "assurance-v1-test-author",
@@ -398,8 +394,8 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     from assurance_product.models import all_binding_ids
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
-    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 32
-    assert len(all_feature_agent_contracts()) == 32
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 28
+    assert len(all_feature_agent_contracts()) == 28
     assert set(all_feature_agent_contracts()) == set(all_binding_ids())
     assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
@@ -482,8 +478,8 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
         family, _, job = rest.rpartition(".")
         if feature == "generation" and job == "codegen":
             extra = (*extra, "qa/tests")
-        if feature == "generation" and job == "plan-review":
-            extra = (*extra, f"qa/results/plan/{family}/reviews")
+        if feature == "generation" and job == "codegen-review":
+            extra = (*extra, f"qa/results/codegen/{family}/reviews")
         if contract_id == "assurance.healing.agent.apply-test-repair.v1":
             extra = (*extra, "qa/results/healing/epochs")
         if feature == "execution":

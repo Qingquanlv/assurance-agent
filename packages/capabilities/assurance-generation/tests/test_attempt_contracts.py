@@ -10,7 +10,7 @@ from graph_engine import ENGINE_API_VERSION, RegistryPorts
 from graph_engine.plugin_api import AttemptContractRef, TaskContext
 
 from agent_runtime_contracts import AgentExecutionContract
-from assurance_generation.contracts.agent import CodegenInputV1, PlanInputV1
+from assurance_generation.contracts.agent import CodegenInputV1
 from assurance_generation.contracts.attempts import (
     AGENT_JOB_CONTRACTS,
     TASK_ATTEMPT_CONTRACTS,
@@ -26,7 +26,6 @@ from assurance_generation.contracts.decisions import (
     advance_review_round,
     complete_generation,
 )
-from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
 from assurance_generation.operations.workflow_state import (
     GenerationCompleteHandler,
@@ -44,15 +43,15 @@ _CODEGEN_PROFILE = "assurance-v1-test-author"
 def test_generation_round_history_routes_include_epoch_and_local_round() -> None:
     from assurance_generation.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
 
-    plan_pattern = "qa/results/plan/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
-    assert plan_pattern in OUTPUT_ROUTE_TEMPLATES["api.plan-review"]
+    plan_pattern = "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    assert plan_pattern in OUTPUT_ROUTE_TEMPLATES["api.codegen-review"]
     assert plan_pattern.format(coverage_epoch=0, review_round=0) != plan_pattern.format(
         coverage_epoch=1, review_round=0
     )
 
 
 def test_generation_owns_twelve_agent_contracts_and_two_tasks() -> None:
-    assert len(AGENT_JOB_CONTRACTS) == 12
+    assert len(AGENT_JOB_CONTRACTS) == 8
     assert tuple(TASK_ATTEMPT_CONTRACTS) == (
         "resolve-inputs",
         "publish-cycle",
@@ -78,17 +77,13 @@ def test_generation_owns_twelve_agent_contracts_and_two_tasks() -> None:
 def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:
     expected_bases = (
         "api.codegen",
-        "api.plan-review",
-        "api.plan",
+        "api.codegen-review",
         "e2e.codegen",
-        "e2e.plan-review",
-        "e2e.plan",
+        "e2e.codegen-review",
         "fuzz.codegen",
-        "fuzz.plan-review",
-        "fuzz.plan",
+        "fuzz.codegen-review",
         "performance.codegen",
-        "performance.plan-review",
-        "performance.plan",
+        "performance.codegen-review",
     )
     assert tuple(sorted(AGENT_JOB_CONTRACTS)) == tuple(sorted(expected_bases))
     for base, contract in AGENT_JOB_CONTRACTS.items():
@@ -96,18 +91,12 @@ def test_generation_agent_catalog_preserves_semantic_ids_and_models() -> None:
         assert contract.contract_id == f"assurance.generation.agent.{base}.v1"
         assert contract.prepare_handler_id == f"assurance.generation.{base}.prepare"
         assert contract.finalize_handler_id == f"assurance.generation.{base}.finalize"
-        if stage == "plan":
-            assert contract.input_model is PlanInputV1
-            assert contract.agent_result_model is PlanResultV1
-            assert contract.output_model is PlanResultV1
-            assert contract.agent_profile == _PLAN_PROFILE
-            assert contract.skill_id == f"aa-{family}-plan"
-        elif stage == "plan-review":
-            assert contract.input_model is PlanInputV1
+        if stage == "codegen-review":
+            assert contract.input_model is CodegenInputV1
             assert contract.agent_result_model is PlanReviewAuthoring
             assert contract.output_model is PlanReview
             assert contract.agent_profile == _PLAN_REVIEW_PROFILE
-            assert contract.skill_id == f"aa-{family}-plan-reviewer"
+            assert contract.skill_id == f"aa-{family}-codegen-reviewer"
         elif stage == "codegen":
             assert contract.input_model is CodegenInputV1
             assert contract.agent_result_model is CodegenAuthoringV1
@@ -123,7 +112,7 @@ def test_generation_plugin_projects_authenticated_attempt_contracts() -> None:
     contribution = GenerationPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
     assert refs == contribution.attempt_contracts == GenerationPlugin.descriptor().attempt_contracts
     assert all(isinstance(item, AttemptContractRef) for item in refs)
-    assert len(contribution.commit_validators) == 7
+    assert len(contribution.commit_validators) == 2
     assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
 
 
@@ -164,7 +153,7 @@ def test_complete_generation_rejects_invalid_inputs(payload: dict[str, object]) 
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
-@pytest.mark.parametrize("stage", ("plan",))
+@pytest.mark.parametrize("stage", ("codegen",))
 async def test_advance_generation_review_round_matches_legacy_handler(family: str, stage: str) -> None:
     payload = {"family": family, "stage": stage, "rounds_used": 0, "rounds_budget": 2}
     spy = MagicMock(spec=TaskContext)
@@ -182,10 +171,10 @@ async def test_advance_generation_review_round_matches_legacy_handler(family: st
 @pytest.mark.parametrize(
     "payload",
     [
-        {"family": "api", "stage": "plan", "rounds_used": 2, "rounds_budget": 2},
-        {"family": "unknown", "stage": "plan", "rounds_used": 0, "rounds_budget": 2},
+        {"family": "api", "stage": "codegen", "rounds_used": 2, "rounds_budget": 2},
+        {"family": "unknown", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2},
         {"family": "api", "stage": "review", "rounds_used": 0, "rounds_budget": 2},
-        {"family": "api", "stage": "plan", "rounds_used": 0, "rounds_budget": 2, "extra": True},
+        {"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2, "extra": True},
     ],
 )
 def test_advance_generation_review_round_rejects_invalid_inputs(payload: dict[str, object]) -> None:

@@ -41,10 +41,10 @@ def candidate_with(*paths: str) -> CandidateWriteSet:
 
 def validation_context() -> ValidationContext:
     return ValidationContext(
-        invocation_id="phase4-test",
-        task_id="phase4-task",
-        graph_instance_id="phase4-graph",
-        node_id="phase4-node",
+        invocation_id="capabilities-test",
+        task_id="capabilities-task",
+        graph_instance_id="capabilities-graph",
+        node_id="capabilities-node",
         resources=ResourceClaims(),
     )
 
@@ -203,14 +203,14 @@ def test_plan_mechanical_rejects_family_discriminator_mismatch() -> None:
     assert "family" in result.reason
 
 
-def test_plugin_contributed_plan_validators_allowlist_registered_paths() -> None:
+def test_plugin_contributed_codegen_validators_allowlist_registered_paths() -> None:
     contribution = GenerationPlugin.contribute(RegistryPorts(engine_api=ENGINE_API_VERSION))
-    validator = contribution.commit_validators["assurance.generation.validator.api-plan.v1"]
-    mechanical = contribution.commit_validators["assurance.generation.validator.plan-mechanical.v1"]
+    generated = contribution.commit_validators["assurance.generation.validator.generated-files.v1"]
+    mapping = contribution.commit_validators["assurance.generation.validator.codegen-mapping.v1"]
     context = validation_context()
-    allowed = candidate_with("qa/results/plans/api-plan.md")
-    assert validator.validate(allowed, context) == ValidationResult(accepted=True)
-    assert mechanical.validate(allowed, context) == ValidationResult(accepted=True)
-    rejected = validator.validate(candidate_with("src/app.py"), context)
+    allowed = candidate_with("qa/tests/api/test_users.py")
+    assert generated.validate(allowed, context).accepted is True
+    assert mapping.validate(allowed, context).accepted is True
+    rejected = generated.validate(candidate_with("src/app.py"), context)
     assert rejected.accepted is False
-    assert mechanical.validate(candidate_with("../secret.md"), context).accepted is False
+    assert mapping.validate(candidate_with("../secret.md"), context).accepted is False

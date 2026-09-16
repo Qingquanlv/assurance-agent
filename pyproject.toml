@@ -41,7 +41,7 @@ pythonpath = ["."]
 addopts = ["--import-mode=importlib"]
 markers = [
     "asyncio: async test executed by the local tests/agent_runtime hook",
-    "phase4: Phase 4 capability-extraction ownership and composition tests",
+    "capabilities: capability ownership and six-wheel composition tests",
 ]
 
 [tool.ruff]

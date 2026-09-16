@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
@@ -9,7 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from assurance_generation.contracts.agent import under_write_root
 from assurance_generation.contracts.families import LayerName
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
-from assurance_generation.contracts.plans import canonical_relative_path
+from assurance_generation.contracts.plans import (
+    FuzzStrategyV1,
+    PerformanceScenarioV1,
+    PlanCoverageRow,
+    canonical_relative_path,
+)
 from assurance_intake.contracts import NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
@@ -18,12 +24,33 @@ CodegenLayer = LayerName
 CodegenDisposition = Literal["generated", "updated", "reused"]
 CodegenFileRole = Literal["test_entry", "support", "shared_builder"]
 
-FAMILY_TARGET_ROOTS: dict[LayerName, tuple[str, ...]] = {
-    "api": ("qa/tests/api/", "qa/tests/testdata/"),
-    "e2e": ("qa/tests/e2e/", "qa/tests/testdata/"),
-    "fuzz": ("qa/tests/fuzz/", "qa/tests/testdata/"),
-    "performance": ("qa/tests/perf/", "qa/tests/testdata/"),
+FAMILY_DIRS: dict[LayerName, str] = {
+    "api": "api",
+    "e2e": "e2e",
+    "fuzz": "fuzz",
+    "performance": "perf",
 }
+
+FAMILY_TARGET_ROOTS: dict[LayerName, tuple[str, ...]] = {
+    family: (f"qa/tests/{directory}/", f"qa/tests/testdata/{directory}/")
+    for family, directory in FAMILY_DIRS.items()
+}
+
+
+def case_module_from_path(path: str) -> str:
+    parts = PurePosixPath(path).parts
+    if len(parts) < 4 or parts[:2] != ("qa", "cases") or parts[-1] != "case.yaml":
+        raise ValueError("case path must be qa/cases/<module>/case.yaml")
+    return "/".join(parts[2:-1])
+
+
+def locked_test_file(family: LayerName, module: str) -> str:
+    leaf = PurePosixPath(module).name
+    return f"qa/tests/{FAMILY_DIRS[family]}/{module}/test_{leaf}.py"
+
+
+def locked_testdata_file(family: LayerName, module: str) -> str:
+    return f"qa/tests/testdata/{FAMILY_DIRS[family]}/{module}.py"
 
 
 def durable_test_path(target_path: str) -> str:
@@ -35,6 +62,97 @@ def durable_test_path(target_path: str) -> str:
 
 def family_allows_target(family: LayerName, target_path: str) -> bool:
     return under_write_root(target_path, FAMILY_TARGET_ROOTS[family])
+
+
+class LockedModuleV1(BaseModel):
+    model_config = _FROZEN
+
+    module: NonEmptyStr
+    case_ids: tuple[NonEmptyStr, ...]
+    test_file: NonEmptyStr
+    testdata_file: NonEmptyStr
+
+
+class CodegenScopeV1(BaseModel):
+    """Host-built closed set of cases, capabilities, and write roots for codegen."""
+
+    model_config = _FROZEN
+
+    schema_version: Literal["1"]
+    family: LayerName
+    change_id: NonEmptyStr
+    case_ids: tuple[NonEmptyStr, ...]
+    required_capabilities: tuple[NonEmptyStr, ...]
+    coverage: tuple[PlanCoverageRow, ...]
+    write_roots: tuple[NonEmptyStr, ...]
+    locked_modules: tuple[LockedModuleV1, ...]
+    locked_outputs: tuple[NonEmptyStr, ...]
+    fuzz_strategy: FuzzStrategyV1 | None = None
+    performance_scenarios: tuple[PerformanceScenarioV1, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_scope(self, info: ValidationInfo) -> Self:
+        context = info.context or {}
+        leafs = context.get("capability_leafs")
+        if not isinstance(leafs, frozenset) or any(not isinstance(item, str) for item in leafs):
+            raise ValueError("capability_leafs context must be a frozenset of declared typed leaves")
+        ids = tuple(sorted(set(self.case_ids)))
+        if self.case_ids != ids:
+            raise ValueError("case_ids must be sorted and unique")
+        if not self.case_ids:
+            raise ValueError("codegen scope requires at least one reviewed case")
+        if not self.coverage:
+            raise ValueError("codegen scope must include operation and risk partitions")
+        covered = tuple(row.case_id for row in self.coverage)
+        if covered != self.case_ids:
+            raise ValueError("coverage must include every case_id exactly once in case_ids order")
+        if self.write_roots != FAMILY_TARGET_ROOTS[self.family]:
+            raise ValueError("write_roots must match the family target roots")
+        for key in self.required_capabilities:
+            if key not in leafs:
+                raise ValueError(f"unknown capability leaf: {key}")
+        for row in self.coverage:
+            for key in row.required_capabilities:
+                if key not in leafs:
+                    raise ValueError(f"unknown capability leaf: {key}")
+        if self.family == "fuzz":
+            if self.fuzz_strategy is None:
+                raise ValueError("fuzz scope requires endpoint/property strategy")
+        elif self.fuzz_strategy is not None:
+            raise ValueError("fuzz_strategy is only valid for fuzz scopes")
+        if self.family == "performance":
+            if not self.performance_scenarios:
+                raise ValueError("performance scope requires scenario identity and numeric thresholds")
+            scenario_ids = [scenario.scenario_id for scenario in self.performance_scenarios]
+            if len(scenario_ids) != len(set(scenario_ids)):
+                raise ValueError("performance scenario_id values must be unique")
+            for scenario in self.performance_scenarios:
+                if scenario.capability not in leafs:
+                    raise ValueError(f"unknown capability leaf: {scenario.capability}")
+        elif self.performance_scenarios:
+            raise ValueError("performance_scenarios is only valid for performance scopes")
+        covered_lock = tuple(sorted(case_id for row in self.locked_modules for case_id in row.case_ids))
+        if covered_lock != self.case_ids:
+            raise ValueError("locked_modules case_ids must match scope.case_ids exactly once")
+        generated = []
+        for row in self.locked_modules:
+            if row.test_file != locked_test_file(self.family, row.module):
+                raise ValueError(f"locked test_file does not match host rule: {row.test_file}")
+            if row.testdata_file != locked_testdata_file(self.family, row.module):
+                raise ValueError(f"locked testdata_file does not match host rule: {row.testdata_file}")
+            generated.extend((row.test_file, row.testdata_file))
+        expected_outputs = tuple(
+            sorted(
+                (
+                    *generated,
+                    f"qa/results/codegen/{self.family}-codegen-summary.md",
+                    f"qa/results/codegen/{self.family}-generated-files.json",
+                )
+            )
+        )
+        if self.locked_outputs != expected_outputs:
+            raise ValueError("locked_outputs must be the sorted generated files plus codegen sidecars")
+        return self
 
 
 def _safe_project_relative_path(value: str) -> str:

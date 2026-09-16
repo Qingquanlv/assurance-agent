@@ -8,6 +8,7 @@ from assurance_generation.contracts.codegen import (
     CodegenMapping,
     CodegenMappingEntry,
     CodegenResultV1,
+    CodegenScopeV1,
 )
 from assurance_generation.contracts.discovery import CampaignResult, CampaignSpec, Counterexample
 from assurance_generation.contracts.families import (
@@ -58,6 +59,7 @@ __all__ = [
     "CodegenMapping",
     "CodegenMappingEntry",
     "CodegenResultV1",
+    "CodegenScopeV1",
     "Counterexample",
     "E2eGeneratedFilesV1",
     "Finding",

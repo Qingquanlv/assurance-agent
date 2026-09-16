@@ -96,9 +96,9 @@ def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
     assert "AssuranceAttemptKernel" not in encoded
     assert "secret" not in encoded.lower() or "secret_handles" in encoded
     assert "/Users/" not in json.dumps(artifacts.graph_manifest.model_dump(mode="json"))
-    assert len(raw_agent_runtime_binding_rows(opencode_composition)) == 32
-    assert count_semantic_agent_contracts() == 32
-    assert count_raw_agent_runtime_bindings() == 32
+    assert len(raw_agent_runtime_binding_rows(opencode_composition)) == 28
+    assert count_semantic_agent_contracts() == 28
+    assert count_raw_agent_runtime_bindings() == 28
 
     tree = copy_config_tree(tmp_path / "org-config")
     policy = tree.path / ".aa" / "policy.yaml"

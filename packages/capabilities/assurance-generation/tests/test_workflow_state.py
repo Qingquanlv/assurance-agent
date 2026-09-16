@@ -10,7 +10,7 @@ from graph_engine.plugin_api import TaskOutcome
 from tests.product.test_change_local_output_routing import execute_task
 
 _FAMILIES = ("api", "e2e", "fuzz", "performance")
-_STAGES = ("plan",)
+_STAGES = ("codegen",)
 _ADVANCE_ID = "assurance.generation.review-round.advance"
 _COMPLETE_ID = "assurance.generation.complete"
 
@@ -120,14 +120,14 @@ async def test_review_round_advance_increments_once_and_preserves_family_stage_b
 @pytest.mark.parametrize(
     "payload",
     [
-        {"family": "api", "stage": "plan", "rounds_used": 2, "rounds_budget": 2},
-        {"family": "api", "stage": "plan", "rounds_used": -1, "rounds_budget": 2},
-        {"family": "api", "stage": "plan", "rounds_used": 0, "rounds_budget": 0},
-        {"family": "api", "stage": "plan", "rounds_used": 3, "rounds_budget": 2},
-        {"family": "api", "stage": "plan", "rounds_used": 1},
-        {"family": "unknown", "stage": "plan", "rounds_used": 0, "rounds_budget": 2},
+        {"family": "api", "stage": "codegen", "rounds_used": 2, "rounds_budget": 2},
+        {"family": "api", "stage": "codegen", "rounds_used": -1, "rounds_budget": 2},
+        {"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 0},
+        {"family": "api", "stage": "codegen", "rounds_used": 3, "rounds_budget": 2},
+        {"family": "api", "stage": "codegen", "rounds_used": 1},
+        {"family": "unknown", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2},
         {"family": "api", "stage": "fix", "rounds_used": 0, "rounds_budget": 2},
-        {"family": "api", "stage": "plan", "rounds_used": 0, "rounds_budget": 2, "extra": True},
+        {"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2, "extra": True},
     ],
 )
 async def test_review_round_advance_rejects_invalid_counters_without_output(
@@ -137,7 +137,7 @@ async def test_review_round_advance_rejects_invalid_counters_without_output(
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
     assert outcome.output is None
 
 

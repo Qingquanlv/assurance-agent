@@ -674,6 +674,8 @@ def test_production_host_rejects_forged_terminal_receipt(tmp_path: Path) -> None
         outcome_digest=canonical_digest(outcome.model_dump(mode="json")),
         quiescence_proof_digest=prove_call_quiescent(),
         host_call_id=sink.host_call_id,
+        started_at="2026-09-16T03:00:00+00:00",
+        completed_at="2026-09-16T03:00:01+00:00",
     )
     with pytest.raises(TerminalReceiptError, match="foreign terminal receipt"):
         sink.install(receipt)
@@ -745,6 +747,8 @@ def test_production_host_reconcile_from_installed_receipt(tmp_path: Path) -> Non
             terminal_proof_digest=None,
             quiescence_proof_digest=prove_call_quiescent(),
             host_call_id=sink.host_call_id,
+            started_at="2026-09-16T03:00:00+00:00",
+            completed_at="2026-09-16T03:00:01+00:00",
         )
     )
     result = asyncio.run(host.reconcile(reconcile))
@@ -1324,6 +1328,8 @@ def test_production_host_crash_after_receipt_leaves_durable_receipt(tmp_path: Pa
             terminal_proof_digest=None,
             quiescence_proof_digest=prove_call_quiescent(),
             host_call_id=sink.host_call_id,
+            started_at="2026-09-16T03:00:00+00:00",
+            completed_at="2026-09-16T03:00:01+00:00",
         )
     )
     result = asyncio.run(host.reconcile(reconcile))

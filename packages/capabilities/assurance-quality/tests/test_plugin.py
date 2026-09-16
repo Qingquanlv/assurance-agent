@@ -13,7 +13,7 @@ from graph_engine.plugin_api import PluginDependency, PluginDescriptor, Provider
 from assurance_quality.operations import quality_handlers
 from assurance_quality.plugin import QUALITY_SOURCE, QualityPlugin
 from assurance_quality.resource_loader import resource_bytes
-from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
+from tests.capabilities.conformance import PluginExpectation, assert_plugin_conforms
 
 
 def test_quality_descriptor_declares_exact_dependency_versions() -> None:

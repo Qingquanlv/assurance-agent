@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -190,6 +191,12 @@ async def test_host_activity_rpc_uses_attempt_journal(production_host_fixture: P
     assert snapshot is not None
     assert snapshot.activity_state == "bound"
     assert not production_host_fixture.legacy_ledger_path.exists()
+    found = production_host_fixture.host.read_terminal_receipts(production_host_fixture.call.identity)
+    assert found
+    started = datetime.fromisoformat(found[0].started_at)
+    completed = datetime.fromisoformat(found[0].completed_at)
+    assert started.tzinfo is not None
+    assert completed >= started
 
 
 def test_host_persist_phase_delta_installs_receipt(
@@ -253,6 +260,11 @@ def test_host_persist_phase_delta_installs_receipt(
     assert found
     assert found[0].staged_write_set_digest == canonical_digest({"paths": ["qa/runtime.txt"]})
     assert ref.receipt_digest == canonical_digest(found[0].model_dump(mode="json"))
+    started = datetime.fromisoformat(found[0].started_at)
+    completed = datetime.fromisoformat(found[0].completed_at)
+    assert started.tzinfo is not None
+    assert completed.tzinfo is not None
+    assert completed >= started
 
 
 def test_production_host_rejects_windows(monkeypatch: pytest.MonkeyPatch) -> None:

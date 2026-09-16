@@ -10,12 +10,11 @@ from graph_engine.attempts import AttemptRetryPolicy, AttemptTimeoutPolicy, Task
 from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import AttemptContractRef, ResourceClaims, ResourceClaimTemplate
 
-from assurance_generation.contracts.agent import CodegenInputV1, PlanInputV1
+from assurance_generation.contracts.agent import CodegenInputV1
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
     CodegenResultV1,
 )
-from assurance_generation.contracts.plans import PlanResultV1
 from assurance_generation.contracts.reviews import PlanReview, PlanReviewAuthoring
 from assurance_generation.contracts.init_runtime import InitTestRuntimeInputV1, InitTestRuntimeResultV1
 from assurance_generation.contracts.workflow import (
@@ -25,43 +24,11 @@ from assurance_generation.contracts.workflow import (
 )
 from assurance_intake.contracts.workflow import ReviewedCaseV1
 
-_DOC_AUTHOR = "assurance-v1-doc-author"
 _REVIEWER = "assurance-v1-reviewer"
 _TEST_AUTHOR = "assurance-v1-test-author"
 _AGENT_RETRY = AttemptRetryPolicy(max_attempts=10, interval_seconds=10)
 _TASK_RETRY = AttemptRetryPolicy(max_attempts=1)
 _TIMEOUT = AttemptTimeoutPolicy(seconds=60)
-
-_PLAN_FILES: Mapping[str, tuple[str, ...]] = MappingProxyType(
-    {
-        "api": (
-            "plans/api-plan.md",
-            "plans/api-test-data-plan.md",
-            "plans/api-codegen-plan.md",
-            "plans/api-codegen-mapping.json",
-            "plans/m3-review-summary.md",
-        ),
-        "e2e": (
-            "plans/e2e-plan.md",
-            "plans/e2e-test-data-plan.md",
-            "plans/e2e-codegen-plan.md",
-            "plans/e2e-codegen-mapping.json",
-            "plans/m4-review-summary.md",
-        ),
-        "fuzz": (
-            "plans/fuzz-plan.md",
-            "plans/fuzz-codegen-plan.md",
-            "plans/fuzz-codegen-mapping.json",
-            "plans/fuzz-review-summary.md",
-        ),
-        "performance": (
-            "plans/performance-plan.md",
-            "plans/performance-codegen-plan.md",
-            "plans/performance-codegen-mapping.json",
-            "plans/performance-review-summary.md",
-        ),
-    }
-)
 
 
 def _paths(*suffixes: str) -> tuple[str, ...]:
@@ -72,7 +39,7 @@ _GENERATED_TESTS_ROOT = "qa/tests"
 
 
 def _review_outputs(family: str) -> tuple[str, ...]:
-    return (f"review/{family}-plan-review.json", f"review/{family}-plan-review-summary.md")
+    return (f"review/{family}-codegen-review.json", f"review/{family}-codegen-review-summary.md")
 
 
 def _codegen_outputs(family: str) -> tuple[str, ...]:
@@ -93,8 +60,8 @@ def _job(
 ) -> AgentExecutionContract[Any, Any, Any]:
     family, _, stage = base.partition(".")
     finalize_suffixes: tuple[str, ...] = ()
-    if stage == "plan-review":
-        finalize_suffixes = (f"plan/{family}/reviews",)
+    if stage == "codegen-review":
+        finalize_suffixes = (f"codegen/{family}/reviews",)
     runtime_writes = _paths(*outputs)
     if stage == "codegen":
         runtime_writes = tuple(sorted((*runtime_writes, _GENERATED_TESTS_ROOT)))
@@ -137,22 +104,13 @@ _JOBS: tuple[
         _codegen_outputs("api"),
     ),
     (
-        "api.plan-review",
-        "aa-api-plan-reviewer",
+        "api.codegen-review",
+        "aa-api-codegen-reviewer",
         _REVIEWER,
-        PlanInputV1,
+        CodegenInputV1,
         PlanReviewAuthoring,
         PlanReview,
         _review_outputs("api"),
-    ),
-    (
-        "api.plan",
-        "aa-api-plan",
-        _DOC_AUTHOR,
-        PlanInputV1,
-        PlanResultV1,
-        PlanResultV1,
-        _PLAN_FILES["api"],
     ),
     (
         "e2e.codegen",
@@ -164,22 +122,13 @@ _JOBS: tuple[
         _codegen_outputs("e2e"),
     ),
     (
-        "e2e.plan-review",
-        "aa-e2e-plan-reviewer",
+        "e2e.codegen-review",
+        "aa-e2e-codegen-reviewer",
         _REVIEWER,
-        PlanInputV1,
+        CodegenInputV1,
         PlanReviewAuthoring,
         PlanReview,
         _review_outputs("e2e"),
-    ),
-    (
-        "e2e.plan",
-        "aa-e2e-plan",
-        _DOC_AUTHOR,
-        PlanInputV1,
-        PlanResultV1,
-        PlanResultV1,
-        _PLAN_FILES["e2e"],
     ),
     (
         "fuzz.codegen",
@@ -191,22 +140,13 @@ _JOBS: tuple[
         _codegen_outputs("fuzz"),
     ),
     (
-        "fuzz.plan-review",
-        "aa-fuzz-plan-reviewer",
+        "fuzz.codegen-review",
+        "aa-fuzz-codegen-reviewer",
         _REVIEWER,
-        PlanInputV1,
+        CodegenInputV1,
         PlanReviewAuthoring,
         PlanReview,
         _review_outputs("fuzz"),
-    ),
-    (
-        "fuzz.plan",
-        "aa-fuzz-plan",
-        _DOC_AUTHOR,
-        PlanInputV1,
-        PlanResultV1,
-        PlanResultV1,
-        _PLAN_FILES["fuzz"],
     ),
     (
         "performance.codegen",
@@ -218,22 +158,13 @@ _JOBS: tuple[
         _codegen_outputs("performance"),
     ),
     (
-        "performance.plan-review",
-        "aa-performance-plan-reviewer",
+        "performance.codegen-review",
+        "aa-performance-codegen-reviewer",
         _REVIEWER,
-        PlanInputV1,
+        CodegenInputV1,
         PlanReviewAuthoring,
         PlanReview,
         _review_outputs("performance"),
-    ),
-    (
-        "performance.plan",
-        "aa-performance-plan",
-        _DOC_AUTHOR,
-        PlanInputV1,
-        PlanResultV1,
-        PlanResultV1,
-        _PLAN_FILES["performance"],
     ),
 )
 
@@ -252,11 +183,11 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                     *(
                         (
                             qa_join(
-                                f"plan/{base.partition('.')[0]}/reviews/"
+                                f"codegen/{base.partition('.')[0]}/reviews/"
                                 "epochs/{coverage_epoch}/rounds/{review_round}.json"
                             ),
                         )
-                        if base.partition(".")[2] == "plan-review"
+                        if base.partition(".")[2] == "codegen-review"
                         else ()
                     ),
                 )

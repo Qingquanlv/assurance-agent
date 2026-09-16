@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 from graph_engine.canonical import JSONValue
 
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from pydantic import ValidationError
 

@@ -17,7 +17,7 @@ import yaml
 
 
 @dataclass(frozen=True, slots=True)
-class Phase5FaultEvidence:
+class AssemblyFaultEvidence:
     evidence_kind: Literal["direct", "superseded", "gap"]
     node_id: str | None = None
     reason: str | None = None
@@ -25,7 +25,7 @@ class Phase5FaultEvidence:
 
 
 @dataclass(frozen=True, slots=True)
-class Phase5FaultCoverageState:
+class AssemblyFaultCoverageState:
     local_gate_disposition: Literal["run"]
     release_complete: bool
     direct_count: int
@@ -36,9 +36,7 @@ class Phase5FaultCoverageState:
     detail: str
 
 
-EVIDENCE_ROOT = Path(__file__).resolve().parents[2] / (
-    ".superpowers/sdd/2026-08-22-pure-graph-engine-phase5-assurance-product-assembly"
-)
+EVIDENCE_ROOT = Path(__file__).resolve().parent / "fixtures" / "assembly"
 
 HISTORICAL_PREPARE_IDS = (
     "assurance.intake.case-design.prepare",
@@ -46,17 +44,13 @@ HISTORICAL_PREPARE_IDS = (
     "assurance.intake.explore.prepare",
     "assurance.intake.intake.prepare",
     "assurance.generation.api.codegen.prepare",
-    "assurance.generation.api.plan-review.prepare",
-    "assurance.generation.api.plan.prepare",
+    "assurance.generation.api.codegen-review.prepare",
     "assurance.generation.e2e.codegen.prepare",
-    "assurance.generation.e2e.plan-review.prepare",
-    "assurance.generation.e2e.plan.prepare",
+    "assurance.generation.e2e.codegen-review.prepare",
     "assurance.generation.fuzz.codegen.prepare",
-    "assurance.generation.fuzz.plan-review.prepare",
-    "assurance.generation.fuzz.plan.prepare",
+    "assurance.generation.fuzz.codegen-review.prepare",
     "assurance.generation.performance.codegen.prepare",
-    "assurance.generation.performance.plan-review.prepare",
-    "assurance.generation.performance.plan.prepare",
+    "assurance.generation.performance.codegen-review.prepare",
     "assurance.execution.execute.prepare",
     "assurance.execution.run.prepare",
     "assurance.healing.coverage-repair.prepare",
@@ -137,7 +131,7 @@ EXPECTED_25_CASE_IDS = (
     "replay-after-provider-state-removal",
 )
 
-PHASE5_FAULT_IDS = (
+ASSEMBLY_FAULT_IDS = (
     "deployment-route-invalid",
     "deployment-route-unknown",
     "deployment-route-missing",
@@ -219,18 +213,18 @@ SECURITY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/product/test_composition_authority.py::test_forged_deployment_declaration_fails_closed",
             "tests/product/test_composition_authority.py::test_mutated_config_tree_changes_lock",
             "tests/product/test_product_input.py::test_product_input_authenticates_resource_refs_against_composition",
-            "tests/phase4/test_six_wheel_composition.py::test_binding_digests_recompute_from_checked_in_bytes",
+            "tests/capabilities/test_six_wheel_composition.py::test_binding_digests_recompute_from_checked_in_bytes",
             "packages/framework/graph-engine/tests/boot/test_source_authentication.py::test_sut_and_cross_owner_symbols_fail_before_import",
         ),
         "adapter_confinement": (
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[absolute-intake]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[parent-dotdot-generation]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[windows-drive-execution]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-file-healing]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-parent-intake]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[hard-link-generation]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[path-swap-execution]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[undeclared-write-root-execution]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[absolute-intake]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[parent-dotdot-generation]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[windows-drive-execution]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-file-healing]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-parent-intake]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[hard-link-generation]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[path-swap-execution]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[undeclared-write-root-execution]",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_dual_root_workspace_identity_drift_is_fail_closed",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity",
         ),
@@ -321,16 +315,16 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_idle_with_open_tools_is_not_terminal",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_mutation-assurance.improvement.effect.archive.v1]",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_mutation-assurance.improvement.effect.archive.v1]",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_receipt-assurance.improvement.effect.archive.v1]",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[reconcile_error-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_mutation-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_mutation-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_receipt-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[reconcile_error-assurance.improvement.effect.archive.v1]",
             "tests/product/test_report_flow.py::test_report_is_mandatory_on_success",
         ),
     }
 )
 
-_PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
+_ASSEMBLY_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
     {
         "deployment-route-invalid": (
             "tests/product/test_binding_builder_security.py::test_manifest_rejects_templates_globs_and_secret_values[{{model}}]"
@@ -497,14 +491,14 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/framework/graph-engine/tests/attempts/test_kernel_effect_recovery.py::test_crash_after_intent_applies_once_without_repeating_promotion[assurance.improvement.effect.archive.v1]"
         ),
         "effect-reconcile-lost-ack": (
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_receipt-assurance.improvement.effect.archive.v1]"
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_receipt-assurance.improvement.effect.archive.v1]"
         ),
     }
 )
 
-PHASE5_FAULT_NODE_IDS: Mapping[str, str] = _PHASE5_DIRECT_FAULT_NODE_IDS
+ASSEMBLY_FAULT_NODE_IDS: Mapping[str, str] = _ASSEMBLY_DIRECT_FAULT_NODE_IDS
 
-_PHASE5_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
+_ASSEMBLY_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
     {
         "seed-capture-cut": (
             "Change-local InvocationSeed has no project-tree capture or WorkspaceSeed authority.",
@@ -565,7 +559,7 @@ _PHASE5_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
     }
 )
 
-_PHASE5_GAP_REASONS: Mapping[str, str] = MappingProxyType(
+_ASSEMBLY_GAP_REASONS: Mapping[str, str] = MappingProxyType(
     {
         "opencode-terminal-before-restart": (
             "The existing adapter test caches TaskOutcome in memory and never restarts a real Engine invocation."
@@ -577,26 +571,26 @@ _PHASE5_GAP_REASONS: Mapping[str, str] = MappingProxyType(
 )
 
 
-def _phase5_fault_evidence(fault_id: str) -> Phase5FaultEvidence:
-    direct_node_id = _PHASE5_DIRECT_FAULT_NODE_IDS.get(fault_id)
+def _assembly_fault_evidence(fault_id: str) -> AssemblyFaultEvidence:
+    direct_node_id = _ASSEMBLY_DIRECT_FAULT_NODE_IDS.get(fault_id)
     if direct_node_id is not None:
-        return Phase5FaultEvidence(evidence_kind="direct", node_id=direct_node_id)
-    superseded = _PHASE5_SUPERSEDED_FAULTS.get(fault_id)
+        return AssemblyFaultEvidence(evidence_kind="direct", node_id=direct_node_id)
+    superseded = _ASSEMBLY_SUPERSEDED_FAULTS.get(fault_id)
     if superseded is not None:
         reason, replacement_node_id = superseded
-        return Phase5FaultEvidence(
+        return AssemblyFaultEvidence(
             evidence_kind="superseded",
             reason=reason,
             replacement_node_id=replacement_node_id,
         )
-    gap_reason = _PHASE5_GAP_REASONS.get(fault_id)
+    gap_reason = _ASSEMBLY_GAP_REASONS.get(fault_id)
     if gap_reason is None:
         raise AssertionError(f"fault row has no evidence disposition: {fault_id}")
-    return Phase5FaultEvidence(evidence_kind="gap", reason=gap_reason)
+    return AssemblyFaultEvidence(evidence_kind="gap", reason=gap_reason)
 
 
-PHASE5_FAULT_EVIDENCE: Mapping[str, Phase5FaultEvidence] = MappingProxyType(
-    {fault_id: _phase5_fault_evidence(fault_id) for fault_id in PHASE5_FAULT_IDS}
+ASSEMBLY_FAULT_EVIDENCE: Mapping[str, AssemblyFaultEvidence] = MappingProxyType(
+    {fault_id: _assembly_fault_evidence(fault_id) for fault_id in ASSEMBLY_FAULT_IDS}
 )
 
 _MISLEADING_PROVIDER_REPLAY_CHARACTERIZATIONS = frozenset(
@@ -617,7 +611,7 @@ _FAULT_SUPPORT_NODE_IDS = frozenset(
 )
 _TASK26_RUNNABLE_EVIDENCE_NODE_IDS = tuple(
     node_id
-    for evidence in PHASE5_FAULT_EVIDENCE.values()
+    for evidence in ASSEMBLY_FAULT_EVIDENCE.values()
     for node_id in (
         evidence.node_id
         if evidence.evidence_kind == "direct"
@@ -643,7 +637,7 @@ REPOSITORY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "wheel_repository_isolation": (
             "packages/adapters/agent-runtime-contracts/tests/test_models.py::test_isolated_wheel_import_does_not_load_adapters_or_assurance",
-            "tests/phase4/test_six_wheel_composition.py::test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints",
+            "tests/capabilities/test_six_wheel_composition.py::test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints",
             "tests/product/test_product_packaging.py::test_wheels_omit_whole_tree_modules_and_result_export_schema",
             "tests/product/test_wheel_smoke_contract.py::test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix",
             "tests/product/test_product_providers.py::test_source_catalog_is_six_wheels_plus_opencode",
@@ -661,10 +655,8 @@ FINAL_GATE_NODE_IDS: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
 
 _ALLOWED_GATE_SOURCE_PREFIXES = ("packages", "tests")
 _FORBIDDEN_PYTEST_CONTROL_NAMES = frozenset({"importorskip", "skip", "skipif", "xfail"})
-_PHASE5_ADMISSION_RELATIVE_PATH = Path(
-    ".superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/phase5-opencode-admission.json"
-)
-_PHASE5_ADMISSION_STATUSES = frozenset({"blocked_by_execution_approval", "complete"})
+_ADMISSION_RELATIVE_PATH = Path("tests/product/fixtures/assembly/opencode-admission.json")
+_ADMISSION_STATUSES = frozenset({"blocked_by_execution_approval", "complete"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,7 +677,7 @@ class GateRunResult:
 
 
 @dataclass(frozen=True, slots=True)
-class Phase5OpenCodeAdmissionState:
+class OpenCodeAdmissionState:
     source_status: str
     local_gate_disposition: Literal["run"]
     release_disposition: Literal["blocked", "requires_task3_evidence_validation"]
@@ -702,17 +694,17 @@ def all_final_gate_node_ids() -> tuple[str, ...]:
     return node_ids
 
 
-def phase5_fault_coverage_state() -> Phase5FaultCoverageState:
+def assembly_fault_coverage_state() -> AssemblyFaultCoverageState:
     superseded_fault_ids = tuple(
         fault_id
-        for fault_id, evidence in PHASE5_FAULT_EVIDENCE.items()
+        for fault_id, evidence in ASSEMBLY_FAULT_EVIDENCE.items()
         if evidence.evidence_kind == "superseded"
     )
     gap_fault_ids = tuple(
-        fault_id for fault_id, evidence in PHASE5_FAULT_EVIDENCE.items() if evidence.evidence_kind == "gap"
+        fault_id for fault_id, evidence in ASSEMBLY_FAULT_EVIDENCE.items() if evidence.evidence_kind == "gap"
     )
-    direct_count = len(PHASE5_FAULT_EVIDENCE) - len(superseded_fault_ids) - len(gap_fault_ids)
-    return Phase5FaultCoverageState(
+    direct_count = len(ASSEMBLY_FAULT_EVIDENCE) - len(superseded_fault_ids) - len(gap_fault_ids)
+    return AssemblyFaultCoverageState(
         local_gate_disposition="run",
         release_complete=not gap_fault_ids,
         direct_count=direct_count,
@@ -721,10 +713,10 @@ def phase5_fault_coverage_state() -> Phase5FaultCoverageState:
         superseded_fault_ids=superseded_fault_ids,
         gap_fault_ids=gap_fault_ids,
         detail=(
-            "Phase 5 Task 26 release evidence is complete: every applicable fault row has direct "
+            "Assembly release evidence is complete: every applicable fault row has direct "
             f"executable evidence and {len(superseded_fault_ids)} retired rows have replacement evidence."
             if not gap_fault_ids
-            else "Phase 5 Task 26 release remains blocked by "
+            else "Assembly release remains blocked by "
             f"{len(gap_fault_ids)} explicitly modeled direct-evidence gaps; "
             f"{len(superseded_fault_ids)} retired rows have replacement evidence and deterministic "
             "local fault gates remain runnable."
@@ -819,7 +811,7 @@ def _junit_counts(path: Path) -> tuple[int, int, int, int]:
 
 
 def _run_gate_node_group(repo_root: Path, node_ids: tuple[str, ...]) -> GateRunResult:
-    with tempfile.TemporaryDirectory(prefix="phase5-final-gate-") as temporary_directory:
+    with tempfile.TemporaryDirectory(prefix="assembly-final-gate-") as temporary_directory:
         junit_path = Path(temporary_directory) / "pytest.xml"
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -883,10 +875,10 @@ def run_gate_nodes(repo_root: Path, node_ids: Sequence[str]) -> GateRunResult:
     )
 
 
-def phase5_opencode_admission_state(repo_root: Path) -> Phase5OpenCodeAdmissionState:
-    admission_path = repo_root / _PHASE5_ADMISSION_RELATIVE_PATH
+def opencode_admission_state(repo_root: Path) -> OpenCodeAdmissionState:
+    admission_path = repo_root / _ADMISSION_RELATIVE_PATH
     if not admission_path.is_file():
-        return Phase5OpenCodeAdmissionState(
+        return OpenCodeAdmissionState(
             source_status="missing",
             local_gate_disposition="run",
             release_disposition="blocked",
@@ -897,10 +889,10 @@ def phase5_opencode_admission_state(repo_root: Path) -> Phase5OpenCodeAdmissionS
         )
     admission = load_json(admission_path)
     source_status = admission.get("admission_status")
-    if not isinstance(source_status, str) or source_status not in _PHASE5_ADMISSION_STATUSES:
+    if not isinstance(source_status, str) or source_status not in _ADMISSION_STATUSES:
         raise AssertionError(f"unknown Task 3 admission status: {source_status!r}")
     if source_status == "complete":
-        return Phase5OpenCodeAdmissionState(
+        return OpenCodeAdmissionState(
             source_status=source_status,
             local_gate_disposition="run",
             release_disposition="requires_task3_evidence_validation",
@@ -909,7 +901,7 @@ def phase5_opencode_admission_state(repo_root: Path) -> Phase5OpenCodeAdmissionS
                 "evidence validator. This local gate does not claim live admission."
             ),
         )
-    return Phase5OpenCodeAdmissionState(
+    return OpenCodeAdmissionState(
         source_status=source_status,
         local_gate_disposition="run",
         release_disposition="blocked",

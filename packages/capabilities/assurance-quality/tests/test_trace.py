@@ -6,7 +6,7 @@ import pytest
 from graph_engine.plugin_api import CandidateWriteSet
 from pydantic import ValidationError
 
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from assurance_quality.contracts.trace import (
     TraceProjectionDocument,

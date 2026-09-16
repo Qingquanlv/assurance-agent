@@ -5,7 +5,7 @@ from typing import Any, cast
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
-from tests.phase4.agent_harness import FakeAgentAdapter
+from tests.capabilities.agent_harness import FakeAgentAdapter
 
 FAMILIES = ("api", "e2e", "fuzz", "performance")
 VALID_LEAFS = ("auth.session.create", "entities.item.create")
@@ -33,6 +33,20 @@ _FRAMEWORK = {
     "fuzz": "schemathesis",
     "performance": "locust",
 }
+
+
+def valid_plan_review(*, required_capabilities: list[str] | None = None) -> dict[str, object]:
+    return {
+        "schema_version": "1.0",
+        "review_type": "api-codegen",
+        "change_id": "CH-DEMO-001",
+        "route": "codegen",
+        "findings": [],
+        "finding_ids": [],
+        "next_action": "proceed to codegen",
+        "risk_level": "medium",
+        "required_capabilities": required_capabilities or ["entities.item.create"],
+    }
 
 
 def family_case_id(family: str) -> str:
@@ -152,9 +166,15 @@ def reviewed_cases(family: str) -> dict[str, Any]:
 
 
 def family_constraints(family: str) -> dict[str, Any]:
-    del family
     return {
-        "write_roots": [family_write_root()],
+        "write_roots": list(
+            {
+                "api": ("qa/tests/api/", "qa/tests/testdata/api/"),
+                "e2e": ("qa/tests/e2e/", "qa/tests/testdata/e2e/"),
+                "fuzz": ("qa/tests/fuzz/", "qa/tests/testdata/fuzz/"),
+                "performance": ("qa/tests/perf/", "qa/tests/testdata/perf/"),
+            }[family]
+        ),
         "operations": ["create"],
         "risks": ["high"],
     }

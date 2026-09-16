@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -21,18 +21,18 @@ from assurance_generation.contracts.agent import (
     AgentFinalizeInputV1,
     CodegenInputV1,
     FamilyConstraintsV1,
-    under_write_root,
 )
 from assurance_generation.contracts.codegen import (
     CodegenAuthoringV1,
     CodegenGeneratedFileAuthoring,
     CodegenMapping,
     CodegenResultV1,
+    CodegenScopeV1,
     durable_test_path,
-    family_allows_target,
 )
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
-from assurance_generation.contracts.plans import PlanResultV1, canonical_relative_path
+from assurance_generation.contracts.plans import canonical_relative_path
+from assurance_generation.operations.codegen_scope import build_codegen_scope
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_PERSONA,
@@ -45,9 +45,8 @@ from assurance_generation.operations.planning import (
     failed_output,
     leafs_of,
     constraints_for_cases,
-    load_family_cases,
+    load_family_case_modules,
     resolve_family,
-    validate_reviewed_plan,
 )
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.resource_loader import resource_bytes, resource_text
@@ -79,7 +78,7 @@ def validate_codegen_input(
     data: object,
     family: Family,
     workspace: Path,
-) -> tuple[CodegenInputV1, PlanResultV1, CaseYamlAuthoring]:
+) -> tuple[CodegenInputV1, CodegenScopeV1, CaseYamlAuthoring]:
     try:
         business = CodegenInputV1.model_validate(data)
         leafs = leafs_of(business.capability_leafs)
@@ -98,23 +97,31 @@ def validate_codegen_input(
         case_paths = tuple(item.path for item in reviewed.case_refs)
     else:
         case_paths = None
-    if business.reviewed_cases is None:
-        cases = load_family_cases(
-            workspace,
-            change_id=business.change_id,
-            family=family,
-            capability_leafs=business.capability_leafs,
-            case_paths=case_paths,
-        )
-    else:
+    cases, case_ids_by_path = load_family_case_modules(
+        workspace,
+        change_id=business.change_id,
+        family=family,
+        capability_leafs=business.capability_leafs,
+        case_paths=case_paths,
+    )
+    if business.reviewed_cases is not None:
         try:
-            cases = CaseYamlAuthoring.model_validate(
+            CaseYamlAuthoring.model_validate(
                 business.reviewed_cases,
                 context={"capability_leafs": leafs},
             )
         except ValidationError as error:
             raise InputError(str(error)) from error
-    plan = validate_reviewed_plan(business, family, cases)
+    try:
+        scope = build_codegen_scope(
+            family=family,
+            change_id=business.change_id,
+            cases=cases,
+            capability_leafs=leafs,
+            case_ids_by_path=case_ids_by_path,
+        )
+    except ValueError as error:
+        raise InputError(str(error)) from error
     constraints: FamilyConstraintsV1 = business.family_constraints or constraints_for_cases(
         family=family,
         change_id=business.change_id,
@@ -122,61 +129,23 @@ def validate_codegen_input(
     )
     business = business.model_copy(
         update={
-            "reviewed_plan": plan.model_dump(mode="json"),
+            "codegen_scope": scope.model_dump(mode="json"),
             "reviewed_cases": cases.model_dump(mode="json"),
             "family_constraints": constraints,
         }
     )
-    return business, plan, cases
+    return business, scope, cases
 
 
-def codegen_outputs(
-    change_id: str,
-    family: Family,
-    *,
-    mapping_targets: tuple[str, ...] = (),
-) -> tuple[str, ...]:
-    del change_id
-    ordinary = (
-        f"qa/results/codegen/{family}-codegen-summary.md",
-        f"qa/results/codegen/{family}-generated-files.json",
-    )
-    durable = tuple(durable_test_path(target) for target in mapping_targets)
-    return tuple(sorted((*ordinary, *durable)))
-
-
-def _closed_mapping(workspace: Path, plan: PlanResultV1, family: Family) -> CodegenMapping:
-    mapping_name = f"{family}-codegen-mapping.json"
-    relatives = tuple(path for path in plan.output_files if PurePosixPath(path).name == mapping_name)
-    if len(relatives) != 1:
-        raise InputError("reviewed plan must declare exactly one closed codegen mapping")
-    relative = relatives[0]
-    try:
-        canonical_relative_path(relative)
-    except ValueError as error:
-        raise InputError(str(error)) from error
-    try:
-        path = _workspace_regular_file(workspace, relative)
-    except OutputError as error:
-        raise InputError(f"closed codegen mapping is missing or unsafe: {relative}") from error
-    try:
-        mapping = CodegenMapping.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValidationError) as error:
-        raise InputError(f"closed codegen mapping is invalid: {relative}: {error}") from error
-    if mapping.layer != family:
-        raise InputError(f"closed mapping layer {mapping.layer!r} does not match {family}")
-    if tuple(sorted(item.case_id for item in mapping.entries)) != plan.case_ids:
-        raise InputError("closed mapping case IDs must exactly match the reviewed plan")
-    if any(not family_allows_target(family, item.target_file) for item in mapping.entries):
-        raise InputError("closed mapping target is outside family policy")
-    return mapping
+def codegen_outputs(scope: CodegenScopeV1) -> tuple[str, ...]:
+    return scope.locked_outputs
 
 
 def prepare_codegen_outcome(
     *,
     skill_path: str,
     persona_path: str,
-    plan: PlanResultV1,
+    scope: CodegenScopeV1,
     cases: CaseYamlAuthoring,
     context_payload: Mapping[str, object],
     binding: AgentBindingDataV1,
@@ -189,7 +158,7 @@ def prepare_codegen_outcome(
         instructions=(
             InstructionPart.text("text/plain", resource_text(skill_path)),
             InstructionPart.text("text/plain", resource_text(persona_path)),
-            InstructionPart.from_json(plan.model_dump(mode="json")),
+            InstructionPart.from_json(scope.model_dump(mode="json")),
             InstructionPart.from_json(cases.model_dump(mode="json")),
             InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
         ),
@@ -241,9 +210,9 @@ def _complete_files(
     *,
     change_id: str,
     family: Family,
-    allowed_paths: tuple[str, ...],
+    allowed_paths: Collection[str],
 ) -> tuple[GeneratedFileEntryV1, ...]:
-    del change_id
+    del change_id, family
     mapped_targets = {item.target_file for item in mapping.entries}
     if not files and mapped_targets:
         raise OutputError("empty files array is invalid when mapping targets exist")
@@ -251,9 +220,7 @@ def _complete_files(
     listed_test_entries: set[str] = set()
     for entry in files:
         target = entry.repo_path
-        if not family_allows_target(family, target):
-            raise OutputError(f"generated target is outside family policy: {target}")
-        if allowed_paths and not under_write_root(target, allowed_paths):
+        if target not in allowed_paths:
             raise OutputError(f"undeclared generated/modified test file: {target}")
         if entry.role == "test_entry" and target not in mapped_targets:
             raise OutputError(f"generated test file is absent from the closed mapping: {target}")
@@ -279,8 +246,8 @@ def _complete_files(
             )
         )
     for target in sorted(mapped_targets):
-        if not family_allows_target(family, target):
-            raise OutputError(f"generated target is outside family policy: {target}")
+        if target not in allowed_paths:
+            raise OutputError(f"undeclared generated/modified test file: {target}")
         if target not in listed_test_entries:
             raise OutputError(f"codegen mapping is missing: {target}")
     return tuple(sorted(completed, key=lambda item: item.repo_path))
@@ -303,17 +270,16 @@ def _finalize_authoring(payload: AgentFinalizeInputV1, family: Family) -> Codege
     if payload.change_id is not None and document.change_id != payload.change_id:
         raise OutputError("codegen change_id does not match locked change_id")
     if payload.required_capabilities is None:
-        raise InputError("reviewed plan required_capabilities are missing")
+        raise InputError("host codegen scope required_capabilities are missing")
     if tuple(document.required_capabilities) != payload.required_capabilities:
-        raise OutputError("required_capabilities must exactly match the reviewed plan")
-    if payload.reviewed_mapping is None:
-        raise InputError("reviewed plan mapping is missing")
-    try:
-        reviewed_mapping = CodegenMapping.model_validate(payload.reviewed_mapping)
-    except ValidationError as error:
-        raise InputError(f"reviewed plan mapping is invalid: {error}") from error
-    if document.mapping != reviewed_mapping:
-        raise OutputError("mapping must exactly match the reviewed plan")
+        raise OutputError("required_capabilities must exactly match the host codegen scope")
+    if payload.reviewed_mapping is not None:
+        try:
+            reviewed_mapping = CodegenMapping.model_validate(payload.reviewed_mapping)
+        except ValidationError as error:
+            raise InputError(f"reviewed plan mapping is invalid: {error}") from error
+        if document.mapping != reviewed_mapping:
+            raise OutputError("mapping must exactly match the reviewed plan")
     return document
 
 
@@ -354,7 +320,7 @@ class CodegenPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             family = resolve_family(self._family, request)
-            business, plan, cases = validate_codegen_input(
+            business, scope, cases = validate_codegen_input(
                 request.input,
                 family,
                 context.project_root,
@@ -362,28 +328,23 @@ class CodegenPrepareHandler:
             binding = AgentBindingDataV1.model_validate(request.binding_data)
             if business.family_constraints is None:
                 raise InputError("family_constraints were not materialized")
-            mapping = _closed_mapping(context.project_root, plan, family)
             context_payload: dict[str, object] = {
                 "change_id": business.change_id,
                 "family_constraints": business.family_constraints.model_dump(mode="json"),
                 "generated_files_root": "qa/tests",
-                "reviewed_mapping": mapping.model_dump(mode="json"),
+                "codegen_scope": scope.model_dump(mode="json"),
             }
             return prepare_codegen_outcome(
                 skill_path=_SKILL_FILES[family],
                 persona_path=PLAN_PERSONA,
-                plan=plan,
+                scope=scope,
                 cases=cases,
                 context_payload=context_payload,
                 binding=binding,
                 result_schema_id=CODEGEN_RESULT_ID,
                 context=context,
                 scope_id=business.change_id,
-                allowed_outputs=codegen_outputs(
-                    business.change_id,
-                    family,
-                    mapping_targets=tuple(sorted({item.target_file for item in mapping.entries})),
-                ),
+                allowed_outputs=codegen_outputs(scope),
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)
@@ -400,14 +361,46 @@ class CodegenFinalizeHandler:
             family = resolve_family(self._family, request)
             payload = AgentFinalizeInputV1.model_validate(request.input)
             document = _finalize_authoring(payload, family)
-            allowed = payload.allowed_paths or payload.artifact_paths
+            _, scope, _ = validate_codegen_input(
+                {
+                    "change_id": payload.change_id or document.change_id,
+                    "plan_digest": payload.plan_digest,
+                    "plan_ref": payload.plan_ref.model_dump(mode="json"),
+                    "capability_leafs": list(payload.capability_leafs),
+                    "reviewed_case": None
+                    if payload.reviewed_case is None
+                    else payload.reviewed_case.model_dump(mode="json"),
+                },
+                family,
+                context.project_root,
+            )
+            mapped_ids = tuple(sorted(item.case_id for item in document.mapping.entries))
+            if mapped_ids != scope.case_ids:
+                raise OutputError("mapping case IDs must exactly match the host codegen scope")
+            locked_generated = {path for path in scope.locked_outputs if path.startswith("qa/tests/")}
+            test_by_case = {
+                case_id: row.test_file for row in scope.locked_modules for case_id in row.case_ids
+            }
+            receipt_tests = {entry.repo_path for entry in document.files}
+            if receipt_tests != locked_generated:
+                raise OutputError(
+                    "codegen receipt test paths do not match locked outputs; "
+                    f"missing={sorted(locked_generated - receipt_tests)}, "
+                    f"unexpected={sorted(receipt_tests - locked_generated)}"
+                )
+            for item in document.mapping.entries:
+                expected = test_by_case.get(item.case_id)
+                if expected is None or item.target_file != expected:
+                    raise OutputError(
+                        f"mapping target_file must equal the locked test file for {item.case_id}"
+                    )
             files = _complete_files(
                 context.write_root,
                 document.files,
                 document.mapping,
                 change_id=document.change_id,
                 family=family,
-                allowed_paths=allowed,
+                allowed_paths=locked_generated,
             )
             result = CodegenResultV1.model_validate(
                 {

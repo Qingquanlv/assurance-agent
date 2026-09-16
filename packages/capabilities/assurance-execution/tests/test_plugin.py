@@ -10,7 +10,7 @@ from graph_engine.plugin_api import PluginDependency, PluginDescriptor, Provider
 
 from assurance_execution.plugin import EXECUTION_SOURCE, ExecutionPlugin
 from assurance_execution.resource_loader import resource_bytes
-from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
+from tests.capabilities.conformance import PluginExpectation, assert_plugin_conforms
 
 
 def test_execution_descriptor_has_exact_dependencies() -> None:

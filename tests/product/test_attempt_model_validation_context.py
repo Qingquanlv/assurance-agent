@@ -177,7 +177,7 @@ def _scenario(tmp_path: Path) -> _Scenario:
         invocation_id="inv-context",
         graph_revision=_revision(),
         public_entrypoint="generate",
-        semantic_node_id="generation.api.plan",
+        semantic_node_id="generation.api.codegen",
         business_activation=BusinessActivation.one_shot(),
         contract_id=resolved.contract.contract_id,
         validated_input=validated_input,
@@ -185,7 +185,7 @@ def _scenario(tmp_path: Path) -> _Scenario:
     execution_context = AttemptExecutionContext(
         invocation_id="inv-context",
         public_entrypoint="generate",
-        semantic_node_id="generation.api.plan",
+        semantic_node_id="generation.api.codegen",
         attempt_key=attempt_key,
         fencing_token=1,
     )
@@ -242,7 +242,7 @@ def test_generation_output_commit_uses_locked_capability_context(tmp_path: Path)
         invocation_id="inv-context",
         graph_revision=_revision(),
         public_entrypoint="generate",
-        semantic_node_id="generation.api.plan",
+        semantic_node_id="generation.api.codegen",
         business_activation=BusinessActivation.one_shot(),
         contract_id=resolved.contract.contract_id,
         validated_input=validated_input,
@@ -250,7 +250,7 @@ def test_generation_output_commit_uses_locked_capability_context(tmp_path: Path)
     execution_context = AttemptExecutionContext(
         invocation_id="inv-context",
         public_entrypoint="generate",
-        semantic_node_id="generation.api.plan",
+        semantic_node_id="generation.api.codegen",
         attempt_key=attempt_key,
         fencing_token=1,
     )
@@ -417,12 +417,12 @@ def test_product_raw_agent_validates_final_generation_output_once_with_the_locke
         execution=AttemptExecutionContext(
             invocation_id="inv-raw-context",
             public_entrypoint="generate",
-            semantic_node_id="generation.api.plan",
+            semantic_node_id="generation.api.codegen",
             attempt_key=derive_attempt_key(
                 invocation_id="inv-raw-context",
                 graph_revision=_revision(),
                 public_entrypoint="generate",
-                semantic_node_id="generation.api.plan",
+                semantic_node_id="generation.api.codegen",
                 business_activation=BusinessActivation.one_shot(),
                 contract_id=contract.contract_id,
                 validated_input=_GenerationInput(

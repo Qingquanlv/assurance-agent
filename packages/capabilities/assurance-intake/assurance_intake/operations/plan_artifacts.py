@@ -236,7 +236,7 @@ class ResolvePlanHandler:
                 write_root=context.write_root,
             )
         except (ValueError, ValidationError, OSError) as error:
-            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=True)
         return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
 
 
@@ -246,7 +246,7 @@ class LoadPlanHandler:
             validated = LoadPlanInputV1.model_validate(request.input)
             output = load_plan_artifact(validated, project_root=context.project_root)
         except (ValueError, ValidationError, OSError) as error:
-            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=True)
         return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
 
 

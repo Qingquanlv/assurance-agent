@@ -117,7 +117,7 @@ class ResolveGenerationInputsHandler:
         try:
             reviewed = resolve_generation_input(request.input, context.project_root)
         except InputError as error:
-            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=True)
         return TaskOutcome.succeeded(reviewed.model_dump(mode="json"))
 
 

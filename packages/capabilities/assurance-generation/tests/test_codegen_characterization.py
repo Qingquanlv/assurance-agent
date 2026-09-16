@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -63,7 +63,7 @@ def test_family_codegen_characterization_missing_extra_and_unknown_leaf(family: 
     missing = _load(f"{family}-codegen-missing-file.json")
     extra = _load(f"{family}-codegen-extra-file.json")
     unknown = _load(f"{family}-codegen-unknown-leaf.json")
-    path = durable_oracle_path(family=family)
+    path = cast(str, valid["mapping"]["entries"][0]["target_file"])
     staged = path
     mapping = CodegenMapping.model_validate(valid["mapping"])
     accepted = GeneratedFilesValidator(

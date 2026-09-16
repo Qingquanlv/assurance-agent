@@ -62,7 +62,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
         "execute": (
             "assurance.execution.agent.execute.v1",
             "assurance.execution.agent.run.v1",
-            "assurance.generation.agent.api.plan.v1",
+            "assurance.generation.agent.api.codegen.v1",
             "assurance.healing.agent.apply-test-repair.v1",
             "assurance.healing.agent.coverage-repair.v1",
             "assurance.healing.agent.fix-proposal.v1",
@@ -72,7 +72,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
         ),
         "full": (
             "assurance.execution.agent.execute.v1",
-            "assurance.generation.agent.api.plan.v1",
+            "assurance.generation.agent.api.codegen.v1",
             "assurance.improvement.agent.archive.v1",
             "assurance.intake.agent.intake.v1",
             "assurance.quality.agent.report.v1",

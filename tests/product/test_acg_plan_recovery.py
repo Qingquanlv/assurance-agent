@@ -253,9 +253,9 @@ def test_downstream_attempt_identity_binds_the_imported_plan(tmp_path: Path) -> 
         "invocation_id": "inv-acg",
         "graph_revision": "a" * 64,
         "public_entrypoint": "full",
-        "semantic_node_id": "generation.api.plan",
+        "semantic_node_id": "generation.api.codegen",
         "business_activation": BusinessActivation.for_trigger("coverage.0.plan"),
-        "contract_id": "assurance.generation.agent.api.plan.v1",
+        "contract_id": "assurance.generation.agent.api.codegen.v1",
     }
 
     first_key = derive_attempt_key(**key_args, validated_input=first_input)

@@ -241,7 +241,7 @@ def test_product_result_schema_missing_document_is_invalid_output() -> None:
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
     assert outcome.failure.message == "result schema is missing"
 
 
@@ -424,7 +424,24 @@ def test_idle_non_closed_history_reduces_to_invalid_output() -> None:
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_output"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
+
+
+@pytest.mark.parametrize("kind", ["succeeded", "failed"])
+def test_non_json_terminal_text_is_retryable_invalid_output(kind: str) -> None:
+    outcome = reduce_terminal(
+        kind=kind,  # type: ignore[arg-type]
+        session={},
+        messages=_closed_assistant({}, text="Self-review passed without a result object."),
+        agent_run=agent_run_request(),
+        request=task_request(agent_run_request()),
+        diff=None,
+    )
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert outcome.failure.message == "terminal text is not one JSON object"
+    assert outcome.failure.retryable is True
 
 
 def test_intermediate_reasoning_then_closed_terminal_reduces_success() -> None:

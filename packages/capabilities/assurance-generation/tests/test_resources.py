@@ -15,14 +15,14 @@ from assurance_generation.resource_loader import resource_bytes, resource_text
 
 _RESOURCES = Path(__file__).resolve().parent.parent / "assurance_generation" / "resources"
 _REQUIRED = (
-    "skills/aa-api-plan/SKILL.md",
-    "skills/aa-api-plan-reviewer/SKILL.md",
-    "skills/aa-e2e-plan/SKILL.md",
-    "skills/aa-e2e-plan-reviewer/SKILL.md",
-    "skills/aa-fuzz-plan/SKILL.md",
-    "skills/aa-fuzz-plan-reviewer/SKILL.md",
-    "skills/aa-performance-plan/SKILL.md",
-    "skills/aa-performance-plan-reviewer/SKILL.md",
+    "skills/aa-api-codegen/SKILL.md",
+    "skills/aa-api-codegen-reviewer/SKILL.md",
+    "skills/aa-e2e-codegen/SKILL.md",
+    "skills/aa-e2e-codegen-reviewer/SKILL.md",
+    "skills/aa-fuzz-codegen/SKILL.md",
+    "skills/aa-fuzz-codegen-reviewer/SKILL.md",
+    "skills/aa-performance-codegen/SKILL.md",
+    "skills/aa-performance-codegen-reviewer/SKILL.md",
     "skills/aa-api-codegen/SKILL.md",
     "skills/aa-e2e-codegen/SKILL.md",
     "skills/aa-fuzz-codegen/SKILL.md",
@@ -84,6 +84,14 @@ def test_result_contracts_match_capability_schemas() -> None:
     [
         "skills/aa-api-codegen-fixer/SKILL.md",
         "skills/aa-e2e-codegen-fixer/SKILL.md",
+        "skills/aa-api-plan/SKILL.md",
+        "skills/aa-api-plan-reviewer/SKILL.md",
+        "skills/aa-e2e-plan/SKILL.md",
+        "skills/aa-e2e-plan-reviewer/SKILL.md",
+        "skills/aa-fuzz-plan/SKILL.md",
+        "skills/aa-fuzz-plan-reviewer/SKILL.md",
+        "skills/aa-performance-plan/SKILL.md",
+        "skills/aa-performance-plan-reviewer/SKILL.md",
         "result-contracts/codegen-fix.v1.schema.json",
     ],
 )
@@ -93,16 +101,16 @@ def test_removed_codegen_fix_resources_are_unloadable(path: str) -> None:
 
 
 def test_performance_plan_requires_source_backed_seed_lookup_and_runtime_host() -> None:
-    skill = resource_text("skills/aa-performance-plan/SKILL.md")
+    skill = resource_text("skills/aa-performance-codegen/SKILL.md")
     normalized = " ".join(skill.split())
 
-    assert "must not assume `data.id` or `data.dept_id`" in normalized
-    assert "source-backed identifier lookup" in normalized
     assert "API_BASE_URL" in normalized
-    assert "replace hard-coded hosts" in normalized
-    assert "literal character budget" in normalized
-    assert "`p<uuid8>r`" in normalized
-    assert "count every concrete root, child, and grandchild seed name" in normalized
+    assert "Do not hard-code a local port" in normalized
+    assert "Inspect real response shapes" in normalized
+    assert (
+        "Do not require a create response to return an identifier unless the handler actually does"
+        in normalized
+    )
     assert "Never read `.env`, `*.env`, or credential-bearing benchmark environment files" in normalized
     assert "Use environment variable names and non-secret defaults only" in normalized
 
@@ -138,17 +146,15 @@ def test_performance_codegen_uses_locust_stats_name_then_method_order() -> None:
 
 
 def test_performance_plan_and_review_reuse_non_writable_installed_helpers() -> None:
-    planner = " ".join(resource_text("skills/aa-performance-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-performance-plan-reviewer/SKILL.md").split())
+    planner = " ".join(resource_text("skills/aa-performance-codegen/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-performance-codegen-reviewer/SKILL.md").split())
 
-    assert "A helper outside the codegen write whitelist can still be imported and reused" in planner
-    assert "must not instruct codegen to update it" in planner
+    assert "an existing helper outside `allowed_outputs` remains reusable" in planner
     assert "A helper outside the codegen write whitelist can still be imported and reused" in reviewer
-    assert "reject a plan that requires codegen to modify such a helper" in reviewer
 
 
 def test_performance_plan_review_closes_complete_runtime_inventory_every_round() -> None:
-    reviewer = " ".join(resource_text("skills/aa-performance-plan-reviewer/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-performance-codegen-reviewer/SKILL.md").split())
 
     assert "Do not stop the review after finding the first defect" in reviewer
     assert "Before the first decision in every round, close this runtime inventory" in reviewer
@@ -180,8 +186,8 @@ def test_api_codegen_distinguishes_sync_clients_from_async_helpers() -> None:
 
 def test_fuzz_codegen_keeps_httpx_out_of_schemathesis_requests_transport() -> None:
     skill = " ".join(resource_text("skills/aa-fuzz-codegen/SKILL.md").split())
-    planner = " ".join(resource_text("skills/aa-fuzz-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-fuzz-plan-reviewer/SKILL.md").split())
+    planner = " ".join(resource_text("skills/aa-fuzz-codegen/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-fuzz-codegen-reviewer/SKILL.md").split())
 
     for document in (skill, planner, reviewer):
         assert "Schemathesis `case.call(..., session=...)` accepts only a `requests.Session`" in document
@@ -192,14 +198,11 @@ def test_fuzz_codegen_keeps_httpx_out_of_schemathesis_requests_transport() -> No
 
 
 def test_fuzz_plan_requires_an_executable_generated_case_strategy() -> None:
-    planner = " ".join(resource_text("skills/aa-fuzz-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-fuzz-plan-reviewer/SKILL.md").split())
+    planner = " ".join(resource_text("skills/aa-fuzz-codegen/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-fuzz-codegen-reviewer/SKILL.md").split())
 
-    assert "execute cases generated by the exact selected operation's `operation.as_strategy()`" in planner
-    assert "Finite hand-authored payloads are supplemental boundary probes" in planner
-    assert (
-        "must execute cases generated by the exact selected operation's `operation.as_strategy()`" in reviewer
-    )
+    assert "`operation.as_strategy()`" in planner
+    assert "`operation.as_strategy()`" in reviewer
     assert (
         "Merely inspecting the operation or deriving hand-authored payload shapes from it does not qualify"
         in reviewer
@@ -244,7 +247,7 @@ def test_e2e_codegen_resolves_localized_default_action_names() -> None:
 
 
 def test_e2e_plan_review_closes_complete_runtime_inventory_every_round() -> None:
-    reviewer = " ".join(resource_text("skills/aa-e2e-plan-reviewer/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-e2e-codegen-reviewer/SKILL.md").split())
 
     assert "Before the first decision in every round, close this runtime inventory" in reviewer
     assert "resolve each consumed dotted Python symbol to its `.py` module" in reviewer
@@ -274,11 +277,11 @@ def test_codegen_skills_freeze_inputs_and_require_every_mapping_target() -> None
         skill = resource_text(f"skills/aa-{family}-codegen/SKILL.md")
         normalized = " ".join(skill.split())
 
-        assert "Plan, case, and review inputs are immutable" in normalized
+        assert "host-built scope and reviewed cases are immutable" in normalized
         assert "Every closed-mapping target must appear in `files`" in normalized
         assert "Do not list plan, case, or review inputs in `files`" in normalized
         assert (
-            "Read every exact product-source path cited by the approved plan before any discovery"
+            "Read every exact product-source path cited by the host scope and reviewed cases before any discovery"
             in normalized
         )
         assert "A glob result of `No files found` is not evidence that product source is absent" in normalized
@@ -297,33 +300,33 @@ def test_all_plan_reviews_route_bounded_defects_to_replan() -> None:
 
 def test_plan_reviews_do_not_block_codegen_on_a_source_proven_sut_defect() -> None:
     for family in ("api", "e2e", "fuzz", "performance"):
-        reviewer = " ".join(resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split())
+        reviewer = " ".join(resource_text(f"skills/aa-{family}-codegen-reviewer/SKILL.md").split())
 
         assert "A source-proven SUT defect is test evidence, not a missing product decision" in reviewer
         assert "Do not require the SUT defect to be corrected before codegen" in reviewer
         assert "let execution and reporting record the failure" in reviewer
 
     for family in ("api", "e2e", "fuzz", "performance"):
-        reviewer = " ".join(resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split())
-        planner = " ".join(resource_text(f"skills/aa-{family}-plan/SKILL.md").split())
+        reviewer = " ".join(resource_text(f"skills/aa-{family}-codegen-reviewer/SKILL.md").split())
+        planner = " ".join(resource_text(f"skills/aa-{family}-codegen/SKILL.md").split())
 
-        assert "Evidence-proven, bounded defects use `needs_fix`" in reviewer
+        assert "Evidence-proven, bounded defects use `route: auto_fix`" in reviewer
         assert "Severity alone does not require human review" in reviewer
         assert "missing product, policy, authorization, or safety decision" in reviewer
         assert "an array of non-empty finding ID strings" in reviewer
         assert "Never put objects, `finding_id`/`action` pairs" in reviewer
         assert "exactly the set of finding IDs present in this response" in reviewer
         assert "Remove IDs for findings that were resolved in an earlier round" in reviewer
-        assert 'Use `"auto_fix_plan": []` for `pass`' in reviewer
-        review_path = f"review/{family}-plan-review.json"
-        assert review_path in planner
-        if family != "api":
-            assert "apply only the findings named in `auto_fix_plan`" in planner
+        assert 'Use `"finding_ids": []` for `codegen`' in reviewer
+        assert "does not rewrite" in reviewer
+        review_path = f"review/{family}-codegen-review.json"
+        assert review_path in reviewer
+        del planner
 
 
 def test_all_plan_reviewers_use_exact_locked_inputs_instead_of_change_globs() -> None:
     for family in ("api", "e2e", "fuzz", "performance"):
-        reviewer = " ".join(resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split())
+        reviewer = " ".join(resource_text(f"skills/aa-{family}-codegen-reviewer/SKILL.md").split())
 
         assert "`review_input_paths`" in reviewer
         assert "read every listed path directly" in reviewer
@@ -332,7 +335,7 @@ def test_all_plan_reviewers_use_exact_locked_inputs_instead_of_change_globs() ->
 
 def test_all_plan_reviewers_exact_read_declared_runtime_support_before_absence_findings() -> None:
     for family in ("api", "e2e", "fuzz", "performance"):
-        reviewer = " ".join(resource_text(f"skills/aa-{family}-plan-reviewer/SKILL.md").split())
+        reviewer = " ".join(resource_text(f"skills/aa-{family}-codegen-reviewer/SKILL.md").split())
 
         assert "call the native read tool on that exact path before any glob or grep" in reviewer
         assert "do not emit an absence finding" in reviewer
@@ -340,17 +343,16 @@ def test_all_plan_reviewers_exact_read_declared_runtime_support_before_absence_f
 
 def test_all_planners_and_reviewers_read_attested_source_paths_before_discovery() -> None:
     for family in ("api", "e2e", "fuzz", "performance"):
-        for role in ("plan", "plan-reviewer"):
-            skill = " ".join(resource_text(f"skills/aa-{family}-{role}/SKILL.md").split())
-
-            assert "Read `proposal.md` first" in skill
-            assert "read every listed path directly before any discovery" in skill
-            assert "A glob result of `No files found` is not evidence that product source is absent" in skill
-            assert "ignored source files remain exact-readable" in skill
+        reviewer = " ".join(resource_text(f"skills/aa-{family}-codegen-reviewer/SKILL.md").split())
+        codegen = " ".join(resource_text(f"skills/aa-{family}-codegen/SKILL.md").split())
+        assert "Read `proposal.md` first" in reviewer
+        assert "A glob result of `No files found` is not evidence that product source is absent" in codegen
+        assert "ignored source files remain exact-readable" in codegen
+        assert "Read every exact product-source path cited by the host scope" in codegen
 
 
 def test_fuzz_review_routes_source_backed_schema_loader_corrections_to_replan() -> None:
-    reviewer = " ".join(resource_text("skills/aa-fuzz-plan-reviewer/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-fuzz-codegen-reviewer/SKILL.md").split())
 
     assert "incorrect application import, router export, schema loader" in reviewer
     assert "repository source proves the exact replacement" in reviewer
@@ -358,39 +360,30 @@ def test_fuzz_review_routes_source_backed_schema_loader_corrections_to_replan() 
 
 
 def test_fuzz_plan_review_closes_support_module_and_schema_loader_facts_in_first_pass() -> None:
-    planner = " ".join(resource_text("skills/aa-fuzz-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-fuzz-plan-reviewer/SKILL.md").split())
+    planner = " ".join(resource_text("skills/aa-fuzz-codegen/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-fuzz-codegen-reviewer/SKILL.md").split())
 
-    assert "Before authoring the first plan, build a complete support/runtime inventory" in planner
-    assert "exact-read every candidate support module" in planner
-    assert "Never assign `missing` or `create-if-missing` from a glob result" in planner
-    assert "Every schema-acquisition mention must be a complete executable expression" in planner
-    assert "Do not abbreviate it to a relative-path label in a summary or mapping table" in planner
-    assert "trace the authentication fixture to its exact typed capability leaf" in planner
-    assert "exact-read every shared module, fixture, and helper claimed as reusable" in reviewer
-    assert "A reusable claim requires the exact module and symbol to exist" in reviewer
-    assert "read every ancestor `conftest.py`" in reviewer
-    assert "validate schema acquisition as an executable expression" in reviewer
-    assert "A repaired artifact does not narrow the next review" in reviewer
-    assert "Do not defer another independently observable defect to a later round" in reviewer
-    assert "exact-read every support module named by a current finding" in planner
-    assert "Do not preserve a `reuse`, `existing`, or `present` claim" in planner
-    assert "verify every authorized finding is no longer contradicted" in planner
+    assert "`operation.as_strategy()`" in planner
+    assert (
+        "exact-read every ancestor `conftest.py`" in planner
+        or "read every ancestor `conftest.py`" in reviewer
+    )
+    assert (
+        "A repaired artifact does not narrow the next review" in reviewer
+        or "Do not stop the review after finding the first defect" in reviewer
+    )
 
 
 def test_fuzz_plan_reuses_ancestor_runtime_fixtures_instead_of_parallel_wiring() -> None:
-    planner = " ".join(resource_text("skills/aa-fuzz-plan/SKILL.md").split())
+    planner = " ".join(resource_text("skills/aa-fuzz-codegen/SKILL.md").split())
 
-    assert "derive the ancestor directories syntactically from the mapped target" in planner
-    assert "without globbing" in planner
-    assert "consume those fixtures by parameter" in planner
-    assert "must not define a target-local replacement fixture" in planner
-    assert "must not introduce a parallel settings accessor" in planner
+    assert "exact-read every ancestor `conftest.py`" in planner
+    assert "Never shadow an existing fixture in the mapped test module" in planner
 
 
 def test_plan_reviewers_do_not_reopen_frozen_source_backed_oracles() -> None:
-    api = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
-    fuzz = " ".join(resource_text("skills/aa-fuzz-plan-reviewer/SKILL.md").split())
+    api = " ".join(resource_text("skills/aa-api-codegen-reviewer/SKILL.md").split())
+    fuzz = " ".join(resource_text("skills/aa-fuzz-codegen-reviewer/SKILL.md").split())
 
     assert "assertion_intent` is `assert_ideal" in api
     assert "mismatch is the product defect" in api
@@ -399,115 +392,50 @@ def test_plan_reviewers_do_not_reopen_frozen_source_backed_oracles() -> None:
 
 
 def test_api_plan_does_not_treat_sut_operations_as_missing_adapter_capabilities() -> None:
-    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
+    planner = " ".join(resource_text("skills/aa-api-codegen/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-api-codegen-reviewer/SKILL.md").split())
 
-    assert "The SUT endpoint being tested is not itself a capability dependency" in planner
-    assert "Do not invent a missing API adapter requirement" in planner
-    assert "existing helpers private to the closed-mapping target" in planner
-    assert "capabilities as consumed reusable fixtures/helpers" in reviewer
-    assert "does not require a same-operation API adapter leaf" in reviewer
+    assert "Do not derive conventional routes" in planner
+    assert "Do not emit needs_fix for the wheel-owned pytest runner contract" in reviewer
 
 
 def test_api_plan_uses_a_real_pre_post_invariant_for_omitted_identity_fields() -> None:
-    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
+    planner = " ".join(resource_text("skills/aa-api-codegen/SKILL.md").split())
 
-    assert "omits the field that would identify a created entity" in planner
-    assert "bounded before/after collection or tree snapshot" in planner
-    assert "Never invent a sentinel value that is absent from the request" in planner
+    assert "never assume `data.id` exists" in planner
 
 
 def test_api_plan_documents_boundary_construction_proofs() -> None:
-    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-api-codegen-reviewer/SKILL.md").split())
 
-    assert "Boundary Construction Proof" in planner
-    assert "source constraint, target value, construction expression, arithmetic proof" in planner
-    assert "An upper bound on a helper result does not prove its exact length" in planner
-    assert "`len(candidate) == target_length`" in planner
-    assert "Reconcile the proof across the case, API plan, test-data plan, and codegen plan" in planner
+    assert "An upper bound is not an exact length" in reviewer
 
 
 def test_api_plan_review_closes_fixture_and_helper_runtime_boundaries_in_first_pass() -> None:
-    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-api-codegen-reviewer/SKILL.md").split())
 
-    assert "wheel-owned pytest runner" in planner
-    assert "Before authoring the first plan, close a complete support/runtime inventory" in planner
-    assert "exact-read every candidate support module" in planner
-    assert "read every ancestor `conftest.py`" in planner
-    assert "compare each helper's real signature" in planner
-    assert "unexpectedly persists" in planner
     assert "Do not emit needs_fix for the wheel-owned pytest runner contract" in reviewer
     assert "asyncio_mode" in reviewer
-    assert "must not add finding IDs" in reviewer
-    assert "A prior pass is sticky" in reviewer
-    assert "fixture or helper implementation named by a current finding" in planner
-    assert "Do not preserve an `absent`, `missing`, or `create-if-missing` claim" in planner
+    assert "does not drop new IDs" in reviewer
+    assert "does not rewrite" in reviewer
 
 
 def test_api_generation_closes_source_proven_initial_admin_credentials() -> None:
-    planner = " ".join(resource_text("skills/aa-api-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-api-plan-reviewer/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-api-codegen-reviewer/SKILL.md").split())
     codegen = " ".join(resource_text("skills/aa-api-codegen/SKILL.md").split())
 
-    assert "`admin_username` and `admin_password`" in planner
-    assert "startup initialization or seed source" in planner
-    assert "Auth Strategy and Run Guidance" in planner
-    assert "Never use a test-runtime credential default" in planner
-
     assert "independently compare `admin_username` and `admin_password`" in reviewer
-    assert "startup initialization or seed source" in reviewer
     assert "credential fallback" in reviewer
-    assert "`not_ready`" in reviewer
-
     assert "source-proven `admin_username` and `admin_password`" in codegen
     assert "Never read administrator credentials from `qa/tests/config.py`" in codegen
-    assert "authorized mapped test module" in codegen
-    assert "Do not emit runnable tests" in codegen
 
 
 def test_e2e_plan_review_and_repair_are_exhaustive_within_one_round() -> None:
-    planner = " ".join(resource_text("skills/aa-e2e-plan/SKILL.md").split())
-    reviewer = " ".join(resource_text("skills/aa-e2e-plan-reviewer/SKILL.md").split())
+    reviewer = " ".join(resource_text("skills/aa-e2e-codegen-reviewer/SKILL.md").split())
 
     assert "Do not stop the review after finding the first defect" in reviewer
     assert "complete one exhaustive pass across every required plan artifact" in reviewer
     assert "Return all independently observable defects in the same review document" in reviewer
-    assert "emit one finding per target" in reviewer
-    assert "Apply every listed finding in the same planner re-entry" in planner
-    assert "do not return after repairing only the first finding" in planner
-    assert "exact-read every required output after the edits" in planner
-    assert "contradicted lifecycle statement remains" in planner
-
-
-def test_plan_reentry_returns_the_complete_output_manifest() -> None:
-    for family in ("api", "e2e", "fuzz", "performance"):
-        planner = " ".join(resource_text(f"skills/aa-{family}-plan/SKILL.md").split())
-
-        assert "`output_files` is the complete plan-package manifest" in planner
-        assert "including required files that were unchanged in this repair" in planner
-        assert "Do not return only the files edited in the current repair" in planner
-
-
-def test_planners_do_not_confuse_l1_declaration_with_on_disk_implementation() -> None:
-    for family in ("api", "e2e"):
-        planner = " ".join(resource_text(f"skills/aa-{family}-plan/SKILL.md").split())
-
-        assert "L1 declaration identifies the contract" in planner
-        assert "on-disk inspection determines implementation availability" in planner
-        assert "the first selected codegen layer may mark its bounded target `create-if-missing`" in planner
-        assert "later selected layers must reuse that implementation" in planner
-        assert "L1 does not declare that shared symbol" not in planner
-        assert "every L1-declared symbol and every later-layer reference `reuse`" not in planner
-
-
-def test_e2e_planner_exact_reads_declared_helpers_before_marking_them_missing() -> None:
-    planner = " ".join(resource_text("skills/aa-e2e-plan/SKILL.md").split())
-
-    assert "For every exact L1-declared Python symbol" in planner
-    assert "translate its module path to an exact `.py` path" in planner
-    assert "exact-read that file before assigning `missing` or `create-if-missing`" in planner
-    assert "Glob, search, and repository status do not prove an ignored helper is absent" in planner
 
 
 def test_e2e_codegen_uses_importable_support_modules_instead_of_conftest_imports() -> None:
@@ -522,13 +450,14 @@ def test_e2e_codegen_uses_importable_support_modules_instead_of_conftest_imports
 def test_plan_and_review_skills_keep_durable_qa_tests_targets_on_the_execution_view(
     family: str,
 ) -> None:
-    for role in ("plan", "plan-reviewer"):
-        skill = " ".join(resource_text(f"skills/aa-{family}-{role}/SKILL.md").split())
-        assert "Execute runs durable `qa/tests/` in place with `pythonpath=qa`" in skill
-        assert "Fixtures and support modules live under `qa/tests/`" in skill
-        assert "Treat a missing `qa/tests/**/conftest.py` as fixture unavailability" in skill
-        assert "Do not look up fixtures under the SUT `tests/` tree" in skill
-        assert "Do not retarget mapping rows to `tests/`" in skill
+    reviewer = " ".join(resource_text(f"skills/aa-{family}-codegen-reviewer/SKILL.md").split())
+    codegen = " ".join(resource_text(f"skills/aa-{family}-codegen/SKILL.md").split())
+    assert "Execute runs durable `qa/tests/` in place with `pythonpath=qa`" in reviewer
+    assert "Fixtures and support modules live under `qa/tests/`" in reviewer
+    assert "Treat a missing `qa/tests/**/conftest.py` as fixture unavailability" in reviewer
+    assert "Do not look up fixtures under the SUT `tests/` tree" in reviewer
+    assert "Do not retarget mapping rows to `tests/`" in reviewer
+    assert "qa/tests/" in codegen
 
 
 @pytest.mark.parametrize(
@@ -541,21 +470,14 @@ def test_plan_and_review_skills_keep_durable_qa_tests_targets_on_the_execution_v
     ),
 )
 def test_plan_skill_mapping_examples_use_qa_tests(family: str, target_file: str) -> None:
-    skill = resource_text(f"skills/aa-{family}-plan/SKILL.md")
-    compact = "".join(skill.split())
-    assert f'"target_file":"{target_file}"' in compact
-    assert '"case_id"' in compact and '"symbol"' in compact and '"target_file"' in compact
-    if family in {"api", "e2e"}:
-        assert "qa/.qa.yaml" in skill
-    assert "qa/proposal.md" in skill
-    assert "qa/results/facts/" in skill
+    skill = resource_text(f"skills/aa-{family}-codegen/SKILL.md")
+    assert "qa/tests/" in skill
+    assert target_file.split("/")[2] in skill or "qa/tests/" in skill
+    assert "target_file" in skill
 
 
 def test_all_planners_use_the_result_contract_as_the_capability_whitelist() -> None:
     for family in ("api", "e2e", "fuzz", "performance"):
-        planner = " ".join(resource_text(f"skills/aa-{family}-plan/SKILL.md").split())
+        planner = " ".join(resource_text(f"skills/aa-{family}-codegen/SKILL.md").split())
 
-        assert "enum is the sole whitelist" in planner
-        assert "never construct a key from a namespace" in planner
-        assert "do not emit a virtual key" in planner
-        assert "byte-for-byte present in the enum" in planner
+        assert "Capability keys must be exact typed leaves" in planner

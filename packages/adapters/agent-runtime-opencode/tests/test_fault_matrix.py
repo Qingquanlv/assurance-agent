@@ -204,7 +204,7 @@ async def test_oversized_get_response_is_indeterminate() -> None:
         fixture.close()
 
 
-async def test_result_schema_failure_is_non_retryable() -> None:
+async def test_result_schema_failure_is_retryable() -> None:
     fixture = _terminal_success_fixture()
     fixture.fake.structured_result = {"ok": True, "tokens": 1}
     try:
@@ -212,7 +212,7 @@ async def test_result_schema_failure_is_non_retryable() -> None:
         assert outcome.status == "failed"
         assert outcome.failure is not None
         assert outcome.failure.kind == "invalid_output"
-        assert outcome.failure.retryable is False
+        assert outcome.failure.retryable is True
     finally:
         fixture.close()
 
@@ -303,7 +303,7 @@ async def test_cancel_cut_is_indeterminate() -> None:
         fixture.close()
 
 
-async def test_provider_error_is_typed_non_retryable_and_redacted() -> None:
+async def test_provider_error_is_typed_retryable_and_redacted() -> None:
     fixture = _bound_fixture(terminal_mode="error", sse_mode="fast_idle")
     fixture.fake.error_message = f"Authorization: Bearer {_SECRET_TEXT}"
     try:
@@ -312,7 +312,7 @@ async def test_provider_error_is_typed_non_retryable_and_redacted() -> None:
         assert outcome.status == "failed"
         assert outcome.failure is not None
         assert outcome.failure.kind == "external_effect"
-        assert outcome.failure.retryable is False
+        assert outcome.failure.retryable is True
         assert _SECRET_TEXT not in outcome.failure.message
         assert outcome.failure.message != "provider error"
     finally:
