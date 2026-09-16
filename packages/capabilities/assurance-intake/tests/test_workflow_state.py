@@ -66,5 +66,5 @@ async def test_review_round_advance_rejects_invalid_counters_without_output(
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
     assert outcome.output is None

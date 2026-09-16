@@ -8,19 +8,16 @@ from langgraph.graph.state import CompiledStateGraph
 
 from assurance_generation.graphs.nodes import (
     activation_codegen,
-    activation_plan,
-    activation_plan_review,
+    activation_codegen_review,
     human_review,
     human_review_retry,
     plan_round_join,
     publish_codegen,
-    publish_plan,
-    publish_plan_review,
+    publish_codegen_review,
     review_round_advance,
     review_round_advance_retry,
     select_codegen,
-    select_plan,
-    select_plan_review,
+    select_codegen_review,
     terminal_done,
     terminal_exhausted,
     terminal_rejected,
@@ -39,42 +36,42 @@ from assurance_generation.graphs.routes import (
 from assurance_generation.graphs.state import FamilyLaneOutput, GenerationState
 from graph_engine.boot.boot import CapabilityBuildContext
 
-_PLAN_REVIEW_PATHS: dict[Hashable, str] = {
-    "codegen": "codegen",
-    "plan-review-round-advance": "plan-review-round-advance",
-    "plan-human-review": "plan-human-review",
+_CODEGEN_REVIEW_PATHS: dict[Hashable, str] = {
+    "done": "done",
+    "codegen-review-round-advance": "codegen-review-round-advance",
+    "codegen-human-review": "codegen-human-review",
     "rejected": "rejected",
     "exhausted": "exhausted",
     "failed": "done",
 }
-_PLAN_REVIEW_RETRY_PATHS: dict[Hashable, str] = {
-    "codegen": "codegen",
-    "plan-review-round-advance-retry": "plan-review-round-advance-retry",
-    "plan-human-review-retry": "plan-human-review-retry",
+_CODEGEN_REVIEW_RETRY_PATHS: dict[Hashable, str] = {
+    "done": "done",
+    "codegen-review-round-advance-retry": "codegen-review-round-advance-retry",
+    "codegen-human-review-retry": "codegen-human-review-retry",
     "rejected": "rejected",
     "exhausted": "exhausted",
     "failed": "done",
 }
 _HUMAN_PATHS: dict[Hashable, str] = {
-    "codegen": "codegen",
+    "done": "done",
     "rejected": "rejected",
-    "plan-review-round-advance": "plan-review-round-advance",
+    "codegen-review-round-advance": "codegen-review-round-advance",
     "exhausted": "exhausted",
 }
 _HUMAN_RETRY_PATHS: dict[Hashable, str] = {
-    "codegen": "codegen",
+    "done": "done",
     "rejected": "rejected",
-    "plan-review-round-advance-retry": "plan-review-round-advance-retry",
+    "codegen-review-round-advance-retry": "codegen-review-round-advance-retry",
     "exhausted": "exhausted",
 }
 _ADVANCE_PATHS: dict[Hashable, str] = {
-    "plan-round-join": "plan-round-join",
+    "codegen-round-join": "codegen-round-join",
     "exhausted": "exhausted",
 }
-_ENTRY_PATHS: dict[Hashable, str] = {"plan": "plan", "skip": "skip"}
-_ATTEMPT_PATHS: dict[Hashable, str] = {"committed": "plan-review", "failed": "done"}
+_ENTRY_PATHS: dict[Hashable, str] = {"codegen": "codegen", "skip": "skip"}
+_ATTEMPT_PATHS: dict[Hashable, str] = {"committed": "codegen-review", "failed": "done"}
 _RETRY_ATTEMPT_PATHS: dict[Hashable, str] = {
-    "committed": "plan-review-retry",
+    "committed": "codegen-review-retry",
     "failed": "done",
 }
 
@@ -119,9 +116,8 @@ def _compile_leaf(
 def _assemble_family_graph(
     context: CapabilityBuildContext,
     *,
-    plan: CompiledStateGraph,
-    plan_review: CompiledStateGraph,
     codegen: CompiledStateGraph,
+    codegen_review: CompiledStateGraph,
     output_schema: type[FamilyLaneOutput] | type[GenerationState] | None,
 ) -> CompiledStateGraph:
     builder = (
@@ -129,63 +125,61 @@ def _assemble_family_graph(
         if output_schema is not None
         else StateGraph(GenerationState)
     )
-    builder.add_node("plan", plan)
-    builder.add_node("plan-retry", plan)
-    builder.add_node("plan-review", plan_review)
-    builder.add_node("plan-review-retry", plan_review)
     builder.add_node("codegen", codegen)
-    builder.add_node("plan-review-round-advance", _node(review_round_advance))
-    builder.add_node("plan-review-round-advance-retry", _node(review_round_advance_retry))
-    builder.add_node("plan-round-join", _node(plan_round_join))
-    builder.add_node("plan-human-review", _node(human_review))
-    builder.add_node("plan-human-review-retry", _node(human_review_retry))
+    builder.add_node("codegen-retry", codegen)
+    builder.add_node("codegen-review", codegen_review)
+    builder.add_node("codegen-review-retry", codegen_review)
+    builder.add_node("codegen-review-round-advance", _node(review_round_advance))
+    builder.add_node("codegen-review-round-advance-retry", _node(review_round_advance_retry))
+    builder.add_node("codegen-round-join", _node(plan_round_join))
+    builder.add_node("codegen-human-review", _node(human_review))
+    builder.add_node("codegen-human-review-retry", _node(human_review_retry))
     builder.add_node("skip", _node(terminal_skipped))
     builder.add_node("done", _node(terminal_done))
     builder.add_node("rejected", _node(terminal_rejected))
     builder.add_node("exhausted", _node(terminal_exhausted))
     builder.add_conditional_edges(START, cast(Callable[..., Any], route_family_entry), _ENTRY_PATHS)
     builder.add_conditional_edges(
-        "plan",
+        "codegen",
         cast(Callable[..., Any], route_attempt_result),
         _ATTEMPT_PATHS,
     )
     builder.add_conditional_edges(
-        "plan-review",
+        "codegen-review",
         cast(Callable[..., Any], route_plan_review),
-        _PLAN_REVIEW_PATHS,
+        _CODEGEN_REVIEW_PATHS,
     )
     builder.add_conditional_edges(
-        "plan-human-review",
+        "codegen-human-review",
         cast(Callable[..., Any], route_plan_human_review),
         _HUMAN_PATHS,
     )
     builder.add_conditional_edges(
-        "plan-review-round-advance",
+        "codegen-review-round-advance",
         cast(Callable[..., Any], route_plan_advance),
         _ADVANCE_PATHS,
     )
     builder.add_conditional_edges(
-        "plan-review-round-advance-retry",
+        "codegen-review-round-advance-retry",
         cast(Callable[..., Any], route_plan_advance_retry),
         _ADVANCE_PATHS,
     )
-    builder.add_edge("plan-round-join", "plan-retry")
+    builder.add_edge("codegen-round-join", "codegen-retry")
     builder.add_conditional_edges(
-        "plan-retry",
+        "codegen-retry",
         cast(Callable[..., Any], route_attempt_result),
         _RETRY_ATTEMPT_PATHS,
     )
     builder.add_conditional_edges(
-        "plan-review-retry",
+        "codegen-review-retry",
         cast(Callable[..., Any], route_plan_review_retry),
-        _PLAN_REVIEW_RETRY_PATHS,
+        _CODEGEN_REVIEW_RETRY_PATHS,
     )
     builder.add_conditional_edges(
-        "plan-human-review-retry",
+        "codegen-human-review-retry",
         cast(Callable[..., Any], route_plan_human_review_retry),
         _HUMAN_RETRY_PATHS,
     )
-    builder.add_edge("codegen", "done")
     builder.add_edge("skip", END)
     builder.add_edge("done", END)
     builder.add_edge("rejected", END)
@@ -197,22 +191,6 @@ def compile_family_pair(
     context: CapabilityBuildContext,
     family: str,
 ) -> tuple[CompiledStateGraph, CompiledStateGraph]:
-    plan = _compile_leaf(
-        context,
-        family=family,
-        stage="plan",
-        activation=activation_plan,
-        select=select_plan,
-        publish=publish_plan,
-    )
-    plan_review = _compile_leaf(
-        context,
-        family=family,
-        stage="plan-review",
-        activation=activation_plan_review,
-        select=select_plan_review,
-        publish=publish_plan_review,
-    )
     codegen = _compile_leaf(
         context,
         family=family,
@@ -221,10 +199,17 @@ def compile_family_pair(
         select=select_codegen,
         publish=publish_codegen,
     )
+    codegen_review = _compile_leaf(
+        context,
+        family=family,
+        stage="codegen-review",
+        activation=activation_codegen_review,
+        select=select_codegen_review,
+        publish=publish_codegen_review,
+    )
     leaves = {
-        "plan": plan,
-        "plan_review": plan_review,
         "codegen": codegen,
+        "codegen_review": codegen_review,
     }
     standalone = _assemble_family_graph(context, output_schema=None, **leaves)
     lane = _assemble_family_graph(context, output_schema=FamilyLaneOutput, **leaves)

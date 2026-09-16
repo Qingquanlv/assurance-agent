@@ -157,7 +157,7 @@ class InitTestRuntimeHandler:
             result = init_test_runtime(payload, context.project_root, context.write_root)
             return TaskOutcome.succeeded(result.model_dump(mode="json"))
         except (ValueError, ValidationError, OSError, SyntaxError, yaml.YAMLError) as error:
-            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=True)
 
 
 def _collect_l1_symbols(node: object, found: list[L1Symbol], path: tuple[str, ...] = ()) -> None:

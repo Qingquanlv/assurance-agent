@@ -138,7 +138,7 @@ async def test_apply_review_rejects_self_transition(tmp_path: Path) -> None:
     )
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
 
 
 def test_review_validator_default_fails_closed() -> None:

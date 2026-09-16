@@ -61,7 +61,7 @@ def complete_generation_cycle(
         if test_targets != targets:
             raise ValueError("generated tests must match the reviewed mapping targets")
         for path in family.plan_files:
-            if not path.startswith("qa/results/plans/"):
+            if not path.startswith(("qa/results/plans/", "qa/results/codegen/")):
                 raise ValueError("plan artifacts must belong to the current change")
             plans[path] = evidence_ref(project_root, path)
         for item in family.mapping.entries:
@@ -105,4 +105,4 @@ class PublishGenerationCycleHandler:
             result = complete_generation_cycle(payload, context.project_root, context.write_root)
             return TaskOutcome.succeeded(result.model_dump(mode="json"))
         except (ValueError, ValidationError, OSError, yaml.YAMLError) as error:
-            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=True)

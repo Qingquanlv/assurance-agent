@@ -31,9 +31,9 @@ def test_product_has_exactly_one_runtime_binding_per_agent_contract(opencode_com
     contracts = all_feature_agent_contracts()
     composition = opencode_composition
     bindings = runtime_bindings_from_composition(composition)
-    assert len(contracts) == 32
+    assert len(contracts) == 28
     assert set(bindings) == set(contracts)
-    assert len(bindings) == 32
+    assert len(bindings) == 28
     assert all(
         binding.model != "fixture-model" or binding.provider == "opencode" for binding in bindings.values()
     )
@@ -44,8 +44,8 @@ def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) ->
 
     # The two Intake plan Tasks enter the live registry when Task 11 wires their
     # semantic nodes into the public graphs.
-    assert len(runtime_registry) == 47
-    assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 32
+    assert len(runtime_registry) == 43
+    assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 28
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
 
@@ -61,7 +61,7 @@ def test_generation_runtime_binds_the_authenticated_capability_validation_contex
     ]
     document = json.loads(catalog.content)
     expected = {"capability_leafs": frozenset(document["typed_leafs"])}
-    resolved = opencode_composition.semantic_attempt_contracts["assurance.generation.agent.api.plan.v1"]
+    resolved = opencode_composition.semantic_attempt_contracts["assurance.generation.agent.api.codegen.v1"]
 
     assert resolved.validation_context == expected
     assert isinstance(resolved.executor, ResolvedRawAgentExecutor)
@@ -72,8 +72,8 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 47
-    assert len(AGENT_EXECUTION_CONTRACTS) == 32
+    assert len(composition.semantic_attempt_contracts) == 43
+    assert len(AGENT_EXECUTION_CONTRACTS) == 28
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
 
@@ -126,7 +126,7 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 47
+    assert len(resolved) == 43
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)
@@ -142,7 +142,7 @@ def test_raw_runtime_rows_are_canonical_and_digest_locked(opencode_composition) 
     contracts = all_feature_agent_contracts()
     composition = opencode_composition
     rows = raw_agent_runtime_binding_rows(composition)
-    assert len(rows) == 32
+    assert len(rows) == 28
     assert tuple(row.contract_id for row in rows) == tuple(sorted(contracts))
     assert all(isinstance(row, RawAgentRuntimeBindingProjectionV1) for row in rows)
     assert all(row.schema_version == "raw-agent-runtime-binding-v1" for row in rows)
@@ -172,7 +172,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     agents = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
-    assert len(agents) == 32
+    assert len(agents) == 28
     assert len(tasks) == 15
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)

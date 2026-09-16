@@ -451,7 +451,7 @@ async def test_codegen_finalize_rejects_invalid_case_path(tmp_path: Path) -> Non
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -476,13 +476,13 @@ async def test_codegen_finalize_rejects_symbol_drift_from_reviewed_mapping(
 
 @pytest.mark.parametrize("field", ("required_capabilities",))
 @pytest.mark.asyncio
-async def test_codegen_missing_trusted_input_does_not_retry_the_agent(field: str, tmp_path: Path) -> None:
+async def test_codegen_missing_trusted_input_is_retryable_invalid_input(field: str, tmp_path: Path) -> None:
     payload = fake_agent_result(codegen_result(files=[durable_oracle_path()]))
     del payload[field]
     outcome = await execute_task(codegen_finalize_handler("api"), payload, tmp_path)
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
 
 
 @pytest.mark.asyncio
@@ -779,7 +779,7 @@ async def test_codegen_finalize_rejects_legacy_wrapped_input(
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
-    assert executed.failure.retryable is False
+    assert executed.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -823,7 +823,7 @@ async def test_codegen_prepare_rejects_routing_marker(family: str, tmp_path: Pat
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
-    assert prepared.failure.retryable is False
+    assert prepared.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)
@@ -833,7 +833,7 @@ async def test_codegen_finalize_rejects_malformed_input(family: str, tmp_path: P
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
-    assert executed.failure.retryable is False
+    assert executed.failure.retryable is True
 
 
 @pytest.mark.parametrize("family", FAMILIES)

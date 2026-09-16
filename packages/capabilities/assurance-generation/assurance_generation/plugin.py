@@ -17,9 +17,7 @@ from assurance_generation.operations import generation_handlers
 from assurance_generation.resource_loader import resource_bytes
 from assurance_generation.validators import (
     CodegenMappingValidator,
-    FamilyPlanValidator,
     GeneratedFilesValidator,
-    PlanMechanicalValidator,
 )
 
 GENERATION_SOURCE = ProviderSource(
@@ -38,20 +36,15 @@ GENERATION_RESOURCE_FILES: dict[str, str] = {
     "assurance.generation.persona.reviewer.v1": "personas/reviewer.md",
     "assurance.generation.persona.test-author.v1": "personas/test-author.md",
     "assurance.generation.result.codegen.v1": "result-contracts/codegen.v1.schema.json",
-    "assurance.generation.result.plan-review.v1": "result-contracts/plan-review.v1.schema.json",
-    "assurance.generation.result.plan.v1": "result-contracts/plan.v1.schema.json",
+    "assurance.generation.result.codegen-review.v1": "result-contracts/plan-review.v1.schema.json",
     "assurance.generation.skill.aa-api-codegen.v1": "skills/aa-api-codegen/SKILL.md",
-    "assurance.generation.skill.aa-api-plan-reviewer.v1": "skills/aa-api-plan-reviewer/SKILL.md",
-    "assurance.generation.skill.aa-api-plan.v1": "skills/aa-api-plan/SKILL.md",
+    "assurance.generation.skill.aa-api-codegen-reviewer.v1": "skills/aa-api-codegen-reviewer/SKILL.md",
     "assurance.generation.skill.aa-e2e-codegen.v1": "skills/aa-e2e-codegen/SKILL.md",
-    "assurance.generation.skill.aa-e2e-plan-reviewer.v1": "skills/aa-e2e-plan-reviewer/SKILL.md",
-    "assurance.generation.skill.aa-e2e-plan.v1": "skills/aa-e2e-plan/SKILL.md",
+    "assurance.generation.skill.aa-e2e-codegen-reviewer.v1": "skills/aa-e2e-codegen-reviewer/SKILL.md",
     "assurance.generation.skill.aa-fuzz-codegen.v1": "skills/aa-fuzz-codegen/SKILL.md",
-    "assurance.generation.skill.aa-fuzz-plan-reviewer.v1": "skills/aa-fuzz-plan-reviewer/SKILL.md",
-    "assurance.generation.skill.aa-fuzz-plan.v1": "skills/aa-fuzz-plan/SKILL.md",
+    "assurance.generation.skill.aa-fuzz-codegen-reviewer.v1": "skills/aa-fuzz-codegen-reviewer/SKILL.md",
     "assurance.generation.skill.aa-performance-codegen.v1": "skills/aa-performance-codegen/SKILL.md",
-    "assurance.generation.skill.aa-performance-plan-reviewer.v1": "skills/aa-performance-plan-reviewer/SKILL.md",
-    "assurance.generation.skill.aa-performance-plan.v1": "skills/aa-performance-plan/SKILL.md",
+    "assurance.generation.skill.aa-performance-codegen-reviewer.v1": "skills/aa-performance-codegen-reviewer/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
@@ -67,11 +60,6 @@ _SCHEMA_FILES: dict[str, str] = {
 _HANDLERS = generation_handlers()
 
 _VALIDATORS = {
-    "assurance.generation.validator.api-plan.v1": FamilyPlanValidator("api"),
-    "assurance.generation.validator.e2e-plan.v1": FamilyPlanValidator("e2e"),
-    "assurance.generation.validator.fuzz-plan.v1": FamilyPlanValidator("fuzz"),
-    "assurance.generation.validator.performance-plan.v1": FamilyPlanValidator("performance"),
-    "assurance.generation.validator.plan-mechanical.v1": PlanMechanicalValidator(),
     "assurance.generation.validator.generated-files.v1": GeneratedFilesValidator(require_mapping=False),
     "assurance.generation.validator.codegen-mapping.v1": CodegenMappingValidator(),
 }

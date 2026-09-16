@@ -435,7 +435,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
     assert prepared.status == "failed"
     assert prepared.failure is not None
     assert prepared.failure.kind == "invalid_input"
-    assert prepared.failure.retryable is False
+    assert prepared.failure.retryable is True
 
 
 @pytest.mark.asyncio
@@ -444,7 +444,7 @@ async def test_finalize_rejects_malformed_input(tmp_path: Path) -> None:
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
-    assert executed.failure.retryable is False
+    assert executed.failure.retryable is True
 
 
 @pytest.mark.asyncio

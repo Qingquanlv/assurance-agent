@@ -2666,17 +2666,10 @@ items:
   status: verified
   verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
-  legacy_id: aa-api-plan
+  legacy_id: aa-api-codegen-reviewer
   disposition: migrate
   owner: assurance.generation
-  new_id: assurance.generation.skill.aa-api-plan.v1
-  status: verified
-  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
-- kind: skill
-  legacy_id: aa-api-plan-reviewer
-  disposition: migrate
-  owner: assurance.generation
-  new_id: assurance.generation.skill.aa-api-plan-reviewer.v1
+  new_id: assurance.generation.skill.aa-api-codegen-reviewer.v1
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
@@ -2722,17 +2715,10 @@ items:
   status: verified
   verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
-  legacy_id: aa-e2e-plan
+  legacy_id: aa-e2e-codegen-reviewer
   disposition: migrate
   owner: assurance.generation
-  new_id: assurance.generation.skill.aa-e2e-plan.v1
-  status: verified
-  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
-- kind: skill
-  legacy_id: aa-e2e-plan-reviewer
-  disposition: migrate
-  owner: assurance.generation
-  new_id: assurance.generation.skill.aa-e2e-plan-reviewer.v1
+  new_id: assurance.generation.skill.aa-e2e-codegen-reviewer.v1
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
@@ -2771,17 +2757,10 @@ items:
   status: verified
   verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
-  legacy_id: aa-fuzz-plan
+  legacy_id: aa-fuzz-codegen-reviewer
   disposition: migrate
   owner: assurance.generation
-  new_id: assurance.generation.skill.aa-fuzz-plan.v1
-  status: verified
-  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
-- kind: skill
-  legacy_id: aa-fuzz-plan-reviewer
-  disposition: migrate
-  owner: assurance.generation
-  new_id: assurance.generation.skill.aa-fuzz-plan-reviewer.v1
+  new_id: assurance.generation.skill.aa-fuzz-codegen-reviewer.v1
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
@@ -2827,17 +2806,10 @@ items:
   status: verified
   verification: packages/features/assurance-generation/tests/test_codegen.py::test_codegen_prepare_is_deterministic_for_every_family
 - kind: skill
-  legacy_id: aa-performance-plan
+  legacy_id: aa-performance-codegen-reviewer
   disposition: migrate
   owner: assurance.generation
-  new_id: assurance.generation.skill.aa-performance-plan.v1
-  status: verified
-  verification: packages/features/assurance-generation/tests/test_planning.py::test_plan_prepare_is_deterministic_for_every_family
-- kind: skill
-  legacy_id: aa-performance-plan-reviewer
-  disposition: migrate
-  owner: assurance.generation
-  new_id: assurance.generation.skill.aa-performance-plan-reviewer.v1
+  new_id: assurance.generation.skill.aa-performance-codegen-reviewer.v1
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill

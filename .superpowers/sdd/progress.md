@@ -116,3 +116,49 @@ Task 7: complete (uncommitted; focused gate 142 passed)
 - Minor: pyright jsonschema warning on harness template; init not in representative thin-root invoke list
 Final review: Important fixed (full init count + fail-closed test, 23 passed)
 - Remaining minors: collector/notes escaping; digest-mismatch kind; GenerationState receipts; evidence receipt test; jsonschema warning; identifier check; reads omit .aa; route_init not exclusive
+
+# SDD Progress — Codegen Locked Outputs
+
+**Plan:** .superpowers/plans/2026-09-15-codegen-locked-outputs.md
+**Branch:** codex/durable-qa-execute
+**Worktree:** /Users/lvqingquan/agent/assurance-agent (in-place; dirty host-scope baseline already on this tree)
+**Start HEAD:** e4da41a3f6ab4ad19f154269f3b3e3792bcb1b4e
+**Commit policy:** commit per task as the plan specifies
+
+## Tasks
+
+Task 1: complete (commits e4da41a3..00aff0c1, review clean)
+- Minor for whole-branch: unused CodegenScopeV1 leftover in contracts/codegen.py (Task 2 consumes it)
+Task 2: complete (commits 00aff0c1..ad0d154e, review clean)
+- Known leftover: operations/codegen.py still calls build_codegen_scope without case_ids_by_path (Task 3)
+Task 3: complete (commits ad0d154e..db79347f, prepare lock review-accepted; codegen-review hunks in planning.py treated as prior approved lane, not reverted)
+- Minor: stale reviewed_mapping fixture KeyError in test_codegen_missing_trusted_input
+- Controller: reviewer wanted planning.py codegen-review revert; that would undo already-approved delete-plan/codegen-review. Left in place.
+Task 4: complete (commits db79347f..729f4608, review clean)
+- Minor for whole-branch: authoring still prefix-allows family root; stale test names; FAMILY_TEST_FILES leftover
+Final review Critical fixed: c21aeb20 lock mapping case IDs to rebuilt host scope
+
+# SDD Progress — Codegen-Review Audit Removal
+
+**Plan:** .superpowers/plans/2026-09-15-codegen-review-audit-removal.md
+**Spec:** .superpowers/specs/2026-09-15-codegen-review-audit-removal-design.md
+**Branch:** codex/durable-qa-execute
+**Worktree:** /Users/lvqingquan/agent/assurance-agent (in-place; unpublished host-scope/codegen-lock already on this tree)
+**Start HEAD:** 3f13ee4e48498ab05baea23774d8bb1526b530f1
+**Commit policy:** commit per task as the plan specifies
+**Do not kill OpenCode on 4096. Do not touch the in-flight live item.**
+
+## Tasks
+
+Task 1: complete (commits 3f13ee4e..0843601e, review clean after 0843601e)
+- Minor for whole-branch: stale no-rewrite test names; sibling finalize tests still seed from review_result(); sealed API JSON can write review_audit null until Task 4 drops the field
+- Controller: dirty-tree prepare/codegen-lock hunks in review.py / test_plan_review.py left in place (already-approved generation lane)
+Task 2: complete (commits 0843601e..5581717c, review clean)
+- Minor for whole-branch: unused review_input_images in planning.py (Task 4 can drop)
+Task 3: complete (commits 5581717c..d5ce26da, review clean)
+- Minor for whole-branch: API skill still says “The audit makes omissions”; non-API skills still mention plan artifacts outside Boundaries
+Task 4: complete (commits d5ce26da..858f3973, review clean)
+- Controller: accepted catch-up routing/catalog hunks in reviews.py / test_contracts.py (already-approved generation lane in named files)
+- Minor: unused ReviewDecision export; schema test does not lock EvidenceArtifactRefV1 deletion
+Final review: Ready to merge (Yes). No Critical/Important. Minors left for a follow-up (stale test names; review_result seeds; unused review_input_images / ReviewDecision; leftover skill plan wording).
+

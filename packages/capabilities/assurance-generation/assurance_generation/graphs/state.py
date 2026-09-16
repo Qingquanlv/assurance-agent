@@ -7,11 +7,11 @@ from assurance_generation.contracts.families import GENERATION_FAMILIES
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
 
 PLAN_ROUND_PREDECESSORS = (
-    "plan-review-round-advance",
-    "plan-review-round-advance-retry",
+    "codegen-review-round-advance",
+    "codegen-review-round-advance-retry",
 )
 
-PlanRoundPredecessor = Literal["plan-review-round-advance", "plan-review-round-advance-retry"]
+PlanRoundPredecessor = Literal["codegen-review-round-advance", "codegen-review-round-advance-retry"]
 
 
 class PlanRoundArrival(TypedDict):
@@ -201,11 +201,9 @@ class GenerationState(CheckpointBridgeState, total=False):
     review_stage: str
     rounds_used: int
     rounds_budget: int
-    decision: str
-    auto_fix_allowed: bool
-    human_review_required: bool
+    route: str
+    finding_ids: list[str]
     human_action: str
-    codegen_readiness: str
     reviewed_plan: dict[str, object]
     artifacts: list[dict[str, object]]
     plan_round_inbox: Annotated[PlanRoundInbox, merge_plan_round_inbox]

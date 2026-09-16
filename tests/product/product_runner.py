@@ -240,7 +240,7 @@ class _ScriptedTaskHost:
                 return TaskOutcome.stopped("coverage_budget_exhausted", output)
             return TaskOutcome.succeeded(output)
         if capability_id.startswith("assurance.generation.agent.") and capability_id.endswith(
-            ".plan-review.v1"
+            ".codegen-review.v1"
         ):
             return TaskOutcome.succeeded(
                 self._public_fields(

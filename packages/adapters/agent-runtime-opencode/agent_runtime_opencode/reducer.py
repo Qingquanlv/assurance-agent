@@ -30,6 +30,18 @@ from agent_runtime_opencode.redaction import (
 
 
 ADAPTER_ID = "runtime.opencode"
+_NON_RETRYABLE_INVALID_OUTPUT_MARKERS = ("canary", "credential")
+
+
+def _invalid_output_outcome(error: BaseException, *, canaries: Sequence[str | bytes]) -> TaskOutcome:
+    message = failure_message(str(error), canaries=canaries)
+    folded = message.casefold()
+    retryable = not any(marker in folded for marker in _NON_RETRYABLE_INVALID_OUTPUT_MARKERS)
+    return TaskOutcome.failed(
+        "invalid_output",
+        message,
+        retryable=retryable,
+    )
 
 
 def reduce_terminal(
@@ -54,16 +66,12 @@ def reduce_terminal(
             try:
                 parse_closed_terminal_result(messages)
             except ValueError as error:
-                return TaskOutcome.failed(
-                    "invalid_output",
-                    failure_message(str(error), canaries=canaries),
-                    retryable=False,
-                )
-        retryable = provider_error_is_transient(session, messages)
+                return _invalid_output_outcome(error, canaries=canaries)
+        transient = provider_error_is_transient(session, messages)
         return TaskOutcome.failed(
-            "transient" if retryable else "external_effect",
+            "transient" if transient else "external_effect",
             failure_message(provider_error_message(session, messages), canaries=canaries),
-            retryable=retryable,
+            retryable=True,
         )
     return _reduce_success(
         messages=messages,
@@ -95,11 +103,7 @@ def _reduce_success(
             canaries=canaries,
         )
     except (TypeError, ValueError) as error:
-        return TaskOutcome.failed(
-            "invalid_output",
-            failure_message(str(error), canaries=canaries),
-            retryable=False,
-        )
+        return _invalid_output_outcome(error, canaries=canaries)
     result_digest = canonical_digest(validated)
     provider_diff_digest = _diff_digest(diff, canaries=canaries)
     provider, model = _provider_and_model(agent_run)

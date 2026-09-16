@@ -5,9 +5,10 @@ import hmac
 import os
 import struct
 from collections.abc import Iterable, Mapping
+from datetime import datetime, timezone
 from typing import Literal, Protocol, runtime_checkable
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from graph_engine.canonical import canonical_digest
 from graph_engine.composition.lock import (
@@ -35,6 +36,20 @@ from graph_engine.plugin_api import (
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 ATTEMPT_ROOT_CAPABILITY_ID: Literal["graph.engine.attempt-root"] = "graph.engine.attempt-root"
 HostOperation = Literal["execute", "reconcile", "cancel"]
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _aware_utc_timestamp(value: str, label: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"{label} must be an ISO-8601 timestamp") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return parsed
 
 
 def authorized_secret_port(authorized: Mapping[str, bytes]) -> SecretPort:
@@ -231,17 +246,29 @@ class TaskHostTerminalReceipt(FrozenModel):
     terminal_proof_digest: str | None = Field(default=None, pattern=_SHA256_PATTERN)
     quiescence_proof_digest: str = Field(pattern=_SHA256_PATTERN)
     host_call_id: int = Field(ge=1)
+    started_at: str
+    completed_at: str
 
     @field_validator("handler_id")
     @classmethod
     def _validate_handler_id(cls, value: str) -> str:
         return _qualified_id(value, "handler id")
 
+    @field_validator("started_at", "completed_at")
+    @classmethod
+    def _validate_timestamp(cls, value: str, info: ValidationInfo) -> str:
+        _aware_utc_timestamp(value, info.field_name)
+        return value
+
     @model_validator(mode="after")
     def _validate_outcome_digest(self) -> TaskHostTerminalReceipt:
         expected = canonical_digest(self.outcome.model_dump(mode="json"))
         if self.outcome_digest != expected:
             raise ValueError("terminal receipt requires a canonical outcome digest")
+        started = _aware_utc_timestamp(self.started_at, "started_at")
+        completed = _aware_utc_timestamp(self.completed_at, "completed_at")
+        if completed < started:
+            raise ValueError("completed_at must not precede started_at")
         return self
 
 

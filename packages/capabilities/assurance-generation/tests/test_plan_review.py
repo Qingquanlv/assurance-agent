@@ -481,7 +481,7 @@ async def test_plan_review_finalize_rejects_malformed_input(family: str, tmp_pat
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_input"
-    assert executed.failure.retryable is False
+    assert executed.failure.retryable is True
 
 
 @pytest.mark.asyncio

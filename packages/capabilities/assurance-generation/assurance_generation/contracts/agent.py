@@ -127,6 +127,7 @@ class AgentFinalizeInputV1(FrozenModel):
     change_id: str | None = Field(default=None, min_length=1)
     capability_leafs: tuple[str, ...]
     required_capabilities: tuple[str, ...] | None = None
+    scope_case_ids: tuple[str, ...] | None = None
     reviewed_mapping: dict[str, Any] | None = None
     artifact_paths: tuple[str, ...]
     allowed_paths: tuple[str, ...] = ()
@@ -145,6 +146,13 @@ class AgentFinalizeInputV1(FrozenModel):
         if value is None:
             return None
         return _sorted_unique(value, label="required capability")
+
+    @field_validator("scope_case_ids")
+    @classmethod
+    def _scope_case_ids(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        return _sorted_unique(value, label="scope case id")
 
     @field_validator("artifact_paths")
     @classmethod
@@ -174,7 +182,8 @@ class CodegenInputV1(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...] = ()
-    reviewed_plan: dict[str, Any]
+    codegen_scope: dict[str, Any] | None = None
+    codegen_output: dict[str, Any] | None = None
     reviewed_cases: dict[str, Any] | None = None
     family_constraints: FamilyConstraintsV1 | None = None
     coverage_epoch: int = Field(default=0, ge=0)
@@ -191,11 +200,18 @@ class CodegenInputV1(FrozenModel):
     def _artifact_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _canonical_relative_paths(value)
 
-    @field_validator("reviewed_plan")
+    @field_validator("codegen_scope")
     @classmethod
-    def _reviewed_plan(cls, value: dict[str, Any]) -> dict[str, Any]:
-        if not value:
-            raise ValueError("reviewed_plan must be a mapping")
+    def _codegen_scope(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
+            raise ValueError("codegen_scope must be a mapping")
+        return value
+
+    @field_validator("codegen_output")
+    @classmethod
+    def _codegen_output(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None and not value:
+            raise ValueError("codegen_output must be a mapping")
         return value
 
     @field_validator("reviewed_cases")

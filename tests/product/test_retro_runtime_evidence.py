@@ -22,7 +22,7 @@ def _records(invocation: str = "inv-full", *, commit_fence: int = 2):
         graph_revision="d" * 64,
         invocation_id=invocation,
         public_entrypoint="full",
-        semantic_node_id="api.plan-review",
+        semantic_node_id="api.codegen-review",
     )
     terminals = [
         AttemptTerminated(

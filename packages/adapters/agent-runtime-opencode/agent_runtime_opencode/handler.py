@@ -119,10 +119,11 @@ class OpenCodeHandler:
                 return result.outcome
             if result.status != "running":
                 if _activity_is_bound(context):
+                    reason = result.reason or result.status
                     return TaskOutcome.failed(
                         "external_effect",
-                        result.reason or result.status,
-                        retryable=False,
+                        reason,
+                        retryable=reason != "prompt identity conflict",
                     )
                 raise OpenCodeDispatchIncomplete(result.reason or result.status)
             if time.monotonic() >= deadline:

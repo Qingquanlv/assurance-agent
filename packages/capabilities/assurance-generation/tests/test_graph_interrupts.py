@@ -64,7 +64,7 @@ def _input(family: str) -> dict[str, object]:
         "lane_selected": True,
         "rounds_used": 0,
         "rounds_budget": 2,
-        "review_stage": "plan",
+        "review_stage": "codegen",
     }
 
 
@@ -73,19 +73,14 @@ def _plan() -> dict[str, object]:
 
 
 def _review(
-    decision: str,
+    route: str,
     *,
-    auto_fix: bool = False,
-    human: bool = False,
     used: int | None = 0,
     budget: int | None = 2,
-    readiness: str = "ready",
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "decision": decision,
-        "auto_fix_allowed": auto_fix,
-        "human_review_required": human,
-        "codegen_readiness": readiness,
+        "route": route,
+        "finding_ids": [],
         "artifacts": [{"path": "qa/results", "digest": _SHA}],
     }
     if used is not None:
@@ -139,7 +134,7 @@ def _config(family: str) -> RunnableConfig:
 
 def test_publish_plan_review_keeps_graph_rounds_when_result_omits_or_nulls_them() -> None:
     state = {"rounds_used": 0, "rounds_budget": 2}
-    dumped = _review("needs_fix", auto_fix=True)
+    dumped = _review("auto_fix")
     dumped["rounds_used"] = None
     dumped["rounds_budget"] = None
     published = publish_plan_review(state, dumped, None)
@@ -188,9 +183,9 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
     request = seen[0]
     assert isinstance(request, dict)
     assert set(request["actions"]) == {"approve", "reject", "request_rework"}
-    assert request["interrupt_id"] == f"{family}-plan-human-review"
+    assert request["interrupt_id"] == f"{family}-codegen-human-review"
     assert request["ordinal"] == 0
-    assert request["reason"] == f"{family}_plan_needs_human_review"
+    assert request["reason"] == f"{family}_codegen_needs_human_review"
 
     with _patch_interrupt(human_review, return_value={"action": "approve"}):
         update = human_review(state)
@@ -209,21 +204,21 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
             human_review_retry(state)
     retry_request = retry_seen[0]
     assert isinstance(retry_request, dict)
-    assert retry_request["interrupt_id"] == f"{family}-plan-human-review-retry"
+    assert retry_request["interrupt_id"] == f"{family}-codegen-human-review-retry"
     assert retry_request["ordinal"] == 1
-    assert retry_request["reason"] == f"{family}_plan_needs_human_review"
+    assert retry_request["reason"] == f"{family}_codegen_needs_human_review"
 
 
 def test_advance_review_round_node_is_the_moved_pure_function() -> None:
-    payload = {"family": "api", "review_stage": "plan", "rounds_used": 0, "rounds_budget": 2}
+    payload = {"family": "api", "review_stage": "codegen", "rounds_used": 0, "rounds_budget": 2}
     output = advance_review_round_node(payload)
-    expected = advance_review_round({"family": "api", "stage": "plan", "rounds_used": 0, "rounds_budget": 2})
+    expected = advance_review_round({"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2})
     assert isinstance(expected, GenerationReviewRoundAdvanceOutput)
     assert output["rounds_used"] == expected.rounds_used == 1
     assert output["rounds_budget"] == expected.rounds_budget == 2
     with pytest.raises((ValidationError, ValueError)):
         advance_review_round_node(
-            {"family": "api", "review_stage": "plan", "rounds_used": 2, "rounds_budget": 2}
+            {"family": "api", "review_stage": "codegen", "rounds_used": 2, "rounds_budget": 2}
         )
 
 
@@ -237,9 +232,8 @@ async def test_pass_completes_without_advance(family: str) -> None:
         _family_graph(bundle, family),
         input=_input(family),
         script={
-            f"generation.{family}.plan": [committed(_plan(), _RECEIPT)],
-            f"generation.{family}.plan-review": [committed(_review("pass"), _RECEIPT)],
             f"generation.{family}.codegen": [committed(_codegen(family), _RECEIPT)],
+            f"generation.{family}.codegen-review": [committed(_review("codegen"), _RECEIPT)],
         },
     )
     terminal = cast(dict[str, object], result.terminal)
@@ -257,17 +251,19 @@ async def test_automatic_fix_advances_exactly_once(family: str) -> None:
         _family_graph(bundle, family),
         input=_input(family),
         script={
-            f"generation.{family}.plan": [committed(_plan(), _RECEIPT), committed(_plan(), _RECEIPT)],
-            f"generation.{family}.plan-review": [
-                committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
-                committed(_review("pass", used=1), _RECEIPT),
+            f"generation.{family}.codegen": [
+                committed(_codegen(family), _RECEIPT),
+                committed(_codegen(family), _RECEIPT),
             ],
-            f"generation.{family}.codegen": [committed(_codegen(family), _RECEIPT)],
+            f"generation.{family}.codegen-review": [
+                committed(_review("auto_fix", used=0), _RECEIPT),
+                committed(_review("codegen", used=1), _RECEIPT),
+            ],
         },
     )
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 1
-    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.plan") == 2
+    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.codegen") == 2
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
@@ -280,12 +276,14 @@ async def test_automatic_fix_advances_when_review_result_nulls_rounds(family: st
         _family_graph(bundle, family),
         input=_input(family),
         script={
-            f"generation.{family}.plan": [committed(_plan(), _RECEIPT), committed(_plan(), _RECEIPT)],
-            f"generation.{family}.plan-review": [
-                committed(_review("needs_fix", auto_fix=True, used=None, budget=None), _RECEIPT),
-                committed(_review("pass", used=None, budget=None), _RECEIPT),
+            f"generation.{family}.codegen": [
+                committed(_codegen(family), _RECEIPT),
+                committed(_codegen(family), _RECEIPT),
             ],
-            f"generation.{family}.codegen": [committed(_codegen(family), _RECEIPT)],
+            f"generation.{family}.codegen-review": [
+                committed(_review("auto_fix", used=None, budget=None), _RECEIPT),
+                committed(_review("codegen", used=None, budget=None), _RECEIPT),
+            ],
         },
     )
     terminal = cast(dict[str, object], result.terminal)
@@ -302,8 +300,8 @@ async def test_reject_is_explicit_terminal(family: str) -> None:
         _family_graph(bundle, family),
         input=_input(family),
         script={
-            f"generation.{family}.plan": [committed(_plan(), _RECEIPT)],
-            f"generation.{family}.plan-review": [committed(_review("reject"), _RECEIPT)],
+            f"generation.{family}.codegen": [committed(_codegen(family), _RECEIPT)],
+            f"generation.{family}.codegen-review": [committed(_review("reject"), _RECEIPT)],
         },
     )
     terminal = cast(dict[str, object], result.terminal)
@@ -320,15 +318,15 @@ async def test_budget_exhaustion_is_explicit_after_two_advances(family: str) -> 
         _family_graph(bundle, family),
         input=_input(family),
         script={
-            f"generation.{family}.plan": [
-                committed(_plan(), _RECEIPT),
-                committed(_plan(), _RECEIPT),
-                committed(_plan(), _RECEIPT),
+            f"generation.{family}.codegen": [
+                committed(_codegen(family), _RECEIPT),
+                committed(_codegen(family), _RECEIPT),
+                committed(_codegen(family), _RECEIPT),
             ],
-            f"generation.{family}.plan-review": [
-                committed(_review("needs_fix", auto_fix=True, used=0), _RECEIPT),
-                committed(_review("needs_fix", auto_fix=True, used=1), _RECEIPT),
-                committed(_review("needs_fix", auto_fix=True, used=2), _RECEIPT),
+            f"generation.{family}.codegen-review": [
+                committed(_review("auto_fix", used=0), _RECEIPT),
+                committed(_review("auto_fix", used=1), _RECEIPT),
+                committed(_review("auto_fix", used=2), _RECEIPT),
             ],
         },
     )
@@ -357,19 +355,14 @@ async def test_human_action_on_family_graph(family: str, action: str) -> None:
         harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
     )
     reviews = (
-        [_review("needs_human_review", human=True), _review("pass", used=1)]
-        if action == "request_rework"
-        else [_review("needs_human_review", human=True)]
+        [_review("human"), _review("codegen", used=1)] if action == "request_rework" else [_review("human")]
     )
     script: dict[str, list[AttemptResolution]] = {
-        f"generation.{family}.plan": [committed(_plan(), _RECEIPT)],
-        f"generation.{family}.plan-review": [committed(item, _RECEIPT) for item in reviews],
+        f"generation.{family}.codegen": [committed(_codegen(family), _RECEIPT)],
+        f"generation.{family}.codegen-review": [committed(item, _RECEIPT) for item in reviews],
     }
     if action == "request_rework":
-        script[f"generation.{family}.plan"].append(committed(_plan(), _RECEIPT))
-        script[f"generation.{family}.codegen"] = [committed(_codegen(family), _RECEIPT)]
-    elif action == "approve":
-        script[f"generation.{family}.codegen"] = [committed(_codegen(family), _RECEIPT)]
+        script[f"generation.{family}.codegen"].append(committed(_codegen(family), _RECEIPT))
     harness._kernel.load_script(script)
     wrapper: StateGraph[GenerationState] = StateGraph(GenerationState)
     wrapper.add_node("family", cast(Any, _family_graph(bundle, family)))
@@ -386,7 +379,7 @@ async def test_human_action_on_family_graph(family: str, action: str) -> None:
         assert _interrupt_value(interrupted) is not None
     value = _interrupt_value(interrupted)
     if isinstance(value, dict):
-        assert value.get("interrupt_id") == f"{family}-plan-human-review"
+        assert value.get("interrupt_id") == f"{family}-codegen-human-review"
         assert value.get("ordinal") == 0
     resumed = await graph.ainvoke(Command(resume={"action": action}), config=config)
     assert resumed["human_action"] == action
@@ -395,11 +388,11 @@ async def test_human_action_on_family_graph(family: str, action: str) -> None:
         inbox = resumed["plan_round_inbox"]
         current = inbox["current_trigger"]
         assert current is not None
-        assert current["predecessor"] == "plan-review-round-advance"
+        assert current["predecessor"] == "codegen-review-round-advance"
         assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
         assert resumed["current_trigger"] == current
         assert [call.semantic_node_id for call in harness._kernel.semantic_calls].count(
-            f"generation.{family}.plan"
+            f"generation.{family}.codegen"
         ) == 2
     elif action == "approve":
         assert resumed.get("status") in {"passed", "done"} or resumed.get("decision") == "pass"
@@ -419,7 +412,7 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt(tmp_path: P
     bundle = build_generation_graphs(
         harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
     )
-    script["generation.api.plan-review"] = [committed(_review("needs_human_review", human=True), _RECEIPT)]
+    script["generation.api.codegen-review"] = [committed(_review("human"), _RECEIPT)]
     script["generation.publish-cycle"] = [committed(cycle_result.model_dump(mode="json"), _RECEIPT)]
     harness._kernel.load_script(script)
     wrapper: StateGraph[GenerationState] = StateGraph(GenerationState)
@@ -457,7 +450,7 @@ async def test_root_fanout_surfaces_resumable_family_human_interrupt(tmp_path: P
         assert _interrupt_value(interrupted) is not None
     value = _interrupt_value(interrupted)
     assert isinstance(value, dict)
-    assert value.get("interrupt_id") == "api-plan-human-review"
+    assert value.get("interrupt_id") == "api-codegen-human-review"
     assert value.get("ordinal") == 0
     resumed = await graph.ainvoke(Command(resume={"action": "approve"}), config=config)
     assert _interrupt_value(resumed) is None
@@ -475,12 +468,18 @@ async def test_request_rework_validates_after_restart_and_advances_once() -> Non
     await _prepare_anchored_backend(backend)
     harness.recording_context(owner_id="assurance.generation", contracts=_contracts())
     builder: StateGraph[GenerationState] = StateGraph(GenerationState)
-    builder.add_node("plan-human-review", cast(Callable[..., Any], human_review))
-    builder.add_edge(START, "plan-human-review")
-    builder.add_edge("plan-human-review", END)
+    builder.add_node("codegen-human-review", cast(Callable[..., Any], human_review))
+    builder.add_edge(START, "codegen-human-review")
+    builder.add_edge("codegen-human-review", END)
     graph = builder.compile(checkpointer=backend)
     await graph.ainvoke(
-        {"family": "api", "rounds_used": 0, "rounds_budget": 2, "decision": "needs_human_review"},
+        {
+            "family": "api",
+            "rounds_used": 0,
+            "rounds_budget": 2,
+            "decision": "needs_human_review",
+            "review_stage": "codegen",
+        },
         config=_config("api"),
     )
     resumed = await graph.ainvoke(Command(resume={"action": "request_rework"}), config=_config("api"))

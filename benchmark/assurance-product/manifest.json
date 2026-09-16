@@ -45,16 +45,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.api.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.plan.v1": {
+        "assurance.generation.agent.api.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -72,16 +63,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.e2e.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.plan.v1": {
+        "assurance.generation.agent.e2e.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -99,16 +81,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.fuzz.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.plan.v1": {
+        "assurance.generation.agent.fuzz.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -126,16 +99,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.performance.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.plan.v1": {
+        "assurance.generation.agent.performance.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -317,9 +281,8 @@
         "intake.case-design",
         "intake.case-review",
         "quality.fact-baseline",
-        "generation.api.plan",
-        "generation.api.plan-review",
         "generation.api.codegen",
+        "generation.api.codegen-review",
         "execution.execute",
         "quality.inspect",
         "quality.report"
@@ -353,16 +316,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.api.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.plan.v1": {
+        "assurance.generation.agent.api.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -380,16 +334,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.e2e.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.plan.v1": {
+        "assurance.generation.agent.e2e.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -407,16 +352,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.fuzz.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.plan.v1": {
+        "assurance.generation.agent.fuzz.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -434,16 +370,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.performance.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.plan.v1": {
+        "assurance.generation.agent.performance.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -671,16 +598,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.api.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.plan.v1": {
+        "assurance.generation.agent.api.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -698,16 +616,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.e2e.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.plan.v1": {
+        "assurance.generation.agent.e2e.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -725,16 +634,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.fuzz.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.plan.v1": {
+        "assurance.generation.agent.fuzz.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -752,16 +652,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.performance.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.plan.v1": {
+        "assurance.generation.agent.performance.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -943,9 +834,8 @@
         "intake.case-design",
         "intake.case-review",
         "quality.fact-baseline",
-        "generation.api.plan",
-        "generation.api.plan-review",
         "generation.api.codegen",
+        "generation.api.codegen-review",
         "execution.execute",
         "quality.inspect",
         "quality.report"
@@ -979,16 +869,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.api.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.plan.v1": {
+        "assurance.generation.agent.api.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1006,16 +887,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.e2e.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.plan.v1": {
+        "assurance.generation.agent.e2e.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1033,16 +905,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.fuzz.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.plan.v1": {
+        "assurance.generation.agent.fuzz.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1060,16 +923,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.performance.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.plan.v1": {
+        "assurance.generation.agent.performance.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1297,16 +1151,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.api.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.plan.v1": {
+        "assurance.generation.agent.api.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1324,16 +1169,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.e2e.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.plan.v1": {
+        "assurance.generation.agent.e2e.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1351,16 +1187,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.fuzz.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.plan.v1": {
+        "assurance.generation.agent.fuzz.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1378,16 +1205,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.performance.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.plan.v1": {
+        "assurance.generation.agent.performance.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1569,9 +1387,8 @@
         "intake.case-design",
         "intake.case-review",
         "quality.fact-baseline",
-        "generation.api.plan",
-        "generation.api.plan-review",
         "generation.api.codegen",
+        "generation.api.codegen-review",
         "execution.execute",
         "quality.inspect",
         "quality.report"
@@ -1605,16 +1422,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.api.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.plan.v1": {
+        "assurance.generation.agent.api.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1632,16 +1440,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.e2e.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.plan.v1": {
+        "assurance.generation.agent.e2e.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1659,16 +1458,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.fuzz.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.plan.v1": {
+        "assurance.generation.agent.fuzz.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1686,16 +1476,7 @@
           "request_policy_id": "assurance.product.agent.request.default",
           "worker_profile": "max"
         },
-        "assurance.generation.agent.performance.plan-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.plan.v1": {
+        "assurance.generation.agent.performance.codegen-review.v1": {
           "limits": {
             "max_seconds": 3600
           },
@@ -1870,7 +1651,7 @@
       "secret_env": "AA_NEXT_OPENCODE_TOKEN",
       "secret_handle": "opencode.token",
       "selected_test_families": [
-        "api"
+    "api"
       ],
       "case_modules": [
         "system/permission"

@@ -55,7 +55,7 @@ def test_generation_rejects_unknown_leaf(family: str) -> None:
 @pytest.mark.parametrize("family", FAMILIES)
 def test_generation_rejects_invalid_review_decision(family: str) -> None:
     raw = review_result(family)
-    raw["decision"] = "approved"
+    raw["route"] = "approved"
     with pytest.raises(ValidationError):
         PlanReviewAuthoring.model_validate(raw, context={"capability_leafs": frozenset(VALID_LEAFS)})
 

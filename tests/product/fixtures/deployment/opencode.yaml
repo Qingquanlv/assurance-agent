@@ -50,14 +50,7 @@ routes:
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.agent.api.plan-review.v1:
-    provider_model: fixture-model
-    worker_profile: assurance-worker
-    permission_profile_id: assurance.product.agent.permission.default
-    request_policy_id: assurance.product.agent.request.default
-    limits:
-      max_seconds: 900
-  assurance.generation.agent.api.plan.v1:
+  assurance.generation.agent.api.codegen-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
@@ -71,14 +64,7 @@ routes:
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.agent.e2e.plan-review.v1:
-    provider_model: fixture-model
-    worker_profile: assurance-worker
-    permission_profile_id: assurance.product.agent.permission.default
-    request_policy_id: assurance.product.agent.request.default
-    limits:
-      max_seconds: 900
-  assurance.generation.agent.e2e.plan.v1:
+  assurance.generation.agent.e2e.codegen-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
@@ -92,14 +78,7 @@ routes:
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.agent.fuzz.plan-review.v1:
-    provider_model: fixture-model
-    worker_profile: assurance-worker
-    permission_profile_id: assurance.product.agent.permission.default
-    request_policy_id: assurance.product.agent.request.default
-    limits:
-      max_seconds: 900
-  assurance.generation.agent.fuzz.plan.v1:
+  assurance.generation.agent.fuzz.codegen-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default
@@ -113,14 +92,7 @@ routes:
     request_policy_id: assurance.product.agent.request.default
     limits:
       max_seconds: 900
-  assurance.generation.agent.performance.plan-review.v1:
-    provider_model: fixture-model
-    worker_profile: assurance-worker
-    permission_profile_id: assurance.product.agent.permission.default
-    request_policy_id: assurance.product.agent.request.default
-    limits:
-      max_seconds: 900
-  assurance.generation.agent.performance.plan.v1:
+  assurance.generation.agent.performance.codegen-review.v1:
     provider_model: fixture-model
     worker_profile: assurance-worker
     permission_profile_id: assurance.product.agent.permission.default

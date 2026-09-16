@@ -32,36 +32,27 @@ def _within_spent_budget(state: Mapping[str, object]) -> bool:
 
 
 def _is_pass(state: Mapping[str, object]) -> bool:
-    return (
-        state.get("decision") == "pass"
-        and state.get("human_review_required") is not True
-        and state.get("codegen_readiness") != "not_ready"
-    )
+    return state.get("route") == "codegen"
 
 
 def _is_auto_fix(state: Mapping[str, object]) -> bool:
-    return (
-        state.get("decision") == "needs_fix"
-        and state.get("auto_fix_allowed") is True
-        and state.get("human_review_required") is not True
-        and _has_budget(state)
-    )
+    return state.get("route") == "auto_fix" and _has_budget(state)
 
 
 def _is_reject(state: Mapping[str, object]) -> bool:
-    return state.get("decision") == "reject" and state.get("human_review_required") is not True
+    return state.get("route") == "reject"
 
 
 def _is_human(state: Mapping[str, object]) -> bool:
-    return state.get("decision") == "needs_human_review" or state.get("human_review_required") is True
+    return state.get("route") == "human"
 
 
 def plan_review_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     return {
-        "pass": "codegen" if _is_pass(state) else None,
-        "auto_fix": "plan-review-round-advance" if _is_auto_fix(state) else None,
+        "pass": "done" if _is_pass(state) else None,
+        "auto_fix": "codegen-review-round-advance" if _is_auto_fix(state) else None,
         "reject": "rejected" if _is_reject(state) else None,
-        "human": "plan-human-review" if _is_human(state) else None,
+        "human": "codegen-human-review" if _is_human(state) else None,
     }
 
 
@@ -69,18 +60,18 @@ def plan_review_retry_named_matches(state: Mapping[str, object]) -> dict[str, st
     matches = plan_review_named_matches(state)
     return {
         "pass": matches["pass"],
-        "auto_fix": "plan-review-round-advance-retry" if matches["auto_fix"] else None,
+        "auto_fix": "codegen-review-round-advance-retry" if matches["auto_fix"] else None,
         "reject": matches["reject"],
-        "human": "plan-human-review-retry" if matches["human"] else None,
+        "human": "codegen-human-review-retry" if matches["human"] else None,
     }
 
 
 def plan_human_review_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
     action = state.get("human_action")
     return {
-        "approve": "codegen" if action == "approve" else None,
+        "approve": "done" if action == "approve" else None,
         "reject": "rejected" if action == "reject" else None,
-        "rework": "plan-review-round-advance" if action == "request_rework" and _has_budget(state) else None,
+        "rework": "codegen-review-round-advance" if action == "request_rework" and _has_budget(state) else None,
     }
 
 
@@ -89,12 +80,12 @@ def plan_human_review_retry_named_matches(state: Mapping[str, object]) -> dict[s
     return {
         "approve": matches["approve"],
         "reject": matches["reject"],
-        "rework": "plan-review-round-advance-retry" if matches["rework"] else None,
+        "rework": "codegen-review-round-advance-retry" if matches["rework"] else None,
     }
 
 
 def plan_advance_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    return {"continue": "plan-round-join" if _within_spent_budget(state) else None}
+    return {"continue": "codegen-round-join" if _within_spent_budget(state) else None}
 
 
 def plan_advance_retry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
@@ -102,7 +93,7 @@ def plan_advance_retry_named_matches(state: Mapping[str, object]) -> dict[str, s
 
 
 def family_entry_named_matches(state: Mapping[str, object]) -> dict[str, str | None]:
-    return {"selected": "plan" if state.get("lane_selected") else None}
+    return {"selected": "codegen" if state.get("lane_selected") else None}
 
 
 def route_families(state: Mapping[str, object]) -> list[Send]:
@@ -134,7 +125,7 @@ def route_families(state: Mapping[str, object]) -> list[Send]:
                     "lane_selected": family in selected,
                     "rounds_used": 0,
                     "rounds_budget": 3,
-                    "review_stage": "plan",
+                    "review_stage": "codegen",
                 },
             )
         )

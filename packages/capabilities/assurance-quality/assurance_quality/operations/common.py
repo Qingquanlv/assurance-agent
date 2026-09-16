@@ -33,7 +33,7 @@ def validate_input(model: type[Any], data: object) -> Any:
 
 
 def failed_input(error: Exception) -> TaskOutcome:
-    return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+    return TaskOutcome.failed("invalid_input", str(error), retryable=True)
 
 
 def failed_output(message: str) -> TaskOutcome:

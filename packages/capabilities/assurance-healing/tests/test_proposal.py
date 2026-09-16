@@ -242,7 +242,7 @@ async def test_fix_proposal_finalize_rejects_rewritten_baseline_digest(tmp_path:
     assert outcome.status == "failed"
     assert outcome.failure is not None
     assert outcome.failure.kind == "invalid_input"
-    assert outcome.failure.retryable is False
+    assert outcome.failure.retryable is True
 
 
 @pytest.mark.asyncio

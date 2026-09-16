@@ -583,15 +583,12 @@ def _authoring_payload(leaf: str) -> dict[str, object]:
 def _plan_review_payload(leaf: str) -> dict[str, object]:
     return {
         "schema_version": "1.0",
-        "review_type": "api-plan",
+        "review_type": "api-codegen",
         "change_id": _CHANGE_ID,
-        "decision": "pass",
+        "route": "codegen",
         "findings": [],
-        "auto_fix_plan": [],
-        "next_action": "proceed to codegen",
-        "auto_fix_allowed": True,
-        "human_review_required": False,
-        "codegen_readiness": "ready",
+        "finding_ids": [],
+        "next_action": "proceed to execute",
         "risk_level": "medium",
         "required_capabilities": [leaf],
     }

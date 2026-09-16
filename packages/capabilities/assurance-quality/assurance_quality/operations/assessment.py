@@ -821,7 +821,7 @@ class MaterializeAssessmentHandler:
                 write_root=context.write_root,
             )
         except (AssessmentInputError, ValidationError, OSError) as error:
-            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=True)
         return TaskOutcome.succeeded(cast(JSONValue, output.model_dump(mode="json")))
 
 
