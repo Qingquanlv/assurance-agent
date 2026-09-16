@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -439,3 +440,277 @@ def test_project_signal_metrics_returns_empty_tuple_for_unknown_type() -> None:
     from assurance_improvement.operations.retro_dashboard import project_signal_metrics
 
     assert project_signal_metrics(_FakeSignal()) == ()  # type: ignore[arg-type]
+
+
+_REAL_CONTEXT = {
+    "schema_version": "3",
+    "retro_id": "retro-a8e10021fee6abf1ec44671cb8d8d9b38d613722e6df2946c1164cda30071b39",
+    "generated_at": "2026-09-16T12:19:50.482167+00:00",
+    "dry_run": False,
+    "window": {
+        "selection": {
+            "mode": "change_ids",
+            "requested_change_ids": ["BENCH-opencode-ret-dept-management-20260916-113031-330191e8"],
+        },
+        "change_ids": ["BENCH-opencode-ret-dept-management-20260916-113031-330191e8"],
+    },
+    "source_manifest": {
+        "issue_slice_sha256": "sha256:" + "1" * 64,
+        "workflow_slice_sha256": "sha256:" + "2" * 64,
+        "eval_slice_sha256": "sha256:" + "3" * 64,
+        "workflow_sources": [
+            {"kind": "loop_round_history", "sha256": "4" * 64, "evidence_ids": ["loop-1"]},
+            {
+                "kind": "workflow_ledger",
+                "sha256": "5" * 64,
+                "evidence_ids": [
+                    "attempt-failure-43ddc93ea1d423fdddd032ebab4d17c2f530230c535a5c488036a8d40d1cc761"
+                ],
+            },
+        ],
+        "eval_sources": [
+            {"kind": "report_outcome", "sha256": "6" * 64, "evidence_ids": []},
+            {
+                "kind": "eval_run",
+                "sha256": "7" * 64,
+                "evidence_ids": ["847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"],
+            },
+        ],
+    },
+    "integrity": {
+        "status": "incomplete",
+        "reasons": ["issue_signal_analysis_failed", "issue_evidence_absent", "skill_drift_evidence_absent"],
+    },
+    "domain_status": {
+        "issue": {
+            "status": "failed",
+            "failure_reason": "Authenticated issue evidence slice is empty",
+        },
+        "workflow": {"status": "ok"},
+        "eval": {"status": "ok"},
+    },
+    "signals": {
+        "issue": [],
+        "workflow": [
+            {
+                "signal_id": "task-failure-58deee4f67475fc5914c83eb991bee49634ef76fd08c2538af81722922fbca00",
+                "signal_type": "task_failure",
+                "summary": "1 technical failure(s) at intake.case-review (invalid_output); recovery does not erase failures.",
+                "occurrence_count": 1,
+                "recommended_change": "Review the node's contract and failure fingerprint before proposing a targeted correction.",
+                "source_refs": {
+                    "workflow_evidence_ids": [
+                        "attempt-failure-43ddc93ea1d423fdddd032ebab4d17c2f530230c535a5c488036a8d40d1cc761"
+                    ]
+                },
+                "confidence": "high",
+                "node_id": "intake.case-review",
+                "error_kind": "invalid_output",
+                "message_fingerprint": "20ff93741b102bf446620dd8e36c3c5f04de2296dbf4625f9fe89ee84ec34c8e",
+            }
+        ],
+        "eval": [
+            {
+                "signal_id": "eval-trend-67832d289e74aa4a6d3daaa486f557e06693fe510325b2474c58b988305ac158",
+                "signal_type": "eval_trend",
+                "summary": "Failure observation in suite 'assurance-execution'.",
+                "occurrence_count": 1,
+                "recommended_change": "Triage the failing dept API sample group.",
+                "source_refs": {
+                    "eval_run_ids": ["847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"]
+                },
+                "confidence": "medium",
+                "suite": "assurance-execution",
+                "verdict": "failed",
+                "failure_signature": "67832d289e74aa4a6d3daaa486f557e06693fe510325b2474c58b988305ac158",
+                "consecutive_count": 0,
+                "sample_run_ids": ["847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"],
+            }
+        ],
+    },
+    "signal_count": 2,
+}
+
+_REAL_CANDIDATES = {
+    "schema_version": "3",
+    "retro_id": _REAL_CONTEXT["retro_id"],
+    "context_sha256": "sha256:" + "8" * 64,
+    "candidates": [
+        {
+            "candidate_id": "cand-workflow-intake-case-review-contract-hardening",
+            "kind": "workflow_improvement",
+            "delivery": "change_draft",
+            "knowledge_delta": None,
+            "source_refs": {
+                "workflow_evidence_ids": [
+                    "attempt-failure-43ddc93ea1d423fdddd032ebab4d17c2f530230c535a5c488036a8d40d1cc761"
+                ]
+            },
+            "target": "intake.case-review",
+            "rationale": "The authenticated workflow ledger records one technical failure.",
+            "proposed_change": "Harden the intake.case-review node contract.",
+            "risk": "medium",
+            "confidence": "high",
+            "signal_ids": ["task-failure-58deee4f67475fc5914c83eb991bee49634ef76fd08c2538af81722922fbca00"],
+            "verification": {
+                "suites": ["assurance-execution"],
+                "required_cases": ["intake.case-review accepts contract-valid output"],
+                "success_criteria": "Re-running intake.case-review yields contract-valid output.",
+            },
+            "supersedes": None,
+        },
+        {
+            "candidate_id": "cand-test-dept-api-triage-67832d28",
+            "kind": "test_improvement",
+            "delivery": "change_draft",
+            "knowledge_delta": None,
+            "source_refs": {
+                "eval_run_ids": ["847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"]
+            },
+            "target": "suite 'assurance-execution' dept API sample group",
+            "rationale": "One authenticated eval run returned verdict 'failed'.",
+            "proposed_change": "Add a deterministic dept API triage/regression case.",
+            "risk": "low",
+            "confidence": "medium",
+            "signal_ids": ["eval-trend-67832d289e74aa4a6d3daaa486f557e06693fe510325b2474c58b988305ac158"],
+            "verification": {
+                "suites": ["assurance-execution"],
+                "required_cases": ["dept API dept-management sample group triage run"],
+                "success_criteria": "Repeated runs report a deterministic verdict.",
+            },
+            "supersedes": None,
+        },
+    ],
+}
+
+_REAL_STATUS = {
+    "schema_version": "1",
+    "retro_id": _REAL_CONTEXT["retro_id"],
+    "batch_id": None,
+    "result": "completed_with_gaps",
+    "improvement_ids": ["IMP-D676E2ECFC80E7CBEA78", "IMP-58CB93E8BAEF3FBAE12C"],
+    "outbox_id": None,
+    "failure_ids": [],
+}
+
+_REAL_LEDGER = {
+    "schema_version": "1",
+    "last_seq": 2,
+    "by_fingerprint": {},
+    "improvements": {
+        "IMP-D676E2ECFC80E7CBEA78": {
+            "improvement_id": "IMP-D676E2ECFC80E7CBEA78",
+            "fingerprint": "d" * 64,
+            "kind": "workflow_improvement",
+            "delivery": "change_draft",
+            "source_refs": {
+                "workflow_evidence_ids": [
+                    "attempt-failure-43ddc93ea1d423fdddd032ebab4d17c2f530230c535a5c488036a8d40d1cc761"
+                ]
+            },
+            "target": "intake.case-review",
+            "rationale": "…",
+            "proposed_change": "…",
+            "verification": {"success_criteria": "…"},
+            "risk": "medium",
+            "confidence": "high",
+            "state": "proposed",
+            "version": 1,
+            "proposed_by_retro_ids": [_REAL_CONTEXT["retro_id"]],
+            "last_event_id": "IMPEVT-1",
+        },
+        "IMP-58CB93E8BAEF3FBAE12C": {
+            "improvement_id": "IMP-58CB93E8BAEF3FBAE12C",
+            "fingerprint": "e" * 64,
+            "kind": "test_improvement",
+            "delivery": "change_draft",
+            "source_refs": {
+                "eval_run_ids": ["847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"]
+            },
+            "target": "suite 'assurance-execution' dept API sample group",
+            "rationale": "…",
+            "proposed_change": "…",
+            "verification": {"success_criteria": "…"},
+            "risk": "low",
+            "confidence": "medium",
+            "state": "proposed",
+            "version": 1,
+            "proposed_by_retro_ids": [_REAL_CONTEXT["retro_id"]],
+            "last_event_id": "IMPEVT-2",
+        },
+    },
+}
+
+
+def _write_full_run(tmp_path) -> Path:
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir)
+    (retro_dir / "context.json").write_text(json.dumps(_REAL_CONTEXT), encoding="utf-8")
+    (retro_dir / "candidates.json").write_text(json.dumps(_REAL_CANDIDATES), encoding="utf-8")
+    (retro_dir / "status.json").write_text(json.dumps(_REAL_STATUS), encoding="utf-8")
+    ledger_dir = tmp_path / "qa" / "improvements"
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "ledger.json").write_text(json.dumps(_REAL_LEDGER), encoding="utf-8")
+    return tmp_path
+
+
+def test_build_retro_dashboard_full_run_joins_candidates_to_ledger(tmp_path) -> None:
+    root = _write_full_run(tmp_path)
+    doc = build_retro_dashboard(root)
+
+    assert doc.stages.model_dump() == {"analyses": True, "synthesis": True, "reconcile": True}
+    assert doc.run.result == "completed_with_gaps"
+    assert doc.run.candidate_count == 2
+    assert doc.run.improvement_ids == ("IMP-D676E2ECFC80E7CBEA78", "IMP-58CB93E8BAEF3FBAE12C")
+    assert "issue_signal_analysis_failed" in doc.run.integrity_reasons
+
+    assert len(doc.candidates) == 2
+    first = next(
+        c for c in doc.candidates if c.candidate_id == "cand-workflow-intake-case-review-contract-hardening"
+    )
+    assert first.improvement_id == "IMP-D676E2ECFC80E7CBEA78"
+    assert first.improvement_state == "proposed"
+    assert first.improvement_version == 1
+    assert first.has_knowledge_delta is False
+
+    workflow_signal = next(s for s in doc.signals if s.domain == "workflow")
+    assert workflow_signal.cited_by_candidate_ids == ("cand-workflow-intake-case-review-contract-hardening",)
+
+
+def test_build_retro_dashboard_missing_ledger_leaves_improvement_fields_null(tmp_path) -> None:
+    root = _write_full_run(tmp_path)
+    (root / "qa" / "improvements" / "ledger.json").unlink()
+
+    doc = build_retro_dashboard(root)
+    assert all(c.improvement_id is None for c in doc.candidates)
+    assert all(c.improvement_state is None for c in doc.candidates)
+    assert all(c.improvement_version is None for c in doc.candidates)
+
+
+def test_build_retro_dashboard_ledger_join_mismatch_is_flagged(tmp_path) -> None:
+    root = _write_full_run(tmp_path)
+    ledger = json.loads((root / "qa" / "improvements" / "ledger.json").read_text(encoding="utf-8"))
+    ledger["improvements"]["IMP-D676E2ECFC80E7CBEA78"]["target"] = "a different target"
+    (root / "qa" / "improvements" / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+
+    doc = build_retro_dashboard(root)
+    mismatched = next(
+        c for c in doc.candidates if c.candidate_id == "cand-workflow-intake-case-review-contract-hardening"
+    )
+    assert mismatched.improvement_id is None
+    assert mismatched.improvement_state is None
+    assert "improvement_join_mismatch" in doc.run.integrity_reasons
+    other = next(c for c in doc.candidates if c.candidate_id == "cand-test-dept-api-triage-67832d28")
+    assert other.improvement_id == "IMP-58CB93E8BAEF3FBAE12C"
+
+
+def test_build_retro_dashboard_reconcile_not_run_leaves_improvement_fields_null(tmp_path) -> None:
+    root = _write_full_run(tmp_path)
+    (root / "qa" / "results" / "retro" / "status.json").unlink()
+
+    doc = build_retro_dashboard(root)
+    assert doc.stages.reconcile is False
+    assert doc.run.result is None
+    assert doc.run.improvement_ids == ()
+    assert all(c.improvement_id is None for c in doc.candidates)

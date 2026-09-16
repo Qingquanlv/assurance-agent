@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from assurance_improvement.contracts.agent import RetroAnalysisResultV3
 from assurance_improvement.contracts.dashboard import (
+    DashboardCandidate,
     DashboardDomain,
     DashboardDomainName,
     DashboardMetric,
@@ -23,12 +24,14 @@ from assurance_improvement.contracts.dashboard import (
     DashboardSignal,
     DashboardSourceRefs,
     DashboardStages,
+    DashboardVerification,
     RetroDashboardV1,
 )
 from assurance_improvement.contracts.improvements import (
     ImprovementCandidateV3,
     ImprovementLedgerProjection,
     ImprovementSourceRefs,
+    ImprovementVerification,
 )
 from assurance_improvement.contracts.retro import (
     ContextSignalSet,
@@ -335,6 +338,63 @@ def _flatten_signals(
     return tuple(sorted(flat, key=lambda item: (-item.occurrence_count, item.signal_id)))
 
 
+def _map_verification(verification: ImprovementVerification) -> DashboardVerification:
+    return DashboardVerification(
+        suites=verification.suites,
+        required_cases=verification.required_cases,
+        success_criteria=verification.success_criteria,
+    )
+
+
+def _build_candidates(
+    candidates: tuple[ImprovementCandidateV3, ...],
+    improvement_ids: tuple[str, ...],
+    ledger: ImprovementLedgerProjection | None,
+) -> tuple[tuple[DashboardCandidate, ...], tuple[str, ...]]:
+    built: list[DashboardCandidate] = []
+    join_mismatch = False
+    for index, candidate in enumerate(candidates):
+        improvement_id = improvement_ids[index] if index < len(improvement_ids) else None
+        resolved_improvement_id: str | None = None
+        state: str | None = None
+        version: int | None = None
+        if improvement_id is not None and ledger is not None:
+            projection = ledger.improvements.get(improvement_id)
+            if projection is not None:
+                if (
+                    projection.kind == candidate.kind
+                    and projection.delivery == candidate.delivery
+                    and projection.target == candidate.target
+                ):
+                    resolved_improvement_id = improvement_id
+                    state = projection.state.value
+                    version = projection.version
+                else:
+                    join_mismatch = True
+        built.append(
+            DashboardCandidate(
+                candidate_id=candidate.candidate_id,
+                kind=candidate.kind.value,
+                delivery=candidate.delivery.value,
+                target=candidate.target,
+                rationale=candidate.rationale,
+                proposed_change=candidate.proposed_change,
+                risk=candidate.risk,
+                confidence=candidate.confidence,
+                signal_ids=candidate.signal_ids,
+                verification=_map_verification(candidate.verification),
+                source_refs=_map_source_refs(candidate.source_refs),
+                has_knowledge_delta=candidate.knowledge_delta is not None,
+                supersedes=candidate.supersedes,
+                improvement_id=resolved_improvement_id,
+                improvement_state=state,
+                improvement_version=version,
+            )
+        )
+    reasons = ("improvement_join_mismatch",) if join_mismatch else ()
+    return tuple(built), reasons
+
+
 def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) -> RetroDashboardV1:
     """Project the current change's retro artifacts into `RetroDashboardV1`.
 
@@ -369,20 +429,14 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
         integrity_reasons.append(status_result.reason)
 
     candidates_result = _load_model(retro_dir / "candidates.json", _load_candidates, "candidates.json")
-    # `_candidates` is loaded here (and its integrity reason folded in) so that
-    # Tasks 4-5 can populate `RetroDashboardV1.candidates` without re-reading
-    # the artifact; this task only needs the integrity side effect below.
-    _candidates: tuple[ImprovementCandidateV3, ...] = candidates_result.model or ()
+    candidates: tuple[ImprovementCandidateV3, ...] = candidates_result.model or ()
     if candidates_result.reason:
         integrity_reasons.append(candidates_result.reason)
 
     ledger_result = _load_model(
         change_root / _LEDGER_PATH, ImprovementLedgerProjection.model_validate_json, "ledger.json"
     )
-    # Same rationale as `_candidates`: Task 4-5 will consume `_ledger` when
-    # deriving improvement linkage; this task only surfaces its integrity
-    # reason.
-    _ledger = ledger_result.model
+    ledger = ledger_result.model
     if ledger_result.reason:
         integrity_reasons.append(ledger_result.reason)
 
@@ -391,12 +445,17 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
 
     domains: tuple[DashboardDomain, ...] = ()
     signals: tuple[DashboardSignal, ...] = ()
+    built_candidates: tuple[DashboardCandidate, ...] = ()
+    join_reasons: tuple[str, ...] = ()
     if context is not None:
-        cited_by = _cited_by_index(_candidates)
+        cited_by = _cited_by_index(candidates)
         signals = _flatten_signals(context.signals, cited_by)
         domains = _build_domains(context)
+        built_candidates, join_reasons = _build_candidates(
+            candidates, run_status.improvement_ids if run_status is not None else (), ledger
+        )
 
-    run = _build_run(context, run_status, tuple(integrity_reasons))
+    run = _build_run(context, run_status, len(candidates), tuple(integrity_reasons) + join_reasons)
 
     resolved_change_id = change_id
     if resolved_change_id is None and context is not None and context.window.change_ids:
@@ -415,12 +474,14 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
         run=run,
         domains=domains,
         signals=signals,
+        candidates=built_candidates,
     )
 
 
 def _build_run(
     context: RetroContextV3 | None,
     run_status: RetroRunStatus | None,
+    candidate_count: int,
     extra_reasons: tuple[str, ...],
 ) -> DashboardRun:
     if context is None:
@@ -430,7 +491,7 @@ def _build_run(
         integrity_status=context.integrity.status,
         integrity_reasons=tuple(context.integrity.reasons) + extra_reasons,
         signal_count=context.signal_count,
-        candidate_count=0,
+        candidate_count=candidate_count,
         window_change_ids=context.window.change_ids,
         selection_mode=context.window.selection.mode,
         batch_id=run_status.batch_id if run_status is not None else None,
