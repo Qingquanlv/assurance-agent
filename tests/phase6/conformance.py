@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 
 
-PHASE4_SDD = Path(".superpowers/sdd/2026-08-22-pure-graph-engine-phase4-assurance-capability-extraction")
+PHASE4_SDD = Path("tests/phase4/fixtures")
 PHASE4_INVENTORY_RELATIVE_PATH = PHASE4_SDD / "phase6-deletion.txt"
 
 PRODUCTION_METADATA_FILES = (

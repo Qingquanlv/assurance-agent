@@ -291,6 +291,11 @@ def _expected_module_paths() -> dict[str, str]:
     return assigned
 
 
+def test_phase4_ownership_ledger_lives_under_test_fixtures() -> None:
+    assert "tests/phase4/fixtures" in OWNERSHIP_PATH.as_posix()
+    assert ".superpowers" not in OWNERSHIP_PATH.as_posix()
+
+
 def test_ledger_covers_every_legacy_operation_and_skill_exactly_once() -> None:
     ledger = load_ownership_ledger(OWNERSHIP_PATH)
     assert ledger.legacy_ids("operation") == legacy_operation_ids()

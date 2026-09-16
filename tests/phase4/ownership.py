@@ -37,13 +37,7 @@ ASSURANCE_OWNERS: tuple[str, ...] = (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-OWNERSHIP_PATH = (
-    REPO_ROOT
-    / ".superpowers"
-    / "sdd"
-    / "2026-08-22-pure-graph-engine-phase4-assurance-capability-extraction"
-    / "ownership.yaml"
-)
+OWNERSHIP_PATH = REPO_ROOT / "tests" / "phase4" / "fixtures" / "ownership.yaml"
 
 _TOP_LEVEL_KEYS = frozenset({"schema_version", "dependencies", "items"})
 _ITEM_KEYS = frozenset({"kind", "legacy_id", "disposition", "owner", "new_id", "status", "verification"})
@@ -280,6 +274,14 @@ SKILL_OWNERS: dict[str, tuple[str, ...]] = {
 }
 
 SKILL_DISPOSITIONS: dict[str, Disposition] = {
+    "aa-api-plan": "delete_phase6",
+    "aa-api-plan-reviewer": "delete_phase6",
+    "aa-e2e-plan": "delete_phase6",
+    "aa-e2e-plan-reviewer": "delete_phase6",
+    "aa-fuzz-plan": "delete_phase6",
+    "aa-fuzz-plan-reviewer": "delete_phase6",
+    "aa-performance-plan": "delete_phase6",
+    "aa-performance-plan-reviewer": "delete_phase6",
     "aa-api-codegen-fixer": "delete_phase6",
     "aa-e2e-codegen-fixer": "delete_phase6",
     "aa-workflow": "replace_phase5",

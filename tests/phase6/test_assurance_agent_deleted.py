@@ -49,6 +49,11 @@ def test_conftest_does_not_import_assurance_agent(repo_root: Path) -> None:
     assert "assurance_agent" not in imported
 
 
+def test_phase4_deletion_ledger_lives_under_test_fixtures() -> None:
+    assert PHASE4_SDD.as_posix() == "tests/phase4/fixtures"
+    assert ".superpowers" not in PHASE4_SDD.as_posix()
+
+
 def test_deleted_agent_inventory_has_replacement_or_obsolete(repo_root: Path) -> None:
     deleted = agent_deletion_paths(repo_root)
     assert deleted

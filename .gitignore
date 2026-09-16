@@ -7,6 +7,9 @@ dist/
 *.egg-info/
 
 .worktrees/
+.superpowers/brainstorm/
+.superpowers/plans/
+.superpowers/specs/
 
 /skills/
 /.opencode/

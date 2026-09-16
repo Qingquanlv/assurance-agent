@@ -36,9 +36,7 @@ class Phase5FaultCoverageState:
     detail: str
 
 
-EVIDENCE_ROOT = Path(__file__).resolve().parents[2] / (
-    ".superpowers/sdd/2026-08-22-pure-graph-engine-phase5-assurance-product-assembly"
-)
+EVIDENCE_ROOT = Path(__file__).resolve().parent / "fixtures" / "phase5"
 
 HISTORICAL_PREPARE_IDS = (
     "assurance.intake.case-design.prepare",
@@ -657,9 +655,7 @@ FINAL_GATE_NODE_IDS: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
 
 _ALLOWED_GATE_SOURCE_PREFIXES = ("packages", "tests")
 _FORBIDDEN_PYTEST_CONTROL_NAMES = frozenset({"importorskip", "skip", "skipif", "xfail"})
-_PHASE5_ADMISSION_RELATIVE_PATH = Path(
-    ".superpowers/sdd/2026-08-26-pure-graph-engine-change-local-final-closeout/phase5-opencode-admission.json"
-)
+_PHASE5_ADMISSION_RELATIVE_PATH = Path("tests/product/fixtures/phase5/opencode-admission.json")
 _PHASE5_ADMISSION_STATUSES = frozenset({"blocked_by_execution_approval", "complete"})
 
 

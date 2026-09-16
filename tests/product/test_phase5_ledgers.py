@@ -1,10 +1,16 @@
 from tests.product.conformance import (
     ALL_BINDING_IDS,
+    EVIDENCE_ROOT,
     HISTORICAL_BINDING_IDS,
     PREPARE_IDS,
     load_json,
     load_yaml,
 )
+
+
+def test_phase5_ledgers_live_under_test_fixtures() -> None:
+    assert EVIDENCE_ROOT.as_posix().endswith("tests/product/fixtures/phase5")
+    assert ".superpowers" not in EVIDENCE_ROOT.as_posix()
 
 
 def test_phase5_ledgers_are_closed_and_exact(evidence_root):

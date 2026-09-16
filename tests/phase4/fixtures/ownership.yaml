@@ -2673,6 +2673,20 @@ items:
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
+  legacy_id: aa-api-plan
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
+- kind: skill
+  legacy_id: aa-api-plan-reviewer
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
+- kind: skill
   legacy_id: aa-archive
   disposition: migrate
   owner: assurance.improvement
@@ -2722,6 +2736,20 @@ items:
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
 - kind: skill
+  legacy_id: aa-e2e-plan
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
+- kind: skill
+  legacy_id: aa-e2e-plan-reviewer
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
+- kind: skill
   legacy_id: aa-execute
   disposition: migrate
   owner: assurance.execution
@@ -2763,6 +2791,20 @@ items:
   new_id: assurance.generation.skill.aa-fuzz-codegen-reviewer.v1
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
+- kind: skill
+  legacy_id: aa-fuzz-plan
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
+- kind: skill
+  legacy_id: aa-fuzz-plan-reviewer
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: skill
   legacy_id: aa-improvement-reviewer
   disposition: migrate
@@ -2812,6 +2854,20 @@ items:
   new_id: assurance.generation.skill.aa-performance-codegen-reviewer.v1
   status: verified
   verification: packages/features/assurance-generation/tests/test_plan_review.py::test_plan_review_finalize_rejects_unknown_leaf
+- kind: skill
+  legacy_id: aa-performance-plan
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
+- kind: skill
+  legacy_id: aa-performance-plan-reviewer
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: skill
   legacy_id: aa-report-generator
   disposition: migrate
