@@ -48,7 +48,7 @@ def test_all_final_gate_nodes_are_unique_auditable_and_collectable() -> None:
 
 
 def test_task3_admission_is_reported_without_fabricating_a_local_pass() -> None:
-    admission_state = conformance.phase5_opencode_admission_state
+    admission_state = conformance.opencode_admission_state
 
     state = admission_state(REPO_ROOT)
     assert state.local_gate_disposition == "run"

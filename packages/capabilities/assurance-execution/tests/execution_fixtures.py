@@ -219,16 +219,16 @@ async def execute_task(
         invocation_id="inv-1",
         lock_digest=_SHA,
         composition_digest=_SHA,
-        entrypoint="phase5",
+        entrypoint="product",
     )
     request = (
         payload
         if isinstance(payload, TaskRequest)
         else TaskRequest(
             invocation_id=invocation.invocation_id,
-            task_id="phase5-task",
-            graph_instance_id="phase5-graph",
-            node_id="phase5-node",
+            task_id="product-task",
+            graph_instance_id="product-graph",
+            node_id="product-node",
             capability_id="test.execution.capability",
             binding_data=binding_data,
             invocation=invocation,

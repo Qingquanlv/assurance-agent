@@ -34,7 +34,7 @@ class CanaryScan:
 
 
 class UniqueCanarySecretPort:
-    def __init__(self, canary: bytes, *, handle: str = "phase4.canary") -> None:
+    def __init__(self, canary: bytes, *, handle: str = "capabilities.canary") -> None:
         self._canary = canary
         self._handle = handle
         self._revoked = False
@@ -59,7 +59,7 @@ class CanaryTaskHost(SixWheelTaskHost):
 
     async def execute_canary(self, validated_input: object, context: object) -> _FixtureNodeOutput:
         del validated_input, context
-        resolved = self.secrets.resolve("phase4.canary").decode("utf-8")
+        resolved = self.secrets.resolve("capabilities.canary").decode("utf-8")
         leaking = (
             f"Authorization: Bearer {resolved}",
             f"provider failed with sk-{resolved}",
@@ -77,7 +77,7 @@ class CanaryTaskHost(SixWheelTaskHost):
 
 
 def inject_unique_canaries() -> CanaryScan:
-    canary = f"phase4-canary-{uuid.uuid4().hex}"
+    canary = f"capabilities-canary-{uuid.uuid4().hex}"
     handler, stream = _capture_logs()
     resolved = resolve_fixture("six-wheel-opencode")
     host = CanaryTaskHost(
@@ -92,7 +92,7 @@ def inject_unique_canaries() -> CanaryScan:
             engine_root,
             host,
             resolved.composition,
-            "phase4-canary-inv",
+            "capabilities-canary-inv",
             execute=host.execute_canary,
         )
     logs = _captured_text(handler, stream)

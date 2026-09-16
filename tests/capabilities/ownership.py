@@ -143,7 +143,7 @@ QUALITY_VERIFICATION_FILES: tuple[str, ...] = (
     "assurance_agent/verification/replay.py",
 )
 
-NON_PHASE4_MODEL_DISPOSITIONS: dict[str, Disposition] = {
+LEFTOVER_MODEL_DISPOSITIONS: dict[str, Disposition] = {
     "packages/assurance-kernel/assurance_kernel/artifacts/models/data_knowledge.py": "replace_phase5",
     "packages/assurance-kernel/assurance_kernel/artifacts/models/policy.py": "replace_phase5",
     "packages/assurance-kernel/assurance_kernel/artifacts/models/state.py": "replace_phase5",
@@ -238,8 +238,8 @@ OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-REPLACE_PHASE5_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
-DELETE_PHASE6_OPERATIONS = frozenset({"operation:retro-accept"})
+REPLACED_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
+DELETED_OPERATIONS = frozenset({"operation:retro-accept"})
 
 SKILL_OWNERS: dict[str, tuple[str, ...]] = {
     "assurance.intake": ("aa-intake", "aa-explore", "aa-case-design", "aa-case-reviewer"),
@@ -451,7 +451,7 @@ HOOK_PRIMARY_SEAMS: dict[str, tuple[str, str]] = {
     "reconcile_heal_record_apply": ("assurance.healing", "assurance.healing.effect.heal-apply.v2"),
 }
 
-DELETE_PHASE6_MODULES: tuple[str, ...] = (
+DELETED_MODULES: tuple[str, ...] = (
     "packages/assurance-kernel/assurance_kernel/artifacts/__init__.py",
     "assurance_agent/artifacts/__init__.py",
     "packages/assurance-kernel/assurance_kernel/artifacts/models/__init__.py",
@@ -469,7 +469,7 @@ DELETE_PHASE6_MODULES: tuple[str, ...] = (
     "assurance_agent/artifacts/validate.py",
 )
 
-REPLACE_PHASE5_ARTIFACT_MODULES: tuple[str, ...] = (
+REPLACED_ARTIFACT_MODULES: tuple[str, ...] = (
     "packages/assurance-kernel/assurance_kernel/artifacts/policy.py",
     "packages/assurance-kernel/assurance_kernel/artifacts/policy_obligations.py",
     "packages/assurance-kernel/assurance_kernel/artifacts/repo_registry.py",
@@ -695,7 +695,7 @@ def _personas_root() -> Path:
 
 
 def legacy_operation_ids() -> frozenset[str]:
-    ids: set[str] = set(REPLACE_PHASE5_OPERATIONS) | set(DELETE_PHASE6_OPERATIONS)
+    ids: set[str] = set(REPLACED_OPERATIONS) | set(DELETED_OPERATIONS)
     for operations in OPERATION_OWNERS.values():
         ids.update(operations)
     return frozenset(ids)
@@ -959,9 +959,9 @@ def _item(
 
 
 def _operation_owner(operation_id: str) -> tuple[Disposition, str | None, str | None]:
-    if operation_id in REPLACE_PHASE5_OPERATIONS:
+    if operation_id in REPLACED_OPERATIONS:
         return "replace_phase5", None, None
-    if operation_id in DELETE_PHASE6_OPERATIONS:
+    if operation_id in DELETED_OPERATIONS:
         return "delete_phase6", None, None
     for owner, operations in OPERATION_OWNERS.items():
         if operation_id in operations:
@@ -999,14 +999,14 @@ def seed_ownership_items() -> tuple[OwnershipItem, ...]:
     module_owners = expand_owned_modules()
     for path, owner in sorted(module_owners.items()):
         items.append(_item("module", path, "migrate", owner, None))
-    for path, disposition in NON_PHASE4_MODEL_DISPOSITIONS.items():
+    for path, disposition in LEFTOVER_MODEL_DISPOSITIONS.items():
         items.append(_item("module", path, disposition, None, None))
     wrappers = REPO_ROOT / "assurance_agent" / "artifacts" / "models"
     for wrapper in sorted(wrappers.glob("*.py")):
         items.append(_item("module", _posix(wrapper), "delete_phase6", None, None))
-    for path in DELETE_PHASE6_MODULES:
+    for path in DELETED_MODULES:
         items.append(_item("module", path, "delete_phase6", None, None))
-    for path in REPLACE_PHASE5_ARTIFACT_MODULES:
+    for path in REPLACED_ARTIFACT_MODULES:
         items.append(_item("module", path, "replace_phase5", None, None))
 
     for legacy_id, owner in CALLABLE_OWNER_OVERRIDES.items():

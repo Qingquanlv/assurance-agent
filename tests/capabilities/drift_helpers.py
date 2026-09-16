@@ -98,7 +98,7 @@ def _started_invocation(original: SixWheelComposition) -> tuple[Path, Path, str,
         provider_state_dir=original.workspace / "drift-start-provider",
     )
     engine_root = original.workspace / "drift-engine"
-    invocation_id = "phase4-drift-inv"
+    invocation_id = "capabilities-drift-inv"
     with _import_activation(original.product_root, original.workspace):
         result, invocation_root, application, artifact, context, _saver = _application_call(
             _start_until_blocked,
@@ -146,7 +146,7 @@ def _mutate_capability_catalog(workspace: Path, product_root: Path, fixtures: Pa
 def _mutate_plugin_code(workspace: Path, product_root: Path, fixtures: Path) -> None:
     del product_root, fixtures
     path = workspace / "wheels" / "assurance-intake" / "assurance_intake" / "operations" / "finalize.py"
-    path.write_text(path.read_text(encoding="utf-8") + "\n# phase4-drift-plugin-code\n", encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8") + "\n# capabilities-drift-plugin-code\n", encoding="utf-8")
 
 
 def _mutate_plugin_version(workspace: Path, product_root: Path, fixtures: Path) -> None:
@@ -192,7 +192,7 @@ def _mutate_skill_bytes(workspace: Path, product_root: Path, fixtures: Path) -> 
         / "aa-case-reviewer"
         / "SKILL.md"
     )
-    path.write_text(path.read_text(encoding="utf-8") + "\n<!-- phase4-drift-skill -->\n", encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8") + "\n<!-- capabilities-drift-skill -->\n", encoding="utf-8")
 
 
 def _mutate_persona_bytes(workspace: Path, product_root: Path, fixtures: Path) -> None:
@@ -206,7 +206,7 @@ def _mutate_persona_bytes(workspace: Path, product_root: Path, fixtures: Path) -
         / "personas"
         / "reviewer.md"
     )
-    path.write_text(path.read_text(encoding="utf-8") + "\n<!-- phase4-drift-persona -->\n", encoding="utf-8")
+    path.write_text(path.read_text(encoding="utf-8") + "\n<!-- capabilities-drift-persona -->\n", encoding="utf-8")
 
 
 def _mutate_result_contract_bytes(workspace: Path, product_root: Path, fixtures: Path) -> None:

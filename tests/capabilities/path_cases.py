@@ -53,9 +53,9 @@ FILESYSTEM_CASES = frozenset({"symlink-file", "symlink-parent", "hard-link", "pa
 
 _SHA = "a" * 64
 _STRING_PATHS = {
-    "absolute": "/tmp/phase4-secret",
+    "absolute": "/tmp/capabilities-secret",
     "parent-dotdot": "qa/cases/../secret.yaml",
-    "windows-drive": "C:/phase4-secret",
+    "windows-drive": "C:/capabilities-secret",
     "undeclared-write-root": "src/app.py",
 }
 
@@ -104,7 +104,7 @@ def _candidate(*paths: str) -> CandidateWriteSet:
 
 def _context() -> ValidationContext:
     return ValidationContext(
-        invocation_id="phase4-test",
+        invocation_id="capabilities-test",
         task_id="capabilities-task",
         graph_instance_id="capabilities-graph",
         node_id="capabilities-node",
@@ -179,7 +179,7 @@ def _workspace_rejected(wheel: str, workspace: Path, relative: str, hook: PathPr
 
 
 async def exercise_path_case(wheel: str, case: str) -> PathObservation:
-    lifetime = TemporaryDirectory(prefix="phase4-path-")
+    lifetime = TemporaryDirectory(prefix="capabilities-path-")
     root = Path(lifetime.name)
     workspace = root / "workspace"
     outside = root / "outside"

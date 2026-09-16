@@ -9,7 +9,7 @@ from tests.product import conformance
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-EXPECTED_PHASE5_FAULT_IDS = (
+EXPECTED_ASSEMBLY_FAULT_IDS = (
     "deployment-route-invalid",
     "deployment-route-unknown",
     "deployment-route-missing",
@@ -156,15 +156,15 @@ def test_fault_gate_manifest_is_exact_closed_and_immutable() -> None:
 
 
 def test_original_task26_fault_rows_have_an_exact_closed_node_mapping() -> None:
-    fault_ids = conformance.PHASE5_FAULT_IDS
-    coverage = conformance.PHASE5_FAULT_NODE_IDS
+    fault_ids = conformance.ASSEMBLY_FAULT_IDS
+    coverage = conformance.ASSEMBLY_FAULT_NODE_IDS
     manifest = conformance.FAULT_GATE_NODE_IDS
 
-    assert fault_ids == EXPECTED_PHASE5_FAULT_IDS
+    assert fault_ids == EXPECTED_ASSEMBLY_FAULT_IDS
     assert tuple(coverage) == tuple(
         fault_id
-        for fault_id in EXPECTED_PHASE5_FAULT_IDS
-        if conformance.PHASE5_FAULT_EVIDENCE[fault_id].evidence_kind == "direct"
+        for fault_id in EXPECTED_ASSEMBLY_FAULT_IDS
+        if conformance.ASSEMBLY_FAULT_EVIDENCE[fault_id].evidence_kind == "direct"
     )
     assert len(coverage) == len(set(coverage)) == 57
     selected_nodes = {node_id for category in manifest.values() for node_id in category}
@@ -174,10 +174,10 @@ def test_original_task26_fault_rows_have_an_exact_closed_node_mapping() -> None:
 
 
 def test_fault_evidence_classification_is_truthful_and_release_remains_blocked() -> None:
-    coverage = conformance.PHASE5_FAULT_EVIDENCE
-    coverage_state = conformance.phase5_fault_coverage_state
+    coverage = conformance.ASSEMBLY_FAULT_EVIDENCE
+    coverage_state = conformance.assembly_fault_coverage_state
 
-    assert tuple(coverage) == EXPECTED_PHASE5_FAULT_IDS
+    assert tuple(coverage) == EXPECTED_ASSEMBLY_FAULT_IDS
     direct = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "direct")
     superseded = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "superseded")
     gaps = tuple(fault_id for fault_id, item in coverage.items() if item.evidence_kind == "gap")
@@ -185,7 +185,7 @@ def test_fault_evidence_classification_is_truthful_and_release_remains_blocked()
     assert superseded == EXPECTED_SUPERSEDED_FAULT_IDS
     assert gaps == EXPECTED_GAP_FAULT_IDS
     assert all(
-        coverage[fault_id].node_id == conformance.PHASE5_FAULT_NODE_IDS[fault_id] for fault_id in direct
+        coverage[fault_id].node_id == conformance.ASSEMBLY_FAULT_NODE_IDS[fault_id] for fault_id in direct
     )
     assert all(coverage[fault_id].replacement_node_id for fault_id in superseded)
     assert all(coverage[fault_id].node_id is None for fault_id in gaps)

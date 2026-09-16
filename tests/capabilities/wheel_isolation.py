@@ -164,7 +164,7 @@ def isolate_package(package: str, expect_entry_point: str) -> None:
     if not spec.source_root.is_dir():
         raise FileNotFoundError(f"requested wheel source is missing: {spec.source_root}")
 
-    with tempfile.TemporaryDirectory(prefix="phase4-wheel-isolation-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="capabilities-wheel-isolation-") as temporary:
         root = Path(temporary)
         wheelhouse = root / "wheelhouse"
         venv = root / "venv"

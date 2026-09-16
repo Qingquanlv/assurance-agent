@@ -12,7 +12,7 @@ from tests.capabilities.conformance import execute_task
 
 
 class FakeAgentAdapter:
-    EVIDENCE_DIGEST = canonical_digest({"kind": "phase4.fake-evidence", "version": 1})
+    EVIDENCE_DIGEST = canonical_digest({"kind": "capabilities.fake-evidence", "version": 1})
 
     def __init__(
         self,

@@ -172,7 +172,7 @@ class _PrepareHandler:
         agent_request = AgentRunRequest(
             instructions=(InstructionPart.text("text/plain", "prepare the task"),),
             result_contract=ResultContract(
-                schema_id="test.phase4.result.v1",
+                schema_id="test.capabilities.result.v1",
                 schema_digest=canonical_digest(schema),
                 delivery_mode="assistant_json_local_v1",
             ),
@@ -289,7 +289,7 @@ def test_fake_adapter_records_canonical_request_bytes_and_digest() -> None:
     request = AgentRunRequest(
         instructions=(InstructionPart.text("text/plain", "run the skill"),),
         result_contract=ResultContract(
-            schema_id="test.phase4.result.v1",
+            schema_id="test.capabilities.result.v1",
             schema_digest=canonical_digest(schema),
             delivery_mode="assistant_json_local_v1",
         ),
@@ -330,7 +330,7 @@ def test_assert_validator_rejects_requires_exact_reason() -> None:
 async def test_assert_effect_idempotent_requires_equal_receipts() -> None:
     await assert_effect_idempotent(
         _IdempotentEffect(),
-        EffectIntent(kind="test.phase4.effect.v1", payload={"n": 1}),
+        EffectIntent(kind="test.capabilities.effect.v1", payload={"n": 1}),
         "key-1",
     )
 

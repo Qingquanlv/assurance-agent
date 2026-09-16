@@ -17,7 +17,7 @@ import yaml
 
 
 @dataclass(frozen=True, slots=True)
-class Phase5FaultEvidence:
+class AssemblyFaultEvidence:
     evidence_kind: Literal["direct", "superseded", "gap"]
     node_id: str | None = None
     reason: str | None = None
@@ -25,7 +25,7 @@ class Phase5FaultEvidence:
 
 
 @dataclass(frozen=True, slots=True)
-class Phase5FaultCoverageState:
+class AssemblyFaultCoverageState:
     local_gate_disposition: Literal["run"]
     release_complete: bool
     direct_count: int
@@ -131,7 +131,7 @@ EXPECTED_25_CASE_IDS = (
     "replay-after-provider-state-removal",
 )
 
-PHASE5_FAULT_IDS = (
+ASSEMBLY_FAULT_IDS = (
     "deployment-route-invalid",
     "deployment-route-unknown",
     "deployment-route-missing",
@@ -324,7 +324,7 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     }
 )
 
-_PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
+_ASSEMBLY_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
     {
         "deployment-route-invalid": (
             "tests/product/test_binding_builder_security.py::test_manifest_rejects_templates_globs_and_secret_values[{{model}}]"
@@ -496,9 +496,9 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
     }
 )
 
-PHASE5_FAULT_NODE_IDS: Mapping[str, str] = _PHASE5_DIRECT_FAULT_NODE_IDS
+ASSEMBLY_FAULT_NODE_IDS: Mapping[str, str] = _ASSEMBLY_DIRECT_FAULT_NODE_IDS
 
-_PHASE5_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
+_ASSEMBLY_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
     {
         "seed-capture-cut": (
             "Change-local InvocationSeed has no project-tree capture or WorkspaceSeed authority.",
@@ -559,7 +559,7 @@ _PHASE5_SUPERSEDED_FAULTS: Mapping[str, tuple[str, str]] = MappingProxyType(
     }
 )
 
-_PHASE5_GAP_REASONS: Mapping[str, str] = MappingProxyType(
+_ASSEMBLY_GAP_REASONS: Mapping[str, str] = MappingProxyType(
     {
         "opencode-terminal-before-restart": (
             "The existing adapter test caches TaskOutcome in memory and never restarts a real Engine invocation."
@@ -571,26 +571,26 @@ _PHASE5_GAP_REASONS: Mapping[str, str] = MappingProxyType(
 )
 
 
-def _phase5_fault_evidence(fault_id: str) -> Phase5FaultEvidence:
-    direct_node_id = _PHASE5_DIRECT_FAULT_NODE_IDS.get(fault_id)
+def _assembly_fault_evidence(fault_id: str) -> AssemblyFaultEvidence:
+    direct_node_id = _ASSEMBLY_DIRECT_FAULT_NODE_IDS.get(fault_id)
     if direct_node_id is not None:
-        return Phase5FaultEvidence(evidence_kind="direct", node_id=direct_node_id)
-    superseded = _PHASE5_SUPERSEDED_FAULTS.get(fault_id)
+        return AssemblyFaultEvidence(evidence_kind="direct", node_id=direct_node_id)
+    superseded = _ASSEMBLY_SUPERSEDED_FAULTS.get(fault_id)
     if superseded is not None:
         reason, replacement_node_id = superseded
-        return Phase5FaultEvidence(
+        return AssemblyFaultEvidence(
             evidence_kind="superseded",
             reason=reason,
             replacement_node_id=replacement_node_id,
         )
-    gap_reason = _PHASE5_GAP_REASONS.get(fault_id)
+    gap_reason = _ASSEMBLY_GAP_REASONS.get(fault_id)
     if gap_reason is None:
         raise AssertionError(f"fault row has no evidence disposition: {fault_id}")
-    return Phase5FaultEvidence(evidence_kind="gap", reason=gap_reason)
+    return AssemblyFaultEvidence(evidence_kind="gap", reason=gap_reason)
 
 
-PHASE5_FAULT_EVIDENCE: Mapping[str, Phase5FaultEvidence] = MappingProxyType(
-    {fault_id: _phase5_fault_evidence(fault_id) for fault_id in PHASE5_FAULT_IDS}
+ASSEMBLY_FAULT_EVIDENCE: Mapping[str, AssemblyFaultEvidence] = MappingProxyType(
+    {fault_id: _assembly_fault_evidence(fault_id) for fault_id in ASSEMBLY_FAULT_IDS}
 )
 
 _MISLEADING_PROVIDER_REPLAY_CHARACTERIZATIONS = frozenset(
@@ -611,7 +611,7 @@ _FAULT_SUPPORT_NODE_IDS = frozenset(
 )
 _TASK26_RUNNABLE_EVIDENCE_NODE_IDS = tuple(
     node_id
-    for evidence in PHASE5_FAULT_EVIDENCE.values()
+    for evidence in ASSEMBLY_FAULT_EVIDENCE.values()
     for node_id in (
         evidence.node_id
         if evidence.evidence_kind == "direct"
@@ -655,8 +655,8 @@ FINAL_GATE_NODE_IDS: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
 
 _ALLOWED_GATE_SOURCE_PREFIXES = ("packages", "tests")
 _FORBIDDEN_PYTEST_CONTROL_NAMES = frozenset({"importorskip", "skip", "skipif", "xfail"})
-_PHASE5_ADMISSION_RELATIVE_PATH = Path("tests/product/fixtures/assembly/opencode-admission.json")
-_PHASE5_ADMISSION_STATUSES = frozenset({"blocked_by_execution_approval", "complete"})
+_ADMISSION_RELATIVE_PATH = Path("tests/product/fixtures/assembly/opencode-admission.json")
+_ADMISSION_STATUSES = frozenset({"blocked_by_execution_approval", "complete"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -677,7 +677,7 @@ class GateRunResult:
 
 
 @dataclass(frozen=True, slots=True)
-class Phase5OpenCodeAdmissionState:
+class OpenCodeAdmissionState:
     source_status: str
     local_gate_disposition: Literal["run"]
     release_disposition: Literal["blocked", "requires_task3_evidence_validation"]
@@ -694,17 +694,17 @@ def all_final_gate_node_ids() -> tuple[str, ...]:
     return node_ids
 
 
-def phase5_fault_coverage_state() -> Phase5FaultCoverageState:
+def assembly_fault_coverage_state() -> AssemblyFaultCoverageState:
     superseded_fault_ids = tuple(
         fault_id
-        for fault_id, evidence in PHASE5_FAULT_EVIDENCE.items()
+        for fault_id, evidence in ASSEMBLY_FAULT_EVIDENCE.items()
         if evidence.evidence_kind == "superseded"
     )
     gap_fault_ids = tuple(
-        fault_id for fault_id, evidence in PHASE5_FAULT_EVIDENCE.items() if evidence.evidence_kind == "gap"
+        fault_id for fault_id, evidence in ASSEMBLY_FAULT_EVIDENCE.items() if evidence.evidence_kind == "gap"
     )
-    direct_count = len(PHASE5_FAULT_EVIDENCE) - len(superseded_fault_ids) - len(gap_fault_ids)
-    return Phase5FaultCoverageState(
+    direct_count = len(ASSEMBLY_FAULT_EVIDENCE) - len(superseded_fault_ids) - len(gap_fault_ids)
+    return AssemblyFaultCoverageState(
         local_gate_disposition="run",
         release_complete=not gap_fault_ids,
         direct_count=direct_count,
@@ -713,10 +713,10 @@ def phase5_fault_coverage_state() -> Phase5FaultCoverageState:
         superseded_fault_ids=superseded_fault_ids,
         gap_fault_ids=gap_fault_ids,
         detail=(
-            "Phase 5 Task 26 release evidence is complete: every applicable fault row has direct "
+            "Assembly release evidence is complete: every applicable fault row has direct "
             f"executable evidence and {len(superseded_fault_ids)} retired rows have replacement evidence."
             if not gap_fault_ids
-            else "Phase 5 Task 26 release remains blocked by "
+            else "Assembly release remains blocked by "
             f"{len(gap_fault_ids)} explicitly modeled direct-evidence gaps; "
             f"{len(superseded_fault_ids)} retired rows have replacement evidence and deterministic "
             "local fault gates remain runnable."
@@ -811,7 +811,7 @@ def _junit_counts(path: Path) -> tuple[int, int, int, int]:
 
 
 def _run_gate_node_group(repo_root: Path, node_ids: tuple[str, ...]) -> GateRunResult:
-    with tempfile.TemporaryDirectory(prefix="phase5-final-gate-") as temporary_directory:
+    with tempfile.TemporaryDirectory(prefix="assembly-final-gate-") as temporary_directory:
         junit_path = Path(temporary_directory) / "pytest.xml"
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -875,10 +875,10 @@ def run_gate_nodes(repo_root: Path, node_ids: Sequence[str]) -> GateRunResult:
     )
 
 
-def phase5_opencode_admission_state(repo_root: Path) -> Phase5OpenCodeAdmissionState:
-    admission_path = repo_root / _PHASE5_ADMISSION_RELATIVE_PATH
+def opencode_admission_state(repo_root: Path) -> OpenCodeAdmissionState:
+    admission_path = repo_root / _ADMISSION_RELATIVE_PATH
     if not admission_path.is_file():
-        return Phase5OpenCodeAdmissionState(
+        return OpenCodeAdmissionState(
             source_status="missing",
             local_gate_disposition="run",
             release_disposition="blocked",
@@ -889,10 +889,10 @@ def phase5_opencode_admission_state(repo_root: Path) -> Phase5OpenCodeAdmissionS
         )
     admission = load_json(admission_path)
     source_status = admission.get("admission_status")
-    if not isinstance(source_status, str) or source_status not in _PHASE5_ADMISSION_STATUSES:
+    if not isinstance(source_status, str) or source_status not in _ADMISSION_STATUSES:
         raise AssertionError(f"unknown Task 3 admission status: {source_status!r}")
     if source_status == "complete":
-        return Phase5OpenCodeAdmissionState(
+        return OpenCodeAdmissionState(
             source_status=source_status,
             local_gate_disposition="run",
             release_disposition="requires_task3_evidence_validation",
@@ -901,7 +901,7 @@ def phase5_opencode_admission_state(repo_root: Path) -> Phase5OpenCodeAdmissionS
                 "evidence validator. This local gate does not claim live admission."
             ),
         )
-    return Phase5OpenCodeAdmissionState(
+    return OpenCodeAdmissionState(
         source_status=source_status,
         local_gate_disposition="run",
         release_disposition="blocked",

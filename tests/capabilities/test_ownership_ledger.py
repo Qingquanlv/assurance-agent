@@ -12,7 +12,7 @@ from tests.capabilities.ownership import (
     CALLABLE_OWNER_OVERRIDES,
     GENERATION_VERIFICATION_FILES,
     MODULE_OWNER_ROOTS,
-    NON_PHASE4_MODEL_DISPOSITIONS,
+    LEFTOVER_MODEL_DISPOSITIONS,
     OWNERSHIP_PATH,
     QUALITY_VERIFICATION_FILES,
     OwnershipLedger,
@@ -110,8 +110,8 @@ OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-REPLACE_PHASE5_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
-DELETE_PHASE6_OPERATIONS = frozenset({"operation:retro-accept"})
+REPLACED_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
+DELETED_OPERATIONS = frozenset({"operation:retro-accept"})
 
 SKILL_OWNERS: dict[str, tuple[str, ...]] = {
     "assurance.intake": ("aa-intake", "aa-explore", "aa-case-design", "aa-case-reviewer"),
@@ -399,12 +399,12 @@ def test_operation_skill_and_persona_dispositions_are_exact() -> None:
             assert item.status == "verified"
             assert item.verification == _operation_live_pointer(operation_id)
 
-    for operation_id in REPLACE_PHASE5_OPERATIONS:
+    for operation_id in REPLACED_OPERATIONS:
         item = by_id[("operation", operation_id)]
         assert item.disposition == "replace_phase5"
         assert item.owner is None
         assert item.new_id is None
-    for operation_id in DELETE_PHASE6_OPERATIONS:
+    for operation_id in DELETED_OPERATIONS:
         item = by_id[("operation", operation_id)]
         assert item.disposition == "delete_phase6"
         assert item.owner is None
@@ -511,7 +511,7 @@ def test_module_roots_expand_to_exact_files_without_overlap() -> None:
         assert item.new_id is None
         assert item.status == "planned"
 
-    for path, disposition in NON_PHASE4_MODEL_DISPOSITIONS.items():
+    for path, disposition in LEFTOVER_MODEL_DISPOSITIONS.items():
         item = module_items[path]
         assert item.disposition == disposition
         assert item.owner is None
