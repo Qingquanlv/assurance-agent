@@ -36,7 +36,7 @@ class Phase5FaultCoverageState:
     detail: str
 
 
-EVIDENCE_ROOT = Path(__file__).resolve().parent / "fixtures" / "phase5"
+EVIDENCE_ROOT = Path(__file__).resolve().parent / "fixtures" / "assembly"
 
 HISTORICAL_PREPARE_IDS = (
     "assurance.intake.case-design.prepare",
@@ -213,18 +213,18 @@ SECURITY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "tests/product/test_composition_authority.py::test_forged_deployment_declaration_fails_closed",
             "tests/product/test_composition_authority.py::test_mutated_config_tree_changes_lock",
             "tests/product/test_product_input.py::test_product_input_authenticates_resource_refs_against_composition",
-            "tests/phase4/test_six_wheel_composition.py::test_binding_digests_recompute_from_checked_in_bytes",
+            "tests/capabilities/test_six_wheel_composition.py::test_binding_digests_recompute_from_checked_in_bytes",
             "packages/framework/graph-engine/tests/boot/test_source_authentication.py::test_sut_and_cross_owner_symbols_fail_before_import",
         ),
         "adapter_confinement": (
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[absolute-intake]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[parent-dotdot-generation]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[windows-drive-execution]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-file-healing]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-parent-intake]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[hard-link-generation]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[path-swap-execution]",
-            "tests/phase4/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[undeclared-write-root-execution]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[absolute-intake]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[parent-dotdot-generation]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[windows-drive-execution]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-file-healing]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[symlink-parent-intake]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[hard-link-generation]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[path-swap-execution]",
+            "tests/capabilities/test_path_confinement.py::test_path_cases_fail_before_spawn_and_stay_inside_workspace[undeclared-write-root-execution]",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_dual_root_workspace_identity_drift_is_fail_closed",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_bound_cancel_reconcile_rejects_live_root_drift_with_same_identity",
         ),
@@ -315,10 +315,10 @@ _FAULT_GATE_SUPPORT_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_lost_sse_authenticates_with_get",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_idle_with_open_tools_is_not_terminal",
             "packages/adapters/agent-runtime-opencode/tests/test_fault_matrix.py::test_completion_cancel_race_provider_terminal_wins",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_mutation-assurance.improvement.effect.archive.v1]",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_mutation-assurance.improvement.effect.archive.v1]",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_receipt-assurance.improvement.effect.archive.v1]",
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[reconcile_error-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_mutation-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_mutation-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[before_receipt-assurance.improvement.effect.archive.v1]",
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[reconcile_error-assurance.improvement.effect.archive.v1]",
             "tests/product/test_report_flow.py::test_report_is_mandatory_on_success",
         ),
     }
@@ -491,7 +491,7 @@ _PHASE5_DIRECT_FAULT_NODE_IDS: Mapping[str, str] = MappingProxyType(
             "packages/framework/graph-engine/tests/attempts/test_kernel_effect_recovery.py::test_crash_after_intent_applies_once_without_repeating_promotion[assurance.improvement.effect.archive.v1]"
         ),
         "effect-reconcile-lost-ack": (
-            "tests/phase4/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_receipt-assurance.improvement.effect.archive.v1]"
+            "tests/capabilities/test_effect_fault_matrix.py::test_effect_crash_cuts_are_at_most_once_and_typed[after_receipt-assurance.improvement.effect.archive.v1]"
         ),
     }
 )
@@ -637,7 +637,7 @@ REPOSITORY_GATE_NODE_IDS: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "wheel_repository_isolation": (
             "packages/adapters/agent-runtime-contracts/tests/test_models.py::test_isolated_wheel_import_does_not_load_adapters_or_assurance",
-            "tests/phase4/test_six_wheel_composition.py::test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints",
+            "tests/capabilities/test_six_wheel_composition.py::test_fixture_product_is_absent_from_workspace_dependencies_archives_and_entrypoints",
             "tests/product/test_product_packaging.py::test_wheels_omit_whole_tree_modules_and_result_export_schema",
             "tests/product/test_wheel_smoke_contract.py::test_wheel_smoke_covers_isolated_selection_and_binding_fault_matrix",
             "tests/product/test_product_providers.py::test_source_catalog_is_six_wheels_plus_opencode",
@@ -655,7 +655,7 @@ FINAL_GATE_NODE_IDS: Mapping[str, Mapping[str, tuple[str, ...]]] = MappingProxyT
 
 _ALLOWED_GATE_SOURCE_PREFIXES = ("packages", "tests")
 _FORBIDDEN_PYTEST_CONTROL_NAMES = frozenset({"importorskip", "skip", "skipif", "xfail"})
-_PHASE5_ADMISSION_RELATIVE_PATH = Path("tests/product/fixtures/phase5/opencode-admission.json")
+_PHASE5_ADMISSION_RELATIVE_PATH = Path("tests/product/fixtures/assembly/opencode-admission.json")
 _PHASE5_ADMISSION_STATUSES = frozenset({"blocked_by_execution_approval", "complete"})
 
 

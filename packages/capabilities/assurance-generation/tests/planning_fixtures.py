@@ -5,7 +5,7 @@ from typing import Any, cast
 from agent_runtime_contracts import AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
-from tests.phase4.agent_harness import FakeAgentAdapter
+from tests.capabilities.agent_harness import FakeAgentAdapter
 
 FAMILIES = ("api", "e2e", "fuzz", "performance")
 VALID_LEAFS = ("auth.session.create", "entities.item.create")

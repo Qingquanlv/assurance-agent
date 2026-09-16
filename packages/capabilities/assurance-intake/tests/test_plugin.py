@@ -10,7 +10,7 @@ from graph_engine.plugin_api import PluginDescriptor, ProviderSource
 
 from assurance_intake.plugin import INTAKE_SOURCE, IntakePlugin
 from assurance_intake.resource_loader import resource_bytes
-from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
+from tests.capabilities.conformance import PluginExpectation, assert_plugin_conforms
 
 
 def test_intake_plugin_conforms() -> None:

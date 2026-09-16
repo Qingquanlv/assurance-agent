@@ -7,7 +7,7 @@ import pytest
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import CandidateWriteSet
 
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.pr_metrics import (

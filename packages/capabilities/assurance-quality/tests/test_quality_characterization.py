@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from assurance_quality.contracts.issues import AffectedSurface, FingerprintInputs
 from assurance_quality.contracts.pr_metrics import MutationEvidence

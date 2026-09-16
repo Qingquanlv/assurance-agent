@@ -9,7 +9,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.effects.state import EffectCallContext, MemoryEffectState, bind_effect_call
 from graph_engine.persistence.runner_lease import StaleFencingToken
 from graph_engine.plugin_api import EffectPolicy
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from assurance_improvement.effects.archive import ARCHIVE_KIND, ImprovementArchiveEffect
 from assurance_improvement.effects.delivery import DELIVERY_KIND, ImprovementDeliveryEffect

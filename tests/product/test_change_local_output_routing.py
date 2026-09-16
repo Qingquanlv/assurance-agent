@@ -18,8 +18,8 @@ from graph_engine.plugin_api import (
     TaskRequest,
     TaskWorkspaceIdentity,
 )
-from tests.phase4.agent_harness import FakeAgentAdapter
-from tests.phase4.conformance import ExecutedTask
+from tests.capabilities.agent_harness import FakeAgentAdapter
+from tests.capabilities.conformance import ExecutedTask
 
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 from assurance_product.output_routes import OutputRouteCatalog

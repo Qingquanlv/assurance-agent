@@ -27,7 +27,7 @@ from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
 from assurance_quality.operations.inspect import build_failure_classification_facts
 from tests.acg_plan_fixture import install_plan
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 CHANGE_ID = "CH-ASSESS-001"
 BATCH_ID = "20260905T010203Z"

@@ -6,12 +6,12 @@ from pathlib import Path
 
 from tests.architecture.legacy_import_inventory import scan_legacy_imports
 
-PHASE4_WORKFLOW = Path("tests/phase4/fixtures/six-wheel-product/test_assurance_phase4_product/workflow.yaml")
+SIX_WHEEL_WORKFLOW = Path("tests/capabilities/fixtures/six-wheel-product/test_six_wheel_product/workflow.yaml")
 CONVERTED_PRODUCTS = (
     Path("examples/graph-engine-toy-a/graph_engine_toy_a/product.py"),
     Path("examples/graph-engine-toy-b/graph_engine_toy_b/product.py"),
     Path("examples/agent-runtime-fixture/agent_runtime_fixture/product.py"),
-    Path("tests/phase4/fixtures/six-wheel-product/test_assurance_phase4_product/product.py"),
+    Path("tests/capabilities/fixtures/six-wheel-product/test_six_wheel_product/product.py"),
 )
 FORBIDDEN_CONVERSION_NAMES = frozenset(
     {
@@ -75,8 +75,8 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def test_phase4_six_wheel_workflow_yaml_is_deleted() -> None:
-    assert not (_repo_root() / PHASE4_WORKFLOW).exists()
+def test_six_wheel_workflow_yaml_is_deleted() -> None:
+    assert not (_repo_root() / SIX_WHEEL_WORKFLOW).exists()
 
 
 def _product_uses_workflow_def(path: Path) -> bool:
@@ -93,7 +93,7 @@ def _product_uses_workflow_def(path: Path) -> bool:
     return False
 
 
-def test_converted_examples_and_phase4_fixture_do_not_embed_workflow_def() -> None:
+def test_converted_examples_and_six_wheel_fixture_do_not_embed_workflow_def() -> None:
     still_embedded = tuple(
         path.as_posix() for path in CONVERTED_PRODUCTS if _product_uses_workflow_def(_repo_root() / path)
     )

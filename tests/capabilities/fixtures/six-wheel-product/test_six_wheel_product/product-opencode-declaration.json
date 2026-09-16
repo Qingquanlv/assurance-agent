@@ -1,0 +1,76 @@
+{
+  "kind": "product",
+  "manifest": {
+    "config_plugin_paths": [
+      "/Users/lvqingquan/agent/assurance-agent/.worktrees/python-native-langgraph-migration/tests/capabilities/fixtures/bindings-opencode"
+    ],
+    "configuration": {},
+    "engine_api": "2.0",
+    "entrypoints": {
+      "fixture": "root"
+    },
+    "graph_factory_symbol": "test_six_wheel_product.product:build_six_wheel_graphs",
+    "plugins": [
+      {
+        "plugin_id": "assurance.execution",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.generation",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.healing",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.improvement",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.intake",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "assurance.quality",
+        "version_specifier": "==0.3.0"
+      },
+      {
+        "plugin_id": "runtime.opencode",
+        "version_specifier": "==0.1.0"
+      },
+      {
+        "plugin_id": "test.assurance.bindings",
+        "version_specifier": "==1.0.0"
+      }
+    ],
+    "product_id": "test.assurance.six-wheel",
+    "product_version": "1.0.0",
+    "schema_version": "1",
+    "source": {
+      "declaration_path": "test_six_wheel_product/product-opencode-declaration.json",
+      "distribution": "test-six-wheel-product",
+      "entrypoint_group": "graph_engine.products",
+      "entrypoint_name": "six-wheel-opencode",
+      "entrypoint_value": "test_six_wheel_product.product:SixWheelOpenCodeProduct",
+      "import_roots": [
+        "",
+        "test_six_wheel_product"
+      ],
+      "version": "1.0.0"
+    }
+  },
+  "schema_version": "1",
+  "source": {
+    "declaration_path": "test_six_wheel_product/product-opencode-declaration.json",
+    "distribution": "test-six-wheel-product",
+    "entrypoint_group": "graph_engine.products",
+    "entrypoint_name": "six-wheel-opencode",
+    "entrypoint_value": "test_six_wheel_product.product:SixWheelOpenCodeProduct",
+    "import_roots": [
+      "",
+      "test_six_wheel_product"
+    ],
+    "version": "1.0.0"
+  }
+}

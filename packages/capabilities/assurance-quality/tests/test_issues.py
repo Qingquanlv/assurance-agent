@@ -6,7 +6,7 @@ import pytest
 from graph_engine.canonical import canonical_digest
 from graph_engine.plugin_api import CandidateWriteSet
 
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from pydantic import ValidationError
 

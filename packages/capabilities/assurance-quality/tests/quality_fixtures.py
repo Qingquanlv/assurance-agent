@@ -144,10 +144,10 @@ def write_set(*paths: str, digest: str = HEX_A) -> CandidateWriteSet:
 
 def validation_context() -> ValidationContext:
     return ValidationContext(
-        invocation_id="phase4-test",
-        task_id="phase4-task",
-        graph_instance_id="phase4-graph",
-        node_id="phase4-node",
+        invocation_id="capabilities-test",
+        task_id="capabilities-task",
+        graph_instance_id="capabilities-graph",
+        node_id="capabilities-node",
         resources=ResourceClaims(),
     )
 

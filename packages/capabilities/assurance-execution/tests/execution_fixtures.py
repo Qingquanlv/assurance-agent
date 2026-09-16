@@ -21,8 +21,8 @@ from graph_engine.plugin_api import (
     TaskWorkspaceIdentity,
     ValidationContext,
 )
-from tests.phase4.agent_harness import FakeAgentAdapter
-from tests.phase4.conformance import ExecutedTask
+from tests.capabilities.agent_harness import FakeAgentAdapter
+from tests.capabilities.conformance import ExecutedTask
 
 from assurance_execution.operations.runner import ExecutionProcessHost, ProcessReceipt
 from assurance_product.execution_view import ExecutionView, build_execution_view
@@ -274,10 +274,10 @@ def candidate_with_result(test: str) -> CandidateWriteSet:
 
 def validation_context() -> ValidationContext:
     return ValidationContext(
-        invocation_id="phase4-test",
-        task_id="phase4-task",
-        graph_instance_id="phase4-graph",
-        node_id="phase4-node",
+        invocation_id="capabilities-test",
+        task_id="capabilities-task",
+        graph_instance_id="capabilities-graph",
+        node_id="capabilities-node",
         resources=ResourceClaims(),
     )
 

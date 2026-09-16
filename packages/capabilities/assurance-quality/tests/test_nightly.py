@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.phase4.conformance import execute_task
+from tests.capabilities.conformance import execute_task
 
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.operations.metrics import ComputeAssertionStrengthHandler, RunMutationSampleHandler

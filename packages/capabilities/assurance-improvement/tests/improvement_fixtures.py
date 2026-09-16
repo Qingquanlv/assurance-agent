@@ -17,7 +17,7 @@ from graph_engine.plugin_api import (
     TaskFailure,
     ValidationContext,
 )
-from tests.phase4.agent_harness import FakeAgentAdapter
+from tests.capabilities.agent_harness import FakeAgentAdapter
 
 from assurance_improvement.contracts.delivery import artifact_digest, digest_hex
 from assurance_improvement.contracts.effects import ImprovementEffectIntentV1
@@ -685,10 +685,10 @@ def write_set(*paths: str, digest: str = HEX_A) -> CandidateWriteSet:
 
 def validation_context() -> ValidationContext:
     return ValidationContext(
-        invocation_id="phase4-test",
-        task_id="phase4-task",
-        graph_instance_id="phase4-graph",
-        node_id="phase4-node",
+        invocation_id="capabilities-test",
+        task_id="capabilities-task",
+        graph_instance_id="capabilities-graph",
+        node_id="capabilities-node",
         resources=ResourceClaims(),
     )
 

@@ -10,7 +10,7 @@ from graph_engine.plugin_api import PluginDependency, PluginDescriptor, Provider
 
 from assurance_healing.plugin import HEALING_SOURCE, HealingPlugin
 from assurance_healing.resource_loader import resource_bytes
-from tests.phase4.conformance import PluginExpectation, assert_plugin_conforms
+from tests.capabilities.conformance import PluginExpectation, assert_plugin_conforms
 
 
 def test_healing_descriptor_declares_exact_upstream_dependencies() -> None:
