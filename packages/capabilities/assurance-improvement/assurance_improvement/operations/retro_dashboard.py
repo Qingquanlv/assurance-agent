@@ -16,13 +16,28 @@ from pydantic import ValidationError
 
 from assurance_improvement.contracts.agent import RetroAnalysisResultV3
 from assurance_improvement.contracts.dashboard import (
+    DashboardDomain,
+    DashboardDomainName,
     DashboardMetric,
     DashboardRun,
+    DashboardSignal,
+    DashboardSourceRefs,
     DashboardStages,
     RetroDashboardV1,
 )
-from assurance_improvement.contracts.improvements import ImprovementCandidateV3, ImprovementLedgerProjection
-from assurance_improvement.contracts.retro import RetroContextV3, RetroRunStatus, Signal
+from assurance_improvement.contracts.improvements import (
+    ImprovementCandidateV3,
+    ImprovementLedgerProjection,
+    ImprovementSourceRefs,
+)
+from assurance_improvement.contracts.retro import (
+    ContextSignalSet,
+    DomainAnalysisStatus,
+    RetroContextV3,
+    RetroRunStatus,
+    RetroSourceDescriptor,
+    Signal,
+)
 
 _SHORT_LEN = 12
 
@@ -225,6 +240,101 @@ def _load_candidates(text: str) -> tuple[ImprovementCandidateV3, ...]:
     return tuple(ImprovementCandidateV3.model_validate(item) for item in items)
 
 
+_DOMAIN_ORDER: tuple[DashboardDomainName, ...] = ("issue", "workflow", "eval", "discovery", "coverage_gap")
+_SOURCE_FIELD_BY_DOMAIN: dict[DashboardDomainName, tuple[str, str]] = {
+    "issue": ("issue_sources", "issue_slice_sha256"),
+    "workflow": ("workflow_sources", "workflow_slice_sha256"),
+    "eval": ("eval_sources", "eval_slice_sha256"),
+    "discovery": ("discovery_sources", "discovery_slice_sha256"),
+    "coverage_gap": ("coverage_gap_sources", "coverage_gap_slice_sha256"),
+}
+
+
+def _map_source_refs(refs: ImprovementSourceRefs) -> DashboardSourceRefs:
+    return DashboardSourceRefs(
+        problem_ids=refs.problem_ids,
+        occurrence_ids=refs.occurrence_ids,
+        issue_event_ids=refs.issue_event_ids,
+        workflow_evidence_ids=refs.workflow_evidence_ids,
+        eval_run_ids=refs.eval_run_ids,
+    )
+
+
+def _source_kind_counts(sources: tuple[RetroSourceDescriptor, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for source in sources:
+        counts[source.kind] = counts.get(source.kind, 0) + 1
+    return counts
+
+
+def _build_domains(context: RetroContextV3) -> tuple[DashboardDomain, ...]:
+    domains: list[DashboardDomain] = []
+    for domain in _DOMAIN_ORDER:
+        status_entry: DomainAnalysisStatus | None = getattr(context.domain_status, domain)
+        sources_field, slice_field = _SOURCE_FIELD_BY_DOMAIN[domain]
+        sources: tuple[RetroSourceDescriptor, ...] = getattr(context.source_manifest, sources_field)
+        slice_sha256: str | None = getattr(context.source_manifest, slice_field)
+        source_count = len(sources)
+        source_kinds = _source_kind_counts(sources)
+        if status_entry is None:
+            domains.append(
+                DashboardDomain(
+                    domain=domain,
+                    status="absent",
+                    failure_reason=None,
+                    signal_count=None,
+                    source_count=source_count,
+                    source_kinds=source_kinds,
+                    slice_sha256=slice_sha256,
+                )
+            )
+            continue
+        signal_tuple = getattr(context.signals, domain)
+        domains.append(
+            DashboardDomain(
+                domain=domain,
+                status=status_entry.status,
+                failure_reason=status_entry.failure_reason,
+                signal_count=len(signal_tuple),
+                source_count=source_count,
+                source_kinds=source_kinds,
+                slice_sha256=slice_sha256,
+            )
+        )
+    return tuple(domains)
+
+
+def _cited_by_index(candidates: tuple[ImprovementCandidateV3, ...]) -> dict[str, tuple[str, ...]]:
+    index: dict[str, list[str]] = {}
+    for candidate in candidates:
+        for signal_id in candidate.signal_ids:
+            index.setdefault(signal_id, []).append(candidate.candidate_id)
+    return {signal_id: tuple(ids) for signal_id, ids in index.items()}
+
+
+def _flatten_signals(
+    signal_set: ContextSignalSet, cited_by: dict[str, tuple[str, ...]]
+) -> tuple[DashboardSignal, ...]:
+    flat: list[DashboardSignal] = []
+    for domain in _DOMAIN_ORDER:
+        for signal in getattr(signal_set, domain):
+            flat.append(
+                DashboardSignal(
+                    signal_id=signal.signal_id,
+                    signal_type=signal.signal_type,
+                    domain=domain,
+                    summary=signal.summary,
+                    occurrence_count=signal.occurrence_count,
+                    confidence=signal.confidence,
+                    recommended_change=signal.recommended_change,
+                    metrics=project_signal_metrics(signal),
+                    source_refs=_map_source_refs(signal.source_refs),
+                    cited_by_candidate_ids=cited_by.get(signal.signal_id, ()),
+                )
+            )
+    return tuple(sorted(flat, key=lambda item: (-item.occurrence_count, item.signal_id)))
+
+
 def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) -> RetroDashboardV1:
     """Project the current change's retro artifacts into `RetroDashboardV1`.
 
@@ -279,6 +389,13 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
     if change_id is not None and context is not None and change_id not in context.window.change_ids:
         raise ValueError(f"--change {change_id} is not part of the retro window")
 
+    domains: tuple[DashboardDomain, ...] = ()
+    signals: tuple[DashboardSignal, ...] = ()
+    if context is not None:
+        cited_by = _cited_by_index(_candidates)
+        signals = _flatten_signals(context.signals, cited_by)
+        domains = _build_domains(context)
+
     run = _build_run(context, run_status, tuple(integrity_reasons))
 
     resolved_change_id = change_id
@@ -296,6 +413,8 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
             reconcile=run_status is not None,
         ),
         run=run,
+        domains=domains,
+        signals=signals,
     )
 
 

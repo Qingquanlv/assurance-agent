@@ -300,3 +300,142 @@ def test_build_retro_dashboard_rejects_change_id_outside_window(tmp_path) -> Non
 
     with pytest.raises(ValueError, match="not part of the retro window"):
         build_retro_dashboard(tmp_path, change_id="CH-OTHER")
+
+
+def _full_context_payload(*, extra_signal: dict[str, object] | None = None) -> dict[str, object]:
+    workflow_signals = [
+        {
+            "signal_id": "task-failure-1",
+            "signal_type": "task_failure",
+            "summary": "1 technical failure(s) at intake.case-review",
+            "occurrence_count": 1,
+            "recommended_change": "Review the node contract.",
+            "source_refs": {"workflow_evidence_ids": ["attempt-failure-1"]},
+            "confidence": "high",
+            "node_id": "intake.case-review",
+            "error_kind": "invalid_output",
+            "message_fingerprint": "f" * 64,
+        }
+    ]
+    if extra_signal is not None:
+        workflow_signals.append(extra_signal)
+    return {
+        "schema_version": "3",
+        "retro_id": "retro-1",
+        "generated_at": "2026-09-16T12:19:50+00:00",
+        "dry_run": False,
+        "window": {
+            "selection": {"mode": "change_ids", "requested_change_ids": ["CH-1"]},
+            "change_ids": ["CH-1"],
+        },
+        "source_manifest": {
+            "issue_slice_sha256": "sha256:" + "a" * 64,
+            "workflow_slice_sha256": "sha256:" + "b" * 64,
+            "eval_slice_sha256": "sha256:" + "c" * 64,
+            "workflow_sources": [
+                {"kind": "loop_round_history", "sha256": "d" * 64, "evidence_ids": ["loop-1"]},
+                {"kind": "workflow_ledger", "sha256": "e" * 64, "evidence_ids": ["attempt-failure-1"]},
+            ],
+        },
+        "integrity": {"status": "incomplete", "reasons": ["issue_evidence_absent"]},
+        "domain_status": {
+            "issue": {"status": "failed", "failure_reason": "no evidence"},
+            "workflow": {"status": "ok"},
+            "eval": {"status": "ok"},
+        },
+        "signals": {"issue": [], "workflow": workflow_signals, "eval": []},
+        "signal_count": len(workflow_signals),
+    }
+
+
+def test_build_retro_dashboard_full_run_populates_domains_and_signals(tmp_path) -> None:
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir)
+    (retro_dir / "context.json").write_text(json.dumps(_full_context_payload()), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path)
+
+    assert [domain.domain for domain in doc.domains] == [
+        "issue",
+        "workflow",
+        "eval",
+        "discovery",
+        "coverage_gap",
+    ]
+    issue_domain = doc.domains[0]
+    assert issue_domain.status == "failed"
+    assert issue_domain.failure_reason == "no evidence"
+    assert issue_domain.signal_count == 0
+    assert issue_domain.source_count == 0
+
+    workflow_domain = doc.domains[1]
+    assert workflow_domain.status == "ok"
+    assert workflow_domain.signal_count == 1
+    assert workflow_domain.source_count == 2
+    assert workflow_domain.source_kinds == {"loop_round_history": 1, "workflow_ledger": 1}
+
+    discovery_domain = doc.domains[3]
+    assert discovery_domain.status == "absent"
+    assert discovery_domain.signal_count is None
+    assert discovery_domain.source_count == 0
+
+    assert len(doc.signals) == 1
+    signal = doc.signals[0]
+    assert signal.signal_id == "task-failure-1"
+    assert signal.domain == "workflow"
+    assert signal.metrics == (
+        DashboardMetric(label="node", value="intake.case-review"),
+        DashboardMetric(label="error_kind", value="invalid_output"),
+        DashboardMetric(label="fingerprint", value="f" * 12),
+    )
+    assert signal.source_refs.workflow_evidence_ids == ("attempt-failure-1",)
+
+
+def test_build_retro_dashboard_signals_sort_by_occurrence_desc_then_id(tmp_path) -> None:
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir)
+    extra = {
+        "signal_id": "healing-1",
+        "signal_type": "healing",
+        "summary": "healed",
+        "occurrence_count": 5,
+        "recommended_change": "n/a",
+        "source_refs": {"workflow_evidence_ids": ["attempt-failure-2"]},
+        "confidence": "medium",
+        "operation": "repair",
+        "outcome": "succeeded",
+    }
+    (retro_dir / "context.json").write_text(
+        json.dumps(_full_context_payload(extra_signal=extra)), encoding="utf-8"
+    )
+
+    doc = build_retro_dashboard(tmp_path)
+    assert [signal.signal_id for signal in doc.signals] == ["healing-1", "task-failure-1"]
+
+
+def test_build_retro_dashboard_unreadable_context_with_unknown_signal_type(tmp_path) -> None:
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir)
+    payload = _full_context_payload()
+    payload["signals"]["workflow"][0] = {  # type: ignore[index]
+        **payload["signals"]["workflow"][0],  # type: ignore[index]
+        "signal_type": "future_signal_type",
+    }
+    (retro_dir / "context.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path)
+    assert doc.stages.synthesis is False
+    assert "artifact_unreadable:context.json" in doc.run.integrity_reasons
+
+
+class _FakeSignal:
+    signal_type = "future_signal_type"
+
+
+def test_project_signal_metrics_returns_empty_tuple_for_unknown_type() -> None:
+    from assurance_improvement.operations.retro_dashboard import project_signal_metrics
+
+    assert project_signal_metrics(_FakeSignal()) == ()  # type: ignore[arg-type]
