@@ -6,10 +6,23 @@ re-derives retro semantics (no re-slicing, no re-running analyzers).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Generic, TypeVar
 
-from assurance_improvement.contracts.dashboard import DashboardMetric
-from assurance_improvement.contracts.retro import Signal
+from pydantic import ValidationError
+
+from assurance_improvement.contracts.agent import RetroAnalysisResultV3
+from assurance_improvement.contracts.dashboard import (
+    DashboardMetric,
+    DashboardRun,
+    DashboardStages,
+    RetroDashboardV1,
+)
+from assurance_improvement.contracts.improvements import ImprovementCandidateV3, ImprovementLedgerProjection
+from assurance_improvement.contracts.retro import RetroContextV3, RetroRunStatus, Signal
 
 _SHORT_LEN = 12
 
@@ -173,3 +186,135 @@ def project_signal_metrics(signal: Signal) -> tuple[DashboardMetric, ...]:
     if projector is None:
         return ()
     return projector(signal)
+
+
+_RETRO_DIR = "qa/results/retro"
+_LEDGER_PATH = "qa/improvements/ledger.json"
+_ANALYSIS_FILES = (
+    "retro-eval-analysis.json",
+    "retro-issue-analysis.json",
+    "retro-workflow-analysis.json",
+)
+
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class _LoadResult(Generic[_T]):
+    exists: bool
+    model: _T | None
+    reason: str | None
+
+
+def _load_model(path: Path, loader: Callable[[str], _T], artifact_name: str) -> _LoadResult[_T]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _LoadResult(exists=False, model=None, reason=None)
+    except OSError:
+        return _LoadResult(exists=True, model=None, reason=f"artifact_unreadable:{artifact_name}")
+    try:
+        return _LoadResult(exists=True, model=loader(text), reason=None)
+    except (ValidationError, ValueError, json.JSONDecodeError):
+        return _LoadResult(exists=True, model=None, reason=f"artifact_unreadable:{artifact_name}")
+
+
+def _load_candidates(text: str) -> tuple[ImprovementCandidateV3, ...]:
+    raw = json.loads(text)
+    items = raw.get("candidates", []) if isinstance(raw, dict) else []
+    return tuple(ImprovementCandidateV3.model_validate(item) for item in items)
+
+
+def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) -> RetroDashboardV1:
+    """Project the current change's retro artifacts into `RetroDashboardV1`.
+
+    Reads only: the three `retro-*-analysis.json` files (stages.analyses),
+    `context.json` (stages.synthesis), `status.json` (stages.reconcile),
+    `candidates.json`, and `qa/improvements/ledger.json`. Missing or partial
+    artifacts are never an error — they are expressed through `stages` and
+    `run.integrity_reasons`. Only an explicit `change_id` that is not part of
+    the retro window raises `ValueError`.
+    """
+    retro_dir = change_root / _RETRO_DIR
+    integrity_reasons: list[str] = []
+
+    analyses_ok = True
+    for name in _ANALYSIS_FILES:
+        result = _load_model(retro_dir / name, RetroAnalysisResultV3.model_validate_json, name)
+        if result.model is None:
+            analyses_ok = False
+            if result.reason:
+                integrity_reasons.append(result.reason)
+
+    context_result = _load_model(
+        retro_dir / "context.json", RetroContextV3.model_validate_json, "context.json"
+    )
+    context = context_result.model
+    if context_result.reason:
+        integrity_reasons.append(context_result.reason)
+
+    status_result = _load_model(retro_dir / "status.json", RetroRunStatus.model_validate_json, "status.json")
+    run_status = status_result.model
+    if status_result.reason:
+        integrity_reasons.append(status_result.reason)
+
+    candidates_result = _load_model(retro_dir / "candidates.json", _load_candidates, "candidates.json")
+    # `_candidates` is loaded here (and its integrity reason folded in) so that
+    # Tasks 4-5 can populate `RetroDashboardV1.candidates` without re-reading
+    # the artifact; this task only needs the integrity side effect below.
+    _candidates: tuple[ImprovementCandidateV3, ...] = candidates_result.model or ()
+    if candidates_result.reason:
+        integrity_reasons.append(candidates_result.reason)
+
+    ledger_result = _load_model(
+        change_root / _LEDGER_PATH, ImprovementLedgerProjection.model_validate_json, "ledger.json"
+    )
+    # Same rationale as `_candidates`: Task 4-5 will consume `_ledger` when
+    # deriving improvement linkage; this task only surfaces its integrity
+    # reason.
+    _ledger = ledger_result.model
+    if ledger_result.reason:
+        integrity_reasons.append(ledger_result.reason)
+
+    if change_id is not None and context is not None and change_id not in context.window.change_ids:
+        raise ValueError(f"--change {change_id} is not part of the retro window")
+
+    run = _build_run(context, run_status, tuple(integrity_reasons))
+
+    resolved_change_id = change_id
+    if resolved_change_id is None and context is not None and context.window.change_ids:
+        resolved_change_id = context.window.change_ids[0]
+
+    return RetroDashboardV1(
+        change_id=resolved_change_id,
+        retro_id=context.retro_id if context is not None else None,
+        generated_at=context.generated_at if context is not None else None,
+        dry_run=context.dry_run if context is not None else False,
+        stages=DashboardStages(
+            analyses=analyses_ok,
+            synthesis=context is not None,
+            reconcile=run_status is not None,
+        ),
+        run=run,
+    )
+
+
+def _build_run(
+    context: RetroContextV3 | None,
+    run_status: RetroRunStatus | None,
+    extra_reasons: tuple[str, ...],
+) -> DashboardRun:
+    if context is None:
+        return DashboardRun(integrity_reasons=extra_reasons)
+    return DashboardRun(
+        result=run_status.result if run_status is not None else None,
+        integrity_status=context.integrity.status,
+        integrity_reasons=tuple(context.integrity.reasons) + extra_reasons,
+        signal_count=context.signal_count,
+        candidate_count=0,
+        window_change_ids=context.window.change_ids,
+        selection_mode=context.window.selection.mode,
+        batch_id=run_status.batch_id if run_status is not None else None,
+        failure_ids=run_status.failure_ids if run_status is not None else (),
+        improvement_ids=run_status.improvement_ids if run_status is not None else (),
+    )
