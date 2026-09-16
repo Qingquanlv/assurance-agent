@@ -107,7 +107,10 @@ def test_performance_plan_requires_source_backed_seed_lookup_and_runtime_host() 
     assert "API_BASE_URL" in normalized
     assert "Do not hard-code a local port" in normalized
     assert "Inspect real response shapes" in normalized
-    assert "Do not require a create response to return an identifier unless the handler actually does" in normalized
+    assert (
+        "Do not require a create response to return an identifier unless the handler actually does"
+        in normalized
+    )
     assert "Never read `.env`, `*.env`, or credential-bearing benchmark environment files" in normalized
     assert "Use environment variable names and non-secret defaults only" in normalized
 
@@ -200,7 +203,10 @@ def test_fuzz_plan_requires_an_executable_generated_case_strategy() -> None:
 
     assert "`operation.as_strategy()`" in planner
     assert "`operation.as_strategy()`" in reviewer
-    assert "Merely inspecting the operation or deriving hand-authored payload shapes from it does not qualify" in reviewer
+    assert (
+        "Merely inspecting the operation or deriving hand-authored payload shapes from it does not qualify"
+        in reviewer
+    )
 
 
 def test_fuzz_codegen_reuses_ancestor_fixtures_without_shadowing_them() -> None:
@@ -358,8 +364,14 @@ def test_fuzz_plan_review_closes_support_module_and_schema_loader_facts_in_first
     reviewer = " ".join(resource_text("skills/aa-fuzz-codegen-reviewer/SKILL.md").split())
 
     assert "`operation.as_strategy()`" in planner
-    assert "exact-read every ancestor `conftest.py`" in planner or "read every ancestor `conftest.py`" in reviewer
-    assert "A repaired artifact does not narrow the next review" in reviewer or "Do not stop the review after finding the first defect" in reviewer
+    assert (
+        "exact-read every ancestor `conftest.py`" in planner
+        or "read every ancestor `conftest.py`" in reviewer
+    )
+    assert (
+        "A repaired artifact does not narrow the next review" in reviewer
+        or "Do not stop the review after finding the first defect" in reviewer
+    )
 
 
 def test_fuzz_plan_reuses_ancestor_runtime_fixtures_instead_of_parallel_wiring() -> None:

@@ -270,9 +270,7 @@ def leafs_of(values: tuple[str, ...]) -> frozenset[str]:
     return frozenset(values)
 
 
-def validate_reviewed_plan(
-    business: PlanInputV1, family: Family, cases: CaseYamlAuthoring
-) -> PlanResultV1:
+def validate_reviewed_plan(business: PlanInputV1, family: Family, cases: CaseYamlAuthoring) -> PlanResultV1:
     try:
         plan = PlanResultV1.model_validate(
             business.reviewed_plan,

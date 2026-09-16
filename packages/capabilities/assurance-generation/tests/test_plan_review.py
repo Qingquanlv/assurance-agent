@@ -166,7 +166,11 @@ async def test_plan_review_finalize_rejects_prefix_leaf(family: str, tmp_path: P
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
 async def test_plan_review_finalize_accepts_typed_review(family: str, tmp_path: Path) -> None:
-    review = valid_plan_review() if family == "api" else {**valid_plan_review(), "review_type": f"{family}-codegen"}
+    review = (
+        valid_plan_review()
+        if family == "api"
+        else {**valid_plan_review(), "review_type": f"{family}-codegen"}
+    )
     executed = await execute_task(
         review_finalize_handler(family),
         fake_agent_result(review),
@@ -505,6 +509,4 @@ async def test_api_review_prepare_does_not_require_review_audit(tmp_path: Path) 
     schema = cast(dict[str, object], request.result_contract.schema_document)
     assert "review_audit" not in cast(list[object], schema["required"])
     parts = [thaw_json(part.json_content) for part in request.instructions if part.json_content is not None]
-    assert all(
-        not (isinstance(part, dict) and "review_requirements" in part) for part in parts
-    )
+    assert all(not (isinstance(part, dict) and "review_requirements" in part) for part in parts)

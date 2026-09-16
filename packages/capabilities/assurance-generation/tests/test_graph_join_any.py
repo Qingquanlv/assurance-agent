@@ -541,7 +541,9 @@ async def test_compiled_family_first_arrival_is_exact_current_trigger(family: st
     assert current["value"] == {"rounds_used": 1, "rounds_budget": 2}
     assert terminal["current_trigger"] == current
     assert terminal["rounds_used"] == current["value"]["rounds_used"]
-    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.codegen") == 2
+    assert [call.semantic_node_id for call in result.semantic_calls].count(
+        f"generation.{family}.codegen"
+    ) == 2
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
@@ -574,7 +576,9 @@ async def test_compiled_family_repeated_epochs_preserve_exact_rounds(family: str
     assert current["value"] != {"rounds_used": 3, "rounds_budget": 2}
     assert current["business_epoch"] == 1
     assert terminal["rounds_used"] == 2
-    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.codegen") == 3
+    assert [call.semantic_node_id for call in result.semantic_calls].count(
+        f"generation.{family}.codegen"
+    ) == 3
 
 
 @pytest.mark.parametrize("family", _FAMILIES)
@@ -608,7 +612,9 @@ async def test_last_budgeted_plan_retry_reaches_join(family: str) -> None:
     assert terminal["current_trigger"] == current
     assert terminal["rounds_used"] == 2
     assert terminal.get("status") in {"passed", "done"} or terminal.get("decision") == "pass"
-    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.codegen") == 3
+    assert [call.semantic_node_id for call in result.semantic_calls].count(
+        f"generation.{family}.codegen"
+    ) == 3
     assert [call.semantic_node_id for call in result.semantic_calls].count(
         f"generation.{family}.codegen-review"
     ) == 3

@@ -6,7 +6,9 @@ from pathlib import Path
 
 from tests.architecture.legacy_import_inventory import scan_legacy_imports
 
-SIX_WHEEL_WORKFLOW = Path("tests/capabilities/fixtures/six-wheel-product/test_six_wheel_product/workflow.yaml")
+SIX_WHEEL_WORKFLOW = Path(
+    "tests/capabilities/fixtures/six-wheel-product/test_six_wheel_product/workflow.yaml"
+)
 CONVERTED_PRODUCTS = (
     Path("examples/graph-engine-toy-a/graph_engine_toy_a/product.py"),
     Path("examples/graph-engine-toy-b/graph_engine_toy_b/product.py"),

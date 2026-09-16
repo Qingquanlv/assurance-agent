@@ -71,7 +71,9 @@ def plan_human_review_named_matches(state: Mapping[str, object]) -> dict[str, st
     return {
         "approve": "done" if action == "approve" else None,
         "reject": "rejected" if action == "reject" else None,
-        "rework": "codegen-review-round-advance" if action == "request_rework" and _has_budget(state) else None,
+        "rework": "codegen-review-round-advance"
+        if action == "request_rework" and _has_budget(state)
+        else None,
     }
 
 

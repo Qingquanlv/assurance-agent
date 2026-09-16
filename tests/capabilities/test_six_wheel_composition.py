@@ -64,9 +64,7 @@ def test_binding_digests_recompute_from_checked_in_bytes() -> None:
 
 
 def test_checked_in_declaration_binds_opencode_entrypoint() -> None:
-    opencode = _load_json(
-        PRODUCT_ROOT / "test_six_wheel_product" / "product-opencode-declaration.json"
-    )
+    opencode = _load_json(PRODUCT_ROOT / "test_six_wheel_product" / "product-opencode-declaration.json")
     opencode_source = cast(dict[str, Any], opencode["source"])
     opencode_manifest = cast(dict[str, Any], opencode["manifest"])
     assert opencode_source["entrypoint_name"] == "six-wheel-opencode"

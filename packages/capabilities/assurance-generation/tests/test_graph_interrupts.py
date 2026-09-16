@@ -212,7 +212,9 @@ def test_interrupt_node_validates_after_restart_and_does_not_mutate_before_inter
 def test_advance_review_round_node_is_the_moved_pure_function() -> None:
     payload = {"family": "api", "review_stage": "codegen", "rounds_used": 0, "rounds_budget": 2}
     output = advance_review_round_node(payload)
-    expected = advance_review_round({"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2})
+    expected = advance_review_round(
+        {"family": "api", "stage": "codegen", "rounds_used": 0, "rounds_budget": 2}
+    )
     assert isinstance(expected, GenerationReviewRoundAdvanceOutput)
     assert output["rounds_used"] == expected.rounds_used == 1
     assert output["rounds_budget"] == expected.rounds_budget == 2
@@ -263,7 +265,9 @@ async def test_automatic_fix_advances_exactly_once(family: str) -> None:
     )
     terminal = cast(dict[str, object], result.terminal)
     assert terminal.get("rounds_used") == 1
-    assert [call.semantic_node_id for call in result.semantic_calls].count(f"generation.{family}.codegen") == 2
+    assert [call.semantic_node_id for call in result.semantic_calls].count(
+        f"generation.{family}.codegen"
+    ) == 2
 
 
 @pytest.mark.parametrize("family", _FAMILIES)

@@ -116,7 +116,9 @@ def capability_runtime_dependency_names(distribution: str) -> tuple[str, ...]:
         name = canonicalize_name(requirement.name)
         if name in _CAPABILITY_RUNTIME_INDEX or name.startswith("assurance-"):
             found.add(name)
-    return tuple(sorted(found, key=lambda name: _CAPABILITY_RUNTIME_INDEX.get(name, len(_CAPABILITY_RUNTIME_INDEX))))
+    return tuple(
+        sorted(found, key=lambda name: _CAPABILITY_RUNTIME_INDEX.get(name, len(_CAPABILITY_RUNTIME_INDEX)))
+    )
 
 
 def _installed_requirements(distribution: str) -> tuple[Requirement, ...]:

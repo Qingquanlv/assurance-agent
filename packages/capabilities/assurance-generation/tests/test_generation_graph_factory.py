@@ -375,7 +375,9 @@ async def test_selected_family_plan_failure_stops_before_plan_review() -> None:
         bundle.e2e,
         input=family_graph_input("e2e"),
         script={
-            _semantic("e2e", "codegen"): [PermanentTaskFailure(kind="transient", message="provider TLS failed")],
+            _semantic("e2e", "codegen"): [
+                PermanentTaskFailure(kind="transient", message="provider TLS failed")
+            ],
             _semantic("e2e", "codegen-review"): [committed(_review_output(), receipt)],
         },
     )
