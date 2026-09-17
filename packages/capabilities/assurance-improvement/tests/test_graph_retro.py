@@ -597,6 +597,73 @@ async def test_rejected_analysis_fail_closes_without_later_agents() -> None:
     assert terminal["status"] == "failed"
 
 
+def _coverage_gap_slice(*, reasons: tuple[str, ...] = ()) -> dict[str, object]:
+    payload = _empty_slice("coverage_gap")
+    payload["sources"] = [
+        {
+            "kind": "coverage_gap_projection",
+            "change_id": "CH-DEMO-001",
+            "head_event_id": None,
+            "sha256": "cg-1",
+            "evidence_ids": ["coverage-gap-1"],
+        }
+    ]
+    if reasons:
+        payload["integrity"] = {"status": "incomplete", "reasons": list(reasons)}
+    return payload
+
+
+def test_assemble_surfaces_coverage_gap_slice_integrity_reasons() -> None:
+    from assurance_improvement.graphs.nodes import assemble_analyses
+
+    assembled = assemble_analyses(
+        retro_graph_input(
+            coverage_gap_slice=_coverage_gap_slice(reasons=("coverage_gap_evidence_corrupt",)),
+            eval_analysis=analysis_agent_output("eval"),
+            issue_analysis=analysis_agent_output("issue"),
+            workflow_analysis=analysis_agent_output("workflow"),
+        )
+    )
+    context = RetroContextV3.model_validate(assembled["context"])
+    assert "coverage_gap_evidence_corrupt" in context.integrity.reasons
+    assert context.integrity.status == "incomplete"
+
+
+def test_assemble_marks_collected_coverage_gap_domain_skipped_not_absent() -> None:
+    from assurance_improvement.graphs.nodes import assemble_analyses
+
+    assembled = assemble_analyses(
+        retro_graph_input(
+            coverage_gap_slice=_coverage_gap_slice(),
+            eval_analysis=analysis_agent_output("eval"),
+            issue_analysis=analysis_agent_output("issue"),
+            workflow_analysis=analysis_agent_output("workflow"),
+        )
+    )
+    context = RetroContextV3.model_validate(assembled["context"])
+    assert context.source_manifest.coverage_gap_slice_sha256 is not None
+    assert len(context.source_manifest.coverage_gap_sources) == 1
+    status = context.domain_status.coverage_gap
+    assert status is not None
+    assert status.status == "skipped"
+
+
+def test_assemble_leaves_coverage_gap_domain_absent_without_a_slice() -> None:
+    from assurance_improvement.graphs.nodes import assemble_analyses
+
+    assembled = assemble_analyses(
+        retro_graph_input(
+            eval_analysis=analysis_agent_output("eval"),
+            issue_analysis=analysis_agent_output("issue"),
+            workflow_analysis=analysis_agent_output("workflow"),
+        )
+    )
+    context = RetroContextV3.model_validate(assembled["context"])
+    assert context.domain_status.coverage_gap is None
+    assert context.source_manifest.coverage_gap_slice_sha256 is None
+    assert context.source_manifest.coverage_gap_sources == ()
+
+
 def test_assemble_fail_closes_on_wrong_analysis_domain() -> None:
     from assurance_improvement.graphs.nodes import assemble_analyses
 

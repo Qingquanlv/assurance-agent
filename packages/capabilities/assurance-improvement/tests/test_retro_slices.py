@@ -13,8 +13,10 @@ from graph_engine.plugin_api import DirectoryIdentity, TaskWorkspaceBinding, Tas
 from assurance_improvement.contracts.retro import (
     LoopRoundEvidenceEntry,
     RetroBuildSlicesInputV1,
+    RetroCollectInput,
     RetroWindow,
 )
+from assurance_improvement.operations.common import InputError
 from assurance_improvement.operations.retro_slices import RetroBuildSlicesExecutor
 from assurance_improvement.operations.retro import AssembleRetroInput, assemble_context
 from assurance_improvement.contracts.delivery import artifact_digest
@@ -443,3 +445,312 @@ async def test_typed_runtime_failures_are_preserved_after_recovery(
     context = assemble_context(AssembleRetroInput.model_validate(assembly))
     assert context.signal_count == 1
     assert context.integrity.status == "incomplete"
+
+
+def _inspect_batch_files(
+    root: Path,
+    *,
+    coverage_digest: str | None = None,
+    with_gap: bool = True,
+) -> tuple[EvidenceArtifactRefV1, EvidenceArtifactRefV1, EvidenceArtifactRefV1, EvidenceArtifactRefV1]:
+    batch = "847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"
+    base = f"qa/results/inspect/epochs/0/batches/{batch}"
+    projection = "b1a1180af14e5071324cc9d1cd56c0f79594d78f668dcec77590b409047d9b13"
+    gaps_payload: dict[str, object] = {
+        "schema_version": "1",
+        "change_id": _CHANGE,
+        "batch_id": batch,
+        "projection_digest": f"sha256:{projection}",
+        "gaps": (
+            [
+                {
+                    "kind": "uncovered_required_case",
+                    "locator": {"case_id": "TC_DEPT_CREATE"},
+                    "layer": "execution",
+                    "batch_id": batch,
+                }
+            ]
+            if with_gap
+            else []
+        ),
+    }
+    gaps_ref = _write(root, f"{base}/coverage-gaps.json", _json_bytes(gaps_payload))
+    if coverage_digest is not None and coverage_digest != gaps_ref.digest:
+        raise AssertionError("coverage digest fixture drifted")
+    observations_ref = _write(
+        root,
+        f"{base}/observations.json",
+        _json_bytes(
+            {
+                "schema_version": "1.0",
+                "change_id": _CHANGE,
+                "batch_id": batch,
+                "observations": [],
+            }
+        ),
+    )
+    trace_ref = _write(root, f"{base}/trace.json", _json_bytes({"change_id": _CHANGE, "batch_id": batch}))
+    metrics_ref = _write(root, f"{base}/metrics.json", _json_bytes({"change_id": _CHANGE, "batch_id": batch}))
+    return gaps_ref, observations_ref, trace_ref, metrics_ref
+
+
+@pytest.mark.asyncio
+async def test_same_batch_inspect_projections_fill_coverage_gap_slice(tmp_path: Path) -> None:
+    gaps_ref, observations_ref, trace_ref, metrics_ref = _inspect_batch_files(tmp_path)
+    inspection_ref = _inspection_ref(
+        tmp_path,
+        "d" * 64,
+        batch_id="847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f",
+        coverage_digest=gaps_ref.digest,
+        trace_digest=trace_ref.digest,
+        metrics_digest=metrics_ref.digest,
+    )
+
+    result = await RetroBuildSlicesExecutor().execute(
+        RetroBuildSlicesInputV1(
+            retro_id="retro-inspect-batch",
+            window=_WINDOW,
+            source_refs=(inspection_ref,),
+        ),
+        _scope(tmp_path),
+    )
+
+    slice_ = result.output.coverage_gap_slice
+    assert slice_ is not None
+    assert slice_.integrity.status == "complete"
+    assert [source.kind for source in slice_.sources] == ["coverage_gap_projection"]
+    assert slice_.sources[0].sha256 == gaps_ref.digest
+    assert slice_.entries[0].gap_kind == "uncovered_required_case"
+    assert slice_.entries[0].case_id == "TC_DEPT_CREATE"
+    assert slice_.entries[0].event_kind == "current"
+    assert {source.sha256 for source in result.output.eval_slice.sources} >= {
+        inspection_ref.digest,
+        observations_ref.digest,
+        trace_ref.digest,
+        metrics_ref.digest,
+    }
+    assert result.output.discovery_slice is None
+
+
+def _assembly_payload(collected: RetroCollectInput, *, with_coverage_gap: bool = True) -> dict[str, object]:
+    assembly: dict[str, object] = {
+        "generated_at": "2026-09-17T08:00:00Z",
+        "window": _WINDOW.model_dump(mode="json"),
+    }
+    for domain in ("issue", "workflow", "eval"):
+        slice_ = getattr(collected, f"{domain}_slice")
+        digest = artifact_digest(slice_)
+        assembly[f"{domain}_slice"] = slice_.model_dump(mode="json")
+        assembly[f"{domain}_slice_sha256"] = digest
+        assembly[f"{domain}_signals"] = {
+            "retro_id": slice_.retro_id,
+            "domain": domain,
+            "analysis_status": "ok",
+            "analyzer": "empty-additional-analysis",
+            "slice_sha256": digest,
+            "signals": [],
+        }
+    coverage_gap = collected.coverage_gap_slice
+    assert coverage_gap is not None
+    assembly["coverage_gap_slice"] = coverage_gap.model_dump(mode="json")
+    if with_coverage_gap:
+        assembly["coverage_gap_slice_sha256"] = artifact_digest(coverage_gap)
+    return assembly
+
+
+async def _collected_with_coverage_gap(tmp_path: Path, *, coverage_drift: bool = False) -> RetroCollectInput:
+    batch = "847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"
+    gaps_ref, _, trace_ref, metrics_ref = _inspect_batch_files(tmp_path)
+    inspection_ref = _inspection_ref(
+        tmp_path,
+        "d" * 64,
+        batch_id=batch,
+        coverage_digest="e" * 64 if coverage_drift else gaps_ref.digest,
+        trace_digest=trace_ref.digest,
+        metrics_digest=metrics_ref.digest,
+    )
+    result = await RetroBuildSlicesExecutor().execute(
+        RetroBuildSlicesInputV1(
+            retro_id="retro-assemble-coverage-gap",
+            window=_WINDOW,
+            source_refs=(inspection_ref,),
+        ),
+        _scope(tmp_path),
+    )
+    return result.output
+
+
+@pytest.mark.asyncio
+async def test_assemble_marks_unanalyzed_coverage_gap_domain_skipped(tmp_path: Path) -> None:
+    collected = await _collected_with_coverage_gap(tmp_path)
+
+    context = assemble_context(AssembleRetroInput.model_validate(_assembly_payload(collected)))
+
+    status = context.domain_status.coverage_gap
+    assert status is not None
+    assert status.status == "skipped"
+    assert context.source_manifest.coverage_gap_slice_sha256 is not None
+    assert len(context.source_manifest.coverage_gap_sources) == 1
+    assert context.signals.coverage_gap == ()
+
+
+@pytest.mark.asyncio
+async def test_assemble_surfaces_unanalyzed_coverage_gap_slice_reasons(tmp_path: Path) -> None:
+    collected = await _collected_with_coverage_gap(tmp_path, coverage_drift=True)
+
+    context = assemble_context(AssembleRetroInput.model_validate(_assembly_payload(collected)))
+
+    assert "coverage_gap_evidence_digest_drift" in context.integrity.reasons
+    assert context.integrity.status == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_assemble_rejects_an_unauthenticated_coverage_gap_slice(tmp_path: Path) -> None:
+    collected = await _collected_with_coverage_gap(tmp_path)
+    assembly = _assembly_payload(collected, with_coverage_gap=False)
+
+    with pytest.raises(InputError, match="coverage_gap"):
+        assemble_context(AssembleRetroInput.model_validate(assembly))
+
+
+@pytest.mark.asyncio
+async def test_explicit_coverage_gaps_source_builds_coverage_gap_slice(tmp_path: Path) -> None:
+    gaps_ref, _, _, _ = _inspect_batch_files(tmp_path)
+    result = await RetroBuildSlicesExecutor().execute(
+        RetroBuildSlicesInputV1(
+            retro_id="retro-explicit-gaps",
+            window=_WINDOW,
+            source_refs=(gaps_ref,),
+        ),
+        _scope(tmp_path),
+    )
+    slice_ = result.output.coverage_gap_slice
+    assert slice_ is not None
+    assert len(slice_.entries) == 1
+    assert slice_.sources[0].kind == "coverage_gap_projection"
+
+
+@pytest.mark.asyncio
+async def test_locked_inspect_projections_are_not_followed_when_digest_drifts(tmp_path: Path) -> None:
+    gaps_ref, _, _, metrics_ref = _inspect_batch_files(tmp_path)
+    inspection_ref = _inspection_ref(
+        tmp_path,
+        "d" * 64,
+        batch_id="847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f",
+        coverage_digest="e" * 64,
+        trace_digest="e" * 64,
+        metrics_digest="1" * 64,
+    )
+    result = await RetroBuildSlicesExecutor().execute(
+        RetroBuildSlicesInputV1(
+            retro_id="retro-digest-drift",
+            window=_WINDOW,
+            source_refs=(inspection_ref,),
+        ),
+        _scope(tmp_path),
+    )
+    admitted = {source.sha256 for source in result.output.eval_slice.sources}
+    assert gaps_ref.digest not in admitted
+    assert metrics_ref.digest not in admitted
+    coverage_slice = result.output.coverage_gap_slice
+    assert coverage_slice is not None
+    assert coverage_slice.entries == ()
+    assert "coverage_gap_evidence_digest_drift" in coverage_slice.integrity.reasons
+    assert "inspect_projection_digest_drift" in result.output.eval_slice.integrity.reasons
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_inspect_batch_directories_report_a_reason(tmp_path: Path) -> None:
+    batch = "847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"
+    gaps_ref, _, trace_ref, metrics_ref = _inspect_batch_files(tmp_path)
+    (tmp_path / "qa" / "results" / "inspect" / "epochs" / "1" / "batches" / batch).mkdir(parents=True)
+    inspection_ref = _inspection_ref(
+        tmp_path,
+        "d" * 64,
+        batch_id=batch,
+        coverage_digest=gaps_ref.digest,
+        trace_digest=trace_ref.digest,
+        metrics_digest=metrics_ref.digest,
+    )
+
+    result = await RetroBuildSlicesExecutor().execute(
+        RetroBuildSlicesInputV1(
+            retro_id="retro-ambiguous-batch",
+            window=_WINDOW,
+            source_refs=(inspection_ref,),
+        ),
+        _scope(tmp_path),
+    )
+
+    assert result.output.coverage_gap_slice is None
+    assert gaps_ref.digest not in {source.sha256 for source in result.output.eval_slice.sources}
+    assert "inspect_batch_ambiguous" in result.output.eval_slice.integrity.reasons
+
+
+@pytest.mark.asyncio
+async def test_corrupt_observations_projection_reports_a_reason(tmp_path: Path) -> None:
+    batch = "847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"
+    gaps_ref, _, trace_ref, metrics_ref = _inspect_batch_files(tmp_path)
+    corrupt_ref = _write(
+        tmp_path,
+        f"qa/results/inspect/epochs/0/batches/{batch}/observations.json",
+        _json_bytes({"schema_version": "9.9", "change_id": _CHANGE, "batch_id": batch}),
+    )
+    inspection_ref = _inspection_ref(
+        tmp_path,
+        "d" * 64,
+        batch_id=batch,
+        coverage_digest=gaps_ref.digest,
+        trace_digest=trace_ref.digest,
+        metrics_digest=metrics_ref.digest,
+    )
+
+    result = await RetroBuildSlicesExecutor().execute(
+        RetroBuildSlicesInputV1(
+            retro_id="retro-corrupt-observations",
+            window=_WINDOW,
+            source_refs=(inspection_ref,),
+        ),
+        _scope(tmp_path),
+    )
+
+    assert corrupt_ref.digest not in {source.sha256 for source in result.output.eval_slice.sources}
+    assert "observations_evidence_corrupt" in result.output.issue_slice.integrity.reasons
+
+
+@pytest.mark.asyncio
+async def test_observations_projection_from_another_batch_reports_a_reason(tmp_path: Path) -> None:
+    batch = "847d09aa43e53799011f682eea02b821263135b6926ab59716aee5370affa79f"
+    gaps_ref, _, trace_ref, metrics_ref = _inspect_batch_files(tmp_path)
+    foreign_ref = _write(
+        tmp_path,
+        f"qa/results/inspect/epochs/0/batches/{batch}/observations.json",
+        _json_bytes(
+            {
+                "schema_version": "1.0",
+                "change_id": _CHANGE,
+                "batch_id": "a-different-batch",
+                "observations": [],
+            }
+        ),
+    )
+    inspection_ref = _inspection_ref(
+        tmp_path,
+        "d" * 64,
+        batch_id=batch,
+        coverage_digest=gaps_ref.digest,
+        trace_digest=trace_ref.digest,
+        metrics_digest=metrics_ref.digest,
+    )
+
+    result = await RetroBuildSlicesExecutor().execute(
+        RetroBuildSlicesInputV1(
+            retro_id="retro-foreign-observations",
+            window=_WINDOW,
+            source_refs=(inspection_ref,),
+        ),
+        _scope(tmp_path),
+    )
+
+    assert foreign_ref.digest not in {source.sha256 for source in result.output.eval_slice.sources}
+    assert "observations_identity_mismatch" in result.output.issue_slice.integrity.reasons

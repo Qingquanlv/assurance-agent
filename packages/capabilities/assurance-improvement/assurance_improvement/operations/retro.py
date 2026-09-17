@@ -190,6 +190,16 @@ def assemble_context(payload: AssembleRetroInput) -> RetroContextV3:
             payload.coverage_gap_slice_sha256,
         ),
     }
+    coverage_gap_slice = payload.coverage_gap_slice
+    unanalyzed: dict[str, tuple[CoverageGapEvidenceSlice, str]] = {}
+    if coverage_gap_slice is not None and payload.coverage_gap_signals is None:
+        # No analyzer produces coverage_gap signals yet, so an authenticated slice
+        # on its own is a collected-but-unanalyzed domain, not an incomplete pair.
+        coverage_gap_digest = payload.coverage_gap_slice_sha256
+        if coverage_gap_digest is None:
+            raise InputError("coverage_gap slice digest is not authenticated")
+        unanalyzed["coverage_gap"] = (coverage_gap_slice, coverage_gap_digest)
+        del optional["coverage_gap"]
     for domain, (slice_, signals, digest) in optional.items():
         present = (slice_ is not None, signals is not None, digest is not None)
         if any(present) and not all(present):
@@ -225,6 +235,17 @@ def assemble_context(payload: AssembleRetroInput) -> RetroContextV3:
             signals[domain] = _merge_domain_signals(
                 domain, (slice_.deterministic_signals, signal_doc.signals)
             )
+    for domain, (collected_slice, collected_digest) in unanalyzed.items():
+        if collected_slice.window != payload.window or collected_slice.domain != domain:
+            raise InputError(f"{domain} assembly identity mismatch")
+        if not same_digest(artifact_digest(collected_slice), collected_digest):
+            raise InputError(f"{domain} slice digest is not authenticated")
+        retro_ids.add(collected_slice.retro_id)
+        slice_digests[domain] = collected_digest
+        statuses[domain] = DomainAnalysisStatus(status="skipped")
+        for reason in collected_slice.integrity.reasons:
+            if reason not in reasons:
+                reasons.append(reason)
     if len(retro_ids) != 1:
         raise InputError("assembly requires a single retro_id")
     integrity = (
@@ -233,7 +254,6 @@ def assemble_context(payload: AssembleRetroInput) -> RetroContextV3:
         else RetroIntegrity(status="complete")
     )
     discovery_slice = payload.discovery_slice
-    coverage_gap_slice = payload.coverage_gap_slice
     return RetroContextV3(
         retro_id=next(iter(slices.values())).retro_id,
         generated_at=payload.generated_at,
