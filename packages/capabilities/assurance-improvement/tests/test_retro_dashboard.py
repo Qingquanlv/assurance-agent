@@ -211,13 +211,15 @@ _ANALYSIS_FILES = (
 )
 
 
-def _write_analysis_files(retro_dir, *, domain_status: dict[str, str] | None = None) -> None:
+def _write_analysis_files(
+    retro_dir, *, domain_status: dict[str, str] | None = None, retro_id: str = "retro-1"
+) -> None:
     domain_status = domain_status or {"eval": "ok", "issue": "ok", "workflow": "ok"}
     for domain, filename in zip(("eval", "issue", "workflow"), _ANALYSIS_FILES, strict=True):
         status = domain_status[domain]
         payload = {
             "schema_version": "3",
-            "retro_id": "retro-1",
+            "retro_id": retro_id,
             "domain": domain,
             "analysis_status": status,
             "failure_reason": "boom" if status == "failed" else None,
@@ -645,7 +647,10 @@ _REAL_LEDGER = {
 def _write_full_run(tmp_path) -> Path:
     retro_dir = tmp_path / "qa" / "results" / "retro"
     retro_dir.mkdir(parents=True)
-    _write_analysis_files(retro_dir)
+    # retro_id must match _REAL_CONTEXT's retro_id so the stale-run
+    # (retro_id mismatch) integrity check introduced in Fix 2 does not
+    # spuriously fire against this otherwise-consistent fixture.
+    _write_analysis_files(retro_dir, retro_id=_REAL_CONTEXT["retro_id"])  # type: ignore[arg-type]
     (retro_dir / "context.json").write_text(json.dumps(_REAL_CONTEXT), encoding="utf-8")
     (retro_dir / "candidates.json").write_text(json.dumps(_REAL_CANDIDATES), encoding="utf-8")
     (retro_dir / "status.json").write_text(json.dumps(_REAL_STATUS), encoding="utf-8")
@@ -714,3 +719,99 @@ def test_build_retro_dashboard_reconcile_not_run_leaves_improvement_fields_null(
     assert doc.run.result is None
     assert doc.run.improvement_ids == ()
     assert all(c.improvement_id is None for c in doc.candidates)
+
+
+def test_build_retro_dashboard_missing_context_still_populates_run_and_candidates(tmp_path) -> None:
+    """Fix 1: a corrupt/missing context.json must not discard run_status or candidates.
+
+    Only genuinely context-derived DashboardRun fields (integrity_status,
+    signal_count, window_change_ids, selection_mode) should fall back to their
+    model defaults when context is None; result/batch_id/failure_ids/
+    improvement_ids/candidate_count come from run_status/candidates
+    regardless of context.
+    """
+    root = _write_full_run(tmp_path)
+    (root / "qa" / "results" / "retro" / "context.json").unlink()
+
+    doc = build_retro_dashboard(root)
+    assert doc.stages.synthesis is False
+    assert doc.retro_id is None
+
+    # Context-derived fields fall back to DashboardRun defaults.
+    assert doc.run.integrity_status is None
+    assert doc.run.signal_count == 0
+    assert doc.run.window_change_ids == ()
+    assert doc.run.selection_mode is None
+
+    # run_status- and candidates-derived fields must NOT be discarded.
+    assert doc.run.result == "completed_with_gaps"
+    assert doc.run.batch_id is None
+    assert doc.run.failure_ids == ()
+    assert doc.run.improvement_ids == ("IMP-D676E2ECFC80E7CBEA78", "IMP-58CB93E8BAEF3FBAE12C")
+    assert doc.run.candidate_count == 2
+
+    assert len(doc.candidates) == 2
+    first = next(
+        c for c in doc.candidates if c.candidate_id == "cand-workflow-intake-case-review-contract-hardening"
+    )
+    assert first.improvement_id == "IMP-D676E2ECFC80E7CBEA78"
+    assert first.improvement_state == "proposed"
+    assert first.improvement_version == 1
+
+
+def test_build_retro_dashboard_flags_retro_id_mismatch_between_analyses_and_context(tmp_path) -> None:
+    """Fix 2: stale prior-run artifacts on disk must be flagged, not rendered as current."""
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir, retro_id="retro-stale")
+    payload = _full_context_payload()
+    payload["retro_id"] = "retro-fresh"
+    (retro_dir / "context.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path)
+    assert "retro_id_mismatch" in doc.run.integrity_reasons
+
+
+def test_build_retro_dashboard_matching_retro_ids_do_not_flag_mismatch(tmp_path) -> None:
+    """Fix 2 regression guard: matching retro_ids across analyses and context must not be flagged."""
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir, retro_id="retro-1")
+    (retro_dir / "context.json").write_text(json.dumps(_full_context_payload()), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path)
+    assert "retro_id_mismatch" not in doc.run.integrity_reasons
+
+
+def test_build_retro_dashboard_no_context_skips_retro_id_mismatch_check(tmp_path) -> None:
+    """Fix 2: with no context to compare against, the mismatch check must not fire."""
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir, retro_id="retro-stale")
+
+    doc = build_retro_dashboard(tmp_path)
+    assert "retro_id_mismatch" not in doc.run.integrity_reasons
+
+
+def test_build_retro_dashboard_reports_unreadable_candidates_when_not_a_dict(tmp_path) -> None:
+    """Fix 4: a top-level JSON array in candidates.json must fail loudly, not silently default."""
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir)
+    (retro_dir / "candidates.json").write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path)
+    assert "artifact_unreadable:candidates.json" in doc.run.integrity_reasons
+    assert doc.candidates == ()
+
+
+def test_build_retro_dashboard_reports_unreadable_candidates_when_key_missing(tmp_path) -> None:
+    """Fix 4: a dict without a 'candidates' key must fail loudly, not silently default to ()."""
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir)
+    (retro_dir / "candidates.json").write_text(json.dumps({"schema_version": "3"}), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path)
+    assert "artifact_unreadable:candidates.json" in doc.run.integrity_reasons
+    assert doc.candidates == ()

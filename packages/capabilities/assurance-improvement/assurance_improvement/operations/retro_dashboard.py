@@ -239,7 +239,9 @@ def _load_model(path: Path, loader: Callable[[str], _T], artifact_name: str) -> 
 
 def _load_candidates(text: str) -> tuple[ImprovementCandidateV3, ...]:
     raw = json.loads(text)
-    items = raw.get("candidates", []) if isinstance(raw, dict) else []
+    if not isinstance(raw, dict) or "candidates" not in raw:
+        raise ValueError("candidates.json must be a document with a top-level 'candidates' key")
+    items = raw["candidates"]
     return tuple(ImprovementCandidateV3.model_validate(item) for item in items)
 
 
@@ -409,12 +411,15 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
     integrity_reasons: list[str] = []
 
     analyses_ok = True
+    analysis_retro_ids: list[str] = []
     for name in _ANALYSIS_FILES:
         result = _load_model(retro_dir / name, RetroAnalysisResultV3.model_validate_json, name)
         if result.model is None:
             analyses_ok = False
             if result.reason:
                 integrity_reasons.append(result.reason)
+        else:
+            analysis_retro_ids.append(result.model.retro_id)
 
     context_result = _load_model(
         retro_dir / "context.json", RetroContextV3.model_validate_json, "context.json"
@@ -422,6 +427,14 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
     context = context_result.model
     if context_result.reason:
         integrity_reasons.append(context_result.reason)
+
+    if context is not None and any(retro_id != context.retro_id for retro_id in analysis_retro_ids):
+        # A prior run's analyses/context/status/candidates sit in a fixed,
+        # overwritten-in-place directory. If a re-run's analyses succeeded
+        # but produced a different retro_id than the on-disk context, the
+        # context (and everything downstream of it) is stale from a
+        # previous run and must not be rendered as current without signal.
+        integrity_reasons.append("retro_id_mismatch")
 
     status_result = _load_model(retro_dir / "status.json", RetroRunStatus.model_validate_json, "status.json")
     run_status = status_result.model
@@ -445,15 +458,19 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
 
     domains: tuple[DashboardDomain, ...] = ()
     signals: tuple[DashboardSignal, ...] = ()
-    built_candidates: tuple[DashboardCandidate, ...] = ()
-    join_reasons: tuple[str, ...] = ()
     if context is not None:
         cited_by = _cited_by_index(candidates)
         signals = _flatten_signals(context.signals, cited_by)
         domains = _build_domains(context)
-        built_candidates, join_reasons = _build_candidates(
-            candidates, run_status.improvement_ids if run_status is not None else (), ledger
-        )
+
+    # `_build_candidates` has no context dependency (it only needs
+    # `candidates`, `run_status.improvement_ids`, and `ledger`, all loaded
+    # independently of `context`), so it must run whenever those are
+    # available rather than being discarded when only context.json is
+    # corrupt/missing.
+    built_candidates, join_reasons = _build_candidates(
+        candidates, run_status.improvement_ids if run_status is not None else (), ledger
+    )
 
     run = _build_run(context, run_status, len(candidates), tuple(integrity_reasons) + join_reasons)
 
@@ -485,7 +502,20 @@ def _build_run(
     extra_reasons: tuple[str, ...],
 ) -> DashboardRun:
     if context is None:
-        return DashboardRun(integrity_reasons=extra_reasons)
+        # context.json being corrupt/missing must not discard what
+        # run_status (result/batch_id/failure_ids/improvement_ids) and the
+        # candidate count already tell us. Only the genuinely
+        # context-derived fields (integrity_status, signal_count,
+        # window_change_ids, selection_mode) fall back to their
+        # `DashboardRun` model defaults.
+        return DashboardRun(
+            result=run_status.result if run_status is not None else None,
+            integrity_reasons=extra_reasons,
+            candidate_count=candidate_count,
+            batch_id=run_status.batch_id if run_status is not None else None,
+            failure_ids=run_status.failure_ids if run_status is not None else (),
+            improvement_ids=run_status.improvement_ids if run_status is not None else (),
+        )
     return DashboardRun(
         result=run_status.result if run_status is not None else None,
         integrity_status=context.integrity.status,

@@ -22,7 +22,7 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 ```
 
 `aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
-`aa bindings build`, and `aa lock show` operate on an installed
+`aa bindings build`, `aa lock show`, and `aa retro show` operate on an installed
 product plus an explicit binding wheel and project configuration tree.
 
 Delivery is `aa run` to achieved.

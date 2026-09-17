@@ -18,5 +18,5 @@ Project `.aa/` holds organization configuration only. The engine does not load
 executable plugins from the system under test.
 
 Installed commands are `aa compile`, `aa start`, `aa run`, `aa status`,
-`aa resume`, `aa bindings build`, and `aa lock show`. Delivery is
+`aa resume`, `aa bindings build`, `aa lock show`, and `aa retro show`. Delivery is
 `aa run` to achieved.
