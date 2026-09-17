@@ -395,6 +395,7 @@ def _flow_features(
     run: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     assess: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     issue_analyze: Mapping[str, object] | None = None,
+    issue_reconcile: Mapping[str, object] | None = None,
     repair_failure: Mapping[str, object] | None = None,
     repair_coverage: Mapping[str, object] | None = None,
     report: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
@@ -438,7 +439,17 @@ def _flow_features(
         assess=_graph(assess or _inspection()),
         issue_review=_echo({"classification": "test", "fix_eligible": True}),
         issue_analyze=_echo(issue_analyze or {"classification": "test", "fix_eligible": True}),
-        issue_reconcile=_echo({"classification": "test", "fix_eligible": True}),
+        issue_reconcile=_echo(
+            issue_reconcile
+            or {
+                "classification": "test",
+                "fix_eligible": True,
+                "issue_snapshot_ref": {
+                    "path": "qa/results/issues/snapshot.json",
+                    "digest": _SHA,
+                },
+            }
+        ),
         report=_graph(report or _report()),
         fact_baseline=_graph(_fact_baseline()),
     )
@@ -703,9 +714,17 @@ def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None
         nested_nodes = getattr(inner, "nodes", {})
     forbidden = {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
     assert not forbidden.intersection(nested_nodes)
-    assert {"fact-baseline", "generation", "execute", "quality", "fix-proposal", "run", "report"} <= set(
-        nested_nodes
-    )
+    assert {
+        "fact-baseline",
+        "generation",
+        "execute",
+        "quality",
+        "fix-proposal",
+        "run",
+        "report",
+        "issue-reconcile",
+        "retro",
+    } <= set(nested_nodes)
 
 
 def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runtime() -> None:

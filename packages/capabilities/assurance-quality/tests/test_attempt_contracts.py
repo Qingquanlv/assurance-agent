@@ -31,8 +31,12 @@ from assurance_quality.plugin import QualityPlugin
 
 def test_quality_owns_five_agent_contracts() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 5
-    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("materialize-assessment-inputs",)
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("materialize-assessment-inputs", "reconcile-issues")
     materialize = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
+    reconcile = TASK_ATTEMPT_CONTRACTS["reconcile-issues"]
+    assert reconcile.contract_id == "assurance.quality.reconcile-issues"
+    assert reconcile.handler_id == "assurance.quality.reconcile-issues.execute"
+    assert reconcile.resources.writes == ("qa/results/issues/snapshot.json",)
     assert materialize.contract_id == "assurance.quality.materialize-assessment-inputs"
     assert materialize.handler_id == "assurance.quality.materialize-assessment-inputs.execute"
     assert isinstance(materialize.resources, ResourceClaimTemplate)

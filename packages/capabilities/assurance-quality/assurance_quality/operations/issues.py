@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.issues import (
+    ChangeIssueSnapshot,
     IssueAnalysisStatus,
     IssueCandidate,
     IssueCandidateDocument,
@@ -22,6 +28,7 @@ from assurance_quality.contracts.issues import (
     ProblemAssessment,
     ProblemSeenRef,
     ProvisionalAssessment,
+    ReconcileIssuesResultV1,
 )
 from assurance_quality.operations.common import InputError, failed_input, succeeded, validate_input
 from assurance_quality.operations.identity import (
@@ -95,11 +102,12 @@ class ReconcileInput(BaseModel):
 
     change_id: str
     batch_id: str
-    observations: tuple[Observation, ...]
-    candidates: tuple[IssueCandidate, ...]
+    observations: tuple[Observation, ...] = ()
+    candidates: tuple[IssueCandidate, ...] = ()
     evidence_bundle_digest: str
     analyzer: str = "assurance.quality"
     prompt_version: str = "1"
+    observations_ref: EvidenceArtifactRefV1 | None = None
 
 
 class ReviewContextInput(BaseModel):
@@ -285,7 +293,44 @@ def reconcile_issues(payload: ReconcileInput) -> dict[str, object]:
         ).model_dump(mode="json"),
         "candidate_digest": digest,
         "project_sync_status": "completed",
+        "batches": [payload.batch_id],
     }
+
+
+_SNAPSHOT_PATH = "qa/results/issues/snapshot.json"
+
+
+def _load_observations(context: TaskContext, ref: EvidenceArtifactRefV1) -> tuple[Observation, ...]:
+    for root in (context.write_root, context.project_root):
+        path = root.joinpath(*PurePosixPath(ref.path).parts)
+        if not path.is_file():
+            continue
+        document = ObservationDocument.model_validate(json.loads(path.read_bytes()))
+        return tuple(document.observations)
+    raise InputError(f"observations not found: {ref.path}")
+
+
+def _write_snapshot(write_root: Path, snapshot: ChangeIssueSnapshot) -> EvidenceArtifactRefV1:
+    data = canonical_json_bytes(snapshot.model_dump(mode="json"))
+    destination = write_root.joinpath(*PurePosixPath(_SNAPSHOT_PATH).parts)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    return EvidenceArtifactRefV1(path=_SNAPSHOT_PATH, digest=hashlib.sha256(data).hexdigest())
+
+
+def _snapshot_from_reconcile(result: dict[str, object]) -> ChangeIssueSnapshot:
+    return ChangeIssueSnapshot.model_validate(
+        {
+            "schema_version": result["schema_version"],
+            "change_id": result["change_id"],
+            "authoritative_batch_id": result["authoritative_batch_id"],
+            "observations": result["observations"],
+            "occurrences": result["occurrences"],
+            "analysis_status": result["analysis_status"],
+            "project_sync_status": result["project_sync_status"],
+            "batches": result["batches"],
+        }
+    )
 
 
 def load_review_context(payload: ReviewContextInput) -> dict[str, object]:
@@ -370,7 +415,27 @@ class ReconcileIssuesHandler(_Handler):
     builder = staticmethod(reconcile_issues)
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        return await super().execute(request, context)
+        try:
+            raw = dict(request.input) if isinstance(request.input, dict) else request.input
+            if isinstance(raw, dict) and not raw.get("observations") and raw.get("observations_ref"):
+                ref = EvidenceArtifactRefV1.model_validate(raw["observations_ref"])
+                loaded = _load_observations(context, ref)
+                raw = {
+                    **raw,
+                    "observations": [item.model_dump(mode="json") for item in loaded],
+                }
+            payload = validate_input(ReconcileInput, raw)
+            result = reconcile_issues(payload)
+            snapshot = _snapshot_from_reconcile(result)
+            ref = _write_snapshot(context.write_root, snapshot)
+            sealed = ReconcileIssuesResultV1.model_validate(
+                {**result, "issue_snapshot_ref": ref.model_dump(mode="json")}
+            )
+            return succeeded(cast(dict[str, object], sealed.model_dump(mode="json")))
+        except InputError as error:
+            return failed_input(error)
+        except (ValidationError, OSError, json.JSONDecodeError) as error:
+            return failed_input(error)
 
 
 class LoadProblemReviewContextHandler(_Handler):

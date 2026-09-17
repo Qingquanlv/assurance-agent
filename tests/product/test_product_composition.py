@@ -44,7 +44,7 @@ def test_composition_has_exact_opencode_identity_and_binding_closure(opencode_co
     contracts = all_feature_agent_contracts()
     tasks = all_feature_task_contracts()
     assert len(contracts) == 28
-    assert len(contracts) + len(tasks) == 43
+    assert len(contracts) + len(tasks) == 44
     assert not any(item.startswith("assurance.product.agent.") for item in bindings)
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         binding = bindings[contract_id]

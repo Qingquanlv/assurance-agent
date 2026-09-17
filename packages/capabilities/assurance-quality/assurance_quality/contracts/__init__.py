@@ -63,6 +63,8 @@ from assurance_quality.contracts.issues import (
     ObservationDocument,
     Problem,
     ProblemProjection,
+    ReconcileIssuesInputV1,
+    ReconcileIssuesResultV1,
 )
 from assurance_quality.contracts.metrics import (
     MetricCollectionGap,
@@ -158,6 +160,8 @@ __all__ = [
     "QualityGateResultV1",
     "QualityGateResultV2",
     "QualityReport",
+    "ReconcileIssuesInputV1",
+    "ReconcileIssuesResultV1",
     "QuarantineEntry",
     "QuarantineProjection",
     "SufficiencyReportV2",

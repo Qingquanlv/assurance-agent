@@ -23,6 +23,7 @@ from assurance_quality.contracts.assessment import (
     ReportOutcomeV1,
     ReportSkillInputV1,
 )
+from assurance_quality.contracts.issues import ReconcileIssuesInputV1, ReconcileIssuesResultV1
 from assurance_quality.contracts.coverage import classify_coverage_state
 from assurance_quality.contracts.decisions import (
     IssueAnalysisPublicV1,
@@ -181,6 +182,40 @@ def select_materialize_assessment(state: Mapping[str, object]) -> MaterializeAss
     )
 
 
+def select_reconcile_issues(state: Mapping[str, object]) -> ReconcileIssuesInputV1:
+    analysis_raw = state.get("issue_analysis")
+    assessment_raw = state.get("assessment_inputs")
+    candidates: tuple[object, ...] = ()
+    change_id = state.get("change_id")
+    batch_id = state.get("batch_id")
+    evidence_bundle_digest = state.get("evidence_bundle_digest")
+    if analysis_raw is not None:
+        analysis = FinalizedIssueAnalysisV1.model_validate(analysis_raw)
+        candidates = analysis.agent_result.candidates
+        change_id = analysis.agent_result.change_id
+        batch_id = analysis.agent_result.batch_id
+        evidence_bundle_digest = analysis.agent_result.evidence_bundle_digest
+    observations_ref = state.get("observations_ref")
+    if assessment_raw is not None:
+        assessment = AssessmentInputsV1.model_validate(assessment_raw)
+        observations_ref = assessment.observations_ref
+        if evidence_bundle_digest is None:
+            evidence_bundle_digest = assessment.evidence_bundle_digest
+        if batch_id is None:
+            batch_id = assessment.batch_id
+        if change_id is None:
+            change_id = assessment.change_id
+    return ReconcileIssuesInputV1.model_validate(
+        {
+            "change_id": change_id,
+            "batch_id": batch_id or "unspecified",
+            "evidence_bundle_digest": evidence_bundle_digest or f"sha256:{'0' * 64}",
+            "candidates": candidates,
+            "observations_ref": observations_ref,
+        }
+    )
+
+
 def select_report(state: Mapping[str, object]) -> QualitySkillInputV1:
     purpose = state.get("report_purpose", "normal")
     inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
@@ -248,6 +283,19 @@ def activation_fact_baseline(state: Mapping[str, object]) -> BusinessActivation:
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch < 0:
         raise ValueError("fact-baseline coverage_epoch must be a non-negative int")
     return BusinessActivation.for_trigger(f"coverage.{epoch}.fact-baseline")
+
+
+def activation_issue_reconcile(state: Mapping[str, object]) -> BusinessActivation:
+    selected = select_reconcile_issues(state)
+    return BusinessActivation.for_trigger(
+        canonical_digest(
+            {
+                "change_id": selected.change_id,
+                "batch_id": selected.batch_id,
+                "evidence_bundle_digest": selected.evidence_bundle_digest,
+            }
+        )
+    )
 
 
 def activation_materialize_assessment(state: Mapping[str, object]) -> BusinessActivation:
@@ -417,6 +465,39 @@ def publish_issue(
     ).model_dump(mode="json")
 
 
+def publish_issue_reconcile(
+    state: Mapping[str, object],
+    output: object,
+    receipt: object,
+) -> dict[str, object]:
+    del receipt
+    result = ReconcileIssuesResultV1.model_validate(_output_payload(output))
+    classification = "unknown"
+    fix_eligible = False
+    analysis_raw = state.get("issue_analysis")
+    if analysis_raw is not None:
+        summary = classify_issue_candidates(
+            FinalizedIssueAnalysisV1.model_validate(analysis_raw).agent_result
+        )
+        classification = summary.classification
+        fix_eligible = summary.fix_eligible
+    change_id = state.get("change_id") or result.change_id
+    if not isinstance(change_id, str):
+        raise TypeError("change_id must be a string")
+    published = QualityIssuePublicV1(
+        change_id=change_id,
+        classification=classification,  # type: ignore[arg-type]
+        evidence_refs=[result.issue_snapshot_ref.model_dump(mode="json")],
+        fix_eligible=fix_eligible,
+        rounds_budget=_published_int({}, "rounds_budget", state.get("rounds_budget", 0)),
+        rounds_used=_published_int({}, "rounds_used", state.get("rounds_used", 0)),
+    ).model_dump(mode="json")
+    return {
+        **published,
+        "issue_snapshot_ref": result.issue_snapshot_ref.model_dump(mode="json"),
+    }
+
+
 def publish_issue_analysis(
     state: Mapping[str, object],
     output: object,
@@ -506,6 +587,7 @@ def terminal_done(state: QualityState) -> dict[str, object]:
 __all__ = [
     "activation_assess",
     "activation_fact_baseline",
+    "activation_issue_reconcile",
     "activation_materialize_assessment",
     "activation_one_shot",
     "clear_report_state",
@@ -514,12 +596,14 @@ __all__ = [
     "publish_materialize_assessment",
     "publish_issue",
     "publish_issue_analysis",
+    "publish_issue_reconcile",
     "publish_report",
     "route_report_attempt",
     "select_fact_baseline",
     "select_inspect",
     "select_quality",
     "select_materialize_assessment",
+    "select_reconcile_issues",
     "select_report",
     "terminal_done",
 ]

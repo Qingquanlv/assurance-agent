@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -35,6 +35,234 @@ from planning_fixtures import PLAN_DIGEST, PLAN_REF  # pyright: ignore[reportMis
 from planning_fixtures import VALID_LEAFS, reviewed_case, reviewed_cases  # pyright: ignore[reportMissingImports]
 
 CHANGE_ID = "CH-DEMO-001"
+
+
+def _repair_baseline(project: Path, family: str) -> dict[str, Any]:
+    _write_reviewed_cases(project, family)
+    paths = _write_locked_generated(project, family)
+    baseline = codegen_result(list(paths), family=family)
+    for entry in baseline["files"]:
+        content = (project / entry["repo_path"]).read_bytes()
+        entry["content_sha256"] = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    baseline["files"].sort(key=lambda entry: entry["repo_path"])
+    return baseline
+
+
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("modified_role", ("support", "test_entry"))
+@pytest.mark.asyncio
+async def test_codegen_repair_can_deliver_only_one_edited_file(
+    family: str, modified_role: str, tmp_path: Path
+) -> None:
+    project, staging = dual_roots(tmp_path)
+    baseline = _repair_baseline(project, family)
+    payload = {**codegen_input(family), "codegen_output": baseline}
+    prepared = await execute_task(
+        codegen_prepare_handler(family), payload, project, binding_data=PLAN_BINDING, write_root=staging
+    )
+    assert prepared.status == "succeeded", prepared.failure
+    authored = codegen_result(list(locked_oracle_paths(family)), family=family)
+    for entry in authored["files"]:
+        path = entry["repo_path"]
+        assert (staging / path).read_bytes() == (project / path).read_bytes()
+        assert (staging / path).stat().st_ino != (project / path).stat().st_ino
+        entry["disposition"] = "updated" if entry["role"] == modified_role else "reused"
+        if entry["role"] == modified_role:
+            (staging / path).write_bytes(b"repaired\n")
+    _write_manifest(staging, authored)
+    finalized = await execute_task(
+        codegen_finalize_handler(family),
+        {**fake_agent_result(authored), "codegen_output": baseline},
+        project,
+        write_root=staging,
+    )
+    assert finalized.status == "succeeded", finalized.failure
+    for entry in baseline["files"]:
+        assert (
+            f"sha256:{hashlib.sha256((project / entry['repo_path']).read_bytes()).hexdigest()}"
+            == entry["content_sha256"]
+        )
+
+
+@pytest.mark.parametrize("has_baseline", (False, True))
+@pytest.mark.asyncio
+async def test_codegen_rejects_unverified_reused_bytes(has_baseline: bool, tmp_path: Path) -> None:
+    project, staging = dual_roots(tmp_path)
+    baseline = _repair_baseline(project, "api")
+    paths = _write_locked_generated(staging, "api")
+    authored = codegen_result(list(paths))
+    authored["files"][0]["disposition"] = "reused"
+    (staging / paths[0]).write_bytes(b"not the authenticated baseline\n")
+    _write_manifest(staging, authored)
+    payload = fake_agent_result(authored)
+    if has_baseline:
+        payload["codegen_output"] = baseline
+    outcome = await execute_task(codegen_finalize_handler("api"), payload, project, write_root=staging)
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "reused" in outcome.failure.message
+
+
+@pytest.mark.parametrize("problem", ("digest", "missing", "change_id", "family", "duplicate"))
+@pytest.mark.asyncio
+async def test_codegen_prepare_rejects_invalid_baseline_before_copying(problem: str, tmp_path: Path) -> None:
+    project, staging = dual_roots(tmp_path)
+    baseline = _repair_baseline(project, "api")
+    if problem == "digest":
+        (project / baseline["files"][-1]["repo_path"]).write_bytes(b"tampered\n")
+    elif problem == "missing":
+        (project / baseline["files"][-1]["repo_path"]).unlink()
+    elif problem == "change_id":
+        baseline["change_id"] = "ANOTHER-CHANGE"
+    elif problem == "family":
+        baseline = _repair_baseline(project, "e2e")
+        _write_reviewed_cases(project, "api")
+    else:
+        baseline["files"].append(baseline["files"][-1])
+    outcome = await execute_task(
+        codegen_prepare_handler("api"),
+        {**codegen_input("api"), "codegen_output": baseline},
+        project,
+        binding_data=PLAN_BINDING,
+        write_root=staging,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert not list(staging.rglob("*.py"))
+
+
+@pytest.mark.parametrize("location", ("source", "destination"))
+@pytest.mark.parametrize("link_kind", ("symlink", "parent_symlink", "hardlink"))
+@pytest.mark.asyncio
+async def test_codegen_prepare_rejects_baseline_links(location: str, link_kind: str, tmp_path: Path) -> None:
+    project, staging = dual_roots(tmp_path)
+    baseline = _repair_baseline(project, "api")
+    relative = baseline["files"][0]["repo_path"]
+    target = (project if location == "source" else staging) / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    real = tmp_path / "other" / target.name
+    real.parent.mkdir()
+    real.write_bytes((project / relative).read_bytes())
+    if target.exists():
+        target.unlink()
+    if link_kind == "parent_symlink":
+        target.parent.rmdir()
+        target.parent.symlink_to(real.parent, target_is_directory=True)
+    elif link_kind == "symlink":
+        target.symlink_to(real)
+    else:
+        target.hardlink_to(real)
+    outcome = await execute_task(
+        codegen_prepare_handler("api"),
+        {**codegen_input("api"), "codegen_output": baseline},
+        project,
+        binding_data=PLAN_BINDING,
+        write_root=staging,
+    )
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_input"
+    assert real.read_bytes() == b"test\n"
+    assert not (staging / locked_oracle_paths("api")[1]).exists()
+
+
+@pytest.mark.asyncio
+async def test_codegen_prepare_replay_preserves_edits_and_only_seeds_locked_paths(tmp_path: Path) -> None:
+    project, staging = dual_roots(tmp_path)
+    baseline = _repair_baseline(project, "api")
+    outside = "qa/tests/api/other/test_other.py"
+    baseline["files"].append({**baseline["files"][0], "repo_path": outside})
+    baseline["files"].append(
+        {**baseline["files"][0], "repo_path": "qa/results/codegen/api-generated-files.json"}
+    )
+    baseline["files"].sort(key=lambda entry: entry["repo_path"])
+    _write_generated(project, "api", outside)
+    _write_manifest(project, codegen_result(list(locked_oracle_paths("api"))))
+    payload = {**codegen_input("api"), "codegen_output": baseline}
+    for index in range(2):
+        outcome = await execute_task(
+            codegen_prepare_handler("api"), payload, project, binding_data=PLAN_BINDING, write_root=staging
+        )
+        assert outcome.status == "succeeded", outcome.failure
+        edited = staging / locked_oracle_paths("api")[1]
+        if index == 0:
+            edited.write_bytes(b"repair already applied\n")
+        assert edited.read_bytes() == b"repair already applied\n"
+    assert not (staging / outside).exists()
+    assert not (staging / "qa/results").exists()
+
+
+@pytest.mark.asyncio
+async def test_codegen_first_prepare_does_not_trust_a_durable_manifest(tmp_path: Path) -> None:
+    project, staging = dual_roots(tmp_path)
+    baseline = _repair_baseline(project, "api")
+    _write_manifest(project, baseline)
+    outcome = await execute_task(
+        codegen_prepare_handler("api"),
+        codegen_input("api"),
+        project,
+        binding_data=PLAN_BINDING,
+        write_root=staging,
+    )
+    assert outcome.status == "succeeded", outcome.failure
+    assert not list(staging.rglob("*.py"))
+
+
+@pytest.mark.asyncio
+async def test_codegen_repair_runs_through_installed_phases(tmp_path: Path) -> None:
+    from agent_runtime_contracts import (
+        AgentRunResult,
+        RawAgentRuntimeOutcome,
+        ReadOnlyRawWorkspace,
+        ResolvedRawAgentExecutor,
+    )
+    from graph_engine.attempts import AuthorizedAttemptScope, ExecutedAttemptResult
+    from assurance_generation.contracts.agent import CodegenInputV1
+    from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS
+    from assurance_product.runtime_bindings import InstalledFinalizePhase, InstalledPreparePhase
+    from tests.product.test_semantic_attempt_bindings import _phase_scope
+
+    scope = _phase_scope(tmp_path)
+    project, staging = scope.workspace.project_root, scope.workspace.write_root
+    baseline = _repair_baseline(project, "api")
+    test_path, data_path = locked_oracle_paths("api")
+
+    class RepairRuntime:
+        async def execute(
+            self, prepared: AgentRunRequest, scope: AuthorizedAttemptScope
+        ) -> RawAgentRuntimeOutcome:
+            assert (staging / test_path).read_bytes() == b"test\n"
+            (staging / data_path).write_bytes(b"repaired\n")
+            authored = codegen_result([test_path, data_path])
+            authored["files"][0]["disposition"] = "reused"
+            authored["files"][1]["disposition"] = "updated"
+            _write_manifest(staging, authored)
+            return RawAgentRuntimeOutcome(
+                run_result=AgentRunResult.model_validate(fake_agent_result(authored)["agent_result"]),
+                raw_workspace=ReadOnlyRawWorkspace(staging),
+            )
+
+    contract = AGENT_JOB_CONTRACTS["api.codegen"]
+    executor = ResolvedRawAgentExecutor(
+        contract,
+        prepare=InstalledPreparePhase(
+            contract.prepare_handler_id, codegen_prepare_handler("api"), PLAN_BINDING
+        ),
+        runtime=RepairRuntime(),
+        finalize=InstalledFinalizePhase(
+            contract.finalize_handler_id, codegen_finalize_handler("api"), contract.output_model
+        ),
+        result_context={"capability_leafs": frozenset(VALID_LEAFS)},
+    )
+    result = await executor.execute(
+        CodegenInputV1.model_validate({**codegen_input("api"), "codegen_output": baseline}), scope
+    )
+    assert isinstance(result, ExecutedAttemptResult), result
+    assert executor.phase_log == ["prepare", "runtime", "finalize"]
+    assert executor.phase_deltas["prepare"] == {test_path, data_path}
+    assert executor.phase_deltas["runtime"] == {data_path, "qa/results/codegen/api-generated-files.json"}
+    assert executor.phase_deltas["finalize"] == set()
+    assert result.output.files[0].disposition == "reused"
+    assert (project / data_path).read_bytes() == b"helper\n"
 
 
 def test_durable_test_path_requires_qa_tests_prefix() -> None:

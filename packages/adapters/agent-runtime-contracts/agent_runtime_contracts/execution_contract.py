@@ -51,8 +51,10 @@ class AgentPhaseWriteClaims:
         prepare = _sorted_unique_paths(self.prepare, kind="prepare write claims")
         runtime = _sorted_unique_paths(self.runtime, kind="runtime write claims")
         finalize = _sorted_unique_paths(self.finalize, kind="finalize write claims")
-        if set(prepare) & set(runtime) or set(prepare) & set(finalize) or set(runtime) & set(finalize):
-            raise ValueError("phase write claims must be disjoint")
+        # Prepare may seed files that runtime subsequently edits. Finalize-owned
+        # outputs remain separate from both phases.
+        if (set(prepare) | set(runtime)) & set(finalize):
+            raise ValueError("finalize write claims must be disjoint from prepare and runtime")
 
     def as_projection(self) -> dict[str, list[str]]:
         return {

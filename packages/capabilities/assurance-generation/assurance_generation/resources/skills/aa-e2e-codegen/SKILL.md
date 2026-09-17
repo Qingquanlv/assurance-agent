@@ -35,7 +35,7 @@ exact reads, and never replace source-backed case facts with guesses from naming
 
 - `qa/results/codegen/e2e-codegen-summary.md`
 - `qa/results/codegen/e2e-generated-files.json`
-- generated or updated test files listed in the host `locked_outputs`
+- every test file listed in the host `locked_outputs`, whether changed or reused
 - the locked testdata file (host `locked_outputs` always include it)
 
 Write only host `locked_outputs`. `target_file` must equal the locked test file
@@ -56,6 +56,19 @@ The graph owns phase state. Do not write an orchestration state file.
 
 Framework is pytest-playwright. Keep Case ID → symbol → target file
 traceability exact.
+
+## Repair Delivery
+
+The host `baseline_files` list identifies authenticated files already copied
+into this attempt's workspace. Read these copies and edit only what the repair
+requires; unchanged baseline files do not need to be rewritten.
+
+The manifest is a complete delivery, not a change list: include every locked
+test and testdata file, including unchanged ones. Reopen each before returning.
+Use `reused` only for a file in `baseline_files` whose bytes remain unchanged;
+this includes locked testdata/support files. A durable file's existence alone
+does not authorize `reused`. When no baseline is supplied, materialize every
+locked file. Unlisted shared dependencies remain outside the manifest.
 
 ## Frozen Inputs and Completion Check
 
@@ -138,10 +151,10 @@ schema source. Route naming convention is not evidence.
 - Only `test_entry` entries may claim mapped Case IDs, and their `case_ids` must
   exactly match the codegen mapping for that path.
 - Every `support` and `shared_builder` entry must use `case_ids: []`.
-- Use `generated` only for a newly added file and `updated` only for a file
-  whose content this invocation changed.
-- `reused` is legal only for an unchanged, selected private-root `test_entry`
-  that is itself a codegen-mapping target.
+- Use `generated` when this locked file has no authenticated baseline, even
+  when materializing existing durable content. Use `updated` when its bytes
+  differ from its authenticated baseline.
+- Apply the Repair Delivery rules to unchanged locked files, including support.
 
 Capability keys must be exact typed leaves. Every mapped function is named
 `test_<case_id_lowercase>__<desc>`.

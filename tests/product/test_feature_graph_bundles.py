@@ -237,7 +237,6 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
 
     duplicated_contract_ids = {
         "assurance.intake.agent.case-design.v1",
-        "assurance.quality.agent.issue-analysis.v1",
     }
     expected = Counter(
         {
@@ -247,7 +246,7 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
     )
 
     assert Counter(occurrences) == expected
-    assert expected.total() == 30
+    assert expected.total() == 29
 
 
 def test_product_allowlist_pairs_match_the_six_factory_builders() -> None:

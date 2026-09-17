@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import cast
 
@@ -47,6 +48,12 @@ async def test_codegen_retry_prepare_receives_previous_codegen_output(family: st
     business = plan_input(family)
     test_path, data_path = locked_oracle_paths(family)
     previous = codegen_result(files=[test_path, data_path], family=family)
+    for entry in previous["files"]:
+        target = tmp_path / entry["repo_path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"baseline\n")
+        entry["content_sha256"] = f"sha256:{hashlib.sha256(target.read_bytes()).hexdigest()}"
+    previous["files"].sort(key=lambda entry: entry["repo_path"])
     case_path = tmp_path / "qa/cases/items/case.yaml"
     case_path.parent.mkdir(parents=True, exist_ok=True)
     case_path.write_text(yaml.safe_dump(reviewed_cases(family), sort_keys=False), encoding="utf-8")
@@ -73,6 +80,7 @@ async def test_codegen_retry_prepare_receives_previous_codegen_output(family: st
     context = thaw_json(request.instructions[4].json_content)
     assert isinstance(context, dict)
     assert context["codegen_scope"]["family"] == family
+    assert context["baseline_files"] == sorted((test_path, data_path))
 
 
 @pytest.mark.parametrize("family", FAMILIES)

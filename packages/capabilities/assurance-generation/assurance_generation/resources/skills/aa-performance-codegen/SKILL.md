@@ -47,7 +47,7 @@ configuration contract without inspecting credential values.
 
 - `qa/results/codegen/performance-codegen-summary.md`
 - `qa/results/codegen/performance-generated-files.json`
-- generated or updated test files listed in the host `locked_outputs`
+- every test file listed in the host `locked_outputs`, whether changed or reused
 - the locked testdata file (host `locked_outputs` always include it)
 
 Write only host `locked_outputs`. `target_file` must equal the locked test file
@@ -89,6 +89,19 @@ token environment variables. When the plan declares an authentication helper,
 call the declared authentication capability with the runtime HTTP client and
 use its returned headers. Do not replace that call with a direct token lookup.
 
+## Repair Delivery
+
+The host `baseline_files` list identifies authenticated files already copied
+into this attempt's workspace. Read these copies and edit only what the repair
+requires; unchanged baseline files do not need to be rewritten.
+
+The manifest is a complete delivery, not a change list: include every locked
+test and testdata file, including unchanged ones. Reopen each before returning.
+Use `reused` only for a file in `baseline_files` whose bytes remain unchanged;
+this includes locked testdata/support files. A durable file's existence alone
+does not authorize `reused`. When no baseline is supplied, materialize every
+locked file. Unlisted shared dependencies remain outside the manifest.
+
 ## Frozen Inputs and Completion Check
 
 The host-built scope and reviewed cases are immutable. Read them as approved evidence;
@@ -121,10 +134,10 @@ mapped symbol exists in that file. Do not list plan, case, or review inputs in
   mapped test entries.
 - Assign each Case ID only to its executable `test_entry`. Support and
   `shared_builder` files must use `case_ids: []`.
-- Use `generated` only for a newly added file and `updated` only for a file
-  whose content this invocation changed. `reused` is legal only for an
-  unchanged, selected private-root `test_entry` that is itself a Task Mapping
-  target.
+- Use `generated` when this locked file has no authenticated baseline, even
+  when materializing existing durable content. Use `updated` when its bytes
+  differ from its authenticated baseline. Apply the Repair Delivery rules to
+  unchanged locked files, including support.
 - If Task Mapping itself repeats a Case ID, the plan is invalid and must not be
   represented as a different relation.
 

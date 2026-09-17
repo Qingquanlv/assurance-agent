@@ -176,6 +176,11 @@ class AgentFinalizeInputV1(FrozenModel):
         return self
 
 
+class CodegenFinalizeInputV1(AgentFinalizeInputV1):
+    # Projected from locked host input, never from the agent's authoring manifest.
+    codegen_output: dict[str, Any] | None = None
+
+
 class CodegenInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     plan_digest: str = Field(pattern=_SHA256)

@@ -143,11 +143,30 @@ class PlanReviewFinalizeHandler:
             if family == "api":
                 raw_path = "qa/results/review/api-codegen-review.json"
                 sealed = context.write_root.joinpath(*PurePosixPath(raw_path).parts)
-                sealed.parent.mkdir(parents=True, exist_ok=True)
-                sealed.write_text(
-                    json.dumps(document.model_dump(mode="json"), indent=2) + "\n",
-                    encoding="utf-8",
-                )
+                canonical = document.model_dump(mode="json", exclude={"rounds_used", "rounds_budget"})
+                existing_normalized: object | None = None
+                if sealed.is_file():
+                    try:
+                        existing_raw = json.loads(sealed.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        existing_raw = None
+                    if isinstance(existing_raw, dict):
+                        existing_normalized = {
+                            key: value
+                            for key, value in existing_raw.items()
+                            if key not in {"review_audit", "rounds_used", "rounds_budget"}
+                        }
+                # The agent already staged this exact path during runtime (see
+                # aa-*-codegen-reviewer skills). Finalize's role is to validate and,
+                # only when policy actually changes the decision, reseal it; when the
+                # sealed content is unchanged, skip the rewrite so the write-claim
+                # staging diff stays limited to the runtime phase that owns this path.
+                if existing_normalized != canonical:
+                    sealed.parent.mkdir(parents=True, exist_ok=True)
+                    sealed.write_text(
+                        json.dumps(document.model_dump(mode="json"), indent=2) + "\n",
+                        encoding="utf-8",
+                    )
             extra: dict[str, object] = {
                 "public_outcome": public_review_outcome(document.route),
             }

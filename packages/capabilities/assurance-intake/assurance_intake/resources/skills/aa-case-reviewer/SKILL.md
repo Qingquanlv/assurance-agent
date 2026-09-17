@@ -17,7 +17,7 @@ requirements and frozen assertion intent distinct from observed implementation;
 a source defect must not weaken the expected test behavior.
 
 Independently verify source behavior and owner-defined expectations. Before
-returning findings, trace each defect across cases, proposal and MRC, and supply
+returning findings, apply the Repair-plan linked-location check below to supply
 all affected locators in the same review using the existing repair contract.
 A repair must be reviewed again; a target repair count never authorizes a pass.
 
@@ -795,6 +795,36 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
 - `.qa.yaml` contains change identity, targets, and approval authority and MUST
   NOT appear in `auto_fix_plan`. Report such a finding as diagnostic and choose
   `needs_human_review` or `reject` when it blocks progress.
+
+### Repair-plan linked-location check
+
+Before returning `needs_fix`, check the intended repaired state against the inputs
+already read. Complete the existing `findings` and `auto_fix_plan` together:
+
+- **Adding a case:** check its planned `test_condition_id` in proposal's
+  `## Test Conditions` and its `case_id` / `type` in `## Layer Rationale`.
+  Include missing or stale entries in the same repair plan as the new case.
+- **Changing a case:** check whether the changed condition, layer, assertion or
+  fixture makes related case fields, proposal claims or MRC mappings inconsistent.
+  List only the affected fields, sections and exact MRC rows that need edits.
+- **Preserving valid content:** leave already-correct entries unchanged. An added
+  case alone does not require an MRC edit; include one only when its coverage
+  mapping needs to change. Keep frozen scope and the existing locator limits.
+
+Example: add `TC_PERMISSION_024` with condition `COND-PERMISSION-024` when both
+proposal sections exist but lack its entries. The complete plan has three paired
+findings/actions, with distinct IDs and these locators:
+
+| Finding ID | Artifact | `case_id` | `locator.key` |
+|---|---|---|---|
+| CR-001 | `qa/cases/system/permission/case.yaml` | `TC_PERMISSION_024` | `added` |
+| CR-002 | `qa/proposal.md` | `null` | `## Test Conditions` |
+| CR-003 | `qa/proposal.md` | `null` | `## Layer Rationale` |
+
+Each matching plan item states the exact entry to add or update. Reuse the
+existing output shape; no extra report or JSON fields are needed. The repair agent
+can edit only listed locators, so include these dependencies now rather than
+leaving them for the next review to discover.
 
 ---
 

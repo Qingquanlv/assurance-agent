@@ -97,7 +97,7 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
             "assurance.quality.materialize-trace-and-coverage-gaps": MaterializeTraceAndCoverageGapsHandler(),
             "assurance.quality.materialize-trace-projection": MaterializeTraceHandler(),
             "assurance.quality.probe-coverage-repair-need": ProbeCoverageRepairNeedHandler(),
-            "assurance.quality.reconcile-issues": ReconcileIssuesHandler(),
+            "assurance.quality.reconcile-issues.execute": ReconcileIssuesHandler(),
             "assurance.quality.record-empty-issue-analysis": RecordEmptyIssueAnalysisHandler(),
             "assurance.quality.record-issue-analysis-failure": RecordIssueAnalysisFailureHandler(),
             "assurance.quality.record-project-sync-pending": RecordProjectSyncPendingHandler(),

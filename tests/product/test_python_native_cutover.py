@@ -159,7 +159,7 @@ def test_plugin_kit_has_no_workflow_module_classifier() -> None:
 def test_semantic_agent_nodes_have_no_phase_aliases(boot_artifact: BootArtifact) -> None:
     import assurance_product.agent_contracts as agent_contracts
 
-    assert len(boot_artifact.attempt_contracts) == 43
+    assert len(boot_artifact.attempt_contracts) == 44
     assert count_semantic_agent_contracts() == 28
     assert count_raw_agent_runtime_bindings() == 28
     assert all_agent_contracts_resolve_with_raw_executor()

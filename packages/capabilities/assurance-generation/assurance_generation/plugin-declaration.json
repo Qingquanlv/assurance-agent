@@ -94,7 +94,7 @@
       },
       {
         "contract_id": "assurance.generation.agent.api.codegen.v1",
-        "digest": "b6967396e1d2ca89fc6d0a8fb3f11a7d538d47a69b6e02b091135be883125261"
+        "digest": "75498fadc128b2124a65fdee0df1bddb5d02711bb82c545dcf0c248ac6fc2d37"
       },
       {
         "contract_id": "assurance.generation.agent.e2e.codegen-review.v1",
@@ -102,7 +102,7 @@
       },
       {
         "contract_id": "assurance.generation.agent.e2e.codegen.v1",
-        "digest": "d0fbcc3cd91f03e5a043f77dfb8ca9b3b3d40f17625eeda0f4a4b3f044f2c135"
+        "digest": "be9e910c9aba666b20a589f89212ad2a93e8a64656b42367457d80e819cf9717"
       },
       {
         "contract_id": "assurance.generation.agent.fuzz.codegen-review.v1",
@@ -110,7 +110,7 @@
       },
       {
         "contract_id": "assurance.generation.agent.fuzz.codegen.v1",
-        "digest": "28232452ac2e9695e3d21078a4abf017c8e8aea584c6bec26322dfc618e29853"
+        "digest": "e1d612082bde21bc7671ed0ca00a3bd13ed03e8e5a8f976cf4ce115969f9ed5e"
       },
       {
         "contract_id": "assurance.generation.agent.performance.codegen-review.v1",
@@ -118,7 +118,7 @@
       },
       {
         "contract_id": "assurance.generation.agent.performance.codegen.v1",
-        "digest": "ffe454688aa364d1b458c9b4b111a8cd53b63c6634b63afbcb53f5405e44edd5"
+        "digest": "07aa2563beccc7710d24f3e2b445ee3ca003aa71a717270f9c3c29e95290b824"
       },
       {
         "contract_id": "assurance.generation.init-test-runtime",

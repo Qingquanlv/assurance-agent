@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -70,13 +71,24 @@ def phase_task_id(attempt_key: AttemptKey, phase: str, handler_id: str) -> str:
     )
 
 
-def _list_relative_files(root: Path) -> set[str]:
+def _snapshot_files(root: Path) -> dict[str, tuple[str, int, int, int, int, int, int]]:
     if not root.exists():
-        return set()
-    files: set[str] = set()
+        return {}
+    files: dict[str, tuple[str, int, int, int, int, int, int]] = {}
     for path in root.rglob("*"):
         if path.is_file() and not path.is_symlink():
-            files.add(path.relative_to(root).as_posix())
+            metadata = path.stat()
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            files[path.relative_to(root).as_posix()] = (
+                digest,
+                metadata.st_mode,
+                metadata.st_uid,
+                metadata.st_gid,
+                metadata.st_nlink,
+                metadata.st_dev,
+                metadata.st_ino,
+            )
     return files
 
 
@@ -349,11 +361,21 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         action: Callable[[], Awaitable[_T]],
         scope: AuthorizedAttemptScope,
     ) -> _T | ExecutorResolution:
-        before = _list_relative_files(scope.workspace.write_root)
+        try:
+            before = _snapshot_files(scope.workspace.write_root)
+        except OSError as error:
+            return PermanentTaskFailure(
+                kind="invalid_output", message=f"cannot snapshot staging before {phase}: {error}"
+            )
         self.phase_log.append(phase)
         result = await action()
-        after = _list_relative_files(scope.workspace.write_root)
-        delta = after - before
+        try:
+            after = _snapshot_files(scope.workspace.write_root)
+        except OSError as error:
+            return PermanentTaskFailure(
+                kind="invalid_output", message=f"cannot snapshot staging after {phase}: {error}"
+            )
+        delta = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
         allowed = self._allowed_paths(phase, scope)
         unexpected = {path for path in delta if not _covered_by_claims(path, allowed)}
         if unexpected:

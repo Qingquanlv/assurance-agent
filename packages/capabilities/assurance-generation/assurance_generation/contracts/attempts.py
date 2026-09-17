@@ -66,7 +66,7 @@ def _job(
     if stage == "codegen":
         runtime_writes = tuple(sorted((*runtime_writes, _GENERATED_TESTS_ROOT)))
     finalize_writes = _paths(*finalize_suffixes)
-    writes = tuple(sorted((*runtime_writes, *finalize_writes)))
+    writes = tuple(sorted({*runtime_writes, *finalize_writes}))
     return AgentExecutionContract(
         contract_id=f"assurance.generation.agent.{base}.v1",
         owner_id="assurance.generation",
@@ -85,7 +85,9 @@ def _job(
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
-            prepare=(), runtime=runtime_writes, finalize=finalize_writes
+            prepare=(_GENERATED_TESTS_ROOT,) if stage == "codegen" else (),
+            runtime=runtime_writes,
+            finalize=finalize_writes,
         ),
     )
 

@@ -211,15 +211,20 @@ def _retro_source_refs(state: ProductState, payload: ProductInputV1) -> tuple[Ev
         raw = state.get(key)
         if isinstance(raw, (list, tuple)):
             candidates.extend(raw)
+    snapshot = state.get("issue_snapshot_ref")
+    if snapshot is not None:
+        candidates.append(snapshot)
     inspection = state.get("inspection_outcome")
     if isinstance(inspection, Mapping):
         candidates.extend(inspection.get("assessment_refs") or ())
-        mapping = inspection.get("mapping_ref")
-        if mapping is not None:
-            candidates.append(mapping)
+        for name in ("mapping_ref", "plan_ref"):
+            value = inspection.get(name)
+            if value is not None:
+                candidates.append(value)
     elif inspection is not None:
         candidates.extend(getattr(inspection, "assessment_refs", ()))
         candidates.append(getattr(inspection, "mapping_ref", None))
+        candidates.append(getattr(inspection, "plan_ref", None))
     report_outcome = state.get("report_outcome")
     if isinstance(report_outcome, Mapping):
         candidates.extend(report_outcome.get("report_refs") or ())

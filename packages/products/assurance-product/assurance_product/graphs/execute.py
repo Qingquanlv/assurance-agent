@@ -15,6 +15,7 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedC
 from assurance_product.graphs.entrypoints import (
     _input_from_state,
     adapt_load_plan,
+    adapt_retro,
     publish_public_output,
     validate_public_input,
 )
@@ -361,6 +362,43 @@ def bind_issue_analysis(state: ProductState) -> dict[str, object]:
     return {"issue_analysis_ref": _issue_analysis_ref(state).model_dump(mode="json")}
 
 
+def adapt_issue_reconcile(state: ProductState) -> dict[str, object]:
+    if state.get("attempt_failure"):
+        raise ValueError("failed issue analysis cannot be reconciled")
+    inspection = InspectionOutcomeV1.model_validate(state.get("inspection_outcome"))
+    assessment = AssessmentInputsV1.model_validate(state.get("assessment_inputs"))
+    analysis = FinalizedIssueAnalysisV1.model_validate(state.get("issue_analysis"))
+    result = analysis.agent_result
+    if (result.change_id, result.batch_id, result.evidence_bundle_digest) != (
+        inspection.change_id,
+        inspection.batch_id,
+        assessment.evidence_bundle_digest,
+    ):
+        raise ValueError("issue analysis belongs to a different assessment batch")
+    result.require_complete_coverage(frozenset(assessment.owned_evidence_ids))
+    bound = state.get("issue_analysis_ref")
+    if bound is not None:
+        ref = EvidenceArtifactRefV1.model_validate(bound)
+        if ref != analysis.issue_analysis_ref:
+            raise ValueError("issue analysis result reference changed")
+    feature_input = {
+        "change_id": inspection.change_id,
+        "batch_id": inspection.batch_id,
+        "assessment_inputs": assessment.model_dump(mode="json"),
+        "issue_analysis": analysis.model_dump(mode="json"),
+        "issue_analysis_ref": analysis.issue_analysis_ref.model_dump(mode="json"),
+        "inspection_outcome": inspection.model_dump(mode="json"),
+        "observations_ref": assessment.observations_ref.model_dump(mode="json"),
+        "evidence_bundle_digest": assessment.evidence_bundle_digest,
+        "owned_evidence_ids": list(assessment.owned_evidence_ids),
+        "rounds_budget": state.get("rounds_budget"),
+        "rounds_used": state.get("rounds_used"),
+        "report_purpose": state.get("report_purpose"),
+        "report_refs": state.get("report_refs"),
+    }
+    return {**feature_input, "feature_input": feature_input}
+
+
 def _current_issue_analysis(state: ProductState) -> FinalizedIssueAnalysisV1:
     if state.get("attempt_failure"):
         raise ValueError("failed issue analysis cannot publish a business result")
@@ -399,6 +437,18 @@ def route_issue_analysis(state: ProductState) -> Literal["report", "repair", "ne
             return "needs-human"
         return "repair"
     return "report"
+
+
+def route_issue_reconcile(state: ProductState) -> Literal["retro", "blocked"]:
+    if state.get("attempt_failure"):
+        return "blocked"
+    return "retro"
+
+
+def route_retro(state: ProductState) -> Literal["diagnostic", "blocked"]:
+    if state.get("attempt_failure"):
+        return "blocked"
+    return "diagnostic"
 
 
 def _adapt_report(
@@ -616,6 +666,10 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_node("adapt-issue-analysis", cast(Any, adapt_issue_analysis))
     builder.add_node("issue-analyze", typed.quality.issue_analyze)
     builder.add_node("bind-issue-analysis", cast(Any, bind_issue_analysis))
+    builder.add_node("adapt-issue-reconcile", cast(Any, adapt_issue_reconcile))
+    builder.add_node("issue-reconcile", typed.quality.issue_reconcile)
+    builder.add_node("adapt-retro", cast(Any, adapt_retro))
+    builder.add_node("retro", typed.improvement.retro)
     builder.add_node("adapt-diagnostic-report", cast(Any, adapt_diagnostic_report))
     builder.add_node("report", typed.quality.report)
     builder.add_node("finish-reported", cast(Any, _finish_reported))
@@ -690,9 +744,21 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
         cast(Callable[..., Any], _route_report),
         {
             "reported": "finish-reported",
-            "diagnostic": "finish-diagnostic",
+            "diagnostic": "adapt-issue-reconcile",
             "blocked": "blocked",
         },
+    )
+    builder.add_edge("adapt-issue-reconcile", "issue-reconcile")
+    builder.add_conditional_edges(
+        "issue-reconcile",
+        cast(Callable[..., Any], route_issue_reconcile),
+        {"retro": "adapt-retro", "blocked": "blocked"},
+    )
+    builder.add_edge("adapt-retro", "retro")
+    builder.add_conditional_edges(
+        "retro",
+        cast(Callable[..., Any], route_retro),
+        {"diagnostic": "finish-diagnostic", "blocked": "blocked"},
     )
     for node in (
         "finish-reported",

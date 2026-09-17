@@ -83,6 +83,7 @@ class QualityState(CheckpointBridgeState, total=False):
     healing_ref: EvidenceArtifactRefV1 | None
     issue_ref: EvidenceArtifactRefV1 | None
     issue_analysis_ref: EvidenceArtifactRefV1 | None
+    issue_snapshot_ref: EvidenceArtifactRefV1 | None
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1

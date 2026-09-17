@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -621,6 +622,38 @@ def test_phase_write_claims_cover_descendant_files() -> None:
     assert not _covered_by_claims("qa/cases/api/case.yaml", claims)
 
 
+@pytest.mark.parametrize("when", ("before", "runtime"))
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read mode-000 files")
+def test_unreadable_phase_file_returns_typed_failure(tmp_path: Path, when: str) -> None:
+    scope = _scope(tmp_path)
+    target = scope.workspace.write_root / "qa/unreadable.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"unreadable\n")
+    if when == "before":
+        target.chmod(0)
+
+    class UnreadableRuntime:
+        async def execute(self, prepared: object, scope: AuthorizedAttemptScope) -> PermanentTaskFailure:
+            target.chmod(0)
+            return PermanentTaskFailure(kind="invalid_output", message="runtime rejected")
+
+    executor = ResolvedRawAgentExecutor(
+        _contract(),
+        prepare=RecordingPrepare(
+            CaseDesignPrepared(change_id="CH-1", path="primary", prompt="design cases"), []
+        ),
+        runtime=UnreadableRuntime(),
+        finalize=RecordingFinalize(_success_output(), []),
+    )
+    try:
+        result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), scope))
+        assert isinstance(result, PermanentTaskFailure)
+        assert result.kind == "invalid_output"
+        assert "snapshot" in result.message
+    finally:
+        target.chmod(0o600)
+
+
 def test_raw_executor_persists_phase_deltas_into_host_receipt(
     raw_executor_fixture: _RawExecutorFixture,
 ) -> None:
@@ -755,7 +788,13 @@ def test_finalize_phase_failure_is_returned_not_raised(tmp_path: Path) -> None:
     assert order == ["prepare", "runtime"]
 
 
-def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize("existing", (False, True))
+def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path, existing: bool) -> None:
+    scope = _scope(tmp_path)
+    if existing:
+        target = scope.workspace.write_root / "qa/undeclared.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"original\n")
     order: list[str] = []
     executor = ResolvedRawAgentExecutor(
         _contract(),
@@ -773,7 +812,7 @@ def test_undeclared_phase_write_returns_typed_failure(tmp_path: Path) -> None:
         finalize=RecordingFinalize(_success_output(), order),
     )
 
-    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+    result = asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), scope))
 
     assert isinstance(result, PermanentTaskFailure)
     assert result.kind == "invalid_output"

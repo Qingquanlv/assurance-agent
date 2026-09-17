@@ -65,7 +65,7 @@
       "assurance.quality.materialize-trace-and-coverage-gaps",
       "assurance.quality.materialize-trace-projection",
       "assurance.quality.probe-coverage-repair-need",
-      "assurance.quality.reconcile-issues",
+      "assurance.quality.reconcile-issues.execute",
       "assurance.quality.record-empty-issue-analysis",
       "assurance.quality.record-issue-analysis-failure",
       "assurance.quality.record-project-sync-pending",
@@ -176,6 +176,10 @@
       {
         "contract_id": "assurance.quality.materialize-assessment-inputs",
         "digest": "110083944c22241d647a400da8bb08ab09dea701783c732f0245d964499bd310"
+      },
+      {
+        "contract_id": "assurance.quality.reconcile-issues",
+        "digest": "9ef3358e2f156929113250f540c4b9bcbf8f023518f9291cebd30a67dac3adb2"
       }
     ]
   }

@@ -1,6 +1,6 @@
 # Attempt Runtime Production Closure Design
 
-> **Status:** implemented architecture; amended 2026-09-04.
+> **Status:** implemented architecture; amended 2026-09-17.
 >
 > **Date:** 2026-09-03.
 >
@@ -10,6 +10,11 @@
 > **Amendment:** [Checkpoint R Removal Design](./2026-09-04-checkpoint-r-removal-design.md)
 > removes the former protected live-provider gate. The ordinary repository gate and focused
 > deterministic production-port/recovery suites are the only source-level acceptance requirements.
+>
+> **2026-09-17 amendment:** prepare and runtime may explicitly share installed write claims
+> to hand off authenticated codegen baseline copies inside staging. Finalize-owned claims remain
+> separate. This supersedes the original three-way-disjoint requirement, without expanding the
+> attempt's write claims or the agent's exact `allowed_outputs`.
 
 ## 1. Decision
 
@@ -128,7 +133,7 @@ The following are non-negotiable:
 3. stale fences cannot dispatch, bind, prepare, promote, settle an Effect, publish terminal state,
    or release a newer grant;
 4. external activity success is not Attempt success;
-5. prepare/runtime/finalize mutate only disjoint installed staging claims and never the canonical
+5. prepare/runtime/finalize mutate only their installed staging claims and never the canonical
    project tree;
 6. output and Effect intents are durable before sealing and independent of executor process memory;
 7. Validators run before durable prepare and promotion;
@@ -280,15 +285,15 @@ The outbound prompt contains the installed JSON Schema as instructions. The adap
 structured-output `format` field and does not negotiate provider schema capability. The unused
 `StructuredOutputCapabilityError` and `negotiate_provider_schema` APIs and tests are deleted.
 
-Prepare, runtime, and finalize share one authenticated staging identity but receive disjoint,
-installed write claims:
+Prepare, runtime, and finalize share one authenticated staging identity and receive explicit
+installed write claims; only prepare/runtime may overlap:
 
-- prepare: deterministic request/context artifacts;
+- prepare: deterministic request/context artifacts and authenticated baseline copies;
 - runtime: model-produced raw paths;
 - finalize: deterministic evidence/result artifacts, excluding runtime-owned paths.
 
 The host measures the tree before and after every phase and durably records the exact delta. Direct
-canonical-project writes, undeclared paths, cross-phase overwrites, traversal, link/mode/ownership
+canonical-project writes, undeclared paths, unauthorized cross-phase overwrites, traversal, link/mode/ownership
 drift, and claim expansion are permanent pre-commit failures. The later Kernel seal validates the
 aggregate actual bytes; it does not trust a self-reported manifest.
 
