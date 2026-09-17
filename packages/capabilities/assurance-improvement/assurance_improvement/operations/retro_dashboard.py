@@ -237,12 +237,22 @@ def _load_model(path: Path, loader: Callable[[str], _T], artifact_name: str) -> 
         return _LoadResult(exists=True, model=None, reason=f"artifact_unreadable:{artifact_name}")
 
 
-def _load_candidates(text: str) -> tuple[ImprovementCandidateV3, ...]:
+@dataclass(frozen=True)
+class _CandidatesDocument:
+    retro_id: str | None
+    candidates: tuple[ImprovementCandidateV3, ...]
+
+
+def _load_candidates(text: str) -> _CandidatesDocument:
     raw = json.loads(text)
-    if not isinstance(raw, dict) or "candidates" not in raw:
+    if not isinstance(raw, dict) or "candidates" not in raw or not isinstance(raw["candidates"], list):
         raise ValueError("candidates.json must be a document with a top-level 'candidates' key")
     items = raw["candidates"]
-    return tuple(ImprovementCandidateV3.model_validate(item) for item in items)
+    retro_id = raw.get("retro_id")
+    return _CandidatesDocument(
+        retro_id=retro_id if isinstance(retro_id, str) else None,
+        candidates=tuple(ImprovementCandidateV3.model_validate(item) for item in items),
+    )
 
 
 _DOMAIN_ORDER: tuple[DashboardDomainName, ...] = ("issue", "workflow", "eval", "discovery", "coverage_gap")
@@ -440,11 +450,33 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
     run_status = status_result.model
     if status_result.reason:
         integrity_reasons.append(status_result.reason)
+    if run_status is not None and context is not None and run_status.retro_id != context.retro_id:
+        # status.json (stages.reconcile) carries a required retro_id. A prior
+        # run's status.json — with its improvement_ids — can be left on disk
+        # if reconcile fails on a re-run whose analyses+context are fresh.
+        # `_build_candidates` positionally zips that stale improvement_ids
+        # tuple onto the current run's fresh candidates, and the ledger
+        # join's kind/delivery/target triple-check only catches a mismatched
+        # join, not a stale-but-coincidentally-matching one.
+        integrity_reasons.append("retro_id_mismatch")
 
     candidates_result = _load_model(retro_dir / "candidates.json", _load_candidates, "candidates.json")
-    candidates: tuple[ImprovementCandidateV3, ...] = candidates_result.model or ()
+    candidates_document = candidates_result.model
+    candidates: tuple[ImprovementCandidateV3, ...] = (
+        candidates_document.candidates if candidates_document is not None else ()
+    )
     if candidates_result.reason:
         integrity_reasons.append(candidates_result.reason)
+    if (
+        candidates_document is not None
+        and candidates_document.retro_id is not None
+        and context is not None
+        and candidates_document.retro_id != context.retro_id
+    ):
+        # candidates.json's real artifact shape (ImprovementCandidateDocumentV3)
+        # also carries a required top-level retro_id; a leftover prior-run
+        # candidates.json must be caught the same way.
+        integrity_reasons.append("retro_id_mismatch")
 
     ledger_result = _load_model(
         change_root / _LEDGER_PATH, ImprovementLedgerProjection.model_validate_json, "ledger.json"

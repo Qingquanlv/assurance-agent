@@ -793,6 +793,51 @@ def test_build_retro_dashboard_no_context_skips_retro_id_mismatch_check(tmp_path
     assert "retro_id_mismatch" not in doc.run.integrity_reasons
 
 
+def test_build_retro_dashboard_flags_retro_id_mismatch_from_stale_status(tmp_path) -> None:
+    """Fix A: a stale status.json (retro_id disagrees with context.json) must be flagged.
+
+    If `reconcile` fails on a re-run but analyses+context are fresh, the
+    previous run's status.json (with its improvement_ids) stays on disk.
+    `_build_candidates` then positionally zips that stale `improvement_ids`
+    tuple onto the current run's fresh `candidates`, so this must produce an
+    integrity signal even though nothing else on disk disagrees.
+    """
+    root = _write_full_run(tmp_path)
+    status_path = root / "qa" / "results" / "retro" / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["retro_id"] = "retro-stale-status"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    doc = build_retro_dashboard(root)
+    assert "retro_id_mismatch" in doc.run.integrity_reasons
+
+
+def test_build_retro_dashboard_flags_retro_id_mismatch_from_stale_candidates(tmp_path) -> None:
+    """Fix A: a stale candidates.json (retro_id disagrees with context.json) must be flagged.
+
+    `candidates.json`'s real artifact shape (`ImprovementCandidateDocumentV3`)
+    carries its own required top-level `retro_id`, so a leftover
+    prior-run `candidates.json` must be caught the same way stale
+    `status.json`/analysis files already are.
+    """
+    root = _write_full_run(tmp_path)
+    candidates_path = root / "qa" / "results" / "retro" / "candidates.json"
+    candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+    candidates["retro_id"] = "retro-stale-candidates"
+    candidates_path.write_text(json.dumps(candidates), encoding="utf-8")
+
+    doc = build_retro_dashboard(root)
+    assert "retro_id_mismatch" in doc.run.integrity_reasons
+
+
+def test_build_retro_dashboard_matching_status_and_candidates_retro_ids_do_not_flag(tmp_path) -> None:
+    """Fix A regression guard: a fully consistent full run must not be flagged."""
+    root = _write_full_run(tmp_path)
+
+    doc = build_retro_dashboard(root)
+    assert "retro_id_mismatch" not in doc.run.integrity_reasons
+
+
 def test_build_retro_dashboard_reports_unreadable_candidates_when_not_a_dict(tmp_path) -> None:
     """Fix 4: a top-level JSON array in candidates.json must fail loudly, not silently default."""
     retro_dir = tmp_path / "qa" / "results" / "retro"
@@ -811,6 +856,18 @@ def test_build_retro_dashboard_reports_unreadable_candidates_when_key_missing(tm
     retro_dir.mkdir(parents=True)
     _write_analysis_files(retro_dir)
     (retro_dir / "candidates.json").write_text(json.dumps({"schema_version": "3"}), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path)
+    assert "artifact_unreadable:candidates.json" in doc.run.integrity_reasons
+    assert doc.candidates == ()
+
+
+def test_build_retro_dashboard_reports_unreadable_candidates_when_value_not_a_list(tmp_path) -> None:
+    """Fix B: a non-list 'candidates' value must degrade gracefully, not raise an uncaught TypeError."""
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    _write_analysis_files(retro_dir)
+    (retro_dir / "candidates.json").write_text(json.dumps({"candidates": None}), encoding="utf-8")
 
     doc = build_retro_dashboard(tmp_path)
     assert "artifact_unreadable:candidates.json" in doc.run.integrity_reasons
