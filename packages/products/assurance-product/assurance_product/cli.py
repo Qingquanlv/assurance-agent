@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,6 +29,11 @@ from assurance_improvement.operations.retro_dashboard import build_retro_dashboa
 
 from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
+from assurance_product.bootstrap.driver import resume_bootstrap, run_bootstrap, stop_bootstrap
+from assurance_product.bootstrap.opencode import OpenCodeLaunchError
+from assurance_product.bootstrap.preflight import BootstrapPreflightError
+from assurance_product.bootstrap.spec import SpecOverrideError, load_run_spec
+from assurance_product.bootstrap.status import read_bootstrap_status
 from assurance_product.change_workspace import ChangeWorkspace, require_real_directory
 from assurance_product.models import PRODUCT_ENTRYPOINTS
 from assurance_product.product import (
@@ -525,6 +531,93 @@ def retro_show(project_dir: str | None, change: str | None, as_json: bool) -> No
     except Exception as error:
         _fail(str(error), 40)
     _emit(dashboard.model_dump(mode="json"))
+
+
+@app.group("bootstrap")
+def bootstrap() -> None:
+    """Operator wrapper that prepares composition and drives an entrypoint."""
+
+
+@bootstrap.command("run")
+@click.option("--project-dir", type=click.Path())
+@click.option("--spec", type=click.Path())
+@click.option("--runs-root", type=click.Path())
+@click.option("--change")
+@click.option("--json", "as_json", is_flag=True)
+def bootstrap_run(
+    project_dir: str | None,
+    spec: str | None,
+    runs_root: str | None,
+    change: str | None,
+    as_json: bool,
+) -> None:
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "spec": spec,
+            "runs_root": runs_root,
+            "json": as_json,
+        },
+        ("project_dir", "spec", "runs_root", "json"),
+    )
+    try:
+        loaded = load_run_spec(Path(cast(str, spec)))
+        status = run_bootstrap(
+            project_dir=Path(cast(str, project_dir)),
+            spec=loaded,
+            runs_root=Path(cast(str, runs_root)),
+            change_id=change,
+            environ=os.environ,
+        )
+    except (BootstrapPreflightError, SpecOverrideError, OpenCodeLaunchError) as error:
+        _fail(str(error), 40)
+    except CommandError as error:
+        _fail(str(error), error.code)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(status.model_dump(mode="json"))
+    raise SystemExit(status.exit_code or 0)
+
+
+@bootstrap.command("status")
+@click.option("--run-dir", type=click.Path())
+@click.option("--json", "as_json", is_flag=True)
+def bootstrap_status(run_dir: str | None, as_json: bool) -> None:
+    _require_options({"run_dir": run_dir, "json": as_json}, ("run_dir", "json"))
+    try:
+        status = read_bootstrap_status(Path(cast(str, run_dir)))
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(status.model_dump(mode="json"))
+
+
+@bootstrap.command("stop")
+@click.option("--run-dir", type=click.Path())
+def bootstrap_stop(run_dir: str | None) -> None:
+    _require_options({"run_dir": run_dir}, ("run_dir",))
+    try:
+        destination = Path(cast(str, run_dir))
+        before = read_bootstrap_status(destination)
+        status = stop_bootstrap(destination)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(status.model_dump(mode="json"))
+    raise SystemExit(0 if before.phase == "terminal" else 20)
+
+
+@bootstrap.command("resume")
+@click.option("--run-dir", type=click.Path())
+@click.option("--json", "as_json", is_flag=True)
+def bootstrap_resume(run_dir: str | None, as_json: bool) -> None:
+    _require_options({"run_dir": run_dir, "json": as_json}, ("run_dir", "json"))
+    try:
+        status = resume_bootstrap(Path(cast(str, run_dir)), environ=os.environ)
+    except (BootstrapPreflightError, SpecOverrideError, OpenCodeLaunchError) as error:
+        _fail(str(error), 40)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(status.model_dump(mode="json"))
+    raise SystemExit(status.exit_code or 0)
 
 
 def _require_options(values: Mapping[str, object], names: Sequence[str]) -> None:

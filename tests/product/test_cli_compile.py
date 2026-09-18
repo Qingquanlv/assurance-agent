@@ -51,10 +51,12 @@ def test_help_exposes_exact_command_tree(cli_runner):
         "resume",
         "lock",
         "retro",
+        "bootstrap",
     }
     assert nested_command_names(cli_runner, app, "bindings") == {"build"}
     assert nested_command_names(cli_runner, app, "lock") == {"show"}
     assert nested_command_names(cli_runner, app, "retro") == {"show"}
+    assert nested_command_names(cli_runner, app, "bootstrap") == {"run", "status", "stop", "resume"}
 
 
 def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
