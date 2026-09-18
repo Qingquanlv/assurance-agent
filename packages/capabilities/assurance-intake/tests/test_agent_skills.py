@@ -180,7 +180,10 @@ def test_explore_skill_returns_the_locked_result_contract() -> None:
     assert "schemas/explore-advisory.schema.json" not in skill
     assert 'Set it to the exact string\n    `"explore/context.json"`' in skill
     assert "Do not expand it to" in skill
-    assert '{"output_files":["qa/results/explore/exploration.json","qa/results/explore/impact-inventory.json"]}' in skill
+    assert (
+        '{"output_files":["qa/results/explore/exploration.json","qa/results/explore/impact-inventory.json"]}'
+        in skill
+    )
 
 
 def test_explore_skill_requires_a_complete_impact_inventory() -> None:
