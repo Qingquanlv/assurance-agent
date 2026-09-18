@@ -29,7 +29,7 @@ from assurance_intake.plugin import IntakePlugin
 _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     "assurance.intake.schema.case-authoring.v1": (
         "1",
-        "93b83ab51c63145bc1d7a90f6be6c79ccef64e106aabcb5eee4d9ef75bbcbe2f",
+        "44a0bb1d4c31a2b9b18453823532f07c5c15102bb07263b625462a4cea2b3e8b",
     ),
     "assurance.intake.schema.case-review.v1": (
         "1",
@@ -37,7 +37,7 @@ _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.intake.schema.case.v1": (
         "1",
-        "93b83ab51c63145bc1d7a90f6be6c79ccef64e106aabcb5eee4d9ef75bbcbe2f",
+        "44a0bb1d4c31a2b9b18453823532f07c5c15102bb07263b625462a4cea2b3e8b",
     ),
     "assurance.intake.schema.qa-change.v1": (
         "1",

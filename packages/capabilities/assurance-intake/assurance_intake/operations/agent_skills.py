@@ -29,6 +29,7 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.contracts.planning_facts import build_planning_facts
 from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS, ExploreAdvisoryV1, build_explore_context
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
     normalized_auto_fix_case_id,
@@ -407,6 +408,15 @@ class CaseDesignPrepareHandler:
             if business.selected_test_families != plan.selected_test_families:
                 raise InputError("case selected families do not match frozen assurance plan")
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
+            _authenticate_evidence_refs(context.project_root, (plan.impact_inventory_ref,))
+            try:
+                inventory = ChangeImpactInventoryV1.model_validate_json(
+                    context.project_root.joinpath(*plan.impact_inventory_ref.path.split("/")).read_bytes()
+                )
+            except (OSError, ValidationError, ValueError) as error:
+                raise InputError(f"invalid impact-inventory.json: {error}") from error
+            if inventory.change_id != business.change_id:
+                raise InputError("impact-inventory.json change_id does not match case-design change_id")
             if business.case_rework_context is not None:
                 rework = business.case_rework_context
                 _authenticate_evidence_refs(context.project_root, rework.assessment_refs)
@@ -428,7 +438,7 @@ class CaseDesignPrepareHandler:
                     raise InputError("exploration.json change_id does not match case-design change_id")
                 if exploration.context_ref != "explore/context.json":
                     raise InputError("exploration.json context_ref must be explore/context.json")
-            business = business.model_copy(update={"exploration": exploration})
+            business = business.model_copy(update={"exploration": exploration, "impact_inventory": inventory})
             review_repair = business.review_repair or _review_repair_contract(
                 context.project_root,
                 business=business,

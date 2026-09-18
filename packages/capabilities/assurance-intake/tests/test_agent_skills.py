@@ -85,6 +85,7 @@ async def run_prepare(
     binding: JSONValue,
     workspace: Path,
     write_root: Path | None = None,
+    impact_rows: tuple[Mapping[str, object], ...] = (),
 ) -> Any:
     if type(handler).__name__.startswith("Case"):
         exploration = workspace / "qa/results/explore/exploration.json"
@@ -104,6 +105,7 @@ async def run_prepare(
             "CH-DEMO-001",
             capability_leafs=VALID_LEAFS,
             minimum_required_coverage=minimum_required_coverage,
+            impact_rows=impact_rows,
         )
         if isinstance(payload, dict):
             payload = {
@@ -1061,6 +1063,7 @@ async def _finalize_files(
     review_repair: object | None = None,
     coverage_epoch: int = 0,
     review_round: int = 0,
+    impact_rows: tuple[Mapping[str, object], ...] = (),
     preparation_refs: list[dict[str, str]] | None = None,
     case_refs: list[dict[str, str]] | None = None,
 ) -> Any:
@@ -1075,6 +1078,7 @@ async def _finalize_files(
             capability_leafs=VALID_LEAFS,
             candidates=selected,
             proposed=selected,
+            impact_rows=impact_rows,
         )
     bound_preparation_refs = list(preparation_refs or [])
     if plan_ref is not None and plan_ref not in bound_preparation_refs:
@@ -3257,3 +3261,154 @@ async def test_failed_case_design_validation_leaves_canonical_outputs_unchanged(
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
     assert canonical.read_bytes() == original
+
+
+def _case_impact_row(
+    row_id: str = "IR-001",
+    *,
+    disposition: str = "add",
+    gap_reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "row_id": row_id,
+        "change_evidence_ids": ["CF-001"],
+        "affected_behavior": {"kind": "api", "key": "POST /items"},
+        "obligation": "duplicate item names must be rejected",
+        "expected_basis_ids": [],
+        "assets": {"case_ids": [], "factory_leafs": [], "problem_ids": []},
+        "disposition": disposition,
+        "gap_reason": gap_reason,
+        "confidence": "medium",
+    }
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_embeds_the_frozen_inventory(tmp_path: Path) -> None:
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        CASE_INPUT,
+        BINDING,
+        tmp_path,
+        impact_rows=(_case_impact_row(),),
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    inventory = cast(Mapping[str, object], business["impact_inventory"])
+    rows = cast(list[Mapping[str, object]], inventory["rows"])
+    assert rows[0]["row_id"] == "IR-001"
+    assert rows[0]["disposition"] == "add"
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_rejects_uncovered_add_rows(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(),),
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "add/modify inventory rows have no covering case: ['IR-001']" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_accepts_a_covering_added_case(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    authored["added"][0]["impact_rows"] = ["IR-001"]
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(),),
+    )
+    assert executed.status == "succeeded", executed.failure
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_rejects_add_row_cited_from_modified(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    added = authored.pop("added")
+    authored["added"] = []
+    authored["modified"] = added
+    authored["modified"][0]["impact_rows"] = ["IR-001"]
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(),),
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "inventory row cited in the wrong section" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_does_not_require_coverage_for_open_rows(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(disposition="capability_gap", gap_reason="no factory yet"),),
+    )
+    assert executed.status == "succeeded", executed.failure

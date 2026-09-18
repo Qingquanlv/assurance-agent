@@ -13,6 +13,7 @@ from graph_engine.plugin_api import FrozenModel
 from graph_engine.frozen_json import FrozenJSONValue
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.common import TestFamily, validate_family_tuple
 from assurance_intake.contracts.workflow import (
     CaseReworkContextV1,
@@ -218,6 +219,7 @@ class CaseDesignInputV1(_SkillInputV1):
     selected_test_families: tuple[TestFamily, ...] = ()
     case_delta_paths: tuple[str, ...] = Field(min_length=1)
     exploration: ExploreAdvisoryV1 | None = None
+    impact_inventory: ChangeImpactInventoryV1 | None = None
     validation_attempt: Literal[0, 1] = 0
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
     review_repair: ReviewRepairContractV1 | None = None

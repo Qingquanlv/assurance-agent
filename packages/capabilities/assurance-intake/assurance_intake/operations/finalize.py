@@ -33,6 +33,7 @@ from assurance_intake.contracts.agent import (
     ReviewRepairContractV1,
 )
 from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS, ExploreAdvisoryV1, ExploreContextV1
+from assurance_intake.contracts.cases import _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
 from assurance_intake.contracts.loop_history import build_loop_round_history
 from assurance_intake.contracts.quality_goals import journey_keys_from_document
@@ -464,6 +465,7 @@ def _load_authored_case_delta(
     locked: tuple[str, ...],
     declared: tuple[str, ...],
     capability_leafs: frozenset[str],
+    inventory: ChangeImpactInventoryV1 | None = None,
     images: Mapping[str, bytes] | None = None,
 ) -> CaseYamlAuthoring:
     if not locked:
@@ -497,7 +499,7 @@ def _load_authored_case_delta(
             raw = yaml.safe_load(data)
             document = CaseYamlAuthoring.model_validate(
                 raw,
-                context={"capability_leafs": capability_leafs},
+                context={"capability_leafs": capability_leafs, "inventory": inventory},
             )
         except (OSError, yaml.YAMLError, ValidationError, TypeError, ValueError) as error:
             raise OutputError(f"invalid written case.yaml {relative}: {error}") from error
@@ -1012,6 +1014,18 @@ class CaseDesignFinalizeHandler:
             if plan.selected_test_families != payload.selected_test_families:
                 raise InputError("case selected families do not match frozen assurance plan")
             capability_leafs = _leafs(payload.capability_leafs)
+            try:
+                inventory_path = _workspace_file(context.project_root, plan.impact_inventory_ref.path)
+                inventory_bytes = inventory_path.read_bytes()
+                if hashlib.sha256(inventory_bytes).hexdigest() != plan.impact_inventory_ref.digest:
+                    raise InputError("impact inventory digest changed after it was committed")
+                inventory = ChangeImpactInventoryV1.model_validate_json(inventory_bytes)
+            except InputError:
+                raise
+            except (OSError, ValidationError, ValueError) as error:
+                raise InputError(f"invalid impact-inventory.json: {error}") from error
+            if inventory.change_id != change_id:
+                raise InputError("impact inventory does not belong to the case-design change")
             receipt = _artifact_list(payload)
             change_root = "qa"
             for relative in receipt.output_files:
@@ -1083,8 +1097,13 @@ class CaseDesignFinalizeHandler:
                 locked=payload.artifact_paths,
                 declared=receipt.output_files,
                 capability_leafs=capability_leafs,
+                inventory=inventory,
                 images=images,
             )
+            try:
+                _require_impact_row_coverage(authored, inventory)
+            except ValueError as error:
+                raise OutputError(str(error)) from error
             validation_errors: list[str] = []
             if payload.selected_test_families:
                 try:
