@@ -101,8 +101,6 @@ class RunSpecV1(FrozenModel):
     @field_validator("case_modules")
     @classmethod
     def _modules(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if not value:
-            raise ValueError("case_modules must be non-empty")
         for module in value:
             if not module or module.startswith("/") or ".." in module.split("/"):
                 raise ValueError(f"invalid case module: {module}")

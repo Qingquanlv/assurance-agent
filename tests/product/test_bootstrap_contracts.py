@@ -91,3 +91,13 @@ def test_route_defaults_are_exact_tokens() -> None:
     assert routes.provider_model == "deepseek/deepseek-v4-flash"
     with pytest.raises(ValidationError):
         RouteDefaultsV1(provider_model="a,b", worker_profile="max")
+
+
+def test_spec_allows_empty_case_modules() -> None:
+    spec = _spec(case_modules=[])
+    assert spec.case_modules == ()
+
+
+def test_spec_still_rejects_unsafe_case_modules() -> None:
+    with pytest.raises(ValidationError):
+        _spec(case_modules=["../escape"])

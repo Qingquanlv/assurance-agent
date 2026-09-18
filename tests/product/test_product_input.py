@@ -305,7 +305,7 @@ def test_case_delta_path_model_matches_public_schema_ascii_shape() -> None:
     assert all(pattern.fullmatch(path) is None for path in invalid)
 
 
-@pytest.mark.parametrize("entrypoint", ("full", "intake", "case"))
+@pytest.mark.parametrize("entrypoint", ("case",))
 def test_case_design_entrypoints_require_exact_case_delta_paths(entrypoint: str) -> None:
     from assurance_product.models import ProductInputV1
 
@@ -318,6 +318,16 @@ def test_case_design_entrypoints_require_exact_case_delta_paths(entrypoint: str)
                 resolved_plan_ref=plan_ref,
             )
         ).validate_for_entrypoint(entrypoint)
+
+
+@pytest.mark.parametrize("entrypoint", ("full", "intake"))
+def test_creator_entrypoints_allow_empty_case_delta_paths(entrypoint: str) -> None:
+    from assurance_product.models import ProductInputV1
+
+    value = ProductInputV1.model_validate(
+        valid_product_input(candidate_test_families=("api",), case_delta_paths=())
+    )
+    assert value.validate_for_entrypoint(entrypoint) is value
 
 
 def test_resource_ref_sha256_is_lowercase_hex():
