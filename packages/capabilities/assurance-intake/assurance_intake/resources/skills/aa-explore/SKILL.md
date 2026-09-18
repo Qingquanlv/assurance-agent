@@ -25,7 +25,7 @@ Do not rely on prior conversation context.
 
 **After completing work:**
 
-1. Write `qa/results/explore/exploration.json`
+1. Write `qa/results/explore/exploration.json` **and** `qa/results/explore/impact-inventory.json`
    - Use the native `write` tool directly. Do not call `aa risk`, `aa artifact`,
      `base64`, or any shell command; the explorer agent has no shell write authority.
    - Write the complete advisory in one operation. A placeholder or reduced object is
@@ -34,7 +34,7 @@ Do not rely on prior conversation context.
    - Autonomous, degraded, and no-source runs MUST still write a complete valid
      `exploration.json`. Weak or absent evidence changes the evidence fields and
      confidence, never the required output file.
-2. Immediately read `qa/results/explore/exploration.json` back. This is a hard
+2. Immediately read both files back. This is a hard
    completion condition: if the read reports missing/error, continue writing and do
    not return. Native `write` is mandatory in this execution profile; there is no CLI
    or shell fallback. Never use Python, `tee`, a heredoc, `base64`, `aa risk`,
@@ -70,6 +70,13 @@ Do not use glob to check either Explore path (`context.json` or `exploration.jso
 Change-local files may be ignored by repository search even though an exact native
 read can access them. A glob result of `No files found` is not a missing-file result:
 perform the exact read. Likewise, verify the output with an exact read after writing.
+
+`context.json` now carries a typed `impact` projection: `impact.seeds[]` (`CF-*`, the
+files/symbols the change touched — from a sealed diff when `impact.diff_base ==
+"change-evidence"`, otherwise from explicit paths in the requirement),
+`impact.candidate_cases[]` (`CS-*` with `case_id`), `impact.historical_problems[]`
+(`HI-*` with `problem_id`), `impact.factory_leafs[]`, and `impact.unobserved_hints[]`.
+These ids, together with your own `SC-*` ids, are the only ids you may cite anywhere.
 
 - Missing or unreadable context → fail the task. Do not return structured success,
   especially not `{"output_files":[]}`; without authenticated context there is no
@@ -171,7 +178,7 @@ business obligations.
 
 ### LLM Hard Rules
 
-1. All numbers, `case_id`, `issue_id`, module names **must** come from `context.json` fields (`evidence[]`, `impact.*`, `historical_issues[]`, `case_signals[]`) **or from source code evidence (SC-* IDs) collected in Step 3**.
+1. All numbers, `case_id`, `issue_id`, module names **must** come from `context.json` fields (`evidence[]`, `impact.seeds[]`, `impact.candidate_cases[]`, `impact.historical_problems[]`, `historical_issues[]`, `case_signals[]`) **or from source code evidence (SC-* IDs) collected in Step 3**. Cite them by id: `CF-*`, `CS-*`, `HI-*`. The product finalizer rejects any id that does not resolve to `context.json` or to your `SC-*` list.
 2. Every `priority_hint` / watchlist item **must** reference ≥1 evidence ID (`context.evidence[].id` or Step 3 `SC-*` ID) via `evidence_ids[]`.
 3. No `evidence_ids` → item MUST be `confidence: low`. Do not generate `priority_hint`/watchlist items with no evidence.
 4. `case_design_guidance` is an **evidence-anchored channel** — never write case files. `priority_hints` is the **sole channel for risk-area signals** (there is no separate `hotspots` array — every `priority_hint` carries its own `confidence`, following the same §5.7 rules as watchlist). When ALL evidence (historical AND source code) is empty, set `priority_hints`, `suggested_scenarios`, and `regression_focus` to `[]`. Do **not** fill them with generic advice — generic "at least cover" guidance belongs exclusively in `minimum_required_coverage`; degraded disclaimers belong exclusively in `executive_summary`.
@@ -269,7 +276,7 @@ finalizer enforces the installed model after read-back.
 
 | Field | Derive from |
 |-------|-------------|
-| `scope.in_scope` / `scope.out_of_scope` | Diff-changed modules/files (`context.json` `impact.modules`) + requirement text scope; uncertain areas go to `out_of_scope` with a note in `executive_summary`, not a guess. When no evidence supports a scope, the required `scope` key is JSON `null`. |
+| `scope.in_scope` / `scope.out_of_scope` | Changed files/symbols (`context.json` `impact.seeds[].path`) + requirement text scope; uncertain areas go to `out_of_scope` with a note in `executive_summary`, not a guess. When no evidence supports a scope, the required `scope` key is JSON `null`. |
 | `data_focus` | Model/entity fields read in Step 3 (SC-* `model_field` evidence) that are central to the change |
 | `layer_recommendation` | Exactly one entry per `API/E2E/Fuzz/Performance`; every entry includes `evidence_ids`: `recommended: true` only when evidence supports it and cites those IDs; `recommended: false` when evidence does not support the layer and uses `evidence_ids: []` plus a concrete evidence-limit reason |
 | `approach` | One sentence combining the recommended layers, e.g. "API + E2E，并对 UserCreate/UserUpdate schema 增加 Fuzz 覆盖" |
@@ -376,6 +383,54 @@ An entry is either a canonical non-empty key string (required by default) or a c
 
 ---
 
+## Step 4b — Change impact inventory
+
+Write `qa/results/explore/impact-inventory.json` with the native `write` tool in one
+operation, then read it back. It is a table of impact rows; the graph seals it and the
+frozen plan binds it, so case design and retro can cite `IR-*` ids.
+
+```json
+{
+  "schema_version": "1",
+  "change_id": "<change_id>",
+  "context_ref": "explore/context.json",
+  "rows": [
+    {
+      "row_id": "IR-001",
+      "change_evidence_ids": ["CF-001", "SC-003"],
+      "affected_behavior": {"kind": "api", "key": "DELETE /api/v1/dept/delete"},
+      "obligation": "deleting a department must also remove its DeptClosure rows and leave user.dept empty",
+      "expected_basis_ids": ["SC-005", "HI-001"],
+      "assets": {"case_ids": ["TC_DEPT_API_011"], "factory_leafs": ["capabilities.domain_factories.dept.make_dept"], "problem_ids": ["PROB-1"]},
+      "disposition": "modify",
+      "gap_reason": null,
+      "confidence": "medium"
+    }
+  ],
+  "exclusions": [
+    {"seed_id": "CF-004", "reason": "router registration only; behavior is covered by CF-001 rows"}
+  ]
+}
+```
+
+| Column | Question it answers | Rules |
+|--------|---------------------|-------|
+| `change_evidence_ids` | Which requirement, file, or symbol changed? | ≥1 id; `CF-*` from `impact.seeds[]` or your `SC-*` |
+| `affected_behavior` | Which API, journey, role, or data constraint may be affected? | `kind` ∈ `api`, `journey`, `role`, `data_constraint`; `data_constraint` keys must be exact typed catalog leafs and `journey` keys exact data-knowledge journeys, otherwise use `capability_gap` |
+| `obligation` + `expected_basis_ids` | What must be verified and on what basis? | one sentence; basis ids from `SC-*`, `HI-*`, `CS-*` |
+| `assets` | Which cases, factories, and problems can be reused? | `case_ids` from `impact.candidate_cases[].case_id`; `factory_leafs` from `impact.factory_leafs`; `problem_ids` from `impact.historical_problems[].problem_id` |
+| `disposition` | Reuse, modify, add, or is something missing? | `reuse`/`modify` require `assets.case_ids`; `add` requires none; `capability_gap` and `pending_confirmation` require `gap_reason` |
+
+Hard rules:
+
+1. Completeness: every `impact.seeds[].seed_id` must appear in at least one row's `change_evidence_ids` or in `exclusions[]` with a reason. Never drop a seed silently.
+2. Do not invent ids. `CF-*`, `CS-*`, `HI-*` come from `context.json`; `SC-*` from Step 3. The product finalizer rejects any id that does not resolve.
+3. Prefer `capability_gap` over a guessed catalog key, and `pending_confirmation` over a guessed business rule. Open rows are visible to case design and retro; wrong closed rows are not.
+4. When `impact.seeds` is empty (no diff, no explicit paths), rows still cite `SC-*` evidence and `exclusions` is `[]`.
+5. The inventory does not replace `exploration.json`; `test_strategy`, `minimum_required_coverage`, and `priority_hints` keep their own channels.
+
+---
+
 ## Step 5 — Resolve open_questions (mode-aware)
 
 After writing the advisory draft, check `open_questions_for_case_design[]`:
@@ -461,12 +516,12 @@ After reconciliation, re-run a mental check: for every answered OQ, no surviving
 
 ## Step 6 — Read-back completeness check
 
-Read `exploration.json` and verify the required top-level fields above, the three
+Read `exploration.json` and `impact-inventory.json` and verify the required top-level fields above, the three
 `case_design_guidance` arrays, all three `evidence_inventory` arrays, a non-empty
 `minimum_required_coverage` object, every required `test_strategy` key (`scope`,
 `data_focus`, `depth`, `layer_recommendation`, `approach`), and four
 `test_strategy.layer_recommendation` entries, each with an explicit
-`evidence_ids` array. Do not run a validator command. The product finalizer performs the
+`evidence_ids` array, and that every inventory row has all required columns. Do not run a validator command. The product finalizer performs the
 authoritative typed validation after this agent returns.
 
 - Incomplete → rewrite the complete object and repeat the read-back check.
@@ -486,6 +541,7 @@ phases:
     outputs:
       - explore/context.json
       - explore/exploration.json    # only when done
+      - explore/impact-inventory.json    # only when done
     priority_hints_count: <n>
     watchlist_high_count: <n>
     degraded: <bool from context.json>
@@ -503,7 +559,7 @@ Do not output a user-facing summary, step log, phase delta, or compliance checkl
 After both artifacts are written and read-back validation succeeds, return structured JSON only:
 
 ```json
-{"output_files":["qa/results/explore/exploration.json"]}
+{"output_files":["qa/results/explore/exploration.json","qa/results/explore/impact-inventory.json"]}
 ```
 
 Every successful run returns exactly the non-empty receipt above. If missing or

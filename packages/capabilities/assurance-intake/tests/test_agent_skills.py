@@ -180,7 +180,29 @@ def test_explore_skill_returns_the_locked_result_contract() -> None:
     assert "schemas/explore-advisory.schema.json" not in skill
     assert 'Set it to the exact string\n    `"explore/context.json"`' in skill
     assert "Do not expand it to" in skill
-    assert '{"output_files":["qa/results/explore/exploration.json"]}' in skill
+    assert '{"output_files":["qa/results/explore/exploration.json","qa/results/explore/impact-inventory.json"]}' in skill
+
+
+def test_explore_skill_requires_a_complete_impact_inventory() -> None:
+    skill = resource_text("skills/aa-explore/SKILL.md")
+    assert "## Step 4b — Change impact inventory" in skill
+    assert "qa/results/explore/impact-inventory.json" in skill
+    assert (
+        "every `impact.seeds[].seed_id` must appear in at least one row's `change_evidence_ids` or in `exclusions[]`"
+        in skill
+    )
+    for disposition in ("`reuse`", "`modify`", "`add`", "`capability_gap`", "`pending_confirmation`"):
+        assert disposition in skill
+    assert "`CF-*`, `CS-*`, `HI-*`" in skill
+    assert "The product finalizer rejects any id that does not resolve" in skill
+
+
+def test_case_design_skill_covers_actionable_impact_rows() -> None:
+    skill = resource_text("skills/aa-case-design/SKILL.md")
+    assert "`impact_inventory`" in skill
+    assert "`impact_rows`" in skill
+    assert "every row with disposition `add` or `modify` must be covered by at least one case" in skill
+    assert "`capability_gap` and `pending_confirmation` rows are listed in `proposal.md`" in skill
 
 
 def test_explore_skill_requires_evidence_ids_on_every_layer_recommendation() -> None:

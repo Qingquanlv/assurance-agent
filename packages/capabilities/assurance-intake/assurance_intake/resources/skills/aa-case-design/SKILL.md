@@ -19,6 +19,16 @@ Check original source for behavior, auth semantics and oracle claims. Keep owner
 requirements and frozen assertion intent distinct from observed implementation;
 a source defect must not weaken the expected test behavior.
 
+The JSON instruction also includes `impact_inventory`: the sealed change impact
+inventory the frozen plan binds. Each row (`IR-*`) names affected behavior, an
+obligation, reusable assets, and a disposition. Two rules follow from it:
+
+- every row with disposition `add` or `modify` must be covered by at least one case — list the row ids in that case's `impact_rows` field;
+- `capability_gap` and `pending_confirmation` rows are listed in `proposal.md` under **Explore Input** as explicit gaps; never invent a case that pretends to cover them.
+
+The product finalizer rejects unknown `impact_rows` ids and returns `needs_fix` when an
+actionable row has no case.
+
 Use exact indexed identifiers and paths where applicable. Keep Case IDs, trace
 keys and MRC references consistent across every authored file. Preserve the frozen
 owner oracle when the implementation differs. The inventory is evidence for
@@ -179,6 +189,7 @@ Every `trace` value is an object with the single field `covered: true`; a bare
 boolean is invalid. In abstract form, `trace` maps an exact, unchanged list member
 to `{covered: true}`. The words used to describe that abstract form are not a
 capability key and must never be copied into an artifact.
+`impact_rows: ["IR-001"]  # IR-* ids from impact_inventory this case covers; [] when none apply`.
 
 Before returning, read back every case and reject your own draft if any trace
 entry has the form `<capability-leaf>: true`, `<capability-leaf>: false`, or an
