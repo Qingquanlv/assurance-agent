@@ -373,6 +373,7 @@ class ExplorePrepareHandler:
             document = build_explore_context(
                 context.project_root,
                 change_id=business.change_id,
+                capability_leafs=business.capability_leafs,
             )
             relative = "qa/results/explore/context.json"
             path = context.write_root.joinpath(*relative.split("/"))
@@ -387,7 +388,7 @@ class ExplorePrepareHandler:
                 context=context,
                 allowed_outputs=explore_outputs(business.change_id),
             )
-        except InputError as error:
+        except (InputError, ValueError) as error:
             return failed_input(error)
 
 
