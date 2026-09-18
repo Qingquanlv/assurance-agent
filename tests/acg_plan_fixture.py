@@ -60,6 +60,7 @@ def install_plan(
     candidates: tuple[TestFamily, ...] = ("api",),
     proposed: tuple[TestFamily, ...] = ("api",),
     policy: Mapping[str, object] = DEFAULT_POLICY,
+    impact_rows: tuple[Mapping[str, object], ...] = (),
 ) -> tuple[ResolvedAssurancePlan, dict[str, str]]:
     capability_leafs = tuple(sorted(set(capability_leafs)))
     policy_bytes = yaml.safe_dump(dict(policy), sort_keys=True).encode()
@@ -114,6 +115,20 @@ def install_plan(
     exploration_bytes = canonical_json_bytes(cast(JSONValue, exploration))
     exploration_path = "qa/results/explore/exploration.json"
     exploration_digest = _write(root, exploration_path, exploration_bytes)
+    inventory_bytes = canonical_json_bytes(
+        cast(
+            JSONValue,
+            {
+                "schema_version": "1",
+                "change_id": change_id,
+                "context_ref": "explore/context.json",
+                "rows": [dict(row) for row in impact_rows],
+                "exclusions": [],
+            },
+        )
+    )
+    inventory_path = "qa/results/explore/impact-inventory.json"
+    inventory_digest = _write(root, inventory_path, inventory_bytes)
     source_digests = (
         ("assurance.product.configuration.capability-catalog", catalog_digest),
         ("assurance.product.configuration.data-knowledge", knowledge_digest),
@@ -136,10 +151,14 @@ def install_plan(
             path=exploration_path,
             digest=exploration_digest,
         ),
+        impact_inventory_ref=EvidenceArtifactRefV1(
+            path=inventory_path,
+            digest=inventory_digest,
+        ),
         source_resource_digests=source_digests,
         capability_leafs=capability_leafs,
     )
-    advisory, quality_goal = prepare_quality_goal(request, project_root=root)
+    advisory, inventory, quality_goal = prepare_quality_goal(request, project_root=root)
     selected = tuple(
         family
         for label, family in (
@@ -151,7 +170,10 @@ def install_plan(
         if any(row.layer == label and row.recommended for row in advisory.test_strategy.layer_recommendation)
     )
     plan = resolve_plan(
-        request=request, proposed=cast(tuple[TestFamily, ...], selected), quality_goal=quality_goal
+        request=request,
+        proposed=cast(tuple[TestFamily, ...], selected),
+        quality_goal=quality_goal,
+        inventory=inventory,
     )
     ref = plan_artifact_ref(plan)
     _write(root, ref.path, plan_bytes(plan))

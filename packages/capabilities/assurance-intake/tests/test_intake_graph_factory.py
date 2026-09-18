@@ -128,6 +128,10 @@ def intake_graph_input() -> dict[str, object]:
                 "path": "qa/results/explore/exploration.json",
                 "digest": _SHA,
             },
+            {
+                "path": "qa/results/explore/impact-inventory.json",
+                "digest": _SHA,
+            },
             plan_ref,
         ],
     }

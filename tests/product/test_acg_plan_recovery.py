@@ -76,6 +76,7 @@ def _plan_scenario(tmp_path: Path) -> _PlanScenario:
         policy_digest=plan.policy_digest,
         family_policy=FamilyPolicyV1.model_validate(DEFAULT_POLICY["test_family_policy"]),
         exploration_ref=plan.exploration_ref,
+        impact_inventory_ref=plan.impact_inventory_ref,
         source_resource_digests=plan.quality_goal.source_resource_digests,
         capability_leafs=("entities.item.constraints.name",),
     )

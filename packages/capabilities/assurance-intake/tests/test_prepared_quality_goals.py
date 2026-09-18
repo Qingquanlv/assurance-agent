@@ -177,6 +177,17 @@ def test_prepare_quality_goal_authenticates_every_source(
         separators=(",", ":"),
     ).encode()
     explore_path.write_bytes(explore_bytes)
+    inventory_bytes = json.dumps(
+        {
+            "schema_version": "1",
+            "change_id": "CH-1",
+            "context_ref": "explore/context.json",
+            "rows": [],
+            "exclusions": [],
+        }
+    ).encode()
+    inventory_path = project / "qa/results/explore/impact-inventory.json"
+    inventory_path.write_bytes(inventory_bytes)
 
     aa = project / ".aa"
     aa.mkdir()
@@ -232,6 +243,10 @@ def test_prepare_quality_goal_authenticates_every_source(
                 "path": explore_path.relative_to(project).as_posix(),
                 "digest": _sha(explore_bytes),
             },
+            "impact_inventory_ref": {
+                "path": "qa/results/explore/impact-inventory.json",
+                "digest": _sha(inventory_bytes),
+            },
             "source_resource_digests": source_digests,
             "capability_leafs": (
                 "entities.item.constraints.name",
@@ -240,7 +255,7 @@ def test_prepare_quality_goal_authenticates_every_source(
         }
     )
 
-    advisory, goal = prepare_quality_goal(request, project_root=project)
+    advisory, _inventory, goal = prepare_quality_goal(request, project_root=project)
     assert advisory.change_id == "CH-1"
     assert advisory.test_strategy.layer_recommendation[1].recommended is False
     assert goal.required_test_families == ("api", "e2e")

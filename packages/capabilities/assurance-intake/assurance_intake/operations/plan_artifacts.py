@@ -15,6 +15,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_closed_keys
 from assurance_intake.contracts.plan import (
     PreparedQualityGoalV1,
     ResolvePlanInputV1,
@@ -83,7 +84,7 @@ def prepare_quality_goal(
     request: ResolvePlanInputV1,
     *,
     project_root: Path,
-) -> tuple[ExploreAdvisoryV1, PreparedQualityGoalV1]:
+) -> tuple[ExploreAdvisoryV1, ChangeImpactInventoryV1, PreparedQualityGoalV1]:
     exploration_data = _read_regular_bytes(
         project_root,
         request.exploration_ref.path,
@@ -98,6 +99,18 @@ def prepare_quality_goal(
     expected_context = "explore/context.json"
     if advisory.context_ref != expected_context:
         raise ValueError("exploration context_ref does not match the current change")
+
+    inventory_data = _read_regular_bytes(
+        project_root,
+        request.impact_inventory_ref.path,
+        request.impact_inventory_ref.digest,
+    )
+    try:
+        inventory = ChangeImpactInventoryV1.model_validate(json.loads(inventory_data))
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError("impact inventory artifact is invalid") from error
+    if inventory.change_id != request.change_id:
+        raise ValueError("impact inventory change_id does not match plan input")
 
     policy = _mapping_yaml(
         _read_regular_bytes(project_root, _POLICY_PATH, request.policy_digest),
@@ -127,10 +140,12 @@ def prepare_quality_goal(
         source_bytes["assurance.product.configuration.data-knowledge"],
         "data knowledge",
     )
+    journey_keys = frozenset(journey_keys_from_document(knowledge))
+    validate_inventory_closed_keys(inventory, journey_keys=journey_keys)
     obligations = normalize_goal_obligations(
         advisory,
         capability_leafs=frozenset(request.capability_leafs),
-        journey_keys=frozenset(journey_keys_from_document(knowledge)),
+        journey_keys=journey_keys,
     )
     goal = PreparedQualityGoalV1(
         obligations_ref=request.exploration_ref,
@@ -140,7 +155,7 @@ def prepare_quality_goal(
         coverage_policy=CoverageGoalPolicyV1.from_product_policy(policy),
         sufficiency_policy=SufficiencyPolicyV1.from_product_policy(policy),
     )
-    return advisory, goal
+    return advisory, inventory, goal
 
 
 def _write_plan(output: ResolvePlanOutputV1, write_root: Path) -> None:
@@ -165,11 +180,12 @@ def resolve_plan_artifact(
     project_root: Path,
     write_root: Path,
 ) -> ResolvePlanOutputV1:
-    advisory, goal = prepare_quality_goal(request, project_root=project_root)
+    advisory, inventory, goal = prepare_quality_goal(request, project_root=project_root)
     plan = resolve_plan(
         request=request,
         proposed=derive_family_proposal(advisory.test_strategy),
         quality_goal=goal,
+        inventory=inventory,
     )
     output = ResolvePlanOutputV1(plan=plan, plan_ref=plan_artifact_ref(plan))
     _write_plan(output, write_root)
@@ -212,14 +228,16 @@ def load_plan_artifact(
         policy_digest=request.policy_digest,
         family_policy=family_policy,
         exploration_ref=plan.exploration_ref,
+        impact_inventory_ref=plan.impact_inventory_ref,
         source_resource_digests=request.source_resource_digests,
         capability_leafs=request.capability_leafs,
     )
-    advisory, goal = prepare_quality_goal(resolve_input, project_root=project_root)
+    advisory, inventory, goal = prepare_quality_goal(resolve_input, project_root=project_root)
     expected = resolve_plan(
         request=resolve_input,
         proposed=derive_family_proposal(advisory.test_strategy),
         quality_goal=goal,
+        inventory=inventory,
     )
     if expected != plan:
         raise ValueError("stored plan does not match its authenticated inputs")

@@ -103,6 +103,11 @@ def select_resolve_plan(state: Mapping[str, object]) -> ResolvePlanInputV1:
                 for item in _preparation_refs(state)
                 if item["path"] == "qa/results/explore/exploration.json"
             ),
+            "impact_inventory_ref": next(
+                item
+                for item in _preparation_refs(state)
+                if item["path"] == "qa/results/explore/impact-inventory.json"
+            ),
             "source_resource_digests": (
                 (catalog["resource_id"], catalog["sha256"]),
                 (knowledge["resource_id"], knowledge["sha256"]),

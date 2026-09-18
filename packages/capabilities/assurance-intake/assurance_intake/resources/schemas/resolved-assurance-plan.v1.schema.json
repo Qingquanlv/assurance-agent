@@ -214,7 +214,10 @@
             "fallback_all_candidates",
             "required_retained",
             "candidate_outside_allowed",
-            "proposed_outside_candidate"
+            "proposed_outside_candidate",
+            "impact_retained",
+            "impact_family_unavailable",
+            "impact_pending_confirmation"
           ],
           "title": "Reason Code",
           "type": "string"
@@ -288,6 +291,9 @@
       "default": "select",
       "title": "Gpm",
       "type": "string"
+    },
+    "impact_inventory_ref": {
+      "$ref": "#/$defs/EvidenceArtifactRefV1"
     },
     "plan_digest": {
       "pattern": "^[0-9a-f]{64}$",
@@ -366,6 +372,7 @@
     "policy_resource_id",
     "policy_digest",
     "exploration_ref",
+    "impact_inventory_ref",
     "plan_digest",
     "resolution_reasons"
   ],

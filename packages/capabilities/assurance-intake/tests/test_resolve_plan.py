@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from assurance_intake.contracts.explore import TestStrategyV1 as Strategy
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.plan import (
     PlanBudgetsV1,
@@ -109,6 +112,10 @@ def _request(
                 "path": "qa/results/explore/exploration.json",
                 "digest": _SHA_A,
             },
+            "impact_inventory_ref": {
+                "path": "qa/results/explore/impact-inventory.json",
+                "digest": _SHA_B,
+            },
             "source_resource_digests": (
                 ("assurance.product.configuration.capability-catalog", _SHA_A),
                 ("assurance.product.configuration.data-knowledge", _SHA_B),
@@ -116,6 +123,32 @@ def _request(
             "capability_leafs": ("cart.read",),
         }
     )
+
+
+def _inventory(*rows: dict[str, Any]) -> ChangeImpactInventoryV1:
+    return ChangeImpactInventoryV1.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": "CH-1",
+            "context_ref": "explore/context.json",
+            "rows": list(rows),
+            "exclusions": [],
+        }
+    )
+
+
+def _journey_row(row_id: str, *, disposition: str = "add", gap_reason: str | None = None) -> dict[str, Any]:
+    return {
+        "row_id": row_id,
+        "change_evidence_ids": ["CF-001"],
+        "affected_behavior": {"kind": "journey", "key": "dept_management_crud"},
+        "obligation": "the department tree page must still render after the change",
+        "expected_basis_ids": [],
+        "assets": {"case_ids": [], "factory_leafs": [], "problem_ids": []},
+        "disposition": disposition,
+        "gap_reason": gap_reason,
+        "confidence": "medium",
+    }
 
 
 def test_proposal_is_derived_from_the_four_typed_rows() -> None:
@@ -166,7 +199,12 @@ def test_incompatible_scope_fails_before_case(
 
 
 def test_resolved_plan_records_fixed_reasons_and_two_distinct_digests() -> None:
-    plan = resolve_plan(request=_request(allowed=("api",)), proposed=("e2e",), quality_goal=_goal())
+    plan = resolve_plan(
+        request=_request(allowed=("api",)),
+        proposed=("e2e",),
+        quality_goal=_goal(),
+        inventory=_inventory(),
+    )
     assert plan.selected_test_families == ("api",)
     assert [reason.reason_code for reason in plan.resolution_reasons] == [
         "fallback_all_candidates",
@@ -186,6 +224,7 @@ def test_resolution_reasons_stay_canonical_when_required_and_excluded_overlap() 
         request=_request(allowed=("api",), required=("api",)),
         proposed=("e2e",),
         quality_goal=_goal(),
+        inventory=_inventory(),
     )
     assert [reason.reason_code for reason in plan.resolution_reasons] == [
         "accepted_proposal",
@@ -196,7 +235,7 @@ def test_resolution_reasons_stay_canonical_when_required_and_excluded_overlap() 
 
 
 def test_plan_decoder_rejects_noncanonical_or_self_inconsistent_bytes() -> None:
-    plan = resolve_plan(request=_request(), proposed=("api",), quality_goal=_goal())
+    plan = resolve_plan(request=_request(), proposed=("api",), quality_goal=_goal(), inventory=_inventory())
     ref = plan_artifact_ref(plan)
     with pytest.raises(ValueError, match="canonical"):
         decode_plan(plan_bytes(plan) + b"\n", ref)
@@ -211,7 +250,66 @@ def test_plan_decoder_rejects_noncanonical_or_self_inconsistent_bytes() -> None:
 
 def test_goal_change_changes_the_plan_identity() -> None:
     request = _request()
-    first = resolve_plan(request=request, proposed=("api",), quality_goal=_goal())
-    second = resolve_plan(request=request, proposed=("api",), quality_goal=_goal("e2e"))
+    first = resolve_plan(request=request, proposed=("api",), quality_goal=_goal(), inventory=_inventory())
+    second = resolve_plan(
+        request=request, proposed=("api",), quality_goal=_goal("e2e"), inventory=_inventory()
+    )
     assert first.plan_digest != second.plan_digest
     assert plan_artifact_ref(first) != plan_artifact_ref(second)
+
+
+def test_closed_journey_row_retains_e2e_within_admissible_scope() -> None:
+    plan = resolve_plan(
+        request=_request(candidate=("api", "e2e"), allowed=("api", "e2e")),
+        proposed=("api",),
+        quality_goal=_goal(),
+        inventory=_inventory(_journey_row("IR-001")),
+    )
+    assert plan.selected_test_families == ("api", "e2e")
+    assert plan.impact_inventory_ref.path == "qa/results/explore/impact-inventory.json"
+    retained = [reason for reason in plan.resolution_reasons if reason.reason_code == "impact_retained"]
+    assert [reason.family for reason in retained] == ["e2e"]
+
+
+def test_journey_row_outside_candidates_is_reported_not_forced() -> None:
+    plan = resolve_plan(
+        request=_request(candidate=("api",), allowed=("api", "e2e")),
+        proposed=("api",),
+        quality_goal=_goal(),
+        inventory=_inventory(_journey_row("IR-001")),
+    )
+    assert plan.selected_test_families == ("api",)
+    unavailable = [
+        reason for reason in plan.resolution_reasons if reason.reason_code == "impact_family_unavailable"
+    ]
+    assert [reason.family for reason in unavailable] == ["e2e"]
+
+
+def test_pending_rows_surface_as_one_global_reason_and_retain_nothing() -> None:
+    plan = resolve_plan(
+        request=_request(candidate=("api", "e2e"), allowed=("api", "e2e")),
+        proposed=("api",),
+        quality_goal=_goal(),
+        inventory=_inventory(
+            _journey_row(
+                "IR-001", disposition="pending_confirmation", gap_reason="owner must confirm the journey"
+            ),
+            _journey_row(
+                "IR-002", disposition="pending_confirmation", gap_reason="owner must confirm the journey"
+            ),
+        ),
+    )
+    assert plan.selected_test_families == ("api",)
+    pending = [
+        reason for reason in plan.resolution_reasons if reason.reason_code == "impact_pending_confirmation"
+    ]
+    assert len(pending) == 1
+    assert pending[0].family is None
+    assert "IR-001" in pending[0].summary and "IR-002" in pending[0].summary
+
+
+def test_plan_input_rejects_a_foreign_inventory_path() -> None:
+    payload = _request().model_dump(mode="json")
+    payload["impact_inventory_ref"] = {"path": "qa/results/other/impact-inventory.json", "digest": _SHA_B}
+    with pytest.raises(ValidationError, match="impact_inventory_ref must bind the current change"):
+        ResolvePlanInputV1.model_validate(payload)
