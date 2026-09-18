@@ -5,7 +5,6 @@ import importlib.util
 from importlib.resources import files
 import json
 import os
-import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -22,7 +21,6 @@ from tests.acg_plan_fixture import install_plan
 
 from tests.product.test_benchmark_manifest import (
     FULL_WORKFLOW_REQUIRED_STEPS,
-    REPO,
     RUNNER_PATH,
 )
 
@@ -71,13 +69,18 @@ def _make_sut(root: Path) -> Path:
     return sut
 
 
+def test_run_item_drives_through_aa_bootstrap() -> None:
+    text = RUNNER_PATH.read_text(encoding="utf-8")
+    assert '"bootstrap", "run"' in text
+    assert "_WRITE_PRODUCT_INPUT" not in text
+
+
 def test_project_config_tree_uses_exact_live_sut_policy(tmp_path: Path) -> None:
-    runner = _load_runner()
+    from assurance_product.bootstrap.composition import _materialize_config_tree
+
     sut = _make_sut(tmp_path)
     config_tree = tmp_path / "config-tree"
-    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
-
-    runner._prepare_project_config_tree(config_tree, sut)
+    _materialize_config_tree(config_tree, sut)
 
     source_policy = (sut / ".aa" / "policy.yaml").read_bytes()
     assert (config_tree / ".aa" / "policy.yaml").read_bytes() == source_policy
@@ -86,12 +89,11 @@ def test_project_config_tree_uses_exact_live_sut_policy(tmp_path: Path) -> None:
 
 
 def test_project_config_tree_materializes_exact_live_sut_catalog(tmp_path: Path) -> None:
-    runner = _load_runner()
+    from assurance_product.bootstrap.composition import _materialize_config_tree
+
     sut = _make_sut(tmp_path)
     config_tree = tmp_path / "config-tree"
-    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
-
-    runner._prepare_project_config_tree(config_tree, sut)
+    _materialize_config_tree(config_tree, sut)
 
     source_catalog = (sut / ".aa" / "capability-catalog.json").read_bytes()
     assert source_catalog == (config_tree / ".aa" / "capability-catalog.json").read_bytes()
@@ -100,17 +102,16 @@ def test_project_config_tree_materializes_exact_live_sut_catalog(tmp_path: Path)
 
 
 def test_project_config_tree_uses_exact_live_sut_knowledge_bytes(tmp_path: Path) -> None:
-    runner = _load_runner()
     sut = _make_sut(tmp_path)
     (sut / ".aa" / "data-knowledge.yaml").write_text(
         'schema_version: "1"\ncapabilities: {domain_factories: {}, adapters: {api: {}}}\n# keep-bytes\n',
         encoding="utf-8",
     )
-    config_tree = tmp_path / "config-tree"
-    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
+    from assurance_product.bootstrap.composition import _materialize_config_tree
 
+    config_tree = tmp_path / "config-tree"
     source_knowledge = (sut / ".aa" / "data-knowledge.yaml").read_bytes()
-    runner._prepare_project_config_tree(config_tree, sut)
+    _materialize_config_tree(config_tree, sut)
 
     assert (config_tree / ".aa" / "data-knowledge.yaml").read_bytes() == source_knowledge
 
@@ -247,6 +248,20 @@ class _FakeAA:
                     }
                 ),
             )
+        if verb == "bootstrap":
+            self._materialize_change()
+            exit_code = 0 if self.terminal.get("status") == "completed" else 40
+            return _completed(
+                exit_code,
+                json.dumps(
+                    {
+                        "phase": "terminal",
+                        "change_id": self.change_id,
+                        "exit_code": exit_code,
+                        "status": self.terminal,
+                    }
+                ),
+            )
         return _completed(1, stderr=f"unexpected aa command: {command}")
 
     def handle_subprocess(self, command: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -280,7 +295,7 @@ class _FakeAA:
 
 class _UnstructuredRunAA(_FakeAA):
     def handle_aa(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        if len(command) > 1 and command[1] == "run":
+        if len(command) > 1 and command[1] == "bootstrap":
             return _completed(23, stdout="deterministic local runner failure\n")
         if len(command) > 1 and command[1] == "status":
             raise AssertionError("unstructured non-zero run must fail before status polling")
@@ -905,7 +920,7 @@ def test_main_keeps_managed_sut_active_from_start_through_achieved(
     original_handle = fake.handle_aa
 
     def require_runtime(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        if len(command) > 1 and command[1] in {"start", "run", "status"}:
+        if len(command) > 1 and command[1] in {"start", "run", "status", "bootstrap"}:
             assert active, f"{command[1]} ran outside the managed SUT lifecycle"
         return original_handle(command)
 
@@ -1005,8 +1020,7 @@ def test_nonzero_unstructured_run_fails_closed_without_status_polling(
     evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
     assert code == 23
     assert evidence["outcome"] == "blocked"
-    assert evidence["validation"]["last_run"]["returncode"] == 23
-    assert "structured run result" in evidence["notes"]
+    assert "bootstrap run" in evidence["notes"]
     assert all(command[1] != "status" for command in fake.commands if len(command) > 1)
 
 

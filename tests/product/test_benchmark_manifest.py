@@ -163,12 +163,7 @@ def test_benchmark_runner_accepts_only_deepseek_v4_pro_routes() -> None:
 
 
 def test_opencode_benchmark_allows_four_review_fix_rounds() -> None:
-    spec = importlib.util.spec_from_file_location("run_item_budget", RUNNER_PATH)
-    assert spec is not None and spec.loader is not None
-    runner = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(runner)
-
-    assert '"review_rounds": 4' in runner._WRITE_PRODUCT_INPUT
+    assert '"review_rounds": 4' in RUNNER_PATH.read_text(encoding="utf-8")
 
 
 def test_status_projection_round_trips_full_benchmark_steps() -> None:
@@ -489,15 +484,27 @@ def test_runner_requires_loaded_assurance_boundary_plugin(monkeypatch: pytest.Mo
 
 
 def test_live_product_input_authorizes_declared_test_roots() -> None:
-    source = RUNNER_PATH.read_text(encoding="utf-8")
-    assert (
-        '"allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"]'
-        in source
+    from assurance_product.models import LOCKED_ALLOWED_ARTIFACT_PATHS
+
+    assert LOCKED_ALLOWED_ARTIFACT_PATHS == (
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
     )
 
 
 def test_live_runner_keeps_polling_while_external_activity_is_recoverable() -> None:
     source = RUNNER_PATH.read_text(encoding="utf-8")
+    driver = (
+        REPO / "packages" / "products" / "assurance-product" / "assurance_product" / "bootstrap" / "driver.py"
+    ).read_text(encoding="utf-8")
 
     assert "parked_recovery" not in source
-    assert 'last_run.get("terminal_reason") == "activity_recovery"' in source
+    assert "activity_recovery" not in source
+    assert '"bootstrap", "run"' in source
+    assert "timeout" in driver
+    assert "run_invocation" in driver

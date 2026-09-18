@@ -21,14 +21,12 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Iterator
 from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import yaml
-
-from assurance_product.configuration import capability_leafs_from_knowledge
 
 _AMBIENT_OVERRIDE_VARS = frozenset(
     {
@@ -47,79 +45,6 @@ _OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS = 10
 _OPENCODE_RESOLVED_READ_ATTEMPTS = 3
 _BACKEND_URL = "http://127.0.0.1:9999"
 _FRONTEND_URL = "http://127.0.0.1:3100"
-_WRITE_PRODUCT_INPUT = r"""
-from __future__ import annotations
-
-import json
-import sys
-from pathlib import Path
-
-from graph_engine.composition import ConfigTreePluginSource, WheelPluginSource
-
-from assurance_product.models import ProductInputV1
-from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
-
-
-def _ref(composition, resource_id: str) -> dict[str, str]:
-    entry = composition.registries.resources.entries[resource_id]
-    return {"resource_id": resource_id, "sha256": entry.sha256}
-
-
-def _catalog_leafs(composition, resource_id: str) -> list[str]:
-    entry = composition.registries.resources.entries[resource_id]
-    document = json.loads(entry.content.decode("utf-8"))
-    leafs = document.get("typed_leafs") if isinstance(document, dict) else None
-    if not isinstance(leafs, list) or any(not isinstance(item, str) for item in leafs):
-        raise ValueError("authenticated capability catalog is missing typed_leafs")
-    return leafs
-
-
-def main() -> int:
-    arguments = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    composition = resolve_assurance_composition(
-        AssuranceCompositionRequest(
-            product_entrypoint=arguments["product"],
-            deployment_source=WheelPluginSource(
-                distribution=arguments["binding_dist"],
-                entrypoint_name="deployment",
-                declaration_path=arguments["binding_declaration"],
-            ),
-            configuration_tree=ConfigTreePluginSource(path=Path(arguments["config_tree"])),
-        )
-    )
-    catalog_ref = _ref(composition, "assurance.product.configuration.capability-catalog")
-    payload = {
-        "schema_version": "1",
-        "change_id": arguments["change_id"],
-        "requirement": arguments["requirement"],
-        "run_mode": "case",
-        "candidate_test_families": list(arguments["selected_test_families"]),
-        "case_delta_paths": [
-            f"qa/cases/{module}/case.yaml"
-            for module in arguments["case_modules"]
-        ],
-        "capability_leafs": _catalog_leafs(composition, catalog_ref["resource_id"]),
-        "capability_catalog": catalog_ref,
-        "product_policy": _ref(composition, "assurance.product.configuration.product-policy"),
-        "data_knowledge": _ref(composition, "assurance.product.configuration.data-knowledge"),
-        "allowed_artifact_paths": ["qa/.qa.yaml", "qa/cases", "qa/fixtures", "qa/proposal.md", "qa/requirement.md", "qa/results", "qa/tests"],
-        "budgets": {
-            "review_rounds": 4,
-            "coverage_rounds": 2,
-            "healing_rounds": 2,
-            "execution_retries": 2,
-        },
-    }
-    value = ProductInputV1.model_validate(payload)
-    value.validate_for_entrypoint(arguments["entrypoint"]).authenticate_against(composition)
-    destination = Path(arguments["output"])
-    destination.write_text(json.dumps(value.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-"""
 
 
 def _repo_root() -> Path:
@@ -379,48 +304,49 @@ def derive_change_id(*, item_id: str, stamp: str, nonce: str) -> str:
     return f"BENCH-{item_id}-{stamp}-{nonce}"
 
 
-def _prepare_project_config_tree(config_tree: Path, project_dir: Path) -> None:
-    policy_path = project_dir / ".aa" / "policy.yaml"
-    if not policy_path.is_file() or policy_path.is_symlink() or policy_path.stat().st_nlink != 1:
-        raise SystemExit("live SUT must provide a regular single-link .aa/policy.yaml")
-    try:
-        policy_bytes = policy_path.read_bytes()
-        policy = yaml.safe_load(policy_bytes)
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
-        raise SystemExit("live SUT product policy is not valid YAML") from error
-    if not isinstance(policy, dict):
-        raise SystemExit("live SUT product policy must be a mapping")
-    knowledge_path = project_dir / ".aa" / "data-knowledge.yaml"
-    if not knowledge_path.is_file() or knowledge_path.is_symlink():
-        raise SystemExit("live SUT must provide a regular .aa/data-knowledge.yaml")
-    try:
-        knowledge_bytes = knowledge_path.read_bytes()
-        knowledge = yaml.safe_load(knowledge_bytes)
-    except (OSError, UnicodeError, yaml.YAMLError) as error:
-        raise SystemExit("live SUT data knowledge is not valid YAML") from error
-    if not isinstance(knowledge, dict):
-        raise SystemExit("live SUT data knowledge must be a mapping")
-    destination_knowledge = config_tree / ".aa" / "data-knowledge.yaml"
-    destination_knowledge.write_bytes(knowledge_bytes)
-    (config_tree / ".aa" / "policy.yaml").write_bytes(policy_bytes)
-    config_path = config_tree / ".aa" / "config.yaml"
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if not isinstance(config, dict):
-        raise SystemExit("benchmark project configuration must be a mapping")
-    config["product_policy"] = policy
-    config["data_knowledge"] = knowledge
-    catalog = {
+def _write_bootstrap_spec(
+    path: Path,
+    *,
+    item: Mapping[str, Any],
+    requirement: str,
+    timeout_seconds: int,
+) -> None:
+    routes = item["routing_assignments"]
+    if not isinstance(routes, Mapping) or not routes:
+        raise SystemExit("manifest item is missing routing_assignments")
+    first = next(iter(routes.values()))
+    if not isinstance(first, Mapping):
+        raise SystemExit("routing assignment must be a mapping")
+    document = {
         "schema_version": "1",
-        "typed_leafs": list(capability_leafs_from_knowledge(knowledge)),
+        "product": "assurance-opencode",
+        "entrypoint": item["entrypoint"],
+        "requirement": requirement,
+        "candidate_test_families": list(item["selected_test_families"]),
+        "case_modules": list(item["case_modules"]),
+        "sut": {
+            "base_url": _BACKEND_URL,
+            "readiness_url": f"{_BACKEND_URL}/openapi.json",
+            "env": {"BASE_URL": _BACKEND_URL},
+            "env_from_node": ["QA_ADMIN_PASSWORD"],
+        },
+        "routes": {
+            "provider_model": first["provider_model"],
+            "worker_profile": first["worker_profile"],
+        },
+        "budgets": {
+            "review_rounds": 4,
+            "coverage_rounds": 2,
+            "healing_rounds": 2,
+            "execution_retries": 2,
+        },
+        "opencode_token_env": item["secret_env"],
+        "timeout_seconds": timeout_seconds,
     }
-    catalog_bytes = (json.dumps(catalog, sort_keys=True, separators=(",", ":")) + "\n").encode()
-    (project_dir / ".aa" / "capability-catalog.json").write_bytes(catalog_bytes)
-    (config_tree / ".aa" / "capability-catalog.json").write_bytes(catalog_bytes)
-    config["capability_catalog"] = catalog
-    config_path.write_text(
-        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = yaml.safe_dump(document, sort_keys=False, allow_unicode=True)
+    _reject_credentials_in_text(text, label=str(path))
+    path.write_text(text, encoding="utf-8")
 
 
 _PRODUCT_WHEEL_PACKAGES = (
@@ -942,31 +868,6 @@ def _last_json_object(path: Path, *, start: int = 0) -> dict[str, Any] | None:
     return None
 
 
-def _source_args(
-    *,
-    product: str,
-    binding_dist: str,
-    binding_declaration: str,
-    config_tree: Path,
-) -> list[str]:
-    return [
-        "--product",
-        product,
-        "--binding-dist",
-        binding_dist,
-        "--binding-entrypoint",
-        "deployment",
-        "--binding-declaration",
-        binding_declaration,
-        "--config-tree",
-        str(config_tree),
-    ]
-
-
-def _secret_arg(item: Mapping[str, Any]) -> str:
-    return f"{item['secret_handle']}=env:{item['secret_env']}"
-
-
 def _load_opencode_secret(secret_env: str) -> None:
     if os.environ.get(secret_env):
         return
@@ -1162,42 +1063,6 @@ def _check_opencode_boundary_plugin(endpoint: str, project_dir: Path) -> list[st
     return []
 
 
-def _write_deployment_manifest(
-    path: Path,
-    item: Mapping[str, Any],
-    *,
-    project_scope: str,
-    adapter: str,
-) -> None:
-    if adapter != "opencode":
-        raise SystemExit(f"unsupported adapter {adapter!r}")
-    binding = dict(item["adapter_binding"])
-    binding["project_scope"] = project_scope
-    document = {
-        "schema_version": "1",
-        "runtime_plugin_id": "runtime.opencode",
-        "adapter_binding": binding,
-        "routes": item["routing_assignments"],
-        "permission_profiles": {
-            "assurance.product.agent.permission.default": {
-                "schema_version": "1",
-                "allowed_tools": ["bash", "edit", "glob", "grep", "read", "write"],
-            }
-        },
-        "request_policies": {
-            "assurance.product.agent.request.default": {
-                "schema_version": "1",
-                "max_output_bytes": 4_000_000,
-            }
-        },
-        "secret_handles": [item["secret_handle"]],
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(document, indent=2, sort_keys=True)
-    # bindings build accepts YAML; JSON is valid YAML.
-    path.write_text(text + "\n", encoding="utf-8")
-
-
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1352,177 +1217,6 @@ def _validate_live_result(
     return errors
 
 
-def _lifecycle_args(
-    *,
-    project_dir: Path,
-    change_id: str,
-    invocation_id: str,
-    source_args: Sequence[str],
-) -> list[str]:
-    return [
-        "--project-dir",
-        str(project_dir),
-        "--change",
-        change_id,
-        "--invocation-id",
-        invocation_id,
-        *source_args,
-    ]
-
-
-def _drive_started_change(
-    *,
-    aa_next: Path,
-    repo: Path,
-    project_dir: Path,
-    change_id: str,
-    source_args: Sequence[str],
-    input_path: Path,
-    item: Mapping[str, Any],
-    env: Mapping[str, str],
-    run_log: Path,
-    poll_seconds: int,
-    timeout_seconds: int,
-    evidence: dict[str, Any],
-    finish: Callable[..., int],
-) -> int:
-    change_args = _lifecycle_args(
-        project_dir=project_dir,
-        change_id=change_id,
-        invocation_id=change_id,
-        source_args=source_args,
-    )
-    started = _aa_next(
-        aa_next,
-        "start",
-        "--json",
-        *change_args,
-        "--entrypoint",
-        str(item["entrypoint"]),
-        "--input",
-        str(input_path),
-        "--secret",
-        _secret_arg(item),
-        cwd=repo,
-        env=env,
-        timeout=600,
-    )
-    if started.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(started.returncode, notes=f"start failed: {started.stderr.strip()}")
-    start_doc = _parse_json(started.stdout, label="start")
-    evidence["lock_digest"] = start_doc.get("lock_digest") or evidence.get("lock_digest")
-
-    deadline = time.monotonic() + timeout_seconds
-    last_status: dict[str, Any] = {}
-    last_run: dict[str, Any] = {}
-    transitions: list[dict[str, Any]] = []
-    run_args = ["run", "--json", *change_args, "--secret", _secret_arg(item)]
-    status_args = ["status", "--json", *change_args, "--secret", _secret_arg(item)]
-
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            evidence["outcome"] = "blocked"
-            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-            return finish(
-                1,
-                notes="timed out waiting for a terminal aa-next status",
-                status=last_status,
-            )
-        run_start = run_log.stat().st_size
-        with run_log.open("a", encoding="utf-8") as log:
-            run_proc = subprocess.run(  # noqa: S603
-                [str(aa_next), *run_args],
-                cwd=repo,
-                env=dict(env),
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                timeout=max(1, int(remaining)),
-                check=False,
-            )
-        parsed_run = _last_json_object(run_log, start=run_start)
-        last_run = parsed_run or {
-            "status": None,
-            "terminal_reason": None,
-            "returncode": run_proc.returncode,
-        }
-        if run_proc.returncode != 0 and parsed_run is None:
-            evidence["outcome"] = "blocked"
-            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-            return finish(
-                run_proc.returncode,
-                notes="aa-next run exited non-zero without a structured run result",
-            )
-        status_proc = _aa_next(
-            aa_next,
-            *status_args,
-            cwd=repo,
-            env=env,
-            timeout=120,
-        )
-        if status_proc.returncode == 0:
-            last_status = _parse_json(status_proc.stdout, label="status")
-            current = {
-                "at": _utc_now(),
-                "status": last_status.get("status"),
-                "terminal_reason": last_status.get("terminal_reason") or last_run.get("terminal_reason"),
-            }
-            if not transitions or transitions[-1].get("status") != current["status"]:
-                transitions.append(current)
-            if last_status.get("status") in _TERMINAL_STATUSES:
-                break
-        else:
-            evidence["outcome"] = "blocked"
-            evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-            return finish(
-                status_proc.returncode or run_proc.returncode or 1,
-                notes=f"run ended without readable status: {status_proc.stderr.strip()}",
-            )
-        if last_run.get("status") == "interrupted":
-            actions = last_run.get("actions") or []
-            if actions:
-                evidence["outcome"] = "blocked"
-                evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-                return finish(
-                    run_proc.returncode or 1,
-                    notes="aa-next run returned a pending interrupt; resume was not invoked",
-                    status=last_status,
-                )
-            if last_run.get("terminal_reason") == "activity_recovery":
-                time.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
-                continue
-        if last_status.get("status") in _TERMINAL_STATUSES:
-            break
-        time.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
-
-    evidence["validation"] = {"transitions": transitions, "last_run": last_run}
-    errors = _validate_live_result(item=item, status=last_status)
-    if (
-        errors
-        or last_status.get("status") != item["expected_terminal"]
-        or not _change_is_achieved(last_status)
-    ):
-        evidence["outcome"] = "blocked"
-        evidence["validation"] = {**evidence["validation"], "errors": errors}
-        detail = "; ".join(errors) if errors else f"live item did not reach {item['expected_terminal']!r}"
-        run_reason = last_run.get("terminal_reason")
-        if run_reason:
-            detail = f"{detail}; last aa-next run returned {last_run.get('status')!r}/{run_reason!r}"
-        return finish(
-            run_proc.returncode or 1,
-            notes=detail,
-            status=last_status,
-        )
-
-    evidence["outcome"] = "completed"
-    return finish(
-        0,
-        notes="live item reached achieved",
-        status=last_status,
-    )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--item", required=True)
@@ -1669,18 +1363,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         evidence["outcome"] = "blocked"
         return finish(1, notes="; ".join(runtime_environment_errors))
 
-    endpoint = str(item["adapter_binding"]["endpoint"])
-    preflight = _check_opencode(endpoint)
-    if preflight != 0:
-        evidence["outcome"] = "blocked"
-        return finish(preflight, notes=f"OpenCode preflight failed at {endpoint}")
-    evidence["provider"] = {
-        "session": None,
-        "process": {"endpoint": endpoint, "protocol": "opencode-http-v1"},
-    }
-
     try:
-        isolated_python, aa_next = _prepare_installed_product_env(
+        _isolated_python, aa_next = _prepare_installed_product_env(
             repo=repo, output=output, env=env, adapter=arguments.adapter
         )
     except SystemExit as error:
@@ -1696,111 +1380,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
 
-    endpoint = str(item["adapter_binding"]["endpoint"])
     agent_profile_errors = _project_opencode_asset_errors(project_dir)
-    agent_profile_errors.extend(_check_opencode_agent_profiles(endpoint, project_dir))
-    agent_profile_errors.extend(_check_opencode_boundary_plugin(endpoint, project_dir))
     if agent_profile_errors:
         evidence["outcome"] = "blocked"
         return finish(
             1,
-            notes="OpenCode resolved agent preflight failed: " + "; ".join(agent_profile_errors),
+            notes="OpenCode project asset preflight failed: " + "; ".join(agent_profile_errors),
         )
-
-    config_tree = output / "config-tree"
-    shutil.copytree(repo / "tests" / "product" / "fixtures" / "project-config", config_tree)
-    _prepare_project_config_tree(config_tree, project_dir)
-
-    deployment_manifest = output / "deployment.yaml"
-    _write_deployment_manifest(
-        deployment_manifest,
-        item,
-        project_scope=str(project_dir),
-        adapter=arguments.adapter,
-    )
-    wheel_dir = output / "binding-wheel"
-    wheel_dir.mkdir()
-    built = _aa_next(
-        aa_next,
-        "bindings",
-        "build",
-        "--json",
-        "--manifest",
-        str(deployment_manifest),
-        "--output-dir",
-        str(wheel_dir),
-        cwd=repo,
-        env=isolated_env,
-        timeout=120,
-    )
-    if built.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(built.returncode, notes=f"bindings build failed: {built.stderr.strip()}")
-    built_doc = _parse_json(built.stdout, label="bindings build")
-    binding_dist = str(built_doc["distribution"])
-    binding_declaration = str(built_doc["declaration_path"])
-    wheel = Path(str(built_doc["wheel"]))
-    installed = subprocess.run(  # noqa: S603
-        ["uv", "pip", "install", "--python", str(isolated_python), str(wheel)],
-        cwd=repo,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if installed.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(
-            installed.returncode, notes=f"deployment wheel install failed: {installed.stderr.strip()}"
-        )
-
-    source_args = _source_args(
-        product=str(item["product"]),
-        binding_dist=binding_dist,
-        binding_declaration=binding_declaration,
-        config_tree=config_tree,
-    )
-    compiled = _aa_next(aa_next, "compile", "--json", *source_args, cwd=repo, env=isolated_env, timeout=180)
-    if compiled.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(compiled.returncode, notes=f"compile failed: {compiled.stderr.strip()}")
-    compile_doc = _parse_json(compiled.stdout, label="compile")
-    evidence["lock_digest"] = compile_doc.get("lock_digest")
 
     requirement_path = repo / str(item["requirement_path"])
     requirement = requirement_path.read_text(encoding="utf-8").strip()
     evidence["requirement_digest"] = _sha256(requirement.encode("utf-8"))
-    helper_dir = output / "helpers"
-    helper_dir.mkdir()
-    (helper_dir / "write_product_input.py").write_text(_WRITE_PRODUCT_INPUT, encoding="utf-8")
-    input_args = helper_dir / "write_product_input.args.json"
-    input_path = output / "product-input.json"
-    _write_json(
-        input_args,
-        {
-            "product": item["product"],
-            "binding_dist": binding_dist,
-            "binding_declaration": binding_declaration,
-            "config_tree": str(config_tree),
-            "change_id": change_id,
-            "requirement": requirement,
-            "selected_test_families": list(item["selected_test_families"]),
-            "case_modules": list(item["case_modules"]),
-            "entrypoint": item["entrypoint"],
-            "output": str(input_path),
-        },
+    spec_path = output / "run-spec.yaml"
+    _write_bootstrap_spec(
+        spec_path,
+        item=item,
+        requirement=requirement,
+        timeout_seconds=arguments.timeout_seconds,
     )
-    written = subprocess.run(  # noqa: S603
-        [str(isolated_python), str(helper_dir / "write_product_input.py"), str(input_args)],
-        cwd=repo,
-        env=isolated_env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if written.returncode != 0:
-        evidence["outcome"] = "blocked"
-        return finish(written.returncode, notes=f"product input write failed: {written.stderr.strip()}")
 
     try:
         with _managed_sut_runtime(
@@ -1816,21 +1413,56 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "sut_frontend": str(sut_runtime.frontend_log),
                 }
             )
-            return _drive_started_change(
-                aa_next=aa_next,
-                repo=repo,
-                project_dir=project_dir,
-                change_id=change_id,
-                source_args=source_args,
-                input_path=input_path,
-                item=item,
+            completed = _aa_next(
+                aa_next,
+                "bootstrap",
+                "run",
+                "--project-dir",
+                str(project_dir),
+                "--spec",
+                str(spec_path),
+                "--runs-root",
+                str(output / "runs"),
+                "--change",
+                change_id,
+                "--json",
+                cwd=repo,
                 env=isolated_env,
-                run_log=run_log,
-                poll_seconds=arguments.poll_seconds,
-                timeout_seconds=arguments.timeout_seconds,
-                evidence=evidence,
-                finish=finish,
+                timeout=max(arguments.timeout_seconds + 120, 120),
             )
+            try:
+                document = _parse_json(completed.stdout, label="bootstrap run")
+            except SystemExit as error:
+                evidence["outcome"] = "blocked"
+                return finish(
+                    completed.returncode or 1,
+                    notes=str(error)
+                    or completed.stderr.strip()
+                    or completed.stdout.strip()
+                    or "bootstrap run failed",
+                )
+            app_status = document.get("status")
+            if not isinstance(app_status, dict):
+                app_status = {}
+            evidence["lock_digest"] = app_status.get("lock_digest") or evidence.get("lock_digest")
+            errors = (
+                _validate_live_result(item=item, status=app_status)
+                if app_status
+                else ["bootstrap status missing application status"]
+            )
+            evidence["validation"] = {"errors": errors, "bootstrap": document}
+            if (
+                errors
+                or app_status.get("status") != item["expected_terminal"]
+                or not _change_is_achieved(app_status)
+            ):
+                evidence["outcome"] = "blocked"
+                detail = (
+                    "; ".join(errors) if errors else f"live item did not reach {item['expected_terminal']!r}"
+                )
+                return finish(completed.returncode or 1, notes=detail, status=app_status)
+            evidence["outcome"] = "completed"
+            return finish(0, notes="live item reached achieved", status=app_status)
     except SystemExit as error:
         evidence["outcome"] = "blocked"
         return finish(1, notes=str(error))
