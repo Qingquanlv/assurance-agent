@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import shutil
 import sys
 import zipfile
 from pathlib import Path
@@ -69,13 +68,68 @@ PREPARE_IDS = tuple(_semantic_contract_id(item) for item in _HISTORICAL_PREPARE_
     "assurance.healing.agent.apply-test-repair.v1",
 )
 
+_PLUGIN_YAML = """schema_version: \"1\"
+plugin_id: assurance.product.configuration
+plugin_version: \"1.0.0\"
+engine_api: \"2.0\"
+dependencies:
+  - plugin_id: assurance.intake
+    version_specifier: \"==0.3.0\"
+  - plugin_id: assurance.generation
+    version_specifier: \"==0.3.0\"
+  - plugin_id: assurance.execution
+    version_specifier: \"==0.3.0\"
+  - plugin_id: assurance.healing
+    version_specifier: \"==0.3.0\"
+  - plugin_id: assurance.quality
+    version_specifier: \"==0.3.0\"
+  - plugin_id: assurance.improvement
+    version_specifier: \"==0.3.0\"
+files:
+  - kind: resource
+    resource_id: assurance.product.configuration.product-policy
+    path: .aa/policy.yaml
+    media_type: application/yaml
+  - kind: resource
+    resource_id: assurance.product.configuration.data-knowledge
+    path: .aa/data-knowledge.yaml
+    media_type: application/yaml
+  - kind: resource
+    resource_id: assurance.product.configuration.project-config
+    path: .aa/config.yaml
+    media_type: application/yaml
+  - kind: resource
+    resource_id: assurance.product.configuration.capability-catalog
+    path: .aa/capability-catalog.json
+    media_type: application/json
+bindings: []
+"""
 
-def _project_config_template() -> Path:
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "tests" / "product" / "fixtures" / "project-config"
-        if (candidate / "plugin.yaml").is_file():
-            return candidate
-    raise ValueError("project-config fixture is not available")
+_CONFIG_YAML = """schema_version: \"1\"
+product_policy:
+  schema_version: \"1\"
+  organization: example
+data_knowledge:
+  schema_version: \"1\"
+  notes: []
+capability_catalog:
+  schema_version: \"1\"
+  typed_leafs: []
+node_policy_values: {}
+"""
+
+
+def _write_config_tree_skeleton(config_tree: Path) -> None:
+    aa = config_tree / ".aa"
+    aa.mkdir(parents=True)
+    (config_tree / "plugin.yaml").write_text(_PLUGIN_YAML, encoding="utf-8")
+    (aa / "config.yaml").write_text(_CONFIG_YAML, encoding="utf-8")
+    (aa / "policy.yaml").write_text("schema_version: '1'\norganization: example\n", encoding="utf-8")
+    (aa / "data-knowledge.yaml").write_text("schema_version: '1'\nnotes: []\n", encoding="utf-8")
+    (aa / "capability-catalog.json").write_text(
+        '{"schema_version":"1","typed_leafs":[]}\n',
+        encoding="utf-8",
+    )
 
 
 def _require_regular_file(path: Path, label: str) -> None:
@@ -155,7 +209,7 @@ def _materialize_config_tree(config_tree: Path, project_dir: Path) -> None:
         project_dir / ".aa" / "data-knowledge.yaml",
         ".aa/data-knowledge.yaml",
     )
-    shutil.copytree(_project_config_template(), config_tree)
+    _write_config_tree_skeleton(config_tree)
     (config_tree / ".aa" / "policy.yaml").write_bytes(policy_bytes)
     (config_tree / ".aa" / "data-knowledge.yaml").write_bytes(knowledge_bytes)
     catalog = {

@@ -46,9 +46,9 @@ def test_start_opencode_serve_uses_injected_spawn(tmp_path: Path, monkeypatch) -
             root / ".opencode" / "plugins" / "assurance-boundary.mjs",
         ),
     )
-    spawned: list[object] = []
+    spawned: list[tuple[list[str], dict[str, object]]] = []
 
-    def fake_spawn(args, **kwargs):
+    def fake_spawn(args: list[str], **kwargs: object) -> SimpleNamespace:
         spawned.append((args, kwargs))
         return SimpleNamespace(pid=4242)
 

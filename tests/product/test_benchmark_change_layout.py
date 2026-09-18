@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import importlib.util
+import re
 from importlib.resources import files
 import json
 import os
@@ -71,7 +72,7 @@ def _make_sut(root: Path) -> Path:
 
 def test_run_item_drives_through_aa_bootstrap() -> None:
     text = RUNNER_PATH.read_text(encoding="utf-8")
-    assert '"bootstrap", "run"' in text
+    assert re.search(r'"bootstrap",\s*"run"', text)
     assert "_WRITE_PRODUCT_INPUT" not in text
 
 

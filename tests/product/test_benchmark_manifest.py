@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import re
 from copy import deepcopy
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -505,6 +506,6 @@ def test_live_runner_keeps_polling_while_external_activity_is_recoverable() -> N
 
     assert "parked_recovery" not in source
     assert "activity_recovery" not in source
-    assert '"bootstrap", "run"' in source
+    assert re.search(r'"bootstrap",\s*"run"', source)
     assert "timeout" in driver
     assert "run_invocation" in driver

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from assurance_product.bootstrap.contracts import BootstrapStatusV1
+from assurance_product.bootstrap.contracts import BootstrapStatusV1, OpenCodeHandleV1
 from assurance_product.bootstrap.status import (
     derive_bootstrap_change_id,
     find_active_run,
@@ -51,7 +51,7 @@ def test_find_active_run_requires_live_pid(tmp_path: Path) -> None:
         BootstrapStatusV1(
             phase="running",
             change_id="BOOT-1",
-            opencode={"endpoint": "http://127.0.0.1:4100", "pid": os.getpid()},
+            opencode=OpenCodeHandleV1(endpoint="http://127.0.0.1:4100", pid=os.getpid()),
         ),
     )
     assert find_active_run(tmp_path / "runs", project) == run_dir.resolve()
