@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import time
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+from assurance_product.bootstrap.contracts import OpenCodeHandleV1, RunSpecV1
+from assurance_product.opencode_agents import install_opencode_agents
+
+_AMBIENT_OVERRIDES = frozenset(
+    {
+        "OPENCODE_ENDPOINT",
+        "OPENCODE_MODEL",
+        "AA_MODEL",
+        "PROVIDER_MODEL",
+    }
+)
+_READY_TIMEOUT_SECONDS = 30.0
+_STOP_WAIT_SECONDS = 5.0
+
+
+class OpenCodeLaunchError(Exception):
+    pass
+
+
+def allocate_loopback_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    if not isinstance(port, int):
+        raise OpenCodeLaunchError("could not allocate a loopback port")
+    return port
+
+
+def build_opencode_env(
+    *,
+    spec: RunSpecV1,
+    run_dir: Path,
+    environ: Mapping[str, str],
+) -> dict[str, str]:
+    env = {key: value for key, value in environ.items() if key not in _AMBIENT_OVERRIDES}
+    env.update(spec.sut.env)
+    for name in spec.sut.env_from_node:
+        if name in environ:
+            env[name] = environ[name]
+    env["XDG_CONFIG_HOME"] = str((run_dir / "opencode-config").resolve())
+    env["NO_PROXY"] = "127.0.0.1,localhost"
+    env["no_proxy"] = "127.0.0.1,localhost"
+    return env
+
+
+def wait_http_ready(url: str, *, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            request = Request(url, method="GET")
+            with urlopen(request, timeout=2) as response:  # noqa: S310 - local readiness probe
+                if 200 <= int(response.status) < 500:
+                    return
+        except HTTPError as error:
+            if error.code < 500:
+                return
+            last_error = error
+        except (URLError, TimeoutError, OSError) as error:
+            last_error = error
+        time.sleep(0.1)
+    raise OpenCodeLaunchError(f"OpenCode did not become ready at {url}: {last_error}")
+
+
+def start_opencode_serve(
+    *,
+    spec: RunSpecV1,
+    project_dir: Path,
+    run_dir: Path,
+    environ: Mapping[str, str],
+    spawn: Callable[..., Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    wait: Callable[[str, float], None] | None = None,
+) -> OpenCodeHandleV1:
+    install_opencode_agents(project_dir)
+    port = allocate_loopback_port()
+    endpoint = f"http://127.0.0.1:{port}"
+    resolver = which or shutil.which
+    binary = resolver("opencode")
+    if not binary:
+        raise OpenCodeLaunchError("opencode is not on PATH")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = run_dir / "opencode.log"
+    log_path.touch()
+    env = build_opencode_env(spec=spec, run_dir=run_dir, environ=environ)
+    command = [binary, "serve", "--hostname", "127.0.0.1", "--port", str(port)]
+    launcher = spawn or subprocess.Popen
+    with log_path.open("ab", buffering=0) as log:
+        process = launcher(
+            command,
+            cwd=project_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    waiter = wait or (lambda url, timeout: wait_http_ready(url, timeout=timeout))
+    try:
+        waiter(f"{endpoint}/global/health", _READY_TIMEOUT_SECONDS)
+    except OpenCodeLaunchError:
+        waiter(f"{endpoint}/", _READY_TIMEOUT_SECONDS)
+    return OpenCodeHandleV1(endpoint=endpoint, pid=int(process.pid))
+
+
+def stop_opencode(handle: OpenCodeHandleV1) -> None:
+    try:
+        os.killpg(handle.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(handle.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+    deadline = time.monotonic() + _STOP_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            os.kill(handle.pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            time.sleep(0.1)
+            continue
+        time.sleep(0.1)
+    try:
+        os.killpg(handle.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(handle.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
