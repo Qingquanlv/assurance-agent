@@ -571,8 +571,12 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
             (
                 "qa/results/explore/context.json",
                 "qa/results/explore/exploration.json",
+                "qa/results/explore/impact-inventory.json",
             ),
-            ("qa/results/explore/exploration.json",),
+            (
+                "qa/results/explore/exploration.json",
+                "qa/results/explore/impact-inventory.json",
+            ),
         ),
         "intake": (
             "aa-intake",

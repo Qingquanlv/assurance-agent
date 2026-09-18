@@ -28,7 +28,7 @@ from assurance_intake.contracts.agent import (
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.contracts.planning_facts import build_planning_facts
-from assurance_intake.contracts.explore import ExploreAdvisoryV1, build_explore_context
+from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS, ExploreAdvisoryV1, build_explore_context
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
     normalized_auto_fix_case_id,
@@ -73,7 +73,8 @@ def intake_outputs(change_id: str) -> tuple[str, ...]:
 
 
 def explore_outputs(change_id: str) -> tuple[str, ...]:
-    return ("qa/results/explore/exploration.json",)
+    del change_id
+    return EXPLORE_OUTPUT_PATHS
 
 
 def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:

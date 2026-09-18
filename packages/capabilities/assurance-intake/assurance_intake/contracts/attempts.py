@@ -118,7 +118,7 @@ _JOBS: tuple[
         ExploreInputV1,
         ArtifactListResultV1,
         FinalizedArtifactsV1,
-        ("explore/exploration.json",),
+        ("explore/exploration.json", "explore/impact-inventory.json"),
         (),
     ),
     (

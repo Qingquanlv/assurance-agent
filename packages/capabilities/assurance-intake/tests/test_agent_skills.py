@@ -12,7 +12,7 @@ import yaml
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
 from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
@@ -1313,15 +1313,125 @@ def _valid_explore_advisory() -> dict[str, Any]:
     }
 
 
+_EXPLORATION = "qa/results/explore/exploration.json"
+_INVENTORY = "qa/results/explore/impact-inventory.json"
+_CONTEXT = "qa/results/explore/context.json"
+
+
+def _explore_context_document(
+    *,
+    seeds: tuple[tuple[str, str], ...] = (("CF-001", "app/controllers/item.py"),),
+    case_ids: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    from assurance_intake.contracts.explore import ExploreContextV1
+    from assurance_intake.contracts.impact import CandidateCaseV1, ImpactProjectionV1, ImpactSeedV1
+
+    return ExploreContextV1(
+        change_id="CH-DEMO-001",
+        requirement_summary="# Requirement",
+        aggregation_policy={
+            "source": "graph-owned-content-snapshot",
+            "layers": ["api", "e2e", "fuzz", "performance"],
+            "ambient_git_forbidden": True,
+        },
+        archive_window={"depth": 0, "archives_sampled": [], "newest_archive": None, "oldest_archive": None},
+        staleness={"max_age_days": None, "stale": False},
+        impact=ImpactProjectionV1(
+            diff_base="content-snapshot",
+            seeds=tuple(
+                ImpactSeedV1(seed_id=seed_id, path=path, reason="requirement_hint") for seed_id, path in seeds
+            ),
+            candidate_cases=tuple(
+                CandidateCaseV1(
+                    evidence_id=f"CS-{index:03d}",
+                    case_id=case_id,
+                    module="menus",
+                    path="qa/cases/menus/case.yaml",
+                    title=case_id,
+                )
+                for index, case_id in enumerate(case_ids, start=1)
+            ),
+            historical_problems=(),
+            factory_leafs=(),
+        ),
+        case_signals=[],
+        test_health=[],
+        historical_issues=[],
+        evidence=[],
+        degraded=True,
+        degraded_reasons=["no_diff: no authenticated diff projection was supplied"],
+        no_git=True,
+    ).model_dump(mode="json")
+
+
+def _valid_inventory(
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    exclusions: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "context_ref": "explore/context.json",
+        "rows": rows if rows is not None else [_inventory_row()],
+        "exclusions": exclusions or [],
+    }
+
+
+def _inventory_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "row_id": "IR-001",
+        "change_evidence_ids": ["CF-001"],
+        "affected_behavior": {"kind": "api", "key": "POST /api/v1/item/create"},
+        "obligation": "duplicate item names must be rejected with 400",
+        "expected_basis_ids": ["SC-001"],
+        "assets": {"case_ids": [], "factory_leafs": [], "problem_ids": []},
+        "disposition": "add",
+        "gap_reason": None,
+        "confidence": "medium",
+    }
+    row.update(overrides)
+    return row
+
+
+def _advisory_with_source_evidence() -> dict[str, Any]:
+    advisory = _valid_explore_advisory()
+    advisory["source_code_evidence"] = [
+        {
+            "id": "SC-001",
+            "source": "source_code",
+            "type": "api_route",
+            "description": "POST /api/v1/item/create — create_item handler",
+            "parse_confidence_cap": "medium",
+        }
+    ]
+    return advisory
+
+
+def _stage_explore_outputs(
+    write_root: Path,
+    *,
+    advisory: dict[str, Any] | None = None,
+    inventory: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, bytes]:
+    files = {
+        _CONTEXT: canonical_json_bytes(cast(JSONValue, context or _explore_context_document())) + b"\n",
+        _EXPLORATION: json.dumps(advisory or _advisory_with_source_evidence()).encode(),
+        _INVENTORY: json.dumps(inventory or _valid_inventory()).encode(),
+    }
+    for relative, data in files.items():
+        path = write_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return files
+
+
 @pytest.mark.asyncio
 async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/results/explore/exploration.json"
-    path = write_root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(_valid_explore_advisory()).encode()
-    path.write_bytes(payload)
-    result = fake_agent_result({"output_files": [relative]})
+    files = _stage_explore_outputs(write_root)
+    result = fake_agent_result({"output_files": [_EXPLORATION, _INVENTORY]})
     executed = await execute_task(
         ExploreFinalizeHandler(),
         {
@@ -1341,10 +1451,11 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
         project,
         write_root=write_root,
     )
-    assert executed.status == "succeeded"
+    assert executed.status == "succeeded", executed.failure
     assert executed.output == {
         "artifacts": [
-            {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
+            {"path": _EXPLORATION, "digest": hashlib.sha256(files[_EXPLORATION]).hexdigest()},
+            {"path": _INVENTORY, "digest": hashlib.sha256(files[_INVENTORY]).hexdigest()},
         ]
     }
     contract = AGENT_JOB_CONTRACTS["explore"]
@@ -1355,9 +1466,8 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/results/explore/exploration.json"
-    path = write_root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _stage_explore_outputs(write_root, inventory=_valid_inventory())
+    path = write_root / _EXPLORATION
     path.write_text(
         json.dumps(
             {
@@ -1372,9 +1482,9 @@ async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> 
 
     executed = await _finalize_files(
         ExploreFinalizeHandler(),
-        {"output_files": [relative]},
+        {"output_files": [_EXPLORATION, _INVENTORY]},
         project,
-        [relative],
+        [_EXPLORATION, _INVENTORY],
         change_id="CH-DEMO-001",
         write_root=write_root,
     )
@@ -1390,13 +1500,13 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
     tmp_path: Path,
 ) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/results/explore/exploration.json"
+    relative = _EXPLORATION
 
     executed = await _finalize_files(
         ExploreFinalizeHandler(),
-        {"output_files": [relative]},
+        {"output_files": [_EXPLORATION, _INVENTORY]},
         project,
-        [relative],
+        [_EXPLORATION, _INVENTORY],
         change_id="CH-DEMO-001",
         write_root=write_root,
     )
@@ -1406,6 +1516,129 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
     assert executed.failure.kind == "invalid_output"
     assert executed.failure.retryable is True
     assert executed.failure.message == f"declared output file is missing: {relative}"
+
+
+async def _finalize_explore(project: Path, write_root: Path) -> Any:
+    return await _finalize_files(
+        ExploreFinalizeHandler(),
+        {"output_files": [_EXPLORATION, _INVENTORY]},
+        project,
+        [_EXPLORATION, _INVENTORY],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+    )
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_requires_both_declared_outputs(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(write_root)
+    executed = await _finalize_files(
+        ExploreFinalizeHandler(),
+        {"output_files": [_EXPLORATION]},
+        project,
+        [_EXPLORATION],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "impact-inventory.json" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_advisory_evidence_ids_that_do_not_resolve(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    advisory = _advisory_with_source_evidence()
+    advisory["case_design_guidance"]["priority_hints"] = [
+        {"id": "PH-001", "hint": "assert 400 on duplicates", "confidence": "low", "evidence_ids": ["SC-404"]}
+    ]
+    _stage_explore_outputs(write_root, advisory=advisory)
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "exploration.json cites unresolvable evidence ids: ['SC-404']" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_inventory_that_leaves_a_seed_unhandled(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(
+        write_root,
+        context=_explore_context_document(
+            seeds=(("CF-001", "app/controllers/item.py"), ("CF-002", "app/api/v1/items.py"))
+        ),
+    )
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "seeds without an impact row or exclusion: ['CF-002']" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_accepts_an_explicit_exclusion(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(
+        write_root,
+        context=_explore_context_document(
+            seeds=(("CF-001", "app/controllers/item.py"), ("CF-002", "app/api/v1/items.py"))
+        ),
+        inventory=_valid_inventory(exclusions=[{"seed_id": "CF-002", "reason": "router wiring only"}]),
+    )
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "succeeded", executed.failure
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_inventory_citing_unknown_case_or_leaf(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(
+        write_root,
+        context=_explore_context_document(case_ids=("TC_MENU_001",)),
+        inventory=_valid_inventory(
+            rows=[
+                _inventory_row(
+                    disposition="modify",
+                    assets={
+                        "case_ids": ["TC_MENU_999"],
+                        "factory_leafs": ["capabilities.domain_factories.menu.nope"],
+                        "problem_ids": [],
+                    },
+                )
+            ]
+        ),
+    )
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "IR-001: unresolvable assets.case_ids: ['TC_MENU_999']" in executed.failure.message
+    assert "assets.factory_leafs outside the typed catalog" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_inventory_for_another_change(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    inventory = _valid_inventory()
+    inventory["change_id"] = "CH-SIBLING"
+    _stage_explore_outputs(write_root, inventory=inventory)
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "impact-inventory.json change_id" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_requires_the_prepared_context_in_staging(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(write_root)
+    (write_root / _CONTEXT).unlink()
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "context.json" in executed.failure.message
 
 
 @pytest.mark.asyncio

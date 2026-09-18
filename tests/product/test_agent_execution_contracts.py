@@ -570,6 +570,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     assert claims == (
         context_claim,
         "qa/results/explore/exploration.json",
+        "qa/results/explore/impact-inventory.json",
     )
 
     store = TaskWorkspaceStore(project, current / ".staging", current / ".runtime" / "receipts")

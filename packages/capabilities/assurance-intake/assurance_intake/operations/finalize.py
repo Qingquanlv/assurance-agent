@@ -32,7 +32,8 @@ from assurance_intake.contracts.agent import (
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS, ExploreAdvisoryV1, ExploreContextV1
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
 from assurance_intake.contracts.loop_history import build_loop_round_history
 from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (
@@ -327,22 +328,96 @@ def _finalize_artifact_list(payload: AgentFinalizeInputV1, workspace: Path) -> l
     return _authenticate_files(workspace, document.output_files, payload.artifact_paths)
 
 
-def _validate_explore_outputs(workspace: Path, declared: tuple[str, ...]) -> None:
+_EXPLORE_CONTEXT = "qa/results/explore/context.json"
+
+
+def _load_explore_context(workspace: Path, *, change_id: str) -> ExploreContextV1:
+    path = _workspace_file(workspace, _EXPLORE_CONTEXT)
+    try:
+        context = ExploreContextV1.model_validate_json(path.read_bytes())
+    except (OSError, ValidationError, ValueError) as error:
+        raise OutputError(f"explore context.json is missing or invalid in staging: {error}") from error
+    if context.change_id != change_id:
+        raise OutputError("explore context.json change_id does not match its change directory")
+    return context
+
+
+def _advisory_evidence_ids(document: ExploreAdvisoryV1) -> frozenset[str]:
+    cited: set[str] = set()
+    groups: tuple[list[object], ...] = (
+        document.watchlist,
+        document.case_design_guidance.priority_hints,
+        document.case_design_guidance.suggested_scenarios,
+        document.case_design_guidance.regression_focus,
+    )
+    for group in groups:
+        for item in group:
+            if not isinstance(item, Mapping):
+                continue
+            ids = item.get("evidence_ids")
+            if isinstance(ids, list):
+                cited.update(value for value in ids if isinstance(value, str))
+    for row in document.test_strategy.layer_recommendation:
+        cited.update(row.evidence_ids)
+    return frozenset(cited)
+
+
+def _validate_explore_outputs(
+    workspace: Path,
+    declared: tuple[str, ...],
+    *,
+    change_id: str,
+    capability_leafs: frozenset[str],
+) -> None:
+    advisory: ExploreAdvisoryV1 | None = None
+    inventory: ChangeImpactInventoryV1 | None = None
     for relative in declared:
-        if not relative.endswith("/explore/exploration.json"):
-            continue
-        path = _workspace_file(workspace, relative)
-        try:
-            document = ExploreAdvisoryV1.model_validate_json(path.read_bytes())
-        except (ValidationError, ValueError) as error:
-            raise OutputError(f"invalid exploration.json: {error}") from error
         parts = PurePosixPath(relative).parts
-        if parts != ("qa", "results", "explore", "exploration.json"):
-            raise OutputError(f"invalid exploration.json path: {relative}")
-        if not document.change_id:
-            raise OutputError("exploration.json change_id does not match its change directory")
-        if document.context_ref != "explore/context.json":
-            raise OutputError("exploration.json context_ref must be explore/context.json")
+        if relative.endswith("/explore/exploration.json"):
+            if parts != ("qa", "results", "explore", "exploration.json"):
+                raise OutputError(f"invalid exploration.json path: {relative}")
+            path = _workspace_file(workspace, relative)
+            try:
+                advisory = ExploreAdvisoryV1.model_validate_json(path.read_bytes())
+            except (OSError, ValidationError, ValueError) as error:
+                raise OutputError(f"invalid exploration.json: {error}") from error
+            if advisory.change_id != change_id:
+                raise OutputError("exploration.json change_id does not match its change directory")
+            if advisory.context_ref != "explore/context.json":
+                raise OutputError("exploration.json context_ref must be explore/context.json")
+        elif relative.endswith("/explore/impact-inventory.json"):
+            if parts != ("qa", "results", "explore", "impact-inventory.json"):
+                raise OutputError(f"invalid impact-inventory.json path: {relative}")
+            path = _workspace_file(workspace, relative)
+            try:
+                inventory = ChangeImpactInventoryV1.model_validate_json(path.read_bytes())
+            except (OSError, ValidationError, ValueError) as error:
+                raise OutputError(f"invalid impact-inventory.json: {error}") from error
+            if inventory.change_id != change_id:
+                raise OutputError("impact-inventory.json change_id does not match its change directory")
+    if advisory is None or inventory is None:
+        return
+    context = _load_explore_context(workspace, change_id=change_id)
+    resolvable = context.impact.resolvable_ids() | frozenset(
+        item.id for item in advisory.source_code_evidence
+    )
+    resolvable |= frozenset(
+        item["id"]
+        for item in context.evidence
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    )
+    unresolvable = sorted(_advisory_evidence_ids(advisory) - resolvable)
+    if unresolvable:
+        raise OutputError(f"exploration.json cites unresolvable evidence ids: {unresolvable}")
+    try:
+        validate_inventory_references(
+            inventory,
+            resolvable=resolvable,
+            seed_ids=context.impact.seed_ids(),
+            capability_leafs=capability_leafs,
+        )
+    except ValueError as error:
+        raise OutputError(f"impact-inventory.json: {error}") from error
 
 
 def _require_selected_test_families(
@@ -899,12 +974,18 @@ class ExploreFinalizeHandler:
             if not payload.artifact_paths:
                 raise InputError("artifact_paths must lock the expected output files")
             document = _artifact_list(payload)
-            _case_change_id(payload.change_id)
-            expected = {"qa/results/explore/exploration.json"}
-            if set(document.output_files) != expected:
-                raise OutputError("explore receipt must declare exactly exploration.json")
+            change_id = _case_change_id(payload.change_id)
+            if set(document.output_files) != set(EXPLORE_OUTPUT_PATHS):
+                raise OutputError(
+                    "explore receipt must declare exactly exploration.json and impact-inventory.json"
+                )
             artifacts = _finalize_artifact_list(payload, context.write_root)
-            _validate_explore_outputs(context.write_root, document.output_files)
+            _validate_explore_outputs(
+                context.write_root,
+                document.output_files,
+                change_id=change_id,
+                capability_leafs=_leafs(payload.capability_leafs),
+            )
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)

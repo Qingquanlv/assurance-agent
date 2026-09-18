@@ -190,6 +190,7 @@ def test_output_routes_are_owned_by_the_installed_product_and_are_not_project_co
     )
     assert workspace.output_route("assurance.intake.agent.explore.v1") == (
         "qa/results/explore/exploration.json",
+        "qa/results/explore/impact-inventory.json",
     )
     assert workspace.output_route("assurance.quality.agent.report.v1") == ("qa/results/report/report.md",)
 
