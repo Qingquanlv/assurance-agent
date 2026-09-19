@@ -16,7 +16,6 @@ from assurance_quality.contracts.obligations import (
     ObligationAssessmentRowV1,
     ObligationAssessmentV1,
     ObligationEvidenceFactsV1,
-    ObligationGateDecision,
     ObligationGateFactsV1,
     ObligationVerdict,
 )
@@ -222,20 +221,6 @@ def write_obligation_assessment(
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(encoded).hexdigest())
 
 
-def obligation_gate(facts: ObligationGateFactsV1) -> ObligationGateDecision:
-    if facts.required_count == 0 or facts.refuted_count:
-        return "blocked"
-    if facts.inconclusive_count > facts.human_gap_count + facts.repairable_gap_count:
-        return "blocked"
-    if facts.human_gap_count:
-        return "needs_human"
-    if facts.repairable_gap_count:
-        return "repair_required"
-    if facts.inconclusive_count == 0 and facts.supported_count == facts.required_count:
-        return "satisfied"
-    return "blocked"
-
-
 def _row_identity(row: ObligationAssessmentRowV1) -> tuple[str, str]:
     return (row.plan_digest, row.mrc_id)
 
@@ -293,6 +278,5 @@ __all__ = [
     "decide_obligation",
     "derive_obligation_gate_facts",
     "load_prepared_obligations",
-    "obligation_gate",
     "write_obligation_assessment",
 ]

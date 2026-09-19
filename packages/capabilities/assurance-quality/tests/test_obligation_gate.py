@@ -10,7 +10,8 @@ from assurance_quality.contracts.obligations import (
     ObligationGateFactsV1,
 )
 from assurance_quality.operations.common import InputError
-from assurance_quality.operations.obligations import derive_obligation_gate_facts, obligation_gate
+from assurance_quality.contracts.obligations import obligation_gate
+from assurance_quality.operations.obligations import derive_obligation_gate_facts
 
 _PLAN = "a" * 64
 _REF = EvidenceArtifactRefV1(path="qa/results/plan/resolved-assurance-plan.json", digest=_PLAN)

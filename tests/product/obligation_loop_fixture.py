@@ -16,9 +16,9 @@ from assurance_quality.contracts.obligations import (
     ObligationAssessmentV1,
     ObligationEvidenceFactsV1,
 )
+from assurance_quality.contracts.obligations import obligation_gate
 from assurance_quality.operations.obligations import (
     decide_obligation,
-    obligation_gate,
     derive_obligation_gate_facts,
 )
 

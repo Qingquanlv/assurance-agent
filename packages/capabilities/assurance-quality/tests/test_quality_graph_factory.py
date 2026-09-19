@@ -606,7 +606,8 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     receipt_payload = inspection_outcome["inspection_receipt"]
     assert isinstance(receipt_payload, dict)
     assert receipt_payload["receipt_id"] == _RECEIPT_ID
-    assert len(evidence_refs) == 8
+    assert len(evidence_refs) == 9
+    assert any("obligation-assessment.json" in str(ref["path"]) for ref in evidence_refs)
     assert result.terminal is not None
 
 

@@ -33,6 +33,9 @@ CoverageGapKind = Literal[
     "constraint_without_property",
     "matrix_cell_unasserted",
     "unmapped_test_cluster",
+    "obligation_case_missing",
+    "obligation_mapping_missing",
+    "obligation_observation_missing",
 ]
 MetricsSufficiencyVerdict = Literal["pass", "needs_human", "reject", "stop", "skipped"]
 
@@ -42,11 +45,14 @@ class RepairLocator(FrozenContract):
     constraint_key: NonEmptyStr | None = None
     cell: NonEmptyStr | None = None
     cluster_key: NonEmptyStr | None = None
+    mrc_id: NonEmptyStr | None = None
 
     @model_validator(mode="after")
     def _at_least_one_key(self) -> Self:
-        if not any((self.case_id, self.constraint_key, self.cell, self.cluster_key)):
-            raise ValueError("locator requires at least one of case_id, constraint_key, cell, cluster_key")
+        if not any((self.case_id, self.constraint_key, self.cell, self.cluster_key, self.mrc_id)):
+            raise ValueError(
+                "locator requires at least one of case_id, constraint_key, cell, cluster_key, mrc_id"
+            )
         return self
 
 
@@ -71,6 +77,7 @@ class DeferredItem(FrozenContract):
         "not_repairable_metric",
         "not_serving_shortboard",
         "no_test_scope",
+        "obligation_scope",
     ]
 
 

@@ -81,6 +81,22 @@ class ObligationGateFactsV1(FrozenModel):
 ObligationGateDecision = Literal["satisfied", "repair_required", "needs_human", "blocked"]
 
 
+def obligation_gate(facts: ObligationGateFactsV1) -> ObligationGateDecision:
+    """Total decision table over closed gate facts. No scope means no verdict."""
+
+    if facts.required_count == 0 or facts.refuted_count:
+        return "blocked"
+    if facts.inconclusive_count > facts.human_gap_count + facts.repairable_gap_count:
+        return "blocked"
+    if facts.human_gap_count:
+        return "needs_human"
+    if facts.repairable_gap_count:
+        return "repair_required"
+    if facts.inconclusive_count == 0 and facts.supported_count == facts.required_count:
+        return "satisfied"
+    return "blocked"
+
+
 __all__ = [
     "ObligationAssessmentRowV1",
     "ObligationAssessmentV1",
@@ -88,4 +104,5 @@ __all__ = [
     "ObligationGateDecision",
     "ObligationGateFactsV1",
     "ObligationVerdict",
+    "obligation_gate",
 ]

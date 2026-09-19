@@ -25,7 +25,7 @@ from assurance_quality.contracts.assessment import (
 )
 from assurance_quality.contracts.issues import ReconcileIssuesInputV1, ReconcileIssuesResultV1
 from assurance_quality.contracts.coverage import classify_coverage_state
-from assurance_quality.operations.obligations import obligation_gate
+from assurance_quality.contracts.obligations import obligation_gate
 from assurance_quality.contracts.decisions import (
     IssueAnalysisPublicV1,
     classify_inspection_disposition,

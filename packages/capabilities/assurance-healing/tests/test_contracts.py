@@ -38,7 +38,7 @@ _CURRENT_HEALING_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.healing.schema.coverage-repair.v1": (
         "1",
-        "51bdecc0456894314c5cae7c3d508481cdb7b43834ca1c761c3e759bcc1aa422",
+        "430cfb5e671b0d7677a71352c8337d6480d4891392cc45a39d8de63ea23ca598",
     ),
     "assurance.healing.schema.fix-proposal.v1": (
         "1",

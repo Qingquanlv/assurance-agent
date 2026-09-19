@@ -434,3 +434,36 @@ def test_coverage_gap_converts_to_healing_repair_brief() -> None:
     assert brief.batch_id == BATCH_ID
     assert brief.eligible is False
     assert brief.repair_items[0].kind == "uncovered_required_case"
+
+
+def test_obligation_gaps_are_deferred_to_intake_rather_than_dropped() -> None:
+    kinds = (
+        "obligation_case_missing",
+        "obligation_mapping_missing",
+        "obligation_observation_missing",
+    )
+    document = CoverageGapsDocument(
+        schema_version="1",
+        change_id=CHANGE_ID,
+        batch_id=BATCH_ID,
+        projection_digest=f"sha256:{HEX_A}",
+        gaps=tuple(
+            CoverageGap(
+                kind=kind,
+                locator=CoverageGapLocator(plan_digest=HEX_A, mrc_id=f"MRC-{index}"),
+                layer="declaration",
+                batch_id=BATCH_ID,
+                evidence_refs=(f"sha256:{HEX_A}",),
+            )
+            for index, kind in enumerate(kinds)
+        ),
+    )
+    brief = coverage_gap_to_repair_brief(document)
+    assert brief.repair_items == ()
+    assert tuple(item.kind for item in brief.deferred_to_intake) == kinds
+    assert {item.reason for item in brief.deferred_to_intake} == {"obligation_scope"}
+    assert tuple(item.locator.mrc_id for item in brief.deferred_to_intake) == (
+        "MRC-0",
+        "MRC-1",
+        "MRC-2",
+    )
