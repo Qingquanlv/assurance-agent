@@ -100,7 +100,13 @@ def test_human_gap_outranks_repairable_on_the_same_batch() -> None:
     (
         {"required_count": -1, "supported_count": 0, "refuted_count": 0, "inconclusive_count": 0},
         {"required_count": 2, "supported_count": 1, "refuted_count": 0, "inconclusive_count": 0},
-        {"required_count": 1, "supported_count": 0, "refuted_count": 0, "inconclusive_count": 1, "repairable_gap_count": 2},
+        {
+            "required_count": 1,
+            "supported_count": 0,
+            "refuted_count": 0,
+            "inconclusive_count": 1,
+            "repairable_gap_count": 2,
+        },
     ),
 )
 def test_gate_facts_reject_negative_or_inconsistent_counts(payload: dict[str, int]) -> None:
@@ -109,7 +115,10 @@ def test_gate_facts_reject_negative_or_inconsistent_counts(payload: dict[str, in
 
 
 def test_aggregate_coverage_cannot_hide_a_missing_obligation() -> None:
-    assessment = _assessment(_row("MRC-API-1"), _row("MRC-API-2", verdict="inconclusive", gap_codes=("obligation_observation_missing",)))
+    assessment = _assessment(
+        _row("MRC-API-1"),
+        _row("MRC-API-2", verdict="inconclusive", gap_codes=("obligation_observation_missing",)),
+    )
     facts = derive_obligation_gate_facts(
         assessment,
         required_ids=((_PLAN, "MRC-API-1"), (_PLAN, "MRC-API-2")),

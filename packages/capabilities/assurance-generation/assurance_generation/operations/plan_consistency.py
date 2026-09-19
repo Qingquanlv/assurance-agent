@@ -129,13 +129,24 @@ def expectation_ready(
     if observation is None or observation.expected is None or not observation.basis_refs:
         return False
     authenticated = {
-        basis.source for basis in obligation.expected_basis_refs if basis.source_status == "authenticated"
+        (basis.source.kind, basis.source.artifact.path, basis.source.artifact.digest, basis.source.locator)
+        for basis in obligation.expected_basis_refs
+        if basis.source_status == "authenticated"
     }
-    if any(ref not in authenticated for ref in observation.basis_refs):
+    if any(
+        (ref.kind, ref.artifact.path, ref.artifact.digest, ref.locator) not in authenticated
+        for ref in observation.basis_refs
+    ):
         return False
     matches = [item for item in review.expectation_reviews if item.observation_key == observation_key]
     if len(matches) != 1 or matches[0].status != "pass" or not matches[0].reason.strip():
         return False
-    if not matches[0].basis_refs or any(ref not in observation.basis_refs for ref in matches[0].basis_refs):
+    observed = {
+        (ref.kind, ref.artifact.path, ref.artifact.digest, ref.locator) for ref in observation.basis_refs
+    }
+    if not matches[0].basis_refs or any(
+        (ref.kind, ref.artifact.path, ref.artifact.digest, ref.locator) not in observed
+        for ref in matches[0].basis_refs
+    ):
         return False
     return review.status == "pass" and review.requirement_id == requirement.requirement_id

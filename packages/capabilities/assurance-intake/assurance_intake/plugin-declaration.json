@@ -49,6 +49,7 @@
     "schemas": [
       "assurance.intake.schema.case-authoring.v1",
       "assurance.intake.schema.case-review.v1",
+      "assurance.intake.schema.case-selection.v1",
       "assurance.intake.schema.case.v1",
       "assurance.intake.schema.qa-change.v1",
       "assurance.intake.schema.resolved-assurance-plan.v1",

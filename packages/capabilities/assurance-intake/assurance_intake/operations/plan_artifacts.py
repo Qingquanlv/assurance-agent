@@ -22,7 +22,7 @@ from assurance_intake.contracts.explore import (
 )
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.obligations import apply_scope_exclusions
+from assurance_intake.operations.obligations import apply_scope_exclusions, normalize_goal_obligations
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_closed_keys
 from assurance_intake.contracts.plan import (
     PreparedQualityGoalV1,
@@ -39,7 +39,6 @@ from assurance_intake.contracts.quality_goals import (
     CoverageGoalPolicyV1,
     SufficiencyPolicyV1,
     journey_keys_from_document,
-    normalize_goal_obligations,
     required_goal_families,
 )
 from assurance_intake.operations.resolve_plan import derive_family_proposal, resolve_plan
@@ -88,7 +87,7 @@ def _mapping_yaml(data: bytes, label: str) -> Mapping[str, object]:
     return cast(Mapping[str, object], value)
 
 
-def _load_exploration(data: bytes) -> tuple[str, str, TestStrategyV1, object]:
+def _load_exploration(data: bytes) -> tuple[str, str, TestStrategyV1, ExploreAdvisoryV1 | PreparedExploreV1]:
     try:
         payload = json.loads(data)
     except (UnicodeError, json.JSONDecodeError) as error:
@@ -96,8 +95,9 @@ def _load_exploration(data: bytes) -> tuple[str, str, TestStrategyV1, object]:
     coverage = payload.get("minimum_required_coverage") if isinstance(payload, dict) else None
     first = coverage[0] if isinstance(coverage, list) and coverage else None
     try:
+        document: ExploreAdvisoryV1 | PreparedExploreV1
         if isinstance(first, dict) and "mrc_id" in first:
-            document: object = PreparedExploreV1.model_validate(payload)
+            document = PreparedExploreV1.model_validate(payload)
         else:
             document = ExploreAdvisoryV1.model_validate(payload)
     except ValueError as error:
@@ -121,7 +121,7 @@ def prepare_quality_goal(
     request: ResolvePlanInputV1,
     *,
     project_root: Path,
-) -> tuple[object, ChangeImpactInventoryV1, PreparedQualityGoalV1]:
+) -> tuple[ExploreAdvisoryV1 | PreparedExploreV1, ChangeImpactInventoryV1, PreparedQualityGoalV1]:
     exploration_data = _read_regular_bytes(
         project_root,
         request.exploration_ref.path,

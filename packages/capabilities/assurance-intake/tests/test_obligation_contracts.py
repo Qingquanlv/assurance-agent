@@ -118,11 +118,7 @@ def test_authenticated_requirement_basis_is_allowed() -> None:
         ({"key": None, "proposed_key": "auth.lockout"}, None),
         ({"verification_requirements": []}, None),
         (
-            {
-                "verification_requirements": [
-                    _requirement(profile_id="concurrency.v1", observations=[])
-                ]
-            },
+            {"verification_requirements": [_requirement(profile_id="concurrency.v1", observations=[])]},
             None,
         ),
     ],
@@ -196,19 +192,11 @@ def test_old_obligation_shape_is_rejected() -> None:
 
 def test_expected_status_must_be_http_or_none() -> None:
     PreparedObligationV1.model_validate(
-        _obligation(
-            verification_requirements=[
-                _requirement(observations=[_observation(expected=None)])
-            ]
-        )
+        _obligation(verification_requirements=[_requirement(observations=[_observation(expected=None)])])
     )
     with pytest.raises(ValidationError, match="status"):
         PreparedObligationV1.model_validate(
-            _obligation(
-                verification_requirements=[
-                    _requirement(observations=[_observation(expected=99)])
-                ]
-            )
+            _obligation(verification_requirements=[_requirement(observations=[_observation(expected=99)])])
         )
 
 

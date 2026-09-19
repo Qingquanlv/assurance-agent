@@ -22,13 +22,16 @@ class FamilyExecutionOutcomeV1(BaseModel):
     model_config = _FROZEN
     family: ExecutionFamily
     state: Literal["executed", "blocked"]
-    reason_code: Literal[
-        "runner_unsupported",
-        "expectation_unconfirmed",
-        "environment_unavailable",
-        "collection_failed",
-        "execution_interrupted",
-    ] | None = None
+    reason_code: (
+        Literal[
+            "runner_unsupported",
+            "expectation_unconfirmed",
+            "environment_unavailable",
+            "collection_failed",
+            "execution_interrupted",
+        ]
+        | None
+    ) = None
     diagnostic_refs: tuple[EvidenceArtifactRefV1, ...] = ()
 
     @model_validator(mode="after")
@@ -79,9 +82,7 @@ class _ExecutionResultBase(BaseModel):
         if mapping_families != frozenset(selected_families):
             raise ValueError("execution mapping must contain a mapped test for every selected family")
         mapping_by_test = {entry.test: entry for entry in self.mapping.mappings}
-        executed_tests = frozenset(
-            entry.test for entry in self.mapping.mappings if entry.layer in executed
-        )
+        executed_tests = frozenset(entry.test for entry in self.mapping.mappings if entry.layer in executed)
         seen: list[str] = []
         for result in self.results:
             if result.test not in executed_tests:

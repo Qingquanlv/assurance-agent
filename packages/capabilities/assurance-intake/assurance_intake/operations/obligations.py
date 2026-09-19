@@ -8,24 +8,16 @@ from pathlib import Path
 from typing import Literal
 
 from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
-from assurance_intake.contracts.explore import ObligationDraftV1, SourceQuoteV1
 from assurance_intake.contracts.obligations import (
     DiscoveryAuditRowV1,
-    ExpectedBasisV1,
     PreparedObligationV1,
-    RequiredObservationV1,
     SourceRefV1,
-    VerificationRequirementV1,
+)
+from assurance_intake.contracts.quality_goals import (
+    normalize_goal_obligations,
+    normalize_obligation_drafts,
 )
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-
-_MRC_PREFIX = {
-    "api": "API",
-    "e2e": "E2E",
-    "e2e_if_enabled": "E2E",
-    "negative": "NEGATIVE",
-    "data_integrity": "DATA-INTEGRITY",
-}
 
 
 class InputError(ValueError):
@@ -40,9 +32,7 @@ _PURPOSE_KINDS: Mapping[str, frozenset[str]] = {
 }
 
 
-def resolve_requirement_quote(
-    text: str, quote: str, context_quote: str | None = None
-) -> tuple[int, int]:
+def resolve_requirement_quote(text: str, quote: str, context_quote: str | None = None) -> tuple[int, int]:
     haystack = text
     offset = 0
     if context_quote is not None:
@@ -207,84 +197,6 @@ def obligation_gaps(
     return tuple(sorted(gaps))
 
 
-def _resolved_refs(
-    quotes: tuple[SourceQuoteV1, ...],
-    resolved_quotes: Mapping[tuple[str, str], SourceRefV1],
-) -> tuple[SourceRefV1, ...]:
-    refs: list[SourceRefV1] = []
-    seen: set[tuple[str, str]] = set()
-    for quote in quotes:
-        key = (quote.source_id, quote.quote)
-        ref = resolved_quotes.get(key)
-        if ref is None or key in seen:
-            continue
-        seen.add(key)
-        refs.append(ref)
-    return tuple(refs)
-
-
-def normalize_obligation_drafts(
-    drafts: tuple[ObligationDraftV1, ...],
-    *,
-    resolved_quotes: Mapping[tuple[str, str], SourceRefV1],
-) -> tuple[PreparedObligationV1, ...]:
-    rows: list[PreparedObligationV1] = []
-    for sequence, draft in enumerate(drafts, start=1):
-        mrc_id = (
-            draft.draft_id
-            if draft.draft_id.startswith("MRC-")
-            else f"MRC-{_MRC_PREFIX[draft.category]}-{sequence:03d}"
-        )
-        observations = tuple(
-            RequiredObservationV1(
-                observation_key=goal.key,
-                condition=goal.condition,
-                predicate="status_code_eq",
-                expected=goal.proposed_expected_status,
-                basis_refs=_resolved_refs(goal.basis_quotes, resolved_quotes),
-            )
-            for goal in draft.observation_goals
-        )
-        if draft.proposed_profile_id is None and not observations:
-            requirements: tuple[VerificationRequirementV1, ...] = ()
-        else:
-            requirements = (
-                VerificationRequirementV1(
-                    requirement_id=f"{mrc_id}-R001",
-                    profile_id=draft.proposed_profile_id or "method_unspecified",
-                    prerequisites=draft.prerequisites,
-                    observations=observations,
-                    semantic_review_required=True,
-                    subject_binding_required=True,
-                ),
-            )
-        rows.append(
-            PreparedObligationV1(
-                mrc_id=mrc_id,
-                key=None,
-                proposed_key=draft.proposed_key,
-                category=draft.category,
-                layer=draft.layer,
-                statement=draft.statement,
-                applicability_conditions=draft.applicability_conditions,
-                expected_basis_refs=tuple(
-                    ExpectedBasisV1(source=ref, source_status="pending")
-                    for ref in _resolved_refs(draft.basis_quotes, resolved_quotes)
-                ),
-                impact_row_ids=draft.impact_row_ids,
-                required=True,
-                scope_disposition="included",
-                exclusion_basis=None,
-                open_questions=draft.open_questions,
-                verification_requirements=requirements,
-            )
-        )
-    ids = [row.mrc_id for row in rows]
-    if len(ids) != len(set(ids)):
-        raise ValueError("duplicate MRC id")
-    return tuple(sorted(rows, key=lambda row: (row.mrc_id, row.proposed_key or "", row.key or "")))
-
-
 def validate_discovery_closure(
     *,
     obligations: tuple[PreparedObligationV1, ...],
@@ -305,13 +217,23 @@ def validate_discovery_closure(
             if missing:
                 raise InputError(f"audit maps unknown MRC: {missing}")
     covered = {row_id for row in obligations for row_id in row.impact_row_ids}
-    explained = {
-        entry.source.locator
-        for entry in audit
-        if entry.disposition in {"excluded", "pending"}
-    }
+    explained = {entry.source.locator for entry in audit if entry.disposition in {"excluded", "pending"}}
     gaps: set[str] = set()
     for row_id in impact_rows:
         if row_id not in covered and row_id not in explained:
             gaps.add("impact_unmapped")
     return tuple(sorted(gaps))
+
+
+__all__ = [
+    "InputError",
+    "apply_scope_exclusions",
+    "authenticate_source",
+    "build_source_index",
+    "normalize_goal_obligations",
+    "normalize_obligation_drafts",
+    "obligation_gaps",
+    "resolve_requirement_quote",
+    "scope_exclusion_allowed",
+    "validate_discovery_closure",
+]

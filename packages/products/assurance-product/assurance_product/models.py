@@ -523,9 +523,10 @@ class ProductInputV1(FrozenModel):
             raise ValueError(f"{entrypoint} requires resolved_plan_ref")
         if not creator and not consumer and self.resolved_plan_ref is not None:
             raise ValueError(f"{entrypoint} does not consume resolved_plan_ref")
-        requires_case_delta = entrypoint == "case"
-        if requires_case_delta and not self.case_delta_paths:
-            raise ValueError(f"{entrypoint} requires non-empty exact case_delta_paths")
+        # full / intake / case all lock case files from Explore inventory.
+        # Empty case_delta_paths is the operator contract; case-design infers
+        # every implied qa/cases/<module>/case.yaml (one requirement can span
+        # several modules).
         if entrypoint not in {"full", "intake", "case"} and self.case_delta_paths:
             raise ValueError(f"{entrypoint} does not consume case_delta_paths")
         if entrypoint != "retro" and self.retro_window is not None:

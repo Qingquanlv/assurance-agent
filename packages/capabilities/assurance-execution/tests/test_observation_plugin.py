@@ -27,7 +27,14 @@ def test_preexisting_output_is_not_overwritten(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("AA_OBSERVE_OUTPUT", str(destination))
 
     class _Config:
-        _aa_observe = {"context": {}, "observer": None, "collected": [], "errors": [], "tests": {}, "complete": True}
+        _aa_observe = {
+            "context": {},
+            "observer": None,
+            "collected": [],
+            "errors": [],
+            "tests": {},
+            "complete": True,
+        }
 
     class _Session:
         config = _Config()

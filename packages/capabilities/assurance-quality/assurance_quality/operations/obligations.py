@@ -127,7 +127,9 @@ def _facts_for_obligation(
     )
 
 
-def load_prepared_obligations(workspace: Path, request: MaterializeAssessmentInputV1) -> tuple[PreparedObligationV1, ...]:
+def load_prepared_obligations(
+    workspace: Path, request: MaterializeAssessmentInputV1
+) -> tuple[PreparedObligationV1, ...]:
     for ref in request.reviewed_case.preparation_refs:
         if not ref.path.endswith(("exploration.json", "quality-goals.json", "prepared-explore.json")):
             continue
@@ -193,9 +195,7 @@ def assess_obligations(
                 gap_codes=tuple(gaps),
             )
         )
-    excluded = tuple(
-        item.mrc_id for item in obligations if item.scope_disposition == "excluded"
-    )
+    excluded = tuple(item.mrc_id for item in obligations if item.scope_disposition == "excluded")
     return ObligationAssessmentV1(
         plan_ref=request.plan_ref,
         rows=tuple(rows),

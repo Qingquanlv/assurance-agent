@@ -27,6 +27,10 @@ from assurance_intake.contracts.workflow import (
 from assurance_intake.plugin import IntakePlugin
 
 _CURRENT_INTAKE_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
+    "assurance.intake.schema.case-selection.v1": (
+        "1",
+        "34627fd563e65de1c53196bc5bf92bb33ea76a3a9357df925d28cc94b2d1f2ba",
+    ),
     "assurance.intake.schema.case-authoring.v1": (
         "1",
         "44a0bb1d4c31a2b9b18453823532f07c5c15102bb07263b625462a4cea2b3e8b",
@@ -88,6 +92,10 @@ def _reviewed_case() -> ReviewedCaseV1:
         ),
         case_refs=(EvidenceArtifactRefV1(path="qa/cases/menus/case.yaml", digest=_SHA),),
         review_ref=EvidenceArtifactRefV1(path="qa/results/review/case-review.json", digest=_SHA),
+        selection_ref=EvidenceArtifactRefV1(
+            path="qa/results/cases/epochs/0/selection.json",
+            digest=_SHA,
+        ),
     )
 
 
@@ -570,19 +578,20 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
             "assurance-v1-explorer",
             (
                 "qa/results/explore/context.json",
+                "qa/results/explore/exploration-draft.json",
                 "qa/results/explore/exploration.json",
                 "qa/results/explore/impact-inventory.json",
             ),
             (
-                "qa/results/explore/exploration.json",
+                "qa/results/explore/exploration-draft.json",
                 "qa/results/explore/impact-inventory.json",
             ),
         ),
         "intake": (
             "aa-intake",
             "assurance-v1-doc-author",
-            ("qa/.qa.yaml", "qa/requirement.md"),
-            ("qa/.qa.yaml", "qa/requirement.md"),
+            ("qa/.qa.yaml", "qa/requirement.md", "qa/results/intake/sources/run-spec.effective.yaml"),
+            ("qa/.qa.yaml",),
         ),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)

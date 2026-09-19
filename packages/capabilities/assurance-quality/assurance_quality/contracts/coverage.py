@@ -210,7 +210,12 @@ __all__ = [
 ]
 
 
-"""MRC matrix + ``report/minimum-coverage-result.json`` (must_compat).
+"""MRC matrix + ``report/minimum-coverage-result.json``.
+
+Shape changed in obligation-evidence-closure (schema_version 2.0). See
+``docs/superpowers/specs/2026-09-19-obligation-evidence-closure-design.md``
+appendix. OpenChamber must read 2.0 to show the obligation view; this
+repo does not keep a 1.0 shim. Old files remain readable by old wheels.
 
 Minimum Required Coverage was historically LLM-authored (matrix) and
 LLM-joined against execution (result). Spec
@@ -355,7 +360,7 @@ class MinimumCoverageResult(BaseModel):
 
     model_config = _FROZEN
 
-    schema_version: Literal["1.0"]
+    schema_version: Literal["2.0"]
     change_id: NonEmptyStr
     summary: MinimumCoverageSummary
     items: tuple[MinimumCoverageItem, ...]
@@ -371,7 +376,7 @@ class MinimumCoverageResult(BaseModel):
     ) -> MinimumCoverageResult:
         summary = summarize_minimum_coverage(items)
         return cls(
-            schema_version="1.0",
+            schema_version="2.0",
             change_id=change_id,
             summary=summary,
             items=tuple(items),
@@ -492,6 +497,8 @@ def mrc_closed_key_findings(
         category = getattr(item, "category", None)
         key = item.key
         if category is None:
+            continue
+        if key is None:
             continue
         if category in _CONSTRAINT_OR_AUTH_CATEGORIES and key not in allowed_constraint_or_auth:
             bad.add(key)

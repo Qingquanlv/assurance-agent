@@ -39,6 +39,8 @@ EXECUTION_RESOURCE_FILES: dict[str, str] = {
 _SCHEMA_FILES: dict[str, str] = {
     "assurance.execution.schema.closed-mapping.v1": "schemas/closed-mapping.v1.schema.json",
     "assurance.execution.schema.execution-evidence.v1": "schemas/execution-evidence.v1.schema.json",
+    "assurance.execution.schema.execution-event.v1": "schemas/execution-event.v1.schema.json",
+    "assurance.execution.schema.observation-bundle.v1": "schemas/observation-bundle.v1.schema.json",
     "assurance.execution.schema.execution-manifest.v1": "schemas/execution-manifest.v1.schema.json",
     "assurance.execution.schema.selected-targets.v1": "schemas/selected-targets.v1.schema.json",
     "assurance.execution.workflow.execute.input.v1": "schemas/workflow/execute-input.v1.schema.json",

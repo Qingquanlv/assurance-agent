@@ -132,7 +132,10 @@ class CollectorDocumentV1(FrozenModel):
             raise ValueError("collected count must match collected_nodeids")
         if self.complete:
             reported = {item.nodeid for item in self.report.tests}
-            if reported != set(self.collected_nodeids) or len(self.report.tests) != self.report.summary.collected:
+            if (
+                reported != set(self.collected_nodeids)
+                or len(self.report.tests) != self.report.summary.collected
+            ):
                 raise ValueError("complete collector must cover every collected nodeid")
         return self
 

@@ -44,7 +44,7 @@ class _Observer:
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> int:
-        allowed = list(self.context.get("allowed_origins") or ())
+        allowed = [str(item) for item in (self.context.get("allowed_origins") or [])]
         if not _origin_allowed(url, allowed):
             raise RuntimeError(f"origin is not approved: {url}")
         expected = None
@@ -58,7 +58,9 @@ class _Observer:
                         if binding.get("observation_id") == observation_id:
                             key = binding.get("observation_key")
                             mrc_id = plan.get("mrc_id") or ""
-                            requirement_id = plan.get("requirement_id") or requirement.get("requirement_id") or ""
+                            requirement_id = (
+                                plan.get("requirement_id") or requirement.get("requirement_id") or ""
+                            )
                 if item.get("observation_key") == key:
                     expected = item.get("expected")
         if expected is None or key is None:

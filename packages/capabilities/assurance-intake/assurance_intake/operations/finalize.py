@@ -61,6 +61,7 @@ from assurance_intake.contracts.review import (
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
+from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_intake.contracts.plan import decode_plan
 from assurance_intake.operations.agent_skills import InputError, failed_input, validate_input
@@ -633,7 +634,9 @@ def _read_case_review_inputs(
 ) -> dict[str, bytes]:
     if not payload.case_delta_paths:
         raise InputError("case_delta_paths are required for case-review scope validation")
-    if payload.case_delta_paths and not set(payload.case_delta_paths) <= {ref.path for ref in payload.case_refs}:
+    if payload.case_delta_paths and not set(payload.case_delta_paths) <= {
+        ref.path for ref in payload.case_refs
+    }:
         raise InputError("case_refs must authenticate every locked case.yaml for case review")
     matrix_refs = tuple(ref for ref in payload.preparation_refs if ref.path == matrix_relative)
     if len(matrix_refs) != 1:
@@ -981,17 +984,17 @@ def _trusted_sources(workspace: Path) -> TrustedIntakeSourcesV1 | None:
         return None
     requirement_bytes = requirement.read_bytes()
     snapshot_bytes = snapshot.read_bytes()
-    families: tuple[str, ...] = ()
+    families: tuple[TestFamily, ...] = ()
     try:
         document = yaml.safe_load(snapshot_bytes)
         raw = document.get("candidate_test_families") if isinstance(document, Mapping) else None
         if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-            families = tuple(raw)
+            families = cast(tuple[TestFamily, ...], tuple(raw))
     except yaml.YAMLError:
         return None
     return TrustedIntakeSourcesV1(
-        requirement_ref={"path": REQUIREMENT_PATH, "digest": _file_digest(requirement_bytes)},
-        run_spec_ref={"path": RUN_SPEC_SNAPSHOT_PATH, "digest": _file_digest(snapshot_bytes)},
+        requirement_ref=EvidenceArtifactRefV1(path=REQUIREMENT_PATH, digest=_file_digest(requirement_bytes)),
+        run_spec_ref=EvidenceArtifactRefV1(path=RUN_SPEC_SNAPSHOT_PATH, digest=_file_digest(snapshot_bytes)),
         accepted_input_digest=_file_digest(requirement_bytes),
         candidate_test_families=families,
     )
@@ -1005,13 +1008,20 @@ def _seal_official_exploration(
     policy_required: frozenset[str],
 ) -> tuple[PreparedExploreV1, bytes]:
     requirement = workspace.joinpath(*REQUIREMENT_PATH.split("/"))
-    text = requirement.read_text(encoding="utf-8") if requirement.is_file() and not requirement.is_symlink() else ""
+    text = (
+        requirement.read_text(encoding="utf-8")
+        if requirement.is_file() and not requirement.is_symlink()
+        else ""
+    )
     digest = _file_digest(requirement.read_bytes()) if requirement.is_file() else ""
     resolved: dict[tuple[str, str], SourceRefV1] = {}
     quotes = [
         quote
         for draft in advisory.minimum_required_coverage
-        for quote in (*draft.basis_quotes, *(goal.basis_quotes for goal in draft.observation_goals))
+        for quote in (
+            *draft.basis_quotes,
+            *(item for goal in draft.observation_goals for item in goal.basis_quotes),
+        )
     ]
     for quote in quotes:
         if quote.source_id != "requirement" or not text:
@@ -1022,7 +1032,7 @@ def _seal_official_exploration(
             continue
         resolved[(quote.source_id, quote.quote)] = SourceRefV1(
             kind="requirement",
-            artifact={"path": REQUIREMENT_PATH, "digest": digest},
+            artifact=EvidenceArtifactRefV1(path=REQUIREMENT_PATH, digest=digest),
             locator=f"bytes:{start}-{end}",
         )
     rows = normalize_obligation_drafts(advisory.minimum_required_coverage, resolved_quotes=resolved)
@@ -1414,7 +1424,9 @@ class CaseReviewFinalizeHandler:
                 delta = set(payload.case_delta_paths)
                 for ref in payload.case_refs:
                     try:
-                        source = yaml.safe_load(_read_regular_bytes(context.write_root, ref.path, kind="case"))
+                        source = yaml.safe_load(
+                            _read_regular_bytes(context.write_root, ref.path, kind="case")
+                        )
                     except (OutputError, yaml.YAMLError):
                         source = yaml.safe_load(
                             _read_regular_bytes(context.project_root, ref.path, kind="case")
@@ -1432,7 +1444,9 @@ class CaseReviewFinalizeHandler:
                             selected.append(
                                 SelectedCaseV1(
                                     case_id=str(entry["case_id"]),
-                                    origin="reuse" if reused else ("modified" if section == "modified" else "added"),
+                                    origin="reuse"
+                                    if reused
+                                    else ("modified" if section == "modified" else "added"),
                                     source_ref=ref,
                                     source_locator=f"{section}[{index}]",
                                     mrc_ids=(),

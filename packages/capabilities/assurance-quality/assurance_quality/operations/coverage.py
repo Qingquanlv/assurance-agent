@@ -17,6 +17,7 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 from assurance_generation.contracts.families import LAYER_NAMES, LayerName
 from assurance_generation.contracts.plans import LayerApplicability
 from assurance_healing.contracts.coverage_repair import (
+    CoverageGapKind as HealingGapKind,
     CoverageRepairBrief,
     DeferredItem,
     RepairItem,
@@ -502,6 +503,14 @@ def coverage_gap_to_repair_brief(document: CoverageGapsDocument) -> CoverageRepa
     repair_items: list[RepairItem] = []
     deferred: list[DeferredItem] = []
     for gap in document.gaps:
+        if gap.kind not in {
+            "uncovered_required_case",
+            "stale_required_case",
+            "constraint_without_property",
+            "matrix_cell_unasserted",
+            "unmapped_test_cluster",
+        }:
+            continue
         locator = RepairLocator(
             case_id=gap.locator.case_id,
             constraint_key=gap.locator.constraint_key,
@@ -509,10 +518,14 @@ def coverage_gap_to_repair_brief(document: CoverageGapsDocument) -> CoverageRepa
             cluster_key=gap.locator.cluster_key,
         )
         if gap.layer == "declaration":
-            deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="declaration_layer"))
+            deferred.append(
+                DeferredItem(kind=cast(HealingGapKind, gap.kind), locator=locator, reason="declaration_layer")
+            )
             continue
         if gap.kind == "unmapped_test_cluster":
-            deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="unmapped_cluster"))
+            deferred.append(
+                DeferredItem(kind=cast(HealingGapKind, gap.kind), locator=locator, reason="unmapped_cluster")
+            )
             continue
         if gap.kind in _REPAIRABLE_GAP_KINDS:
             repair_items.append(
@@ -523,7 +536,9 @@ def coverage_gap_to_repair_brief(document: CoverageGapsDocument) -> CoverageRepa
                 )
             )
             continue
-        deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="not_repairable_metric"))
+        deferred.append(
+            DeferredItem(kind=cast(HealingGapKind, gap.kind), locator=locator, reason="not_repairable_metric")
+        )
     return CoverageRepairBrief(
         schema_version="1",
         change_id=document.change_id,

@@ -144,7 +144,10 @@ class ObligationDraftV1(FrozenModel):
         if catalog is None:
             return self
         allowed = {entry.source_id for entry in catalog}
-        quotes = [*self.basis_quotes, *(quote for goal in self.observation_goals for quote in goal.basis_quotes)]
+        quotes = [
+            *self.basis_quotes,
+            *(quote for goal in self.observation_goals for quote in goal.basis_quotes),
+        ]
         unknown = sorted({quote.source_id for quote in quotes if quote.source_id not in allowed})
         if unknown:
             raise ValueError(f"source_id is not in the host source catalog: {unknown}")
@@ -175,7 +178,9 @@ class ExploreAdvisoryV1(BaseModel):
         if catalog is None:
             return self
         for draft in self.minimum_required_coverage:
-            ObligationDraftV1.model_validate(draft.model_dump(mode="json"), context={"source_catalog": catalog})
+            ObligationDraftV1.model_validate(
+                draft.model_dump(mode="json"), context={"source_catalog": catalog}
+            )
         return self
 
 
@@ -370,9 +375,7 @@ def _utf8_prefix(data: bytes, budget: int) -> tuple[str, RequirementReadFactsV1]
     total = len(data)
     text = data.decode("utf-8")
     if total <= budget:
-        return text, RequirementReadFactsV1(
-            total_bytes=total, provided_bytes=total, read_state="complete"
-        )
+        return text, RequirementReadFactsV1(total_bytes=total, provided_bytes=total, read_state="complete")
     low, high = 0, len(text)
     while low < high:
         mid = (low + high + 1) // 2

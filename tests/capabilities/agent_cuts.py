@@ -21,7 +21,6 @@ from tests.capabilities.six_wheel_harness import (
 )
 from tests.acg_plan_fixture import install_plan
 
-from assurance_execution.operations.agent_skills import ExecuteFinalizeHandler
 from assurance_generation.operations.planning import PlanFinalizeHandler
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
 from assurance_improvement.operations.agent import RetroFinalizeHandler
@@ -38,7 +37,6 @@ AGENT_CUTS = (
 WHEEL_FINALIZERS = {
     "intake": CaseReviewFinalizeHandler,
     "generation": lambda: PlanFinalizeHandler("api"),
-    "execution": ExecuteFinalizeHandler,
     "healing": FixProposalFinalizeHandler,
     "quality": InspectFinalizeHandler,
     "improvement": RetroFinalizeHandler,

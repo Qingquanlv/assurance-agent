@@ -63,6 +63,11 @@ def _fixture(
         preparation_refs=tuple(sorted((plan_ref, preparation), key=lambda item: item.path)),
         case_refs=(case,),
         review_ref=review,
+        selection_ref=_write(
+            root,
+            f"qa/results/cases/epochs/{coverage_epoch}/selection.json",
+            b'{"schema_version":"1"}',
+        ),
     )
     manifest = _write(
         root,

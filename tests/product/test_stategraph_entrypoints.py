@@ -15,6 +15,7 @@ from langgraph.types import Checkpointer
 from pydantic import ValidationError
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS as EXECUTION_TASKS
 from assurance_execution.graphs.factory import ExecutionGraphs, build_execution_graphs
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
 from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS as GENERATION_TASKS
@@ -100,7 +101,10 @@ def _contracts_for(owner_id: str) -> dict[str, TaskAttemptContract[Any, Any]]:
             **{task.contract_id: task for task in GENERATION_TASKS.values()},
         }
     if owner_id == "assurance.execution":
-        return _job_contracts(EXECUTION_JOBS)
+        return {
+            **_job_contracts(EXECUTION_JOBS),
+            **{task.contract_id: task for task in EXECUTION_TASKS.values()},
+        }
     if owner_id == "assurance.quality":
         return {
             **_job_contracts(QUALITY_JOBS),

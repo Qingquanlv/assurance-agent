@@ -430,9 +430,7 @@ def render_quality_report_markdown(raw: Mapping[str, object]) -> bytes:
             if row.remaining_assumptions:
                 lines.append(f"  - Remaining assumptions: {', '.join(row.remaining_assumptions)}")
         if report.obligation_assessment.excluded_mrc_ids:
-            lines.append(
-                "- Excluded: " + ", ".join(report.obligation_assessment.excluded_mrc_ids)
-            )
+            lines.append("- Excluded: " + ", ".join(report.obligation_assessment.excluded_mrc_ids))
         lines.append("- Source authentication is not the same as a confirmed expected behavior.")
     if report.minimum_required_coverage:
         lines.extend(["", "## Prepared obligations", ""])

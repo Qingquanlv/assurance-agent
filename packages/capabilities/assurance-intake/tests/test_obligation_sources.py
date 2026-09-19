@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 import yaml
 
+from typing import cast
+
 from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
+from assurance_intake.contracts.common import TestFamily
 from assurance_intake.contracts.explore import build_explore_context
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -65,7 +68,7 @@ def _sources(tmp_path: Path, *, families: tuple[str, ...] = ("api",)) -> Trusted
         requirement_ref=requirement,
         run_spec_ref=run_spec,
         accepted_input_digest=requirement.digest,
-        candidate_test_families=families,
+        candidate_test_families=cast(tuple[TestFamily, ...], families),
     )
 
 

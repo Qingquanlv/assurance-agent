@@ -75,8 +75,13 @@ def _semantic_contract_id(prepare_id: str) -> str:
     return f"assurance.{feature}.agent.{base}.v1"
 
 
-PREPARE_IDS = tuple(_semantic_contract_id(item) for item in HISTORICAL_PREPARE_IDS) + (
-    "assurance.healing.agent.apply-test-repair.v1",
+PREPARE_IDS = tuple(
+    contract_id
+    for contract_id in (
+        tuple(_semantic_contract_id(item) for item in HISTORICAL_PREPARE_IDS)
+        + ("assurance.healing.agent.apply-test-repair.v1",)
+    )
+    if contract_id not in {"assurance.execution.agent.execute.v1", "assurance.execution.agent.run.v1"}
 )
 HISTORICAL_BINDING_IDS = tuple(
     f"assurance.product.agent.{item.removeprefix('assurance.').removesuffix('.prepare')}.{phase}"

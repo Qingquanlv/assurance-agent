@@ -29,7 +29,9 @@ _SKILL_FIELDS = (
 )
 
 
-def _skill_payload(state: Mapping[str, object], *, execution_kind: Literal["execute", "run"]) -> dict[str, object]:
+def _skill_payload(
+    state: Mapping[str, object], *, execution_kind: Literal["execute", "run"]
+) -> dict[str, object]:
     payload = {name: state[name] for name in _SKILL_FIELDS if name in state}
     epoch = payload.get("coverage_epoch", 0)
     if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:

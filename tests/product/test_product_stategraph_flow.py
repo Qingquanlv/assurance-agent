@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from assurance_execution.contracts.evidence import FamilyExecutionOutcomeV1
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_execution.graphs.factory import ExecutionGraphs
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
@@ -161,7 +162,7 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         mapping_ref=generated.mapping_ref,
         source_refs=generated.source_refs,
         receipt=_receipt(f"execution-{epoch}-{repair_round}"),
-        family_outcomes=({"family": "api", "state": "executed", "reason_code": None, "diagnostic_refs": ()},),
+        family_outcomes=(FamilyExecutionOutcomeV1(family="api", state="executed"),),
     )
     return {"execution_result": result.model_dump(mode="json"), "status": "passed"}
 

@@ -106,3 +106,13 @@ code review, the repository gate, wheel rebuild, and authenticated deployment.
 
 The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
+
+Execute and run are deterministic tasks. They do not call an LLM. Same-process
+`aa_observe` collection detects omitted or mismatched observations; it is not a
+cryptographic anti-forgery guarantee. `output_preexisting`, review, and fault
+injection increase detection, not authenticity. Unconfirmed expectations stay
+`expectation_unconfirmed` and cannot achieve. OpenChamber must upgrade to the
+`minimum-coverage-result.json` 2.0 reader to show the obligation view; see
+`docs/superpowers/specs/2026-09-19-obligation-evidence-closure-design.md`.
+Live OpenCode codegen acceptance is a separate authorized run and is not claimed
+by the deterministic test gate.

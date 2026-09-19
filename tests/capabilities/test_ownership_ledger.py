@@ -32,7 +32,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
     "assurance.execution": (
         "operation:run-tests",
-        "operation:run-tests-and-collect-pr-metrics",
     ),
     "assurance.healing": (
         "operation:allocate-healing-attempt",

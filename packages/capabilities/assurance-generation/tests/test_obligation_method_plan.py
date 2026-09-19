@@ -99,22 +99,27 @@ def test_expectation_ready_requires_authenticated_basis_and_pass_review() -> Non
             "verification_requirements": [req.model_dump(mode="json")],
         }
     )
-    review = ObligationSemanticReviewV1(
-        frozen_plan_digest="b" * 64,
-        mrc_id="MRC-LOCK",
-        requirement_id="R-LOCK",
-        plan_ref={"path": "qa/results/plan/" + ("b" * 64) + "/resolved-assurance-plan.json", "digest": "c" * 64},
-        status="fail",
-        reason="source says 200, not 423",
-        source_refs=req.observations[0].basis_refs,
-        expectation_reviews=(
-            {
-                "observation_key": "locked_valid_password",
-                "status": "fail",
-                "reason": "quoted clause is the success path",
-                "basis_refs": [req.observations[0].basis_refs[0].model_dump(mode="json")],
+    review = ObligationSemanticReviewV1.model_validate(
+        {
+            "frozen_plan_digest": "b" * 64,
+            "mrc_id": "MRC-LOCK",
+            "requirement_id": "R-LOCK",
+            "plan_ref": {
+                "path": "qa/results/plan/" + ("b" * 64) + "/resolved-assurance-plan.json",
+                "digest": "c" * 64,
             },
-        ),
+            "status": "fail",
+            "reason": "source says 200, not 423",
+            "source_refs": [item.model_dump(mode="json") for item in req.observations[0].basis_refs],
+            "expectation_reviews": [
+                {
+                    "observation_key": "locked_valid_password",
+                    "status": "fail",
+                    "reason": "quoted clause is the success path",
+                    "basis_refs": [req.observations[0].basis_refs[0].model_dump(mode="json")],
+                }
+            ],
+        }
     )
     assert (
         expectation_ready(
@@ -130,7 +135,9 @@ def test_expectation_ready_requires_authenticated_basis_and_pass_review() -> Non
             "status": "pass",
             "reason": "lockout clause supports 423",
             "expectation_reviews": (
-                review.expectation_reviews[0].model_copy(update={"status": "pass", "reason": "matches lockout clause"}),
+                review.expectation_reviews[0].model_copy(
+                    update={"status": "pass", "reason": "matches lockout clause"}
+                ),
             ),
         }
     )

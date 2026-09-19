@@ -116,6 +116,7 @@
       "assurance.quality.schema.metrics.v1",
       "assurance.quality.schema.minimum-coverage.v1",
       "assurance.quality.schema.mutation.v1",
+      "assurance.quality.schema.obligation-assessment.v1",
       "assurance.quality.schema.perf-slack.v1",
       "assurance.quality.schema.quality-gate.v2",
       "assurance.quality.schema.quarantine.v1",

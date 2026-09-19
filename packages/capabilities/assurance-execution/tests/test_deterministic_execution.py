@@ -24,9 +24,7 @@ def test_retired_execution_agent_contracts_are_not_bound() -> None:
     harness = GraphHarness()
     context = harness.recording_context(
         owner_id="assurance.execution",
-        contracts={
-            contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()
-        },
+        contracts={contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()},
     )
     build_execution_graphs(context)
     assert context.bound_contract_ids == (

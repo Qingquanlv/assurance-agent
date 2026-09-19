@@ -668,4 +668,3 @@ def _finalize_evidence(payload: AgentFinalizeInputV1, workspace: Path) -> Execut
         },
         context={"capability_leafs": leafs, "case_ids": case_ids},
     )
-

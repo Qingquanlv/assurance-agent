@@ -160,7 +160,6 @@ CALLABLE_OWNER_OVERRIDES: dict[str, str] = {
 OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
     "assurance.execution": (
         "operation:run-tests",
-        "operation:run-tests-and-collect-pr-metrics",
     ),
     "assurance.healing": (
         "operation:allocate-healing-attempt",

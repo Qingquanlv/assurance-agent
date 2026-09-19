@@ -56,14 +56,10 @@ def _draft(**overrides: object) -> dict[str, object]:
                 "key": "locked_valid_password",
                 "condition": "连续5次失败后，用正确密码登录",
                 "proposed_expected_status": 423,
-                "basis_quotes": [
-                    {"source_id": "requirement", "quote": "锁定返回423", "context_quote": None}
-                ],
+                "basis_quotes": [{"source_id": "requirement", "quote": "锁定返回423", "context_quote": None}],
             }
         ],
-        "basis_quotes": [
-            {"source_id": "requirement", "quote": "锁定返回423", "context_quote": None}
-        ],
+        "basis_quotes": [{"source_id": "requirement", "quote": "锁定返回423", "context_quote": None}],
         "open_questions": [],
     }
     row.update(overrides)

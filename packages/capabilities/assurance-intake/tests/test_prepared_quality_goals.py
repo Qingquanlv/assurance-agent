@@ -11,10 +11,8 @@ import yaml
 from assurance_intake.contracts.explore import ExploreAdvisoryV1
 from assurance_intake.contracts.plan import LoadPlanInputV1, ResolvePlanInputV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.contracts.quality_goals import (
-    normalize_goal_obligations,
-    required_goal_families,
-)
+from assurance_intake.contracts.quality_goals import required_goal_families
+from assurance_intake.operations.obligations import normalize_goal_obligations
 from assurance_intake.operations.plan_artifacts import (
     LoadPlanHandler,
     ResolvePlanHandler,

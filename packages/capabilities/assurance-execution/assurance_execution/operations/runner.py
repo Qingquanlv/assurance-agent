@@ -322,7 +322,10 @@ def authenticate_execution_output(
     expected: RunTestsInputV1,
     document: CollectorDocumentV1,
 ) -> None:
-    if document.identity.change_id != expected.change_id or document.identity.batch_id != expected.batch_id:
+    if (
+        document.identity.plan_digest != expected.plan_digest
+        or document.identity.batch_id != expected.batch_id
+    ):
         raise OutputError("collector identity does not match the locked execution input")
     if not document.complete:
         raise OutputError("collector document is incomplete")
@@ -435,7 +438,9 @@ def run_observed_mapping(
     for family in selected_families:
         family_selected = tuple(entry.test for entry in mapping.mappings if entry.layer == family)
         try:
-            argv = build_family_argv(cast(ExecutionFamily, family), family_selected, batch_id=payload.batch_id)
+            argv = build_family_argv(
+                cast(ExecutionFamily, family), family_selected, batch_id=payload.batch_id
+            )
         except RunnerUnsupported:
             relative = (
                 f"qa/results/execution/epochs/{payload.coverage_epoch}/"
@@ -443,7 +448,9 @@ def run_observed_mapping(
             )
             diagnostic = workspace.joinpath(*relative.split("/"))
             diagnostic.parent.mkdir(parents=True, exist_ok=True)
-            payload_bytes = (json.dumps({"family": family, "reason_code": "runner_unsupported"}) + "\n").encode()
+            payload_bytes = (
+                json.dumps({"family": family, "reason_code": "runner_unsupported"}) + "\n"
+            ).encode()
             diagnostic.write_bytes(payload_bytes)
             outcomes.append(
                 FamilyExecutionOutcomeV1(
@@ -525,9 +532,9 @@ def run_observed_mapping(
             "results": results,
             "family_outcomes": [item.model_dump(mode="json") for item in outcomes],
             "mapping_digest": mapping_digest(mapping),
-            "receipt_digest": mapping_digest(mapping) if not commands else hashlib.sha256(
-                json.dumps(commands, sort_keys=True).encode()
-            ).hexdigest(),
+            "receipt_digest": mapping_digest(mapping)
+            if not commands
+            else hashlib.sha256(json.dumps(commands, sort_keys=True).encode()).hexdigest(),
         }
     )
 
