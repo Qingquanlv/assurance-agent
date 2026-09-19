@@ -15,7 +15,7 @@ from graph_engine.plugin_api import FrozenModel
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_intake.contracts.common import TestFamily, validate_family_tuple
-from assurance_intake.contracts.impact import INVENTORY_PATH
+from assurance_intake.contracts.impact import INVENTORY_PATH, impact_row_identity
 from assurance_intake.contracts.quality_goals import (
     PreparedQualityGoalV1,
     validate_resource_digests,
@@ -34,6 +34,23 @@ _REASON_ORDER = {
     "impact_pending_confirmation": 7,
 }
 _GLOBAL_REASONS = frozenset({"accepted_proposal", "fallback_all_candidates", "impact_pending_confirmation"})
+
+
+def bind_impact_row_ids(
+    *,
+    plan_digest: str,
+    inventory_ref: EvidenceArtifactRefV1,
+    row_ids: tuple[str, ...],
+) -> tuple[tuple[str, str, str], ...]:
+    """Bind local IR-* ids to the plan and authenticated inventory digest."""
+    return tuple(
+        impact_row_identity(
+            plan_digest=plan_digest,
+            inventory_digest=inventory_ref.digest,
+            row_id=row_id,
+        )
+        for row_id in row_ids
+    )
 
 
 def _canonical_segment(value: str, label: str) -> str:
@@ -325,6 +342,7 @@ __all__ = [
     "ResolvePlanOutputV1",
     "ResolvedAssurancePlan",
     "TestFamilyPolicyV1",
+    "bind_impact_row_ids",
     "decode_plan",
     "plan_artifact_ref",
     "plan_bytes",

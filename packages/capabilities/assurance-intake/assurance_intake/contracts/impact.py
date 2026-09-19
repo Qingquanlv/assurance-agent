@@ -10,6 +10,7 @@ right; digests prove provenance, not correctness.
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+import re
 from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
@@ -35,6 +36,7 @@ _KIND_FAMILY: dict[str, TestFamily] = {
     "data_constraint": "api",
 }
 _SHA256 = r"^[0-9a-f]{64}$"
+_CASE_MODULE_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _canonical_relative(value: str, label: str) -> str:
@@ -195,7 +197,8 @@ class ImpactRowV1(FrozenModel):
     row_id: str = Field(pattern=r"^IR-\d{3,}$")
     change_evidence_ids: tuple[str, ...] = Field(min_length=1)
     affected_behavior: AffectedBehaviorV1
-    obligation: str = Field(min_length=1)
+    case_module: str | None = None
+    obligation: str = Field(min_length=1)  # analysis draft; formal expected behavior is PreparedObligationV1
     expected_basis_ids: tuple[str, ...] = ()
     assets: ImpactAssetsV1
     disposition: ImpactDisposition
@@ -208,6 +211,18 @@ class ImpactRowV1(FrozenModel):
         if any(not item.strip() for item in value):
             raise ValueError("evidence ids must be non-empty strings")
         return _require_unique(value, "evidence ids")
+
+    @field_validator("case_module")
+    @classmethod
+    def _case_module(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value != value.strip() or not value:
+            raise ValueError("case_module must be a trimmed non-empty slug path")
+        parts = value.split("/")
+        if any(_CASE_MODULE_PART.fullmatch(part) is None for part in parts):
+            raise ValueError("case_module must be slash-separated slug segments")
+        return value
 
     @model_validator(mode="after")
     def _disposition_shape(self) -> Self:
@@ -338,6 +353,13 @@ def impact_required_families(inventory: ChangeImpactInventoryV1) -> tuple[TestFa
     return tuple(family for family in TEST_FAMILY_ORDER if family in families)
 
 
+def impact_row_identity(*, plan_digest: str, inventory_digest: str, row_id: str) -> tuple[str, str, str]:
+    """Full impact-row identity. Naked IR-* is not reusable across inventories."""
+    if not plan_digest or not inventory_digest or not row_id:
+        raise ValueError("impact row identity requires plan digest, inventory digest, and row_id")
+    return (plan_digest, inventory_digest, row_id)
+
+
 __all__ = [
     "AffectedBehaviorV1",
     "BehaviorKind",
@@ -357,6 +379,7 @@ __all__ = [
     "ImpactSeedV1",
     "SeedReason",
     "impact_required_families",
+    "impact_row_identity",
     "validate_inventory_closed_keys",
     "validate_inventory_references",
 ]

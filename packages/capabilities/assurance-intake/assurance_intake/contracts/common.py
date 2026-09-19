@@ -12,6 +12,8 @@ RiskTier = Literal["low", "medium", "high", "critical"]
 RISK_TIER_ORDER: tuple[RiskTier, ...] = get_args(RiskTier)
 TestFamily = Literal["api", "e2e", "fuzz", "performance"]
 TEST_FAMILY_ORDER: tuple[TestFamily, ...] = get_args(TestFamily)
+MrcCategory = Literal["api", "e2e", "e2e_if_enabled", "negative", "data_integrity"]
+MrcLayer = Literal["api", "e2e", "both"]
 
 
 def validate_family_tuple(value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:

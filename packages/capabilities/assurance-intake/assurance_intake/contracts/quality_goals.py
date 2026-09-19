@@ -11,7 +11,14 @@ from pydantic import Field, field_validator
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
 from graph_engine.plugin_api import FrozenModel
 
-from assurance_intake.contracts.common import RiskTier, TestFamily, validate_family_tuple
+from assurance_intake.contracts.common import (
+    MrcCategory,
+    MrcLayer,
+    RiskTier,
+    TestFamily,
+    validate_family_tuple,
+)
+from assurance_intake.contracts.obligations import PreparedObligationV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 FiniteFloor = Annotated[float, Field(ge=0.0, le=1.0, allow_inf_nan=False)]
@@ -21,8 +28,6 @@ COVERAGE_GOAL_ORDER: tuple[CoverageGoal, ...] = (
     "auth_matrix_coverage",
     "journey_coverage",
 )
-MrcCategory = Literal["api", "e2e", "e2e_if_enabled", "negative", "data_integrity"]
-MrcLayer = Literal["api", "e2e", "both"]
 _MRC_CATEGORIES: tuple[MrcCategory, ...] = (
     "api",
     "e2e",
@@ -125,14 +130,6 @@ class PreparedQualityGoalV1(FrozenModel):
         return value
 
 
-class PreparedObligationV1(FrozenModel):
-    mrc_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-    key: str = Field(min_length=1)
-    category: MrcCategory
-    required: bool
-    layer: MrcLayer
-
-
 def journey_keys_from_document(document: Mapping[str, object]) -> tuple[str, ...]:
     raw = document.get("journeys", [])
     if not isinstance(raw, list) or any(
@@ -188,11 +185,27 @@ def _obligation(
     )
 
 
+def _obligation_layers(row: PreparedObligationV1) -> tuple[TestFamily, ...]:
+    return ("api", "e2e") if row.layer == "both" else (row.layer,)
+
+
+def _scope_obligation(
+    row: PreparedObligationV1,
+    admissible_families: frozenset[TestFamily] | None,
+) -> PreparedObligationV1:
+    if admissible_families is None or not row.required:
+        return row
+    if any(family in admissible_families for family in _obligation_layers(row)):
+        return row
+    return row.model_copy(update={"required": False})
+
+
 def normalize_goal_obligations(
     advisory: Any,
     *,
     capability_leafs: frozenset[str],
     journey_keys: frozenset[str],
+    admissible_families: frozenset[TestFamily] | None = None,
 ) -> tuple[PreparedObligationV1, ...]:
     source = advisory.minimum_required_coverage
     if not isinstance(source, Mapping) or not source:
@@ -207,7 +220,10 @@ def normalize_goal_obligations(
         if category == "e2e_if_enabled" and entries:
             raise ValueError("e2e_if_enabled applicability is unresolved; resolve obligations under e2e")
         for sequence, entry in enumerate(entries, start=1):
-            row = _obligation(category=category, entry=entry, sequence=sequence)
+            row = _scope_obligation(
+                _obligation(category=category, entry=entry, sequence=sequence),
+                admissible_families,
+            )
             if category in {"negative", "data_integrity"} and row.key not in capability_leafs:
                 raise ValueError(f"unknown closed MRC key: {row.key}")
             if category == "e2e" and row.key not in journey_keys:
@@ -224,11 +240,15 @@ def normalize_goal_obligations(
 
 def required_goal_families(
     obligations: tuple[PreparedObligationV1, ...],
+    *,
+    admissible_families: frozenset[TestFamily] | None = None,
 ) -> tuple[TestFamily, ...]:
     families: set[TestFamily] = set()
     for row in obligations:
         if row.required:
-            families.update(("api", "e2e") if row.layer == "both" else (row.layer,))
+            families.update(_obligation_layers(row))
+    if admissible_families is not None:
+        families &= set(admissible_families)
     return tuple(family for family in ("api", "e2e", "fuzz", "performance") if family in families)
 
 
