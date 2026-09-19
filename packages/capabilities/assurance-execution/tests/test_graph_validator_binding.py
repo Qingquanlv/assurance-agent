@@ -8,8 +8,8 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 from langchain_core.runnables.config import RunnableConfig
 
-from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
-from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
+from agent_runtime_contracts import RawAgentRuntimeOutcome
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.graphs.factory import build_execution_graphs
 from assurance_execution.graphs.nodes import publish_execution, select_execute
@@ -51,7 +51,7 @@ from graph_engine.testing import GraphHarness, RecordingCapabilityBuildContext
 
 _TEST_CONTRACT_ID = "test.assurance.execution.validator-parity.v1"
 _EVIDENCE_VALIDATOR_ID = "assurance.execution.validator.evidence.v1"
-_EXECUTE_ID = "assurance.execution.agent.execute.v1"
+_EXECUTE_ID = "assurance.execution.execute"
 _ACCEPT_PATH = "qa/tests/test_validator_parity.py"
 _REJECT_PATH = "src/validator_parity.py"
 _OUTSIDE_REASON = "execution candidate may write only tests and change execution paths"
@@ -123,14 +123,14 @@ class _CountingValidator:
         return self.inner.validate(staged, context)
 
 
+class _NoopExecutor:
+    async def execute(self, validated_input: object, scope: object) -> object:
+        del validated_input, scope
+        raise RuntimeError("semantic attempt is not driven")
+
+
 def _boot_resolved_execute() -> ResolvedAttemptContract[Any, Any]:
-    agent = AGENT_JOB_CONTRACTS["execute"]
-    return ResolvedRawAgentExecutor(
-        agent,
-        prepare=cast(Any, _DeferredPhase()),
-        runtime=_DeferredPhase(),
-        finalize=cast(Any, _DeferredPhase()),
-    ).resolve()
+    return resolve_contract(TASK_ATTEMPT_CONTRACTS["execute"], executor=cast(Any, _NoopExecutor()))
 
 
 def _contribution() -> PluginContribution:
@@ -138,7 +138,7 @@ def _contribution() -> PluginContribution:
 
 
 def _manifest() -> GraphBuildManifest:
-    digest = canonical_digest(AGENT_JOB_CONTRACTS["execute"].to_task_contract().canonical_projection())
+    digest = canonical_digest(TASK_ATTEMPT_CONTRACTS["execute"].canonical_projection())
     return GraphBuildManifest(
         revision=GraphRevision.build(
             product_lock_digest="a" * 64,
@@ -262,7 +262,7 @@ def _invoke_config() -> RunnableConfig:
 
 
 def _assert_shipped_inventory(contribution: PluginContribution) -> None:
-    assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
+    assert all(contract.validators == () for contract in TASK_ATTEMPT_CONTRACTS.values())
     assert _TEST_CONTRACT_ID not in {item.contract_id for item in contribution.attempt_contracts}
     assert _TEST_CONTRACT_ID not in all_feature_agent_contracts()
     assert len(all_feature_agent_contracts()) == 28
@@ -327,11 +327,11 @@ async def _run_parity_candidate(
     shipped_context = GraphHarness().recording_context(
         owner_id="assurance.execution",
         contracts={
-            contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()
+            contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()
         },
     )
     build_execution_graphs(shipped_context)
-    assert shipped_context.bound_contract_ids == (_EXECUTE_ID, "assurance.execution.agent.run.v1")
+    assert shipped_context.bound_contract_ids == (_EXECUTE_ID, "assurance.execution.run")
     factory = AttemptNodeFactory(journal=journal, kernel=kernel)
     context = RecordingCapabilityBuildContext(
         owner_id="assurance.execution",
@@ -366,7 +366,7 @@ async def _run_parity_candidate(
     finally:
         store.close()
     _assert_shipped_inventory(contribution)
-    assert all(contract.validators == () for contract in AGENT_JOB_CONTRACTS.values())
+    assert all(contract.validators == () for contract in TASK_ATTEMPT_CONTRACTS.values())
     return cast(dict[str, object], terminal), counter, workspace, writer
 
 

@@ -9,8 +9,8 @@ import pytest
 from langchain_core.runnables.config import RunnableConfig
 from pydantic import BaseModel
 
-from agent_runtime_contracts import RawAgentRuntimeOutcome, ResolvedRawAgentExecutor
-from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS
+from agent_runtime_contracts import RawAgentRuntimeOutcome
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_execution.contracts.execution import ExecutionManifest
 from assurance_execution.contracts.selection import SelectedTargets
@@ -20,7 +20,6 @@ from assurance_execution.operations.agent_skills import assemble_execution_input
 from assurance_execution.operations.common import InputError
 from graph_engine.attempts.contracts import (
     ExecutedAttemptResult,
-    ResolvedAttemptContract,
     TaskAttemptContract,
     resolve_contract,
 )
@@ -50,7 +49,7 @@ from tests.acg_plan_fixture import install_plan
 
 _SHA = "a" * 64
 _RECEIPT = ReceiptRef(receipt_id="receipt-1", receipt_digest="b" * 64)
-_RUN_ID = "assurance.execution.agent.run.v1"
+_RUN_ID = "assurance.execution.run"
 
 
 def bundle_fields(bundle: ExecutionGraphs) -> tuple[str, ...]:
@@ -159,7 +158,7 @@ def execution_manifest(*, change_id: str = "CH-DEMO-001") -> ExecutionManifest:
 
 
 def execution_contracts() -> dict[str, TaskAttemptContract[Any, Any]]:
-    return {contract.contract_id: contract.to_task_contract() for contract in AGENT_JOB_CONTRACTS.values()}
+    return {contract.contract_id: contract for contract in TASK_ATTEMPT_CONTRACTS.values()}
 
 
 def generation_result() -> dict[str, object]:
@@ -173,6 +172,7 @@ def generation_result() -> dict[str, object]:
         "preparation_refs": [ref("qa/requirement.md"), plan_ref],
         "case_refs": [ref("qa/cases/items/case.yaml")],
         "review_ref": ref("qa/results/review/case-review.json"),
+        "selection_ref": ref("qa/results/cases/epochs/2/selection.json"),
     }
     return {
         "change_id": "CH-DEMO-001",
@@ -198,8 +198,8 @@ def test_execution_factory_exports_execute_and_rerun(recording_context) -> None:
     bundle = build_execution_graphs(recording_context)
     assert bundle_fields(bundle) == ("execute", "rerun")
     assert recording_context.bound_contract_ids == (
-        "assurance.execution.agent.execute.v1",
-        "assurance.execution.agent.run.v1",
+        "assurance.execution.execute",
+        "assurance.execution.run",
     )
     assert recording_context.compiled_subgraph_checkpointers == (None, None)
 
@@ -232,6 +232,7 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
         "rounds_budget": 2,
         "rounds_used": 0,
         "status": "passed",
+        "family_outcomes": [item.model_dump(mode="json") for item in output.family_outcomes],
     }
     assert execute.terminal is not None
     assert execute.promotion_decision == "committed"
@@ -250,6 +251,7 @@ async def test_execute_and_rerun_publish_typed_public_output() -> None:
         "rounds_budget": 2,
         "rounds_used": 0,
         "status": "passed",
+        "family_outcomes": [item.model_dump(mode="json") for item in output.family_outcomes],
     }
     assert rerun.promotion_decision == "committed"
 
@@ -346,11 +348,12 @@ def test_execution_prepare_rejects_replaced_generation_source(tmp_path: Path) ->
                 "selected_test_families": ["api"],
                 "capability_leafs": ["entities.item.create"],
                 "coverage_epoch": 2,
+                "coverage_epoch_token": "2",
+                "execution_kind": "execute",
                 "generation_result": generation,
             },
             workspace=tmp_path,
             write_root=tmp_path / ".stage",
-            model=AGENT_JOB_CONTRACTS["execute"].input_model,
         )
 
 
@@ -404,16 +407,6 @@ class _DeferredPhase:
         raise RuntimeError("semantic attempt phase is not driven")
 
 
-def _boot_resolved_execute() -> ResolvedAttemptContract[Any, Any]:
-    agent = AGENT_JOB_CONTRACTS["execute"]
-    return ResolvedRawAgentExecutor(
-        agent,
-        prepare=cast(Any, _DeferredPhase()),
-        runtime=_DeferredPhase(),
-        finalize=cast(Any, _DeferredPhase()),
-    ).resolve()
-
-
 def _revision() -> str:
     return canonical_digest({"revision": "execution-graph"})
 
@@ -440,14 +433,13 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
     workspace = _RecordingWorkspace(TaskWorkspaceProvider(store))
     output = execution_evidence()
     writer = _WritingExecutor(workspace, output)
-    core = _boot_resolved_execute()
     writable = ResourceClaims(writes=("tests",))
     execute_contract = resolve_contract(
-        replace(core.contract, resources=writable),
+        replace(TASK_ATTEMPT_CONTRACTS["execute"], resources=writable),
         executor=writer,
     )
     run_contract = resolve_contract(
-        replace(AGENT_JOB_CONTRACTS["run"].to_task_contract(), resources=writable),
+        replace(TASK_ATTEMPT_CONTRACTS["run"], resources=writable),
         executor=writer,
     )
     journal = MemoryAttemptJournal()
@@ -493,20 +485,10 @@ async def test_execution_graph_replays_committed_attempt_without_duplicate_dispa
         await bundle.rerun.ainvoke(second_rerun, config=_invoke_config(entrypoint="rerun"))
         assert writer.calls == 3
 
-        selected = AGENT_JOB_CONTRACTS["run"].input_model.model_validate(
-            {
-                key: first_rerun[key]
-                for key in AGENT_JOB_CONTRACTS["run"].input_model.model_fields
-                if key in first_rerun
-            }
-        )
-        selected_second = AGENT_JOB_CONTRACTS["run"].input_model.model_validate(
-            {
-                key: second_rerun[key]
-                for key in AGENT_JOB_CONTRACTS["run"].input_model.model_fields
-                if key in second_rerun
-            }
-        )
+        from assurance_execution.graphs.nodes import select_rerun
+
+        selected = select_rerun(first_rerun)
+        selected_second = select_rerun(second_rerun)
         first_key = derive_attempt_key(
             invocation_id="inv-1",
             graph_revision=_revision(),

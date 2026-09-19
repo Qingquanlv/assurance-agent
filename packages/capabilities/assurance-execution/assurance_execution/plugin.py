@@ -33,10 +33,7 @@ EXECUTION_DEPENDENCIES: tuple[PluginDependency, ...] = (
 )
 
 EXECUTION_RESOURCE_FILES: dict[str, str] = {
-    "assurance.execution.persona.executor.v1": "personas/executor.md",
     "assurance.execution.result.execution.v1": "result-contracts/execution.v1.schema.json",
-    "assurance.execution.skill.aa-execute.v1": "skills/aa-execute/SKILL.md",
-    "assurance.execution.skill.aa-run.v1": "skills/aa-run/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {

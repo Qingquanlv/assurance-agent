@@ -91,11 +91,11 @@
       },
       {
         "contract_id": "assurance.intake.agent.explore.v1",
-        "digest": "56d54167153773fa6e2ab9989dd06a6026dae533ac5f16d54c62a8010dea1943"
+        "digest": "3165323ad1907428c69209b32cda81eae63b50d95db1aadd8a35f50c23dc4523"
       },
       {
         "contract_id": "assurance.intake.agent.intake.v1",
-        "digest": "a31a56af2423377b2f2117ef6f8250f4ae390f5badecd26f48c4207bd25b786d"
+        "digest": "69fbbe71c6fbefa7308d8359e2ddfeb0d356c75b1d3a696698d5cbbf09921297"
       },
       {
         "contract_id": "assurance.intake.task.load-plan",

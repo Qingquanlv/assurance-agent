@@ -33,8 +33,6 @@ _HISTORICAL_PREPARE_IDS = (
     "assurance.generation.fuzz.codegen-review.prepare",
     "assurance.generation.performance.codegen.prepare",
     "assurance.generation.performance.codegen-review.prepare",
-    "assurance.execution.execute.prepare",
-    "assurance.execution.run.prepare",
     "assurance.healing.coverage-repair.prepare",
     "assurance.healing.fix-proposal.prepare",
     "assurance.quality.fact-baseline.prepare",

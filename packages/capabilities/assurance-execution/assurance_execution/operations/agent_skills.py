@@ -17,14 +17,13 @@ from agent_runtime_contracts.qa_paths import qa_join
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import TaskContext, TaskOutcome
 
 from assurance_execution.contracts.agent import (
     AgentBindingDataV1,
     AgentFinalizeInputV1,
     ExecutionPrepareInputV1,
-    ExecuteInputV1,
-    RunSkillInputV1,
+    RunTestsInputV1,
     SelectInputV1,
 )
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
@@ -39,8 +38,6 @@ from assurance_execution.generated_merge import merge_generated
 from assurance_execution.operations.common import (
     InputError,
     OutputError,
-    failed_input,
-    failed_output,
     json_digest,
     leafs_of,
     mapping_digest,
@@ -440,8 +437,8 @@ def assemble_execution_input(
     *,
     workspace: Path,
     write_root: Path,
-    model: type[ExecuteInputV1] | type[RunSkillInputV1],
-) -> ExecuteInputV1 | RunSkillInputV1:
+    model: type[Any] | None = None,
+) -> RunTestsInputV1:
     root = validate_input(ExecutionPrepareInputV1, data)
     try:
         plan = decode_plan(
@@ -523,24 +520,20 @@ def assemble_execution_input(
             raise ValueError("durable execution lock time is missing")
     except ValueError as error:
         raise InputError(str(error)) from error
-    return model(
+    del execution_view_root, model
+    return RunTestsInputV1(
         change_id=root.change_id,
         plan_digest=root.plan_digest,
         plan_ref=root.plan_ref,
         batch_id=batch_id,
         capability_leafs=root.capability_leafs,
         case_ids=case_ids,
-        artifact_paths=(),
         mapping=closed,
         selected_targets=selected,
         baseline_tree_id=locked_baseline,
         runner_profile_digest=runner_profile_digest,
         coverage_epoch=root.coverage_epoch,
-        repair_round=root.repair_round,
-        generation_result=root.generation_result,
-        execution_view_root=execution_view_root,
-        execution_view_digest=view.digest,
-        executed_at=view.executed_at,
+        execution_kind=root.execution_kind,
     )
 
 
@@ -676,88 +669,3 @@ def _finalize_evidence(payload: AgentFinalizeInputV1, workspace: Path) -> Execut
         context={"capability_leafs": leafs, "case_ids": case_ids},
     )
 
-
-class ExecutePrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            binding = validate_binding(request.binding_data)
-            business = assemble_execution_input(
-                request.input,
-                workspace=context.project_root,
-                write_root=context.write_root,
-                model=ExecuteInputV1,
-            )
-            return prepare_outcome(
-                skill_path=EXECUTE_SKILL,
-                business=business,
-                binding=binding,
-                context=context,
-                allowed_outputs=(),
-                read_roots=(business.execution_view_root,),
-            )
-        except InputError as error:
-            return failed_input(error)
-
-
-class RunPrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            binding = validate_binding(request.binding_data)
-            business = assemble_execution_input(
-                request.input,
-                workspace=context.project_root,
-                write_root=context.write_root,
-                model=RunSkillInputV1,
-            )
-            return prepare_outcome(
-                skill_path=RUN_SKILL,
-                business=business,
-                binding=binding,
-                context=context,
-                allowed_outputs=(),
-                read_roots=(business.execution_view_root,),
-            )
-        except InputError as error:
-            return failed_input(error)
-
-
-class ExecuteFinalizeHandler:
-    input_model = AgentFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = _finalize_payload(request.input)
-            evidence = _finalize_evidence(payload, context.project_root)
-            _commit_execution_evidence(
-                payload,
-                evidence,
-                project_root=context.project_root,
-                write_root=context.write_root,
-                filename="execute-result.json",
-            )
-            return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-
-
-class RunFinalizeHandler:
-    input_model = AgentFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = _finalize_payload(request.input)
-            evidence = _finalize_evidence(payload, context.project_root)
-            _commit_execution_evidence(
-                payload,
-                evidence,
-                project_root=context.project_root,
-                write_root=context.write_root,
-                filename="run-result.json",
-            )
-            return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))

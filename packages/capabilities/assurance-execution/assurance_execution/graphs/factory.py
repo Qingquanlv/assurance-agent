@@ -21,8 +21,8 @@ from assurance_execution.graphs.nodes import (
 from assurance_execution.graphs.state import ExecutionState
 from graph_engine.boot.boot import CapabilityBuildContext
 
-_EXECUTE_CONTRACT = "assurance.execution.agent.execute.v1"
-_RUN_CONTRACT = "assurance.execution.agent.run.v1"
+_EXECUTE_CONTRACT = "assurance.execution.execute"
+_RUN_CONTRACT = "assurance.execution.run"
 _TERMINALS = {"committed": "committed", "failed": "failed"}
 ExecutionSemanticNodeId = Literal["execution.execute", "execution.run"]
 

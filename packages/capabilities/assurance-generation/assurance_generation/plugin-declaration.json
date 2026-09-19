@@ -126,11 +126,11 @@
       },
       {
         "contract_id": "assurance.generation.publish-cycle",
-        "digest": "693d3fa0ba4fa8c9bec90e1416d05cc6c9d33bd706a5961e813af7b653933384"
+        "digest": "73c3c5c6dbcbe17d34a0322a9a43e7dfb885ca4afadd3ae1c5747ad0ad568fb1"
       },
       {
         "contract_id": "assurance.generation.resolve-inputs",
-        "digest": "e7066ddb6586fe70b66373db907dc6c0de52f1de29599788e415bf8a712d0ee1"
+        "digest": "fdbed1397dce3c67bbe69a97b4f816bebe9109291851a378ab3b32e7fae8eb06"
       }
     ]
   }

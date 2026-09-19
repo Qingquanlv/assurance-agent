@@ -368,8 +368,8 @@ class _ExecutionLoopHost:
             if isinstance(request_input.get("rounds_budget"), int):
                 rounds_budget = request_input["rounds_budget"]
         if capability_id in {
-            "assurance.execution.agent.execute.v1",
-            "assurance.execution.agent.run.v1",
+            "assurance.execution.execute",
+            "assurance.execution.run",
         }:
             status = (
                 self._execution_sequence[self._execution_index]

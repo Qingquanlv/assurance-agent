@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -13,19 +14,29 @@ from typing import Protocol, cast, runtime_checkable
 from pydantic import ValidationError
 
 from graph_engine.canonical import JSONValue
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import (
+    TaskActivityCancelResult,
+    TaskActivityReconcileResult,
+    TaskActivitySnapshot,
+    TaskContext,
+    TaskOutcome,
+    TaskRequest,
+)
 
-from assurance_execution.contracts.agent import RunTestsInputV1
-from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.agent import ExecutionPrepareInputV1, RunTestsInputV1
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1, FamilyExecutionOutcomeV1
+from assurance_execution.contracts.execution import EXECUTION_FAMILIES, ExecutionFamily
+from assurance_execution.contracts.observations import CollectorDocumentV1
 from assurance_execution.contracts.selection import ClosedMappingV1
+from assurance_execution.operations.observation_run import RunnerUnsupported, build_family_argv
 from assurance_execution.operations.common import (
     InputError,
     OutputError,
-    failed_input,
-    failed_output,
     leafs_of,
+    mapping_digest,
     validate_input,
 )
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_execution.operations.normalize import normalize_evidence
 from assurance_execution.operations.paths import (
     resolve_canonical_evidence,
@@ -307,48 +318,218 @@ def _run_output(
     return output
 
 
+def authenticate_execution_output(
+    expected: RunTestsInputV1,
+    document: CollectorDocumentV1,
+) -> None:
+    if document.identity.change_id != expected.change_id or document.identity.batch_id != expected.batch_id:
+        raise OutputError("collector identity does not match the locked execution input")
+    if not document.complete:
+        raise OutputError("collector document is incomplete")
+
+
 class RunTestsHandler:
     def __init__(self, *, process_host: ExecutionProcessHost) -> None:
         self._process_host = process_host
 
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = validate_input(RunTestsInputV1, request.input)
-            output = run_closed_mapping(
-                payload,
-                context.project_root,
-                self._process_host,
-                include_pr_metrics=False,
-            )
-            return TaskOutcome.succeeded(cast(JSONValue, output))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-        except ValidationError as error:
-            return failed_input(error)
+    def _payload(self, request: TaskRequest, context: TaskContext) -> RunTestsInputV1:
+        raw = request.input
+        if isinstance(raw, Mapping) and "mapping" in raw:
+            return validate_input(RunTestsInputV1, raw)
+        from assurance_execution.operations.agent_skills import assemble_execution_input
 
-
-class RunTestsAndCollectPrMetricsHandler:
-    def __init__(self, *, process_host: ExecutionProcessHost) -> None:
-        self._process_host = process_host
+        prepared = validate_input(ExecutionPrepareInputV1, raw)
+        return assemble_execution_input(
+            prepared,
+            workspace=context.project_root,
+            write_root=context.write_root,
+        )
 
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            payload = validate_input(RunTestsInputV1, request.input)
-            output = run_closed_mapping(
-                payload,
-                context.project_root,
-                self._process_host,
-                include_pr_metrics=True,
-            )
-            return TaskOutcome.succeeded(cast(JSONValue, output))
+            raw = request.input
+            assembled = isinstance(raw, Mapping) and "mapping" in raw
+            payload = self._payload(request, context)
+            if payload.timeout_seconds <= 30:
+                raise InputError("execution timeout must reserve 30 seconds for cleanup")
+            if context.activity is not None:
+                context.activity.mark_dispatch_started(
+                    {
+                        "handler": "assurance.execution.run-tests",
+                        "batch_id": payload.batch_id,
+                        "baseline_tree_id": payload.baseline_tree_id,
+                        "runner_profile_digest": payload.runner_profile_digest,
+                    }
+                )
+            if assembled:
+                output = run_closed_mapping(
+                    payload,
+                    context.project_root,
+                    self._process_host,
+                    include_pr_metrics=False,
+                )
+                evidence = ExecutionEvidenceV1.model_validate(output["evidence"])
+            else:
+                evidence = run_observed_mapping(payload, context.project_root, self._process_host)
+                filename = "run-result.json" if payload.execution_kind == "run" else "execute-result.json"
+                write_canonical_evidence(context.project_root, evidence, filename=filename)
+            if context.activity is not None:
+                context.activity.bind({"batch_id": payload.batch_id})
+            return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
         except InputError as error:
-            return failed_input(error)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
         except OutputError as error:
-            return failed_output(str(error))
+            return TaskOutcome.failed("invalid_output", str(error), retryable=False)
         except ValidationError as error:
-            return failed_input(error)
+            return TaskOutcome.failed("invalid_input", str(error), retryable=False)
+
+    async def reconcile(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityReconcileResult:
+        del request, context
+        if activity.state == "terminal_observed" and activity.terminal is not None:
+            return TaskActivityReconcileResult(status="terminal", outcome=activity.terminal)
+        if activity.dispatch_fingerprint is None:
+            return TaskActivityReconcileResult(status="not_dispatched")
+        return TaskActivityReconcileResult(status="indeterminate", reason="execution_interrupted")
+
+    async def cancel(
+        self,
+        request: TaskRequest,
+        context: TaskContext,
+        activity: TaskActivitySnapshot,
+    ) -> TaskActivityCancelResult:
+        del request, context
+        reference = activity.reference
+        if isinstance(reference, Mapping):
+            pid = reference.get("pid")
+            if isinstance(pid, int) and pid > 0:
+                try:
+                    os.killpg(pid, 15)
+                except OSError:
+                    try:
+                        os.kill(pid, 15)
+                    except OSError:
+                        pass
+        return TaskActivityCancelResult(status="acknowledged")
+
+
+def run_observed_mapping(
+    payload: RunTestsInputV1,
+    workspace: Path,
+    process_host: ExecutionProcessHost,
+) -> ExecutionEvidenceV1:
+    mapping = _closed_mapping(payload)
+    if not mapping.selected:
+        raise InputError("execution mapping must contain at least one selected test")
+    selected_families = tuple(
+        family for family in EXECUTION_FAMILIES if getattr(payload.selected_targets, family)
+    )
+    outcomes: list[FamilyExecutionOutcomeV1] = []
+    commands: list[dict[str, object]] = []
+    results: list[dict[str, object]] = []
+    failed = False
+    for family in selected_families:
+        family_selected = tuple(entry.test for entry in mapping.mappings if entry.layer == family)
+        try:
+            argv = build_family_argv(cast(ExecutionFamily, family), family_selected, batch_id=payload.batch_id)
+        except RunnerUnsupported:
+            relative = (
+                f"qa/results/execution/epochs/{payload.coverage_epoch}/"
+                f"batches/{payload.batch_id}/diagnostics/{family}.json"
+            )
+            diagnostic = workspace.joinpath(*relative.split("/"))
+            diagnostic.parent.mkdir(parents=True, exist_ok=True)
+            payload_bytes = (json.dumps({"family": family, "reason_code": "runner_unsupported"}) + "\n").encode()
+            diagnostic.write_bytes(payload_bytes)
+            outcomes.append(
+                FamilyExecutionOutcomeV1(
+                    family=cast(ExecutionFamily, family),
+                    state="blocked",
+                    reason_code="runner_unsupported",
+                    diagnostic_refs=(
+                        EvidenceArtifactRefV1(
+                            path=relative,
+                            digest=hashlib.sha256(payload_bytes).hexdigest(),
+                        ),
+                    ),
+                )
+            )
+            failed = True
+            continue
+        _authenticate_selected(
+            workspace,
+            ClosedMappingV1.model_validate(
+                {
+                    "selected": list(family_selected),
+                    "mappings": [
+                        item.model_dump(mode="json") for item in mapping.mappings if item.layer == family
+                    ],
+                },
+                context={
+                    "capability_leafs": leafs_of(payload.capability_leafs),
+                    "case_ids": leafs_of(payload.case_ids),
+                },
+            ),
+        )
+        receipt = process_host.spawn(argv, workspace)
+        report = receipt.report or {}
+        family_mapping = ClosedMappingV1.model_validate(
+            {
+                "selected": list(family_selected),
+                "mappings": [
+                    item.model_dump(mode="json") for item in mapping.mappings if item.layer == family
+                ],
+            },
+            context={
+                "capability_leafs": leafs_of(payload.capability_leafs),
+                "case_ids": leafs_of(payload.case_ids),
+            },
+        )
+        family_evidence = normalize_evidence(
+            change_id=payload.change_id,
+            plan_digest=payload.plan_digest,
+            plan_ref=payload.plan_ref,
+            batch_id=payload.batch_id,
+            selected_targets={name: name == family for name in ("api", "e2e", "fuzz", "performance")},
+            mapping=family_mapping,
+            capability_leafs=leafs_of(payload.capability_leafs),
+            case_ids=leafs_of(payload.case_ids),
+            baseline_tree_id=payload.baseline_tree_id,
+            runner_profile_digest=payload.runner_profile_digest,
+            command=receipt.command,
+            exit_code=receipt.exit_code,
+            report=report,
+        )
+        commands.extend(item.model_dump(mode="json") for item in family_evidence.receipt.commands)
+        results.extend(item.model_dump(mode="json") for item in family_evidence.results)
+        outcomes.append(FamilyExecutionOutcomeV1(family=cast(ExecutionFamily, family), state="executed"))
+        if family_evidence.status == "failed":
+            failed = True
+    return ExecutionEvidenceV1.model_validate(
+        {
+            "schema_version": "1",
+            "status": "failed" if failed else "passed",
+            "change_id": payload.change_id,
+            "plan_digest": payload.plan_digest,
+            "plan_ref": payload.plan_ref.model_dump(mode="json"),
+            "batch_id": payload.batch_id,
+            "selected_targets": payload.selected_targets.model_dump(mode="json"),
+            "mapping": mapping.model_dump(mode="json"),
+            "baseline_tree_id": payload.baseline_tree_id,
+            "runner_profile_digest": payload.runner_profile_digest,
+            "receipt": {"commands": commands},
+            "results": results,
+            "family_outcomes": [item.model_dump(mode="json") for item in outcomes],
+            "mapping_digest": mapping_digest(mapping),
+            "receipt_digest": mapping_digest(mapping) if not commands else hashlib.sha256(
+                json.dumps(commands, sort_keys=True).encode()
+            ).hexdigest(),
+        }
+    )
 
 
 def classify_exit(exit_code: int, *, failed: int, collected: int) -> str:

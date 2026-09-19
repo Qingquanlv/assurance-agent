@@ -62,7 +62,6 @@ _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
         "qa/results/review/**",
         "qa/results/trace/**",
     ),
-    "assurance-v1-executor": ("qa/results/execution/**",),
     "assurance-v1-explorer": (
         "qa/results/explore/exploration-draft.json",
         "qa/results/explore/impact-inventory.json",
@@ -85,25 +84,9 @@ _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
     ),
 }
 
-_DURABLE_TESTS = "qa/tests/**"
-_EXECUTOR_COMMANDS = (
-    "npm run test --prefix qa *",
-    "npm test --prefix qa *",
-    f"npx playwright test --config={_DURABLE_TESTS} *",
-    "pnpm --dir qa run test *",
-    "pnpm --dir qa test *",
-    (
-        "PYTHONDONTWRITEBYTECODE=1 "
-        "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
-        "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa *"
-    ),
-    f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile {_DURABLE_TESTS} *",
-)
-
 _BASH_RULES: Mapping[str, tuple[str, ...]] = {
     "assurance-v1-archiver": (),
     "assurance-v1-doc-author": (),
-    "assurance-v1-executor": _EXECUTOR_COMMANDS,
     "assurance-v1-explorer": (),
     "assurance-v1-reporter": (
         "aa --version",

@@ -10,6 +10,7 @@ from pydantic.types import AwareDatetime
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.plugin_api import FrozenModel
 
+from assurance_execution.contracts.evidence import FamilyExecutionOutcomeV1
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
@@ -27,6 +28,7 @@ class ExecutionCycleResultV1(FrozenModel):
     mapping_ref: EvidenceArtifactRefV1
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     receipt: ReceiptRef
+    family_outcomes: tuple[FamilyExecutionOutcomeV1, ...]
 
     @model_validator(mode="after")
     def _paths_match_change(self) -> Self:

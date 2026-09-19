@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from types import MappingProxyType
 
-from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
-from assurance_execution.contracts.attempts import OUTPUT_ROUTE_TEMPLATES as EXECUTION_OUTPUTS
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
 from assurance_generation.contracts.attempts import OUTPUT_ROUTE_TEMPLATES as GENERATION_OUTPUTS
 from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS as HEALING_JOBS
@@ -24,7 +22,6 @@ def _route_templates() -> Mapping[str, tuple[str, ...]]:
     for contracts, templates in (
         (INTAKE_JOBS, INTAKE_OUTPUTS),
         (GENERATION_JOBS, GENERATION_OUTPUTS),
-        (EXECUTION_JOBS, EXECUTION_OUTPUTS),
         (QUALITY_JOBS, QUALITY_OUTPUTS),
         (HEALING_JOBS, HEALING_OUTPUTS),
         (IMPROVEMENT_JOBS, IMPROVEMENT_OUTPUTS),

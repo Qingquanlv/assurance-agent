@@ -31,8 +31,6 @@ EXPECTED_AGENT_PROFILES = {
     "assurance.generation.agent.fuzz.codegen-review.v1": "assurance-v1-reviewer",
     "assurance.generation.agent.performance.codegen.v1": "assurance-v1-test-author",
     "assurance.generation.agent.performance.codegen-review.v1": "assurance-v1-reviewer",
-    "assurance.execution.agent.execute.v1": "assurance-v1-executor",
-    "assurance.execution.agent.run.v1": "assurance-v1-executor",
     "assurance.healing.agent.coverage-repair.v1": "assurance-v1-test-author",
     "assurance.healing.agent.fix-proposal.v1": "assurance-v1-doc-author",
     "assurance.healing.agent.apply-test-repair.v1": "assurance-v1-test-author",
@@ -105,15 +103,21 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
     assert archiver["tools"]["apply_patch"] is False
     assert set(archiver["permission"]["edit"]) == {
         "**",
+        "**/qa/requirement.md",
         "**/qa/results/explore/context.json",
+        "**/qa/results/explore/exploration.json",
         "**/qa/results/workflow-state.json",
         "**/qa/results/workflow-state.yaml",
         "qa/.runtime/**",
         "qa/.staging/**",
+        "qa/.staging/**/qa/requirement.md",
         "qa/.staging/**/qa/results/explore/context.json",
+        "qa/.staging/**/qa/results/explore/exploration.json",
         "qa/.staging/**/qa/results/workflow-state.json",
         "qa/.staging/**/qa/results/workflow-state.yaml",
+        "qa/requirement.md",
         "qa/results/explore/context.json",
+        "qa/results/explore/exploration.json",
         "qa/results/workflow-state.json",
         "qa/results/workflow-state.yaml",
     }
@@ -121,27 +125,7 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
     doc_author = config["agent"]["assurance-v1-doc-author"]
     assert doc_author["tools"]["apply_patch"] is True
     assert "tool literally named `write` is available" in doc_author["prompt"]
-    executor = config["agent"]["assurance-v1-executor"]
-    pytest_command = (
-        "PYTHONDONTWRITEBYTECODE=1 "
-        "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
-        "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa *"
-    )
-    assert executor["permission"]["bash"][pytest_command] == "allow"
-    assert (
-        executor["permission"]["bash"][
-            "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile qa/tests/** *"
-        ]
-        == "allow"
-    )
-    assert all(
-        "qa/.staging/execution" not in command for command in executor["permission"]["bash"] if command != "*"
-    )
-    assert "uv run --isolated pytest *" not in executor["permission"]["bash"]
-    assert "uv run --isolated locust *" not in executor["permission"]["bash"]
-    assert "pytest *" not in executor["permission"]["bash"]
-    assert "python -m pytest *" not in executor["permission"]["bash"]
-    assert "uv run pytest *" not in executor["permission"]["bash"]
+    assert "assurance-v1-executor" not in config["agent"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
@@ -300,81 +284,6 @@ try {
         assert "not allowed" in denied.stderr or "path escapes" in denied.stderr
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
-def test_opencode_boundary_allows_the_canonical_locust_command(tmp_path: Path) -> None:
-    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
-
-    project = tmp_path / "project"
-    project.mkdir()
-    _config, plugin = install_opencode_agents(project)
-    write_root = "qa/.staging/task-1/attempt-1"
-    locustfile = project / "qa/tests/perf/locustfile_dept.py"
-    locustfile.parent.mkdir(parents=True)
-    locustfile.write_text("# bounded input\n", encoding="utf-8")
-    title = workspace_binding_title(
-        session_id="ses-test",
-        agent_profile="assurance-v1-executor",
-        project_root=project,
-        write_root=write_root,
-        allowed_outputs=(),
-        task_id="task-1",
-        attempt=1,
-        attempt_id="attempt-1",
-        read_roots=("qa",),
-    )
-    driver = r"""
-import { pathToFileURL } from "node:url";
-const pluginPath = process.argv[1];
-const payload = JSON.parse(process.argv[2]);
-const { default: createPlugin } = await import(pathToFileURL(pluginPath).href);
-const hooks = await createPlugin({
-  client: { session: { get: async () => ({ data: payload.session }) } },
-});
-try {
-  await hooks["tool.execute.before"](
-    { tool: "bash", sessionID: payload.session.id, callID: "call-test" },
-    { args: { command: payload.command } },
-  );
-  process.stdout.write("ALLOW\n");
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 23;
-}
-"""
-    command = (
-        "PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile "
-        "qa/tests/perf/locustfile_dept.py "
-        "--headless --users 10 --spawn-rate 2 --run-time 60s"
-    )
-
-    completed = subprocess.run(
-        [
-            shutil.which("node") or "node",
-            "--input-type=module",
-            "-e",
-            driver,
-            str(plugin),
-            json.dumps(
-                {
-                    "session": {
-                        "id": "ses-test",
-                        "directory": str(project.resolve()),
-                        "agent": "assurance-v1-executor",
-                        "title": title,
-                    },
-                    "command": command,
-                }
-            ),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "ALLOW\n"
-
-
 def test_opencode_agent_installation_rejects_conflicting_project_profile(tmp_path) -> None:
     from assurance_product.opencode_agents import install_opencode_agents
 
@@ -386,6 +295,24 @@ def test_opencode_agent_installation_rejects_conflicting_project_profile(tmp_pat
         install_opencode_agents(project)
 
 
+def test_opencode_agent_installation_replaces_stale_owned_profile(tmp_path) -> None:
+    from assurance_product.opencode_agents import bounded_agent_profiles, install_opencode_agents
+
+    project = tmp_path / "project"
+    project.mkdir()
+    stale = {
+        "$schema": "https://opencode.ai/config.json",
+        "plugin": ["./.opencode/plugins/assurance-boundary.mjs"],
+        "agent": {profile: {"description": f"stale {profile}"} for profile in bounded_agent_profiles()},
+    }
+    (project / "opencode.json").write_text(json.dumps(stale, indent=2) + "\n", encoding="utf-8")
+
+    config_path, _plugin = install_opencode_agents(project)
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    assert set(document["agent"]) == set(bounded_agent_profiles())
+    assert document["agent"][bounded_agent_profiles()[0]]["mode"] == "all"
+
+
 def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     from assurance_product.agent_contracts import (
         FEATURE_AGENT_JOB_CATALOGS,
@@ -394,8 +321,8 @@ def test_feature_owned_agent_job_catalogs_are_provider_neutral() -> None:
     from assurance_product.models import all_binding_ids
 
     all_contracts = [contract for catalog in FEATURE_AGENT_JOB_CATALOGS for contract in catalog.values()]
-    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 28
-    assert len(all_feature_agent_contracts()) == 28
+    assert sum(len(catalog) for catalog in FEATURE_AGENT_JOB_CATALOGS) == 26
+    assert len(all_feature_agent_contracts()) == 26
     assert set(all_feature_agent_contracts()) == set(all_binding_ids())
     assert all(not hasattr(contract, "requires_provider_schema") for contract in all_contracts)
     assert all(
@@ -460,7 +387,14 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     extra_claims = {
         "assurance.intake.agent.case-design.v1": ("qa/cases",),
         "assurance.intake.agent.case-review.v1": ("qa/cases/reviewed-case.json",),
-        "assurance.intake.agent.explore.v1": ("qa/results/explore/context.json",),
+        "assurance.intake.agent.intake.v1": (
+            "qa/requirement.md",
+            "qa/results/intake/sources/run-spec.effective.yaml",
+        ),
+        "assurance.intake.agent.explore.v1": (
+            "qa/results/explore/context.json",
+            "qa/results/explore/exploration.json",
+        ),
     }
     for contract_id, contract in AGENT_EXECUTION_CONTRACTS.items():
         assert "change_id" in contract.input_model.model_fields
@@ -569,6 +503,7 @@ def test_explore_prepare_claim_ignores_a_symlinked_sibling_and_promotes_context(
     context_claim = "qa/results/explore/context.json"
     assert claims == (
         context_claim,
+        "qa/results/explore/exploration-draft.json",
         "qa/results/explore/exploration.json",
         "qa/results/explore/impact-inventory.json",
     )

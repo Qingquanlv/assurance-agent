@@ -56,29 +56,39 @@ class _ExecutionResultBase(BaseModel):
     runner_profile_digest: NonEmptyStr
     receipt: ExecutionReceiptV1
     results: tuple[RawTestResultV1, ...]
+    family_outcomes: tuple[FamilyExecutionOutcomeV1, ...] = ()
 
     @model_validator(mode="after")
     def _results_must_be_selected(self) -> Self:
         selected_families = tuple(
             family for family in EXECUTION_FAMILIES if getattr(self.selected_targets, family)
         )
+        synthesized = not self.family_outcomes
+        outcomes = self.family_outcomes or tuple(
+            FamilyExecutionOutcomeV1(family=command.family, state="executed")
+            for command in self.receipt.commands
+        )
+        outcome_families = tuple(item.family for item in outcomes)
+        if outcome_families != selected_families:
+            raise ValueError("family_outcomes must cover selected targets in canonical order")
+        executed = tuple(item.family for item in outcomes if item.state == "executed")
         command_families = tuple(command.family for command in self.receipt.commands)
-        if command_families != selected_families:
-            raise ValueError(
-                "execution command receipts must exactly cover selected targets in canonical order"
-            )
+        if command_families != executed:
+            raise ValueError("execution command receipts must exactly cover executed families")
         mapping_families = frozenset(entry.layer for entry in self.mapping.mappings)
         if mapping_families != frozenset(selected_families):
             raise ValueError("execution mapping must contain a mapped test for every selected family")
-        allowed = frozenset(self.mapping.selected)
         mapping_by_test = {entry.test: entry for entry in self.mapping.mappings}
+        executed_tests = frozenset(
+            entry.test for entry in self.mapping.mappings if entry.layer in executed
+        )
         seen: list[str] = []
         for result in self.results:
-            if result.test not in allowed:
-                raise ValueError("execution evidence contains a test outside the closed mapping")
+            if result.test not in executed_tests:
+                raise ValueError("execution evidence contains a test outside the executed mapping")
             seen.append(result.test)
-        if len(seen) != len(set(seen)) or set(seen) != set(allowed):
-            raise ValueError("execution evidence must uniquely cover the closed mapping")
+        if len(seen) != len(set(seen)) or set(seen) != set(executed_tests):
+            raise ValueError("execution evidence must uniquely cover executed mapping entries")
         for command in self.receipt.commands:
             family_results = tuple(
                 result for result in self.results if mapping_by_test[result.test].layer == command.family
@@ -99,6 +109,8 @@ class _ExecutionResultBase(BaseModel):
                 or command.skipped < counts["skipped"]
             ):
                 raise ValueError("execution command receipt counts contradict the normalized family results")
+        if synthesized:
+            return self.model_copy(update={"family_outcomes": outcomes})
         return self
 
 
@@ -115,4 +127,3 @@ class ExecutionEvidenceV1(_ExecutionResultBase):
     executed_at: AwareDatetime | None = None
     mapping_digest: NonEmptyStr
     receipt_digest: NonEmptyStr
-    family_outcomes: tuple[FamilyExecutionOutcomeV1, ...] = ()

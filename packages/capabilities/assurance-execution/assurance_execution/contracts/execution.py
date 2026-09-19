@@ -82,13 +82,11 @@ class ExecutionReceiptV1(BaseModel):
 
     model_config = _FROZEN
 
-    commands: tuple[ExecutionCommandReceiptV1, ...] = Field(min_length=1, max_length=4)
+    commands: tuple[ExecutionCommandReceiptV1, ...] = Field(min_length=0, max_length=4)
 
     @model_validator(mode="after")
-    def _commands_are_non_empty_unique_and_ordered(self) -> Self:
+    def _commands_are_unique_and_ordered(self) -> Self:
         families = tuple(command.family for command in self.commands)
-        if not families:
-            raise ValueError("execution command receipts must be non-empty")
         expected = tuple(family for family in EXECUTION_FAMILIES if family in families)
         if families != expected:
             raise ValueError("execution command receipts must be unique and canonically ordered")

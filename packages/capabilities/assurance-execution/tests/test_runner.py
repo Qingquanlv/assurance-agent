@@ -14,7 +14,6 @@ from assurance_execution.operations.runner import (
     build_pytest_argv,
 )
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
-    as_object,
     execute_task,
     executed_paths,
     fake_pytest_host,
@@ -69,7 +68,7 @@ async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
     assert escaped.status == "failed"
     assert escaped.failure is not None
     assert escaped.failure.kind == "invalid_input"
-    assert escaped.failure.retryable is True
+    assert escaped.failure.retryable is False
 
 
 @pytest.mark.asyncio
@@ -207,24 +206,6 @@ def test_confined_host_rejects_report_outside_cwd(tmp_path: Path) -> None:
     (tmp_path / "link-report.json").symlink_to(escaped)
     with pytest.raises(InputError, match="report"):
         host.spawn(("pytest", "--json-report", "--json-report-file=link-report.json"), tmp_path)
-
-
-@pytest.mark.asyncio
-async def test_run_tests_and_collect_pr_metrics_uses_selected_only(tmp_path: Path) -> None:
-    from assurance_execution.operations.runner import RunTestsAndCollectPrMetricsHandler
-
-    write_test(tmp_path / "qa/tests/generated_test.py")
-    write_test(tmp_path / "qa/tests/legacy_test.py")
-    outcome = await execute_task(
-        RunTestsAndCollectPrMetricsHandler(process_host=fake_pytest_host()),
-        run_request(selected=["qa/tests/generated_test.py"]),
-        tmp_path,
-    )
-    assert outcome.status == "succeeded"
-    assert executed_paths(outcome) == ("qa/tests/generated_test.py",)
-    metric = as_object(as_object(outcome.output)["pr_metric_input"])
-    assert metric["selected"] == ["qa/tests/generated_test.py"]
-    assert as_object(metric["results"][0])["test"] == "qa/tests/generated_test.py"
 
 
 def test_family_argv_rejects_performance_and_keeps_pytest_observe() -> None:
