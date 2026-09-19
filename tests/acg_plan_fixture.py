@@ -43,6 +43,77 @@ DEFAULT_POLICY: dict[str, object] = {
 }
 
 
+def _draft(
+    *,
+    draft_id: str,
+    proposed_key: str,
+    category: str,
+    layer: str,
+) -> dict[str, object]:
+    return {
+        "draft_id": draft_id,
+        "proposed_key": proposed_key,
+        "category": category,
+        "layer": layer,
+        "statement": f"{proposed_key} must hold",
+        "applicability_conditions": [],
+        "impact_row_ids": [],
+        "proposed_profile_id": None,
+        "prerequisites": [],
+        "observation_goals": [],
+        "basis_quotes": [],
+        "open_questions": [],
+    }
+
+
+def _coverage_drafts(
+    minimum_required_coverage: Mapping[str, object] | list[Mapping[str, object]] | None,
+    *,
+    capability_leafs: tuple[str, ...],
+) -> list[dict[str, object]]:
+    if minimum_required_coverage is None:
+        return [
+            _draft(
+                draft_id="D-API",
+                proposed_key=capability_leafs[0],
+                category="api",
+                layer="api",
+            )
+        ]
+    if isinstance(minimum_required_coverage, list):
+        return [dict(item) for item in minimum_required_coverage]
+    drafts: list[dict[str, object]] = []
+    for index, (family, keys) in enumerate(minimum_required_coverage.items()):
+        if isinstance(keys, Mapping):
+            drafts.append(dict(keys))
+            continue
+        if not isinstance(keys, list):
+            continue
+        for key_index, key in enumerate(keys):
+            if isinstance(key, Mapping):
+                proposed = str(key.get("proposed_key") or key.get("key") or capability_leafs[0])
+                drafts.append(
+                    _draft(
+                        draft_id=str(key.get("draft_id") or f"D-{family}-{index}-{key_index}"),
+                        proposed_key=proposed,
+                        category=str(key.get("category") or ("e2e" if family == "e2e" else "api")),
+                        layer=str(key.get("layer") or family),
+                    )
+                )
+                continue
+            layer = str(family) if family in {"api", "e2e", "both"} else "api"
+            category = "e2e" if family == "e2e" else "api"
+            drafts.append(
+                _draft(
+                    draft_id=f"D-{family}-{index}-{key_index}",
+                    proposed_key=str(key),
+                    category=category,
+                    layer=layer,
+                )
+            )
+    return drafts
+
+
 def _write(root: Path, relative: str, data: bytes) -> str:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,29 +141,9 @@ def install_plan(
     knowledge_bytes = yaml.safe_dump({"journeys": list(journeys)}, sort_keys=True).encode()
     knowledge_digest = _write(root, ".aa/data-knowledge.yaml", knowledge_bytes)
 
-    coverage = (
-        list(minimum_required_coverage)
-        if isinstance(minimum_required_coverage, list)
-        else (
-            list(minimum_required_coverage.values())
-            if minimum_required_coverage is not None
-            else [
-                {
-                    "draft_id": "D-API",
-                    "proposed_key": capability_leafs[0],
-                    "category": "api",
-                    "layer": "api",
-                    "statement": f"{capability_leafs[0]} must hold",
-                    "applicability_conditions": [],
-                    "impact_row_ids": [],
-                    "proposed_profile_id": None,
-                    "prerequisites": [],
-                    "observation_goals": [],
-                    "basis_quotes": [],
-                    "open_questions": [],
-                }
-            ]
-        )
+    coverage = _coverage_drafts(
+        minimum_required_coverage,
+        capability_leafs=capability_leafs,
     )
     recommended = set(proposed)
     exploration = {

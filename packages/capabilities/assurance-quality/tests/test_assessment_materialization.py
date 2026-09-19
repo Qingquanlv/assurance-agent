@@ -258,6 +258,32 @@ def _workspace_input(
         ],
     }
     evidence_ref = _write_json(root, EVIDENCE_PATH, evidence)
+    inventory_path = root / "qa/results/explore/impact-inventory.json"
+    inventory_ref = {
+        "path": "qa/results/explore/impact-inventory.json",
+        "digest": hashlib.sha256(inventory_path.read_bytes()).hexdigest(),
+    }
+    selection_ref = _write_json(
+        root,
+        "qa/results/cases/epochs/3/selection.json",
+        {
+            "schema_version": "1",
+            "change_id": CHANGE_ID,
+            "coverage_epoch": 3,
+            "plan_digest": plan_document.plan_digest,
+            "inventory_ref": inventory_ref,
+            "cases": [
+                {
+                    "case_id": item["case_id"],
+                    "origin": "added",
+                    "source_ref": case_ref,
+                    "source_locator": CASE_PATH,
+                    "mrc_ids": [CAPABILITY],
+                }
+                for item in selected_cases
+            ],
+        },
+    )
     reviewed = {
         "change_id": CHANGE_ID,
         "coverage_epoch": 3,
@@ -269,6 +295,7 @@ def _workspace_input(
         ),
         "case_refs": [case_ref],
         "review_ref": review,
+        "selection_ref": selection_ref,
     }
     generation = {
         "change_id": CHANGE_ID,
@@ -298,6 +325,7 @@ def _workspace_input(
             "mapping_ref": mapping_ref,
             "source_refs": [source],
             "receipt": {"receipt_id": "execute", "receipt_digest": "e" * 64},
+            "family_outcomes": [{"family": family, "state": "executed"}],
         },
         "policy_resource_id": "assurance.product.configuration.product-policy",
         "policy_sha256": plan_document.policy_digest,

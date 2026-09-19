@@ -244,7 +244,8 @@ class MinimumCoverageMatrixRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mrc_id: NonEmptyStr
-    key: NonEmptyStr
+    key: NonEmptyStr | None = None
+    proposed_key: str | None = None
     required: bool = True
     covered_by_cases: list[str] = []
     status: MrcMatrixRowStatus = "covered"
@@ -267,7 +268,7 @@ class MinimumCoverageMatrix(RootModel[list[MinimumCoverageMatrixRow]]):
     @model_validator(mode="after")
     def _require_unique_row_identity(self) -> Self:
         for field in ("mrc_id", "key"):
-            values = [getattr(row, field) for row in self.root]
+            values = [getattr(row, field) for row in self.root if getattr(row, field) is not None]
             duplicates = sorted(value for value in set(values) if values.count(value) > 1)
             if duplicates:
                 raise ValueError(f"duplicate {field} values are not allowed: {duplicates!r}")

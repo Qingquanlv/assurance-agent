@@ -75,7 +75,8 @@ from assurance_quality.operations.metrics import (
 )
 from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
-from assurance_quality.operations.common import json_digest
+from assurance_quality.operations.common import InputError, json_digest
+from assurance_quality.operations.obligations import assess_obligations, write_obligation_assessment
 from assurance_quality.operations.goal_scope import has_layer_evidence, obligation_goal
 from assurance_quality.operations.identity import ObservationIdentityInput, observation_id
 
@@ -213,6 +214,7 @@ def _prepared_obligations(
             advisory,
             capability_leafs=capability_leafs,
             journey_keys=journey_keys,
+            admissible_families=frozenset(plan.candidate_test_families),
         )
     except (json.JSONDecodeError, yaml.YAMLError, ValidationError, ValueError) as error:
         if isinstance(error, AssessmentInputError):
@@ -242,8 +244,19 @@ def _reviewed_obligations(
     except (json.JSONDecodeError, ValidationError) as error:
         raise AssessmentInputError(f"invalid reviewed minimum coverage matrix: {error}") from error
     case_by_id = {case.case_id: case for case in cases}
-    prepared = {row.key: row for row in baseline}
-    result = {row.key: MinimumCoverageMatrixRow(**row.model_dump()) for row in baseline}
+    prepared = {row.key: row for row in baseline if row.key is not None}
+    result = {
+        row.key: MinimumCoverageMatrixRow(
+            mrc_id=row.mrc_id,
+            key=row.key,
+            proposed_key=row.proposed_key,
+            required=row.required,
+            category=row.category,
+            layer=row.layer,
+        )
+        for row in baseline
+        if row.key is not None
+    }
     journey_cases: set[str] = set()
     for row in matrix.root:
         unknown = sorted(set(row.covered_by_cases) - set(case_by_id))
@@ -749,12 +762,22 @@ def materialize_assessment_inputs(
             observations=list(observations),
         ),
     )
+    try:
+        obligation_assessment = assess_obligations(workspace=project_root, request=request)
+    except InputError as error:
+        raise AssessmentInputError(str(error)) from error
+    obligation_assessment_ref = write_obligation_assessment(
+        write_root,
+        request,
+        obligation_assessment,
+    )
     issue_manifest = _issue_evidence_manifest(
         change_id=request.reviewed_case.change_id,
         batch_id=request.execution.batch_id,
         refs=(
             request.execution.evidence_ref,
             observations_ref,
+            obligation_assessment_ref,
             trace_ref,
             gaps_ref,
             sufficiency_ref,
@@ -789,6 +812,7 @@ def materialize_assessment_inputs(
         sufficiency_ref=sufficiency_ref,
         execution_ref=request.execution.evidence_ref,
         observations_ref=observations_ref,
+        obligation_assessment_ref=obligation_assessment_ref,
         issue_evidence_manifest_ref=issue_evidence_manifest_ref,
         owned_evidence_ids=tuple(item.observation_id for item in observations),
         evidence_bundle_digest=issue_manifest.digest,

@@ -91,6 +91,7 @@ class AssessmentInputsV1(FrozenModel):
     sufficiency_ref: EvidenceArtifactRefV1
     execution_ref: EvidenceArtifactRefV1
     observations_ref: EvidenceArtifactRefV1
+    obligation_assessment_ref: EvidenceArtifactRefV1
     issue_evidence_manifest_ref: EvidenceArtifactRefV1
     owned_evidence_ids: tuple[str, ...]
     evidence_bundle_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -350,6 +351,7 @@ class ReportSkillInputV1(QualitySkillInputV1):
                     self.assessment.sufficiency_ref,
                     self.assessment.execution_ref,
                     self.assessment.observations_ref,
+                    self.assessment.obligation_assessment_ref,
                     self.assessment.issue_evidence_manifest_ref,
                     *(() if self.assessment.healing_ref is None else (self.assessment.healing_ref,)),
                     *(() if self.assessment.issue_ref is None else (self.assessment.issue_ref,)),
