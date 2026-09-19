@@ -178,9 +178,9 @@ def test_opencode_edit_rules_allow_remapped_staging_writes() -> None:
     remapped = "qa/.staging/6940ef04da8847a5d15da2779cccfd81c329144aa660c58a76df25984ceb2e8a/attempt-1"
     repo_remapped = f"benchmark/vue-fastapi-admin/{remapped}"
     cases = (
-        ("assurance-v1-doc-author", "qa/requirement.md"),
         ("assurance-v1-doc-author", "qa/.qa.yaml"),
-        ("assurance-v1-explorer", "qa/results/explore/exploration.json"),
+        ("assurance-v1-explorer", "qa/results/explore/exploration-draft.json"),
+        ("assurance-v1-explorer", "qa/results/explore/impact-inventory.json"),
         ("assurance-v1-test-author", "qa/tests/api/test_dept.py"),
     )
     for profile_name, logical in cases:
@@ -193,6 +193,8 @@ def test_opencode_edit_rules_allow_remapped_staging_writes() -> None:
     author = agents["assurance-v1-doc-author"]
     denied = (
         (explorer, "qa/results/explore/context.json"),
+        (explorer, "qa/results/explore/exploration.json"),
+        (author, "qa/requirement.md"),
         (author, "qa/results/workflow-state.json"),
         (author, "qa/results/workflow-state.yaml"),
         (author, "qa/.staging/evil.txt"),

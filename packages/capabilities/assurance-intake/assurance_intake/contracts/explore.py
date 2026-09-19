@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -25,9 +26,21 @@ from assurance_intake.contracts.impact import (
 from assurance_intake.contracts.planning_facts import source_path_hints
 
 EXPLORATION_PATH = "qa/results/explore/exploration.json"
-EXPLORE_OUTPUT_PATHS: tuple[str, ...] = (EXPLORATION_PATH, INVENTORY_PATH)
+EXPLORATION_DRAFT_PATH = "qa/results/explore/exploration-draft.json"
+REQUIREMENT_PATH = "qa/requirement.md"
+RUN_SPEC_SNAPSHOT_PATH = "qa/results/intake/sources/run-spec.effective.yaml"
+REQUIREMENT_CONTEXT_BUDGET = 65536
+EXPLORE_AGENT_OUTPUT_PATHS: tuple[str, ...] = (EXPLORATION_DRAFT_PATH, INVENTORY_PATH)
+EXPLORE_OFFICIAL_OUTPUT_PATHS: tuple[str, ...] = (EXPLORATION_PATH, INVENTORY_PATH)
+EXPLORE_OUTPUT_PATHS: tuple[str, ...] = EXPLORE_AGENT_OUTPUT_PATHS
 _MAX_CASE_FILES = 64
 _MAX_PROBLEMS = 64
+
+
+class RequirementReadFactsV1(FrozenModel):
+    total_bytes: int = Field(ge=0)
+    provided_bytes: int = Field(ge=0)
+    read_state: Literal["complete", "truncated"]
 
 
 class SourceCodeEvidenceV1(BaseModel):
@@ -201,6 +214,7 @@ class ExploreContextV1(BaseModel):
     historical_issues: list[Any]
     evidence: list[Any]
     source_catalog: tuple[SourceCatalogEntryV1, ...]
+    requirement_read_facts: RequirementReadFactsV1
     degraded: bool
     degraded_reasons: list[str]
     no_git: bool
@@ -352,6 +366,55 @@ def _historical_problems(workspace: Path) -> tuple[tuple[HistoricalProblemV1, ..
     return tuple(rows), []
 
 
+def _utf8_prefix(data: bytes, budget: int) -> tuple[str, RequirementReadFactsV1]:
+    total = len(data)
+    text = data.decode("utf-8")
+    if total <= budget:
+        return text, RequirementReadFactsV1(
+            total_bytes=total, provided_bytes=total, read_state="complete"
+        )
+    low, high = 0, len(text)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if len(text[:mid].encode("utf-8")) <= budget:
+            low = mid
+        else:
+            high = mid - 1
+    provided = text[:low].encode("utf-8")
+    return text[:low], RequirementReadFactsV1(
+        total_bytes=total, provided_bytes=len(provided), read_state="truncated"
+    )
+
+
+def _source_catalog(workspace: Path) -> tuple[SourceCatalogEntryV1, ...]:
+    entries: list[SourceCatalogEntryV1] = []
+    requirement = _read_regular(workspace, REQUIREMENT_PATH)
+    if requirement is not None:
+        entries.append(
+            SourceCatalogEntryV1(
+                source_id="requirement",
+                kind="requirement",
+                artifact=EvidenceArtifactRefV1(
+                    path=REQUIREMENT_PATH, digest=hashlib.sha256(requirement).hexdigest()
+                ),
+                quotable=True,
+            )
+        )
+    snapshot = _read_regular(workspace, RUN_SPEC_SNAPSHOT_PATH)
+    if snapshot is not None:
+        entries.append(
+            SourceCatalogEntryV1(
+                source_id="run-spec",
+                kind="decision",
+                artifact=EvidenceArtifactRefV1(
+                    path=RUN_SPEC_SNAPSHOT_PATH, digest=hashlib.sha256(snapshot).hexdigest()
+                ),
+                quotable=False,
+            )
+        )
+    return tuple(entries)
+
+
 def build_explore_context(
     workspace: Path,
     *,
@@ -364,11 +427,13 @@ def build_explore_context(
     belongs to another change; a forged diff projection must fail prepare, not degrade.
     """
 
-    requirement_text = ""
-    requirement = workspace / "qa" / "requirement.md"
-    if requirement.is_file() and not requirement.is_symlink():
-        requirement_text = requirement.read_text(encoding="utf-8")
-    requirement_summary = requirement_text[:2000] if requirement_text else None
+    requirement_data = _read_regular(workspace, REQUIREMENT_PATH) or b""
+    if requirement_data:
+        requirement_text, read_facts = _utf8_prefix(requirement_data, REQUIREMENT_CONTEXT_BUDGET)
+    else:
+        requirement_text = ""
+        read_facts = RequirementReadFactsV1(total_bytes=0, provided_bytes=0, read_state="complete")
+    requirement_summary = requirement_text or None
 
     diff_base, seeds, unobserved, seed_degraded = _seed_projection(
         workspace, change_id=change_id, requirement_text=requirement_text
@@ -385,6 +450,8 @@ def build_explore_context(
     ]
     if not archives:
         degraded_reasons.append("no_archives: historical archive projection is empty or missing")
+    if read_facts.read_state == "truncated":
+        degraded_reasons.append("input_truncated: requirement exceeded the host read budget")
 
     return ExploreContextV1(
         change_id=change_id,
@@ -415,7 +482,8 @@ def build_explore_context(
         test_health=[],
         historical_issues=[],
         evidence=[],
-        source_catalog=(),
+        source_catalog=_source_catalog(workspace),
+        requirement_read_facts=read_facts,
         degraded=bool(degraded_reasons),
         degraded_reasons=degraded_reasons,
         no_git=True,
@@ -423,13 +491,20 @@ def build_explore_context(
 
 
 __all__ = [
+    "EXPLORATION_DRAFT_PATH",
     "EXPLORATION_PATH",
+    "EXPLORE_AGENT_OUTPUT_PATHS",
+    "EXPLORE_OFFICIAL_OUTPUT_PATHS",
     "EXPLORE_OUTPUT_PATHS",
+    "REQUIREMENT_CONTEXT_BUDGET",
+    "REQUIREMENT_PATH",
+    "RUN_SPEC_SNAPSHOT_PATH",
     "ExploreAdvisoryV1",
     "ExploreContextV1",
     "ObligationDraftV1",
     "ObservationDraftV1",
     "PreparedExploreV1",
+    "RequirementReadFactsV1",
     "SourceCatalogEntryV1",
     "SourceQuoteV1",
     "build_explore_context",

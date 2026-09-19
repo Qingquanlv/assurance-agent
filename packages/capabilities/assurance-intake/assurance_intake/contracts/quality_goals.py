@@ -136,11 +136,17 @@ def normalize_goal_obligations(
     source = advisory.minimum_required_coverage
     if not source:
         raise ValueError("minimum_required_coverage must be a non-empty mapping")
-    drafts = tuple(source)
-    if any(draft.category == "e2e_if_enabled" for draft in drafts):
+    first = source[0]
+    if getattr(first, "mrc_id", None):
+        prepared_rows = tuple(source)
+    else:
+        if any(draft.category == "e2e_if_enabled" for draft in source):
+            raise ValueError("e2e_if_enabled applicability is unresolved; resolve obligations under e2e")
+        prepared_rows = normalize_obligation_drafts(tuple(source), resolved_quotes={})
+    if any(row.category == "e2e_if_enabled" for row in prepared_rows):
         raise ValueError("e2e_if_enabled applicability is unresolved; resolve obligations under e2e")
     rows: list[PreparedObligationV1] = []
-    for row in normalize_obligation_drafts(drafts, resolved_quotes={}):
+    for row in prepared_rows:
         proposed = row.proposed_key
         if row.category == "api" and proposed:
             key: str | None = proposed

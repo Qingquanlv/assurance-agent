@@ -52,7 +52,13 @@ def _skill_payload(state: Mapping[str, object]) -> dict[str, object]:
 
 
 def select_intake(state: Mapping[str, object]) -> IntakeInputV1:
-    return IntakeInputV1.model_validate({**_skill_payload(state), "requirement": state["requirement"]})
+    return IntakeInputV1.model_validate(
+        {
+            **_skill_payload(state),
+            "requirement": state["requirement"],
+            "candidate_test_families": state.get("candidate_test_families", ()),
+        }
+    )
 
 
 def select_explore(state: Mapping[str, object]) -> ExploreInputV1:
@@ -298,16 +304,20 @@ def publish_case_design(state: Mapping[str, object], output: object, receipt: ob
         and not str(item.get("path", "")).endswith("/case.yaml")
     ]
     preparation_by_path = {str(item["path"]): item for item in preparation_refs}
-    return {
+    published_case_refs = sorted(case_refs, key=lambda item: (item["path"], item["digest"]))
+    update = {
         "validation_status": payload.get("validation_status", "pass"),
         "validation_attempt": payload.get("validation_attempt", 0),
         "validation_error": payload.get("validation_error"),
         "artifacts": artifacts,
-        "case_refs": sorted(case_refs, key=lambda item: (item["path"], item["digest"])),
+        "case_refs": published_case_refs,
         "preparation_refs": [preparation_by_path[path] for path in sorted(preparation_by_path)],
         "rounds_used": state.get("rounds_used", 0),
         "rounds_budget": state.get("rounds_budget", 2),
     }
+    if published_case_refs:
+        update["case_delta_paths"] = [item["path"] for item in published_case_refs]
+    return update
 
 
 def publish_case_review(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:

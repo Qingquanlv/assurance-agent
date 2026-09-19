@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -42,14 +43,22 @@ def read_bootstrap_status(run_dir: Path) -> BootstrapStatusV1:
     return BootstrapStatusV1.model_validate(raw)
 
 
+def effective_spec_bytes(spec: RunSpecV1) -> bytes:
+    return yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False, allow_unicode=True).encode(
+        "utf-8"
+    )
+
+
 def write_effective_spec(run_dir: Path, spec: RunSpecV1) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     path = run_dir / "run-spec.effective.yaml"
-    path.write_text(
-        yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False, allow_unicode=True),
-        encoding="utf-8",
-    )
+    data = effective_spec_bytes(spec)
+    path.write_bytes(data)
     return path
+
+
+def effective_spec_digest(spec: RunSpecV1) -> str:
+    return hashlib.sha256(effective_spec_bytes(spec)).hexdigest()
 
 
 def write_run_manifest(run_dir: Path, document: Mapping[str, object]) -> None:

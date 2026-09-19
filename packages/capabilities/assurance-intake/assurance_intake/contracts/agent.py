@@ -100,14 +100,31 @@ class _SkillInputV1(FrozenModel):
 
 class IntakeInputV1(_SkillInputV1):
     requirement: str = Field(min_length=1)
+    candidate_test_families: tuple[TestFamily, ...] = ()
 
     @field_validator("requirement")
     @classmethod
     def _requirement(cls, value: str) -> str:
-        text = value.strip()
-        if not text:
+        if not value or not value.strip():
             raise ValueError("requirement must be a non-empty string")
-        return text
+        return value
+
+    @field_validator("candidate_test_families")
+    @classmethod
+    def _candidate_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
+        return _canonical_test_families(value)
+
+
+class TrustedIntakeSourcesV1(FrozenModel):
+    requirement_ref: EvidenceArtifactRefV1
+    run_spec_ref: EvidenceArtifactRefV1
+    accepted_input_digest: str = Field(pattern=_SHA256)
+    candidate_test_families: tuple[TestFamily, ...]
+
+    @field_validator("candidate_test_families")
+    @classmethod
+    def _candidate_test_families(cls, value: tuple[TestFamily, ...]) -> tuple[TestFamily, ...]:
+        return _canonical_test_families(value)
 
 
 class ExploreInputV1(_SkillInputV1):
@@ -217,7 +234,7 @@ class CaseDesignInputV1(_SkillInputV1):
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_rework_context: CaseReworkContextV1 | None = None
     selected_test_families: tuple[TestFamily, ...] = ()
-    case_delta_paths: tuple[str, ...] = Field(min_length=1)
+    case_delta_paths: tuple[str, ...] = ()
     exploration: ExploreAdvisoryV1 | None = None
     impact_inventory: ChangeImpactInventoryV1 | None = None
     validation_attempt: Literal[0, 1] = 0

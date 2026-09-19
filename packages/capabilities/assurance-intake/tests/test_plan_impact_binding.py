@@ -41,6 +41,72 @@ def test_plan_preparation_rejects_journey_rows_outside_authenticated_journeys(tm
         install_plan(tmp_path, "CH-1", journeys=(), impact_rows=(_journey_row(),))
 
 
+def test_same_row_id_with_different_inventory_digest_is_rejected(tmp_path: Path) -> None:
+    first, _ = install_plan(
+        tmp_path / "a",
+        "CH-1",
+        journeys=("dept_management_crud",),
+        candidates=("api", "e2e"),
+        proposed=("api",),
+        impact_rows=(_journey_row(),),
+    )
+    second, _ = install_plan(
+        tmp_path / "b",
+        "CH-1",
+        journeys=("dept_management_crud",),
+        candidates=("api", "e2e"),
+        proposed=("api",),
+        impact_rows=({**_journey_row(), "confidence": "high"},),
+    )
+    assert first.impact_inventory_ref.digest != second.impact_inventory_ref.digest
+    assert first.impact_inventory_ref.path == second.impact_inventory_ref.path
+
+
+def test_api_only_excludes_e2e_obligation_when_run_spec_is_authenticated(tmp_path: Path) -> None:
+    snapshot = tmp_path / "qa/results/intake/sources/run-spec.effective.yaml"
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    snapshot.write_text("candidate_test_families:\n- api\n", encoding="utf-8")
+    plan, _ = install_plan(
+        tmp_path,
+        "CH-1",
+        journeys=("dept_management_crud",),
+        candidates=("api",),
+        proposed=("api",),
+        minimum_required_coverage=[
+            {
+                "draft_id": "D-API",
+                "proposed_key": "entities.item.constraints.name",
+                "category": "api",
+                "layer": "api",
+                "statement": "api holds",
+                "applicability_conditions": [],
+                "impact_row_ids": [],
+                "proposed_profile_id": None,
+                "prerequisites": [],
+                "observation_goals": [],
+                "basis_quotes": [],
+                "open_questions": [],
+            },
+            {
+                "draft_id": "D-E2E",
+                "proposed_key": "dept_management_crud",
+                "category": "e2e",
+                "layer": "e2e",
+                "statement": "journey holds",
+                "applicability_conditions": [],
+                "impact_row_ids": [],
+                "proposed_profile_id": None,
+                "prerequisites": [],
+                "observation_goals": [],
+                "basis_quotes": [],
+                "open_questions": [],
+            },
+        ],
+    )
+    assert plan.selected_test_families == ("api",)
+    assert "e2e" not in plan.quality_goal.required_test_families
+
+
 def test_plan_preparation_accepts_a_declared_journey_gap(tmp_path: Path) -> None:
     plan, _ = install_plan(
         tmp_path,

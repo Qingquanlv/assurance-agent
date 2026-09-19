@@ -14,7 +14,15 @@ from pydantic import ValidationError
 from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.explore import (
+    ExploreAdvisoryV1,
+    PreparedExploreV1,
+    RUN_SPEC_SNAPSHOT_PATH,
+    TestStrategyV1,
+)
+from assurance_intake.contracts.obligations import SourceRefV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.operations.obligations import apply_scope_exclusions
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_closed_keys
 from assurance_intake.contracts.plan import (
     PreparedQualityGoalV1,
@@ -80,24 +88,53 @@ def _mapping_yaml(data: bytes, label: str) -> Mapping[str, object]:
     return cast(Mapping[str, object], value)
 
 
+def _load_exploration(data: bytes) -> tuple[str, str, TestStrategyV1, object]:
+    try:
+        payload = json.loads(data)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("exploration artifact is invalid") from error
+    coverage = payload.get("minimum_required_coverage") if isinstance(payload, dict) else None
+    first = coverage[0] if isinstance(coverage, list) and coverage else None
+    try:
+        if isinstance(first, dict) and "mrc_id" in first:
+            document: object = PreparedExploreV1.model_validate(payload)
+        else:
+            document = ExploreAdvisoryV1.model_validate(payload)
+    except ValueError as error:
+        raise ValueError("exploration artifact is invalid") from error
+    return document.change_id, document.context_ref, document.test_strategy, document
+
+
+def _exclusion_basis(project_root: Path) -> SourceRefV1 | None:
+    path = project_root.joinpath(*RUN_SPEC_SNAPSHOT_PATH.split("/"))
+    if not path.is_file() or path.is_symlink():
+        return None
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return SourceRefV1(
+        kind="decision",
+        artifact=EvidenceArtifactRefV1(path=RUN_SPEC_SNAPSHOT_PATH, digest=digest),
+        locator="/candidate_test_families",
+    )
+
+
 def prepare_quality_goal(
     request: ResolvePlanInputV1,
     *,
     project_root: Path,
-) -> tuple[ExploreAdvisoryV1, ChangeImpactInventoryV1, PreparedQualityGoalV1]:
+) -> tuple[object, ChangeImpactInventoryV1, PreparedQualityGoalV1]:
     exploration_data = _read_regular_bytes(
         project_root,
         request.exploration_ref.path,
         request.exploration_ref.digest,
     )
     try:
-        advisory = ExploreAdvisoryV1.model_validate(json.loads(exploration_data))
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        change_id, context_ref, _strategy, advisory = _load_exploration(exploration_data)
+    except ValueError as error:
         raise ValueError("exploration artifact is invalid") from error
-    if advisory.change_id != request.change_id:
+    if change_id != request.change_id:
         raise ValueError("exploration change_id does not match plan input")
     expected_context = "explore/context.json"
-    if advisory.context_ref != expected_context:
+    if context_ref != expected_context:
         raise ValueError("exploration context_ref does not match the current change")
 
     inventory_data = _read_regular_bytes(
@@ -142,15 +179,25 @@ def prepare_quality_goal(
     )
     journey_keys = frozenset(journey_keys_from_document(knowledge))
     validate_inventory_closed_keys(inventory, journey_keys=journey_keys)
+    admissible = frozenset(request.candidate_test_families)
     obligations = normalize_goal_obligations(
         advisory,
         capability_leafs=frozenset(request.capability_leafs),
         journey_keys=journey_keys,
+        admissible_families=admissible,
     )
+    basis = _exclusion_basis(project_root)
+    if basis is not None:
+        obligations = apply_scope_exclusions(
+            obligations,
+            candidate_families=admissible,
+            policy_required_families=frozenset(request.family_policy.required),
+            exclusion_basis=basis,
+        )
     goal = PreparedQualityGoalV1(
         obligations_ref=request.exploration_ref,
         source_resource_digests=request.source_resource_digests,
-        required_test_families=required_goal_families(obligations),
+        required_test_families=required_goal_families(obligations, admissible_families=admissible),
         metric_catalog=COVERAGE_GOAL_ORDER,
         coverage_policy=CoverageGoalPolicyV1.from_product_policy(policy),
         sufficiency_policy=SufficiencyPolicyV1.from_product_policy(policy),
@@ -183,7 +230,7 @@ def resolve_plan_artifact(
     advisory, inventory, goal = prepare_quality_goal(request, project_root=project_root)
     plan = resolve_plan(
         request=request,
-        proposed=derive_family_proposal(advisory.test_strategy),
+        proposed=derive_family_proposal(advisory.test_strategy),  # type: ignore[union-attr]
         quality_goal=goal,
         inventory=inventory,
     )

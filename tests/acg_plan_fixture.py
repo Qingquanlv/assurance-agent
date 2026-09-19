@@ -56,7 +56,7 @@ def install_plan(
     *,
     capability_leafs: tuple[str, ...] = ("entities.item.constraints.name",),
     journeys: tuple[str, ...] = (),
-    minimum_required_coverage: Mapping[str, object] | None = None,
+    minimum_required_coverage: Mapping[str, object] | list[Mapping[str, object]] | None = None,
     candidates: tuple[TestFamily, ...] = ("api",),
     proposed: tuple[TestFamily, ...] = ("api",),
     policy: Mapping[str, object] = DEFAULT_POLICY,
@@ -71,9 +71,28 @@ def install_plan(
     knowledge_digest = _write(root, ".aa/data-knowledge.yaml", knowledge_bytes)
 
     coverage = (
-        dict(minimum_required_coverage)
-        if minimum_required_coverage is not None
-        else {"api": [capability_leafs[0]]}
+        list(minimum_required_coverage)
+        if isinstance(minimum_required_coverage, list)
+        else (
+            list(minimum_required_coverage.values())
+            if minimum_required_coverage is not None
+            else [
+                {
+                    "draft_id": "D-API",
+                    "proposed_key": capability_leafs[0],
+                    "category": "api",
+                    "layer": "api",
+                    "statement": f"{capability_leafs[0]} must hold",
+                    "applicability_conditions": [],
+                    "impact_row_ids": [],
+                    "proposed_profile_id": None,
+                    "prerequisites": [],
+                    "observation_goals": [],
+                    "basis_quotes": [],
+                    "open_questions": [],
+                }
+            ]
+        )
     )
     recommended = set(proposed)
     exploration = {

@@ -15,6 +15,7 @@ from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 from assurance_product.application import AssuranceProductApplication
 from assurance_product.binding_builder import build_deployment_wheel
 from assurance_product.bootstrap.contracts import RunSpecV1
+from assurance_product.bootstrap.status import effective_spec_digest
 from assurance_product.configuration import capability_leafs_from_knowledge
 from assurance_product.models import LOCKED_ALLOWED_ARTIFACT_PATHS, ProductInputV1
 from assurance_product.product import AssuranceCompositionRequest, resolve_assurance_composition
@@ -309,7 +310,7 @@ def prepare_composition(
         "requirement": spec.requirement,
         "run_mode": "case",
         "candidate_test_families": list(spec.candidate_test_families),
-        "case_delta_paths": [f"qa/cases/{module}/case.yaml" for module in spec.case_modules],
+        "case_delta_paths": [],
         "capability_leafs": _catalog_leafs(composition, catalog_ref["resource_id"]),
         "capability_catalog": catalog_ref,
         "product_policy": _resource_ref(composition, _POLICY_RESOURCE_ID),
@@ -330,4 +331,5 @@ def prepare_composition(
         "binding_declaration": built.declaration_path,
         "config_tree": config_tree,
         "input_path": input_path,
+        "run_spec_digest": effective_spec_digest(spec),
     }

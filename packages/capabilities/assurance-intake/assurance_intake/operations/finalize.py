@@ -32,9 +32,27 @@ from assurance_intake.contracts.agent import (
     ReviewRepairActionV1,
     ReviewRepairContractV1,
 )
-from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS, ExploreAdvisoryV1, ExploreContextV1
+from assurance_intake.contracts.explore import (
+    EXPLORATION_PATH,
+    EXPLORE_AGENT_OUTPUT_PATHS,
+    EXPLORE_OFFICIAL_OUTPUT_PATHS,
+    ExploreAdvisoryV1,
+    ExploreContextV1,
+    PreparedExploreV1,
+    REQUIREMENT_PATH,
+)
+from assurance_intake.operations.obligations import (
+    apply_scope_exclusions,
+    authenticate_source,
+    normalize_obligation_drafts,
+    resolve_requirement_quote,
+)
+from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
+from assurance_intake.contracts.obligations import ExpectedBasisV1, SourceRefV1
+from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.cases import _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
+from assurance_intake.operations.case_modules import infer_case_delta_paths
 from assurance_intake.contracts.loop_history import build_loop_round_history
 from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (
@@ -374,18 +392,18 @@ def _validate_explore_outputs(
     inventory: ChangeImpactInventoryV1 | None = None
     for relative in declared:
         parts = PurePosixPath(relative).parts
-        if relative.endswith("/explore/exploration.json"):
-            if parts != ("qa", "results", "explore", "exploration.json"):
-                raise OutputError(f"invalid exploration.json path: {relative}")
+        if relative.endswith("/explore/exploration-draft.json"):
+            if parts != ("qa", "results", "explore", "exploration-draft.json"):
+                raise OutputError(f"invalid exploration-draft.json path: {relative}")
             path = _workspace_file(workspace, relative)
             try:
                 advisory = ExploreAdvisoryV1.model_validate_json(path.read_bytes())
             except (OSError, ValidationError, ValueError) as error:
-                raise OutputError(f"invalid exploration.json: {error}") from error
+                raise OutputError(f"invalid exploration-draft.json: {error}") from error
             if advisory.change_id != change_id:
-                raise OutputError("exploration.json change_id does not match its change directory")
+                raise OutputError("exploration-draft.json change_id does not match its change directory")
             if advisory.context_ref != "explore/context.json":
-                raise OutputError("exploration.json context_ref must be explore/context.json")
+                raise OutputError("exploration-draft.json context_ref must be explore/context.json")
         elif relative.endswith("/explore/impact-inventory.json"):
             if parts != ("qa", "results", "explore", "impact-inventory.json"):
                 raise OutputError(f"invalid impact-inventory.json path: {relative}")
@@ -953,6 +971,115 @@ def _validate_review_repair(
     return images
 
 
+def _trusted_sources(workspace: Path) -> TrustedIntakeSourcesV1 | None:
+    requirement = workspace.joinpath(*REQUIREMENT_PATH.split("/"))
+    snapshot = workspace.joinpath(*RUN_SPEC_SNAPSHOT_PATH.split("/"))
+    if not requirement.is_file() or requirement.is_symlink():
+        return None
+    if not snapshot.is_file() or snapshot.is_symlink():
+        return None
+    requirement_bytes = requirement.read_bytes()
+    snapshot_bytes = snapshot.read_bytes()
+    families: tuple[str, ...] = ()
+    try:
+        document = yaml.safe_load(snapshot_bytes)
+        raw = document.get("candidate_test_families") if isinstance(document, Mapping) else None
+        if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+            families = tuple(raw)
+    except yaml.YAMLError:
+        return None
+    return TrustedIntakeSourcesV1(
+        requirement_ref={"path": REQUIREMENT_PATH, "digest": _file_digest(requirement_bytes)},
+        run_spec_ref={"path": RUN_SPEC_SNAPSHOT_PATH, "digest": _file_digest(snapshot_bytes)},
+        accepted_input_digest=_file_digest(requirement_bytes),
+        candidate_test_families=families,
+    )
+
+
+def _seal_official_exploration(
+    workspace: Path,
+    advisory: ExploreAdvisoryV1,
+    *,
+    candidate_families: frozenset[str],
+    policy_required: frozenset[str],
+) -> tuple[PreparedExploreV1, bytes]:
+    requirement = workspace.joinpath(*REQUIREMENT_PATH.split("/"))
+    text = requirement.read_text(encoding="utf-8") if requirement.is_file() and not requirement.is_symlink() else ""
+    digest = _file_digest(requirement.read_bytes()) if requirement.is_file() else ""
+    resolved: dict[tuple[str, str], SourceRefV1] = {}
+    quotes = [
+        quote
+        for draft in advisory.minimum_required_coverage
+        for quote in (*draft.basis_quotes, *(goal.basis_quotes for goal in draft.observation_goals))
+    ]
+    for quote in quotes:
+        if quote.source_id != "requirement" or not text:
+            continue
+        try:
+            start, end = resolve_requirement_quote(text, quote.quote, quote.context_quote)
+        except ValueError:
+            continue
+        resolved[(quote.source_id, quote.quote)] = SourceRefV1(
+            kind="requirement",
+            artifact={"path": REQUIREMENT_PATH, "digest": digest},
+            locator=f"bytes:{start}-{end}",
+        )
+    rows = normalize_obligation_drafts(advisory.minimum_required_coverage, resolved_quotes=resolved)
+    sources = _trusted_sources(workspace)
+    sealed: list[object] = []
+    for row in rows:
+        bases = []
+        for basis in row.expected_basis_refs:
+            status = "pending"
+            if sources is not None:
+                try:
+                    authenticate_source(
+                        basis.source,
+                        purpose="expected_basis",
+                        workspace=workspace,
+                        sources=sources,
+                    )
+                    status = "authenticated"
+                except ValueError:
+                    status = "pending"
+            bases.append(ExpectedBasisV1(source=basis.source, source_status=status))
+        sealed.append(row.model_copy(update={"expected_basis_refs": tuple(bases)}))
+    if sources is not None:
+        sealed = list(
+            apply_scope_exclusions(
+                tuple(sealed),  # type: ignore[arg-type]
+                candidate_families=candidate_families or frozenset(sources.candidate_test_families),
+                policy_required_families=policy_required,
+                exclusion_basis=SourceRefV1(
+                    kind="decision",
+                    artifact=sources.run_spec_ref,
+                    locator="/candidate_test_families",
+                ),
+            )
+        )
+    official = PreparedExploreV1(
+        schema_version="1",
+        change_id=advisory.change_id,
+        context_ref=advisory.context_ref,
+        generated_at=advisory.generated_at,
+        executive_summary=advisory.executive_summary,
+        watchlist=tuple(advisory.watchlist),
+        evidence_inventory=advisory.evidence_inventory,
+        source_code_evidence=tuple(advisory.source_code_evidence),
+        case_design_guidance=advisory.case_design_guidance,
+        minimum_required_coverage=tuple(sealed),  # type: ignore[arg-type]
+        open_questions_for_case_design=tuple(advisory.open_questions_for_case_design),
+        test_strategy=advisory.test_strategy,
+    )
+    data = canonical_json_bytes(official.model_dump(mode="json")) + b"\n"
+    destination = workspace.joinpath(*EXPLORATION_PATH.split("/"))
+    if destination.exists() or destination.is_symlink():
+        raise OutputError("official exploration.json must be written by finalize only")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    return official, data
+
+
 class IntakeFinalizeHandler:
     input_model = AgentFinalizeInputV1
 
@@ -960,7 +1087,15 @@ class IntakeFinalizeHandler:
         try:
             payload = validate_input(AgentFinalizeInputV1, request.input)
             artifacts = _finalize_artifact_list(payload, context.write_root)
-            return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
+            requirement = _authenticate_files(
+                context.write_root,
+                (REQUIREMENT_PATH,),
+                payload.artifact_paths + (REQUIREMENT_PATH,),
+            )
+            merged = {item["path"]: item for item in (*artifacts, *requirement)}
+            return TaskOutcome.succeeded(
+                cast(JSONValue, {"artifacts": [merged[path] for path in sorted(merged)]})
+            )
         except InputError as error:
             return failed_input(error)
         except OutputError as error:
@@ -977,9 +1112,9 @@ class ExploreFinalizeHandler:
                 raise InputError("artifact_paths must lock the expected output files")
             document = _artifact_list(payload)
             change_id = _case_change_id(payload.change_id)
-            if set(document.output_files) != set(EXPLORE_OUTPUT_PATHS):
+            if set(document.output_files) != set(EXPLORE_AGENT_OUTPUT_PATHS):
                 raise OutputError(
-                    "explore receipt must declare exactly exploration.json and impact-inventory.json"
+                    "explore receipt must declare exactly exploration-draft.json and impact-inventory.json"
                 )
             artifacts = _finalize_artifact_list(payload, context.write_root)
             _validate_explore_outputs(
@@ -988,6 +1123,21 @@ class ExploreFinalizeHandler:
                 change_id=change_id,
                 capability_leafs=_leafs(payload.capability_leafs),
             )
+            advisory = ExploreAdvisoryV1.model_validate_json(
+                context.write_root.joinpath(*EXPLORE_AGENT_OUTPUT_PATHS[0].split("/")).read_bytes()
+            )
+            official, official_bytes = _seal_official_exploration(
+                context.write_root,
+                advisory,
+                candidate_families=frozenset(),
+                policy_required=frozenset(),
+            )
+            del official
+            artifacts.append({"path": EXPLORATION_PATH, "digest": _file_digest(official_bytes)})
+            official_paths = {item["path"] for item in artifacts}
+            if not set(EXPLORE_OFFICIAL_OUTPUT_PATHS) <= official_paths:
+                raise OutputError("finalize must return official exploration and inventory refs")
+            artifacts.sort(key=lambda item: item["path"])
             return TaskOutcome.succeeded(cast(JSONValue, {"artifacts": artifacts}))
         except InputError as error:
             return failed_input(error)
@@ -1042,14 +1192,21 @@ class CaseDesignFinalizeHandler:
                 raise OutputError(
                     "case-design receipt is missing required output files: " + ", ".join(missing)
                 )
-            if not payload.case_delta_paths:
-                raise InputError("case_delta_paths must lock at least one exact case.yaml output")
+            try:
+                inferred = infer_case_delta_paths(inventory)
+            except ValueError:
+                inferred = ()
+            if inferred:
+                expected_cases = set(inferred)
+            elif payload.case_delta_paths:
+                expected_cases = set(payload.case_delta_paths)
+            else:
+                raise InputError("impact inventory does not imply any case module")
             declared_cases = {
                 relative
                 for relative in receipt.output_files
                 if relative.startswith(f"{change_root}/cases/") and relative.endswith("/case.yaml")
             }
-            expected_cases = set(payload.case_delta_paths)
             if declared_cases != expected_cases:
                 missing_cases = sorted(expected_cases - declared_cases)
                 unexpected_cases = sorted(declared_cases - expected_cases)

@@ -47,9 +47,15 @@ def _job(
     outputs: tuple[str, ...],
     extra_claims: tuple[str, ...] = (),
 ) -> AgentExecutionContract[Any, Any, Any]:
-    prepare_suffixes = ("explore/context.json",) if base == "explore" else ()
+    prepare_suffixes = {
+        "explore": ("explore/context.json",),
+        "intake": ("requirement.md", "intake/sources/run-spec.effective.yaml"),
+    }.get(base, ())
     prepare_paths = _paths(*prepare_suffixes) if prepare_suffixes else ()
-    finalize_suffixes = ("cases/reviewed-case.json", "cases/reviews") if base == "case-review" else ()
+    finalize_suffixes = {
+        "case-review": ("cases/reviewed-case.json", "cases/reviews"),
+        "explore": ("explore/exploration.json",),
+    }.get(base, ())
     finalize_paths = _paths(*finalize_suffixes) if finalize_suffixes else ()
     literal_claims = (_CASES_ROOT,) if base == "case-design" else ()
     writes = tuple(
@@ -118,7 +124,7 @@ _JOBS: tuple[
         ExploreInputV1,
         ArtifactListResultV1,
         FinalizedArtifactsV1,
-        ("explore/exploration.json", "explore/impact-inventory.json"),
+        ("explore/exploration-draft.json", "explore/impact-inventory.json"),
         (),
     ),
     (
@@ -128,7 +134,7 @@ _JOBS: tuple[
         IntakeInputV1,
         ArtifactListResultV1,
         FinalizedArtifactsV1,
-        (".qa.yaml", "requirement.md"),
+        (".qa.yaml",),
         (),
     ),
 )

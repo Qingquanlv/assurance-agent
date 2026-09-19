@@ -28,13 +28,20 @@ from assurance_intake.contracts.agent import (
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.contracts.planning_facts import build_planning_facts
-from assurance_intake.contracts.explore import EXPLORE_OUTPUT_PATHS, ExploreAdvisoryV1, build_explore_context
+from assurance_intake.contracts.explore import (
+    EXPLORE_AGENT_OUTPUT_PATHS,
+    REQUIREMENT_PATH,
+    RUN_SPEC_SNAPSHOT_PATH,
+    ExploreAdvisoryV1,
+    build_explore_context,
+)
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
+from assurance_intake.operations.case_modules import infer_case_delta_paths
 from assurance_intake.resource_loader import resource_bytes, resource_text
 
 INTAKE_SKILL = "skills/aa-intake/SKILL.md"
@@ -70,12 +77,13 @@ _BOUNDED_PROFILES: Mapping[str, str] = {
 
 
 def intake_outputs(change_id: str) -> tuple[str, ...]:
-    return tuple(sorted(("qa/.qa.yaml", "qa/requirement.md")))
+    del change_id
+    return ("qa/.qa.yaml",)
 
 
 def explore_outputs(change_id: str) -> tuple[str, ...]:
     del change_id
-    return EXPLORE_OUTPUT_PATHS
+    return EXPLORE_AGENT_OUTPUT_PATHS
 
 
 def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -349,11 +357,29 @@ def failed_input(error: Exception) -> TaskOutcome:
     return TaskOutcome.failed("invalid_input", str(error), retryable=True)
 
 
+def _materialize_requirement(text: str) -> bytes:
+    return (text.removesuffix("\n") + "\n").encode("utf-8")
+
+
+def _write_prepare_file(write_root: Path, relative: str, data: bytes) -> None:
+    path = write_root.joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
 class IntakePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             business = validate_input(IntakeInputV1, request.input)
             binding = validate_binding(request.binding_data)
+            _write_prepare_file(
+                context.write_root, REQUIREMENT_PATH, _materialize_requirement(business.requirement)
+            )
+            snapshot = yaml.safe_dump(
+                {"candidate_test_families": list(business.candidate_test_families)},
+                sort_keys=True,
+            ).encode("utf-8")
+            _write_prepare_file(context.write_root, RUN_SPEC_SNAPSHOT_PATH, snapshot)
             return prepare_outcome(
                 skill_path=INTAKE_SKILL,
                 persona_path=INTAKE_PERSONA,
@@ -439,6 +465,14 @@ class CaseDesignPrepareHandler:
                 if exploration.context_ref != "explore/context.json":
                     raise InputError("exploration.json context_ref must be explore/context.json")
             business = business.model_copy(update={"exploration": exploration, "impact_inventory": inventory})
+            try:
+                inferred = infer_case_delta_paths(inventory)
+            except ValueError:
+                inferred = ()
+            if inferred:
+                business = business.model_copy(update={"case_delta_paths": inferred})
+            elif not business.case_delta_paths:
+                raise InputError("impact inventory does not imply any case module")
             review_repair = business.review_repair or _review_repair_contract(
                 context.project_root,
                 business=business,

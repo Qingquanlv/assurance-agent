@@ -25,14 +25,14 @@ Do not rely on prior conversation context.
 
 **After completing work:**
 
-1. Write `qa/results/explore/exploration.json` **and** `qa/results/explore/impact-inventory.json`
+1. Write `qa/results/explore/exploration-draft.json` **and** `qa/results/explore/impact-inventory.json`
    - Use the native `write` tool directly. Do not call `aa risk`, `aa artifact`,
      `base64`, or any shell command; the explorer agent has no shell write authority.
    - Write the complete advisory in one operation. A placeholder or reduced object is
      invalid even when it contains `schema_version`, `change_id`, `watchlist`, and
      `open_questions_for_case_design`.
    - Autonomous, degraded, and no-source runs MUST still write a complete valid
-     `exploration.json`. Weak or absent evidence changes the evidence fields and
+     `exploration-draft.json`. Weak or absent evidence changes the evidence fields and
      confidence, never the required output file.
 2. Immediately read both files back. This is a hard
    completion condition: if the read reports missing/error, continue writing and do
@@ -40,7 +40,7 @@ Do not rely on prior conversation context.
    or shell fallback. Never use Python, `tee`, a heredoc, `base64`, `aa risk`,
    `aa artifact`, `ast_grep_replace`, or a shell command suffix to create this artifact.
 3. Do **not** write `qa/results/explore/advisory.md`
-4. After read-back, verify every field listed under `exploration.json schema (MVP)` and
+4. After read-back, verify every field listed under `exploration-draft.json schema (MVP)` and
    `test_strategy` is present and populated. The product finalizer performs the
    authoritative validation after this agent returns.
 5. On a read-back or completeness failure, continue correcting the artifact; do not
@@ -337,11 +337,11 @@ Generate applicable obligations from the **module's domain shape** (CRUD operati
 | Sub-array | What to include |
 |-----------|----------------|
 | `api` | One entry per main API operation the module exposes (CRUD + any module-specific queries). Name in snake_case (`verb_noun`). |
-| `e2e` | Every applicable business-required user journey, using an exact key from authenticated data knowledge's `journeys`. A `recommended: false` E2E row must not erase a required journey. However, an explicit API-only requirement makes E2E journeys inapplicable: set `minimum_required_coverage.e2e` to `[]`. The candidate set alone is not enough to make a journey inapplicable. |
+| `e2e` | Every applicable business-required user journey, using an exact key from authenticated data knowledge's `journeys`. A `recommended: false` E2E row must not erase a required journey when `e2e` is still a candidate family and the requirement still needs that journey. An explicit API-only requirement, or a candidate set that does not include `e2e`, makes E2E journeys inapplicable: set `minimum_required_coverage.e2e` to `[]`. Do not keep a catalog journey as required after declining E2E for API-only scope. |
 | `negative` | Exact authenticated capability-catalog leaf keys for required-field, foreign-key, boundary, or authorization obligations. Do not invent scenario names as keys. |
 | `data_integrity` | Exact authenticated capability-catalog leaf keys for consistency invariants, such as hierarchy, ordering, or relationship constraints. Do not invent scenario names as keys. |
 
-Resolve conditional requiredness/applicability from requirement and authenticated policy/data evidence before finalizing. Write resolved required E2E journeys under `e2e`, regardless of the recommendation or candidate family set. When the authenticated requirement explicitly limits scope to API-only, that requirement resolves E2E journeys as inapplicable and the `e2e` array must be empty even if the data-knowledge catalog contains matching journeys. An unresolved condition blocks plan freezing; do not turn it into `required: false`, erase it, or use a family recommendation as its condition. The legacy `e2e_if_enabled` category may be absent or `[]`; non-empty entries are unresolved and rejected.
+Resolve conditional requiredness/applicability from requirement and authenticated policy/data evidence before finalizing. Write resolved required E2E journeys under `e2e` only when `e2e` remains a candidate family and the requirement still needs those journeys. When the authenticated requirement explicitly limits scope to API-only, or when `e2e` is not a candidate family, E2E journeys are inapplicable and the `e2e` array must be empty even if the data-knowledge catalog contains matching journeys. An unresolved condition blocks plan freezing; do not turn it into `required: false`, erase it, or use a family recommendation as its condition. The legacy `e2e_if_enabled` category may be absent or `[]`; non-empty entries are unresolved and rejected.
 
 An entry is either a canonical non-empty key string (required by default) or a closed object with only `id`, `key`, `category`, `required`, and `layer`. `category`, if present, must match its containing sub-array. `layer` defaults to `e2e` for `e2e` and `api` for the other categories; use `both` only when both kinds of evidence are required. Resolve `required` to a boolean using the evidence above. Keep IDs and keys unique across all categories. If a required closed key is unavailable, report the unresolved obligation instead of inventing a key or silently omitting it.
 
@@ -399,6 +399,7 @@ frozen plan binds it, so case design and retro can cite `IR-*` ids.
       "row_id": "IR-001",
       "change_evidence_ids": ["CF-001", "SC-003"],
       "affected_behavior": {"kind": "api", "key": "DELETE /api/v1/dept/delete"},
+      "case_module": "system/dept",
       "obligation": "deleting a department must also remove its DeptClosure rows and leave user.dept empty",
       "expected_basis_ids": ["SC-005", "HI-001"],
       "assets": {"case_ids": ["TC_DEPT_API_011"], "factory_leafs": ["capabilities.domain_factories.dept.make_dept"], "problem_ids": ["PROB-1"]},
@@ -417,6 +418,7 @@ frozen plan binds it, so case design and retro can cite `IR-*` ids.
 |--------|---------------------|-------|
 | `change_evidence_ids` | Which requirement, file, or symbol changed? | ≥1 id; `CF-*` from `impact.seeds[]` or your `SC-*` |
 | `affected_behavior` | Which API, journey, role, or data constraint may be affected? | `kind` ∈ `api`, `journey`, `role`, `data_constraint`; `data_constraint` keys must be exact typed catalog leafs and `journey` keys exact data-knowledge journeys, otherwise use `capability_gap` |
+| `case_module` | Which `qa/cases/<module>/` directory should receive the delta? | required on `add`/`modify`; slash-separated slugs such as `system/dept`; rows that belong in one `case.yaml` MUST share the same module; prefer an existing catalog path when `impact.candidate_cases[]` already has one |
 | `obligation` + `expected_basis_ids` | What must be verified and on what basis? | one sentence; basis ids from `SC-*`, `HI-*`, `CS-*` |
 | `assets` | Which cases, factories, and problems can be reused? | `case_ids` from `impact.candidate_cases[].case_id`; `factory_leafs` from `impact.factory_leafs`; `problem_ids` from `impact.historical_problems[].problem_id` |
 | `disposition` | Reuse, modify, add, or is something missing? | `reuse`/`modify` require `assets.case_ids`; `add` requires none; `capability_gap` and `pending_confirmation` require `gap_reason` |
@@ -428,6 +430,7 @@ Hard rules:
 3. Prefer `capability_gap` over a guessed catalog key, and `pending_confirmation` over a guessed business rule. Open rows are visible to case design and retro; wrong closed rows are not.
 4. When `impact.seeds` is empty (no diff, no explicit paths), rows still cite `SC-*` evidence and `exclusions` is `[]`.
 5. The inventory does not replace `exploration.json`; `test_strategy`, `minimum_required_coverage`, and `priority_hints` keep their own channels.
+6. Name `case_module` on every `add` or `modify` row. One requirement commonly spans several modules — emit one inventory row per affected behavior, and reuse the same `case_module` only when those rows belong in the same `case.yaml`. The operator never supplies modules; case-design writes every inferred `qa/cases/<case_module>/case.yaml` path.
 
 ---
 
@@ -559,7 +562,7 @@ Do not output a user-facing summary, step log, phase delta, or compliance checkl
 After both artifacts are written and read-back validation succeeds, return structured JSON only:
 
 ```json
-{"output_files":["qa/results/explore/exploration.json","qa/results/explore/impact-inventory.json"]}
+{"output_files":["qa/results/explore/exploration-draft.json","qa/results/explore/impact-inventory.json"]}
 ```
 
 Every successful run returns exactly the non-empty receipt above. If missing or
