@@ -138,6 +138,10 @@ class RunTestsInputV1(FrozenModel):
     timeout_seconds: int = Field(default=3600, ge=31, le=3600)
     coverage_epoch: int = Field(default=0, ge=0)
     execution_kind: Literal["execute", "run"] = "execute"
+    # Frozen observation method. Without it the runner cannot collect a runtime
+    # observation and every obligation stays inconclusive downstream.
+    method_plan_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    allowed_origins: tuple[str, ...] = ()
 
     @field_validator("capability_leafs")
     @classmethod

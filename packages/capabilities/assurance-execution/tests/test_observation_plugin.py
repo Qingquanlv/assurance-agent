@@ -42,3 +42,82 @@ def test_preexisting_output_is_not_overwritten(tmp_path: Path, monkeypatch) -> N
     plugin.pytest_sessionfinish(_Session(), 0)
     assert destination.read_text(encoding="utf-8") == "keep-me"
     assert "output_preexisting" in _Session.config._aa_observe["errors"]
+
+
+def _binding_context() -> dict:
+    return {
+        "identity": {
+            "plan_digest": "a" * 64,
+            "method_plan_refs": [],
+            "mapping_digest": "b" * 64,
+            "batch_id": "B-1",
+            "baseline_tree_id": "c" * 64,
+            "runner_profile_digest": "d" * 64,
+        },
+        "allowed_origins": ["http://127.0.0.1:9"],
+        "timeout_seconds": 2,
+        "max_response_bytes": 4096,
+        "requirements": [
+            {
+                "requirement_id": "REQ-1",
+                "profile_id": "api-default",
+                "prerequisites": [],
+                "observations": [
+                    {
+                        "observation_key": "locked_valid_password",
+                        "condition": "valid password after five failures",
+                        "predicate": "status_code_eq",
+                        "expected": 423,
+                        "basis_refs": [],
+                    }
+                ],
+                "semantic_review_required": True,
+                "subject_binding_required": False,
+            }
+        ],
+        "method_plans": [
+            {
+                "mrc_id": "MRC-1",
+                "requirement_id": "REQ-1",
+                "profile_id": "api-default",
+                "case_ids": ["TC-1"],
+                "prerequisites": [],
+                "steps": [{"step_id": "S1", "purpose": "observe", "action": "post"}],
+                "observations": [
+                    {
+                        "observation_id": "OBS-1",
+                        "observation_key": "locked_valid_password",
+                        "step_id": "S1",
+                        "test_nodeid": "qa/tests/api/test_lockout.py::test_locks",
+                        "assertion_id": "A1",
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def test_emitted_observation_carries_every_contract_field(tmp_path: Path, monkeypatch) -> None:
+    from assurance_execution.contracts.observations import RuntimeObservationV1
+
+    plugin = _plugin()
+    observer = plugin._Observer(_binding_context())
+    observer.bind_test("qa/tests/api/test_lockout.py::test_locks")
+    monkeypatch.setattr(
+        plugin.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            plugin.urllib.error.HTTPError("http://127.0.0.1:9/login", 423, "Locked", {}, None)
+        ),
+    )
+
+    observer.request(observation_id="OBS-1", method="POST", url="http://127.0.0.1:9/login")
+
+    row = RuntimeObservationV1.model_validate(observer.observations[0])
+    assert row.mrc_id == "MRC-1"
+    assert row.test_nodeid == "qa/tests/api/test_lockout.py::test_locks"
+    assert row.assertion_id == "A1"
+    assert row.step_id == "S1"
+    assert row.actual_status == 423
+    assert row.predicate_passed is True
+    assert row.sequence_index == 0
