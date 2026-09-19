@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import ValidationError
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1, FamilyExecutionOutcomeV1
-from assurance_intake.contracts.obligations import PreparedObligationV1
+from assurance_execution.contracts.execution import EXECUTION_FAMILIES
+from assurance_execution.contracts.observations import ObservationBundleV1, RuntimeObservationV1
+from assurance_generation.contracts.obligation_methods import (
+    expectation_ready,
+    validate_observation_binding,
+)
+from assurance_generation.contracts.plans import ObligationMethodPlanV1
+from assurance_generation.contracts.reviews import ObligationSemanticReviewV1
+from assurance_intake.contracts.obligations import PreparedObligationV1, VerificationRequirementV1
 from assurance_intake.contracts.plan import decode_plan
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
@@ -77,53 +86,154 @@ def _authenticate_ref(workspace: Path, ref: EvidenceArtifactRefV1) -> bytes:
     return payload
 
 
+def _families_for_layer(layer: str | None) -> frozenset[str]:
+    if layer is None:
+        return frozenset(EXECUTION_FAMILIES)
+    if layer == "both":
+        return frozenset({"api", "e2e"})
+    return frozenset({layer})
+
+
 def _blocked_reason(
     outcomes: tuple[FamilyExecutionOutcomeV1, ...],
     layer: str | None,
 ) -> str | None:
+    families = _families_for_layer(layer)
     for item in outcomes:
-        if layer is not None and item.family not in {layer, "both"}:
-            if layer == "both" and item.family in {"api", "e2e"}:
-                pass
-            elif item.family != layer:
-                continue
+        if item.family not in families:
+            continue
         if item.state == "blocked" and item.reason_code is not None:
             return item.reason_code
     return None
 
 
+class ObligationMethod(NamedTuple):
+    """The reviewed method and observations bound to one obligation."""
+
+    plan: ObligationMethodPlanV1 | None
+    review: ObligationSemanticReviewV1 | None
+    requirement: VerificationRequirementV1 | None
+
+
+def _method_for_obligation(
+    obligation: PreparedObligationV1,
+    plans: Mapping[str, ObligationMethodPlanV1],
+    reviews: Mapping[tuple[str, str], ObligationSemanticReviewV1],
+) -> ObligationMethod:
+    plan = plans.get(obligation.mrc_id)
+    requirement = next(
+        (
+            item
+            for item in obligation.verification_requirements
+            if plan is not None and item.requirement_id == plan.requirement_id
+        ),
+        None,
+    )
+    if requirement is None and plan is None and len(obligation.verification_requirements) == 1:
+        requirement = obligation.verification_requirements[0]
+    review = reviews.get((obligation.mrc_id, requirement.requirement_id)) if requirement is not None else None
+    return ObligationMethod(plan=plan, review=review, requirement=requirement)
+
+
+def _method_is_bound(method: ObligationMethod) -> bool:
+    if method.plan is None or method.requirement is None:
+        return False
+    try:
+        validate_observation_binding(method.requirement, method.plan.observations)
+    except ValueError:
+        return False
+    return True
+
+
+def _expectation_is_confirmed(obligation: PreparedObligationV1, method: ObligationMethod) -> bool:
+    if method.requirement is None or not method.requirement.observations:
+        return False
+    return all(
+        expectation_ready(obligation, method.requirement, item.observation_key, method.review)
+        for item in method.requirement.observations
+    )
+
+
+def _observations_for_obligation(
+    obligation: PreparedObligationV1,
+    method: ObligationMethod,
+    bundle: ObservationBundleV1 | None,
+) -> tuple[RuntimeObservationV1, ...]:
+    if bundle is None or method.plan is None:
+        return ()
+    wanted = {item.observation_id for item in method.plan.observations}
+    return tuple(
+        item
+        for item in bundle.observations
+        if item.observation_id in wanted and item.mrc_id == obligation.mrc_id
+    )
+
+
 def _facts_for_obligation(
     *,
     obligation: PreparedObligationV1,
-    evidence: ExecutionEvidenceV1,
-    expectation_ready: bool,
-    reviews_passed: bool,
+    method: ObligationMethod,
+    blocked: str | None,
+    observations: tuple[RuntimeObservationV1, ...],
+    subject_matched: bool,
     counterexample_ref: EvidenceArtifactRefV1 | None,
 ) -> ObligationEvidenceFactsV1:
-    blocked = _blocked_reason(evidence.family_outcomes, obligation.layer)
-    failed_results = tuple(item for item in evidence.results if item.status == "failed")
+    confirmed = _expectation_is_confirmed(obligation, method)
+    method_valid = _method_is_bound(method)
+    reviews_passed = method.review is not None and method.review.status == "pass"
+    required_ids = (
+        {item.observation_id for item in method.plan.observations} if method.plan is not None else set()
+    )
+    complete = (
+        blocked is None
+        and bool(required_ids)
+        and {item.observation_id for item in observations} == required_ids
+    )
+    contradicted = tuple(item for item in observations if not item.predicate_passed)
     eligible = (
-        expectation_ready
+        confirmed
+        and method_valid
         and reviews_passed
+        and subject_matched
         and blocked is None
-        and bool(failed_results)
+        and complete
+        and bool(contradicted)
         and counterexample_ref is not None
     )
-    complete = bool(evidence.results) and blocked is None
     return ObligationEvidenceFactsV1.model_validate(
         {
-            "expectation_confirmed": expectation_ready,
+            "expectation_confirmed": confirmed,
             "eligible_counterexample": eligible,
-            "subject_valid": blocked is None,
-            "method_valid": blocked is None,
+            "subject_valid": subject_matched and blocked is None,
+            "method_valid": method_valid and blocked is None,
             "prerequisites_valid": blocked is None,
             "observations_complete": complete,
             "required_reviews_passed": reviews_passed,
-            "supporting_evidence_current": complete,
+            "supporting_evidence_current": complete and not contradicted,
             "counterexample_evidence_current": eligible,
             "counterexample_refs": (counterexample_ref,) if eligible and counterexample_ref else (),
         }
     )
+
+
+def _gap_codes(
+    *,
+    blocked: str | None,
+    facts: ObligationEvidenceFactsV1,
+    method: ObligationMethod,
+) -> tuple[str, ...]:
+    if blocked is not None:
+        return (blocked,)
+    codes: list[str] = []
+    if method.plan is None:
+        codes.append("obligation_case_missing")
+    elif not facts.method_valid:
+        codes.append("obligation_mapping_missing")
+    if not facts.expectation_confirmed:
+        codes.append("expectation_unconfirmed")
+    if not facts.observations_complete:
+        codes.append("obligation_observation_missing")
+    return tuple(codes)
 
 
 def load_prepared_obligations(
@@ -132,9 +242,11 @@ def load_prepared_obligations(
     for ref in request.reviewed_case.preparation_refs:
         if not ref.path.endswith(("exploration.json", "quality-goals.json", "prepared-explore.json")):
             continue
+        # A digest mismatch is an authentication failure, not a miss. Only an
+        # artifact that does not carry obligations is skipped.
         try:
             payload = json.loads(_authenticate_ref(workspace, ref).decode("utf-8"))
-        except (InputError, UnicodeError, json.JSONDecodeError):
+        except (UnicodeError, json.JSONDecodeError):
             continue
         raw = payload.get("minimum_required_coverage") if isinstance(payload, dict) else None
         if not isinstance(raw, list):
@@ -148,6 +260,54 @@ def load_prepared_obligations(
         if rows:
             return tuple(rows)
     return ()
+
+
+def load_obligation_methods(
+    workspace: Path, request: MaterializeAssessmentInputV1
+) -> tuple[dict[str, ObligationMethodPlanV1], dict[tuple[str, str], ObligationSemanticReviewV1]]:
+    """Read the reviewed method plans the generation cycle froze for this plan."""
+
+    plans: dict[str, ObligationMethodPlanV1] = {}
+    reviews: dict[tuple[str, str], ObligationSemanticReviewV1] = {}
+    for ref in request.generation.plan_refs:
+        if not ref.path.endswith(".json"):
+            continue
+        try:
+            payload = json.loads(_authenticate_ref(workspace, ref).decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for item in payload.get("method_plans") or ():
+            try:
+                plan = ObligationMethodPlanV1.model_validate(item)
+            except ValidationError:
+                continue
+            if plan.mrc_id in plans:
+                raise InputError(f"obligation has more than one reviewed method: {plan.mrc_id}")
+            plans[plan.mrc_id] = plan
+        for item in payload.get("semantic_reviews") or ():
+            try:
+                review = ObligationSemanticReviewV1.model_validate(item)
+            except ValidationError:
+                continue
+            if review.frozen_plan_digest != request.plan_digest:
+                raise InputError(f"semantic review belongs to another plan: {review.mrc_id}")
+            reviews[(review.mrc_id, review.requirement_id)] = review
+    return plans, reviews
+
+
+def load_observation_bundle(
+    workspace: Path, request: MaterializeAssessmentInputV1
+) -> ObservationBundleV1 | None:
+    ref = request.execution.observations_ref
+    if ref is None:
+        return None
+    try:
+        payload = json.loads(_authenticate_ref(workspace, ref).decode("utf-8"))
+        return ObservationBundleV1.model_validate(payload)
+    except (UnicodeError, json.JSONDecodeError, ValidationError) as error:
+        raise InputError(f"invalid runtime observation bundle: {error}") from error
 
 
 def assess_obligations(
@@ -166,32 +326,41 @@ def assess_obligations(
     except (UnicodeError, json.JSONDecodeError, ValidationError) as error:
         raise InputError(f"invalid execution evidence: {error}") from error
     obligations = load_prepared_obligations(workspace, request)
+    plans, reviews = load_obligation_methods(workspace, request)
+    bundle = load_observation_bundle(workspace, request)
+    subject_matched = bundle is None or bundle.subject.status == "matched"
+    observations_ref = request.execution.observations_ref
     rows: list[ObligationAssessmentRowV1] = []
     for obligation in obligations:
         if obligation.scope_disposition == "excluded":
             continue
+        method = _method_for_obligation(obligation, plans, reviews)
         blocked = _blocked_reason(evidence.family_outcomes, obligation.layer)
+        observations = _observations_for_obligation(obligation, method, bundle)
         facts = _facts_for_obligation(
             obligation=obligation,
-            evidence=evidence,
-            expectation_ready=True,
-            reviews_passed=True,
-            counterexample_ref=request.execution.evidence_ref if evidence.results else None,
+            method=method,
+            blocked=blocked,
+            observations=observations,
+            subject_matched=subject_matched,
+            counterexample_ref=observations_ref,
         )
         verdict = decide_obligation(facts)
-        gaps: list[str] = []
-        if blocked:
-            gaps.append(blocked)
-            verdict = "inconclusive"
-        elif verdict == "inconclusive" and not facts.observations_complete:
-            gaps.append("obligation_observation_missing")
+        evidence_refs = (
+            (request.execution.evidence_ref,)
+            if observations_ref is None
+            else (request.execution.evidence_ref, observations_ref)
+        )
         rows.append(
             ObligationAssessmentRowV1(
                 plan_digest=request.plan_digest,
                 mrc_id=obligation.mrc_id,
                 verdict=verdict,
-                evidence_refs=(request.execution.evidence_ref,),
-                gap_codes=tuple(gaps),
+                method_plan_refs=(),
+                evidence_refs=evidence_refs,
+                gap_codes=()
+                if verdict == "supported"
+                else _gap_codes(blocked=blocked, facts=facts, method=method),
             )
         )
     excluded = tuple(item.mrc_id for item in obligations if item.scope_disposition == "excluded")

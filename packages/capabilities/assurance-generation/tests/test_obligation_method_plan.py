@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from assurance_generation.contracts.plans import ObservationBindingV1
-from assurance_generation.operations.plan_consistency import (
+from assurance_generation.contracts.obligation_methods import (
     expectation_ready,
     required_observation_keys,
     validate_observation_binding,

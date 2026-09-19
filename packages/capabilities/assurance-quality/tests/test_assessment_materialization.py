@@ -16,7 +16,7 @@ from graph_engine.plugin_api import ResourceClaimTemplate
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_intake.contracts.common import TestFamily
-from assurance_quality.contracts.assessment import AssessmentInputsV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
 from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.coverage import CoverageGapsDocument, classify_coverage_state
 from assurance_quality.contracts.decisions import classify_inspection_disposition
@@ -26,6 +26,7 @@ from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
 from assurance_quality.operations.inspect import build_failure_classification_facts
+from assurance_quality.operations.obligations import assess_obligations
 from tests.acg_plan_fixture import install_plan
 from tests.capabilities.conformance import execute_task
 
@@ -1101,3 +1102,221 @@ async def test_optional_healing_and_issue_evidence_are_digest_authenticated(tmp_
     assert result.failure is not None
     assert result.failure.kind == "invalid_input"
     assert "digest changed" in result.failure.message
+
+
+OBSERVATION_KEY = "locked_valid_password"
+OBSERVATION_ID = "OBS-LOCK-1"
+PLANNED_MRC = "MRC-LOCK-1"
+UNPLANNED_MRC = "MRC-LOCK-2"
+
+
+def _obligation_source(requirement: dict[str, str]) -> dict[str, Any]:
+    return {"kind": "requirement", "artifact": requirement, "locator": "L10"}
+
+
+def _prepared_obligation(mrc_id: str, requirement: dict[str, str]) -> dict[str, Any]:
+    source = _obligation_source(requirement)
+    return {
+        "mrc_id": mrc_id,
+        "key": CAPABILITY,
+        "proposed_key": None,
+        "category": "api",
+        "layer": "api",
+        "statement": "the account locks after five failed logins",
+        "applicability_conditions": [],
+        "expected_basis_refs": [{"source": source, "source_status": "authenticated"}],
+        "impact_row_ids": [],
+        "required": True,
+        "scope_disposition": "included",
+        "exclusion_basis": None,
+        "open_questions": [],
+        "verification_requirements": [
+            {
+                "requirement_id": f"REQ-{mrc_id}",
+                "profile_id": "api-default",
+                "prerequisites": [],
+                "observations": [
+                    {
+                        "observation_key": OBSERVATION_KEY,
+                        "condition": "valid password after five failures",
+                        "predicate": "status_code_eq",
+                        "expected": 423,
+                        "basis_refs": [source],
+                    }
+                ],
+                "semantic_review_required": True,
+                "subject_binding_required": False,
+            }
+        ],
+    }
+
+
+def _with_two_obligations(root: Path) -> dict[str, Any]:
+    """One obligation carries a reviewed method plan; the other carries none."""
+
+    request = _workspace_input(root)
+    requirement = next(
+        ref for ref in request["reviewed_case"]["preparation_refs"] if ref["path"] == "qa/requirement.md"
+    )
+    obligations = [
+        _prepared_obligation(PLANNED_MRC, requirement),
+        _prepared_obligation(UNPLANNED_MRC, requirement),
+    ]
+    goals_ref = _write_json(
+        root,
+        "qa/results/intake/quality-goals.json",
+        {"minimum_required_coverage": obligations},
+    )
+    request["reviewed_case"]["preparation_refs"] = sorted(
+        [*request["reviewed_case"]["preparation_refs"], goals_ref],
+        key=lambda item: (item["path"], item["digest"]),
+    )
+    request["generation"]["reviewed_case"] = request["reviewed_case"]
+    method_plan_ref = _write_json(
+        root,
+        "qa/results/plans/obligation-method-plans.json",
+        {
+            "method_plans": [
+                {
+                    "mrc_id": PLANNED_MRC,
+                    "requirement_id": f"REQ-{PLANNED_MRC}",
+                    "profile_id": "api-default",
+                    "case_ids": ["TC_ITEM_001"],
+                    "prerequisites": [],
+                    "steps": [{"step_id": "S1", "purpose": "observe", "action": "post the valid password"}],
+                    "observations": [
+                        {
+                            "observation_id": OBSERVATION_ID,
+                            "observation_key": OBSERVATION_KEY,
+                            "step_id": "S1",
+                            "test_nodeid": TEST_SELECTOR,
+                            "assertion_id": "A1",
+                        }
+                    ],
+                }
+            ],
+            "semantic_reviews": [
+                {
+                    "frozen_plan_digest": request["plan_digest"],
+                    "mrc_id": PLANNED_MRC,
+                    "requirement_id": f"REQ-{PLANNED_MRC}",
+                    "plan_ref": request["plan_ref"],
+                    "status": "pass",
+                    "reason": "the expected lockout status is quoted from the requirement",
+                    "source_refs": [_obligation_source(requirement)],
+                    "expectation_reviews": [
+                        {
+                            "observation_key": OBSERVATION_KEY,
+                            "status": "pass",
+                            "reason": "423 is the quoted locked status",
+                            "basis_refs": [_obligation_source(requirement)],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    request["generation"]["plan_refs"] = [*request["generation"]["plan_refs"], method_plan_ref]
+    return request
+
+
+def test_each_obligation_is_concluded_from_its_own_method_and_observations(tmp_path: Path) -> None:
+    request = MaterializeAssessmentInputV1.model_validate(_with_two_obligations(tmp_path))
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    verdicts = {row.mrc_id: row for row in assessment.rows}
+    assert set(verdicts) == {PLANNED_MRC, UNPLANNED_MRC}
+    # The whole run passed, but neither obligation has a runtime observation for
+    # its own required key, so neither may be reported as supported.
+    assert verdicts[PLANNED_MRC].verdict == "inconclusive"
+    assert "obligation_observation_missing" in verdicts[PLANNED_MRC].gap_codes
+    # The second obligation has no reviewed method at all, which is a different
+    # gap from a missing observation.
+    assert verdicts[UNPLANNED_MRC].verdict == "inconclusive"
+    assert "obligation_case_missing" in verdicts[UNPLANNED_MRC].gap_codes
+    assert "obligation_case_missing" not in verdicts[PLANNED_MRC].gap_codes
+
+
+def test_unreviewed_expectation_is_not_confirmed(tmp_path: Path) -> None:
+    payload = _with_two_obligations(tmp_path)
+    plans = json.loads((tmp_path / "qa/results/plans/obligation-method-plans.json").read_bytes())
+    plans["semantic_reviews"][0]["status"] = "abstain"
+    ref = _write_json(tmp_path, "qa/results/plans/obligation-method-plans.json", plans)
+    payload["generation"]["plan_refs"] = [
+        item for item in payload["generation"]["plan_refs"] if item["path"] != ref["path"]
+    ] + [ref]
+    request = MaterializeAssessmentInputV1.model_validate(payload)
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    row = next(item for item in assessment.rows if item.mrc_id == PLANNED_MRC)
+    assert row.verdict == "inconclusive"
+    assert "expectation_unconfirmed" in row.gap_codes
+
+
+def _with_runtime_observations(root: Path, *, predicate_passed: bool) -> dict[str, Any]:
+    payload = _with_two_obligations(root)
+    mapping_ref = payload["execution"]["mapping_ref"]
+    bundle_ref = _write_json(
+        root,
+        f"qa/results/execution/epochs/3/batches/{BATCH_ID}/runtime-observations.json",
+        {
+            "schema_version": "1",
+            "identity": {
+                "plan_digest": payload["plan_digest"],
+                "method_plan_refs": [payload["generation"]["plan_refs"][-1]],
+                "mapping_digest": mapping_ref["digest"],
+                "batch_id": BATCH_ID,
+                "baseline_tree_id": "b" * 64,
+                "runner_profile_digest": "c" * 64,
+            },
+            "subject": {
+                "kind": "local",
+                "expected_identity": "loopback",
+                "observed_identity": "loopback",
+                "evidence_ref": None,
+                "status": "matched",
+            },
+            "observations": [
+                {
+                    "observation_id": OBSERVATION_ID,
+                    "observation_key": OBSERVATION_KEY,
+                    "mrc_id": PLANNED_MRC,
+                    "requirement_id": f"REQ-{PLANNED_MRC}",
+                    "test_nodeid": TEST_SELECTOR,
+                    "assertion_id": "A1",
+                    "step_id": "S1",
+                    "sequence_id": "SEQ-1",
+                    "sequence_index": 0,
+                    "actual_status": 423 if predicate_passed else 200,
+                    "predicate_passed": predicate_passed,
+                    "observed_at": EXECUTED_AT.isoformat(),
+                    "prerequisite_refs": [],
+                }
+            ],
+            "collection_errors": [],
+        },
+    )
+    payload["execution"]["observations_ref"] = bundle_ref
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("predicate_passed", "expected"),
+    ((True, "supported"), (False, "refuted")),
+)
+def test_obligation_verdict_follows_its_own_runtime_observation(
+    tmp_path: Path, predicate_passed: bool, expected: str
+) -> None:
+    request = MaterializeAssessmentInputV1.model_validate(
+        _with_runtime_observations(tmp_path, predicate_passed=predicate_passed)
+    )
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    rows = {row.mrc_id: row for row in assessment.rows}
+    assert rows[PLANNED_MRC].verdict == expected
+    # The unplanned obligation shares the run but has no observation of its own,
+    # so the same execution cannot conclude it either way.
+    assert rows[UNPLANNED_MRC].verdict == "inconclusive"

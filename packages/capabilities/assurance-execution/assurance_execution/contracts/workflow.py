@@ -26,6 +26,7 @@ class ExecutionCycleResultV1(FrozenModel):
     final_status: Literal["PASS", "FAIL"]
     evidence_ref: EvidenceArtifactRefV1
     mapping_ref: EvidenceArtifactRefV1
+    observations_ref: EvidenceArtifactRefV1 | None = None
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     receipt: ReceiptRef
     family_outcomes: tuple[FamilyExecutionOutcomeV1, ...]
@@ -37,6 +38,8 @@ class ExecutionCycleResultV1(FrozenModel):
             raise ValueError("execution evidence must belong to the current change")
         if not self.mapping_ref.path.startswith(prefix):
             raise ValueError("execution mapping must belong to the current change")
+        if self.observations_ref is not None and not self.observations_ref.path.startswith(prefix):
+            raise ValueError("runtime observations must belong to the current change")
         if any(not item.path.startswith(prefix) for item in self.source_refs):
             raise ValueError("execution sources must belong to the current change")
         return self
