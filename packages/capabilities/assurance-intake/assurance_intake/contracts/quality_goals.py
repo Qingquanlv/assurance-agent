@@ -28,29 +28,6 @@ COVERAGE_GOAL_ORDER: tuple[CoverageGoal, ...] = (
     "auth_matrix_coverage",
     "journey_coverage",
 )
-_MRC_CATEGORIES: tuple[MrcCategory, ...] = (
-    "api",
-    "e2e",
-    "e2e_if_enabled",
-    "negative",
-    "data_integrity",
-)
-_DEFAULT_LAYER: dict[MrcCategory, MrcLayer] = {
-    "api": "api",
-    "e2e": "e2e",
-    "e2e_if_enabled": "e2e",
-    "negative": "api",
-    "data_integrity": "api",
-}
-_MRC_PREFIX: dict[MrcCategory, str] = {
-    "api": "API",
-    "e2e": "E2E",
-    "e2e_if_enabled": "E2E",
-    "negative": "NEGATIVE",
-    "data_integrity": "DATA-INTEGRITY",
-}
-
-
 class CoverageFloorsV1(FrozenModel):
     low: FiniteFloor
     medium: FiniteFloor
@@ -142,62 +119,8 @@ def journey_keys_from_document(document: Mapping[str, object]) -> tuple[str, ...
     return value
 
 
-def _obligation(
-    *,
-    category: MrcCategory,
-    entry: object,
-    sequence: int,
-) -> PreparedObligationV1:
-    if isinstance(entry, str):
-        if not entry or entry != entry.strip():
-            raise ValueError("MRC key must be a canonical non-empty string")
-        return PreparedObligationV1(
-            mrc_id=f"MRC-{_MRC_PREFIX[category]}-{sequence:03d}",
-            key=entry,
-            category=category,
-            required=True,
-            layer=_DEFAULT_LAYER[category],
-        )
-    if not isinstance(entry, Mapping):
-        raise ValueError("MRC entries must be strings or closed objects")
-    unknown = set(entry) - {"id", "key", "category", "required", "layer"}
-    if unknown:
-        raise ValueError(f"unknown MRC fields: {sorted(unknown)}")
-    declared_category = entry.get("category", category)
-    if declared_category != category:
-        raise ValueError("MRC category conflicts with its containing category")
-    layer = entry.get("layer", _DEFAULT_LAYER[category])
-    if layer not in {"api", "e2e", "both"}:
-        raise ValueError("MRC layer is invalid")
-    if layer != "both" and layer != _DEFAULT_LAYER[category]:
-        raise ValueError("MRC category and layer conflict")
-    mrc_id = entry.get("id", f"MRC-{_MRC_PREFIX[category]}-{sequence:03d}")
-    key = entry.get("key")
-    required = entry.get("required", True)
-    return PreparedObligationV1.model_validate(
-        {
-            "mrc_id": mrc_id,
-            "key": key,
-            "category": category,
-            "required": required,
-            "layer": layer,
-        }
-    )
-
-
 def _obligation_layers(row: PreparedObligationV1) -> tuple[TestFamily, ...]:
     return ("api", "e2e") if row.layer == "both" else (row.layer,)
-
-
-def _scope_obligation(
-    row: PreparedObligationV1,
-    admissible_families: frozenset[TestFamily] | None,
-) -> PreparedObligationV1:
-    if admissible_families is None or not row.required:
-        return row
-    if any(family in admissible_families for family in _obligation_layers(row)):
-        return row
-    return row.model_copy(update={"required": False})
 
 
 def normalize_goal_obligations(
@@ -207,35 +130,36 @@ def normalize_goal_obligations(
     journey_keys: frozenset[str],
     admissible_families: frozenset[TestFamily] | None = None,
 ) -> tuple[PreparedObligationV1, ...]:
+    from assurance_intake.operations.obligations import normalize_obligation_drafts
+
+    del admissible_families
     source = advisory.minimum_required_coverage
-    if not isinstance(source, Mapping) or not source:
+    if not source:
         raise ValueError("minimum_required_coverage must be a non-empty mapping")
+    drafts = tuple(source)
+    if any(draft.category == "e2e_if_enabled" for draft in drafts):
+        raise ValueError("e2e_if_enabled applicability is unresolved; resolve obligations under e2e")
     rows: list[PreparedObligationV1] = []
-    for category_name, entries in source.items():
-        if category_name not in _MRC_CATEGORIES:
-            raise ValueError(f"unknown MRC category: {category_name}")
-        category: MrcCategory = category_name
-        if not isinstance(entries, list):
-            raise ValueError(f"MRC category {category} must contain a list")
-        if category == "e2e_if_enabled" and entries:
-            raise ValueError("e2e_if_enabled applicability is unresolved; resolve obligations under e2e")
-        for sequence, entry in enumerate(entries, start=1):
-            row = _scope_obligation(
-                _obligation(category=category, entry=entry, sequence=sequence),
-                admissible_families,
-            )
-            if category in {"negative", "data_integrity"} and row.key not in capability_leafs:
-                raise ValueError(f"unknown closed MRC key: {row.key}")
-            if category == "e2e" and row.key not in journey_keys:
-                raise ValueError(f"unknown journey MRC key: {row.key}")
-            rows.append(row)
+    for row in normalize_obligation_drafts(drafts, resolved_quotes={}):
+        proposed = row.proposed_key
+        if row.category == "api" and proposed:
+            key: str | None = proposed
+        elif proposed and proposed in capability_leafs | journey_keys:
+            key = proposed
+        else:
+            key = None
+        if row.category in {"negative", "data_integrity"} and key not in capability_leafs:
+            raise ValueError(f"unknown closed MRC key: {key}")
+        if row.category == "e2e" and key not in journey_keys:
+            raise ValueError(f"unknown journey MRC key: {key}")
+        rows.append(row.model_copy(update={"key": key}))
     ids = [row.mrc_id for row in rows]
     keys = [row.key for row in rows]
     if len(ids) != len(set(ids)):
         raise ValueError("duplicate MRC id")
     if len(keys) != len(set(keys)):
         raise ValueError("duplicate MRC key")
-    return tuple(sorted(rows, key=lambda row: (row.mrc_id, row.key)))
+    return tuple(sorted(rows, key=lambda row: (row.mrc_id, row.key or "")))
 
 
 def required_goal_families(
@@ -247,8 +171,6 @@ def required_goal_families(
     for row in obligations:
         if row.required:
             families.update(_obligation_layers(row))
-    if admissible_families is not None:
-        families &= set(admissible_families)
     return tuple(family for family in ("api", "e2e", "fuzz", "performance") if family in families)
 
 
