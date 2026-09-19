@@ -259,6 +259,23 @@ def _mapping_items(value: object) -> list[Mapping[str, object]]:
     return [item for item in value if isinstance(item, Mapping)]
 
 
+def _selection_ref(
+    state: Mapping[str, object], payload: Mapping[str, object]
+) -> EvidenceArtifactRefV1 | None:
+    reviewed = payload.get("reviewed_case")
+    if isinstance(reviewed, Mapping) and reviewed.get("selection_ref") is not None:
+        return EvidenceArtifactRefV1.model_validate(reviewed["selection_ref"])
+    epoch = state.get("coverage_epoch", 0)
+    expected = f"qa/results/cases/epochs/{epoch}/selection.json"
+    for item in _mapping_items(payload.get("artifacts")):
+        if item.get("path") == expected:
+            return EvidenceArtifactRefV1.model_validate(item)
+    raw = state.get("selection_ref")
+    if raw is not None:
+        return EvidenceArtifactRefV1.model_validate(raw)
+    return None
+
+
 def publish_artifacts(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del receipt
     payload = _output_payload(output)
@@ -343,6 +360,9 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
     )
     if review_ref is None:
         return update
+    selection_ref = _selection_ref(state, payload)
+    if selection_ref is None:
+        return update
     reviewed = ReviewedCaseV1.model_validate(
         {
             "change_id": state["change_id"],
@@ -352,6 +372,7 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
             "preparation_refs": state.get("preparation_refs", ()),
             "case_refs": state.get("case_refs", ()),
             "review_ref": review_ref,
+            "selection_ref": selection_ref,
         }
     )
     receipt_ref = receipt if isinstance(receipt, ReceiptRef) else None

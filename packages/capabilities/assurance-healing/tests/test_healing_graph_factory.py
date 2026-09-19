@@ -131,6 +131,10 @@ def failure_graph_input(**overrides: object) -> dict[str, object]:
                 "path": "qa/results/review/case-review.json",
                 "digest": _SHA,
             },
+            "selection_ref": {
+                "path": "qa/results/cases/epochs/0/selection.json",
+                "digest": _SHA,
+            },
         },
         "proposal_ref": {
             "path": "qa/results/healing/fix-proposal.json",

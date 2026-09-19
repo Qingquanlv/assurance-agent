@@ -1144,6 +1144,7 @@ class ExploreFinalizeHandler:
                 policy_required=frozenset(),
             )
             del official
+            artifacts = [item for item in artifacts if item["path"] != EXPLORE_AGENT_OUTPUT_PATHS[0]]
             artifacts.append({"path": EXPLORATION_PATH, "digest": _file_digest(official_bytes)})
             official_paths = {item["path"] for item in artifacts}
             if not set(EXPLORE_OFFICIAL_OUTPUT_PATHS) <= official_paths:

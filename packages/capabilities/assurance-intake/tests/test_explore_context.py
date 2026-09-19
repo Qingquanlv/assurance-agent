@@ -65,7 +65,7 @@ def _workspace(tmp_path: Path) -> Path:
 
 def test_output_paths_are_fixed() -> None:
     assert EXPLORE_OUTPUT_PATHS == (
-        "qa/results/explore/exploration.json",
+        "qa/results/explore/exploration-draft.json",
         "qa/results/explore/impact-inventory.json",
     )
 

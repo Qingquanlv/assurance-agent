@@ -115,9 +115,29 @@ async def run_prepare(
             }
         if mismatched_exploration is not None:
             exploration.write_bytes(mismatched_exploration)
+    if type(handler).__name__.startswith("CaseReview") and isinstance(payload, dict):
+        payload = _with_case_refs(workspace, payload)
     if type(handler).__name__.startswith("Explore") and isinstance(payload, dict):
         payload = {**payload, "candidate_test_families": ["api"]}
     return await execute_task(handler, payload, workspace, binding_data=binding, write_root=write_root)
+
+
+def _with_case_refs(workspace: Path, payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    paths = payload.get("case_delta_paths")
+    raw_refs = payload.get("case_refs")
+    existing: list[JSONValue] = (
+        [item for item in raw_refs if isinstance(item, Mapping)] if isinstance(raw_refs, list) else []
+    )
+    bound = {str(item.get("path")) for item in existing if isinstance(item, Mapping)}
+    refs: list[JSONValue] = list(existing)
+    if isinstance(paths, list):
+        for relative in paths:
+            if not isinstance(relative, str) or relative in bound:
+                continue
+            path = workspace.joinpath(*relative.split("/"))
+            if path.is_file():
+                refs.append({"path": relative, "digest": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return {**payload, "case_refs": refs}
 
 
 async def run_finalize(
@@ -166,8 +186,8 @@ def test_intake_skill_requires_direct_change_write() -> None:
     assert "must not require" in skill.lower() or "do not require" in skill.lower()
     assert "initialize" in skill.lower()
     assert "requirement.md" in skill
-    assert "Call the native `write` tool exactly twice" in skill
-    assert "read both files back" in skill
+    assert "Call the native `write` tool exactly once" in skill
+    assert "read" in skill and "back" in skill
     assert "A final JSON response without those successful tool calls is invalid" in normalized
     assert "interactive" not in persona.lower()
     assert "do not ask" in persona.lower()
@@ -496,10 +516,7 @@ async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path
     prepared = await run_prepare(IntakePrepareHandler(), INTAKE_INPUT, BINDING, tmp_path)
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
-    assert request.workspace.allowed_outputs == (
-        "qa/.qa.yaml",
-        "qa/requirement.md",
-    )
+    assert request.workspace.allowed_outputs == ("qa/.qa.yaml",)
     skill, persona, business = request.instructions
     assert "Capability-owned intake" in (skill.text_content or "")
     assert "Do not ask" in (skill.text_content or "")
@@ -750,7 +767,6 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
     path = tmp_path / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     advisory = _valid_explore_advisory()
-    advisory["minimum_required_coverage"] = {"api": ["create_item"]}
     path.write_text(json.dumps(advisory), encoding="utf-8")
 
     prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
@@ -760,9 +776,13 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
     business = cast(Mapping[str, object], request.instructions[2].json_content)
     exploration = cast(Mapping[str, object], business["exploration"])
     assert exploration["change_id"] == "CH-DEMO-001"
-    assert dict(cast(Mapping[str, object], exploration["minimum_required_coverage"])) == {
-        "api": ("create_item",)
-    }
+    coverage = tuple(
+        cast(Mapping[str, object], item)
+        for item in cast(tuple[object, ...], exploration["minimum_required_coverage"])
+    )
+    assert coverage
+    assert coverage[0]["category"] in {"api", "capability", "invariant"}
+    assert "statement" in coverage[0]
 
 
 @pytest.mark.asyncio
@@ -805,6 +825,7 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
     )
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     (change_root / "results/trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    (change_root / "requirement.md").write_text("# Requirement\n", encoding="utf-8")
     (change_root / "cases/menus/case.yaml").write_text(
         "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
         encoding="utf-8",
@@ -897,6 +918,9 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
 
 @pytest.mark.asyncio
 async def test_case_review_prepare_rejects_missing_locked_input(tmp_path: Path) -> None:
+    case = tmp_path / "qa/cases/menus/case.yaml"
+    case.parent.mkdir(parents=True, exist_ok=True)
+    case.write_text("schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
     prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
@@ -913,6 +937,7 @@ async def test_case_review_prepare_rejects_intermediate_directory_symlink(tmp_pa
     (change_root / "cases").mkdir()
     sibling_cases.mkdir(parents=True)
     (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
+    (change_root / "requirement.md").write_text("# Requirement\n", encoding="utf-8")
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     (change_root / "results/trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
     (sibling_cases / "case.yaml").write_text(
@@ -1550,7 +1575,7 @@ async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> 
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert "exploration.json" in executed.failure.message
+    assert "exploration" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -1558,7 +1583,7 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
     tmp_path: Path,
 ) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = _EXPLORATION
+    relative = _EXPLORATION_DRAFT
 
     executed = await _finalize_files(
         ExploreFinalizeHandler(),
@@ -1707,6 +1732,8 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
+    requirement = b"# Requirement\n"
+    (write_root / "qa/requirement.md").write_bytes(requirement)
 
     executed = await _finalize_files(
         IntakeFinalizeHandler(),
@@ -1725,7 +1752,10 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
     )
     assert executed.status == "succeeded"
     assert executed.output == {
-        "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
+        "artifacts": [
+            {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
+            {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
+        ]
     }
 
 
@@ -1765,16 +1795,22 @@ async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = b'{"ok":true}'
     path.write_bytes(payload)
+    requirement = b"# Requirement\n"
+    (write_root / "qa/requirement.md").parent.mkdir(parents=True, exist_ok=True)
+    (write_root / "qa/requirement.md").write_bytes(requirement)
     executed = await _finalize_files(
         IntakeFinalizeHandler(),
         {"output_files": [relative]},
         project,
-        [relative],
+        [relative, "qa/requirement.md"],
         write_root=write_root,
     )
     assert executed.status == "succeeded"
     assert executed.output == {
-        "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
+        "artifacts": [
+            {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
+            {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
+        ]
     }
     AGENT_JOB_CONTRACTS["intake"].output_model.model_validate(executed.output)
 

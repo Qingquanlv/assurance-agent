@@ -94,6 +94,7 @@ def _execution(plan_digest: str = SHA, plan_ref: dict[str, str] | None = None) -
         "plan_ref": bound_ref,
         "batch_id": "batch-1",
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+        "family_outcomes": [{"family": "api", "state": "executed"}],
         "mapping": {
             "schema_version": "1",
             "selected": [f"{TARGET}::test_users"],
@@ -186,6 +187,7 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
         _json_bytes(_execution(plan.plan_digest, plan_ref)),
     )
     source_ref = _write(project, SOURCE, before)
+    selection_ref = _write(project, "qa/results/cases/epochs/0/selection.json", b'{"schema_version":"1"}\n')
     payload: dict[str, object] = {
         "change_id": CHANGE,
         "plan_digest": plan.plan_digest,
@@ -203,6 +205,7 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
             ),
             "case_refs": [case_ref],
             "review_ref": review_ref,
+            "selection_ref": selection_ref,
         },
         "proposal_ref": proposal_ref,
         "approval_ref": approval_ref,
@@ -495,6 +498,10 @@ def test_input_binds_reviewed_case_epoch() -> None:
                     "preparation_refs": [{"path": PREP, "digest": SHA}],
                     "case_refs": [{"path": CASE, "digest": SHA}],
                     "review_ref": {"path": REVIEW, "digest": SHA},
+                    "selection_ref": {
+                        "path": "qa/results/cases/epochs/0/selection.json",
+                        "digest": SHA,
+                    },
                 },
                 "proposal_ref": {"path": PROPOSAL, "digest": SHA},
                 "approval_ref": None,
