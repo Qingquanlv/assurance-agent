@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from graph_engine.plugin_api import FrozenModel
 
@@ -61,9 +61,31 @@ class ObligationAssessmentV1(FrozenModel):
     excluded_basis_refs: tuple[SourceRefV1, ...] = ()
 
 
+class ObligationGateFactsV1(FrozenModel):
+    required_count: int = Field(ge=0)
+    supported_count: int = Field(ge=0)
+    refuted_count: int = Field(ge=0)
+    inconclusive_count: int = Field(ge=0)
+    repairable_gap_count: int = Field(ge=0)
+    human_gap_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _counts_are_closed(self) -> Self:
+        if self.required_count != self.supported_count + self.refuted_count + self.inconclusive_count:
+            raise ValueError("required_count must equal supported + refuted + inconclusive")
+        if self.human_gap_count + self.repairable_gap_count > self.inconclusive_count:
+            raise ValueError("classified gaps cannot exceed inconclusive obligations")
+        return self
+
+
+ObligationGateDecision = Literal["satisfied", "repair_required", "needs_human", "blocked"]
+
+
 __all__ = [
     "ObligationAssessmentRowV1",
     "ObligationAssessmentV1",
     "ObligationEvidenceFactsV1",
+    "ObligationGateDecision",
+    "ObligationGateFactsV1",
     "ObligationVerdict",
 ]

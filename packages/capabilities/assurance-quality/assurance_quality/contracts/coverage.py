@@ -81,6 +81,9 @@ CoverageGapKind = Literal[
     "constraint_without_property",
     "matrix_cell_unasserted",
     "unmapped_test_cluster",
+    "obligation_case_missing",
+    "obligation_mapping_missing",
+    "obligation_observation_missing",
 ]
 
 # Declaration order is the deterministic sort order for kinds.
@@ -98,11 +101,26 @@ class CoverageGapLocator(BaseModel):
     constraint_key: NonEmptyStr | None = None
     cell: NonEmptyStr | None = None
     cluster_key: NonEmptyStr | None = None
+    plan_digest: NonEmptyStr | None = None
+    mrc_id: NonEmptyStr | None = None
+    requirement_id: NonEmptyStr | None = None
+    observation_id: NonEmptyStr | None = None
 
     @model_validator(mode="after")
     def _at_least_one_key(self) -> Self:
-        if not any((self.case_id, self.constraint_key, self.cell, self.cluster_key)):
-            raise ValueError("locator requires at least one of case_id, constraint_key, cell, cluster_key")
+        if not any(
+            (
+                self.case_id,
+                self.constraint_key,
+                self.cell,
+                self.cluster_key,
+                self.plan_digest,
+                self.mrc_id,
+                self.requirement_id,
+                self.observation_id,
+            )
+        ):
+            raise ValueError("locator requires at least one locating field")
         return self
 
 
@@ -165,6 +183,10 @@ class CoverageGapsDocument(BaseModel):
                     gap.locator.constraint_key or "",
                     gap.locator.cell or "",
                     gap.locator.cluster_key or "",
+                    gap.locator.plan_digest or "",
+                    gap.locator.mrc_id or "",
+                    gap.locator.requirement_id or "",
+                    gap.locator.observation_id or "",
                     gap.batch_id,
                 ),
             )
@@ -295,7 +317,8 @@ class MinimumCoverageItem(BaseModel):
     model_config = _FROZEN
 
     mrc_id: NonEmptyStr
-    key: NonEmptyStr
+    key: NonEmptyStr | None = None
+    proposed_key: str | None = None
     category: MrcCategory
     required: bool
     layer: MrcLayer

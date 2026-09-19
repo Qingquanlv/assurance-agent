@@ -240,6 +240,8 @@ async def test_report_markdown_is_a_deterministic_human_projection() -> None:
     assert b"Final status: FAIL" in first
     assert f"Plan: {HEX_A}".encode() in first
     assert b"Execution: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in first
+    assert b"No verifiable obligation was assessed; this is not a passing result." in first
+    assert b"\xe7\xb3\xbb\xe7\xbb\x9f\xe6\xb2\xa1\xe6\x9c\x89\xe9\x97\xae\xe9\xa2\x98" not in first
 
 
 @pytest.mark.asyncio

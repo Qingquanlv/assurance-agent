@@ -332,6 +332,7 @@ def join_minimum_coverage(payload: MinimumCoverageInput) -> MinimumCoverageResul
             MinimumCoverageItem(
                 mrc_id=row.mrc_id,
                 key=row.key,
+                proposed_key=row.proposed_key,
                 category=row.category,
                 required=row.required,
                 layer=row.layer,

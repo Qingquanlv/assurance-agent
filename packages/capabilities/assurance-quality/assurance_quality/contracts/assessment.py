@@ -24,6 +24,7 @@ from assurance_quality.contracts.agent import (
     QualitySkillInputV1,
 )
 from assurance_quality.contracts.coverage import CoverageState
+from assurance_quality.contracts.obligations import ObligationGateFactsV1
 from assurance_quality.contracts.goal_policy import ActiveCoverageScopeV1, CoverageGoalPolicyV1
 from assurance_quality.contracts.metrics import MetricsDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
@@ -92,6 +93,7 @@ class AssessmentInputsV1(FrozenModel):
     execution_ref: EvidenceArtifactRefV1
     observations_ref: EvidenceArtifactRefV1
     obligation_assessment_ref: EvidenceArtifactRefV1
+    obligation_gate_facts: ObligationGateFactsV1
     issue_evidence_manifest_ref: EvidenceArtifactRefV1
     owned_evidence_ids: tuple[str, ...]
     evidence_bundle_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")

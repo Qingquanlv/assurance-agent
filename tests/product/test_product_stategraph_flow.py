@@ -110,6 +110,7 @@ def _reviewed(epoch: int = 0) -> ReviewedCaseV1:
         ),
         case_refs=(_ref(_CASE_DELTA),),
         review_ref=_ref("qa/results/review/case-review.json"),
+        selection_ref=_ref(f"qa/results/cases/epochs/{epoch}/selection.json"),
     )
 
 
@@ -160,6 +161,7 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         mapping_ref=generated.mapping_ref,
         source_refs=generated.source_refs,
         receipt=_receipt(f"execution-{epoch}-{repair_round}"),
+        family_outcomes=({"family": "api", "state": "executed", "reason_code": None, "diagnostic_refs": ()},),
     )
     return {"execution_result": result.model_dump(mode="json"), "status": "passed"}
 
@@ -224,6 +226,18 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
             "sufficiency_ref": sufficiency.model_dump(mode="json"),
             "execution_ref": execution.evidence_ref.model_dump(mode="json"),
             "observations_ref": observations.model_dump(mode="json"),
+            "obligation_assessment_ref": {
+                "path": f"qa/results/inspect/epochs/{epoch}/batches/B-1/obligation-assessment.json",
+                "digest": _SHA,
+            },
+            "obligation_gate_facts": {
+                "required_count": 1,
+                "supported_count": 1,
+                "refuted_count": 0,
+                "inconclusive_count": 0,
+                "repairable_gap_count": 0,
+                "human_gap_count": 0,
+            },
             "issue_evidence_manifest_ref": issue_manifest.model_dump(mode="json"),
             "owned_evidence_ids": ["OBS-DEMO-001"],
             "evidence_bundle_digest": f"sha256:{_SHA}",

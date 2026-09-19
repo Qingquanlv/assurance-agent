@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -15,9 +16,31 @@ from assurance_quality.contracts.obligations import (
     ObligationAssessmentRowV1,
     ObligationAssessmentV1,
     ObligationEvidenceFactsV1,
+    ObligationGateDecision,
+    ObligationGateFactsV1,
     ObligationVerdict,
 )
 from assurance_quality.operations.common import InputError
+
+REPAIRABLE_OBLIGATION_GAPS = frozenset(
+    {
+        "obligation_case_missing",
+        "obligation_mapping_missing",
+        "obligation_observation_missing",
+    }
+)
+HUMAN_OBLIGATION_GAPS = frozenset(
+    {
+        "expectation_unconfirmed",
+        "runner_unsupported",
+        "profile_missing",
+        "oracle_gap",
+        "scope_gap",
+        "capability_unknown",
+        "method_unsupported",
+        "no_verifiable_scope",
+    }
+)
 
 
 def decide_obligation(facts: ObligationEvidenceFactsV1) -> ObligationVerdict:
@@ -104,7 +127,7 @@ def _facts_for_obligation(
     )
 
 
-def _load_obligations(workspace: Path, request: MaterializeAssessmentInputV1) -> tuple[PreparedObligationV1, ...]:
+def load_prepared_obligations(workspace: Path, request: MaterializeAssessmentInputV1) -> tuple[PreparedObligationV1, ...]:
     for ref in request.reviewed_case.preparation_refs:
         if not ref.path.endswith(("exploration.json", "quality-goals.json", "prepared-explore.json")):
             continue
@@ -141,7 +164,7 @@ def assess_obligations(
         evidence = ExecutionEvidenceV1.model_validate(json.loads(evidence_bytes.decode("utf-8")))
     except (UnicodeError, json.JSONDecodeError, ValidationError) as error:
         raise InputError(f"invalid execution evidence: {error}") from error
-    obligations = _load_obligations(workspace, request)
+    obligations = load_prepared_obligations(workspace, request)
     rows: list[ObligationAssessmentRowV1] = []
     for obligation in obligations:
         if obligation.scope_disposition == "excluded":
@@ -199,8 +222,77 @@ def write_obligation_assessment(
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(encoded).hexdigest())
 
 
+def obligation_gate(facts: ObligationGateFactsV1) -> ObligationGateDecision:
+    if facts.required_count == 0 or facts.refuted_count:
+        return "blocked"
+    if facts.inconclusive_count > facts.human_gap_count + facts.repairable_gap_count:
+        return "blocked"
+    if facts.human_gap_count:
+        return "needs_human"
+    if facts.repairable_gap_count:
+        return "repair_required"
+    if facts.inconclusive_count == 0 and facts.supported_count == facts.required_count:
+        return "satisfied"
+    return "blocked"
+
+
+def _row_identity(row: ObligationAssessmentRowV1) -> tuple[str, str]:
+    return (row.plan_digest, row.mrc_id)
+
+
+def _classify_inconclusive_gaps(codes: tuple[str, ...]) -> Literal["human", "repairable", "unclassified"]:
+    if any(code in HUMAN_OBLIGATION_GAPS for code in codes):
+        return "human"
+    if any(code in REPAIRABLE_OBLIGATION_GAPS for code in codes):
+        return "repairable"
+    return "unclassified"
+
+
+def derive_obligation_gate_facts(
+    assessment: ObligationAssessmentV1,
+    *,
+    required_ids: tuple[tuple[str, str], ...],
+) -> ObligationGateFactsV1:
+    if len(required_ids) != len(set(required_ids)):
+        raise InputError("required obligation identities are not unique")
+    identities = tuple(_row_identity(row) for row in assessment.rows)
+    if len(identities) != len(set(identities)):
+        raise InputError("assessment rows are not unique by (plan_digest, mrc_id)")
+    required_set = set(required_ids)
+    if set(identities) != required_set:
+        raise InputError("assessment rows do not match the required obligation identities")
+    excluded = set(assessment.excluded_mrc_ids)
+    required_mrcs = {mrc_id for _, mrc_id in required_ids}
+    if excluded & required_mrcs:
+        raise InputError("excluded obligations overlap the required identity set")
+    supported = sum(1 for row in assessment.rows if row.verdict == "supported")
+    refuted = sum(1 for row in assessment.rows if row.verdict == "refuted")
+    inconclusive_rows = tuple(row for row in assessment.rows if row.verdict == "inconclusive")
+    human = 0
+    repairable = 0
+    for row in inconclusive_rows:
+        kind = _classify_inconclusive_gaps(row.gap_codes)
+        if kind == "human":
+            human += 1
+        elif kind == "repairable":
+            repairable += 1
+    return ObligationGateFactsV1(
+        required_count=len(required_ids),
+        supported_count=supported,
+        refuted_count=refuted,
+        inconclusive_count=len(inconclusive_rows),
+        repairable_gap_count=repairable,
+        human_gap_count=human,
+    )
+
+
 __all__ = [
+    "HUMAN_OBLIGATION_GAPS",
+    "REPAIRABLE_OBLIGATION_GAPS",
     "assess_obligations",
     "decide_obligation",
+    "derive_obligation_gate_facts",
+    "load_prepared_obligations",
+    "obligation_gate",
     "write_obligation_assessment",
 ]

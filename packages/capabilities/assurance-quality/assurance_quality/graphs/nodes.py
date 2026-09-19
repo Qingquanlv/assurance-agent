@@ -25,6 +25,7 @@ from assurance_quality.contracts.assessment import (
 )
 from assurance_quality.contracts.issues import ReconcileIssuesInputV1, ReconcileIssuesResultV1
 from assurance_quality.contracts.coverage import classify_coverage_state
+from assurance_quality.operations.obligations import obligation_gate
 from assurance_quality.contracts.decisions import (
     IssueAnalysisPublicV1,
     classify_inspection_disposition,
@@ -391,9 +392,26 @@ def publish_inspect(
             policy=finalized.assessment.policy,
         )
     disposition = classify_inspection_disposition(facts=facts, coverage_state=coverage_state)
+    obligation_decision = obligation_gate(assessment.obligation_gate_facts)
+    if disposition == "satisfied" and obligation_decision != "satisfied":
+        if obligation_decision == "repair_required":
+            disposition = "coverage_insufficient"
+            coverage_state = "repair_required"
+        elif obligation_decision == "needs_human":
+            disposition = "needs_human"
+            coverage_state = None
+        else:
+            disposition = "blocked"
+            coverage_state = None
+    elif disposition == "coverage_insufficient" and obligation_decision == "blocked":
+        disposition = "blocked"
+        coverage_state = None
     reason_codes = set(finalized.reason_codes)
     if coverage_state is not None:
         reason_codes.add(f"coverage.{coverage_state}")
+    reason_codes.add(f"obligation.{obligation_decision}")
+    if assessment.obligation_gate_facts.required_count == 0:
+        reason_codes.add("obligation.no_verifiable_scope")
     assessment_refs = tuple(
         sorted(
             (
@@ -403,6 +421,7 @@ def publish_inspect(
                 assessment.sufficiency_ref,
                 assessment.execution_ref,
                 assessment.observations_ref,
+                assessment.obligation_assessment_ref,
                 assessment.issue_evidence_manifest_ref,
                 *(() if assessment.healing_ref is None else (assessment.healing_ref,)),
                 *(() if assessment.issue_ref is None else (assessment.issue_ref,)),

@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
 from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts.obligations import PreparedObligationV1
 
 
 class SourceCodeEvidence(BaseModel):
@@ -35,7 +36,7 @@ class Advisory(BaseModel):
     executive_summary: Any = None
     evidence_inventory: Any = None
     case_design_guidance: Any = None
-    minimum_required_coverage: Any = None
+    minimum_required_coverage: tuple[PreparedObligationV1, ...] | None = None
     source_code_evidence: list[SourceCodeEvidence] = Field(default_factory=list)
 
 

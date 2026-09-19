@@ -42,7 +42,13 @@ from assurance_quality.contracts.assessment import (
     MaterializeAssessmentInputV1,
 )
 from assurance_quality.contracts.decisions import classify_inspection_disposition
-from assurance_quality.contracts.coverage import MinimumCoverageMatrixRow
+from assurance_quality.contracts.coverage import (
+    CoverageGap,
+    CoverageGapKind,
+    CoverageGapLocator,
+    CoverageGapsDocument,
+    MinimumCoverageMatrixRow,
+)
 from assurance_quality.contracts.goal_policy import (
     ActiveCoverageScopeV1,
     CoverageGoalPolicyV1,
@@ -76,13 +82,51 @@ from assurance_quality.operations.metrics import (
 from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
 from assurance_quality.operations.common import InputError, json_digest
-from assurance_quality.operations.obligations import assess_obligations, write_obligation_assessment
+from assurance_quality.operations.obligations import (
+    REPAIRABLE_OBLIGATION_GAPS,
+    assess_obligations,
+    derive_obligation_gate_facts,
+    load_prepared_obligations,
+    write_obligation_assessment,
+)
 from assurance_quality.operations.goal_scope import has_layer_evidence, obligation_goal
 from assurance_quality.operations.identity import ObservationIdentityInput, observation_id
 
 
 class AssessmentInputError(ValueError):
     """The assessment sources could not prove one coherent execution cycle."""
+
+
+def _coverage_gaps_with_obligations(
+    gaps: CoverageGapsDocument,
+    *,
+    assessment,
+    batch_id: str,
+    computed_at: datetime,
+    minimum_coverage,
+) -> CoverageGapsDocument:
+    extra: list[CoverageGap] = []
+    for row in assessment.rows:
+        for code in row.gap_codes:
+            if code not in REPAIRABLE_OBLIGATION_GAPS:
+                continue
+            extra.append(
+                CoverageGap(
+                    kind=cast(CoverageGapKind, code),
+                    locator=CoverageGapLocator(plan_digest=row.plan_digest, mrc_id=row.mrc_id),
+                    layer="declaration",
+                    batch_id=batch_id,
+                    evidence_refs=tuple(ref.path for ref in row.evidence_refs) or (assessment.plan_ref.path,),
+                )
+            )
+    return CoverageGapsDocument.model_validate(
+        {
+            **gaps.model_dump(mode="json"),
+            "computed_at": computed_at,
+            "minimum_coverage": minimum_coverage.model_dump(mode="json"),
+            "gaps": [item.model_dump(mode="json") for item in (*gaps.gaps, *extra)],
+        }
+    )
 
 
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
@@ -624,12 +668,15 @@ def materialize_assessment_inputs(
     }
     trace_keys = {key for case in cases for key in case.trace}
     for obligation in obligations:
-        goal = obligation_goal(key=obligation.key, category=obligation.category)
+        obligation_key = obligation.key or obligation.proposed_key
+        if not obligation_key:
+            continue
+        goal = obligation_goal(key=obligation_key, category=obligation.category)
         if goal is not None and (
-            obligation.required or obligation.covered_by_cases or obligation.key in trace_keys
+            obligation.required or obligation.covered_by_cases or obligation_key in trace_keys
         ):
-            reviewed_goal_maps[goal][obligation.key] = tuple(obligation.covered_by_cases)
-    mrc_keys = {obligation.key for obligation in obligations}
+            reviewed_goal_maps[goal][obligation_key] = tuple(obligation.covered_by_cases)
+    mrc_keys = {obligation.key for obligation in obligations if obligation.key}
     for case in cases:
         for key in case.trace:
             if key in mrc_keys:
@@ -689,26 +736,51 @@ def materialize_assessment_inputs(
     # Numeric obligations retain their authenticated coverage floors. MRCs
     # without a numeric goal still require execution evidence through the
     # existing sufficiency route.
+    selected = {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
     if any(
         item.required
-        and obligation_goal(key=item.key, category=item.category) is None
+        and obligation_goal(key=item.key or item.proposed_key or "", category=item.category) is None
         and item.status != "covered"
         for item in minimum_coverage.items
+    ) or any(
+        outcome.state == "blocked" for outcome in evidence.family_outcomes if outcome.family in selected
     ):
         sufficiency = sufficiency.model_copy(update={"sufficient": False})
-    gaps = build_coverage_gaps(
-        projection,
-        sufficiency,
-        change_id=request.reviewed_case.change_id,
+    try:
+        obligation_assessment = assess_obligations(workspace=project_root, request=request)
+        prepared = load_prepared_obligations(project_root, request)
+        obligation_gate_facts = derive_obligation_gate_facts(
+            obligation_assessment,
+            required_ids=tuple(
+                (request.plan_digest, item.mrc_id)
+                for item in prepared
+                if item.scope_disposition != "excluded"
+            ),
+        )
+    except InputError as error:
+        raise AssessmentInputError(str(error)) from error
+    gaps = _coverage_gaps_with_obligations(
+        build_coverage_gaps(
+            projection,
+            sufficiency,
+            change_id=request.reviewed_case.change_id,
+            batch_id=request.execution.batch_id,
+        ),
+        assessment=obligation_assessment,
         batch_id=request.execution.batch_id,
-    ).model_copy(update={"computed_at": request.execution_at, "minimum_coverage": minimum_coverage})
+        computed_at=request.execution_at,
+        minimum_coverage=minimum_coverage,
+    )
     metrics = _metrics(
         cases=cases,
         projection=projection,
         policy_digest=request.policy_sha256,
         computed_at=request.execution_at,
         reviewed=reviewed_goal_maps,
-        required_layers={obligation.key: obligation.layer for obligation in obligations},
+        required_layers={
+            (obligation.key or obligation.proposed_key or obligation.mrc_id): obligation.layer
+            for obligation in obligations
+        },
     )
     goals = tuple(goal for goal in _GOAL_ORDER if reviewed_goal_maps[cast(CoverageGoal, goal)])
     selected = {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
@@ -762,10 +834,6 @@ def materialize_assessment_inputs(
             observations=list(observations),
         ),
     )
-    try:
-        obligation_assessment = assess_obligations(workspace=project_root, request=request)
-    except InputError as error:
-        raise AssessmentInputError(str(error)) from error
     obligation_assessment_ref = write_obligation_assessment(
         write_root,
         request,
@@ -813,6 +881,7 @@ def materialize_assessment_inputs(
         execution_ref=request.execution.evidence_ref,
         observations_ref=observations_ref,
         obligation_assessment_ref=obligation_assessment_ref,
+        obligation_gate_facts=obligation_gate_facts,
         issue_evidence_manifest_ref=issue_evidence_manifest_ref,
         owned_evidence_ids=tuple(item.observation_id for item in observations),
         evidence_bundle_digest=issue_manifest.digest,

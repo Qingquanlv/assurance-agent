@@ -146,6 +146,7 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
         ],
         "case_refs": [ref("qa/cases/items/case.yaml")],
         "review_ref": ref("qa/results/review/case-review.json"),
+        "selection_ref": ref("qa/results/cases/epochs/2/selection.json"),
     }
     generation = {
         "change_id": "CH-DEMO-001",
@@ -175,6 +176,9 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
                 "mapping_ref": generation["mapping_ref"],
                 "source_refs": generation["source_refs"],
                 "receipt": {"receipt_id": "execution", "receipt_digest": _SHA},
+                "family_outcomes": [
+                    {"family": "api", "state": "executed", "reason_code": None, "diagnostic_refs": []}
+                ],
             },
             "policy_resource_id": "assurance.product.configuration.product-policy",
             "policy_sha256": _SHA,
@@ -239,6 +243,18 @@ def _assessment_output() -> dict[str, object]:
             "digest": _SHA,
         },
         "observations_ref": {"path": f"{base}/observations.json", "digest": _SHA},
+        "obligation_assessment_ref": {
+            "path": f"{base}/obligation-assessment.json",
+            "digest": _SHA,
+        },
+        "obligation_gate_facts": {
+            "required_count": 1,
+            "supported_count": 1,
+            "refuted_count": 0,
+            "inconclusive_count": 0,
+            "repairable_gap_count": 0,
+            "human_gap_count": 0,
+        },
         "issue_evidence_manifest_ref": {
             "path": f"{base}/issue-evidence-manifest.json",
             "digest": _SHA,

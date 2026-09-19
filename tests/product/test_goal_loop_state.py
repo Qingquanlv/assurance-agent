@@ -47,6 +47,7 @@ def _reviewed_case(epoch: int = 0) -> ReviewedCaseV1:
         ),
         case_refs=(_ref("qa/cases/system/case.yaml"),),
         review_ref=_ref("qa/results/review/case-review.json"),
+        selection_ref=_ref(f"qa/results/cases/epochs/{epoch}/selection.json"),
     )
 
 
@@ -228,6 +229,7 @@ def test_full_tail_adapter_preserves_case_scope_and_current_epoch() -> None:
         ),
         case_refs=(_ref("qa/cases/system/case.yaml"),),
         review_ref=_ref("qa/results/review/case-review.json"),
+        selection_ref=_ref("qa/results/cases/epochs/1/selection.json"),
     )
     payload = valid_product_input(
         candidate_test_families=("api",),

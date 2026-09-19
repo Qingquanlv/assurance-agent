@@ -271,6 +271,7 @@ def _quality_gate_for(
         ),
         case_refs=(ref(f"{prefix}/cases/items/case.yaml", b"reviewed cases"),),
         review_ref=ref(f"{results}/review/case-review.json", b'{"decision":"pass"}'),
+        selection_ref=ref(f"{prefix}/results/cases/epochs/0/selection.json", b'{"schema_version":"1"}'),
     )
     filename = (
         "run-result.json" if execution_gate["semantic_node_id"] == "execution.run" else "execute-result.json"

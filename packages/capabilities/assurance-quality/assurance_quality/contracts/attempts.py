@@ -161,6 +161,7 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/observations.json",
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/obligation-assessment.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/issue-evidence-manifest.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",

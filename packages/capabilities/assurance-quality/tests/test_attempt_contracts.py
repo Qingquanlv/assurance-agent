@@ -58,6 +58,7 @@ def test_quality_owns_five_agent_contracts() -> None:
         "qa/results/inspect/epochs/2/batches/B-1/coverage-gaps.json",
         "qa/results/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
         "qa/results/inspect/epochs/2/batches/B-1/metrics.json",
+        "qa/results/inspect/epochs/2/batches/B-1/obligation-assessment.json",
         "qa/results/inspect/epochs/2/batches/B-1/observations.json",
         "qa/results/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
         "qa/results/inspect/epochs/2/batches/B-1/trace.json",

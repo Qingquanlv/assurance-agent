@@ -70,6 +70,7 @@ def _seed_review(root: Path, loaded: Any) -> dict[str, str]:
         preparation_refs=(loaded.plan_ref,),
         case_refs=(case,),
         review_ref=review,
+        selection_ref=write("qa/results/cases/epochs/3/selection.json", b'{"schema_version":"1"}'),
     )
     return write("qa/cases/reviewed-case.json", reviewed.model_dump_json().encode()).model_dump(mode="json")
 
