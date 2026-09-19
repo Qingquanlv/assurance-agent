@@ -280,7 +280,7 @@ class CaseReviewInputV1(_SkillInputV1):
     review_round: int = Field(default=0, ge=0)
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = ()
     case_refs: tuple[EvidenceArtifactRefV1, ...] = ()
-    case_delta_paths: tuple[str, ...] = Field(min_length=1)
+    case_delta_paths: tuple[str, ...] = ()
     review_input_paths: tuple[str, ...] = ()
 
     @field_validator("case_delta_paths", "review_input_paths")

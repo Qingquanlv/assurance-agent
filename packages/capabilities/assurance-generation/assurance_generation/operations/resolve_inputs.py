@@ -61,7 +61,7 @@ def authenticate_reviewed_case(
         plan.plan_digest,
         reviewed.plan_ref,
     )
-    for ref in (*reviewed.preparation_refs, *reviewed.case_refs, reviewed.review_ref):
+    for ref in (*reviewed.preparation_refs, *reviewed.case_refs, reviewed.review_ref, reviewed.selection_ref):
         _file(project_root, ref)
     try:
         raw_review = json.loads(_file(project_root, reviewed.review_ref).read_bytes())

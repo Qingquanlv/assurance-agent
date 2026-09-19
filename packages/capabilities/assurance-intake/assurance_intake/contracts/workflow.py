@@ -75,6 +75,7 @@ class ReviewedCaseV1(FrozenModel):
     preparation_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     case_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     review_ref: EvidenceArtifactRefV1
+    selection_ref: EvidenceArtifactRefV1
 
     @field_validator("change_id")
     @classmethod
@@ -105,6 +106,9 @@ class ReviewedCaseV1(FrozenModel):
         review_path = "qa/results/review/case-review.json"
         if self.review_ref.path != review_path:
             raise ValueError("review_ref must bind the current case-review.json")
+        expected_selection = f"qa/results/cases/epochs/{self.coverage_epoch}/selection.json"
+        if self.selection_ref.path != expected_selection:
+            raise ValueError("selection_ref must bind the current epoch selection.json")
         return self
 
 

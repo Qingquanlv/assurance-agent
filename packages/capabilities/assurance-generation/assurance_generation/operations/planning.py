@@ -530,6 +530,9 @@ def validate_plan_input(
             )
         except ValueError as error:
             raise InputError(str(error)) from error
+        from assurance_intake.operations.case_selection import load_selected_cases
+
+        load_selected_cases(workspace, reviewed)
         case_paths = tuple(item.path for item in reviewed.case_refs)
     else:
         case_paths = None

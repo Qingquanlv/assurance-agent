@@ -126,8 +126,9 @@ Use this skill when:
 The user or orchestrator should provide:
 
 - `change_id`
-- `case_delta_paths` — the exact current-change `cases/<module>/case.yaml` paths
+- `case_delta_paths` — write-authorized current-change `cases/<module>/case.yaml` paths; may be empty when the current selection is reuse-only
 - `review_input_paths` — the complete exact case-design input paths; read every item
+- Current execution scope is the sealed selection, including reused historical cases. Do not treat delta IDs as the whole set.
 
 Expected input files:
 

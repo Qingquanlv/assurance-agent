@@ -53,6 +53,7 @@ from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.cases import _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
 from assurance_intake.operations.case_modules import infer_case_delta_paths
+from assurance_intake.contracts.case_selection import CaseSelectionV1, SelectedCaseV1, selection_path
 from assurance_intake.contracts.loop_history import build_loop_round_history
 from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (
@@ -632,7 +633,7 @@ def _read_case_review_inputs(
 ) -> dict[str, bytes]:
     if not payload.case_delta_paths:
         raise InputError("case_delta_paths are required for case-review scope validation")
-    if {ref.path for ref in payload.case_refs} != set(payload.case_delta_paths):
+    if payload.case_delta_paths and not set(payload.case_delta_paths) <= {ref.path for ref in payload.case_refs}:
         raise InputError("case_refs must authenticate every locked case.yaml for case review")
     matrix_refs = tuple(ref for ref in payload.preparation_refs if ref.path == matrix_relative)
     if len(matrix_refs) != 1:
@@ -1409,6 +1410,53 @@ class CaseReviewFinalizeHandler:
                     path=history_relative,
                     digest=_file_digest(history_bytes),
                 )
+                selected: list[SelectedCaseV1] = []
+                delta = set(payload.case_delta_paths)
+                for ref in payload.case_refs:
+                    try:
+                        source = yaml.safe_load(_read_regular_bytes(context.write_root, ref.path, kind="case"))
+                    except (OutputError, yaml.YAMLError):
+                        source = yaml.safe_load(
+                            _read_regular_bytes(context.project_root, ref.path, kind="case")
+                        )
+                    if not isinstance(source, Mapping):
+                        raise OutputError(f"case source is not a mapping: {ref.path}")
+                    reused = ref.path not in delta
+                    for section in ("added", "modified"):
+                        entries = source.get(section)
+                        if not isinstance(entries, list):
+                            continue
+                        for index, entry in enumerate(entries):
+                            if not isinstance(entry, Mapping) or not isinstance(entry.get("case_id"), str):
+                                continue
+                            selected.append(
+                                SelectedCaseV1(
+                                    case_id=str(entry["case_id"]),
+                                    origin="reuse" if reused else ("modified" if section == "modified" else "added"),
+                                    source_ref=ref,
+                                    source_locator=f"{section}[{index}]",
+                                    mrc_ids=(),
+                                )
+                            )
+                if not selected:
+                    raise OutputError("case selection must include at least one case")
+                selection = CaseSelectionV1(
+                    schema_version="1",
+                    change_id=change_id,
+                    coverage_epoch=payload.coverage_epoch,
+                    plan_digest=payload.plan_digest,
+                    inventory_ref=plan.impact_inventory_ref,
+                    cases=tuple(selected),
+                )
+                selection_relative = selection_path(payload.coverage_epoch)
+                selection_bytes = canonical_json_bytes(selection.model_dump(mode="json")) + b"\n"
+                selection_file = context.write_root.joinpath(*selection_relative.split("/"))
+                selection_file.parent.mkdir(parents=True, exist_ok=True)
+                selection_file.write_bytes(selection_bytes)
+                selection_ref = EvidenceArtifactRefV1(
+                    path=selection_relative,
+                    digest=_file_digest(selection_bytes),
+                )
                 reviewed = ReviewedCaseV1(
                     change_id=change_id,
                     coverage_epoch=payload.coverage_epoch,
@@ -1417,6 +1465,7 @@ class CaseReviewFinalizeHandler:
                     preparation_refs=payload.preparation_refs,
                     case_refs=payload.case_refs,
                     review_ref=review_ref,
+                    selection_ref=selection_ref,
                 )
                 manifest_relative = "qa/cases/reviewed-case.json"
                 manifest_bytes = canonical_json_bytes(reviewed.model_dump(mode="json")) + b"\n"
@@ -1429,6 +1478,7 @@ class CaseReviewFinalizeHandler:
                         "path": manifest_relative,
                         "digest": _file_digest(manifest_bytes),
                     },
+                    selection_ref.model_dump(mode="json"),
                     history_ref.model_dump(mode="json"),
                 ]
                 output["reviewed_case"] = reviewed.model_dump(mode="json")

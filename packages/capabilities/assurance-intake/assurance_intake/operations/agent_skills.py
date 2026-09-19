@@ -513,10 +513,10 @@ class CaseReviewPrepareHandler:
             )
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
             _authenticate_evidence_refs(context.project_root, business.case_refs)
-            if business.case_refs and {item.path for item in business.case_refs} != set(
-                business.case_delta_paths
-            ):
-                raise InputError("case_refs must bind every locked case_delta_path exactly once")
+            if business.case_delta_paths and not set(business.case_delta_paths) <= {
+                item.path for item in business.case_refs
+            }:
+                raise InputError("case_refs must bind every locked case_delta_path")
             review_inputs = case_review_inputs(business.change_id, business.case_delta_paths)
             for relative in review_inputs:
                 _require_regular_project_input(context.project_root, relative)
