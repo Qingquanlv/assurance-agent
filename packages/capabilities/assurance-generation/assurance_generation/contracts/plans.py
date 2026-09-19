@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 from assurance_generation.contracts.families import KNOWN_PLAN_CHECK_IDS, PLAN_CHECK_IDS, LayerName
 from assurance_intake.contracts import CaseYamlAuthoring, NonEmptyStr, RiskTier
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
 
@@ -175,6 +176,37 @@ class PerformanceScenarioV1(BaseModel):
     error_rate_max: float = Field(ge=0, le=1, allow_inf_nan=False)
 
 
+class ObservationBindingV1(BaseModel):
+    model_config = _FROZEN
+
+    observation_id: NonEmptyStr
+    observation_key: NonEmptyStr
+    step_id: NonEmptyStr
+    test_nodeid: NonEmptyStr
+    assertion_id: NonEmptyStr
+
+
+class ConcreteRequestStepV1(BaseModel):
+    model_config = _FROZEN
+
+    step_id: NonEmptyStr
+    purpose: Literal["setup", "observe", "cleanup"]
+    action: NonEmptyStr
+    condition_refs: tuple[str, ...] = ()
+
+
+class ObligationMethodPlanV1(BaseModel):
+    model_config = _FROZEN
+
+    mrc_id: NonEmptyStr
+    requirement_id: NonEmptyStr
+    profile_id: NonEmptyStr
+    case_ids: tuple[str, ...]
+    prerequisites: tuple[str, ...]
+    steps: tuple[ConcreteRequestStepV1, ...]
+    observations: tuple[ObservationBindingV1, ...]
+
+
 class PlanResultV1(BaseModel):
     """Typed four-family plan result consumed by review, codegen, and validators."""
 
@@ -189,6 +221,9 @@ class PlanResultV1(BaseModel):
     output_files: tuple[NonEmptyStr, ...]
     fuzz_strategy: FuzzStrategyV1 | None = None
     performance_scenarios: tuple[PerformanceScenarioV1, ...] = ()
+    frozen_plan_digest: str | None = None
+    selection_ref: EvidenceArtifactRefV1 | None = None
+    method_plans: tuple[ObligationMethodPlanV1, ...] = ()
 
     def require_case_scope(self, cases: CaseYamlAuthoring) -> None:
         entries = (*cases.added, *cases.modified)

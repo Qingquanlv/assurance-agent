@@ -98,6 +98,10 @@ Before writing the manifest:
    output when one exists; otherwise define it in the authorized mapped test
    module. List a support file only when its exact path is in `allowed_outputs`.
 4. Finish only when the unresolved fixture set is empty.
+5. Observation tests must call the wheel-provided `aa_observe` fixture:
+   `aa_observe.request(observation_id=..., method=..., url=..., body=..., headers=...)`.
+   Do not define a same-named fixture, install a collector package, fill
+   `actual`/`pass`, or treat an ordinary client request as an observation.
 
 Names such as `client` and `admin_token` are not implicit fixtures. Their
 provider must exist in the candidate tree.

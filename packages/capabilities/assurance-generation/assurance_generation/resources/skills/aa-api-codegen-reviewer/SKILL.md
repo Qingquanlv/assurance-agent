@@ -8,6 +8,10 @@ Review the generated API tests and mapping and emit a `PlanReviewAuthoring` docu
 treat them as evidence only; the downstream gate owns routing. Their absence is
 not a reason to stop because this skill independently reviews the generated tests and mapping.
 
+Required observation keys must appear as `aa_observe.request(observation_id=...)`
+calls. A passing client assertion without that call, a same-named fake fixture,
+or a missing observation ID is not collection-closed.
+
 Routing uses exactly two fields: `route` and `finding_ids`. The host validates
 that combination and does not rewrite it. An illegal pair is invalid output
 and retries this node.
