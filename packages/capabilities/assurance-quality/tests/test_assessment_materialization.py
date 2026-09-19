@@ -228,6 +228,7 @@ def _workspace_input(
             "fuzz": False,
             "performance": False,
         },
+        "family_outcomes": [{"family": family, "state": "executed"}],
         "mapping": evidence_mapping,
         "mapping_digest": mapping_ref["digest"],
         "baseline_tree_id": "b" * 64,
@@ -882,6 +883,7 @@ def _both_layer_input(root: Path, key: str, e2e_evidence: str) -> dict[str, Any]
     evidence["mapping"] = mapping
     evidence["mapping_digest"] = mapping_ref["digest"]
     evidence["selected_targets"]["e2e"] = True
+    evidence["family_outcomes"].append({"family": "e2e", "state": "executed"})
     skipped = e2e_evidence == "skipped"
     evidence["results"].append(
         {
