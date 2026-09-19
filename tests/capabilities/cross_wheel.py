@@ -659,6 +659,7 @@ def _evidence_payload(leaf: str) -> dict[str, object]:
         "plan_ref": _PLAN_REF,
         "batch_id": _BATCH_ID,
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+        "family_outcomes": [{"family": "api", "state": "executed"}],
         "mapping": _closed_mapping_payload(leaf),
         "mapping_digest": _HEX,
         "baseline_tree_id": _HEX,
