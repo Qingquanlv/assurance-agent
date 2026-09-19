@@ -215,6 +215,7 @@ def _output() -> ExecutionEvidenceV1:
                 "fuzz": False,
                 "performance": False,
             },
+            "family_outcomes": [{"family": "api", "state": "executed"}],
             "mapping": {
                 "selected": ["tests/a.py"],
                 "mappings": [

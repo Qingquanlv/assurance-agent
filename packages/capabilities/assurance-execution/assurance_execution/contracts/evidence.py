@@ -59,18 +59,16 @@ class _ExecutionResultBase(BaseModel):
     runner_profile_digest: NonEmptyStr
     receipt: ExecutionReceiptV1
     results: tuple[RawTestResultV1, ...]
-    family_outcomes: tuple[FamilyExecutionOutcomeV1, ...] = ()
+    # Stated by the producer, never inferred here. Validation must leave the
+    # sealed document byte-identical so its digest still names the bytes.
+    family_outcomes: tuple[FamilyExecutionOutcomeV1, ...]
 
     @model_validator(mode="after")
     def _results_must_be_selected(self) -> Self:
         selected_families = tuple(
             family for family in EXECUTION_FAMILIES if getattr(self.selected_targets, family)
         )
-        synthesized = not self.family_outcomes
-        outcomes = self.family_outcomes or tuple(
-            FamilyExecutionOutcomeV1(family=command.family, state="executed")
-            for command in self.receipt.commands
-        )
+        outcomes = self.family_outcomes
         outcome_families = tuple(item.family for item in outcomes)
         if outcome_families != selected_families:
             raise ValueError("family_outcomes must cover selected targets in canonical order")
@@ -110,8 +108,6 @@ class _ExecutionResultBase(BaseModel):
                 or command.skipped < counts["skipped"]
             ):
                 raise ValueError("execution command receipt counts contradict the normalized family results")
-        if synthesized:
-            return self.model_copy(update={"family_outcomes": outcomes})
         return self
 
 

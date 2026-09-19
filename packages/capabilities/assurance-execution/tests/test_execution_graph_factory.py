@@ -114,6 +114,7 @@ def execution_evidence(*, change_id: str = "CH-DEMO-001", status: str = "passed"
             "batch_id": "20260822T000000Z",
             "executed_at": "2026-08-22T00:00:00Z",
             "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+            "family_outcomes": [{"family": "api", "state": "executed"}],
             "mapping": _mapping(),
             "mapping_digest": _SHA,
             "baseline_tree_id": "b" * 64,
