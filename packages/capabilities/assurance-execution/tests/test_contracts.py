@@ -181,7 +181,7 @@ def test_closed_mapping_rejects_unknown_case_or_capability() -> None:
 
 def test_execution_evidence_rejects_unselected_old_test() -> None:
     raw = valid_evidence(results=[valid_result("tests/legacy_test.py")])
-    with pytest.raises(ValidationError, match="test outside the closed mapping"):
+    with pytest.raises(ValidationError, match="test outside the executed mapping"):
         ExecutionEvidenceV1.model_validate(raw)
 
 
@@ -256,7 +256,7 @@ def test_execution_evidence_rejects_missing_reordered_or_duplicate_command_recei
     raw["selected_targets"] = {"api": True, "e2e": True, "fuzz": False, "performance": False}
     raw["receipt"] = {"commands": commands}
 
-    with pytest.raises(ValidationError, match="command receipt|at least 1"):
+    with pytest.raises(ValidationError, match="command receipts must|family_outcomes must cover"):
         ExecutionEvidenceV1.model_validate(raw)
 
 

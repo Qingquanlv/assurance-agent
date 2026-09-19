@@ -173,7 +173,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
     tasks = all_feature_task_contracts()
     resolved = composition.semantic_attempt_contracts
     assert len(agents) == 26
-    assert len(tasks) == 16
+    assert len(tasks) == 18
     task_ids = {contract.contract_id for contract in tasks.values()}
     assert set(agents) | task_ids == set(resolved)
     for contract_id in agents:
