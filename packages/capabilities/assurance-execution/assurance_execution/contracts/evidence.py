@@ -8,6 +8,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 from assurance_execution.contracts.execution import (
     EXECUTION_FAMILIES,
+    ExecutionFamily,
     ExecutionReceiptV1,
     RawTestResultV1,
 )
@@ -15,6 +16,30 @@ from assurance_execution.contracts.selection import ClosedMappingV1, SelectedTar
 from assurance_intake.contracts import EvidenceArtifactRefV1, NonEmptyStr
 
 _FROZEN = ConfigDict(frozen=True, extra="forbid")
+
+
+class FamilyExecutionOutcomeV1(BaseModel):
+    model_config = _FROZEN
+    family: ExecutionFamily
+    state: Literal["executed", "blocked"]
+    reason_code: Literal[
+        "runner_unsupported",
+        "expectation_unconfirmed",
+        "environment_unavailable",
+        "collection_failed",
+        "execution_interrupted",
+    ] | None = None
+    diagnostic_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+
+    @model_validator(mode="after")
+    def _state_matches_reason(self) -> Self:
+        if self.state == "executed":
+            if self.reason_code is not None:
+                raise ValueError("executed family cannot carry a block reason")
+            return self
+        if self.reason_code is None or not self.diagnostic_refs:
+            raise ValueError("blocked family requires a reason and diagnostic refs")
+        return self
 
 
 class _ExecutionResultBase(BaseModel):
@@ -90,3 +115,4 @@ class ExecutionEvidenceV1(_ExecutionResultBase):
     executed_at: AwareDatetime | None = None
     mapping_digest: NonEmptyStr
     receipt_digest: NonEmptyStr
+    family_outcomes: tuple[FamilyExecutionOutcomeV1, ...] = ()

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from assurance_execution.operations.common import InputError
+from assurance_execution.operations.observation_run import RunnerUnsupported, build_family_argv
 from assurance_execution.operations.runner import (
     ConfinedExecutionProcessHost,
     RunTestsHandler,
@@ -224,3 +225,11 @@ async def test_run_tests_and_collect_pr_metrics_uses_selected_only(tmp_path: Pat
     metric = as_object(as_object(outcome.output)["pr_metric_input"])
     assert metric["selected"] == ["qa/tests/generated_test.py"]
     assert as_object(metric["results"][0])["test"] == "qa/tests/generated_test.py"
+
+
+def test_family_argv_rejects_performance_and_keeps_pytest_observe() -> None:
+    with pytest.raises(RunnerUnsupported, match="performance"):
+        build_family_argv("performance", ("qa/tests/locustfile.py",), batch_id="B-1")
+    argv = build_family_argv("api", ("qa/tests/api/test_a.py",), batch_id="B-1")
+    assert argv[:5] == ("uv", "run", "--isolated", "--frozen", "pytest")
+    assert "-p" in argv and "aa_observe" in argv
