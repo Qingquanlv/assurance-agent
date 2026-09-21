@@ -21,6 +21,7 @@ from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.coverage import CoverageGapsDocument, classify_coverage_state
 from assurance_quality.contracts.decisions import classify_inspection_disposition
 from assurance_quality.contracts.metrics import MetricKey, MetricsDocument
+from assurance_quality.contracts.obligations import obligation_gate
 from assurance_quality.contracts.issues import IssueEvidenceManifest, ObservationDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2
@@ -104,7 +105,7 @@ def _workspace_input(
     *,
     capability_leafs: tuple[str, ...] = (CAPABILITY, "entities.item.constraints.description"),
     journeys: tuple[str, ...] = (),
-    minimum_required_coverage: Mapping[str, object] | None = None,
+    minimum_required_coverage: Mapping[str, object] | list[Mapping[str, object]] | None = None,
     case_entries: list[dict[str, object]] | None = None,
     matrix_rows: list[dict[str, object]] | None = None,
     family: Literal["api", "e2e"] = "api",
@@ -1020,6 +1021,165 @@ async def test_applicability_preserves_authenticated_goal_sources(tmp_path: Path
         assert refs[source].digest == hashlib.sha256((tmp_path / source).read_bytes()).hexdigest()
 
 
+@pytest.mark.asyncio
+async def test_materialize_accepts_sealed_prepared_exploration_obligations(tmp_path: Path) -> None:
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage=[
+            {
+                "mrc_id": "MRC-API-001",
+                "key": None,
+                "proposed_key": CAPABILITY,
+                "category": "api",
+                "layer": "api",
+                "statement": f"{CAPABILITY} must hold",
+                "applicability_conditions": [],
+                "expected_basis_refs": [],
+                "impact_row_ids": [],
+                "required": True,
+                "scope_disposition": "included",
+                "exclusion_basis": None,
+                "open_questions": [],
+                "verification_requirements": [],
+            }
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+
+
+@pytest.mark.asyncio
+async def test_plan_bound_draft_obligations_outrank_supplemental_goals(tmp_path: Path) -> None:
+    request = _workspace_input(tmp_path)
+    supplemental = _write_json(
+        tmp_path,
+        "qa/results/intake/quality-goals.json",
+        {
+            "minimum_required_coverage": [
+                {
+                    "mrc_id": "MRC-API-001",
+                    "key": CAPABILITY,
+                    "proposed_key": CAPABILITY,
+                    "category": "api",
+                    "layer": "api",
+                    "statement": "only one obligation",
+                    "applicability_conditions": [],
+                    "expected_basis_refs": [],
+                    "impact_row_ids": [],
+                    "required": True,
+                    "scope_disposition": "included",
+                    "exclusion_basis": None,
+                    "open_questions": [],
+                    "verification_requirements": [],
+                }
+            ]
+        },
+    )
+    request["reviewed_case"]["preparation_refs"] = sorted(
+        [*request["reviewed_case"]["preparation_refs"], supplemental],
+        key=lambda ref: (ref["path"], ref["digest"]),
+    )
+    request["generation"]["reviewed_case"] = request["reviewed_case"]
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    assert output.obligation_gate_facts.required_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matrix_mode", ("valid", "dropped", "rebound"))
+async def test_materialize_keeps_unresolved_obligation_as_explicit_gap(
+    tmp_path: Path, matrix_mode: str
+) -> None:
+    def obligation(mrc_id: str, proposed_key: str | None, category: str) -> dict[str, object]:
+        return {
+            "mrc_id": mrc_id,
+            "key": None,
+            "proposed_key": proposed_key,
+            "category": category,
+            "layer": "api",
+            "statement": "required behavior must be verified",
+            "applicability_conditions": [],
+            "expected_basis_refs": [],
+            "impact_row_ids": [],
+            "required": True,
+            "scope_disposition": "included",
+            "exclusion_basis": None,
+            "open_questions": [],
+            "verification_requirements": [],
+        }
+
+    matrix_rows = [
+        {
+            "mrc_id": "MRC-API-001",
+            "key": CAPABILITY,
+            "required": True,
+            "covered_by_cases": ["TC_ITEM_001"],
+            "status": "covered",
+            "category": "api",
+            "layer": "api",
+        },
+    ]
+    if matrix_mode != "dropped":
+        matrix_rows.append(
+            {
+                "mrc_id": "MRC-NEGATIVE-009",
+                "key": None if matrix_mode == "valid" else "entities.item.constraints.description",
+                "required": True,
+                "covered_by_cases": [] if matrix_mode == "valid" else ["TC_ITEM_002"],
+                "status": "skipped_by_scope" if matrix_mode == "valid" else "covered",
+                "skip_reason": "capability_unresolved" if matrix_mode == "valid" else None,
+                "category": "negative",
+                "layer": "api",
+            }
+        )
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage=[
+            obligation("MRC-API-001", CAPABILITY, "api"),
+            obligation("MRC-NEGATIVE-009", None, "negative"),
+        ],
+        matrix_rows=matrix_rows,
+    )
+    supplemental = _write_json(
+        tmp_path,
+        "qa/results/intake/quality-goals.json",
+        {"minimum_required_coverage": [obligation("MRC-API-001", CAPABILITY, "api")]},
+    )
+    request["reviewed_case"]["preparation_refs"] = sorted(
+        [*request["reviewed_case"]["preparation_refs"], supplemental],
+        key=lambda ref: (ref["path"], ref["digest"]),
+    )
+    request["generation"]["reviewed_case"] = request["reviewed_case"]
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    if matrix_mode != "valid":
+        assert result.status == "failed"
+        assert result.failure is not None
+        assert "unresolved MRC" in result.failure.message
+        return
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    assert output.obligation_gate_facts.required_count == 2
+    assert output.obligation_gate_facts.human_gap_count >= 1
+    assert obligation_gate(output.obligation_gate_facts) == "needs_human"
+    obligation_assessment = json.loads(result.workspace_bytes[output.obligation_assessment_ref.path])
+    unresolved_assessment = next(
+        item for item in obligation_assessment["rows"] if item["mrc_id"] == "MRC-NEGATIVE-009"
+    )
+    assert unresolved_assessment["verdict"] == "inconclusive"
+    assert "capability_unresolved" in unresolved_assessment["gap_codes"]
+    coverage = json.loads(result.workspace_bytes[output.gaps_ref.path])["minimum_coverage"]
+    unresolved = next(item for item in coverage["items"] if item["mrc_id"] == "MRC-NEGATIVE-009")
+    assert unresolved["key"] is None
+    assert unresolved["status"] == "skipped_by_scope"
+
+
 def test_materializer_claims_allow_reading_frozen_goal_sources() -> None:
     contract = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
     assert isinstance(contract.resources, ResourceClaimTemplate)
@@ -1153,7 +1313,7 @@ def _prepared_obligation(mrc_id: str, requirement: dict[str, str]) -> dict[str, 
     }
 
 
-def _with_two_obligations(root: Path) -> dict[str, Any]:
+def _with_two_obligations(root: Path, *, unresolved_planned: bool = False) -> dict[str, Any]:
     """One obligation carries a reviewed method plan; the other carries none."""
 
     request = _workspace_input(root)
@@ -1164,14 +1324,29 @@ def _with_two_obligations(root: Path) -> dict[str, Any]:
         _prepared_obligation(PLANNED_MRC, requirement),
         _prepared_obligation(UNPLANNED_MRC, requirement),
     ]
-    goals_ref = _write_json(
+    obligations[0]["proposed_key"] = None if unresolved_planned else CAPABILITY
+    obligations[0]["key"] = None if unresolved_planned else CAPABILITY
+    obligations[1]["key"] = "entities.item.constraints.description"
+    obligations[1]["proposed_key"] = "entities.item.constraints.description"
+    plan, plan_ref = install_plan(
         root,
-        "qa/results/intake/quality-goals.json",
-        {"minimum_required_coverage": obligations},
+        CHANGE_ID,
+        minimum_required_coverage=[cast(Mapping[str, object], row) for row in obligations],
     )
+    old_plan_path = request["plan_ref"]["path"]
+    request["plan_digest"] = plan.plan_digest
+    request["plan_ref"] = plan_ref
+    for cycle in ("reviewed_case", "generation", "execution"):
+        request[cycle]["plan_digest"] = plan.plan_digest
+        request[cycle]["plan_ref"] = plan_ref
     request["reviewed_case"]["preparation_refs"] = sorted(
-        [*request["reviewed_case"]["preparation_refs"], goals_ref],
-        key=lambda item: (item["path"], item["digest"]),
+        [
+            ref
+            for ref in request["reviewed_case"]["preparation_refs"]
+            if ref["path"] not in {old_plan_path, plan_ref["path"]}
+        ]
+        + [plan_ref],
+        key=lambda ref: (ref["path"], ref["digest"]),
     )
     request["generation"]["reviewed_case"] = request["reviewed_case"]
     method_plan_ref = _write_json(
@@ -1257,8 +1432,10 @@ def test_unreviewed_expectation_is_not_confirmed(tmp_path: Path) -> None:
     assert "expectation_unconfirmed" in row.gap_codes
 
 
-def _with_runtime_observations(root: Path, *, predicate_passed: bool) -> dict[str, Any]:
-    payload = _with_two_obligations(root)
+def _with_runtime_observations(
+    root: Path, *, predicate_passed: bool, unresolved_planned: bool = False
+) -> dict[str, Any]:
+    payload = _with_two_obligations(root, unresolved_planned=unresolved_planned)
     mapping_ref = payload["execution"]["mapping_ref"]
     bundle_ref = _write_json(
         root,
@@ -1322,3 +1499,14 @@ def test_obligation_verdict_follows_its_own_runtime_observation(
     # The unplanned obligation shares the run but has no observation of its own,
     # so the same execution cannot conclude it either way.
     assert rows[UNPLANNED_MRC].verdict == "inconclusive"
+
+
+def test_unresolved_capability_remains_inconclusive_despite_passing_observation(tmp_path: Path) -> None:
+    payload = _with_runtime_observations(tmp_path, predicate_passed=True, unresolved_planned=True)
+    request = MaterializeAssessmentInputV1.model_validate(payload)
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    row = next(item for item in assessment.rows if item.mrc_id == PLANNED_MRC)
+    assert row.verdict == "inconclusive"
+    assert "capability_unresolved" in row.gap_codes

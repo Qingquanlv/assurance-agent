@@ -2,18 +2,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from agent_runtime_contracts import AgentRunResult
-from graph_engine.canonical import JSONValue, canonical_digest
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 from graph_engine.plugin_api import TaskOutcome
 
 from assurance_intake.contracts.plan import ResolvedAssurancePlan
+from assurance_intake.contracts.cases import MinimumCoverageMatrixAuthoring
+from assurance_intake.contracts.review import CaseReviewResultV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.operations.agent_skills import case_review_outputs
+from assurance_intake.operations.case_review_seal import (
+    collect_selected_cases,
+    expected_case_selection,
+    expected_review_history,
+    expected_reviewed_case,
+)
 from assurance_intake.operations.finalize import (
     CaseDesignFinalizeHandler,
     CaseReviewFinalizeHandler,
@@ -29,6 +41,93 @@ _MATRIX = "qa/results/trace/minimum-coverage-matrix.json"
 _LEAFS = ("entities.item.create",)
 _FIXTURE = Path(__file__).parent / "fixtures/case-authoring-valid.yaml"
 _Phase = Literal["design", "review"]
+
+
+def test_matrix_keeps_multiple_unresolved_mrc_rows_by_id() -> None:
+    matrix = MinimumCoverageMatrixAuthoring.model_validate(
+        [
+            {
+                "mrc_id": mrc_id,
+                "key": None,
+                "required": True,
+                "covered_by_cases": [],
+                "status": "skipped_by_scope",
+                "skip_reason": "capability_unresolved",
+                "category": "negative",
+                "layer": "api",
+            }
+            for mrc_id in ("MRC-NEGATIVE-009", "MRC-NEGATIVE-012")
+        ]
+    )
+    assert [row.mrc_id for row in matrix.root] == ["MRC-NEGATIVE-009", "MRC-NEGATIVE-012"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ("design", "review"))
+@pytest.mark.parametrize("matrix_mode", ("valid", "dropped", "rebound"))
+async def test_case_finalization_preserves_unresolved_row_by_mrc_id(
+    tmp_path: Path, phase: _Phase, matrix_mode: str
+) -> None:
+    project, stage = dual_roots(tmp_path)
+    drafts: list[Mapping[str, object]] = [
+        {
+            "draft_id": mrc_id,
+            "proposed_key": key,
+            "category": category,
+            "layer": "api",
+            "statement": "required behavior must be verified",
+            "applicability_conditions": [],
+            "impact_row_ids": [],
+            "proposed_profile_id": None,
+            "prerequisites": [],
+            "observation_goals": [],
+            "basis_quotes": [],
+            "open_questions": [],
+        }
+        for mrc_id, key, category in (
+            ("MRC-API-001", "create_menu", "api"),
+            ("MRC-NEGATIVE-009", None, "negative"),
+        )
+    ]
+    plan, plan_ref = install_plan(project, _CHANGE, capability_leafs=_LEAFS, minimum_required_coverage=drafts)
+    outputs = _write_outputs(project, e2e_required=None)
+    matrix_path = project / _MATRIX
+    matrix = json.loads(matrix_path.read_bytes())
+    if matrix_mode != "dropped":
+        matrix.append(
+            {
+                "mrc_id": "MRC-NEGATIVE-009",
+                "key": None if matrix_mode == "valid" else "entities.item.create",
+                "required": True,
+                "covered_by_cases": [],
+                "status": "skipped_by_scope",
+                "skip_reason": "capability_unresolved",
+                "category": "negative",
+                "layer": "api",
+            }
+        )
+    matrix_path.write_text(json.dumps(matrix), encoding="utf-8")
+
+    outcome = await _finalize(
+        phase,
+        project,
+        stage,
+        plan,
+        plan_ref,
+        outputs,
+        input_refs=_refs(project, outputs),
+        write_runtime_seal=phase == "review",
+    )
+
+    if matrix_mode != "valid":
+        assert outcome.status == "failed"
+        assert outcome.failure is not None
+        assert "unresolved MRC" in outcome.failure.message
+        return
+    assert outcome.status == "succeeded", outcome.failure
+    assert isinstance(outcome.output, dict)
+    if phase == "review":
+        assert outcome.output["reviewed_case"]
 
 
 def _write_outputs(
@@ -90,6 +189,80 @@ def _refs(root: Path, paths: tuple[str, ...]) -> list[dict[str, str]]:
     ]
 
 
+def _write_json_model(root: Path, relative: str, model: BaseModel) -> None:
+    path = root.joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_json_bytes(model.model_dump(mode="json")) + b"\n")
+
+
+def _write_review_seal(
+    *,
+    project: Path,
+    stage: Path,
+    document: dict[str, Any],
+    plan: ResolvedAssurancePlan,
+    plan_ref: dict[str, str],
+    input_refs: list[dict[str, str]],
+    coverage_epoch: int,
+) -> None:
+    review_relative = "qa/results/review/case-review.json"
+    review_ref = EvidenceArtifactRefV1(
+        path=review_relative,
+        digest=hashlib.sha256((stage / review_relative).read_bytes()).hexdigest(),
+    )
+    case_refs = [EvidenceArtifactRefV1.model_validate(item) for item in input_refs if item["path"] == _CASE]
+    if not case_refs:
+        return
+    source = yaml.safe_load((project / _CASE).read_bytes())
+    if not isinstance(source, dict):
+        return
+    selected = collect_selected_cases(case_refs, [_CASE], [(case_refs[0], source)])
+    selection = expected_case_selection(
+        change_id=_CHANGE,
+        coverage_epoch=coverage_epoch,
+        plan=plan,
+        cases=selected,
+    )
+    selection_relative = f"qa/results/cases/epochs/{coverage_epoch}/selection.json"
+    _write_json_model(stage, selection_relative, selection)
+    selection_ref = EvidenceArtifactRefV1(
+        path=selection_relative,
+        digest=hashlib.sha256((stage / selection_relative).read_bytes()).hexdigest(),
+    )
+    preparation_refs = [
+        EvidenceArtifactRefV1.model_validate(item)
+        for item in sorted(
+            [plan_ref, *(ref for ref in input_refs if ref["path"] != _CASE)],
+            key=lambda ref: ref["path"],
+        )
+    ]
+    history = expected_review_history(
+        change_id=_CHANGE,
+        coverage_epoch=coverage_epoch,
+        review_round=0,
+        document=CaseReviewResultV1.model_validate(document),
+        preparation_refs=preparation_refs,
+        case_refs=case_refs,
+        review_ref=review_ref,
+    )
+    _write_json_model(
+        stage,
+        f"qa/cases/reviews/epochs/{coverage_epoch}/rounds/0.json",
+        history,
+    )
+    reviewed = expected_reviewed_case(
+        change_id=_CHANGE,
+        coverage_epoch=coverage_epoch,
+        plan_digest=plan.plan_digest,
+        plan_ref=EvidenceArtifactRefV1.model_validate(plan_ref),
+        preparation_refs=preparation_refs,
+        case_refs=case_refs,
+        review_ref=review_ref,
+        selection_ref=selection_ref,
+    )
+    _write_json_model(stage, "qa/cases/reviewed-case.json", reviewed)
+
+
 async def _finalize(
     phase: _Phase,
     project: Path,
@@ -101,6 +274,7 @@ async def _finalize(
     coverage_epoch: int = 0,
     validation_attempt: int | None = None,
     input_refs: list[dict[str, str]] | None = None,
+    write_runtime_seal: bool = False,
 ) -> TaskOutcome:
     if phase == "design":
         structured: dict[str, Any] = {"output_files": list(outputs)}
@@ -135,10 +309,28 @@ async def _finalize(
             "qa/results/review/case-review-summary.md",
             "qa/results/review/case-review.json",
         )
-        review_path = stage / artifacts[1]
+        artifacts = (
+            case_review_outputs(_CHANGE, coverage_epoch=coverage_epoch)
+            if write_runtime_seal
+            else (
+                "qa/results/review/case-review-summary.md",
+                "qa/results/review/case-review.json",
+            )
+        )
+        review_path = stage / "qa/results/review/case-review.json"
         review_path.parent.mkdir(parents=True, exist_ok=True)
         review_path.write_text(json.dumps(structured), encoding="utf-8")
-        (stage / artifacts[0]).write_text("# Review\n", encoding="utf-8")
+        (stage / "qa/results/review/case-review-summary.md").write_text("# Review\n", encoding="utf-8")
+        if write_runtime_seal:
+            _write_review_seal(
+                project=project,
+                stage=stage,
+                document=structured,
+                plan=plan,
+                plan_ref=plan_ref,
+                input_refs=input_refs or [],
+                coverage_epoch=coverage_epoch,
+            )
         selected = []
         handler = CaseReviewFinalizeHandler()
     result = AgentRunResult(
@@ -247,7 +439,14 @@ async def test_finalize_allows_optional_case_outside_frozen_scope(
     outputs = _write_outputs(source, e2e_required=False, matrix_e2e_required=False)
 
     outcome = await _finalize(
-        phase, project, stage, plan, plan_ref, outputs, input_refs=_refs(source, outputs)
+        phase,
+        project,
+        stage,
+        plan,
+        plan_ref,
+        outputs,
+        input_refs=_refs(source, outputs),
+        write_runtime_seal=phase == "review",
     )
 
     assert outcome.status == "succeeded", outcome.failure

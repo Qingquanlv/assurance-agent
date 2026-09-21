@@ -129,6 +129,7 @@ class RunTestsInputV1(FrozenModel):
     plan_digest: str = Field(pattern=_SHA256)
     plan_ref: EvidenceArtifactRefV1
     batch_id: str = Field(min_length=1)
+    executed_at: AwareDatetime | None = None
     selected_targets: SelectedTargets
     mapping: ClosedMappingV1
     capability_leafs: tuple[str, ...]

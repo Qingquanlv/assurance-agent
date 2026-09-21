@@ -386,7 +386,7 @@ def test_agent_execute_contracts_render_exact_current_change_output_claims() -> 
     )
     extra_claims = {
         "assurance.intake.agent.case-design.v1": ("qa/cases",),
-        "assurance.intake.agent.case-review.v1": ("qa/cases/reviewed-case.json",),
+        "assurance.intake.agent.case-review.v1": ("qa/results/cases/epochs",),
         "assurance.intake.agent.intake.v1": (
             "qa/requirement.md",
             "qa/results/intake/sources/run-spec.effective.yaml",

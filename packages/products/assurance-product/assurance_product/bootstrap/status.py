@@ -44,9 +44,7 @@ def read_bootstrap_status(run_dir: Path) -> BootstrapStatusV1:
 
 
 def effective_spec_bytes(spec: RunSpecV1) -> bytes:
-    return yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False, allow_unicode=True).encode(
-        "utf-8"
-    )
+    return yaml.safe_dump(spec.model_dump(mode="json"), sort_keys=False, allow_unicode=True).encode("utf-8")
 
 
 def write_effective_spec(run_dir: Path, spec: RunSpecV1) -> Path:

@@ -30,6 +30,7 @@ from assurance_quality.contracts.decisions import (
     IssueAnalysisPublicV1,
     classify_inspection_disposition,
     classify_issue_candidates,
+    merge_obligation_disposition,
 )
 from assurance_quality.graphs.state import (
     QualityAssessPublicV1,
@@ -393,18 +394,10 @@ def publish_inspect(
         )
     disposition = classify_inspection_disposition(facts=facts, coverage_state=coverage_state)
     obligation_decision = obligation_gate(assessment.obligation_gate_facts)
-    if disposition == "satisfied" and obligation_decision != "satisfied":
-        if obligation_decision == "repair_required":
-            disposition = "coverage_insufficient"
-            coverage_state = "repair_required"
-        elif obligation_decision == "needs_human":
-            disposition = "needs_human"
-            coverage_state = None
-        else:
-            disposition = "blocked"
-            coverage_state = None
-    elif disposition == "coverage_insufficient" and obligation_decision == "blocked":
-        disposition = "blocked"
+    disposition = merge_obligation_disposition(disposition, obligation_decision)
+    if disposition == "coverage_insufficient":
+        coverage_state = "repair_required"
+    elif disposition != "satisfied":
         coverage_state = None
     reason_codes = set(finalized.reason_codes)
     if coverage_state is not None:

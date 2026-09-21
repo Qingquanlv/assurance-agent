@@ -201,3 +201,19 @@ def test_human_reason_outranks_repairable_on_the_same_obligation() -> None:
     assert facts.human_gap_count == 1
     assert facts.repairable_gap_count == 0
     assert obligation_gate(facts) == "needs_human"
+
+
+def test_unresolved_capability_requires_human_even_with_missing_case() -> None:
+    facts = derive_obligation_gate_facts(
+        _assessment(
+            _row(
+                "MRC-NEGATIVE-009",
+                verdict="inconclusive",
+                gap_codes=("capability_unresolved", "obligation_case_missing"),
+            )
+        ),
+        required_ids=((_PLAN, "MRC-NEGATIVE-009"),),
+    )
+    assert facts.human_gap_count == 1
+    assert facts.repairable_gap_count == 0
+    assert obligation_gate(facts) == "needs_human"

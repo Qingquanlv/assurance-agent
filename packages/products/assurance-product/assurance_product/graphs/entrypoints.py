@@ -207,7 +207,10 @@ def adapt_improvement(state: ProductState) -> dict[str, object]:
 
 def _retro_source_refs(state: ProductState, payload: ProductInputV1) -> tuple[EvidenceArtifactRefV1, ...]:
     candidates: list[object] = [*payload.artifacts]
-    for key in ("artifacts", "source_artifacts", "report_refs", "evidence_refs"):
+    runtime_ref = state.get("retro_runtime_ref")
+    if runtime_ref is not None:
+        candidates.append(runtime_ref)
+    for key in ("artifacts", "source_artifacts", "report_refs", "evidence_refs", "history_refs"):
         raw = state.get(key)
         if isinstance(raw, (list, tuple)):
             candidates.extend(raw)

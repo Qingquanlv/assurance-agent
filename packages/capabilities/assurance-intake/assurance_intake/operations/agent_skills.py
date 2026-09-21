@@ -32,8 +32,8 @@ from assurance_intake.contracts.explore import (
     EXPLORE_AGENT_OUTPUT_PATHS,
     REQUIREMENT_PATH,
     RUN_SPEC_SNAPSHOT_PATH,
-    ExploreAdvisoryV1,
     build_explore_context,
+    load_exploration_document,
 )
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.review import (
@@ -99,7 +99,13 @@ def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tu
     )
 
 
-def case_review_outputs(change_id: str) -> tuple[str, ...]:
+def case_review_outputs(
+    change_id: str,
+    *,
+    coverage_epoch: int = 0,
+    review_round: int = 0,
+) -> tuple[str, ...]:
+    del change_id, coverage_epoch, review_round
     return tuple(
         sorted(
             (
@@ -457,7 +463,7 @@ class CaseDesignPrepareHandler:
                 if not exploration_path.is_file() or exploration_path.is_symlink():
                     raise InputError("exploration.json must be a regular file")
                 try:
-                    exploration = ExploreAdvisoryV1.model_validate_json(exploration_path.read_bytes())
+                    exploration = load_exploration_document(exploration_path.read_bytes())
                 except (OSError, ValidationError, ValueError) as error:
                     raise InputError(f"invalid exploration.json: {error}") from error
                 if exploration.change_id != business.change_id:
@@ -530,7 +536,11 @@ class CaseReviewPrepareHandler:
                 binding=binding,
                 result_schema_id=CASE_REVIEW_RESULT_ID,
                 context=context,
-                allowed_outputs=case_review_outputs(business.change_id),
+                allowed_outputs=case_review_outputs(
+                    business.change_id,
+                    coverage_epoch=business.coverage_epoch,
+                    review_round=business.review_round,
+                ),
                 planning_facts=build_planning_facts(
                     context.project_root,
                     change_id=business.change_id,

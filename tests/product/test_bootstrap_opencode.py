@@ -33,6 +33,7 @@ def test_build_opencode_env_strips_overrides_and_sets_xdg(tmp_path: Path) -> Non
     assert "OPENCODE_MODEL" not in env
     assert env["BASE_URL"] == "http://127.0.0.1:9999"
     assert env["QA_ADMIN_PASSWORD"] == "secret"
+    assert env["OPENCODE_SERVER_PASSWORD"] == "tok"
     assert env["XDG_CONFIG_HOME"] == str((tmp_path / "opencode-config").resolve())
 
 

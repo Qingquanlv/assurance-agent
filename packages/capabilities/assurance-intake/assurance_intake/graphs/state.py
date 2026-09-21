@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Annotated, Literal, TypedDict
 
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
+from assurance_intake.contracts.workflow import merge_history_refs
 
 CASE_REVIEW_PREDECESSORS = (
     "review-round-advance",
@@ -154,6 +155,7 @@ class IntakeState(CheckpointBridgeState, total=False):
     validation_attempt: int
     validation_error: str | None
     artifacts: list[dict[str, object]]
+    history_refs: Annotated[list[dict[str, str]], merge_history_refs]
     case_review_inbox: Annotated[CaseReviewInbox, merge_case_review_inbox]
     current_trigger: CaseReviewArrival | None
     status: str

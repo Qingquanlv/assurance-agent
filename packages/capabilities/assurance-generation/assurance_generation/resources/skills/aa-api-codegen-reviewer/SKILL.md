@@ -129,6 +129,12 @@ Write the entire object to `api-codegen-review.json`, then read and parse that e
 file. After any correction, rewrite and re-read the file first; a corrected final
 response alone does not repair the staged artifact. The Markdown summary is the
 human-readable summary, not a replacement or reduced shape for the JSON file.
+### Host-owned derived files
+
+Your outputs are the review JSON and Markdown summary. After authenticating
+the raw review, the host finalize handler generates history and finding-scope
+under declared write claims. Digests and identities are computed by the host.
+Return the same complete JSON object that you wrote to the review file.
 
 ## Boundaries
 

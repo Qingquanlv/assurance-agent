@@ -34,12 +34,63 @@ from assurance_healing.operations.common import (
 )
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_healing.resource_loader import resource_text
-from assurance_intake.contracts import build_loop_round_history
+from assurance_intake.contracts import LoopRoundHistoryV1, build_loop_round_history
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 APPLICATION_SKILL = "skills/aa-apply-test-repair/SKILL.md"
 APPLICATION_RESULT_ID = "assurance.healing.result.applied-test-repair.v1"
 APPLICATION_RESULT_FILE = "result-contracts/applied-test-repair.v1.schema.json"
+
+
+def repair_history_path(*, coverage_epoch: int, repair_round: int) -> str:
+    return f"qa/results/healing/epochs/{coverage_epoch}/rounds/{repair_round}/repair.json"
+
+
+def expected_repair_history(
+    business: ApplyTestRepairInputV1,
+    verified: VerifiedTestRepairV1,
+) -> LoopRoundHistoryV1:
+    input_refs = tuple(
+        sorted(
+            (
+                *business.reviewed_case.preparation_refs,
+                *business.reviewed_case.case_refs,
+                business.reviewed_case.review_ref,
+                business.proposal_ref,
+                business.execution_ref,
+                business.mapping_ref,
+            ),
+            key=lambda item: item.path,
+        )
+    )
+    input_digest = engine_digest(cast(JSONValue, [item.model_dump(mode="json") for item in input_refs]))
+    source_by_path = {item.path: item for item in (*input_refs, *verified.changed_test_refs)}
+    return build_loop_round_history(
+        change_id=business.change_id,
+        coverage_epoch=business.coverage_epoch,
+        loop_kind="implementation_repair",
+        family=None,
+        round_index=business.repair_round,
+        outcome="applied",
+        review_input_digest=input_digest,
+        source_refs=tuple(source_by_path[path] for path in sorted(source_by_path)),
+    )
+
+
+def authenticate_repair_history(
+    context: TaskContext,
+    *,
+    relative: str,
+    expected: LoopRoundHistoryV1,
+) -> EvidenceArtifactRefV1:
+    path = context.write_root.joinpath(*relative.split("/"))
+    try:
+        authored = LoopRoundHistoryV1.model_validate_json(path.read_bytes())
+    except (OSError, ValidationError, ValueError) as error:
+        raise OutputError(f"invalid repair history: {error}") from error
+    if authored != expected:
+        raise OutputError("repair.json does not match the locked repair inputs")
+    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def _canonical_file(root: Path, relative: str) -> Path:
@@ -240,7 +291,10 @@ class ApplyTestRepairPrepareHandler:
                 instructions=(
                     InstructionPart.text("text/plain", resource_text(APPLICATION_SKILL)),
                     InstructionPart.from_json(
-                        {**business.model_dump(mode="json"), "allowed_test_paths": list(approved_paths)}
+                        {
+                            **business.model_dump(mode="json"),
+                            "allowed_test_paths": list(approved_paths),
+                        }
                     ),
                 ),
                 result_contract=result_contract(APPLICATION_RESULT_ID, APPLICATION_RESULT_FILE),
@@ -275,41 +329,14 @@ class ApplyTestRepairFinalizeHandler:
             except ValidationError as error:
                 raise OutputError(str(error)) from error
             verified = _verify_application(business, result, context)
-            input_refs = tuple(
-                sorted(
-                    (
-                        *business.reviewed_case.preparation_refs,
-                        *business.reviewed_case.case_refs,
-                        business.reviewed_case.review_ref,
-                        business.proposal_ref,
-                        business.execution_ref,
-                        business.mapping_ref,
-                    ),
-                    key=lambda item: item.path,
-                )
-            )
-            input_digest = engine_digest(
-                cast(JSONValue, [item.model_dump(mode="json") for item in input_refs])
-            )
-            source_by_path = {item.path: item for item in (*input_refs, *verified.changed_test_refs)}
-            history = build_loop_round_history(
-                change_id=business.change_id,
+            expected_history = expected_repair_history(business, verified)
+            history_relative = repair_history_path(
                 coverage_epoch=business.coverage_epoch,
-                loop_kind="implementation_repair",
-                family=None,
-                round_index=business.repair_round,
-                outcome="applied",
-                review_input_digest=input_digest,
-                source_refs=tuple(source_by_path[path] for path in sorted(source_by_path)),
+                repair_round=business.repair_round,
             )
-            history_relative = (
-                f"qa/results/healing/epochs/{business.coverage_epoch}/"
-                f"rounds/{business.repair_round}/repair.json"
-            )
-            history_bytes = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
-            history_path = context.write_root.joinpath(*history_relative.split("/"))
+            history_path = context.write_root / history_relative
             history_path.parent.mkdir(parents=True, exist_ok=True)
-            history_path.write_bytes(history_bytes)
+            history_path.write_bytes(canonical_json_bytes(expected_history.model_dump(mode="json")) + b"\n")
             return TaskOutcome.succeeded(cast(JSONValue, verified.model_dump(mode="json")))
         except InputError as error:
             return failed_input(error)
@@ -320,4 +347,7 @@ class ApplyTestRepairFinalizeHandler:
 __all__ = [
     "ApplyTestRepairFinalizeHandler",
     "ApplyTestRepairPrepareHandler",
+    "authenticate_repair_history",
+    "expected_repair_history",
+    "repair_history_path",
 ]

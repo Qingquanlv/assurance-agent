@@ -10,9 +10,9 @@ def test_lockout_fault_is_detected_by_the_same_verification(tmp_path: Path) -> N
     bad = run_lockout_cycle(tmp_path / "bad", lockout_enabled=False)
 
     assert good["assessment"].rows[0].verdict == "supported"
-    assert good["public_status"] == "achieved"
+    assert good["gate_decision"] == "satisfied"
     assert bad["assessment"].rows[0].verdict == "refuted"
-    assert bad["public_status"] != "achieved"
+    assert bad["gate_decision"] == "blocked"
     # The same test bytes produced both conclusions; only the subject differed.
     assert bad["experiment_receipt"]["test_source_digest"] == good["experiment_receipt"]["test_source_digest"]
 
@@ -33,4 +33,4 @@ def test_pass_without_lockout_observation_does_not_support(tmp_path: Path) -> No
     assert result["bundle"].observations == ()
     assert result["assessment"].rows[0].verdict == "inconclusive"
     assert "obligation_observation_missing" in result["assessment"].rows[0].gap_codes
-    assert result["public_status"] != "achieved"
+    assert result["gate_decision"] != "satisfied"

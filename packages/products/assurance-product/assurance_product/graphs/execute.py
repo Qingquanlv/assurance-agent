@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal, cast
 
 from langchain_core.runnables.config import RunnableConfig
@@ -645,7 +645,25 @@ def resume_product_interrupts(
     return result
 
 
-def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph[ProductState]:
+def snapshot_retro_runtime_node(
+    snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None,
+) -> Callable[..., Any]:
+    if snapshot is None:
+        return lambda _state: {}
+
+    async def node(_state: ProductState) -> dict[str, object]:
+        ref = await snapshot()
+        return {"retro_runtime_ref": ref.model_dump(mode="json")}
+
+    return node
+
+
+def build_execute_graph(
+    bundles: object,
+    *,
+    validate: bool = True,
+    runtime_snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None = None,
+) -> StateGraph[ProductState]:
     typed = cast(Any, bundles)
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     if validate:
@@ -668,6 +686,7 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_node("bind-issue-analysis", cast(Any, bind_issue_analysis))
     builder.add_node("adapt-issue-reconcile", cast(Any, adapt_issue_reconcile))
     builder.add_node("issue-reconcile", typed.quality.issue_reconcile)
+    builder.add_node("snapshot-retro-runtime", cast(Any, snapshot_retro_runtime_node(runtime_snapshot)))
     builder.add_node("adapt-retro", cast(Any, adapt_retro))
     builder.add_node("retro", typed.improvement.retro)
     builder.add_node("adapt-diagnostic-report", cast(Any, adapt_diagnostic_report))
@@ -752,8 +771,9 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     builder.add_conditional_edges(
         "issue-reconcile",
         cast(Callable[..., Any], route_issue_reconcile),
-        {"retro": "adapt-retro", "blocked": "blocked"},
+        {"retro": "snapshot-retro-runtime", "blocked": "blocked"},
     )
+    builder.add_edge("snapshot-retro-runtime", "adapt-retro")
     builder.add_edge("adapt-retro", "retro")
     builder.add_conditional_edges(
         "retro",
@@ -771,8 +791,14 @@ def build_execute_graph(bundles: object, *, validate: bool = True) -> StateGraph
     return builder
 
 
-def build_execute_tail(bundles: object) -> CompiledStateGraph:
-    return build_execute_graph(bundles, validate=False).compile(checkpointer=None)
+def build_execute_tail(
+    bundles: object,
+    *,
+    runtime_snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None = None,
+) -> CompiledStateGraph:
+    return build_execute_graph(bundles, validate=False, runtime_snapshot=runtime_snapshot).compile(
+        checkpointer=None
+    )
 
 
 def build_execute_root(

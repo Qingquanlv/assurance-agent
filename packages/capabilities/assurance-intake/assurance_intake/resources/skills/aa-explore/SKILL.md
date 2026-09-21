@@ -332,35 +332,113 @@ Three buckets; populate dynamically for every change, do **not** copy-paste the 
 
 #### minimum_required_coverage — derivation rules
 
-Generate applicable obligations from the **module's domain shape** (CRUD operations + tree/hierarchy if applicable + RBAC/auth + negative/integrity), the requirement, and authenticated catalog/data knowledge. Populate these four sub-arrays, using `[]` for a category with no applicable obligations:
+`minimum_required_coverage` is a **JSON array of obligation drafts**. Do **not** write
+the legacy family object (`{"api": [...], "e2e": [], "negative": [...],
+"data_integrity": [...]}`); the product finalizer rejects that shape as
+`invalid_output`.
 
-| Sub-array | What to include |
-|-----------|----------------|
-| `api` | One entry per main API operation the module exposes (CRUD + any module-specific queries). Name in snake_case (`verb_noun`). |
-| `e2e` | Every applicable business-required user journey, using an exact key from authenticated data knowledge's `journeys`. A `recommended: false` E2E row must not erase a required journey when `e2e` is still a candidate family and the requirement still needs that journey. An explicit API-only requirement, or a candidate set that does not include `e2e`, makes E2E journeys inapplicable: set `minimum_required_coverage.e2e` to `[]`. Do not keep a catalog journey as required after declining E2E for API-only scope. |
-| `negative` | Exact authenticated capability-catalog leaf keys for required-field, foreign-key, boundary, or authorization obligations. Do not invent scenario names as keys. |
-| `data_integrity` | Exact authenticated capability-catalog leaf keys for consistency invariants, such as hierarchy, ordering, or relationship constraints. Do not invent scenario names as keys. |
+Generate one draft per applicable obligation from the **module's domain shape**
+(CRUD operations + tree/hierarchy if applicable + RBAC/auth + negative/integrity),
+the requirement, and authenticated catalog/data knowledge. Empty categories are
+omitted — do not emit placeholder drafts.
 
-Resolve conditional requiredness/applicability from requirement and authenticated policy/data evidence before finalizing. Write resolved required E2E journeys under `e2e` only when `e2e` remains a candidate family and the requirement still needs those journeys. When the authenticated requirement explicitly limits scope to API-only, or when `e2e` is not a candidate family, E2E journeys are inapplicable and the `e2e` array must be empty even if the data-knowledge catalog contains matching journeys. An unresolved condition blocks plan freezing; do not turn it into `required: false`, erase it, or use a family recommendation as its condition. The legacy `e2e_if_enabled` category may be absent or `[]`; non-empty entries are unresolved and rejected.
+| `category` | What to include | `proposed_key` | default `layer` |
+|-----------|-----------------|----------------|-----------------|
+| `api` | One draft per main API operation the module exposes (CRUD + any module-specific queries) | snake_case `verb_noun` | `api` |
+| `e2e` | Every applicable business-required user journey | exact key from authenticated data knowledge `journeys` | `e2e` |
+| `negative` | Required-field, foreign-key, boundary, or authorization obligations | exact capability-catalog leaf | `api` |
+| `data_integrity` | Consistency invariants such as hierarchy, ordering, or relationship constraints | exact capability-catalog leaf | `api` |
 
-An entry is either a canonical non-empty key string (required by default) or a closed object with only `id`, `key`, `category`, `required`, and `layer`. `category`, if present, must match its containing sub-array. `layer` defaults to `e2e` for `e2e` and `api` for the other categories; use `both` only when both kinds of evidence are required. Resolve `required` to a boolean using the evidence above. Keep IDs and keys unique across all categories. If a required closed key is unavailable, report the unresolved obligation instead of inventing a key or silently omitting it.
+Each draft MUST include every field below. Use `[]` / `null` when a list or optional
+id has no value; do not omit keys.
+
+| Field | Rule |
+|-------|------|
+| `draft_id` | Unique in this array (`D-API-001`, `D-NEG-001`, …) |
+| `proposed_key` | The operation, journey, or catalog leaf from the table |
+| `category` | `api` / `e2e` / `negative` / `data_integrity` only. Do not emit `e2e_if_enabled`. |
+| `layer` | `api`, `e2e`, or `both`. Use `both` only when both kinds of evidence are required. |
+| `statement` | One sentence stating what must hold |
+| `applicability_conditions` | Resolved conditions, or `[]` |
+| `impact_row_ids` | Inventory row ids this draft covers, or `[]` |
+| `proposed_profile_id` | A known profile id, or `null` |
+| `prerequisites` | Setup the later observation needs, or `[]` |
+| `observation_goals` | Later observation drafts, or `[]` |
+| `basis_quotes` | Quotes whose `source_id` is in the host source catalog, or `[]` |
+| `open_questions` | Unresolved questions that block freezing, or `[]` |
+
+A `recommended: false` E2E layer row must not erase a required journey when `e2e`
+is still a candidate family and the requirement still needs that journey. An explicit API-only requirement, or a candidate set that does not include `e2e`, makes E2E journeys inapplicable: do not emit `category: "e2e"` drafts. Do not keep a catalog journey as required after declining E2E for API-only scope.
+
+Resolve conditional requiredness/applicability from requirement and authenticated
+policy/data evidence before finalizing. Write `category: "e2e"` drafts only when
+`e2e` remains a candidate family and the requirement still needs those journeys.
+An unresolved condition belongs in `open_questions`; do not invent `required`,
+erase the draft, or use a family recommendation as its condition. Keep
+`draft_id` and `proposed_key` unique across the array. If a required closed key
+is unavailable, leave `proposed_key` null and record the unresolved obligation
+in `open_questions` instead of inventing a key or silently omitting it.
 
 *Example (menu-management, only when these exact catalog leaves and journey keys are authenticated):*
 ```json
-"minimum_required_coverage": {
-  "api": ["create_menu", "list_menu_tree", "get_menu_detail",
-          "update_menu", "delete_menu"],
-  "e2e": ["admin_can_enter_menu_management",
-          "admin_creates_menu_and_sees_navigation",
-          "role_based_menu_visibility",
-          "non_admin_cannot_access_menu_management"],
-  "negative": ["entities.menu.constraints.name_required",
-               "entities.menu.constraints.parent_exists",
-               "auth.menu.manage"],
-  "data_integrity": ["entities.menu.constraints.parent_child_tree",
-                     "entities.menu.constraints.sort_order",
-                     "entities.menu.constraints.role_relation"]
-}
+"minimum_required_coverage": [
+  {
+    "draft_id": "D-API-001",
+    "proposed_key": "create_menu",
+    "category": "api",
+    "layer": "api",
+    "statement": "POST create must persist a menu under an authenticated parent.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  },
+  {
+    "draft_id": "D-E2E-001",
+    "proposed_key": "admin_can_enter_menu_management",
+    "category": "e2e",
+    "layer": "e2e",
+    "statement": "An admin can open the menu-management page.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  },
+  {
+    "draft_id": "D-NEG-001",
+    "proposed_key": "entities.menu.constraints.name_required",
+    "category": "negative",
+    "layer": "api",
+    "statement": "Create and update reject a missing menu name.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  },
+  {
+    "draft_id": "D-DATA-001",
+    "proposed_key": "entities.menu.constraints.parent_child_tree",
+    "category": "data_integrity",
+    "layer": "api",
+    "statement": "Parent/child menu links stay a tree after writes.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  }
+]
 ```
 
 ### Confidence rules (§5.7)
@@ -521,7 +599,7 @@ After reconciliation, re-run a mental check: for every answered OQ, no surviving
 
 Read `exploration.json` and `impact-inventory.json` and verify the required top-level fields above, the three
 `case_design_guidance` arrays, all three `evidence_inventory` arrays, a non-empty
-`minimum_required_coverage` object, every required `test_strategy` key (`scope`,
+`minimum_required_coverage` array of obligation drafts, every required `test_strategy` key (`scope`,
 `data_focus`, `depth`, `layer_recommendation`, `approach`), and four
 `test_strategy.layer_recommendation` entries, each with an explicit
 `evidence_ids` array, and that every inventory row has all required columns. Do not run a validator command. The product finalizer performs the

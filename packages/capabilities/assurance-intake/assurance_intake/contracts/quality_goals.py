@@ -247,7 +247,11 @@ def normalize_goal_obligations(
             key = proposed
         else:
             key = None
-        if row.category in {"negative", "data_integrity"} and key not in capability_leafs:
+        if (
+            row.category in {"negative", "data_integrity"}
+            and proposed is not None
+            and key not in capability_leafs
+        ):
             raise ValueError(f"unknown closed MRC key: {key}")
         if row.category == "e2e" and key not in journey_keys:
             raise ValueError(f"unknown journey MRC key: {key}")

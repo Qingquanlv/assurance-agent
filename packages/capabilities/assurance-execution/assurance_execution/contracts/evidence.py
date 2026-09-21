@@ -122,5 +122,6 @@ class ExecutionEvidenceV1(_ExecutionResultBase):
     plan_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     plan_ref: EvidenceArtifactRefV1
     executed_at: AwareDatetime | None = None
+    observations_ref: EvidenceArtifactRefV1 | None = None
     mapping_digest: NonEmptyStr
     receipt_digest: NonEmptyStr

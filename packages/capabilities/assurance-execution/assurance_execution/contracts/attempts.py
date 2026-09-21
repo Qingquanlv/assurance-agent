@@ -34,6 +34,7 @@ def _task(base: str) -> TaskAttemptContract[Any, Any]:
             writes=(
                 qa_join(f"execution/{base}-result.json"),
                 qa_join("execution/epochs/{coverage_epoch}"),
+                qa_join(".staging/execution/durable-execution-v1.json"),
             ),
         ),
         retry=_TASK_RETRY,

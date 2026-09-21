@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import PurePosixPath
 from typing import cast
 
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
@@ -22,6 +21,7 @@ from assurance_generation.operations.planning import (
     InputError,
     OutputError,
     closed_family,
+    expected_plan_review_history,
     failed_input,
     failed_output,
     evidence_ref,
@@ -29,7 +29,6 @@ from assurance_generation.operations.planning import (
     plan_review_outputs,
     plan_review_input_paths,
     prepare_plan_outcome,
-    persist_loop_round_history,
     plan_repair_review,
     resolve_family,
 )
@@ -96,7 +95,12 @@ class PlanReviewPrepareHandler:
                 binding=binding,
                 result_schema_id=PLAN_REVIEW_RESULT_ID,
                 context=context,
-                allowed_outputs=plan_review_outputs(business.change_id, family),
+                allowed_outputs=plan_review_outputs(
+                    business.change_id,
+                    family,
+                    coverage_epoch=business.coverage_epoch,
+                    review_round=business.local_round,
+                ),
                 close_result_capabilities=True,
                 review_input_paths=review_inputs,
                 extra_json={
@@ -140,33 +144,6 @@ class PlanReviewFinalizeHandler:
                 apply_plan_review_policy(document.model_dump(mode="json"), previous=None),
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
-            if family == "api":
-                raw_path = "qa/results/review/api-codegen-review.json"
-                sealed = context.write_root.joinpath(*PurePosixPath(raw_path).parts)
-                canonical = document.model_dump(mode="json", exclude={"rounds_used", "rounds_budget"})
-                existing_normalized: object | None = None
-                if sealed.is_file():
-                    try:
-                        existing_raw = json.loads(sealed.read_text(encoding="utf-8"))
-                    except (OSError, json.JSONDecodeError):
-                        existing_raw = None
-                    if isinstance(existing_raw, dict):
-                        existing_normalized = {
-                            key: value
-                            for key, value in existing_raw.items()
-                            if key not in {"review_audit", "rounds_used", "rounds_budget"}
-                        }
-                # The agent already staged this exact path during runtime (see
-                # aa-*-codegen-reviewer skills). Finalize's role is to validate and,
-                # only when policy actually changes the decision, reseal it; when the
-                # sealed content is unchanged, skip the rewrite so the write-claim
-                # staging diff stays limited to the runtime phase that owns this path.
-                if existing_normalized != canonical:
-                    sealed.parent.mkdir(parents=True, exist_ok=True)
-                    sealed.write_text(
-                        json.dumps(document.model_dump(mode="json"), indent=2) + "\n",
-                        encoding="utf-8",
-                    )
             extra: dict[str, object] = {
                 "public_outcome": public_review_outcome(document.route),
             }
@@ -183,31 +160,53 @@ class PlanReviewFinalizeHandler:
                     context.write_root,
                     f"qa/results/review/{family}-codegen-review.json",
                 )
+                try:
+                    authored = json.loads((context.write_root / review_ref.path).read_text(encoding="utf-8"))
+                    if isinstance(authored, dict):
+                        authored.pop("review_audit", None)
+                    authored_document = PlanReviewAuthoring.model_validate(
+                        authored,
+                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    )
+                    authored_document = PlanReviewAuthoring.model_validate(
+                        apply_plan_review_policy(authored_document.model_dump(mode="json"), previous=None),
+                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    )
+                except (OSError, UnicodeError, ValueError) as error:
+                    raise OutputError(f"invalid review artifact: {error}") from error
+                if authored_document != document:
+                    raise OutputError("review artifact does not match the returned agent result")
                 history_relative = (
                     f"qa/results/codegen/{family}/reviews/epochs/"
                     f"{payload.coverage_epoch}/rounds/{payload.local_round}.json"
                 )
-                history_ref = persist_loop_round_history(
-                    context,
-                    relative=history_relative,
+                expected_history = expected_plan_review_history(
                     change_id=document.change_id,
                     coverage_epoch=payload.coverage_epoch,
-                    loop_kind="plan_review",
                     family=family,
                     round_index=payload.local_round,
                     outcome=str(extra["public_outcome"]),
                     input_refs=input_refs,
                     source_refs=(*input_refs, review_ref),
                 )
-                extra["history_ref"] = history_ref.model_dump(mode="json")
-                scope_relative = write_finding_scope(
-                    context.write_root,
-                    family=family,
-                    coverage_epoch=payload.coverage_epoch,
-                    change_id=document.change_id,
-                    route=document.route,
-                    finding_ids=tuple(str(item) for item in document.finding_ids),
+                history_path = context.write_root / history_relative
+                history_path.parent.mkdir(parents=True, exist_ok=True)
+                history_path.write_bytes(
+                    canonical_json_bytes(expected_history.model_dump(mode="json")) + b"\n"
                 )
+                history_ref = evidence_ref(context.write_root, history_relative)
+                extra["history_ref"] = history_ref.model_dump(mode="json")
+                try:
+                    scope_relative = write_finding_scope(
+                        context.write_root,
+                        family=family,
+                        coverage_epoch=payload.coverage_epoch,
+                        change_id=document.change_id,
+                        route=document.route,
+                        finding_ids=tuple(str(item) for item in document.finding_ids),
+                    )
+                except ValueError as error:
+                    raise OutputError(str(error)) from error
                 scope_ref = evidence_ref(context.write_root, scope_relative)
                 extra["artifacts"] = [
                     history_ref.model_dump(mode="json"),

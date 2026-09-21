@@ -564,11 +564,14 @@ def test_intake_agent_job_catalog_is_feature_owned() -> None:
             (
                 "qa/cases/reviewed-case.json",
                 "qa/cases/reviews",
+                "qa/results/cases/epochs",
                 "qa/results/review/case-review-summary.md",
                 "qa/results/review/case-review.json",
             ),
             (
+                "qa/cases/reviewed-case.json",
                 "qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
+                "qa/results/cases/epochs/{coverage_epoch}/selection.json",
                 "qa/results/review/case-review-summary.md",
                 "qa/results/review/case-review.json",
             ),

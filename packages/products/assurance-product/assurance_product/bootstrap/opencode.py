@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import signal
@@ -54,26 +55,42 @@ def build_opencode_env(
     env["XDG_CONFIG_HOME"] = str((run_dir / "opencode-config").resolve())
     env["NO_PROXY"] = "127.0.0.1,localhost"
     env["no_proxy"] = "127.0.0.1,localhost"
+    token = env.get(spec.opencode_token_env)
+    if token:
+        env["OPENCODE_SERVER_PASSWORD"] = token
     return env
 
 
-def wait_http_ready(url: str, *, timeout: float) -> None:
+def _basic_opencode_authorization(token: str) -> str:
+    encoded = base64.b64encode(f"opencode:{token}".encode("utf-8")).decode("ascii")
+    return f"Basic {encoded}"
+
+
+def wait_http_ready(
+    url: str,
+    *,
+    timeout: float,
+    authorization: str | None = None,
+) -> None:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
             request = Request(url, method="GET")
+            if authorization:
+                request.add_header("Authorization", authorization)
             with urlopen(request, timeout=2) as response:  # noqa: S310 - local readiness probe
-                if 200 <= int(response.status) < 500:
+                if 200 <= int(response.status) < 300:
                     return
+                last_error = OSError(f"unexpected status {response.status}")
         except HTTPError as error:
-            if error.code < 500:
+            if authorization is None and 400 <= error.code < 500:
                 return
             last_error = error
         except (URLError, TimeoutError, OSError) as error:
             last_error = error
         time.sleep(0.1)
-    raise OpenCodeLaunchError(f"OpenCode did not become ready at {url}: {last_error}")
+    raise OpenCodeLaunchError(f"endpoint did not become ready at {url}: {last_error}")
 
 
 def start_opencode_serve(
@@ -86,7 +103,10 @@ def start_opencode_serve(
     which: Callable[[str], str | None] | None = None,
     wait: Callable[[str, float], None] | None = None,
 ) -> OpenCodeHandleV1:
-    install_opencode_agents(project_dir)
+    try:
+        install_opencode_agents(project_dir)
+    except ValueError as error:
+        raise OpenCodeLaunchError(str(error)) from error
     port = allocate_loopback_port()
     endpoint = f"http://127.0.0.1:{port}"
     resolver = which or shutil.which
@@ -97,6 +117,8 @@ def start_opencode_serve(
     log_path = run_dir / "opencode.log"
     log_path.touch()
     env = build_opencode_env(spec=spec, run_dir=run_dir, environ=environ)
+    token = env.get("OPENCODE_SERVER_PASSWORD")
+    authorization = _basic_opencode_authorization(token) if token else None
     command = [binary, "serve", "--hostname", "127.0.0.1", "--port", str(port)]
     launcher = spawn or subprocess.Popen
     with log_path.open("ab", buffering=0) as log:
@@ -109,7 +131,7 @@ def start_opencode_serve(
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
-    waiter = wait or (lambda url, timeout: wait_http_ready(url, timeout=timeout))
+    waiter = wait or (lambda url, timeout: wait_http_ready(url, timeout=timeout, authorization=authorization))
     try:
         waiter(f"{endpoint}/global/health", _READY_TIMEOUT_SECONDS)
     except OpenCodeLaunchError:

@@ -19,6 +19,7 @@ from assurance_intake.contracts.explore import (
     PreparedExploreV1,
     RUN_SPEC_SNAPSHOT_PATH,
     TestStrategyV1,
+    load_exploration_document,
 )
 from assurance_intake.contracts.obligations import SourceRefV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -88,20 +89,7 @@ def _mapping_yaml(data: bytes, label: str) -> Mapping[str, object]:
 
 
 def _load_exploration(data: bytes) -> tuple[str, str, TestStrategyV1, ExploreAdvisoryV1 | PreparedExploreV1]:
-    try:
-        payload = json.loads(data)
-    except (UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError("exploration artifact is invalid") from error
-    coverage = payload.get("minimum_required_coverage") if isinstance(payload, dict) else None
-    first = coverage[0] if isinstance(coverage, list) and coverage else None
-    try:
-        document: ExploreAdvisoryV1 | PreparedExploreV1
-        if isinstance(first, dict) and "mrc_id" in first:
-            document = PreparedExploreV1.model_validate(payload)
-        else:
-            document = ExploreAdvisoryV1.model_validate(payload)
-    except ValueError as error:
-        raise ValueError("exploration artifact is invalid") from error
+    document = load_exploration_document(data)
     return document.change_id, document.context_ref, document.test_strategy, document
 
 

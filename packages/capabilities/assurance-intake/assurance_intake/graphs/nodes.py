@@ -347,6 +347,10 @@ def publish_case_review(state: Mapping[str, object], output: object, receipt: ob
         "rounds_used": _as_int(state["rounds_used"], name="rounds_used"),
         "rounds_budget": _as_int(state["rounds_budget"], name="rounds_budget"),
     }
+    if payload.get("history_ref") is not None:
+        update["history_refs"] = [
+            EvidenceArtifactRefV1.model_validate(payload["history_ref"]).model_dump(mode="json")
+        ]
     if payload.get("decision") != "pass":
         return update
     review_path = "qa/results/review/case-review.json"

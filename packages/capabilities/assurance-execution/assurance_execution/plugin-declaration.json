@@ -67,11 +67,11 @@
     "attempt_contracts": [
       {
         "contract_id": "assurance.execution.execute",
-        "digest": "07781b48146c6993b67d7e02474f55064c903701d5b470f6775e4610c51590be"
+        "digest": "5103b77c3e2a526c8ae7d6f14af0ef77bc9b89f9ba5b4a25ae509b339023c48e"
       },
       {
         "contract_id": "assurance.execution.run",
-        "digest": "0f5cc94c0fc7df0a8e0d4f08c280261d78e7e109e92ceb0d1fdca4a748158a44"
+        "digest": "b6f938123cf3636fd8ad4ff731fb679e0e50292eaaa7000d91573778cb20d5ab"
       }
     ]
   }

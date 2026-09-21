@@ -13,6 +13,7 @@ from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.composition import (
     CapabilityBindingEntry,
     ConfigTreePluginSource,
+    EditableWheelProductSource,
     FrozenComposition,
     PluginRequirement,
     ProductManifest,
@@ -41,8 +42,10 @@ from assurance_product.models import (
     all_binding_ids,
 )
 from assurance_product.source_catalog import (
+    editable_distribution_root,
+    editable_source_files,
+    installed_plugin_source,
     product_source_catalog,
-    wheel_plugin_source,
 )
 
 _PRODUCT_VERSION = "0.3.0"
@@ -123,11 +126,25 @@ def _product_source() -> ProviderSource:
     )
 
 
-def _wheel_product_source() -> WheelProductSource:
-    return WheelProductSource(
+def _wheel_product_source() -> WheelProductSource | EditableWheelProductSource:
+    root = editable_distribution_root("assurance-product")
+    if root is None:
+        return WheelProductSource(
+            distribution="assurance-product",
+            entrypoint_name=_PRODUCT_ENTRYPOINT,
+            declaration_path=_DECLARATION_PATH,
+        )
+    files = editable_source_files(root)
+    if _DECLARATION_PATH not in files:
+        raise AssuranceCompositionError(
+            f"editable assurance-product is missing declaration {_DECLARATION_PATH}"
+        )
+    return EditableWheelProductSource(
         distribution="assurance-product",
         entrypoint_name=_PRODUCT_ENTRYPOINT,
         declaration_path=_DECLARATION_PATH,
+        source_root=root,
+        source_files=files,
     )
 
 
@@ -277,7 +294,10 @@ def _authenticate_assurance_composition(
         or not identity.import_roots
     ):
         raise AssuranceCompositionError("product snapshot identity drifted")
-    if composition.lock.product.source.kind is not SourceKind.WHEEL_PRODUCT:
+    if composition.lock.product.source.kind not in {
+        SourceKind.WHEEL_PRODUCT,
+        SourceKind.EDITABLE_PRODUCT,
+    }:
         raise AssuranceCompositionError("product source kind is not an installed wheel")
     declaration_file = next(
         (item for item in product_entry.snapshot.files if item.path == source.declaration_path),
@@ -355,7 +375,7 @@ def resolve_assurance_composition(request: AssuranceCompositionRequest) -> Assur
         ResolutionRequest(
             product=_wheel_product_source(),
             plugins=(
-                *(wheel_plugin_source(source) for source in product_source_catalog()),
+                *(installed_plugin_source(source) for source in product_source_catalog()),
                 request.deployment_source,
                 request.configuration_tree,
             ),

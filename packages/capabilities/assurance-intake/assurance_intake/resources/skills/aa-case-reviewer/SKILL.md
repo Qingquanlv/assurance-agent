@@ -182,6 +182,13 @@ This skill is a **gate producer**. The workflow cannot advance past case review 
 - If you cannot write the JSON file for any reason, treat the review as **failed** and report it — the workflow must treat a missing or invalid `case-review.json` as a STOP condition.
 - `case-review.json` must contain a `source_verification` object with exactly these required fields: `independent: true`, a non-empty `reviewed_source_files` list of product source paths, and a non-empty `verified_claims` list. Every `verified_claims[]` item must contain `claim` and a non-empty `evidence_files` list drawn from `reviewed_source_files`. Paths under `qa/`, `.aa/`, `adapter-config/`, `docs/`, `requirements/`, and `tests/` do not count as product source.
 
+### Host-owned derived files
+
+Your outputs are the review JSON and Markdown summary. After authenticating
+the raw review, the host finalize handler generates `selection.json`, review
+history, and `reviewed-case.json` under its declared write claims. These are
+not Agent outputs; their digests and identities are computed by the host.
+
 ---
 
 ## Review Scope
@@ -262,7 +269,10 @@ FOR EACH required MRC item:
 
 Violations:
 
-- required MRC item has no covering case → `needs_fix`
+- required MRC item has no covering case → `needs_fix`, except a frozen
+  `proposed_key: null` row explicitly recorded as `key: null`,
+  `status: skipped_by_scope`, and `skip_reason: capability_unresolved: ...`;
+  that row is a known delivery gap, not an authoring error
 - matrix references a missing case or a case in the wrong layer → `needs_fix`
 - e2e_if_enabled item is skipped without explicit skipped_by_scope + reason → `needs_fix`
   (the author must either cover it or add the explicit reason). Escalate to human
@@ -270,12 +280,11 @@ Violations:
 - closed-category MRC key absent from `.aa/data-knowledge.yaml` / declared journey set
   **and** no already-existing matching
   `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry: follow the
-  same closed-key recipe as `aa-case-design`. When an explicit requirement or
-  resolved Explore assertion intent supplies the oracle, the row may remain
-  covered and `proposal.md` Data Needs records the missing vocabulary. Otherwise
-  return bounded `needs_fix` instructing `aa-case-design` to mark that exact
-  matrix row `skipped_by_scope`, clear `covered_by_cases`, add a precise
-  `skip_reason`, and narrow any unsupported case assertion. Do not instruct
+  same closed-key recipe as `aa-case-design`. Return bounded `needs_fix` to
+  instruct `aa-case-design` to mark that exact matrix row `skipped_by_scope`
+  only when it is missing or is not recorded with frozen `mrc_id`, `key: null`,
+  `status: skipped_by_scope`, empty `covered_by_cases`, and a precise
+  `capability_unresolved:` reason. Narrow any unsupported case assertion. Do not instruct
   `aa-case-design` to create a data-knowledge proposal; it is not an authorized
   case-design output.
 
@@ -299,7 +308,10 @@ business oracle. Every advisory MRC item must have one row, but
   `needs_review` item and do not ask a human to define optional new behavior.
 - Use `needs_human_review` only when the explicit owner requirement itself
   requires the ambiguous behavior and available frozen inputs/source do not
-  select one meaning.
+  select one meaning **and** the Case artifacts claim to implement or verify
+  one of those meanings. A correctly recorded unresolved row does not stop
+  review of other cases; Quality retains it as `capability_unresolved` and
+  routes the final gate to `needs_human`.
 
 A matching `discovered_candidates[].knowledge_key` authenticates proposed
 closed-category vocabulary for an MRC row. It does not promote that key into an
@@ -322,7 +334,8 @@ These four fields are an exact projection of the frozen matrix, not an estimate:
 - count only rows whose `required` value is true;
 - `covered` is the number of required rows with `status: covered`;
 - `skipped_by_scope` is the number of required rows with that status;
-- `missing` lists every required `skipped_by_scope` row's `key`, in matrix order.
+- `missing` lists every required `skipped_by_scope` row's non-null `key`, or its
+  `mrc_id` when `key` is null, in matrix order.
 
 The runtime recomputes this projection from `trace/minimum-coverage-matrix.json`
 and rejects the review when any count or key differs.
@@ -683,6 +696,12 @@ Return one of these decisions:
 - A missing requirement cannot be inferred from files.
 - The required repair has two or more plausible product meanings and the available evidence does
   not select one. High or critical risk by itself is not such an ambiguity.
+
+An unresolved MRC with `key: null` and `status: skipped_by_scope` is not a
+Case-artifact repair or permission to guess a product meaning. Review the
+remaining cases normally; if they pass, use `decision: pass` and preserve the
+unresolved row in `minimum_coverage.missing` by `mrc_id`. The later Quality
+gate, not this local review, issues `needs_human` for that obligation.
 
 An optional assertion invented by the case author is not, by itself, a reason to
 ask a person to define new business behavior. When that assertion is not required

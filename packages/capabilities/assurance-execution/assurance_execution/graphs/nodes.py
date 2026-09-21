@@ -119,6 +119,7 @@ def publish_execution(
             executed_at=evidence.executed_at,
             final_status=raw_status,
             evidence_ref=evidence_ref,
+            observations_ref=evidence.observations_ref,
             mapping_ref=generation.mapping_ref,
             source_refs=generation.source_refs,
             receipt=ReceiptRef.model_validate(receipt),

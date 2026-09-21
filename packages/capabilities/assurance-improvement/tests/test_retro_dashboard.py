@@ -238,6 +238,7 @@ def test_build_retro_dashboard_on_empty_change_root_returns_all_stages_false(tmp
     assert doc.domains == ()
     assert doc.signals == ()
     assert doc.candidates == ()
+    assert doc.run.integrity_reasons == ()
 
 
 def test_build_retro_dashboard_with_only_analyses_present(tmp_path) -> None:
@@ -248,9 +249,15 @@ def test_build_retro_dashboard_with_only_analyses_present(tmp_path) -> None:
     doc = build_retro_dashboard(tmp_path)
     assert doc.stages.model_dump() == {"analyses": True, "synthesis": False, "reconcile": False}
     assert doc.retro_id is None
-    assert doc.domains == ()
     assert doc.signals == ()
     assert doc.candidates == ()
+    assert {domain.domain: domain.status for domain in doc.domains} == {
+        "issue": "ok",
+        "workflow": "ok",
+        "eval": "ok",
+        "discovery": "absent",
+        "coverage_gap": "absent",
+    }
 
 
 def test_build_retro_dashboard_analyses_false_when_one_file_missing(tmp_path) -> None:
@@ -261,6 +268,56 @@ def test_build_retro_dashboard_analyses_false_when_one_file_missing(tmp_path) ->
 
     doc = build_retro_dashboard(tmp_path)
     assert doc.stages.analyses is False
+    assert "artifact_missing:retro-workflow-analysis.json" in doc.run.integrity_reasons
+
+
+def test_build_retro_dashboard_eval_only_projects_signals_without_context(tmp_path) -> None:
+    """A mid-run retro (only eval analysis on disk) must still surface its signals.
+
+    stages.analyses stays False until all three analysis files exist, but the
+    loaded eval signals and missing-file reasons must not be discarded — otherwise
+    the dashboard is indistinguishable from 'no retro run'.
+    """
+    retro_dir = tmp_path / "qa" / "results" / "retro"
+    retro_dir.mkdir(parents=True)
+    payload = {
+        "schema_version": "3",
+        "retro_id": "retro-eval-only",
+        "domain": "eval",
+        "analysis_status": "ok",
+        "failure_reason": None,
+        "candidates": [],
+        "signals": [
+            {
+                "signal_id": "eval-trend-1",
+                "signal_type": "eval_trend",
+                "summary": "suite failed once",
+                "occurrence_count": 1,
+                "recommended_change": "re-run the suite",
+                "source_refs": {"eval_run_ids": ["run-1"], "problem_ids": [], "occurrence_ids": []},
+                "confidence": "high",
+                "suite": "assurance-execution",
+                "verdict": "failed",
+                "failure_signature": "a" * 64,
+                "consecutive_count": 0,
+                "sample_run_ids": ["run-1"],
+                "source_change_ids": ["CH-1"],
+            }
+        ],
+    }
+    (retro_dir / "retro-eval-analysis.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    doc = build_retro_dashboard(tmp_path, change_id="CH-1")
+    assert doc.stages.analyses is False
+    assert doc.stages.synthesis is False
+    assert doc.change_id == "CH-1"
+    assert "artifact_missing:retro-issue-analysis.json" in doc.run.integrity_reasons
+    assert "artifact_missing:retro-workflow-analysis.json" in doc.run.integrity_reasons
+    assert [signal.signal_id for signal in doc.signals] == ["eval-trend-1"]
+    assert doc.signals[0].domain == "eval"
+    eval_domain = next(domain for domain in doc.domains if domain.domain == "eval")
+    assert eval_domain.status == "ok"
+    assert eval_domain.signal_count == 1
 
 
 def test_build_retro_dashboard_reports_unreadable_context(tmp_path) -> None:

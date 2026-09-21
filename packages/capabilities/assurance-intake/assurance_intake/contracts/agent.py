@@ -12,7 +12,7 @@ from agent_runtime_contracts import AgentRunResult, FrozenExecutionSelection
 from graph_engine.plugin_api import FrozenModel
 from graph_engine.frozen_json import FrozenJSONValue
 
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.common import TestFamily, validate_family_tuple
 from assurance_intake.contracts.workflow import (
@@ -235,7 +235,7 @@ class CaseDesignInputV1(_SkillInputV1):
     case_rework_context: CaseReworkContextV1 | None = None
     selected_test_families: tuple[TestFamily, ...] = ()
     case_delta_paths: tuple[str, ...] = ()
-    exploration: ExploreAdvisoryV1 | None = None
+    exploration: PreparedExploreV1 | ExploreAdvisoryV1 | None = None
     impact_inventory: ChangeImpactInventoryV1 | None = None
     validation_attempt: Literal[0, 1] = 0
     validation_error: str | None = Field(default=None, min_length=1, max_length=8192)

@@ -308,7 +308,7 @@ class MrcObligation(BaseModel):
     model_config = _FROZEN
 
     mrc_id: NonEmptyStr
-    key: NonEmptyStr
+    key: NonEmptyStr | None = None
     category: MrcCategory
     required: bool
     layer: MrcLayer

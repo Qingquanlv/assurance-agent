@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -676,6 +677,51 @@ def test_full_init_failure_does_not_enter_case() -> None:
     result = invoke_product_root(_product_graphs(features), "full", _public_input("full"))
     assert result["terminal"] == {"status": "failed", "reason": "not_achieved"}
     assert calls == {"case": 0}
+
+
+def test_full_retains_case_and_generation_history_across_nested_graphs() -> None:
+    case_ref = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
+    generation_ref = {
+        "path": "qa/results/codegen/api/reviews/epochs/0/rounds/0.json",
+        "digest": "b" * 64,
+    }
+    result = invoke_product_root(
+        _product_graphs(
+            _flow_features(
+                case={**_case(), "history_refs": [case_ref]},
+                generation={**_generation(), "history_refs": [generation_ref]},
+            )
+        ),
+        "full",
+        _public_input("full"),
+    )
+    assert result["history_refs"] == [case_ref, generation_ref]
+
+
+def test_diagnostic_execute_snapshots_runtime_before_retro() -> None:
+    runtime_ref = {
+        "path": "qa/results/workflow/" + "a" * 64 + "/pre-retro/workflow-evidence.json",
+        "digest": "b" * 64,
+    }
+    snapshots = 0
+
+    async def snapshot():
+        nonlocal snapshots
+        snapshots += 1
+        return EvidenceArtifactRefV1.model_validate(runtime_ref)
+
+    graphs = build_product_graphs(
+        context=_build_context(),
+        features=_flow_features(
+            assess=_inspection(disposition="blocked"),
+            issue_analyze=_analysis_result("product_bug"),
+            report=_diagnostic_report(),
+        ),
+        runtime_snapshot=snapshot,
+    )
+    result = asyncio.run(graphs.entrypoints["execute"].ainvoke(_public_input("execute")))
+    assert snapshots == 1
+    assert runtime_ref in result["source_refs"]
 
 
 @pytest.mark.parametrize("feature", ["retro", "apply"])

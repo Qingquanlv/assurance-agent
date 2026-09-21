@@ -74,7 +74,7 @@ def preflight_bootstrap(
     qa_root = root / "qa"
     if qa_root.exists():
         existing = _qa_change_id(root)
-        if existing is None or existing != change_id:
+        if existing is not None and existing != change_id:
             raise BootstrapPreflightError("qa/ already belongs to a different change")
     active = find_active_run(runs_root, root)
     expected = (runs_root / change_id).resolve()

@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
@@ -30,6 +31,21 @@ from assurance_intake.operations import (
 )
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_intake.contracts.review import CaseReviewResultV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.operations.agent_skills import case_review_outputs
+from assurance_intake.operations.case_review_seal import (
+    collect_selected_cases,
+    expected_case_selection,
+    expected_review_history,
+    expected_reviewed_case,
+)
+from assurance_intake.contracts.explore import (
+    ExploreAdvisoryV1,
+    ObligationDraftV1,
+    PreparedExploreV1,
+)
+from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
 from assurance_intake.resource_loader import resource_text
 
 _SHA = "a" * 64
@@ -96,7 +112,7 @@ async def run_prepare(
             existing = json.loads(existing_bytes)
             if isinstance(existing, Mapping):
                 candidate = existing.get("minimum_required_coverage")
-                if isinstance(candidate, Mapping):
+                if isinstance(candidate, Mapping | list):
                     minimum_required_coverage = candidate
                 if existing.get("change_id") != "CH-DEMO-001":
                     mismatched_exploration = existing_bytes
@@ -245,8 +261,24 @@ def test_explore_skill_keeps_explicit_api_only_scope_out_of_e2e_obligations() ->
 
     assert "An explicit API-only requirement, or a candidate set that does not include `e2e`" in skill
     assert "makes E2E journeys inapplicable" in skill
-    assert "set `minimum_required_coverage.e2e` to `[]`" in skill
+    assert 'do not emit `category: "e2e"` drafts' in skill
     assert "Do not keep a catalog journey as required after declining E2E" in skill
+    assert "set `minimum_required_coverage.e2e` to `[]`" not in skill
+    assert '"minimum_required_coverage": {' not in skill
+
+
+def test_explore_skill_mrc_example_validates_as_obligation_drafts() -> None:
+    skill = resource_text("skills/aa-explore/SKILL.md")
+    start = skill.index("*Example (menu-management, only when these exact catalog leaves")
+    fence = skill.index("```json", start)
+    end = skill.index("```", fence + 7)
+    blob = skill[fence + 7 : end].strip().rstrip(",")
+    document = json.loads("{" + blob + "}" if blob.startswith('"minimum_required_coverage"') else blob)
+    drafts = document["minimum_required_coverage"]
+    assert isinstance(drafts, list) and drafts
+    for item in drafts:
+        ObligationDraftV1.model_validate(item)
+    assert {item["category"] for item in drafts} <= {"api", "e2e", "negative", "data_integrity"}
 
 
 def test_case_design_skill_requires_cleanup_for_every_successful_persistent_create() -> None:
@@ -786,6 +818,27 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
 
 
 @pytest.mark.asyncio
+async def test_case_design_prepare_consumes_sealed_prepared_exploration(tmp_path: Path) -> None:
+    relative = "qa/results/explore/exploration.json"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_sealed_explore_document()), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded", prepared.failure
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    exploration = cast(Mapping[str, object], business["exploration"])
+    coverage = tuple(
+        cast(Mapping[str, object], item)
+        for item in cast(tuple[object, ...], exploration["minimum_required_coverage"])
+    )
+    assert coverage[0]["mrc_id"]
+    assert "draft_id" not in coverage[0]
+
+
+@pytest.mark.asyncio
 async def test_case_design_prepare_reads_plan_bound_exploration_for_standalone_case(
     tmp_path: Path,
 ) -> None:
@@ -1083,6 +1136,116 @@ def _case_review_document(*, missing: list[str]) -> JSONValue:
     )
 
 
+def _ref(path: Path, relative: str) -> EvidenceArtifactRefV1:
+    return EvidenceArtifactRefV1(
+        path=relative,
+        digest=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
+def _write_json_model(root: Path, relative: str, model: BaseModel) -> None:
+    path = root.joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_json_bytes(model.model_dump(mode="json")) + b"\n")
+
+
+def _write_case_review_runtime_seal(
+    *,
+    project: Path,
+    write_root: Path,
+    document: Mapping[str, object],
+    change_id: str,
+    coverage_epoch: int,
+    review_round: int,
+    case_delta_paths: list[str],
+    case_refs: list[dict[str, str]],
+    preparation_refs: list[dict[str, str]],
+    plan: object,
+    plan_ref: dict[str, str],
+) -> list[str]:
+    review_relative = "qa/results/review/case-review.json"
+    review_ref = _ref(write_root / review_relative, review_relative)
+    refs = [EvidenceArtifactRefV1.model_validate(item) for item in case_refs]
+    documents: list[tuple[EvidenceArtifactRefV1, Mapping[str, object]]] = []
+    for ref in refs:
+        source = yaml.safe_load((project / ref.path).read_bytes())
+        assert isinstance(source, Mapping)
+        documents.append((ref, source))
+    selected = collect_selected_cases(refs, case_delta_paths, documents)
+    selection = expected_case_selection(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        plan=plan,  # type: ignore[arg-type]
+        cases=selected,
+    )
+    selection_relative = f"qa/results/cases/epochs/{coverage_epoch}/selection.json"
+    _write_json_model(write_root, selection_relative, selection)
+    selection_ref = _ref(write_root.joinpath(*selection_relative.split("/")), selection_relative)
+    history = expected_review_history(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        review_round=review_round,
+        document=CaseReviewResultV1.model_validate(document),
+        preparation_refs=[EvidenceArtifactRefV1.model_validate(item) for item in preparation_refs],
+        case_refs=refs,
+        review_ref=review_ref,
+    )
+    history_relative = f"qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    _write_json_model(write_root, history_relative, history)
+    reviewed = expected_reviewed_case(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        plan_digest=str(plan.plan_digest),  # type: ignore[attr-defined]
+        plan_ref=EvidenceArtifactRefV1.model_validate(plan_ref),
+        preparation_refs=[EvidenceArtifactRefV1.model_validate(item) for item in preparation_refs],
+        case_refs=refs,
+        review_ref=review_ref,
+        selection_ref=selection_ref,
+    )
+    manifest_relative = "qa/cases/reviewed-case.json"
+    _write_json_model(write_root, manifest_relative, reviewed)
+    return [manifest_relative, history_relative, selection_relative]
+
+
+def _install_and_write_case_review_seal(
+    *,
+    project: Path,
+    write_root: Path,
+    document: Mapping[str, object],
+    case_refs: list[dict[str, str]],
+    preparation_refs: list[dict[str, str]],
+    case_delta_paths: list[str],
+    coverage_epoch: int = 0,
+    review_round: int = 0,
+    change_id: str = "CH-DEMO-001",
+) -> list[dict[str, str]]:
+    plan, plan_ref = install_plan(
+        project,
+        change_id,
+        capability_leafs=VALID_LEAFS,
+        candidates=("api",),
+        proposed=("api",),
+    )
+    bound = list(preparation_refs)
+    if plan_ref not in bound:
+        bound.append(plan_ref)
+        bound.sort(key=lambda item: (item["path"], item["digest"]))
+    _write_case_review_runtime_seal(
+        project=project,
+        write_root=write_root,
+        document=document,
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        review_round=review_round,
+        case_delta_paths=case_delta_paths,
+        case_refs=case_refs,
+        preparation_refs=bound,
+        plan=plan,
+        plan_ref=plan_ref,
+    )
+    return bound
+
+
 def _write_review_matrix(workspace: Path, *, missing: list[str]) -> None:
     keys = ["create_item", "update_item"] if not missing else ["create_item", missing[0]]
     rows = []
@@ -1194,26 +1357,36 @@ async def _finalize_review_with_written_cases(
     review_path.write_text(json.dumps(document), encoding="utf-8")
     summary_relative = "qa/results/review/case-review-summary.md"
     (write_root / summary_relative).write_text("# Case review\n", encoding="utf-8")
+    case_refs = [
+        {
+            "path": case_relative,
+            "digest": hashlib.sha256((workspace / case_relative).read_bytes()).hexdigest(),
+        }
+    ]
+    preparation_refs = [
+        {
+            "path": matrix_relative,
+            "digest": hashlib.sha256((workspace / matrix_relative).read_bytes()).hexdigest(),
+        },
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=workspace,
+        write_root=write_root,
+        document=cast(Mapping[str, object], document),
+        case_refs=case_refs,
+        preparation_refs=preparation_refs,
+        case_delta_paths=[case_relative],
+    )
     executed = await _finalize_files(
         CaseReviewFinalizeHandler(),
         document,
         workspace,
-        [review_relative, summary_relative],
+        list(case_review_outputs("CH-DEMO-001")),
         change_id="CH-DEMO-001",
         write_root=write_root,
         case_delta_paths=[case_relative],
-        case_refs=[
-            {
-                "path": case_relative,
-                "digest": hashlib.sha256((workspace / case_relative).read_bytes()).hexdigest(),
-            }
-        ],
-        preparation_refs=[
-            {
-                "path": matrix_relative,
-                "digest": hashlib.sha256((workspace / matrix_relative).read_bytes()).hexdigest(),
-            }
-        ],
+        case_refs=case_refs,
+        preparation_refs=bound_preparation,
     )
     return executed.outcome
 
@@ -1386,6 +1559,25 @@ def _valid_explore_advisory() -> dict[str, Any]:
             "approach": None,
         },
     }
+
+
+def _sealed_explore_document() -> dict[str, Any]:
+    advisory = ExploreAdvisoryV1.model_validate(_valid_explore_advisory())
+    rows = normalize_obligation_drafts(advisory.minimum_required_coverage, resolved_quotes={})
+    return PreparedExploreV1(
+        schema_version="1",
+        change_id=advisory.change_id,
+        context_ref=advisory.context_ref,
+        generated_at=advisory.generated_at,
+        executive_summary=advisory.executive_summary,
+        watchlist=tuple(advisory.watchlist),
+        evidence_inventory=advisory.evidence_inventory,
+        source_code_evidence=tuple(advisory.source_code_evidence),
+        case_design_guidance=advisory.case_design_guidance,
+        minimum_required_coverage=rows,
+        open_questions_for_case_design=tuple(advisory.open_questions_for_case_design),
+        test_strategy=advisory.test_strategy,
+    ).model_dump(mode="json")
 
 
 _EXPLORATION = "qa/results/explore/exploration.json"
@@ -3027,6 +3219,15 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
             "digest": hashlib.sha256(case_path.read_bytes()).hexdigest(),
         }
     ]
+    case_delta_paths = [case_path.relative_to(project).as_posix()]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+    )
 
     executed = await _finalize_files(
         CaseReviewFinalizeHandler(),
@@ -3042,8 +3243,8 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
             "qa/tests",
         ],
         change_id="CH-DEMO-001",
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
     )
@@ -3091,25 +3292,36 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
             "digest": hashlib.sha256(case_path.read_bytes()).hexdigest(),
         }
     ]
+    case_delta_paths = [case_path.relative_to(project).as_posix()]
+    artifact_paths = [
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        coverage_epoch=0,
+    )
 
     first = await _finalize_files(
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
+        artifact_paths,
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
     )
@@ -3120,41 +3332,34 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
+        artifact_paths,
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
+    )
+    _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=bound_preparation,
+        case_delta_paths=case_delta_paths,
+        coverage_epoch=1,
     )
     second = await _finalize_files(
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
+        artifact_paths,
         change_id="CH-DEMO-001",
         coverage_epoch=1,
         review_round=0,
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
     )
@@ -3171,6 +3376,134 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         "path": "qa/cases/reviews/epochs/1/rounds/0.json",
         "digest": hashlib.sha256(second_history.read_bytes()).hexdigest(),
     }
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_preserves_raw_review_bytes(
+    tmp_path: Path,
+) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_review_matrix(project, missing=[])
+    case_relative = _write_case_delta(
+        project,
+        yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
+    )
+    review_document = _case_review_document(missing=[])
+    review_path = write_root / "qa/results/review/case-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(review_document), encoding="utf-8")
+    (review_path.parent / "case-review-summary.md").write_text("# Case review\n", encoding="utf-8")
+    case_refs = [
+        {
+            "path": case_relative,
+            "digest": hashlib.sha256((project / case_relative).read_bytes()).hexdigest(),
+        }
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=[
+            {
+                "path": "qa/results/trace/minimum-coverage-matrix.json",
+                "digest": hashlib.sha256(
+                    (project / "qa/results/trace/minimum-coverage-matrix.json").read_bytes()
+                ).hexdigest(),
+            }
+        ],
+        case_delta_paths=[case_relative],
+    )
+    before = {
+        relative: (write_root / relative).read_bytes()
+        for relative in case_review_outputs("CH-DEMO-001")
+        if relative != "qa/results/review/case-review-summary.md"
+    }
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        review_document,
+        project,
+        list(case_review_outputs("CH-DEMO-001")),
+        change_id="CH-DEMO-001",
+        case_delta_paths=[case_relative],
+        preparation_refs=bound_preparation,
+        case_refs=case_refs,
+        write_root=write_root,
+    )
+    assert executed.status == "succeeded", executed.failure
+    for relative, data in before.items():
+        assert (write_root / relative).read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_generates_host_seals(
+    tmp_path: Path,
+) -> None:
+    from tests.capabilities.finalize_phase import checked_finalize
+
+    project, write_root = dual_roots(tmp_path)
+    _write_review_matrix(project, missing=[])
+    case_relative = _write_case_delta(
+        project,
+        yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
+    )
+    review_document = _case_review_document(missing=[])
+    review_path = write_root / "qa/results/review/case-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(review_document), encoding="utf-8")
+    (review_path.parent / "case-review-summary.md").write_text("# Case review\n", encoding="utf-8")
+    case_refs = [
+        {
+            "path": case_relative,
+            "digest": hashlib.sha256((project / case_relative).read_bytes()).hexdigest(),
+        }
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=[
+            {
+                "path": "qa/results/trace/minimum-coverage-matrix.json",
+                "digest": hashlib.sha256(
+                    (project / "qa/results/trace/minimum-coverage-matrix.json").read_bytes()
+                ).hexdigest(),
+            }
+        ],
+        case_delta_paths=[case_relative],
+    )
+    for relative in (
+        "qa/results/cases/epochs/0/selection.json",
+        "qa/cases/reviews/epochs/0/rounds/0.json",
+        "qa/cases/reviewed-case.json",
+    ):
+        (write_root / relative).unlink()
+    executed = await checked_finalize(
+        AGENT_JOB_CONTRACTS["case-review"],
+        write_root,
+        lambda: _finalize_files(
+            CaseReviewFinalizeHandler(),
+            review_document,
+            project,
+            list(case_review_outputs("CH-DEMO-001")),
+            change_id="CH-DEMO-001",
+            case_delta_paths=[case_relative],
+            preparation_refs=bound_preparation,
+            case_refs=case_refs,
+            write_root=write_root,
+        ),
+    )
+    assert executed.status == "succeeded", executed.failure
+    selection_path = write_root / "qa/results/cases/epochs/0/selection.json"
+    selection = json.loads(selection_path.read_bytes())
+    assert selection["cases"][0]["case_id"] == "TC_MENU_001"
+    reviewed = json.loads((write_root / "qa/cases/reviewed-case.json").read_bytes())
+    assert reviewed["selection_ref"]["digest"] == hashlib.sha256(selection_path.read_bytes()).hexdigest()
+    assert reviewed["review_ref"]["digest"] == hashlib.sha256(review_path.read_bytes()).hexdigest()
+    assert (
+        json.loads((write_root / "qa/cases/reviews/epochs/0/rounds/0.json").read_bytes())["outcome"] == "pass"
+    )
 
 
 @pytest.mark.asyncio

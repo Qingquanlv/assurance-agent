@@ -16,7 +16,7 @@ from assurance_generation.contracts.workflow import (
     ResolveGenerationInputV1,
 )
 from graph_engine.attempts.resolutions import ReceiptRef
-from assurance_intake.contracts.workflow import ReviewedCaseV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
 from assurance_generation.graphs.state import (
     PlanRoundArrival,
     consume_plan_round_trigger,
@@ -254,13 +254,18 @@ def publish_plan_review(state: Mapping[str, object], output: object, receipt: ob
     payload = _output_payload(output)
     raw_ids = payload.get("finding_ids")
     finding_ids = [str(item) for item in raw_ids] if isinstance(raw_ids, list | tuple) else []
-    return {
+    update = {
         "route": payload.get("route", "codegen"),
         "finding_ids": finding_ids,
         "artifacts": payload.get("artifacts") or [],
         "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
         "rounds_budget": _published_int(payload, "rounds_budget", state.get("rounds_budget", 3)),
     }
+    if payload.get("history_ref") is not None:
+        update["history_refs"] = [
+            EvidenceArtifactRefV1.model_validate(payload["history_ref"]).model_dump(mode="json")
+        ]
+    return update
 
 
 def publish_codegen(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:

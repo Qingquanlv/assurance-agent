@@ -308,8 +308,11 @@ Maintain a visible checklist for each item, or use the available task/todo tool 
    Also read propagated `assertion_intent` on `case_design_guidance.priority_hints[]`, `watchlist[]`, and `suggested_scenarios[]` — when present, treat the hint/scenario text as the authoritative test directive (do not reinterpret neutral pitfall wording); also read `test_strategy` (if present) as a **macro plan proposal** for scope/data/layer/approach.
 1. **Derive change ID** — format `<TICKET-ID>-<short-kebab-description>`
 2. **Explore QA context** — check `qa/cases/`, `qa/tests/`, `qa/knowledge/`, `qa/results/`
-3. **Use trusted target modules** — derive them only from exact graph-provided
-   `case_delta_paths`; never guess a module or write a different case path.
+3. **Use inventory-inferred target modules** — write every exact `case_delta_paths`
+   listed on this request. The graph infers that set from Explore
+   `impact_inventory` (`case_module`, else the affected behavior). One
+   requirement can lock more than one `case.yaml`. Never invent a different path
+   and never drop a listed module.
    - If `exploration` is non-null: use its typed contents as the Explore advisory.
 4. **Mode branch**:
    - `interactive`: ask clarifying questions one at a time — cover 8 categories; **prioritize watchlist / `exception_scenarios`** when advisory exists; lead macro categories with the `test_strategy` proposal (confirm/override) when present; treat advisory answered OQs as already-resolved for that specific pitfall; surface unresolved OQs as part of their category's question.
@@ -619,12 +622,12 @@ Minimum Required Coverage keys are a **closed set**. Do **not** freely invent MR
 1. Do not create a data-knowledge proposal file; it is not an authorized output.
    Record the missing closed key under `proposal.md` **Data Needs**.
 2. Keep the MRC inventory complete: every advisory MRC item still gets exactly
-   one matrix row. When a frozen requirement or resolved Explore
-   `assertion_intent` supplies the oracle, map the row to the covering case and
-   mark it `covered`. When no frozen oracle exists and the scenario is only an
-   advisory expansion beyond the explicit requirement, use `required: true`,
-   `status: skipped_by_scope`, an empty `covered_by_cases`, and a precise
-   `skip_reason` stating that the advisory expansion lacks a frozen oracle.
+   one matrix row. Preserve the frozen `mrc_id`; use `key: null`,
+   `required: true`, `status: skipped_by_scope`, an empty `covered_by_cases`,
+   and a `skip_reason` beginning `capability_unresolved:`. Even when an oracle
+   is known, do not claim a closed-key MRC is covered before its key resolves.
+   When the advisory expansion lacks a frozen oracle, include that fact in the
+   same `skip_reason` and narrow dependent assertions.
 3. Do not put the unavailable key in case `trace`. Case `trace`
    remains an L1 typed-capability proof map and is independent from MRC rows.
    Never omit the MRC row and never claim promotion merely to score full
@@ -1104,7 +1107,9 @@ inside `trace`; MRC-to-case mapping belongs in the separate coverage matrix.
 
 MRC keys must obey **MRC closed-key discipline** above: never invent
 closed-category keys. Record an unknown key in `proposal.md` **Data Needs** and
-retain its matrix row as `skipped_by_scope` with a precise reason; do not write a
+retain its matrix row with `key: null`, `status: skipped_by_scope`, and
+`skip_reason: capability_unresolved` followed by the precise reason. Keep the
+frozen `mrc_id`; multiple unresolved rows may have null keys. Do not write a
 knowledge-proposal file or a silent covered matrix entry.
 
 Also write `qa/results/trace/minimum-coverage-matrix.json`:
@@ -1116,6 +1121,12 @@ Also write `qa/results/trace/minimum-coverage-matrix.json`:
   covered_by_cases: [TC_API_012, TC_API_013]
   status: covered | skipped_by_scope
   skip_reason: null
+- mrc_id: MRC-NEGATIVE-009
+  key: null
+  required: true
+  covered_by_cases: []
+  status: skipped_by_scope
+  skip_reason: "capability_unresolved: no matching closed leaf"
 ```
 
 This is a required case-design output, not reviewer-owned diagnostics. Include it
@@ -1124,7 +1135,7 @@ in the final `output_files` receipt and read it back before returning. Every
 every `status: skipped_by_scope` row must have an empty `covered_by_cases` list and
 a non-empty `skip_reason`.
 
-`mrc_id and key must each be unique across the entire matrix`. When two
+`mrc_id` must be unique; non-null keys must also be unique. When two
 categories describe the same obligation, keep one row and map all relevant
 cases to it; do not duplicate the key under a second `mrc_id`.
 

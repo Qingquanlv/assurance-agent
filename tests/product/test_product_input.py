@@ -152,6 +152,55 @@ def test_full_retro_uses_the_current_change_and_report_receipt_identity() -> Non
     assert first["retro_id"] == second["retro_id"]
 
 
+def test_full_retro_binds_pre_retro_snapshot_and_all_review_rounds() -> None:
+    from assurance_product.graphs.entrypoints import adapt_retro
+
+    state = valid_product_input()
+    runtime_ref = {
+        "path": "qa/results/workflow/" + "a" * 64 + "/pre-retro/workflow-evidence.json",
+        "digest": "b" * 64,
+    }
+    history_refs = [
+        {"path": f"qa/cases/reviews/epochs/0/rounds/{index}.json", "digest": str(index) * 64}
+        for index in (1, 2)
+    ]
+    state["retro_runtime_ref"] = runtime_ref
+    state["history_refs"] = history_refs
+    source_refs = adapt_retro(state)["source_refs"]  # type: ignore[arg-type]
+    assert isinstance(source_refs, list)
+    assert runtime_ref in source_refs
+    assert all(ref in source_refs for ref in history_refs)
+
+
+def test_history_ref_reducer_accumulates_rounds_and_rejects_digest_conflicts() -> None:
+    from assurance_intake.contracts.workflow import merge_history_refs
+
+    first = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
+    second = {"path": "qa/cases/reviews/epochs/0/rounds/1.json", "digest": "b" * 64}
+    assert merge_history_refs([first], [second, first]) == [first, second]
+    with pytest.raises(ValueError, match="conflicting history ref"):
+        merge_history_refs([first], [{**first, "digest": "c" * 64}])
+
+
+def test_review_publishers_forward_sealed_round_refs() -> None:
+    from assurance_generation.graphs.nodes import publish_plan_review
+    from assurance_intake.graphs.nodes import publish_case_review
+
+    ref = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
+    case = publish_case_review(
+        {"rounds_used": 0, "rounds_budget": 2},
+        {"decision": "reject", "history_ref": ref},
+        None,
+    )
+    plan = publish_plan_review(
+        {"rounds_used": 0, "rounds_budget": 2},
+        {"route": "codegen", "history_ref": ref},
+        None,
+    )
+    assert case["history_refs"] == [ref]
+    assert plan["history_refs"] == [ref]
+
+
 def test_product_input_rejects_auto_archive():
     from assurance_product.models import ProductInputV1
 
@@ -305,27 +354,18 @@ def test_case_delta_path_model_matches_public_schema_ascii_shape() -> None:
     assert all(pattern.fullmatch(path) is None for path in invalid)
 
 
-@pytest.mark.parametrize("entrypoint", ("case",))
-def test_case_design_entrypoints_require_exact_case_delta_paths(entrypoint: str) -> None:
+@pytest.mark.parametrize("entrypoint", ("full", "intake", "case"))
+def test_case_writing_entrypoints_allow_empty_case_delta_paths(entrypoint: str) -> None:
     from assurance_product.models import ProductInputV1
 
-    candidate = ("api",) if entrypoint in {"full", "intake"} else ()
+    families = ("api",) if entrypoint in {"full", "intake"} else ()
     plan_ref = _PLAN_REF if entrypoint == "case" else None
-    with pytest.raises(ValueError, match="case_delta_paths"):
-        ProductInputV1.model_validate(
-            valid_product_input(
-                candidate_test_families=candidate,
-                resolved_plan_ref=plan_ref,
-            )
-        ).validate_for_entrypoint(entrypoint)
-
-
-@pytest.mark.parametrize("entrypoint", ("full", "intake"))
-def test_creator_entrypoints_allow_empty_case_delta_paths(entrypoint: str) -> None:
-    from assurance_product.models import ProductInputV1
-
     value = ProductInputV1.model_validate(
-        valid_product_input(candidate_test_families=("api",), case_delta_paths=())
+        valid_product_input(
+            candidate_test_families=families,
+            case_delta_paths=(),
+            resolved_plan_ref=plan_ref,
+        )
     )
     assert value.validate_for_entrypoint(entrypoint) is value
 
@@ -357,7 +397,7 @@ def test_resource_ref_sha256_is_lowercase_hex():
 def test_empty_family_entrypoints_require_empty_selection(entrypoint: str):
     from assurance_product.models import ProductInputV1
 
-    case_delta_paths = ("qa/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
+    case_delta_paths = ()
     plan_ref = _PLAN_REF if entrypoint in {"case", "execute"} else None
     value = ProductInputV1.model_validate(
         valid_product_input(case_delta_paths=case_delta_paths, resolved_plan_ref=plan_ref)
@@ -394,14 +434,11 @@ def test_plan_creators_require_non_empty_candidates(entrypoint: str):
 def test_plan_consumers_require_one_resolved_plan_ref(entrypoint: str) -> None:
     from assurance_product.models import ProductInputV1
 
-    case_delta_paths = ("qa/cases/system/dept/case.yaml",) if entrypoint == "case" else ()
-    ProductInputV1.model_validate(
-        valid_product_input(case_delta_paths=case_delta_paths, resolved_plan_ref=_PLAN_REF)
-    ).validate_for_entrypoint(entrypoint)
+    ProductInputV1.model_validate(valid_product_input(resolved_plan_ref=_PLAN_REF)).validate_for_entrypoint(
+        entrypoint
+    )
     with pytest.raises(ValueError, match="requires resolved_plan_ref"):
-        ProductInputV1.model_validate(
-            valid_product_input(case_delta_paths=case_delta_paths)
-        ).validate_for_entrypoint(entrypoint)
+        ProductInputV1.model_validate(valid_product_input()).validate_for_entrypoint(entrypoint)
 
 
 @pytest.mark.parametrize("entrypoint", ("full", "intake"))

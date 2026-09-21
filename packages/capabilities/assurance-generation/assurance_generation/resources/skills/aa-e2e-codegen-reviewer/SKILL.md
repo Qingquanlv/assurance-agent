@@ -107,6 +107,13 @@ has already verified these exact paths as regular files.
 - `qa/results/review/e2e-codegen-review.json`
 - `qa/results/review/e2e-codegen-review-summary.md`
 
+### Host-owned derived files
+
+Your outputs are the review JSON and Markdown summary. After authenticating
+the raw review, the host finalize handler generates history and finding-scope
+under declared write claims. Digests and identities are computed by the host.
+Return the same complete JSON object that you wrote to the review file.
+
 ## Boundaries
 
 Write only the review outputs listed above. Authorizing bounded codegen re-entry

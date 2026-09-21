@@ -43,6 +43,24 @@ def load_finding_scope(root: Path, *, family: str, coverage_epoch: int) -> dict[
     return {"route": route, "finding_ids": ids}
 
 
+def expected_finding_scope(
+    *,
+    family: str,
+    coverage_epoch: int,
+    change_id: str,
+    route: str,
+    finding_ids: Sequence[str],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "change_id": change_id,
+        "coverage_epoch": coverage_epoch,
+        "family": family,
+        "route": route,
+        "finding_ids": list(finding_ids),
+    }
+
+
 def write_finding_scope(
     root: Path,
     *,
@@ -57,14 +75,13 @@ def write_finding_scope(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            {
-                "schema_version": "1",
-                "change_id": change_id,
-                "coverage_epoch": coverage_epoch,
-                "family": family,
-                "route": route,
-                "finding_ids": list(finding_ids),
-            },
+            expected_finding_scope(
+                family=family,
+                coverage_epoch=coverage_epoch,
+                change_id=change_id,
+                route=route,
+                finding_ids=finding_ids,
+            ),
             indent=2,
         )
         + "\n",
@@ -73,8 +90,39 @@ def write_finding_scope(
     return relative
 
 
+def authenticate_finding_scope(
+    root: Path,
+    *,
+    family: str,
+    coverage_epoch: int,
+    change_id: str,
+    route: str,
+    finding_ids: Sequence[str],
+) -> str:
+    relative = finding_scope_path(family, coverage_epoch)
+    path = root.joinpath(*relative.split("/"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid finding-scope: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("finding-scope must be a JSON object")
+    expected = expected_finding_scope(
+        family=family,
+        coverage_epoch=coverage_epoch,
+        change_id=change_id,
+        route=route,
+        finding_ids=finding_ids,
+    )
+    if payload != expected:
+        raise ValueError("finding-scope.json does not match the locked review")
+    return relative
+
+
 __all__ = [
     "apply_plan_review_policy",
+    "authenticate_finding_scope",
+    "expected_finding_scope",
     "finding_scope_path",
     "load_finding_scope",
     "write_finding_scope",

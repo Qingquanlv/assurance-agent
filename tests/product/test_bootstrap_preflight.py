@@ -41,6 +41,18 @@ def test_preflight_rejects_missing_policy(tmp_path: Path) -> None:
         )
 
 
+def test_preflight_allows_unbound_qa_runtime(tmp_path: Path) -> None:
+    project = _sut(tmp_path)
+    (project / "qa" / ".runtime").mkdir(parents=True)
+    preflight_bootstrap(
+        project_dir=project,
+        spec=_spec(),
+        runs_root=tmp_path / "runs",
+        change_id="BOOT-1",
+        environ={"AA_NEXT_OPENCODE_TOKEN": "t", "QA_ADMIN_PASSWORD": "x"},
+    )
+
+
 def test_preflight_rejects_foreign_qa(tmp_path: Path) -> None:
     project = _sut(tmp_path)
     qa = project / "qa"

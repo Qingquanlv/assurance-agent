@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import replace
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,7 +13,11 @@ from graph_engine.attempts.events import AttemptOpened, AttemptTerminated
 from graph_engine.attempts.keys import AttemptKey
 from graph_engine.persistence.attempt_journal import AttemptJournalRecord
 from assurance_product.change_workspace import ChangeWorkspace
-from assurance_product.retro_evidence import project_runtime_evidence, publish_runtime_evidence
+from assurance_product.retro_evidence import (
+    project_runtime_evidence,
+    publish_runtime_evidence,
+    snapshot_runtime_evidence,
+)
 
 
 def _records(invocation: str = "inv-full", *, commit_fence: int = 2):
@@ -87,6 +92,70 @@ def test_published_runtime_evidence_is_explicit_hash_bound_and_repeatable(tmp_pa
     assert ref.path.endswith("/workflow-evidence.json")
     assert publish_runtime_evidence(workspace, snapshot) == ref
     assert "secret-diagnostic" not in (tmp_path / ref.path).read_text()
+
+
+def test_pre_retro_snapshot_is_not_overwritten_by_post_run_export(tmp_path: Path) -> None:
+    workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
+
+    async def read_records():
+        return _records()
+
+    ref = asyncio.run(snapshot_runtime_evidence(workspace, read_records, invocation_id="inv-full"))
+    before = (tmp_path / ref.path).read_bytes()
+    assert "/pre-retro/" in ref.path
+    assert ref.path.endswith("/workflow-evidence.json")
+    publish_runtime_evidence(
+        workspace,
+        project_runtime_evidence(_records(), change_id="CH-A", invocation_id="inv-full"),
+    )
+    assert (tmp_path / ref.path).read_bytes() == before
+
+
+def test_pre_retro_snapshot_is_immutable_across_replay(tmp_path: Path) -> None:
+    workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
+    snapshot = project_runtime_evidence(_records(), change_id="CH-A", invocation_id="inv-full")
+    original = publish_runtime_evidence(workspace, snapshot, stage="pre-retro")
+    original_bytes = (tmp_path / original.path).read_bytes()
+
+    changed = snapshot.model_copy(update={"journal_digest": "f" * 64})
+    replay = publish_runtime_evidence(workspace, changed, stage="pre-retro")
+
+    assert replay.path != original.path
+    assert (tmp_path / original.path).read_bytes() == original_bytes
+    assert publish_runtime_evidence(workspace, snapshot, stage="pre-retro") == original
+
+
+def test_pre_retro_snapshot_rejects_existing_different_bytes(tmp_path: Path) -> None:
+    workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
+    snapshot = project_runtime_evidence(_records(), change_id="CH-A", invocation_id="inv-full")
+    ref = publish_runtime_evidence(workspace, snapshot, stage="pre-retro")
+    (tmp_path / ref.path).write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match="immutable"):
+        publish_runtime_evidence(workspace, snapshot, stage="pre-retro")
+
+
+def test_graph_snapshot_node_uses_the_trusted_runtime_ref(tmp_path: Path) -> None:
+    from assurance_product.graphs.execute import snapshot_retro_runtime_node
+
+    workspace = ChangeWorkspace.prepare(tmp_path, "CH-A")
+
+    async def read_records():
+        return _records()
+
+    async def snapshot():
+        return await snapshot_runtime_evidence(workspace, read_records, invocation_id="inv-full")
+
+    update = asyncio.run(snapshot_retro_runtime_node(snapshot)({}))
+    ref = update["retro_runtime_ref"]
+    assert (tmp_path / ref["path"]).is_file()
+    assert ref["digest"] == hashlib.sha256((tmp_path / ref["path"]).read_bytes()).hexdigest()
+
+
+def test_dry_graph_snapshot_node_is_synchronous_and_has_no_side_effect() -> None:
+    from assurance_product.graphs.execute import snapshot_retro_runtime_node
+
+    assert snapshot_retro_runtime_node(None)({}) == {}
 
 
 def test_runtime_publication_rejects_symlink_parent(tmp_path: Path) -> None:

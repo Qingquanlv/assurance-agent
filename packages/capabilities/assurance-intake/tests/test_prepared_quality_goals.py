@@ -28,7 +28,7 @@ def _sha(data: bytes) -> str:
 def _draft(
     *,
     draft_id: str,
-    proposed_key: str,
+    proposed_key: str | None,
     category: str,
     layer: str,
     statement: str | None = None,
@@ -195,6 +195,17 @@ def test_empty_legacy_condition_does_not_make_resolved_obligations_unresolved() 
             ],
             "unresolved",
         ),
+        (
+            [
+                _draft(
+                    draft_id="D-E2E",
+                    proposed_key=None,
+                    category="e2e",
+                    layer="e2e",
+                )
+            ],
+            "unknown journey",
+        ),
     ],
 )
 def test_goal_normalization_fails_closed(drafts: list[dict[str, object]], message: str) -> None:
@@ -205,6 +216,32 @@ def test_goal_normalization_fails_closed(drafts: list[dict[str, object]], messag
             capability_leafs=frozenset({"entities.item.constraints.name"}),
             journey_keys=frozenset({"checkout"}),
         )
+
+
+@pytest.mark.parametrize("category", ("negative", "data_integrity"))
+def test_unresolved_closed_obligation_is_preserved_for_later_gate(category: str) -> None:
+    advisory = ExploreAdvisoryV1.model_validate(
+        _advisory(
+            [
+                _draft(
+                    draft_id="MRC-NEGATIVE-009",
+                    proposed_key=None,
+                    category=category,
+                    layer="api",
+                    statement="Unauthorized or invalid reference must be rejected",
+                )
+            ]
+        )
+    )
+    rows = normalize_goal_obligations(
+        advisory,
+        capability_leafs=frozenset({"entities.item.constraints.name"}),
+        journey_keys=frozenset(),
+    )
+    assert [(row.mrc_id, row.key, row.proposed_key, row.required) for row in rows] == [
+        ("MRC-NEGATIVE-009", None, None, True)
+    ]
+    assert required_goal_families(rows) == ("api",)
 
 
 @pytest.mark.parametrize("empty_legacy_category", [False, True])
@@ -228,6 +265,12 @@ def test_prepare_quality_goal_authenticates_every_source(
             draft_id="D-DATA",
             proposed_key="entities.item.constraints.parent",
             category="data_integrity",
+            layer="api",
+        ),
+        _draft(
+            draft_id="MRC-NEGATIVE-009",
+            proposed_key=None,
+            category="negative",
             layer="api",
         ),
     ]

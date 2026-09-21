@@ -11,6 +11,7 @@ from assurance_intake.contracts.workflow import (
     CaseReworkContextV1,
     EvidenceArtifactRefV1,
     ReviewedCaseV1,
+    merge_history_refs,
 )
 from assurance_quality.contracts.assessment import (
     AssessmentInputsV1,
@@ -143,8 +144,10 @@ class ProductStateDocument(FrozenModel):
     allowed_artifact_paths: list[str]
     budgets: dict[str, int]
     artifacts: list[dict[str, Any]]
+    history_refs: list[dict[str, str]]
     retro_window: RetroWindow | None
     retro_id: str
+    retro_runtime_ref: EvidenceArtifactRefV1
     retro_status: RetroRunStatus
     window: RetroWindow
     decision: str
@@ -261,8 +264,10 @@ class ProductState(CheckpointBridgeState, total=False):
     allowed_artifact_paths: list[str]
     budgets: dict[str, int]
     artifacts: list[dict[str, object]]
+    history_refs: Annotated[list[dict[str, str]], merge_history_refs]
     retro_window: RetroWindow | None
     retro_id: str
+    retro_runtime_ref: dict[str, str]
     retro_status: dict[str, object]
     window: dict[str, object]
     decision: str

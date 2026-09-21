@@ -43,6 +43,7 @@ from assurance_product.product import (
     reopen_change_workspace,
     resolve_assurance_composition,
 )
+from assurance_product.sut_worktree import ensure_run_worktree
 from assurance_product.application import RuntimeSelectionError, SelectionCrash
 
 _SOURCE_FLAGS = (
@@ -560,6 +561,20 @@ def bootstrap_run(
         },
         ("project_dir", "spec", "runs_root", "json"),
     )
+    status_path: Path | None = None
+    previous_status_bytes: bytes | None = None
+    if (
+        as_json
+        and runs_root is not None
+        and change is not None
+        and change not in {"", ".", ".."}
+        and not any(character in change for character in ("/", "\\", " ", "\x00"))
+    ):
+        status_path = Path(runs_root) / change / "bootstrap-status.json"
+        try:
+            previous_status_bytes = status_path.read_bytes()
+        except OSError:
+            pass
     try:
         loaded = load_run_spec(Path(cast(str, spec)))
         status = run_bootstrap(
@@ -569,12 +584,22 @@ def bootstrap_run(
             change_id=change,
             environ=os.environ,
         )
-    except (BootstrapPreflightError, SpecOverrideError, OpenCodeLaunchError) as error:
-        _fail(str(error), 40)
-    except CommandError as error:
-        _fail(str(error), error.code)
     except Exception as error:
-        _fail(str(error), 40)
+        if status_path is not None:
+            try:
+                current_status_bytes = status_path.read_bytes()
+            except (OSError, ValueError):
+                pass
+            else:
+                if current_status_bytes != previous_status_bytes:
+                    try:
+                        persisted = read_bootstrap_status(status_path.parent)
+                    except (OSError, ValueError):
+                        pass
+                    else:
+                        if persisted.phase == "terminal" and persisted.change_id == change:
+                            _emit(persisted.model_dump(mode="json"))
+        _fail(str(error), error.code if isinstance(error, CommandError) else 40)
     _emit(status.model_dump(mode="json"))
     raise SystemExit(status.exit_code or 0)
 
@@ -725,6 +750,13 @@ def _authorize_secrets(
     return authorization
 
 
+def _project_for_run(project_dir: Path, change_id: str) -> Path:
+    try:
+        return ensure_run_worktree(project_dir, change_id)
+    except ValueError as error:
+        raise CommandError(str(error)) from error
+
+
 def _bind_workspace(project_dir: Path, change_id: str, *, create: bool) -> ChangeWorkspace:
     try:
         if create:
@@ -774,6 +806,7 @@ def _start_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
+    project_dir = _project_for_run(project_dir, change_id)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
         return AssuranceProductApplication().start(
@@ -810,6 +843,7 @@ def _run_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
+    project_dir = _project_for_run(project_dir, change_id)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
         result, mapped, _code = AssuranceProductApplication().run(

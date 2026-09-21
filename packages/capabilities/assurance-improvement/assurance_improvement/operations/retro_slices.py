@@ -261,9 +261,9 @@ def _source_plan_binding(
         return None
     raw_digest = document.get("plan_digest")
     raw_ref = document.get("plan_ref")
-    if raw_digest is None and raw_ref is None:
-        return None
-    if raw_digest is None or raw_ref is None:
+    if raw_ref is None:
+        if raw_digest is None:
+            return None
         raise RetroSlicesInputError("plan-bound Retro source has an incomplete plan binding")
     try:
         ref = EvidenceArtifactRefV1.model_validate(raw_ref)
@@ -273,7 +273,7 @@ def _source_plan_binding(
     if supplied != ref:
         raise RetroSlicesInputError("plan-bound Retro source did not include its exact plan source")
     plan = decode_plan(_read_ref(project_root, ref), ref)
-    if raw_digest != plan.plan_digest:
+    if raw_digest is not None and raw_digest != plan.plan_digest:
         raise RetroSlicesInputError("plan-bound Retro source plan_digest does not match its plan")
     return plan.plan_digest, ref
 
@@ -518,7 +518,11 @@ def build_retro_slices(
                     kind="change_issue_ledger",
                     ref=ref,
                     change_id=snapshot.change_id,
-                    evidence_ids=(item.occurrence_id for item in entries),
+                    # Issue analysis may cite an occurrence or the problem that groups it;
+                    # both identities come from this one authenticated snapshot.
+                    evidence_ids=(
+                        value for item in entries for value in (item.occurrence_id, item.problem_id)
+                    ),
                 )
             )
             continue
@@ -578,7 +582,7 @@ def build_retro_slices(
     if not selected_changes.issubset(runtime_changes):
         workflow_reasons.append("task_failure_evidence_absent")
     # Loop outcomes and runtime errors do not establish adherence to a skill.
-    workflow_reasons.append("skill_drift_evidence_absent")
+    workflow_reasons.append("skill_drift_not_assessed")
     if not issue_sources:
         issue_reasons.append("issue_evidence_absent")
     if not eval_entries:

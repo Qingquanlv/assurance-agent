@@ -316,8 +316,10 @@ def _workspace_tree_id(
     manifest = _BaselineManifest()
     try:
         excluded = excluded_root.resolve().relative_to(workspace.resolve())
-    except ValueError as error:
-        raise InputError("attempt write root must remain inside the project") from error
+    except ValueError:
+        # Kernel workspaces may live outside the SUT. There is then no
+        # candidate subtree to exclude from the project baseline.
+        excluded = None
     for relative_root in _BASELINE_SOURCE_ROOTS:
         _add_baseline_tree(workspace, relative_root, excluded=excluded, manifest=manifest)
     try:
@@ -342,7 +344,7 @@ def _add_baseline_tree(
     workspace: Path,
     relative_root: str,
     *,
-    excluded: Path,
+    excluded: Path | None,
     manifest: _BaselineManifest,
 ) -> None:
     root = workspace.joinpath(*PurePosixPath(relative_root).parts)
@@ -526,6 +528,7 @@ def assemble_execution_input(
         plan_digest=root.plan_digest,
         plan_ref=root.plan_ref,
         batch_id=batch_id,
+        executed_at=view.executed_at,
         capability_leafs=root.capability_leafs,
         case_ids=case_ids,
         mapping=closed,

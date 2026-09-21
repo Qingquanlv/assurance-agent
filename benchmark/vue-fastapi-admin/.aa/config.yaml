@@ -1,18 +1,15 @@
 version: 1
-
 project:
   name: vue-fastapi-admin
   root: .
   layout: default
-
+  type: fullstack
 sources:
   frontend: ./web
   backend: ./app
-
 qa:
   cases: ./qa/cases
   changes: ./qa/changes
-
 tests:
   root: ./tests
   api: ./tests/api
@@ -21,7 +18,6 @@ tests:
   fixtures: ./tests/fixtures
   helpers: ./tests/helpers
   reports: ./tests/reports
-
 frameworks:
   api:
     enabled: true
@@ -29,17 +25,14 @@ frameworks:
   e2e:
     enabled: true
     name: playwright
-
 workflow:
   primary_runner: skill
   agent: opencode
   agents:
     claude_code: false
     codex: false
-
 mcp:
   enabled: false
-
 generation:
   prd_input_mode: prompt
   e2e:
@@ -51,40 +44,27 @@ generation:
       - css
   api:
     prefer_existing_fixtures: true
-
 execution:
   entry: cli
   self_healing:
     mode: proposal-only
-
   model_routing:
-    # Hybrid OpenCode benchmark policy. A non-empty CLI --model/
-    # OPENCODE_MODEL intentionally overrides this map for single-model A/B runs.
     default: anthropic/deepseek-v4-flash
     strict_routes: true
     routes:
-      # Bulk source discovery and deterministic fact extraction stay on the
-      # low-AFP default. Contract failures still escalate to GLM below.
       aa-explore: anthropic/deepseek-v4-flash
       aa-fact-baseline: anthropic/deepseek-v4-flash
-
-      # Design, design repair, and coverage repair need stronger contract fidelity.
       aa-case-design: anthropic/glm-5.2
       aa-api-plan: anthropic/glm-5.2
       aa-e2e-plan: anthropic/glm-5.2
       aa-fuzz-plan: anthropic/glm-5.2
       aa-performance-plan: anthropic/glm-5.2
       aa-coverage-repair: anthropic/glm-5.2
-
-      # Case/plan reviewers remain independent and cost-efficient on DeepSeek.
       aa-case-reviewer: anthropic/deepseek-v4-flash
       aa-api-plan-reviewer: anthropic/deepseek-v4-flash
       aa-e2e-plan-reviewer: anthropic/deepseek-v4-flash
       aa-fuzz-plan-reviewer: anthropic/deepseek-v4-flash
       aa-performance-plan-reviewer: anthropic/deepseek-v4-flash
-
-      # Codegen and operational analysis are high-volume, contract-bounded
-      # work. Start on DeepSeek and escalate only on contract failures.
       aa-api-codegen: anthropic/deepseek-v4-flash
       aa-api-codegen-fixer: anthropic/deepseek-v4-flash
       aa-e2e-codegen: anthropic/deepseek-v4-flash
@@ -95,20 +75,16 @@ execution:
       aa-issue-analyzer: anthropic/deepseek-v4-flash
       aa-issue-triage-advisor: anthropic/deepseek-v4-flash
       aa-archive: anthropic/deepseek-v4-flash
-
       aa-retro-issue-analysis: anthropic/deepseek-v4-flash
       aa-retro-workflow-analysis: anthropic/deepseek-v4-flash
       aa-retro-eval-analysis: anthropic/deepseek-v4-flash
       aa-retro: anthropic/deepseek-v4-flash
-      # Explicit user decision: Improvement Reviewer stays on GLM 5.2.
       aa-improvement-reviewer: anthropic/glm-5.2
-
     escalation:
       model: anthropic/glm-5.2
       on_error_kinds:
         - invalid_output
         - forbidden_write
-
 coverage:
   enabled: true
   gate_mode: warn
@@ -116,7 +92,9 @@ coverage:
   threshold:
     line: 70
     branch: 60
-
 performance:
   enabled: true
   base_url: http://127.0.0.1:9999
+urls:
+  frontend: http://127.0.0.1:3100
+  backend: http://127.0.0.1:9999

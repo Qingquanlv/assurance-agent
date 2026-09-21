@@ -75,6 +75,19 @@ _PURE_IDS = frozenset(
 )
 
 
+def test_case_review_seal_files_are_finalize_not_runtime() -> None:
+    claims = AGENT_JOB_CONTRACTS["case-review"].phase_write_claims
+    assert claims.finalize == (
+        "qa/cases/reviewed-case.json",
+        "qa/cases/reviews",
+        "qa/results/cases/epochs",
+    )
+    assert claims.runtime == (
+        "qa/results/review/case-review-summary.md",
+        "qa/results/review/case-review.json",
+    )
+
+
 def test_review_history_identity_includes_epoch() -> None:
     from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
 

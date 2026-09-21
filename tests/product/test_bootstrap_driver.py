@@ -6,8 +6,14 @@ import pytest
 
 from assurance_product.bootstrap.contracts import BootstrapStatusV1, OpenCodeHandleV1
 from assurance_product.bootstrap.driver import run_bootstrap, stop_bootstrap
+from assurance_product.bootstrap.opencode import OpenCodeLaunchError
 from assurance_product.bootstrap.preflight import BootstrapPreflightError
-from assurance_product.bootstrap.status import run_dir_for, write_bootstrap_status, write_run_manifest
+from assurance_product.bootstrap.status import (
+    read_bootstrap_status,
+    run_dir_for,
+    write_bootstrap_status,
+    write_run_manifest,
+)
 from tests.product.test_bootstrap_contracts import _spec
 
 
@@ -83,6 +89,77 @@ def test_run_bootstrap_stops_opencode_on_preflight_failure(tmp_path: Path) -> No
             wait_ready=lambda url, timeout: None,
         )
     assert started == []
+
+
+def test_run_bootstrap_marks_terminal_when_opencode_launch_fails(tmp_path: Path) -> None:
+    project = _sut(tmp_path)
+    runs_root = tmp_path / "runs"
+
+    def fail_start(**kwargs: object) -> OpenCodeHandleV1:
+        del kwargs
+        raise OpenCodeLaunchError("OpenCode agent target already has different content")
+
+    with pytest.raises(OpenCodeLaunchError, match="already has different content"):
+        run_bootstrap(
+            project_dir=project,
+            spec=_spec(),
+            runs_root=runs_root,
+            change_id="BOOT-1",
+            environ=_environ(),
+            start_opencode_serve=fail_start,
+            stop_opencode=lambda handle: None,
+            prepare_composition=lambda **kwargs: {},
+            wait_ready=lambda url, timeout: None,
+        )
+    status = read_bootstrap_status(run_dir_for(runs_root, "BOOT-1"))
+    assert status.phase == "terminal"
+    assert status.exit_code == 40
+    assert status.error is not None
+    assert "already has different content" in status.error
+
+
+def test_run_bootstrap_marks_terminal_when_running_graph_raises_value_error(tmp_path: Path) -> None:
+    project = _sut(tmp_path)
+    runs_root = tmp_path / "runs"
+    handle = OpenCodeHandleV1(endpoint="http://127.0.0.1:4101", pid=4242)
+    stopped: list[OpenCodeHandleV1] = []
+
+    def prepare(**kwargs: object) -> dict[str, object]:
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        return {
+            "product": "assurance-opencode",
+            "binding_dist": "assurance-product-bindings-test",
+            "binding_declaration": "pkg/assurance-deployment-plugin.json",
+            "config_tree": run_dir / "config-tree",
+            "input_path": run_dir / "product-input.json",
+        }
+
+    def fail_run(**kwargs: object) -> tuple[object, str]:
+        del kwargs
+        raise ValueError("plan-bound Retro source has an incomplete plan binding")
+
+    with pytest.raises(ValueError, match="incomplete plan binding"):
+        run_bootstrap(
+            project_dir=project,
+            spec=_spec(),
+            runs_root=runs_root,
+            change_id="BOOT-1",
+            environ=_environ(),
+            start_opencode_serve=lambda **kwargs: handle,
+            stop_opencode=stopped.append,
+            prepare_composition=prepare,
+            start_invocation=lambda **kwargs: {"invocation_id": kwargs["invocation_id"]},
+            run_invocation=fail_run,
+            read_status=lambda **kwargs: {"status": "running"},
+            wait_ready=lambda url, timeout: None,
+        )
+
+    status = read_bootstrap_status(run_dir_for(runs_root, "BOOT-1"))
+    assert status.phase == "terminal"
+    assert status.exit_code == 40
+    assert status.error is not None and "incomplete plan binding" in status.error
+    assert stopped == [handle]
 
 
 def test_stop_bootstrap_kills_recorded_pid(tmp_path: Path) -> None:

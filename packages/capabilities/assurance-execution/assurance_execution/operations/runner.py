@@ -8,6 +8,8 @@ import os
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from importlib.resources import files
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
 
@@ -25,7 +27,7 @@ from graph_engine.plugin_api import (
 
 from assurance_execution.contracts.agent import ExecutionPrepareInputV1, RunTestsInputV1
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1, FamilyExecutionOutcomeV1
-from assurance_execution.contracts.execution import EXECUTION_FAMILIES, ExecutionFamily
+from assurance_execution.contracts.execution import EXECUTION_FAMILIES, ExecutionFamily, ExecutionReceiptV1
 from assurance_execution.contracts.observations import (
     CollectorDocumentV1,
     ExecutionIdentityV1,
@@ -47,6 +49,7 @@ from assurance_execution.operations.observation_run import (
 from assurance_execution.operations.common import (
     InputError,
     OutputError,
+    json_digest,
     leafs_of,
     mapping_digest,
     validate_input,
@@ -128,7 +131,8 @@ def _batch_id_from_argv(argv: tuple[str, ...]) -> str | None:
     return None
 
 
-_HOST_FLAGS = (_BATCH_FLAG, OBSERVE_CONTEXT_FLAG, OBSERVE_OUTPUT_FLAG)
+_OBSERVE_ROOT_FLAG = "--assurance-observe-root="
+_HOST_FLAGS = (_BATCH_FLAG, OBSERVE_CONTEXT_FLAG, OBSERVE_OUTPUT_FLAG, _OBSERVE_ROOT_FLAG)
 
 
 def _public_pytest_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
@@ -165,13 +169,27 @@ def _scrubbed_env(argv: tuple[str, ...] | None = None, cwd: Path | None = None) 
     else:
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     if cwd is not None:
+        # This root is supplied by the trusted handler, never by test code or
+        # an Agent. Paths remain confined, but collector output is staged in
+        # the Kernel write root while the subprocess still runs in the SUT.
+        root = _flag_value(argv or (), _OBSERVE_ROOT_FLAG)
+        collector_root = Path(root) if root is not None else cwd
+        if root is not None and (not collector_root.is_absolute() or not collector_root.is_dir()):
+            raise InputError("collector root must be an existing absolute directory")
         for flag, name in (
             (OBSERVE_CONTEXT_FLAG, "AA_OBSERVE_CONTEXT"),
             (OBSERVE_OUTPUT_FLAG, "AA_OBSERVE_OUTPUT"),
         ):
             raw = _flag_value(argv or (), flag)
             if raw:
-                env[name] = str(_confined_observe_path(raw, cwd))
+                env[name] = str(_confined_observe_path(raw, collector_root))
+        if _flag_value(argv or (), OBSERVE_CONTEXT_FLAG):
+            # Only the standalone collector is injected into the SUT interpreter;
+            # no pydantic/graph-engine import is required there.
+            runner_root = str(files("assurance_execution").joinpath("resources/runner"))
+            env["PYTHONPATH"] = os.pathsep.join(
+                value for value in (runner_root, env.get("PYTHONPATH")) if value
+            )
         if batch_id:
             env["AA_OBSERVE_TOKEN"] = batch_id
     return env
@@ -309,6 +327,7 @@ def run_closed_mapping(
     process_host: ExecutionProcessHost,
     *,
     include_pr_metrics: bool,
+    write_root: Path | None = None,
 ) -> dict[str, object]:
     mapping = _closed_mapping(payload)
     selected = tuple(mapping.selected)
@@ -337,7 +356,12 @@ def run_closed_mapping(
         exit_code=receipt.exit_code,
         report=report,
     )
-    write_canonical_evidence(workspace, evidence)
+    evidence = evidence.model_copy(update={"executed_at": payload.executed_at or datetime.now(UTC)})
+    write_canonical_evidence(
+        workspace if write_root is None else write_root,
+        evidence,
+        filename="run-result.json" if payload.execution_kind == "run" else "execute-result.json",
+    )
     return _run_output(payload, selected, evidence, include_pr_metrics=include_pr_metrics)
 
 
@@ -420,23 +444,22 @@ class RunTestsHandler:
                     context.project_root,
                     self._process_host,
                     include_pr_metrics=False,
+                    write_root=context.write_root,
                 )
                 evidence = ExecutionEvidenceV1.model_validate(output["evidence"])
-                observations_ref = None
             else:
-                evidence, bundle = run_observed_mapping(payload, context.project_root, self._process_host)
-                filename = "run-result.json" if payload.execution_kind == "run" else "execute-result.json"
-                write_canonical_evidence(context.project_root, evidence, filename=filename)
-                observations_ref = (
-                    None
-                    if bundle is None
-                    else write_observation_bundle(context.project_root, payload, bundle)
+                evidence, bundle = run_observed_mapping(
+                    payload, context.project_root, self._process_host, write_root=context.write_root
                 )
+                filename = "run-result.json" if payload.execution_kind == "run" else "execute-result.json"
+                observations_ref = (
+                    None if bundle is None else write_observation_bundle(context.write_root, payload, bundle)
+                )
+                evidence = evidence.model_copy(update={"observations_ref": observations_ref})
+                write_canonical_evidence(context.write_root, evidence, filename=filename)
             if context.activity is not None:
                 context.activity.bind({"batch_id": payload.batch_id})
             result = evidence.model_dump(mode="json")
-            if observations_ref is not None:
-                result["observations_ref"] = observations_ref.model_dump(mode="json")
             return TaskOutcome.succeeded(cast(JSONValue, result))
         except InputError as error:
             return TaskOutcome.failed("invalid_input", str(error), retryable=False)
@@ -571,7 +594,10 @@ def run_observed_mapping(
     payload: RunTestsInputV1,
     workspace: Path,
     process_host: ExecutionProcessHost,
+    *,
+    write_root: Path | None = None,
 ) -> tuple[ExecutionEvidenceV1, ObservationBundleV1 | None]:
+    destination = workspace if write_root is None else write_root
     mapping = _closed_mapping(payload)
     if not mapping.selected:
         raise InputError("execution mapping must contain at least one selected test")
@@ -579,7 +605,6 @@ def run_observed_mapping(
         family for family in EXECUTION_FAMILIES if getattr(payload.selected_targets, family)
     )
     requirements, plans = load_observation_method(payload, workspace)
-    observed = bool(plans)
     outcomes: list[FamilyExecutionOutcomeV1] = []
     commands: list[dict[str, object]] = []
     results: list[dict[str, object]] = []
@@ -592,27 +617,16 @@ def run_observed_mapping(
         context_relative: str | None = None
         output_relative: str | None = None
         try:
-            if observed:
-                family_mapping_for_context = ClosedMappingV1.model_validate(
-                    {
-                        "selected": list(family_selected),
-                        "mappings": [
-                            item.model_dump(mode="json") for item in mapping.mappings if item.layer == family
-                        ],
-                    },
-                    context={
-                        "capability_leafs": leafs_of(payload.capability_leafs),
-                        "case_ids": leafs_of(payload.case_ids),
-                    },
-                )
-                context_relative, output_relative, identity = _write_observe_context(
-                    payload,
-                    workspace,
-                    family=family,
-                    mapping=family_mapping_for_context,
-                    requirements=requirements,
-                    plans=plans,
-                )
+            # Even a method-less run needs the collector's pytest report.
+            # An empty observation set is evidence of a gap, not a passed obligation.
+            context_relative, output_relative, identity = _write_observe_context(
+                payload,
+                destination,
+                family=family,
+                mapping=mapping,
+                requirements=requirements,
+                plans=plans,
+            )
             argv = build_family_argv(
                 cast(ExecutionFamily, family),
                 family_selected,
@@ -620,12 +634,13 @@ def run_observed_mapping(
                 observe_context=context_relative,
                 observe_output=output_relative,
             )
+            argv = (*argv, f"{_OBSERVE_ROOT_FLAG}{destination.resolve()}")
         except RunnerUnsupported:
             relative = (
                 f"qa/results/execution/epochs/{payload.coverage_epoch}/"
                 f"batches/{payload.batch_id}/diagnostics/{family}.json"
             )
-            diagnostic = workspace.joinpath(*relative.split("/"))
+            diagnostic = destination.joinpath(*relative.split("/"))
             diagnostic.parent.mkdir(parents=True, exist_ok=True)
             payload_bytes = (
                 json.dumps({"family": family, "reason_code": "runner_unsupported"}) + "\n"
@@ -663,7 +678,9 @@ def run_observed_mapping(
         )
         receipt = process_host.spawn(argv, workspace)
         document = (
-            None if output_relative is None else _read_collector_document(workspace, output_relative, payload)
+            None
+            if output_relative is None
+            else _read_collector_document(destination, output_relative, payload)
         )
         # The collector owns the run report. Falling back to the host's report
         # would leave the evidence and the observations describing two runs.
@@ -707,6 +724,8 @@ def run_observed_mapping(
         outcomes.append(FamilyExecutionOutcomeV1(family=cast(ExecutionFamily, family), state="executed"))
         if family_evidence.status == "failed":
             failed = True
+    execution_receipt = ExecutionReceiptV1.model_validate({"commands": commands})
+    receipt_document = cast(JSONValue, execution_receipt.model_dump(mode="json"))
     evidence = ExecutionEvidenceV1.model_validate(
         {
             "schema_version": "1",
@@ -715,17 +734,16 @@ def run_observed_mapping(
             "plan_digest": payload.plan_digest,
             "plan_ref": payload.plan_ref.model_dump(mode="json"),
             "batch_id": payload.batch_id,
+            "executed_at": payload.executed_at or datetime.now(UTC),
             "selected_targets": payload.selected_targets.model_dump(mode="json"),
             "mapping": mapping.model_dump(mode="json"),
             "baseline_tree_id": payload.baseline_tree_id,
             "runner_profile_digest": payload.runner_profile_digest,
-            "receipt": {"commands": commands},
+            "receipt": receipt_document,
             "results": results,
             "family_outcomes": [item.model_dump(mode="json") for item in outcomes],
             "mapping_digest": mapping_digest(mapping),
-            "receipt_digest": mapping_digest(mapping)
-            if not commands
-            else hashlib.sha256(json.dumps(commands, sort_keys=True).encode()).hexdigest(),
+            "receipt_digest": json_digest(receipt_document),
         }
     )
     if identity is None:

@@ -26,6 +26,7 @@ from assurance_quality.contracts.obligations import (
     ObligationAssessmentRowV1,
     ObligationAssessmentV1,
     ObligationEvidenceFactsV1,
+    ObligationGateDecision,
     obligation_gate,
 )
 from assurance_quality.operations.obligations import (
@@ -87,7 +88,7 @@ class LockoutExperimentReceipt(TypedDict):
 class LockoutCycleResult(TypedDict):
     assessment: ObligationAssessmentV1
     bundle: ObservationBundleV1
-    public_status: str
+    gate_decision: ObligationGateDecision
     experiment_receipt: LockoutExperimentReceipt
 
 
@@ -389,7 +390,9 @@ def run_lockout_cycle(
         mrc_id=_MRC,
         verdict=verdict,
         evidence_refs=(observations_ref,),
-        gap_codes=() if verdict == "supported" else _gap_codes(blocked=None, facts=facts, method=method),
+        gap_codes=()
+        if verdict == "supported"
+        else _gap_codes(obligation=obligation, blocked=None, facts=facts, method=method),
     )
     assessment = ObligationAssessmentV1(plan_ref=plan_ref, rows=(row,))
     gate = obligation_gate(derive_obligation_gate_facts(assessment, required_ids=((_PLAN, _MRC),)))
@@ -400,7 +403,9 @@ def run_lockout_cycle(
     return {
         "assessment": assessment,
         "bundle": bundle,
-        "public_status": "achieved" if gate == "satisfied" else "not-achieved",
+        # This component experiment does not run the product/report graph and
+        # must not fabricate its public achieved status.
+        "gate_decision": gate,
         "experiment_receipt": {
             "test_source_digest": hashlib.sha256(encoded).hexdigest(),
             "lockout_enabled": lockout_enabled,

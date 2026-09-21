@@ -57,6 +57,8 @@ def _job(
         "explore": ("explore/exploration.json",),
     }.get(base, ())
     finalize_paths = _paths(*finalize_suffixes) if finalize_suffixes else ()
+    if base == "case-review":
+        finalize_paths = tuple(sorted((*finalize_paths, "qa/results/cases/epochs")))
     literal_claims = (_CASES_ROOT,) if base == "case-design" else ()
     writes = tuple(
         sorted(
@@ -115,7 +117,7 @@ _JOBS: tuple[
         CaseReviewResultV1,
         CaseReviewResultV1,
         ("review/case-review.json", "review/case-review-summary.md"),
-        ("cases/reviewed-case.json",),
+        (),
     ),
     (
         "explore",
@@ -152,7 +154,11 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                 (
                     *_paths(*outputs),
                     *(
-                        (qa_join("cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"),)
+                        (
+                            qa_join("cases/reviewed-case.json"),
+                            qa_join("cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"),
+                            "qa/results/cases/epochs/{coverage_epoch}/selection.json",
+                        )
                         if base == "case-review"
                         else ()
                     ),

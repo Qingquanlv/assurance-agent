@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from assurance_product.bootstrap.contracts import BootstrapStatusV1, OpenCodeHandleV1, RunSpecV1
+from assurance_product.bootstrap.opencode import OpenCodeLaunchError
 from assurance_product.bootstrap.opencode import start_opencode_serve as _start_opencode_serve
 from assurance_product.bootstrap.opencode import stop_opencode as _stop_opencode
 from assurance_product.bootstrap.opencode import wait_http_ready
 from assurance_product.bootstrap.preflight import BootstrapPreflightError, preflight_bootstrap
+from assurance_product.bootstrap.resources import release_active_resource_authorizations
 from assurance_product.bootstrap.spec import load_run_spec
 from assurance_product.bootstrap.status import (
     derive_bootstrap_change_id,
@@ -22,6 +24,7 @@ from assurance_product.bootstrap.status import (
     write_effective_spec,
     write_run_manifest,
 )
+from assurance_product.sut_worktree import ensure_run_worktree
 
 _SUT_READY_TIMEOUT_SECONDS = 90.0
 _TERMINAL_STATUSES = frozenset({"completed", "succeeded", "stopped", "interrupted", "failed"})
@@ -203,6 +206,7 @@ def _drive_application(
                 ended_at=_iso_now(),
                 exit_code=_exit_code_for(snapshot, mapped),
             )
+        time.sleep(1.0)
 
 
 def run_bootstrap(
@@ -226,6 +230,7 @@ def run_bootstrap(
         stamp=utc_stamp(),
         nonce=secrets.token_hex(4),
     )
+    project_dir = ensure_run_worktree(project_dir, resolved_change)
     run_dir = run_dir_for(runs_root, resolved_change)
     write_effective_spec(run_dir, spec)
     started_at = _iso_now()
@@ -238,6 +243,33 @@ def run_bootstrap(
     status_app = read_status or _default_read_status
     ready = wait_ready or wait_http_ready
     handle: OpenCodeHandleV1 | None = None
+    import assurance_product.cli as cli_mod
+
+    original_resolve = cli_mod._resolve_and_audit
+    resolve_cache: dict[tuple[str, str, str, str, str], object] = {}
+
+    def _cached_resolve(
+        *,
+        product: str,
+        binding_dist: str,
+        binding_entrypoint: str,
+        binding_declaration: str,
+        config_tree: str,
+    ) -> object:
+        key = (product, binding_dist, binding_entrypoint, binding_declaration, config_tree)
+        hit = resolve_cache.get(key)
+        if hit is None:
+            hit = original_resolve(
+                product=product,
+                binding_dist=binding_dist,
+                binding_entrypoint=binding_entrypoint,
+                binding_declaration=binding_declaration,
+                config_tree=config_tree,
+            )
+            resolve_cache[key] = hit
+        return hit
+
+    cli_mod._resolve_and_audit = _cached_resolve
     try:
         try:
             preflight_bootstrap(
@@ -258,13 +290,40 @@ def run_bootstrap(
                 error=str(error),
             )
             raise
-        ready(spec.sut.readiness_url, timeout=_SUT_READY_TIMEOUT_SECONDS)
-        handle = start_serve(
-            spec=spec,
-            project_dir=project_dir,
-            run_dir=run_dir,
-            environ=environ,
+        release_active_resource_authorizations(
+            project_dir / "qa" / ".runtime" / "langgraph" / "checkpoints.sqlite3"
         )
+        try:
+            ready(spec.sut.readiness_url, timeout=_SUT_READY_TIMEOUT_SECONDS)
+        except OpenCodeLaunchError as error:
+            _persist(
+                run_dir,
+                phase="terminal",
+                change_id=resolved_change,
+                started_at=started_at,
+                ended_at=_iso_now(),
+                exit_code=40,
+                error=f"SUT not ready at {spec.sut.readiness_url}: {error}",
+            )
+            raise
+        try:
+            handle = start_serve(
+                spec=spec,
+                project_dir=project_dir,
+                run_dir=run_dir,
+                environ=environ,
+            )
+        except (OpenCodeLaunchError, ValueError) as error:
+            _persist(
+                run_dir,
+                phase="terminal",
+                change_id=resolved_change,
+                started_at=started_at,
+                ended_at=_iso_now(),
+                exit_code=40,
+                error=str(error),
+            )
+            raise
         current = _persist(
             run_dir,
             phase="opencode_ready",
@@ -314,7 +373,27 @@ def run_bootstrap(
             read_status=status_app,
         )
         return current
+    except (BootstrapPreflightError, OpenCodeLaunchError):
+        raise
+    except Exception as error:
+        previous = read_bootstrap_status(run_dir)
+        if previous.phase != "terminal":
+            cause = error.__cause__ or error.__context__
+            detail = str(error) if cause is None else f"{error}: {cause}"
+            _persist(
+                run_dir,
+                phase="terminal",
+                change_id=resolved_change,
+                opencode=handle,
+                status=previous.status,
+                started_at=started_at,
+                ended_at=_iso_now(),
+                exit_code=40,
+                error=detail,
+            )
+        raise
     finally:
+        cli_mod._resolve_and_audit = original_resolve
         if handle is not None:
             stop(handle)
 

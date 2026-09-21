@@ -428,6 +428,7 @@ class ProductRuntimePorts:
         from assurance_improvement.graphs.factory import build_improvement_graphs
         from assurance_intake.graphs.factory import build_intake_graphs
         from assurance_product.graphs.factory import build_product_graphs
+        from assurance_product.retro_evidence import snapshot_runtime_evidence
         from assurance_quality.graphs.factory import build_quality_graphs
 
         if fencing_token < 1:
@@ -473,7 +474,19 @@ class ProductRuntimePorts:
                 context.for_capability("assurance.improvement")
             ),
         }
-        graphs = build_product_graphs(context=context, features=features)
+
+        async def runtime_snapshot():
+            return await snapshot_runtime_evidence(
+                self.workspace,
+                self.attempt_journal.read_records,
+                invocation_id=invocation_id,
+            )
+
+        graphs = build_product_graphs(
+            context=context,
+            features=features,
+            runtime_snapshot=runtime_snapshot,
+        )
         composition = cast(FrozenComposition, self.composition)
         manifest = product_graph_manifest(composition, product_lock_from_composition(composition))
         artifact = BootArtifact(

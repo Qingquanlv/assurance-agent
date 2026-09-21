@@ -43,8 +43,22 @@ _TERMINAL_STATUSES = frozenset({"completed", "failed", "stopped", "interrupted"}
 _OPENCODE_RESOLVED_READ_TIMEOUT_SECONDS = 300
 _OPENCODE_RESOLVED_RETRY_BACKOFF_SECONDS = 10
 _OPENCODE_RESOLVED_READ_ATTEMPTS = 3
-_BACKEND_URL = "http://127.0.0.1:9999"
-_FRONTEND_URL = "http://127.0.0.1:3100"
+_BACKEND_PORT = 9999
+_FRONTEND_PORT = 3100
+_BACKEND_URL = f"http://127.0.0.1:{_BACKEND_PORT}"
+_FRONTEND_URL = f"http://127.0.0.1:{_FRONTEND_PORT}"
+
+
+def _configure_runtime_ports(backend_port: int, frontend_port: int) -> None:
+    if not 1 <= backend_port <= 65535 or not 1 <= frontend_port <= 65535:
+        raise SystemExit("managed SUT ports must be in 1..65535")
+    if backend_port == frontend_port:
+        raise SystemExit("managed SUT backend and frontend ports must differ")
+    global _BACKEND_PORT, _FRONTEND_PORT, _BACKEND_URL, _FRONTEND_URL
+    _BACKEND_PORT = backend_port
+    _FRONTEND_PORT = frontend_port
+    _BACKEND_URL = f"http://127.0.0.1:{backend_port}"
+    _FRONTEND_URL = f"http://127.0.0.1:{frontend_port}"
 
 
 def _repo_root() -> Path:
@@ -146,39 +160,6 @@ def _sut_worktree_home(repo: Path) -> Path:
     return repo / ".worktrees"
 
 
-def _sut_git_root(sut_root: Path) -> Path:
-    completed = subprocess.run(
-        ["git", "-C", str(sut_root), "rev-parse", "--show-toplevel"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        raise SystemExit(f"SUT is not a git repository: {sut_root}")
-    root = Path(completed.stdout.strip()).resolve()
-    if root != sut_root.resolve():
-        raise SystemExit(
-            f"SUT git root is {root}, not {sut_root.resolve()}; refuse to worktree the parent repo"
-        )
-    return root
-
-
-def _seed_worktree_runtime(source: Path, dest: Path) -> None:
-    from assurance_product.opencode_agents import _opencode_config
-
-    config = dest / "opencode.json"
-    config.write_text(_opencode_config(), encoding="utf-8")
-    plugin = dest / ".opencode" / "plugins" / "assurance-boundary.mjs"
-    plugin.parent.mkdir(parents=True, exist_ok=True)
-    plugin.write_bytes(
-        files("assurance_product").joinpath("resources", "opencode", "assurance-boundary.mjs").read_bytes()
-    )
-    source_migrations = source / "migrations"
-    dest_migrations = dest / "migrations"
-    if source_migrations.is_dir() and not dest_migrations.exists():
-        shutil.copytree(source_migrations, dest_migrations)
-
-
 def _primary_worktree_root(project_dir: Path) -> Path | None:
     completed = subprocess.run(
         ["git", "-C", str(project_dir), "worktree", "list", "--porcelain"],
@@ -207,26 +188,6 @@ def _frontend_web_root(project_dir: Path) -> Path:
         if vite.is_file() and os.access(vite, os.X_OK) and lockfile.is_file():
             return web.resolve()
     raise SystemExit("managed SUT frontend requires pinned pnpm dependencies and executable Vite")
-
-
-def _prepare_sut_worktree(*, repo: Path, sut_root: Path, change_id: str) -> Path:
-    source = _sut_git_root(sut_root)
-    dest = (_sut_worktree_home(repo) / source.name / change_id).resolve()
-    if dest == source or source in dest.parents:
-        raise SystemExit(f"worktree destination must be outside the SUT checkout: {dest}")
-    if dest.exists():
-        raise SystemExit(f"worktree destination must be fresh: {dest}")
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    added = subprocess.run(
-        ["git", "-C", str(source), "worktree", "add", "-b", f"bench/{change_id}", str(dest)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if added.returncode != 0:
-        raise SystemExit(f"SUT worktree add failed: {added.stderr.strip() or added.stdout.strip()}")
-    _seed_worktree_runtime(source, dest)
-    return dest
 
 
 def _sha256(data: bytes) -> str:
@@ -686,8 +647,8 @@ def _managed_sut_runtime(
     output: Path,
     env: Mapping[str, str],
 ) -> Iterator[_SutRuntime]:
-    _assert_loopback_port_available(9999)
-    _assert_loopback_port_available(3100)
+    _assert_loopback_port_available(_BACKEND_PORT)
+    _assert_loopback_port_available(_FRONTEND_PORT)
     runtime_root = output / "sut-runtime"
     if runtime_root.exists():
         raise SystemExit(f"managed SUT runtime directory must be fresh: {runtime_root}")
@@ -716,7 +677,7 @@ def _managed_sut_runtime(
                 "--host",
                 "127.0.0.1",
                 "--port",
-                "9999",
+                str(_BACKEND_PORT),
             ),
             cwd=runtime_root,
             env=runtime_env,
@@ -741,7 +702,15 @@ def _managed_sut_runtime(
         runtime_env["QA_LIMITED_PASSWORD"] = limited_password
         frontend = _spawn_managed_process(
             label="frontend",
-            command=(str(vite), "--host", "127.0.0.1", "--port", "3100", "--strictPort", "--no-open"),
+            command=(
+                str(vite),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(_FRONTEND_PORT),
+                "--strictPort",
+                "--no-open",
+            ),
             cwd=web,
             env=runtime_env,
             log_path=frontend_log,
@@ -1225,13 +1194,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--project-dir",
         type=Path,
-        help="Use this SUT checkout as-is (must not contain qa/). Default: a fresh SUT git worktree",
+        help="Use this SUT checkout as-is (must not contain qa/). Default: catalog SUT; aa run creates the worktree",
     )
     parser.add_argument("--poll-seconds", type=int, default=30)
     parser.add_argument("--timeout-seconds", type=int, default=28800)
+    parser.add_argument("--backend-port", type=int, default=9999)
+    parser.add_argument("--frontend-port", type=int, default=3100)
     parser.add_argument("--nonce")
     parser.add_argument("--stamp")
     arguments = parser.parse_args(argv)
+
+    _configure_runtime_ports(arguments.backend_port, arguments.frontend_port)
 
     _reject_ambient_overrides()
     repo = _repo_root()
@@ -1258,12 +1231,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.project_dir is not None and (sut_root / "qa").exists():
         return _fail("explicit project must not contain qa; retained evidence will not be overwritten")
     project_dir = sut_root
-    if arguments.project_dir is None:
-        try:
-            project_dir = _prepare_sut_worktree(repo=repo, sut_root=sut_root, change_id=change_id)
-        except SystemExit as error:
-            return _fail(str(error))
-        sut_root = project_dir
     change_root = project_dir / "qa"
     run_log = output / "run.log"
     run_log.touch()
@@ -1357,6 +1324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     isolated_env.pop("PYTHONPATH", None)
     isolated_env.pop("UV_PROJECT", None)
     isolated_env["PYTHONNOUSERSITE"] = "1"
+    isolated_env["AA_SUT_WORKTREE_HOME"] = str(_sut_worktree_home(repo))
 
     runtime_environment_errors = _runtime_environment_errors(os.environ, output=output)
     if runtime_environment_errors:
@@ -1444,6 +1412,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             app_status = document.get("status")
             if not isinstance(app_status, dict):
                 app_status = {}
+            bootstrap_error = document.get("error")
+            if document.get("phase") == "terminal" and isinstance(bootstrap_error, str) and bootstrap_error:
+                evidence["outcome"] = "blocked"
+                evidence["validation"] = {"errors": [bootstrap_error], "bootstrap": document}
+                return finish(
+                    completed.returncode or 1,
+                    notes=f"bootstrap failed: {bootstrap_error}",
+                    status=app_status or None,
+                )
+            if completed.returncode != 0:
+                failure = f"bootstrap exited {completed.returncode}"
+                evidence["outcome"] = "blocked"
+                evidence["validation"] = {"errors": [failure], "bootstrap": document}
+                return finish(completed.returncode, notes=failure, status=app_status or None)
             evidence["lock_digest"] = app_status.get("lock_digest") or evidence.get("lock_digest")
             errors = (
                 _validate_live_result(item=item, status=app_status)

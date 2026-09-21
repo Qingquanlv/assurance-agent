@@ -5,6 +5,7 @@ from typing import Annotated, Literal, NotRequired, TypedDict
 
 from assurance_generation.contracts.families import GENERATION_FAMILIES
 from graph_engine.stategraph.checkpoint_bridge import CheckpointBridgeState
+from assurance_intake.contracts.workflow import merge_history_refs
 
 PLAN_ROUND_PREDECESSORS = (
     "codegen-review-round-advance",
@@ -177,9 +178,11 @@ def merge_family_results(left: object, right: object) -> list[FamilyLaneResult]:
 
 class FamilyLaneOutput(TypedDict, total=False):
     family_results: Annotated[list[FamilyLaneResult], merge_family_results]
+    history_refs: Annotated[list[dict[str, str]], merge_history_refs]
 
 
 class GenerationState(CheckpointBridgeState, total=False):
+    history_refs: Annotated[list[dict[str, str]], merge_history_refs]
     generation_result: dict[str, object]
     generation_receipt: dict[str, object]
     plan_files: list[str]

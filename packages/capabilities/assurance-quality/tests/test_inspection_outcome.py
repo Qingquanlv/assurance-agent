@@ -170,6 +170,30 @@ def test_repairable_failure_precedes_a_coverage_shortfall() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("original", "expected"),
+    [
+        ("blocked", ("blocked", "blocked", "blocked", "blocked")),
+        ("analysis_required", ("analysis_required",) * 4),
+        ("needs_human", ("needs_human", "needs_human", "needs_human", "blocked")),
+        (
+            "repairable_execution_failure",
+            ("repairable_execution_failure", "repairable_execution_failure", "needs_human", "blocked"),
+        ),
+        (
+            "coverage_insufficient",
+            ("coverage_insufficient", "coverage_insufficient", "needs_human", "blocked"),
+        ),
+        ("satisfied", ("satisfied", "coverage_insufficient", "needs_human", "blocked")),
+    ],
+)
+def test_obligation_merge_preserves_stop_conditions(original, expected) -> None:
+    from assurance_quality.contracts.decisions import merge_obligation_disposition
+
+    decisions = ("satisfied", "repair_required", "needs_human", "blocked")
+    assert tuple(merge_obligation_disposition(original, item) for item in decisions) == expected
+
+
 def test_agent_result_has_no_business_route_field() -> None:
     result = _inspect_output()["agent_result"]
     assert isinstance(result, dict)
@@ -186,8 +210,21 @@ def test_publish_inspect_derives_satisfied_without_an_agent_coverage_state() -> 
     assert route_coverage(published) == "satisfied"
 
 
-def test_publish_inspect_routes_coverage_shortfall_to_case_rework() -> None:
+@pytest.mark.parametrize("gate", ["satisfied", "needs_human", "blocked"])
+def test_publish_inspect_routes_coverage_shortfall_to_case_rework(gate: str) -> None:
     output = _inspect_output()
+    state = _publish_state()
+    if gate != "satisfied":
+        assessment = cast(dict, state["assessment_inputs"])
+        assessment["obligation_gate_facts"] = {
+            "required_count": 1,
+            "supported_count": 0,
+            "refuted_count": int(gate == "blocked"),
+            "inconclusive_count": int(gate == "needs_human"),
+            "repairable_gap_count": 0,
+            "human_gap_count": int(gate == "needs_human"),
+        }
+        output["assessment"] = assessment
     metrics = MetricsDocument.model_validate(output["metrics"])
     metric_map = dict(metrics.metrics)
     scope = MetricScope.of(total=1, covered=0, uncovered=("constraint.missing",))
@@ -209,13 +246,14 @@ def test_publish_inspect_routes_coverage_shortfall_to_case_rework() -> None:
         }
     ).model_dump(mode="json")
 
-    published = publish_inspect(_publish_state(), output, _receipt())
+    published = publish_inspect(state, output, _receipt())
 
     outcome = published["inspection_outcome"]
     assert isinstance(outcome, dict)
-    assert outcome["coverage_state"] == "repair_required"
-    assert outcome["disposition"] == "coverage_insufficient"
-    assert route_coverage(published) == "coverage_insufficient"
+    expected = "coverage_insufficient" if gate == "satisfied" else gate
+    assert outcome["coverage_state"] == ("repair_required" if gate == "satisfied" else None)
+    assert outcome["disposition"] == expected
+    assert route_coverage(published) == expected
 
 
 @pytest.mark.parametrize("stale_field", ["coverage_epoch", "batch_id", "policy_sha256"])

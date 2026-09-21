@@ -14,7 +14,7 @@ from typing import cast
 import yaml
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
@@ -40,6 +40,7 @@ from assurance_intake.contracts.explore import (
     ExploreContextV1,
     PreparedExploreV1,
     REQUIREMENT_PATH,
+    load_exploration_document,
 )
 from assurance_intake.operations.obligations import (
     apply_scope_exclusions,
@@ -53,8 +54,7 @@ from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.cases import _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
 from assurance_intake.operations.case_modules import infer_case_delta_paths
-from assurance_intake.contracts.case_selection import CaseSelectionV1, SelectedCaseV1, selection_path
-from assurance_intake.contracts.loop_history import build_loop_round_history
+from assurance_intake.contracts.case_selection import selection_path
 from assurance_intake.contracts.quality_goals import journey_keys_from_document
 from assurance_intake.contracts.review import (
     CaseMinimumCoverageReview,
@@ -62,10 +62,16 @@ from assurance_intake.contracts.review import (
     normalized_auto_fix_edits,
 )
 from assurance_intake.contracts.common import TestFamily
-from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.operations.agent_skills import InputError, failed_input, validate_input
 from assurance_intake.operations.agent_skills import case_review_outputs
+from assurance_intake.operations.case_review_seal import (
+    collect_selected_cases,
+    expected_case_selection,
+    expected_review_history,
+    expected_reviewed_case,
+)
 
 
 class OutputError(ValueError):
@@ -607,6 +613,37 @@ def _load_minimum_coverage_matrix(
             f"authenticated journey keys: {list(journey_keys)}"
         )
     return document
+
+
+def _require_frozen_unresolved_rows(
+    workspace: Path,
+    plan: ResolvedAssurancePlan,
+    matrix: MinimumCoverageMatrixAuthoring,
+) -> None:
+    ref = plan.quality_goal.obligations_ref
+    try:
+        data = _read_regular_bytes(workspace, ref.path, kind="frozen exploration")
+    except OutputError as error:
+        raise InputError(str(error)) from error
+    if _file_digest(data) != ref.digest:
+        raise InputError("frozen exploration does not match the assurance plan")
+    try:
+        exploration = load_exploration_document(data)
+        obligations = (
+            exploration.minimum_required_coverage
+            if isinstance(exploration, PreparedExploreV1)
+            else normalize_obligation_drafts(exploration.minimum_required_coverage, resolved_quotes={})
+        )
+    except (ValueError, ValidationError) as error:
+        raise InputError(f"frozen exploration obligations are invalid: {error}") from error
+    unresolved = {row.mrc_id for row in obligations if row.proposed_key is None}
+    mapped = {row.mrc_id for row in matrix.root if row.key is None}
+    missing = sorted(unresolved - mapped)
+    if missing:
+        raise OutputError(f"unresolved MRC rows missing or rebound: {missing}")
+    invented = sorted(mapped - unresolved)
+    if invented:
+        raise OutputError(f"unresolved MRC rows do not match the frozen plan: {invented}")
 
 
 def _read_minimum_coverage_matrix(
@@ -1285,7 +1322,7 @@ class CaseDesignFinalizeHandler:
                     plan.quality_goal.source_resource_digests,
                 )
                 try:
-                    _load_minimum_coverage_matrix(
+                    matrix = _load_minimum_coverage_matrix(
                         context.write_root,
                         relative=matrix_relative,
                         authored=authored,
@@ -1293,14 +1330,16 @@ class CaseDesignFinalizeHandler:
                         journey_keys=journey_keys,
                         images=images,
                     )
+                    _require_frozen_unresolved_rows(context.project_root, plan, matrix)
                 except OutputError as error:
                     validation_errors.append(str(error))
             else:
-                _read_minimum_coverage_matrix(
+                matrix = _read_minimum_coverage_matrix(
                     context.write_root,
                     relative=matrix_relative,
                     images=images,
                 )
+                _require_frozen_unresolved_rows(context.project_root, plan, matrix)
             if validation_errors:
                 raise OutputError("; ".join(validation_errors))
             output = CaseDesignOutputV1(
@@ -1373,12 +1412,13 @@ class CaseReviewFinalizeHandler:
                 ),
                 images=images,
             )
+            _require_frozen_unresolved_rows(context.project_root, plan, matrix)
             required = [row for row in matrix.root if row.required]
             expected_projection = {
                 "total_required": len(required),
                 "covered": sum(row.status == "covered" for row in required),
                 "skipped_by_scope": sum(row.status == "skipped_by_scope" for row in required),
-                "missing": [row.key for row in required if row.status == "skipped_by_scope"],
+                "missing": [row.key or row.mrc_id for row in required if row.status == "skipped_by_scope"],
             }
             document = document.model_copy(
                 update={"minimum_coverage": CaseMinimumCoverageReview.model_validate(expected_projection)}
@@ -1387,42 +1427,22 @@ class CaseReviewFinalizeHandler:
             if payload.preparation_refs and payload.case_refs:
                 artifacts = _authenticate_files(
                     context.write_root,
-                    case_review_outputs(change_id),
+                    case_review_outputs(
+                        change_id,
+                        coverage_epoch=payload.coverage_epoch,
+                        review_round=payload.review_round,
+                    ),
                     payload.artifact_paths,
                 )
+                by_path = {item["path"]: item for item in artifacts}
                 review_relative = "qa/results/review/case-review.json"
-                review_ref = EvidenceArtifactRefV1.model_validate(
-                    next(item for item in artifacts if item["path"] == review_relative)
-                )
-                input_refs = tuple(
-                    sorted((*payload.preparation_refs, *payload.case_refs), key=lambda item: item.path)
-                )
-                input_digest = canonical_digest(
-                    cast(JSONValue, [item.model_dump(mode="json") for item in input_refs])
-                )
-                history = build_loop_round_history(
-                    change_id=change_id,
-                    coverage_epoch=payload.coverage_epoch,
-                    loop_kind="case_review",
-                    family=None,
-                    round_index=payload.review_round,
-                    outcome=document.public_outcome or document.decision,
-                    review_input_digest=input_digest,
-                    source_refs=tuple(sorted((*input_refs, review_ref), key=lambda item: item.path)),
-                )
+                review_ref = EvidenceArtifactRefV1.model_validate(by_path[review_relative])
+                selection_relative = selection_path(payload.coverage_epoch)
                 history_relative = (
                     f"qa/cases/reviews/epochs/{payload.coverage_epoch}/rounds/{payload.review_round}.json"
                 )
-                history_bytes = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
-                history_path = context.write_root.joinpath(*history_relative.split("/"))
-                history_path.parent.mkdir(parents=True, exist_ok=True)
-                history_path.write_bytes(history_bytes)
-                history_ref = EvidenceArtifactRefV1(
-                    path=history_relative,
-                    digest=_file_digest(history_bytes),
-                )
-                selected: list[SelectedCaseV1] = []
-                delta = set(payload.case_delta_paths)
+                manifest_relative = "qa/cases/reviewed-case.json"
+                documents: list[tuple[EvidenceArtifactRefV1, Mapping[str, object]]] = []
                 for ref in payload.case_refs:
                     try:
                         source = yaml.safe_load(
@@ -1434,45 +1454,43 @@ class CaseReviewFinalizeHandler:
                         )
                     if not isinstance(source, Mapping):
                         raise OutputError(f"case source is not a mapping: {ref.path}")
-                    reused = ref.path not in delta
-                    for section in ("added", "modified"):
-                        entries = source.get(section)
-                        if not isinstance(entries, list):
-                            continue
-                        for index, entry in enumerate(entries):
-                            if not isinstance(entry, Mapping) or not isinstance(entry.get("case_id"), str):
-                                continue
-                            selected.append(
-                                SelectedCaseV1(
-                                    case_id=str(entry["case_id"]),
-                                    origin="reuse"
-                                    if reused
-                                    else ("modified" if section == "modified" else "added"),
-                                    source_ref=ref,
-                                    source_locator=f"{section}[{index}]",
-                                    mrc_ids=(),
-                                )
-                            )
-                if not selected:
-                    raise OutputError("case selection must include at least one case")
-                selection = CaseSelectionV1(
-                    schema_version="1",
+                    documents.append((ref, source))
+                try:
+                    selected = collect_selected_cases(
+                        payload.case_refs,
+                        payload.case_delta_paths,
+                        documents,
+                    )
+                except ValueError as error:
+                    raise OutputError(str(error)) from error
+                expected_selection = expected_case_selection(
                     change_id=change_id,
                     coverage_epoch=payload.coverage_epoch,
-                    plan_digest=payload.plan_digest,
-                    inventory_ref=plan.impact_inventory_ref,
-                    cases=tuple(selected),
+                    plan=plan,
+                    cases=selected,
                 )
-                selection_relative = selection_path(payload.coverage_epoch)
-                selection_bytes = canonical_json_bytes(selection.model_dump(mode="json")) + b"\n"
-                selection_file = context.write_root.joinpath(*selection_relative.split("/"))
-                selection_file.parent.mkdir(parents=True, exist_ok=True)
-                selection_file.write_bytes(selection_bytes)
-                selection_ref = EvidenceArtifactRefV1(
-                    path=selection_relative,
-                    digest=_file_digest(selection_bytes),
+                expected_history = expected_review_history(
+                    change_id=change_id,
+                    coverage_epoch=payload.coverage_epoch,
+                    review_round=payload.review_round,
+                    document=document,
+                    preparation_refs=payload.preparation_refs,
+                    case_refs=payload.case_refs,
+                    review_ref=review_ref,
                 )
-                reviewed = ReviewedCaseV1(
+                derived_refs: dict[str, EvidenceArtifactRefV1] = {}
+                for relative, derived in (
+                    (selection_relative, expected_selection),
+                    (history_relative, expected_history),
+                ):
+                    data = canonical_json_bytes(derived.model_dump(mode="json")) + b"\n"
+                    path = _workspace_file(context.write_root, relative)
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(data)
+                    derived_refs[relative] = EvidenceArtifactRefV1(path=relative, digest=_file_digest(data))
+                selection_ref = derived_refs[selection_relative]
+                history_ref = derived_refs[history_relative]
+                expected_reviewed = expected_reviewed_case(
                     change_id=change_id,
                     coverage_epoch=payload.coverage_epoch,
                     plan_digest=payload.plan_digest,
@@ -1482,21 +1500,17 @@ class CaseReviewFinalizeHandler:
                     review_ref=review_ref,
                     selection_ref=selection_ref,
                 )
-                manifest_relative = "qa/cases/reviewed-case.json"
-                manifest_bytes = canonical_json_bytes(reviewed.model_dump(mode="json")) + b"\n"
-                manifest_path = context.write_root.joinpath(*manifest_relative.split("/"))
+                manifest_bytes = canonical_json_bytes(expected_reviewed.model_dump(mode="json")) + b"\n"
+                manifest_path = _workspace_file(context.write_root, manifest_relative)
                 manifest_path.parent.mkdir(parents=True, exist_ok=True)
                 manifest_path.write_bytes(manifest_bytes)
                 output["artifacts"] = [
                     *artifacts,
-                    {
-                        "path": manifest_relative,
-                        "digest": _file_digest(manifest_bytes),
-                    },
                     selection_ref.model_dump(mode="json"),
                     history_ref.model_dump(mode="json"),
+                    {"path": manifest_relative, "digest": _file_digest(manifest_bytes)},
                 ]
-                output["reviewed_case"] = reviewed.model_dump(mode="json")
+                output["reviewed_case"] = expected_reviewed.model_dump(mode="json")
                 output["history_ref"] = history_ref.model_dump(mode="json")
             else:
                 output["artifacts"] = []

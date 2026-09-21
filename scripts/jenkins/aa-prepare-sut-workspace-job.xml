@@ -1,0 +1,46 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<project>
+  <description>Clone a SUT workspace from GitHub, write .aa/run-spec.yaml, and start per-workspace OpenCode + OpenChamber. Does not start the SUT and does not run aa bootstrap.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>GITHUB_URL</name>
+          <description>GitHub 仓库地址</description>
+          <defaultValue>https://github.com/Qingquanlv/vue-fastapi-admin.git</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>BRANCH</name>
+          <description>分支名称</description>
+          <defaultValue>main</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <scm class="hudson.scm.NullSCM"/>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>set -euo pipefail
+SCRIPT="/Users/lvqingquan/agent/assurance-agent/scripts/jenkins/prepare-sut-workspace.sh"
+if [[ ! -x "${SCRIPT}" ]]; then
+  echo "fail-closed: missing executable ${SCRIPT}" &gt;&amp;2
+  exit 1
+fi
+export GITHUB_URL BRANCH
+"${SCRIPT}"
+</command>
+      <configuredLocalRules/>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers/>
+  <buildWrappers/>
+</project>

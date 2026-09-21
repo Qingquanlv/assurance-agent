@@ -90,6 +90,24 @@ async def test_fake_config_with_protocol_profile_still_validates() -> None:
         fake.close()
 
 
+async def test_http_client_uses_basic_opencode_password() -> None:
+    import base64
+
+    fake = OpenCodeFakeServer(profile=_profile())
+    try:
+        config = _config(fake)
+        client = OpenCodeHttpClient(config, secret=b"tok")
+        try:
+            prepared = client._client.build_request("GET", "/global/health")
+            header = prepared.headers["Authorization"]
+            assert header.startswith("Basic ")
+            assert base64.b64decode(header.split(" ", 1)[1]).decode() == "opencode:tok"
+        finally:
+            await client.aclose()
+    finally:
+        fake.close()
+
+
 async def test_http_client_omits_authorization_when_secret_is_empty() -> None:
     fake = OpenCodeFakeServer(profile=_profile())
     try:

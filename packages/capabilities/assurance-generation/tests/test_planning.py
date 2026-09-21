@@ -20,8 +20,9 @@ def test_codegen_review_outputs_use_family_prefixed_review_paths() -> None:
     )
     for family in FAMILIES:
         outputs = plan_review_outputs("CH-DEMO-001", family)
-        assert all(path.startswith("qa/results/review/") for path in outputs)
+        assert all(path.startswith("qa/results/") for path in outputs)
         assert any(path.endswith(f"{family}-codegen-review.json") for path in outputs)
+        assert len(outputs) == 2
         assert not any(
             "/".join(("qa", "changes")) + "/" in path
             for path in (*plan_outputs("CH-DEMO-001", family), *plan_review_outputs("CH-DEMO-001", family))

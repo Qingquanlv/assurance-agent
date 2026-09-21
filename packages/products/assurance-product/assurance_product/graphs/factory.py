@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, cast
@@ -33,6 +33,7 @@ from assurance_product.models import FEATURE_WORKFLOW_OWNERS, PRODUCT_ENTRYPOINT
 from assurance_quality.graphs.factory import QualityGraphs
 from graph_engine.boot.boot import GraphBuildContext
 from graph_engine.boot.graph_revision import EntrypointGraphContract
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 _BUNDLE_TYPES: Mapping[str, type] = {
     "assurance.intake": IntakeGraphs,
@@ -146,6 +147,7 @@ def build_product_graphs(
     *,
     context: GraphBuildContext,
     features: Mapping[str, object],
+    runtime_snapshot: Callable[[], Awaitable[EvidenceArtifactRefV1]] | None = None,
 ) -> ProductGraphs:
     from assurance_product.graphs.execute import build_execute_root, build_execute_tail
     from assurance_product.graphs.full import build_full_root
@@ -155,7 +157,7 @@ def build_product_graphs(
     thin_names = tuple(thin.entrypoints)
     if len(thin_names) != len(set(thin_names)):
         raise ValueError("duplicate product roots")
-    execute_tail = build_execute_tail(bundles)
+    execute_tail = build_execute_tail(bundles, runtime_snapshot=runtime_snapshot)
     stale_tail_nodes = _FORBIDDEN_PRODUCT_TAIL_NODES.intersection(execute_tail.nodes)
     if stale_tail_nodes:
         raise ValueError(f"obsolete Product coverage nodes are reachable: {sorted(stale_tail_nodes)}")

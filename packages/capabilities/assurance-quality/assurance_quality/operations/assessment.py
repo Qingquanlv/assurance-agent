@@ -26,7 +26,7 @@ from assurance_intake.contracts.cases import (
     CaseYamlAuthoring,
     MinimumCoverageMatrixAuthoring,
 )
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.explore import load_exploration_document
 from assurance_intake.contracts.quality_goals import (
     CoverageGoal,
     MrcCategory,
@@ -226,8 +226,8 @@ def _prepared_obligations(
 ) -> tuple[tuple[PreparedObligationV1, ...], frozenset[str], frozenset[str]]:
     quality_goal = plan.quality_goal
     try:
-        advisory = ExploreAdvisoryV1.model_validate(json.loads(_read_ref(root, quality_goal.obligations_ref)))
-    except (json.JSONDecodeError, ValidationError) as error:
+        advisory = load_exploration_document(_read_ref(root, quality_goal.obligations_ref))
+    except (json.JSONDecodeError, ValidationError, ValueError) as error:
         raise AssessmentInputError(f"invalid prepared goal obligations: {error}") from error
     if advisory.change_id != request.reviewed_case.change_id:
         raise AssessmentInputError("prepared goal obligations belong to another change")
@@ -301,8 +301,37 @@ def _reviewed_obligations(
         for row in baseline
         if row.key is not None
     }
+    unresolved = {
+        row.mrc_id: MinimumCoverageMatrixRow(
+            mrc_id=row.mrc_id,
+            key=None,
+            proposed_key=row.proposed_key,
+            required=row.required,
+            category=row.category,
+            layer=row.layer,
+            status="skipped_by_scope",
+            skip_reason="capability_unresolved",
+        )
+        for row in baseline
+        if row.key is None
+    }
+    unresolved_matrix_ids = {row.mrc_id for row in matrix.root if row.key is None}
+    missing_unresolved = sorted(set(unresolved) - unresolved_matrix_ids)
+    if missing_unresolved:
+        raise AssessmentInputError(f"unresolved MRC rows missing or rebound: {missing_unresolved}")
     journey_cases: set[str] = set()
     for row in matrix.root:
+        if row.mrc_id in unresolved and row.key is not None:
+            raise AssessmentInputError(f"unresolved MRC row was rebound to a key: {row.mrc_id}")
+        if row.key is None:
+            original = unresolved.get(row.mrc_id)
+            if original is None:
+                raise AssessmentInputError(f"unresolved MRC row is not in the frozen plan: {row.mrc_id}")
+            if row.category not in {None, original.category} or row.layer not in {None, original.layer}:
+                raise AssessmentInputError(
+                    f"reviewed MRC scope conflicts with prepared obligation: {row.mrc_id}"
+                )
+            continue
         unknown = sorted(set(row.covered_by_cases) - set(case_by_id))
         if unknown:
             raise AssessmentInputError(f"minimum coverage matrix references unknown active cases: {unknown}")
@@ -378,7 +407,9 @@ def _reviewed_obligations(
                     )
                 }
             )
-    return tuple(sorted(result.values(), key=lambda row: (row.mrc_id, row.key)))
+    return tuple(
+        sorted((*result.values(), *unresolved.values()), key=lambda row: (row.mrc_id, row.key or ""))
+    )
 
 
 def _metrics(

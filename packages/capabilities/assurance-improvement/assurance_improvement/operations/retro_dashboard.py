@@ -213,6 +213,11 @@ _ANALYSIS_FILES = (
     "retro-issue-analysis.json",
     "retro-workflow-analysis.json",
 )
+_ANALYSIS_DOMAIN_BY_FILE: dict[str, DashboardDomainName] = {
+    "retro-eval-analysis.json": "eval",
+    "retro-issue-analysis.json": "issue",
+    "retro-workflow-analysis.json": "workflow",
+}
 
 _T = TypeVar("_T")
 
@@ -319,6 +324,63 @@ def _build_domains(context: RetroContextV3) -> tuple[DashboardDomain, ...]:
     return tuple(domains)
 
 
+def _build_domains_from_analyses(
+    loaded: dict[DashboardDomainName, RetroAnalysisResultV3],
+) -> tuple[DashboardDomain, ...]:
+    domains: list[DashboardDomain] = []
+    for domain in _DOMAIN_ORDER:
+        result = loaded.get(domain)
+        if result is None:
+            domains.append(
+                DashboardDomain(
+                    domain=domain,
+                    status="absent",
+                    failure_reason=None,
+                    signal_count=None,
+                    source_count=0,
+                    source_kinds={},
+                    slice_sha256=None,
+                )
+            )
+            continue
+        domains.append(
+            DashboardDomain(
+                domain=domain,
+                status=result.analysis_status,
+                failure_reason=result.failure_reason,
+                signal_count=len(result.signals),
+                source_count=0,
+                source_kinds={},
+                slice_sha256=None,
+            )
+        )
+    return tuple(domains)
+
+
+def _flatten_analysis_signals(
+    loaded: dict[DashboardDomainName, RetroAnalysisResultV3],
+    cited_by: dict[str, tuple[str, ...]],
+) -> tuple[DashboardSignal, ...]:
+    flat: list[DashboardSignal] = []
+    for domain, result in loaded.items():
+        for signal in result.signals:
+            flat.append(
+                DashboardSignal(
+                    signal_id=signal.signal_id,
+                    signal_type=signal.signal_type,
+                    domain=domain,
+                    summary=signal.summary,
+                    occurrence_count=signal.occurrence_count,
+                    confidence=signal.confidence,
+                    recommended_change=signal.recommended_change,
+                    metrics=project_signal_metrics(signal),
+                    source_refs=_map_source_refs(signal.source_refs),
+                    cited_by_candidate_ids=cited_by.get(signal.signal_id, ()),
+                )
+            )
+    return tuple(sorted(flat, key=lambda item: (-item.occurrence_count, item.signal_id)))
+
+
 def _cited_by_index(candidates: tuple[ImprovementCandidateV3, ...]) -> dict[str, tuple[str, ...]]:
     index: dict[str, list[str]] = {}
     for candidate in candidates:
@@ -422,14 +484,26 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
 
     analyses_ok = True
     analysis_retro_ids: list[str] = []
+    loaded_analyses: dict[DashboardDomainName, RetroAnalysisResultV3] = {}
+    missing_analysis_files: list[str] = []
     for name in _ANALYSIS_FILES:
         result = _load_model(retro_dir / name, RetroAnalysisResultV3.model_validate_json, name)
         if result.model is None:
             analyses_ok = False
             if result.reason:
                 integrity_reasons.append(result.reason)
+            elif not result.exists:
+                missing_analysis_files.append(name)
         else:
             analysis_retro_ids.append(result.model.retro_id)
+            domain = result.model.domain or _ANALYSIS_DOMAIN_BY_FILE[name]
+            loaded_analyses[domain] = result.model
+    # Only flag missing analysis files when this change already has some retro
+    # artifact — an empty qa/results/retro must stay indistinguishable from
+    # "no retro run", not a wall of artifact_missing reasons.
+    if loaded_analyses:
+        for name in missing_analysis_files:
+            integrity_reasons.append(f"artifact_missing:{name}")
 
     context_result = _load_model(
         retro_dir / "context.json", RetroContextV3.model_validate_json, "context.json"
@@ -488,12 +562,15 @@ def build_retro_dashboard(change_root: Path, *, change_id: str | None = None) ->
     if change_id is not None and context is not None and change_id not in context.window.change_ids:
         raise ValueError(f"--change {change_id} is not part of the retro window")
 
+    cited_by = _cited_by_index(candidates)
     domains: tuple[DashboardDomain, ...] = ()
     signals: tuple[DashboardSignal, ...] = ()
     if context is not None:
-        cited_by = _cited_by_index(candidates)
         signals = _flatten_signals(context.signals, cited_by)
         domains = _build_domains(context)
+    elif loaded_analyses:
+        signals = _flatten_analysis_signals(loaded_analyses, cited_by)
+        domains = _build_domains_from_analyses(loaded_analyses)
 
     # `_build_candidates` has no context dependency (it only needs
     # `candidates`, `run_status.improvement_ids`, and `ledger`, all loaded

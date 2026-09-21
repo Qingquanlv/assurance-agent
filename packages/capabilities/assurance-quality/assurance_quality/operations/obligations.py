@@ -18,7 +18,9 @@ from assurance_generation.contracts.obligation_methods import (
 from assurance_generation.contracts.plans import ObligationMethodPlanV1
 from assurance_generation.contracts.reviews import ObligationSemanticReviewV1
 from assurance_intake.contracts.obligations import PreparedObligationV1, VerificationRequirementV1
+from assurance_intake.contracts.explore import PreparedExploreV1, load_exploration_document
 from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.assessment import MaterializeAssessmentInputV1
 from assurance_quality.contracts.obligations import (
@@ -39,6 +41,7 @@ REPAIRABLE_OBLIGATION_GAPS = frozenset(
 )
 HUMAN_OBLIGATION_GAPS = frozenset(
     {
+        "capability_unresolved",
         "expectation_unconfirmed",
         "runner_unsupported",
         "profile_missing",
@@ -178,7 +181,9 @@ def _facts_for_obligation(
     subject_matched: bool,
     counterexample_ref: EvidenceArtifactRefV1 | None,
 ) -> ObligationEvidenceFactsV1:
-    confirmed = _expectation_is_confirmed(obligation, method)
+    confirmed = not (
+        obligation.key is None and obligation.proposed_key is None
+    ) and _expectation_is_confirmed(obligation, method)
     method_valid = _method_is_bound(method)
     reviews_passed = method.review is not None and method.review.status == "pass"
     required_ids = (
@@ -218,13 +223,16 @@ def _facts_for_obligation(
 
 def _gap_codes(
     *,
+    obligation: PreparedObligationV1,
     blocked: str | None,
     facts: ObligationEvidenceFactsV1,
     method: ObligationMethod,
 ) -> tuple[str, ...]:
-    if blocked is not None:
-        return (blocked,)
     codes: list[str] = []
+    if obligation.key is None and obligation.proposed_key is None:
+        codes.append("capability_unresolved")
+    if blocked is not None:
+        return tuple((*codes, blocked))
     if method.plan is None:
         codes.append("obligation_case_missing")
     elif not facts.method_valid:
@@ -239,27 +247,16 @@ def _gap_codes(
 def load_prepared_obligations(
     workspace: Path, request: MaterializeAssessmentInputV1
 ) -> tuple[PreparedObligationV1, ...]:
-    for ref in request.reviewed_case.preparation_refs:
-        if not ref.path.endswith(("exploration.json", "quality-goals.json", "prepared-explore.json")):
-            continue
-        # A digest mismatch is an authentication failure, not a miss. Only an
-        # artifact that does not carry obligations is skipped.
-        try:
-            payload = json.loads(_authenticate_ref(workspace, ref).decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
-            continue
-        raw = payload.get("minimum_required_coverage") if isinstance(payload, dict) else None
-        if not isinstance(raw, list):
-            continue
-        rows: list[PreparedObligationV1] = []
-        for item in raw:
-            try:
-                rows.append(PreparedObligationV1.model_validate(item))
-            except ValidationError:
-                continue
-        if rows:
-            return tuple(rows)
-    return ()
+    try:
+        plan = decode_plan(_authenticate_ref(workspace, request.plan_ref), request.plan_ref)
+        exploration = load_exploration_document(
+            _authenticate_ref(workspace, plan.quality_goal.obligations_ref)
+        )
+        if isinstance(exploration, PreparedExploreV1):
+            return exploration.minimum_required_coverage
+        return normalize_obligation_drafts(exploration.minimum_required_coverage, resolved_quotes={})
+    except (ValueError, ValidationError) as error:
+        raise InputError(f"invalid plan-bound obligations: {error}") from error
 
 
 def load_obligation_methods(
@@ -360,7 +357,7 @@ def assess_obligations(
                 evidence_refs=evidence_refs,
                 gap_codes=()
                 if verdict == "supported"
-                else _gap_codes(blocked=blocked, facts=facts, method=method),
+                else _gap_codes(obligation=obligation, blocked=blocked, facts=facts, method=method),
             )
         )
     excluded = tuple(item.mrc_id for item in obligations if item.scope_disposition == "excluded")
