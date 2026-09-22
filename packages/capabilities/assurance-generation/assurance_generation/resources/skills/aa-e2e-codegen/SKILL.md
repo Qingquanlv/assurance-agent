@@ -31,6 +31,14 @@ exact reads, and never replace source-backed case facts with guesses from naming
 
 ## Outputs
 
+When the host supplies non-empty \`verification_obligations\`, return one
+\`method_plans\` row for every supplied obligation. Copy the frozen MRC,
+requirement, profile, and prerequisite identities exactly; bind every required
+observation key to a concrete generated test node, step, and assertion. The
+bound test must call \`aa_observe.request(observation_id=...)\` with that exact
+observation ID. Do not invent expectations or omit an obligation. Return an
+empty \`method_plans\` array only when \`verification_obligations\` is empty.
+
 ### required
 
 - `qa/results/codegen/e2e-codegen-summary.md`

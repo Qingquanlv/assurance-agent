@@ -5,6 +5,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import cast
 
 import pytest
@@ -114,7 +115,7 @@ def _prepared_project(project: Path, *, passing: bool) -> dict[str, object]:
         path.write_bytes(data)
         return {"path": relative, "digest": hashlib.sha256(data).hexdigest()}
 
-    write("qa/cases/items/case.yaml", reviewed_cases())
+    case_ref = write("qa/cases/items/case.yaml", reviewed_cases())
     mapping = codegen_mapping(target_file=source)
     write(
         "qa/results/codegen/api-generated-files.json",
@@ -132,15 +133,45 @@ def _prepared_project(project: Path, *, passing: bool) -> dict[str, object]:
     generation.update(plan_digest=plan.plan_digest, plan_ref=plan_ref, coverage_epoch=0)
     reviewed = cast(dict, generation["reviewed_case"])
     reviewed.update(plan_digest=plan.plan_digest, plan_ref=plan_ref, coverage_epoch=0)
-    reviewed["selection_ref"] = write("qa/results/cases/epochs/0/selection.json", {})
+    reviewed["case_refs"] = [case_ref]
+    reviewed["review_ref"] = write("qa/results/review/case-review.json", {"decision": "approve"})
+    reviewed["selection_ref"] = write(
+        "qa/results/cases/epochs/0/selection.json",
+        {
+            "schema_version": "1",
+            "change_id": "CH-DEMO-001",
+            "coverage_epoch": 0,
+            "plan_digest": plan.plan_digest,
+            "inventory_ref": plan_ref,
+            "cases": [
+                {
+                    "case_id": "TC_A",
+                    "origin": "added",
+                    "source_ref": case_ref,
+                    "source_locator": "added[0]",
+                    "mrc_ids": [],
+                }
+            ],
+        },
+    )
     reviewed["preparation_refs"] = [plan_ref]
     generation["mapping_ref"] = write("qa/results/codegen/closed-mapping.json", mapping)
     generation["source_refs"] = [
         {"path": source, "digest": hashlib.sha256((project / source).read_bytes()).hexdigest()}
     ]
-    generation["plan_refs"] = [
-        write("qa/results/plans/api-plan.json", {"requirements": [], "method_plans": []})
-    ]
+    method_ref = write(
+        "qa/results/generation/epochs/0/obligation-methods.json",
+        {
+            "schema_version": "1",
+            "plan_digest": plan.plan_digest,
+            "plan_ref": plan_ref,
+            "requirements": [],
+            "method_plans": [],
+            "semantic_reviews": [],
+        },
+    )
+    generation["plan_refs"] = [method_ref]
+    generation["method_plan_ref"] = method_ref
     return {
         "change_id": "CH-DEMO-001",
         "plan_digest": plan.plan_digest,
@@ -157,8 +188,20 @@ def _prepared_project(project: Path, *, passing: bool) -> dict[str, object]:
 class _LocalInterpreterHost(ConfinedExecutionProcessHost):
     """Real pytest/collector; only interpreter provisioning is outside this test."""
 
-    def spawn(self, argv: tuple[str, ...], cwd: Path):
-        return super().spawn((sys.executable, "-m", *argv[argv.index("pytest") :]), cwd)
+    def spawn(
+        self,
+        argv: tuple[str, ...],
+        cwd: Path,
+        *,
+        timeout_seconds: float = 3600,
+        on_started: Callable[[int], None] | None = None,
+    ):
+        return super().spawn(
+            (sys.executable, "-m", *argv[argv.index("pytest") :]),
+            cwd,
+            timeout_seconds=timeout_seconds,
+            on_started=on_started,
+        )
 
 
 class _HandlerExecutor:

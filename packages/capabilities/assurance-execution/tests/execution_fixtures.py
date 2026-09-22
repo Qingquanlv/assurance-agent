@@ -107,7 +107,7 @@ class FakePytestHost:
         self.cwds: list[Path] = []
         self._outcomes = dict(outcomes or {})
 
-    def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
+    def spawn(self, argv: tuple[str, ...], cwd: Path, **_kwargs: object) -> ProcessReceipt:
         self.commands.append(argv)
         self.cwds.append(cwd)
         selected = _selected_from_argv(argv)

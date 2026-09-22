@@ -219,7 +219,10 @@ _PUBLISH_CYCLE = TaskAttemptContract(
     resources=ResourceClaimTemplate(
         parameters={"coverage_epoch": "/coverage_epoch_token"},
         reads=("qa",),
-        writes=(qa_join("generation/epochs/{coverage_epoch}/mapping.json"),),
+        writes=(
+            qa_join("generation/epochs/{coverage_epoch}/mapping.json"),
+            qa_join("generation/epochs/{coverage_epoch}/obligation-methods.json"),
+        ),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,

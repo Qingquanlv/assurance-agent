@@ -6,6 +6,16 @@ adapter.
 Review fuzz plans and emit a `PlanReviewAuthoring` document from
 `assurance_generation.contracts`.
 
+## Semantic obligation review
+
+The final JSON instruction includes the trusted `codegen_output.method_plans`.
+For every method plan, emit exactly one `semantic_reviews` row and exactly
+one expectation review for each bound observation key. Confirm an expectation
+only from its frozen normative basis references; use `abstain`, `conflict`,
+or `fail` when the source is absent, ambiguous, contradictory, or mismatched.
+Copy `frozen_plan_digest`, `plan_ref`, MRC ID, and requirement ID from the
+locked inputs. An empty method-plan set requires an empty semantic-review set.
+
 Routing uses exactly two fields: `route` and `finding_ids`. The host validates
 that combination and does not rewrite it. An illegal pair is invalid output
 and retries this node.

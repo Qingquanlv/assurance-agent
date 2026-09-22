@@ -45,6 +45,7 @@ from assurance_intake.contracts.explore import (
 from assurance_intake.operations.obligations import (
     apply_scope_exclusions,
     authenticate_source,
+    normalize_goal_obligations,
     normalize_obligation_drafts,
     resolve_requirement_quote,
 )
@@ -249,6 +250,34 @@ def _read_regular_bytes(workspace: Path, relative: str, *, kind: str) -> bytes:
 
 _DATA_KNOWLEDGE_RESOURCE_ID = "assurance.product.configuration.data-knowledge"
 _DATA_KNOWLEDGE_PATH = ".aa/data-knowledge.yaml"
+_CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
+_CAPABILITY_CATALOG_PATH = ".aa/capability-catalog.json"
+
+
+def _authenticated_capability_leafs(
+    workspace: Path,
+    source_resource_digests: tuple[tuple[str, str], ...],
+) -> tuple[str, ...]:
+    expected_digest = dict(source_resource_digests).get(_CAPABILITY_CATALOG_RESOURCE_ID)
+    if expected_digest is None:
+        raise InputError("frozen assurance plan does not bind the capability catalog")
+    try:
+        data = _read_regular_bytes(workspace, _CAPABILITY_CATALOG_PATH, kind="capability catalog")
+    except OutputError as error:
+        raise InputError(str(error)) from error
+    if _file_digest(data) != expected_digest:
+        raise InputError("capability catalog does not match the frozen assurance plan")
+    try:
+        document = json.loads(data)
+        raw = document.get("typed_leafs") if isinstance(document, Mapping) else None
+        if not isinstance(raw, list) or any(not isinstance(item, str) or not item for item in raw):
+            raise ValueError("typed_leafs must be a list of non-empty strings")
+        leafs = tuple(raw)
+        if leafs != tuple(sorted(set(leafs))):
+            raise ValueError("typed_leafs must be sorted and unique")
+        return leafs
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise InputError(f"invalid capability catalog: {error}") from error
 
 
 def _authenticated_journey_keys(
@@ -632,11 +661,25 @@ def _require_frozen_unresolved_rows(
         obligations = (
             exploration.minimum_required_coverage
             if isinstance(exploration, PreparedExploreV1)
-            else normalize_obligation_drafts(exploration.minimum_required_coverage, resolved_quotes={})
+            else normalize_goal_obligations(
+                exploration,
+                capability_leafs=frozenset(
+                    _authenticated_capability_leafs(
+                        workspace,
+                        plan.quality_goal.source_resource_digests,
+                    )
+                ),
+                journey_keys=frozenset(
+                    _authenticated_journey_keys(
+                        workspace,
+                        plan.quality_goal.source_resource_digests,
+                    )
+                ),
+            )
         )
     except (ValueError, ValidationError) as error:
         raise InputError(f"frozen exploration obligations are invalid: {error}") from error
-    unresolved = {row.mrc_id for row in obligations if row.proposed_key is None}
+    unresolved = {row.mrc_id for row in obligations if row.key is None}
     mapped = {row.mrc_id for row in matrix.root if row.key is None}
     missing = sorted(unresolved - mapped)
     if missing:

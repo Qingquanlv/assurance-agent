@@ -67,6 +67,8 @@ def valid_product_input(**overrides: object) -> dict[str, object]:
             "qa/results",
             "qa/tests",
         ),
+        "allowed_origins": (),
+        "execution_timeout_seconds": 3600,
         "budgets": {
             "review_rounds": 1,
             "coverage_rounds": 1,
@@ -302,6 +304,20 @@ def test_product_input_locks_exact_artifact_prefixes():
         ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=("qa/../secret",)))
     with pytest.raises(ValidationError):
         ProductInputV1.model_validate(valid_product_input(allowed_artifact_paths=(leftover[0], leftover[0])))
+
+
+def test_product_input_requires_canonical_allowed_origins() -> None:
+    from assurance_product.models import ProductInputV1
+
+    value = ProductInputV1.model_validate(valid_product_input(allowed_origins=("https://sut.example:8443",)))
+    assert value.allowed_origins == ("https://sut.example:8443",)
+    for invalid in (
+        "https://sut.example/api",
+        "https://user:secret@sut.example",
+        "ftp://sut.example",
+    ):
+        with pytest.raises(ValueError, match="allowed_origins"):
+            ProductInputV1.model_validate(valid_product_input(allowed_origins=(invalid,)))
 
 
 @pytest.mark.parametrize(

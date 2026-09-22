@@ -260,6 +260,7 @@ def publish_plan_review(state: Mapping[str, object], output: object, receipt: ob
         "artifacts": payload.get("artifacts") or [],
         "rounds_used": _published_int(payload, "rounds_used", state.get("rounds_used", 0)),
         "rounds_budget": _published_int(payload, "rounds_budget", state.get("rounds_budget", 3)),
+        "semantic_reviews": payload.get("semantic_reviews") or [],
     }
     if payload.get("history_ref") is not None:
         update["history_refs"] = [
@@ -432,6 +433,8 @@ def _family_result(state: Mapping[str, object], *, status: str, selected: bool) 
                 "files": codegen.get("files", []),
                 "mapping": codegen.get("mapping"),
                 "receipt": dict(receipt),
+                "method_plans": codegen.get("method_plans") or [],
+                "semantic_reviews": state.get("semantic_reviews") or [],
             }
     return {"family_results": result["family_results"]}
 

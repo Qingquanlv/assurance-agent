@@ -5,15 +5,19 @@ from pathlib import Path
 from tests.product.obligation_loop_fixture import run_lockout_cycle
 
 
-def test_lockout_fault_is_detected_by_the_same_verification(tmp_path: Path) -> None:
+def test_unattested_http_subject_cannot_support_or_refute_an_obligation(tmp_path: Path) -> None:
     good = run_lockout_cycle(tmp_path / "good", lockout_enabled=True)
     bad = run_lockout_cycle(tmp_path / "bad", lockout_enabled=False)
 
-    assert good["assessment"].rows[0].verdict == "supported"
-    assert good["gate_decision"] == "satisfied"
-    assert bad["assessment"].rows[0].verdict == "refuted"
-    assert bad["gate_decision"] == "blocked"
-    # The same test bytes produced both conclusions; only the subject differed.
+    for result in (good, bad):
+        row = result["assessment"].rows[0]
+        assert row.verdict == "inconclusive"
+        assert row.method_plan_refs
+        assert "subject_identity_unavailable" in row.gap_codes
+        assert result["gate_decision"] != "satisfied"
+        assert result["bundle"].subject.status == "unavailable"
+    # The observations still distinguish the implementations, but cannot become
+    # a formal verdict until the remote subject is bound to the candidate.
     assert bad["experiment_receipt"]["test_source_digest"] == good["experiment_receipt"]["test_source_digest"]
 
 

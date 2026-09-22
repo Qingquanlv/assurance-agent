@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from graph_engine.composition import ConfigTreePluginSource, WheelPluginSource
@@ -261,6 +262,18 @@ def _catalog_leafs(composition: object, resource_id: str) -> list[str]:
     return leafs
 
 
+def _origin_from_base_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("sut.base_url must be an HTTP URL without credentials")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def prepare_composition(
     *,
     project_dir: Path,
@@ -314,6 +327,8 @@ def prepare_composition(
         "product_policy": _resource_ref(composition, _POLICY_RESOURCE_ID),
         "data_knowledge": _resource_ref(composition, _KNOWLEDGE_RESOURCE_ID),
         "allowed_artifact_paths": list(LOCKED_ALLOWED_ARTIFACT_PATHS),
+        "allowed_origins": [_origin_from_base_url(spec.sut.base_url)],
+        "execution_timeout_seconds": min(spec.timeout_seconds, 3600),
         "budgets": spec.budgets.model_dump(mode="json"),
     }
     value = ProductInputV1.model_validate(payload)

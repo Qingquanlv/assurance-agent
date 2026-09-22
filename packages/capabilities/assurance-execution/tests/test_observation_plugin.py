@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 from importlib.resources import files
 from pathlib import Path
 
@@ -121,3 +122,32 @@ def test_emitted_observation_carries_every_contract_field(tmp_path: Path, monkey
     assert row.actual_status == 423
     assert row.predicate_passed is True
     assert row.sequence_index == 0
+
+
+def test_same_observation_key_is_scoped_by_requirement(tmp_path: Path, monkeypatch) -> None:
+    del tmp_path
+    plugin = _plugin()
+    context = _binding_context()
+    second_requirement = copy.deepcopy(context["requirements"][0])
+    second_requirement["requirement_id"] = "REQ-2"
+    second_requirement["observations"][0]["expected"] = 200
+    second_plan = copy.deepcopy(context["method_plans"][0])
+    second_plan["mrc_id"] = "MRC-2"
+    second_plan["requirement_id"] = "REQ-2"
+    second_plan["observations"][0]["observation_id"] = "OBS-2"
+    context["requirements"].append(second_requirement)
+    context["method_plans"].append(second_plan)
+    observer = plugin._Observer(context)
+    observer.bind_test("qa/tests/api/test_lockout.py::test_locks")
+    monkeypatch.setattr(
+        plugin.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            plugin.urllib.error.HTTPError("http://127.0.0.1:9/login", 423, "Locked", {}, None)
+        ),
+    )
+
+    observer.request(observation_id="OBS-1", method="POST", url="http://127.0.0.1:9/login")
+
+    assert observer.observations[0]["mrc_id"] == "MRC-1"
+    assert observer.observations[0]["predicate_passed"] is True

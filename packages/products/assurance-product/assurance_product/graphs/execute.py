@@ -162,6 +162,8 @@ def adapt_execution(state: ProductState) -> dict[str, object]:
         "rounds_budget": payload.budgets.healing_rounds,
         "rounds_used": int(state.get("healing_rounds_used", 0)),
         "generation_result": state.get("generation_result"),
+        "allowed_origins": list(payload.allowed_origins),
+        "timeout_seconds": payload.execution_timeout_seconds,
     }
     return {**feature_input, "feature_input": feature_input}
 
@@ -192,6 +194,8 @@ def adapt_rerun(state: ProductState) -> dict[str, object]:
         "rounds_budget": int(state.get("rounds_budget") or payload.budgets.healing_rounds),
         "rounds_used": repair_round,
         "generation_result": repaired_generation.model_dump(mode="json"),
+        "allowed_origins": list(payload.allowed_origins),
+        "timeout_seconds": payload.execution_timeout_seconds,
     }
     return {**feature_input, "feature_input": feature_input}
 

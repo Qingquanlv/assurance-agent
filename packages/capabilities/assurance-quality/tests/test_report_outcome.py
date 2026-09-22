@@ -162,6 +162,7 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
             "mapping_ref": mapping_ref,
             "source_refs": [_ref("qa/tests/test_orders.py")],
             "plan_refs": [_ref(f"{results}/generation/epochs/0/api/plan.json")],
+            "method_plan_ref": _ref(f"{results}/generation/epochs/0/obligation-methods.json"),
         },
         "inspection_outcome": inspection,
         "coverage_state": "satisfied",

@@ -43,6 +43,8 @@ _INPUT_KEYS = (
     "product_policy",
     "data_knowledge",
     "allowed_artifact_paths",
+    "allowed_origins",
+    "execution_timeout_seconds",
     "budgets",
     "artifacts",
     "retro_window",

@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 from collections.abc import Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -15,7 +17,7 @@ from typing import Protocol, cast, runtime_checkable
 
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_digest
 from graph_engine.plugin_api import (
     TaskActivityCancelResult,
     TaskActivityReconcileResult,
@@ -71,9 +73,20 @@ class ProcessReceipt:
     report: Mapping[str, object] | None
 
 
+class ExecutionTimeout(OutputError):
+    """The trusted host stopped an execution process after its locked deadline."""
+
+
 @runtime_checkable
 class ExecutionProcessHost(Protocol):
-    def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt: ...
+    def spawn(
+        self,
+        argv: tuple[str, ...],
+        cwd: Path,
+        *,
+        timeout_seconds: float = 3600,
+        on_started: Callable[[int], None] | None = None,
+    ) -> ProcessReceipt: ...
 
 
 _JSON_REPORT_FILE = ".assurance-execution-report.json"
@@ -84,7 +97,14 @@ _REPORT_REASON = "pytest report path must be a regular file under the workspace"
 class ConfinedExecutionProcessHost:
     """Argv-only spawn. Production host; tests inject a fake instead."""
 
-    def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
+    def spawn(
+        self,
+        argv: tuple[str, ...],
+        cwd: Path,
+        *,
+        timeout_seconds: float = 3600,
+        on_started: Callable[[int], None] | None = None,
+    ) -> ProcessReceipt:
         if not argv or any("\x00" in item for item in argv):
             raise InputError("execution argv must be a confined non-empty command")
         public_argv = _public_pytest_argv(argv)
@@ -95,21 +115,50 @@ class ConfinedExecutionProcessHost:
             and (report_path.is_symlink() or not report_path.is_file())
         ):
             raise InputError(_REPORT_REASON)
-        completed = subprocess.run(  # noqa: S603
+        process = subprocess.Popen(  # noqa: S603
             list(public_argv),
             cwd=str(cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            check=False,
             shell=False,
             env=_scrubbed_env(argv, cwd),
+            start_new_session=True,
         )
+        if on_started is not None:
+            try:
+                on_started(process.pid)
+            except Exception:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+                process.communicate()
+                raise
+        try:
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as error:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                process.terminate()
+            try:
+                process.communicate(timeout=1)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    process.kill()
+                process.communicate()
+            raise ExecutionTimeout(
+                f"execution exceeded locked timeout of {timeout_seconds} seconds"
+            ) from error
         report = _load_confined_report(report_path, cwd)
         return ProcessReceipt(
             command=argv,
-            exit_code=int(completed.returncode),
-            stdout=completed.stdout or "",
-            stderr=completed.stderr or "",
+            exit_code=int(process.returncode),
+            stdout=stdout or "",
+            stderr=stderr or "",
             report=report,
         )
 
@@ -328,6 +377,7 @@ def run_closed_mapping(
     *,
     include_pr_metrics: bool,
     write_root: Path | None = None,
+    on_started: Callable[[int], None] | None = None,
 ) -> dict[str, object]:
     mapping = _closed_mapping(payload)
     selected = tuple(mapping.selected)
@@ -339,7 +389,12 @@ def run_closed_mapping(
         project_root=workspace,
         batch_id=payload.batch_id,
     )
-    receipt = process_host.spawn(argv, workspace)
+    receipt = process_host.spawn(
+        argv,
+        workspace,
+        timeout_seconds=payload.timeout_seconds,
+        on_started=on_started,
+    )
     report = receipt.report or {}
     evidence = normalize_evidence(
         change_id=payload.change_id,
@@ -399,10 +454,33 @@ def authenticate_execution_output(
     if (
         document.identity.plan_digest != expected.plan_digest
         or document.identity.batch_id != expected.batch_id
+        or tuple(item.model_dump(mode="json") for item in document.identity.method_plan_refs)
+        != tuple(item.model_dump(mode="json") for item in expected.method_plan_refs)
+        or document.identity.mapping_digest != mapping_digest(expected.mapping)
+        or document.identity.baseline_tree_id != expected.baseline_tree_id
+        or document.identity.runner_profile_digest != expected.runner_profile_digest
     ):
         raise OutputError("collector identity does not match the locked execution input")
     if not document.complete:
         raise OutputError("collector document is incomplete")
+
+
+def _subject_binding(*, baseline_tree_id: str, allowed_origins: tuple[str, ...]) -> SubjectBindingV1:
+    if allowed_origins:
+        return SubjectBindingV1(
+            kind="remote",
+            expected_identity=f"origins:{canonical_digest(list(allowed_origins))}",
+            observed_identity=None,
+            evidence_ref=None,
+            status="unavailable",
+        )
+    return SubjectBindingV1(
+        kind="local",
+        expected_identity=baseline_tree_id,
+        observed_identity=baseline_tree_id,
+        evidence_ref=None,
+        status="matched",
+    )
 
 
 class RunTestsHandler:
@@ -427,6 +505,14 @@ class RunTestsHandler:
             raw = request.input
             assembled = isinstance(raw, Mapping) and "mapping" in raw
             payload = self._payload(request, context)
+            process_started = False
+
+            def bind_process(pid: int) -> None:
+                nonlocal process_started
+                process_started = True
+                if context.activity is not None:
+                    context.activity.bind({"batch_id": payload.batch_id, "pid": pid})
+
             if payload.timeout_seconds <= 30:
                 raise InputError("execution timeout must reserve 30 seconds for cleanup")
             if context.activity is not None:
@@ -445,11 +531,16 @@ class RunTestsHandler:
                     self._process_host,
                     include_pr_metrics=False,
                     write_root=context.write_root,
+                    on_started=bind_process,
                 )
                 evidence = ExecutionEvidenceV1.model_validate(output["evidence"])
             else:
                 evidence, bundle = run_observed_mapping(
-                    payload, context.project_root, self._process_host, write_root=context.write_root
+                    payload,
+                    context.project_root,
+                    self._process_host,
+                    write_root=context.write_root,
+                    on_started=bind_process,
                 )
                 filename = "run-result.json" if payload.execution_kind == "run" else "execute-result.json"
                 observations_ref = (
@@ -457,7 +548,7 @@ class RunTestsHandler:
                 )
                 evidence = evidence.model_copy(update={"observations_ref": observations_ref})
                 write_canonical_evidence(context.write_root, evidence, filename=filename)
-            if context.activity is not None:
+            if context.activity is not None and not process_started:
                 context.activity.bind({"batch_id": payload.batch_id})
             result = evidence.model_dump(mode="json")
             return TaskOutcome.succeeded(cast(JSONValue, result))
@@ -548,7 +639,10 @@ def _write_observe_context(
 ) -> tuple[str, str, ExecutionIdentityV1]:
     identity = ExecutionIdentityV1(
         plan_digest=payload.plan_digest,
-        method_plan_refs=payload.method_plan_refs,
+        method_plan_refs=tuple(
+            EvidenceArtifactRefV1.model_validate(item.model_dump(mode="json"))
+            for item in payload.method_plan_refs
+        ),
         mapping_digest=mapping_digest(mapping),
         batch_id=payload.batch_id,
         baseline_tree_id=payload.baseline_tree_id,
@@ -596,6 +690,7 @@ def run_observed_mapping(
     process_host: ExecutionProcessHost,
     *,
     write_root: Path | None = None,
+    on_started: Callable[[int], None] | None = None,
 ) -> tuple[ExecutionEvidenceV1, ObservationBundleV1 | None]:
     destination = workspace if write_root is None else write_root
     mapping = _closed_mapping(payload)
@@ -676,7 +771,12 @@ def run_observed_mapping(
                 },
             ),
         )
-        receipt = process_host.spawn(argv, workspace)
+        receipt = process_host.spawn(
+            argv,
+            workspace,
+            timeout_seconds=payload.timeout_seconds,
+            on_started=on_started,
+        )
         document = (
             None
             if output_relative is None
@@ -751,12 +851,9 @@ def run_observed_mapping(
     bundle = ObservationBundleV1(
         schema_version="1",
         identity=identity,
-        subject=SubjectBindingV1(
-            kind="local",
-            expected_identity=payload.baseline_tree_id,
-            observed_identity=payload.baseline_tree_id,
-            evidence_ref=None,
-            status="matched",
+        subject=_subject_binding(
+            baseline_tree_id=payload.baseline_tree_id,
+            allowed_origins=payload.allowed_origins,
         ),
         observations=tuple(observations),
         collection_errors=tuple(collection_errors),

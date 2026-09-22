@@ -301,6 +301,7 @@ class PlanReviewAuthoring(BaseModel):
     next_action: NonEmptyStr
     risk_level: RiskTier
     required_capabilities: list[NonEmptyStr]
+    semantic_reviews: tuple[ObligationSemanticReviewV1, ...] = ()
     public_outcome: PublicReviewOutcome | None = None
     rounds_used: int | None = None
     rounds_budget: int | None = None

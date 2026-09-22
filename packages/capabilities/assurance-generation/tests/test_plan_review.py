@@ -31,12 +31,54 @@ from review_audit_fixtures import (  # pyright: ignore[reportMissingImports]
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     FAMILIES,
+    PLAN_DIGEST,
+    PLAN_REF,
     fake_agent_result,
     plan_input,
     review_result,
     reviewed_cases,
     valid_plan_review,
 )
+
+
+def _codegen_with_method() -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "layer": "api",
+        "files": [],
+        "mapping": {
+            "schema_version": "1",
+            "layer": "api",
+            "entries": [
+                {
+                    "case_id": "TC_API_001",
+                    "symbol": "test_lockout",
+                    "target_file": "qa/tests/api/items/test_items.py",
+                }
+            ],
+        },
+        "required_capabilities": ["entities.item.create"],
+        "method_plans": [
+            {
+                "mrc_id": "MRC-LOCK",
+                "requirement_id": "REQ-LOCK",
+                "profile_id": "api.state-sequence.v1",
+                "case_ids": ["TC_API_001"],
+                "prerequisites": [],
+                "steps": [{"step_id": "S1", "purpose": "observe", "action": "login"}],
+                "observations": [
+                    {
+                        "observation_id": "OBS-LOCK",
+                        "observation_key": "locked_status",
+                        "step_id": "S1",
+                        "test_nodeid": "qa/tests/api/items/test_items.py::test_lockout",
+                        "assertion_id": "A1",
+                    }
+                ],
+            }
+        ],
+    }
 
 
 def test_review_audit_modules_are_gone() -> None:
@@ -131,6 +173,44 @@ async def test_api_review_finalizes_without_review_audit(tmp_path: Path) -> None
     output = cast(dict[str, object], outcome.output)
     assert output["route"] == "codegen"
     assert "review_audit" not in output
+
+
+@pytest.mark.asyncio
+async def test_review_requires_typed_semantic_review_for_each_method_plan(tmp_path: Path) -> None:
+    payload = fake_agent_result(valid_plan_review())
+    payload["codegen_output"] = _codegen_with_method()
+
+    missing = await execute_task(review_finalize_handler("api"), payload, tmp_path)
+    assert missing.status == "failed"
+    assert missing.failure is not None
+    assert "semantic_reviews" in missing.failure.message
+
+    review = {
+        **valid_plan_review(),
+        "semantic_reviews": [
+            {
+                "frozen_plan_digest": PLAN_DIGEST,
+                "mrc_id": "MRC-LOCK",
+                "requirement_id": "REQ-LOCK",
+                "plan_ref": PLAN_REF,
+                "status": "pass",
+                "reason": "the frozen requirement supports the expected status",
+                "source_refs": [],
+                "expectation_reviews": [
+                    {
+                        "observation_key": "locked_status",
+                        "status": "pass",
+                        "reason": "the expected status is explicit",
+                        "basis_refs": [],
+                    }
+                ],
+            }
+        ],
+    }
+    accepted_payload = fake_agent_result(review)
+    accepted_payload["codegen_output"] = _codegen_with_method()
+    accepted = await execute_task(review_finalize_handler("api"), accepted_payload, tmp_path)
+    assert accepted.status == "succeeded", accepted.failure
 
 
 @pytest.mark.asyncio

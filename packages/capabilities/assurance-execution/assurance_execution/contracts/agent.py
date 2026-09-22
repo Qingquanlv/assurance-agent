@@ -93,6 +93,8 @@ class ExecutionPrepareInputV1(FrozenModel):
     repair_round: int = Field(default=0, ge=0)
     execution_kind: Literal["execute", "run"] = "execute"
     generation_result: GenerationCycleResultV1 | None = None
+    allowed_origins: tuple[str, ...] = ()
+    timeout_seconds: int = Field(default=3600, ge=31, le=3600)
 
     @field_validator("selected_test_families")
     @classmethod

@@ -32,7 +32,8 @@ from assurance_generation.contracts.codegen import (
     durable_test_path,
 )
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
-from assurance_generation.contracts.plans import canonical_relative_path
+from assurance_generation.contracts.obligation_methods import validate_observation_binding
+from assurance_generation.contracts.plans import ObligationMethodPlanV1, canonical_relative_path
 from assurance_generation.operations.codegen_scope import build_codegen_scope
 from assurance_generation.operations.planning import (
     FAMILIES,
@@ -52,6 +53,10 @@ from assurance_generation.operations.planning import (
 from assurance_generation.operations.resolve_inputs import authenticate_reviewed_case
 from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import CaseYamlAuthoring
+from assurance_intake.contracts.explore import PreparedExploreV1, load_exploration_document
+from assurance_intake.contracts.obligations import PreparedObligationV1
+from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
 
 CODEGEN_RESULT_ID = "assurance.generation.result.codegen.v1"
 _RESULT_FILES: Mapping[str, str] = {
@@ -63,6 +68,88 @@ _SKILL_FILES: Mapping[Family, str] = {
     "fuzz": "skills/aa-fuzz-codegen/SKILL.md",
     "performance": "skills/aa-performance-codegen/SKILL.md",
 }
+
+
+def _verification_obligations(
+    workspace: Path,
+    *,
+    plan_ref: object,
+    family: Family,
+    required: bool,
+) -> tuple[PreparedObligationV1, ...]:
+    from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+
+    model_dump = getattr(plan_ref, "model_dump", None)
+    if callable(model_dump):
+        plan_ref = model_dump(mode="json")
+    ref = EvidenceArtifactRefV1.model_validate(plan_ref)
+    plan_path = _workspace_path(workspace, ref.path)
+    if not plan_path.is_file() and not required:
+        return ()
+    plan_bytes = _workspace_regular_file(workspace, ref.path).read_bytes()
+    if hashlib.sha256(plan_bytes).hexdigest() != ref.digest:
+        raise InputError("frozen plan digest changed")
+    try:
+        plan = decode_plan(plan_bytes, ref)
+        obligations_ref = plan.quality_goal.obligations_ref
+        obligations_bytes = _workspace_regular_file(workspace, obligations_ref.path).read_bytes()
+        if hashlib.sha256(obligations_bytes).hexdigest() != obligations_ref.digest:
+            raise InputError("frozen obligation digest changed")
+        exploration = load_exploration_document(obligations_bytes)
+        rows = (
+            exploration.minimum_required_coverage
+            if isinstance(exploration, PreparedExploreV1)
+            else normalize_obligation_drafts(exploration.minimum_required_coverage, resolved_quotes={})
+        )
+    except ValueError as error:
+        raise InputError(f"invalid frozen obligations: {error}") from error
+    layers = {"api", "both"} if family == "api" else {"e2e", "both"} if family == "e2e" else set()
+    return tuple(
+        row
+        for row in rows
+        if row.scope_disposition == "included" and row.layer in layers and row.verification_requirements
+    )
+
+
+def _validate_method_plans(
+    *,
+    obligations: tuple[PreparedObligationV1, ...],
+    methods: tuple[ObligationMethodPlanV1, ...],
+    scope: CodegenScopeV1,
+    mapping: CodegenMapping,
+) -> None:
+    expected = {}
+    for obligation in obligations:
+        if len(obligation.verification_requirements) != 1:
+            raise InputError(
+                f"obligation must have exactly one verification requirement in v1: {obligation.mrc_id}"
+            )
+        requirement = obligation.verification_requirements[0]
+        expected[obligation.mrc_id] = requirement
+    actual = {item.mrc_id: item for item in methods}
+    if len(actual) != len(methods) or set(actual) != set(expected):
+        raise OutputError("method_plans must exactly cover the family verification obligations")
+    selectors = {f"{item.target_file}::{item.symbol.replace('.', '::')}" for item in mapping.entries}
+    case_ids = set(scope.case_ids)
+    for mrc_id, requirement in expected.items():
+        method = actual[mrc_id]
+        if (
+            method.requirement_id != requirement.requirement_id
+            or method.profile_id != requirement.profile_id
+            or method.prerequisites != requirement.prerequisites
+            or not method.case_ids
+            or not set(method.case_ids) <= case_ids
+        ):
+            raise OutputError(f"method plan does not match frozen requirement: {mrc_id}")
+        step_ids = {item.step_id for item in method.steps}
+        if len(step_ids) != len(method.steps) or any(
+            item.step_id not in step_ids or item.test_nodeid not in selectors for item in method.observations
+        ):
+            raise OutputError(f"method plan bindings are not executable: {mrc_id}")
+        try:
+            validate_observation_binding(requirement, method.observations)
+        except ValueError as error:
+            raise OutputError(f"invalid method observation binding for {mrc_id}: {error}") from error
 
 
 def codegen_result_contract(schema_id: str) -> ResultContract:
@@ -85,6 +172,7 @@ def validate_codegen_input(
         leafs = leafs_of(business.capability_leafs)
     except ValidationError as error:
         raise InputError(str(error)) from error
+    selected_scope: tuple[CaseYamlAuthoring, dict[str, tuple[str, ...]]] | None = None
     if business.reviewed_case is not None:
         try:
             reviewed = authenticate_reviewed_case(
@@ -95,16 +183,24 @@ def validate_codegen_input(
             )
         except ValueError as error:
             raise InputError(str(error)) from error
-        case_paths = tuple(item.path for item in reviewed.case_refs)
+        from assurance_generation.operations.selected_cases import load_selected_case_authoring
+
+        selected_scope = load_selected_case_authoring(
+            workspace,
+            reviewed,
+            family=family,
+            capability_leafs=business.capability_leafs,
+        )
+    if selected_scope is None:
+        cases, case_ids_by_path = load_family_case_modules(
+            workspace,
+            change_id=business.change_id,
+            family=family,
+            capability_leafs=business.capability_leafs,
+            case_paths=None,
+        )
     else:
-        case_paths = None
-    cases, case_ids_by_path = load_family_case_modules(
-        workspace,
-        change_id=business.change_id,
-        family=family,
-        capability_leafs=business.capability_leafs,
-        case_paths=case_paths,
-    )
+        cases, case_ids_by_path = selected_scope
     if business.reviewed_cases is not None:
         try:
             CaseYamlAuthoring.model_validate(
@@ -402,6 +498,15 @@ class CodegenPrepareHandler:
                 "generated_files_root": "qa/tests",
                 "codegen_scope": scope.model_dump(mode="json"),
                 "baseline_files": sorted(baseline),
+                "verification_obligations": [
+                    item.model_dump(mode="json")
+                    for item in _verification_obligations(
+                        context.project_root,
+                        plan_ref=business.plan_ref,
+                        family=family,
+                        required=business.reviewed_case is not None,
+                    )
+                ],
             }
             return prepare_codegen_outcome(
                 skill_path=_SKILL_FILES[family],
@@ -463,6 +568,17 @@ class CodegenFinalizeHandler:
                     raise OutputError(
                         f"mapping target_file must equal the locked test file for {item.case_id}"
                     )
+            _validate_method_plans(
+                obligations=_verification_obligations(
+                    context.project_root,
+                    plan_ref=payload.plan_ref,
+                    family=family,
+                    required=payload.reviewed_case is not None,
+                ),
+                methods=document.method_plans,
+                scope=scope,
+                mapping=document.mapping,
+            )
             files = _complete_files(
                 context.write_root,
                 document.files,
@@ -480,6 +596,7 @@ class CodegenFinalizeHandler:
                     "files": [item.model_dump(mode="json") for item in files],
                     "mapping": document.mapping.model_dump(mode="json"),
                     "required_capabilities": list(document.required_capabilities),
+                    "method_plans": [item.model_dump(mode="json") for item in document.method_plans],
                 },
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )

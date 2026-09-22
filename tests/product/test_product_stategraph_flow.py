@@ -144,6 +144,7 @@ def _generation(epoch: int = 0) -> dict[str, object]:
         mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
         source_refs=(_ref(f"qa/results/generated/epochs/{epoch}/tests/test_case.py"),),
         plan_refs=(_ref(f"qa/results/plans/epochs/{epoch}/api.json"),),
+        method_plan_ref=_ref(f"qa/results/generation/epochs/{epoch}/obligation-methods.json"),
     )
     return {"generation_result": result.model_dump(mode="json"), "status": "passed"}
 

@@ -154,7 +154,7 @@ class _LocalPytestHost:
     def __init__(self, *, lockout_url: str) -> None:
         self._lockout_url = lockout_url
 
-    def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
+    def spawn(self, argv: tuple[str, ...], cwd: Path, **_kwargs: object) -> ProcessReceipt:
         public = _public_pytest_argv(argv)
         env = _scrubbed_env(argv, cwd)
         env["LOCKOUT_URL"] = self._lockout_url
@@ -374,7 +374,12 @@ def run_lockout_cycle(
         )
     }
     review = ObligationSemanticReviewV1.model_validate(_semantic_review())
-    method = _method_for_obligation(obligation, plans, {(_MRC, _REQUIREMENT): review})
+    method = _method_for_obligation(
+        obligation,
+        plans,
+        {(_MRC, _REQUIREMENT): review},
+        {_MRC: method_ref},
+    )
     observations = _observations_for_obligation(obligation, method, bundle)
     facts: ObligationEvidenceFactsV1 = _facts_for_obligation(
         obligation=obligation,
@@ -389,6 +394,7 @@ def run_lockout_cycle(
         plan_digest=_PLAN,
         mrc_id=_MRC,
         verdict=verdict,
+        method_plan_refs=(method_ref,),
         evidence_refs=(observations_ref,),
         gap_codes=()
         if verdict == "supported"

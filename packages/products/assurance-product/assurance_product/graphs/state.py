@@ -142,6 +142,8 @@ class ProductStateDocument(FrozenModel):
     product_policy: dict[str, str]
     data_knowledge: dict[str, str]
     allowed_artifact_paths: list[str]
+    allowed_origins: list[str]
+    execution_timeout_seconds: int
     budgets: dict[str, int]
     artifacts: list[dict[str, Any]]
     history_refs: list[dict[str, str]]

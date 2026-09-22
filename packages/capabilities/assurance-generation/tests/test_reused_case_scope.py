@@ -7,7 +7,12 @@ import pytest
 
 from assurance_intake.contracts.case_selection import CaseSelectionV1, SelectedCaseV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
-from assurance_intake.operations.case_selection import InputError, load_selected_cases, require_selected_ids
+from assurance_generation.operations.selected_cases import (
+    InputError,
+    load_selected_case_authoring,
+    load_selected_cases,
+    require_selected_ids,
+)
 
 _FIXTURE = (
     Path(__file__).resolve().parents[2]
@@ -79,6 +84,15 @@ def test_generation_scope_includes_reused_ids(tmp_path: Path) -> None:
     assert _digest(tmp_path.joinpath("qa/cases/auth/login/case.yaml").read_bytes()) == _digest(
         _FIXTURE.read_bytes()
     )
+
+    authored, ids_by_path = load_selected_case_authoring(
+        tmp_path,
+        reviewed,
+        family="api",
+        capability_leafs=("entities.item.create",),
+    )
+    assert [entry.case_id for entry in authored.added] == ["TC_MENU_001"]
+    assert ids_by_path == {"qa/cases/auth/login/case.yaml": ("TC_MENU_001",)}
 
 
 def test_generation_scope_rejects_subset_without_reuse(tmp_path: Path) -> None:

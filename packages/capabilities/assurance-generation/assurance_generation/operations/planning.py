@@ -535,6 +535,7 @@ def validate_plan_input(
         business = PlanInputV1.model_validate(data)
     except ValidationError as error:
         raise InputError(str(error)) from error
+    selected_cases: CaseYamlAuthoring | None = None
     if business.reviewed_case is not None:
         try:
             reviewed = authenticate_reviewed_case(
@@ -545,19 +546,23 @@ def validate_plan_input(
             )
         except ValueError as error:
             raise InputError(str(error)) from error
-        from assurance_generation.operations.selected_cases import load_selected_cases
+        from assurance_generation.operations.selected_cases import load_selected_case_authoring
 
-        load_selected_cases(workspace, reviewed)
-        case_paths = tuple(item.path for item in reviewed.case_refs)
-    else:
-        case_paths = None
-    if business.reviewed_cases is None:
+        selected_cases, _ = load_selected_case_authoring(
+            workspace,
+            reviewed,
+            family=family,
+            capability_leafs=business.capability_leafs,
+        )
+    if selected_cases is not None:
+        cases = selected_cases
+    elif business.reviewed_cases is None:
         cases = load_family_cases(
             workspace,
             change_id=business.change_id,
             family=family,
             capability_leafs=business.capability_leafs,
-            case_paths=case_paths,
+            case_paths=None,
         )
     else:
         try:

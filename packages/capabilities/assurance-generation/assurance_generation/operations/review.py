@@ -13,6 +13,7 @@ from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskR
 
 from assurance_generation.contracts.agent import AgentBindingDataV1, AgentFinalizeInputV1
 from assurance_generation.contracts.reviews import PlanReviewAuthoring, public_review_outcome
+from assurance_generation.contracts.codegen import CodegenResultV1
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_REVIEW_RESULT_ID,
@@ -106,6 +107,8 @@ class PlanReviewPrepareHandler:
                 extra_json={
                     "codegen_scope": scope.model_dump(mode="json"),
                     "codegen_output": codegen_business.codegen_output,
+                    "frozen_plan_digest": business.plan_digest,
+                    "plan_ref": business.plan_ref.model_dump(mode="json"),
                 },
                 repair_review=plan_repair_review(
                     context.project_root,
@@ -212,6 +215,39 @@ class PlanReviewFinalizeHandler:
                     history_ref.model_dump(mode="json"),
                     scope_ref.model_dump(mode="json"),
                 ]
+            if payload.codegen_output is not None:
+                try:
+                    codegen_output = CodegenResultV1.model_validate(
+                        payload.codegen_output,
+                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    )
+                except ValidationError as error:
+                    raise InputError(f"invalid codegen output: {error}") from error
+                expected = {
+                    (item.mrc_id, item.requirement_id): {
+                        binding.observation_key for binding in item.observations
+                    }
+                    for item in codegen_output.method_plans
+                }
+                actual = {
+                    (item.mrc_id, item.requirement_id): {
+                        review.observation_key for review in item.expectation_reviews
+                    }
+                    for item in document.semantic_reviews
+                }
+                if actual != expected:
+                    raise OutputError("semantic_reviews must exactly cover reviewed method-plan expectations")
+                if any(
+                    item.frozen_plan_digest != payload.plan_digest or item.plan_ref != payload.plan_ref
+                    for item in document.semantic_reviews
+                ):
+                    raise OutputError("semantic review identity does not match the frozen plan")
+                if document.route == "codegen" and any(
+                    item.status != "pass"
+                    or any(expectation.status != "pass" for expectation in item.expectation_reviews)
+                    for item in document.semantic_reviews
+                ):
+                    raise OutputError("codegen route requires every semantic review to pass")
             return TaskOutcome.succeeded(
                 cast(
                     JSONValue,

@@ -9,6 +9,8 @@ from pathlib import Path, PurePosixPath
 import yaml
 from pydantic import ValidationError
 
+from assurance_generation.contracts.families import LayerName
+from assurance_intake.contracts import CaseYamlAuthoring
 from assurance_intake.contracts.case_selection import CaseSelectionV1, selection_path
 from assurance_intake.contracts.cases import CaseEntryAuthoring
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedCaseV1
@@ -16,6 +18,14 @@ from assurance_intake.contracts.workflow import EvidenceArtifactRefV1, ReviewedC
 
 class InputError(ValueError):
     """Raised when the current selection cannot be authenticated."""
+
+
+_CASE_TYPES: dict[LayerName, str] = {
+    "api": "API",
+    "e2e": "E2E",
+    "fuzz": "Fuzz",
+    "performance": "Performance",
+}
 
 
 def require_selected_ids(actual: tuple[str, ...], selected: tuple[str, ...]) -> None:
@@ -66,6 +76,13 @@ def _entry_at(document: object, locator: str, case_id: str) -> CaseEntryAuthorin
 
 
 def load_selected_cases(workspace: Path, reviewed: ReviewedCaseV1) -> tuple[CaseEntryAuthoring, ...]:
+    return tuple(entry for _, entry in _load_selected_rows(workspace, reviewed))
+
+
+def _load_selected_rows(
+    workspace: Path,
+    reviewed: ReviewedCaseV1,
+) -> tuple[tuple[str, CaseEntryAuthoring], ...]:
     selection_bytes = _regular_file(workspace, reviewed.selection_ref)
     if reviewed.selection_ref.path != selection_path(reviewed.coverage_epoch):
         raise InputError("selection_ref must bind the current epoch selection.json")
@@ -79,7 +96,7 @@ def load_selected_cases(workspace: Path, reviewed: ReviewedCaseV1) -> tuple[Case
         raise InputError("selection plan_digest does not match the reviewed case")
     _regular_file(workspace, reviewed.review_ref)
     source_paths = {item.path for item in reviewed.case_refs}
-    loaded: list[CaseEntryAuthoring] = []
+    loaded: list[tuple[str, CaseEntryAuthoring]] = []
     seen_ids: set[str] = set()
     for item in selection.cases:
         if item.source_ref.path not in source_paths:
@@ -92,5 +109,45 @@ def load_selected_cases(workspace: Path, reviewed: ReviewedCaseV1) -> tuple[Case
         if item.case_id in seen_ids:
             raise InputError("duplicate selected case_id")
         seen_ids.add(item.case_id)
-        loaded.append(_entry_at(document, item.source_locator, item.case_id))
+        loaded.append((item.source_ref.path, _entry_at(document, item.source_locator, item.case_id)))
     return tuple(loaded)
+
+
+def load_selected_case_authoring(
+    workspace: Path,
+    reviewed: ReviewedCaseV1,
+    *,
+    family: LayerName,
+    capability_leafs: tuple[str, ...],
+) -> tuple[CaseYamlAuthoring, dict[str, tuple[str, ...]]]:
+    """Project the authenticated selection into one family without losing reuse."""
+
+    selected = tuple(
+        (path, entry)
+        for path, entry in _load_selected_rows(workspace, reviewed)
+        if entry.type == _CASE_TYPES[family]
+    )
+    grouped: dict[str, list[str]] = {}
+    for path, entry in selected:
+        grouped.setdefault(path, []).append(entry.case_id)
+    try:
+        cases = CaseYamlAuthoring.model_validate(
+            {
+                "schema_version": "1.0",
+                "added": [entry.model_dump(mode="json") for _, entry in selected],
+                "modified": [],
+                "removed": [],
+            },
+            context={"capability_leafs": frozenset(capability_leafs)},
+        )
+    except ValidationError as error:
+        raise InputError(f"selected cases are invalid: {error}") from error
+    return cases, {path: tuple(sorted(ids)) for path, ids in sorted(grouped.items())}
+
+
+__all__ = [
+    "InputError",
+    "load_selected_case_authoring",
+    "load_selected_cases",
+    "require_selected_ids",
+]

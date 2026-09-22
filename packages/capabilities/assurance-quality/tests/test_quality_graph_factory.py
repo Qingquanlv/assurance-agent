@@ -157,6 +157,7 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
         "mapping_ref": ref("qa/results/codegen/closed-mapping.json"),
         "source_refs": [ref("qa/tests/a.py")],
         "plan_refs": [ref("qa/results/plans/api-plan.md")],
+        "method_plan_ref": ref("qa/results/generation/epochs/2/obligation-methods.json"),
     }
     payload.update(
         {

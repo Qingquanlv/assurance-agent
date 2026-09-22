@@ -26,6 +26,8 @@ _SKILL_FIELDS = (
     "coverage_epoch",
     "repair_round",
     "generation_result",
+    "allowed_origins",
+    "timeout_seconds",
 )
 
 

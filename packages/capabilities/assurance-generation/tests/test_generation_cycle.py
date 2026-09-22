@@ -11,6 +11,7 @@ from assurance_generation.contracts.families import LayerName
 from assurance_generation.operations.codegen import CodegenFinalizeHandler
 from assurance_generation.contracts.workflow import CompleteGenerationInputV1
 from assurance_generation.operations.cycle import complete_generation_cycle
+from assurance_intake.contracts.case_selection import CaseSelectionV1, SelectedCaseV1
 from assurance_product.graphs.execute import _route_generation, adapt_execution
 from assurance_product.graphs.state import ProductState
 from graph_engine.attempts.workspace import TaskWorkspaceProvider, TaskWorkspaceStore
@@ -48,7 +49,29 @@ async def cycle_fixture(
     for family in families:
         cases["added"].extend(reviewed_cases(family)["added"])  # type: ignore[union-attr]
     case_ref = _write(root, "qa/cases/items/case.yaml", yaml.safe_dump(cases).encode())
-    reviewed = reviewed.model_copy(update={"case_refs": (case_ref,)})
+    selection = CaseSelectionV1(
+        schema_version="1",
+        change_id=reviewed.change_id,
+        coverage_epoch=coverage_epoch,
+        plan_digest=reviewed.plan_digest,
+        inventory_ref=reviewed.plan_ref.model_dump(mode="json"),
+        cases=tuple(
+            SelectedCaseV1(
+                case_id=entry["case_id"],
+                origin="added",
+                source_ref=case_ref.model_dump(mode="json"),
+                source_locator=f"added[{index}]",
+                mrc_ids=(),
+            )
+            for index, entry in enumerate(cases["added"])
+        ),
+    )
+    selection_ref = _write(
+        root,
+        f"qa/results/cases/epochs/{coverage_epoch}/selection.json",
+        selection.model_dump_json().encode(),
+    )
+    reviewed = reviewed.model_copy(update={"case_refs": (case_ref,), "selection_ref": selection_ref})
     script = {
         "generation.resolve-inputs": [
             committed(
@@ -89,6 +112,8 @@ async def cycle_fixture(
                 "files": output["files"],
                 "mapping": output["mapping"],
                 "receipt": receipt.model_dump(mode="json"),
+                "method_plans": [],
+                "semantic_reviews": [],
             }
         )
     payload = CompleteGenerationInputV1.model_validate(
@@ -195,6 +220,9 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
         "qa/tests/testdata/e2e/items.py",
     }
     assert len(result["plan_refs"]) == 4
+    method_document = json.loads((project / result["method_plan_ref"]["path"]).read_bytes())
+    assert method_document["plan_digest"] == result["plan_digest"]
+    assert method_document["method_plans"] == []
     assert {ref["path"] for ref in result["plan_refs"]} == {
         "qa/results/codegen/api-codegen-summary.md",
         "qa/results/codegen/api-generated-files.json",
@@ -203,9 +231,18 @@ async def test_generation_cycle_is_committed_and_passed_to_execution(
     }
     assert state["generation_receipt"]["receipt_digest"] != "a" * 64
     assert executor.dispatch_count == 1
-    adapted = adapt_execution(cast(ProductState, {**valid_product_input(), **state}))
+    adapted = adapt_execution(
+        cast(
+            ProductState,
+            {
+                **valid_product_input(allowed_origins=("http://127.0.0.1:9999",)),
+                **state,
+            },
+        )
+    )
     feature_input = cast(dict[str, object], adapted["feature_input"])
     assert feature_input["generation_result"] == result
+    assert feature_input["allowed_origins"] == ["http://127.0.0.1:9999"]
 
 
 async def test_generation_cycle_requires_results_plan_prefix(tmp_path: Path) -> None:

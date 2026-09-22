@@ -48,7 +48,10 @@ from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
 from assurance_generation.contracts import CodegenAuthoringV1
 from assurance_intake.contracts import CaseYamlAuthoring
+from assurance_intake.contracts.case_selection import CaseSelectionV1, selection_path
+from assurance_intake.contracts.cases import CaseEntryAuthoring
 from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.workflow import ReviewedCaseV1
 from assurance_execution.resource_loader import resource_bytes, resource_text
 
 EXECUTE_SKILL = "skills/aa-execute/SKILL.md"
@@ -265,7 +268,66 @@ def _reviewed_cases(
     workspace: Path,
     *,
     capability_leafs: tuple[str, ...],
+    reviewed_case: ReviewedCaseV1 | None = None,
 ) -> CaseYamlAuthoring:
+    if reviewed_case is not None:
+        selection_file = _regular_input_file(workspace, reviewed_case.selection_ref.path)
+        if hashlib.sha256(selection_file.read_bytes()).hexdigest() != reviewed_case.selection_ref.digest:
+            raise InputError("reviewed case selection digest changed")
+        if reviewed_case.selection_ref.path != selection_path(reviewed_case.coverage_epoch):
+            raise InputError("reviewed case selection does not bind the current epoch")
+        try:
+            selection = CaseSelectionV1.model_validate(_json_document(selection_file))
+        except ValidationError as error:
+            raise InputError(f"invalid reviewed case selection: {error}") from error
+        if (
+            selection.change_id != reviewed_case.change_id
+            or selection.coverage_epoch != reviewed_case.coverage_epoch
+            or selection.plan_digest != reviewed_case.plan_digest
+        ):
+            raise InputError("reviewed case selection identity does not match")
+        review_file = _regular_input_file(workspace, reviewed_case.review_ref.path)
+        if hashlib.sha256(review_file.read_bytes()).hexdigest() != reviewed_case.review_ref.digest:
+            raise InputError("reviewed case review digest changed")
+        case_refs = {item.path: item for item in reviewed_case.case_refs}
+        selected: list[CaseEntryAuthoring] = []
+        for row in selection.cases:
+            source_ref = case_refs.get(row.source_ref.path)
+            if source_ref is None or source_ref != row.source_ref:
+                raise InputError("selected case source is not authenticated by the reviewed case")
+            source_file = _regular_input_file(workspace, source_ref.path)
+            if hashlib.sha256(source_file.read_bytes()).hexdigest() != source_ref.digest:
+                raise InputError(f"selected case source digest changed: {source_ref.path}")
+            try:
+                document = yaml.safe_load(source_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError) as error:
+                raise InputError(f"selected case source is invalid: {source_ref.path}") from error
+            section, marker, raw_index = row.source_locator.partition("[")
+            entries = document.get(section) if isinstance(document, dict) else None
+            if not marker or not raw_index.endswith("]") or not raw_index[:-1].isdigit():
+                raise InputError(f"selected case locator is invalid: {row.source_locator}")
+            index = int(raw_index[:-1])
+            if not isinstance(entries, list) or index >= len(entries):
+                raise InputError(f"selected case locator is out of range: {row.source_locator}")
+            try:
+                entry = CaseEntryAuthoring.model_validate(entries[index])
+            except ValidationError as error:
+                raise InputError(f"selected case is invalid: {error}") from error
+            if entry.case_id != row.case_id:
+                raise InputError("selected case locator does not match case_id")
+            selected.append(entry)
+        try:
+            return CaseYamlAuthoring.model_validate(
+                {
+                    "schema_version": "1.0",
+                    "added": [entry.model_dump(mode="json") for entry in selected],
+                    "modified": [],
+                    "removed": [],
+                },
+                context={"capability_leafs": leafs_of(capability_leafs)},
+            )
+        except ValidationError as error:
+            raise InputError(str(error)) from error
     root = workspace / "qa" / "cases"
     if not root.is_dir() or root.is_symlink():
         raise InputError("reviewed case directory is missing: qa/cases")
@@ -441,6 +503,9 @@ def assemble_execution_input(
     write_root: Path,
     model: type[Any] | None = None,
 ) -> RunTestsInputV1:
+    model_dump = getattr(data, "model_dump", None)
+    if callable(model_dump):
+        data = model_dump(mode="json")
     root = validate_input(ExecutionPrepareInputV1, data)
     try:
         plan = decode_plan(
@@ -473,6 +538,7 @@ def assemble_execution_input(
     cases = _reviewed_cases(
         workspace,
         capability_leafs=root.capability_leafs,
+        reviewed_case=(None if root.generation_result is None else root.generation_result.reviewed_case),
     )
     case_ids = tuple(
         sorted(
@@ -537,6 +603,11 @@ def assemble_execution_input(
         runner_profile_digest=runner_profile_digest,
         coverage_epoch=root.coverage_epoch,
         execution_kind=root.execution_kind,
+        timeout_seconds=root.timeout_seconds,
+        method_plan_refs=(
+            () if root.generation_result is None else (root.generation_result.method_plan_ref,)
+        ),
+        allowed_origins=root.allowed_origins,
     )
 
 

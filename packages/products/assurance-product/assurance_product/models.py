@@ -452,6 +452,8 @@ class ProductInputV1(FrozenModel):
     product_policy: ResourceRefV1
     data_knowledge: ResourceRefV1
     allowed_artifact_paths: tuple[str, ...]
+    allowed_origins: tuple[str, ...] = ()
+    execution_timeout_seconds: int = Field(default=3600, ge=31, le=3600)
     budgets: BusinessBudgetsV1
     artifacts: tuple[ArtifactRefV1, ...] = ()
     retro_window: RetroWindow | None = None
@@ -492,6 +494,27 @@ class ProductInputV1(FrozenModel):
     @classmethod
     def _case_delta_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _exact_case_delta_paths(value)
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _allowed_origins(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(set(value))):
+            raise ValueError("allowed_origins must be sorted and unique")
+        for origin in value:
+            parsed = urlparse(origin)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or parsed.params
+                or parsed.query
+                or parsed.fragment
+                or origin != f"{parsed.scheme}://{parsed.netloc}"
+            ):
+                raise ValueError("allowed_origins must contain canonical HTTP origins")
+        return value
 
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> ProductInputV1:

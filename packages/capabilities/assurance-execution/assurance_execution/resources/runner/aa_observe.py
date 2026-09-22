@@ -58,21 +58,28 @@ class _Observer:
         self._sequence = 0
 
     def _binding(self, observation_id: str) -> _Binding:
-        expectations: dict[str, int] = {}
+        expectations: dict[tuple[str, str], int] = {}
         for requirement in self.context.get("requirements") or ():
+            requirement_id = str(requirement.get("requirement_id") or "")
             for item in requirement.get("observations") or ():
                 expected = item.get("expected")
                 key = item.get("observation_key")
                 if expected is not None and key is not None:
-                    expectations[str(key)] = int(expected)
+                    expectations[(requirement_id, str(key))] = int(expected)
         for plan in self.context.get("method_plans") or ():
             for row in plan.get("observations") or ():
                 if row.get("observation_id") != observation_id:
                     continue
                 key = str(row.get("observation_key") or "")
-                if key not in expectations:
+                expectation_key = (str(plan.get("requirement_id") or ""), key)
+                if expectation_key not in expectations:
                     break
-                return _Binding(key=key, expected=expectations[key], plan=plan, row=row)
+                return _Binding(
+                    key=key,
+                    expected=expectations[expectation_key],
+                    plan=plan,
+                    row=row,
+                )
         raise RuntimeError(f"unknown observation_id: {observation_id}")
 
     def request(

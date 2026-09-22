@@ -47,6 +47,7 @@ HUMAN_OBLIGATION_GAPS = frozenset(
         "profile_missing",
         "oracle_gap",
         "scope_gap",
+        "subject_identity_unavailable",
         "capability_unknown",
         "method_unsupported",
         "no_verifiable_scope",
@@ -116,12 +117,14 @@ class ObligationMethod(NamedTuple):
     plan: ObligationMethodPlanV1 | None
     review: ObligationSemanticReviewV1 | None
     requirement: VerificationRequirementV1 | None
+    plan_ref: EvidenceArtifactRefV1 | None
 
 
 def _method_for_obligation(
     obligation: PreparedObligationV1,
     plans: Mapping[str, ObligationMethodPlanV1],
     reviews: Mapping[tuple[str, str], ObligationSemanticReviewV1],
+    plan_refs: Mapping[str, EvidenceArtifactRefV1],
 ) -> ObligationMethod:
     plan = plans.get(obligation.mrc_id)
     requirement = next(
@@ -135,11 +138,28 @@ def _method_for_obligation(
     if requirement is None and plan is None and len(obligation.verification_requirements) == 1:
         requirement = obligation.verification_requirements[0]
     review = reviews.get((obligation.mrc_id, requirement.requirement_id)) if requirement is not None else None
-    return ObligationMethod(plan=plan, review=review, requirement=requirement)
+    return ObligationMethod(
+        plan=plan,
+        review=review,
+        requirement=requirement,
+        plan_ref=plan_refs.get(obligation.mrc_id),
+    )
 
 
 def _method_is_bound(method: ObligationMethod) -> bool:
     if method.plan is None or method.requirement is None:
+        return False
+    if (
+        method.plan.requirement_id != method.requirement.requirement_id
+        or method.plan.profile_id != method.requirement.profile_id
+        or method.plan.prerequisites != method.requirement.prerequisites
+        or not method.plan.case_ids
+    ):
+        return False
+    step_ids = tuple(item.step_id for item in method.plan.steps)
+    if len(step_ids) != len(set(step_ids)):
+        return False
+    if any(item.step_id not in step_ids for item in method.plan.observations):
         return False
     try:
         validate_observation_binding(method.requirement, method.plan.observations)
@@ -164,12 +184,36 @@ def _observations_for_obligation(
 ) -> tuple[RuntimeObservationV1, ...]:
     if bundle is None or method.plan is None:
         return ()
-    wanted = {item.observation_id for item in method.plan.observations}
+    bindings = {item.observation_id: item for item in method.plan.observations}
+    indexes = {item.observation_id: index for index, item in enumerate(method.plan.observations)}
     return tuple(
         item
         for item in bundle.observations
-        if item.observation_id in wanted and item.mrc_id == obligation.mrc_id
+        if (binding := bindings.get(item.observation_id)) is not None
+        and item.mrc_id == obligation.mrc_id
+        and item.requirement_id == method.plan.requirement_id
+        and item.observation_key == binding.observation_key
+        and item.test_nodeid == binding.test_nodeid
+        and item.assertion_id == binding.assertion_id
+        and item.step_id == binding.step_id
+        and item.sequence_index == indexes[item.observation_id]
     )
+
+
+def _observation_passed(method: ObligationMethod, observation: RuntimeObservationV1) -> bool:
+    if method.requirement is None:
+        return False
+    expected = next(
+        (
+            item
+            for item in method.requirement.observations
+            if item.observation_key == observation.observation_key
+        ),
+        None,
+    )
+    if expected is None or expected.predicate != "status_code_eq" or expected.expected is None:
+        return False
+    return observation.actual_status == expected.expected
 
 
 def _facts_for_obligation(
@@ -181,9 +225,7 @@ def _facts_for_obligation(
     subject_matched: bool,
     counterexample_ref: EvidenceArtifactRefV1 | None,
 ) -> ObligationEvidenceFactsV1:
-    confirmed = not (
-        obligation.key is None and obligation.proposed_key is None
-    ) and _expectation_is_confirmed(obligation, method)
+    confirmed = obligation.key is not None and _expectation_is_confirmed(obligation, method)
     method_valid = _method_is_bound(method)
     reviews_passed = method.review is not None and method.review.status == "pass"
     required_ids = (
@@ -192,9 +234,14 @@ def _facts_for_obligation(
     complete = (
         blocked is None
         and bool(required_ids)
+        and len(observations) == len(required_ids)
         and {item.observation_id for item in observations} == required_ids
     )
-    contradicted = tuple(item for item in observations if not item.predicate_passed)
+    contradicted = tuple(item for item in observations if not _observation_passed(method, item))
+    prerequisites_valid = blocked is None and (
+        not (method.requirement and method.requirement.prerequisites)
+        or (bool(observations) and all(item.prerequisite_refs for item in observations))
+    )
     eligible = (
         confirmed
         and method_valid
@@ -202,6 +249,7 @@ def _facts_for_obligation(
         and subject_matched
         and blocked is None
         and complete
+        and prerequisites_valid
         and bool(contradicted)
         and counterexample_ref is not None
     )
@@ -211,7 +259,7 @@ def _facts_for_obligation(
             "eligible_counterexample": eligible,
             "subject_valid": subject_matched and blocked is None,
             "method_valid": method_valid and blocked is None,
-            "prerequisites_valid": blocked is None,
+            "prerequisites_valid": prerequisites_valid,
             "observations_complete": complete,
             "required_reviews_passed": reviews_passed,
             "supporting_evidence_current": complete and not contradicted,
@@ -229,7 +277,7 @@ def _gap_codes(
     method: ObligationMethod,
 ) -> tuple[str, ...]:
     codes: list[str] = []
-    if obligation.key is None and obligation.proposed_key is None:
+    if obligation.key is None:
         codes.append("capability_unresolved")
     if blocked is not None:
         return tuple((*codes, blocked))
@@ -239,6 +287,8 @@ def _gap_codes(
         codes.append("obligation_mapping_missing")
     if not facts.expectation_confirmed:
         codes.append("expectation_unconfirmed")
+    if not facts.subject_valid:
+        codes.append("subject_identity_unavailable")
     if not facts.observations_complete:
         codes.append("obligation_observation_missing")
     return tuple(codes)
@@ -261,37 +311,70 @@ def load_prepared_obligations(
 
 def load_obligation_methods(
     workspace: Path, request: MaterializeAssessmentInputV1
-) -> tuple[dict[str, ObligationMethodPlanV1], dict[tuple[str, str], ObligationSemanticReviewV1]]:
+) -> tuple[
+    dict[str, ObligationMethodPlanV1],
+    dict[tuple[str, str], ObligationSemanticReviewV1],
+    dict[str, EvidenceArtifactRefV1],
+]:
     """Read the reviewed method plans the generation cycle froze for this plan."""
 
     plans: dict[str, ObligationMethodPlanV1] = {}
     reviews: dict[tuple[str, str], ObligationSemanticReviewV1] = {}
-    for ref in request.generation.plan_refs:
-        if not ref.path.endswith(".json"):
-            continue
-        try:
-            payload = json.loads(_authenticate_ref(workspace, ref).decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        for item in payload.get("method_plans") or ():
-            try:
-                plan = ObligationMethodPlanV1.model_validate(item)
-            except ValidationError:
-                continue
-            if plan.mrc_id in plans:
-                raise InputError(f"obligation has more than one reviewed method: {plan.mrc_id}")
-            plans[plan.mrc_id] = plan
-        for item in payload.get("semantic_reviews") or ():
-            try:
-                review = ObligationSemanticReviewV1.model_validate(item)
-            except ValidationError:
-                continue
-            if review.frozen_plan_digest != request.plan_digest:
-                raise InputError(f"semantic review belongs to another plan: {review.mrc_id}")
-            reviews[(review.mrc_id, review.requirement_id)] = review
-    return plans, reviews
+    plan_refs: dict[str, EvidenceArtifactRefV1] = {}
+    ref = request.generation.method_plan_ref
+    try:
+        payload = json.loads(_authenticate_ref(workspace, ref).decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise InputError(f"invalid obligation method artifact: {error}") from error
+    if not isinstance(payload, dict):
+        raise InputError("obligation method artifact is not a document")
+    if payload.get("plan_digest") != request.plan_digest or payload.get(
+        "plan_ref"
+    ) != request.plan_ref.model_dump(mode="json"):
+        raise InputError("obligation method artifact belongs to another frozen plan")
+    try:
+        typed_plans = tuple(
+            ObligationMethodPlanV1.model_validate(item) for item in payload.get("method_plans") or ()
+        )
+        typed_reviews = tuple(
+            ObligationSemanticReviewV1.model_validate(item) for item in payload.get("semantic_reviews") or ()
+        )
+    except ValidationError as error:
+        raise InputError(f"invalid obligation method artifact: {error}") from error
+    for plan in typed_plans:
+        if plan.mrc_id in plans:
+            raise InputError(f"obligation has more than one reviewed method: {plan.mrc_id}")
+        plans[plan.mrc_id] = plan
+        plan_refs[plan.mrc_id] = ref
+    for review in typed_reviews:
+        if review.frozen_plan_digest != request.plan_digest or review.plan_ref != request.plan_ref:
+            raise InputError(f"semantic review belongs to another plan: {review.mrc_id}")
+        key = (review.mrc_id, review.requirement_id)
+        if key in reviews:
+            raise InputError(f"obligation has more than one semantic review: {review.mrc_id}")
+        reviews[key] = review
+    return plans, reviews, plan_refs
+
+
+def _authenticate_observation_identity(
+    *,
+    request: MaterializeAssessmentInputV1,
+    evidence: ExecutionEvidenceV1,
+    bundle: ObservationBundleV1,
+    method_refs: tuple[EvidenceArtifactRefV1, ...],
+) -> None:
+    identity = bundle.identity
+    expected_refs = tuple(sorted(method_refs, key=lambda item: (item.path, item.digest)))
+    actual_refs = tuple(sorted(identity.method_plan_refs, key=lambda item: (item.path, item.digest)))
+    if (
+        identity.plan_digest != request.plan_digest
+        or identity.batch_id != request.execution.batch_id
+        or identity.mapping_digest != evidence.mapping_digest
+        or identity.baseline_tree_id != evidence.baseline_tree_id
+        or identity.runner_profile_digest != evidence.runner_profile_digest
+        or actual_refs != expected_refs
+    ):
+        raise InputError("runtime observation identity does not match execution evidence")
 
 
 def load_observation_bundle(
@@ -323,17 +406,32 @@ def assess_obligations(
     except (UnicodeError, json.JSONDecodeError, ValidationError) as error:
         raise InputError(f"invalid execution evidence: {error}") from error
     obligations = load_prepared_obligations(workspace, request)
-    plans, reviews = load_obligation_methods(workspace, request)
+    plans, reviews, plan_refs = load_obligation_methods(workspace, request)
     bundle = load_observation_bundle(workspace, request)
-    subject_matched = bundle is None or bundle.subject.status == "matched"
+    method_refs = (request.generation.method_plan_ref,)
+    if bundle is not None:
+        _authenticate_observation_identity(
+            request=request,
+            evidence=evidence,
+            bundle=bundle,
+            method_refs=method_refs,
+        )
+    subject_matched = bundle is not None and bundle.subject.status == "matched"
     observations_ref = request.execution.observations_ref
     rows: list[ObligationAssessmentRowV1] = []
     for obligation in obligations:
         if obligation.scope_disposition == "excluded":
             continue
-        method = _method_for_obligation(obligation, plans, reviews)
+        method = _method_for_obligation(obligation, plans, reviews, plan_refs)
         blocked = _blocked_reason(evidence.family_outcomes, obligation.layer)
-        observations = _observations_for_obligation(obligation, method, bundle)
+        observations = (
+            ()
+            if bundle is not None and bundle.collection_errors
+            else _observations_for_obligation(obligation, method, bundle)
+        )
+        for observation in observations:
+            for prerequisite_ref in observation.prerequisite_refs:
+                _authenticate_ref(workspace, prerequisite_ref)
         facts = _facts_for_obligation(
             obligation=obligation,
             method=method,
@@ -353,7 +451,7 @@ def assess_obligations(
                 plan_digest=request.plan_digest,
                 mrc_id=obligation.mrc_id,
                 verdict=verdict,
-                method_plan_refs=(),
+                method_plan_refs=(method.plan_ref,) if method.plan_ref is not None else (),
                 evidence_refs=evidence_refs,
                 gap_codes=()
                 if verdict == "supported"

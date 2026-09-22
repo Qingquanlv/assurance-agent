@@ -176,17 +176,6 @@ def test_empty_legacy_condition_does_not_make_resolved_obligations_unresolved() 
         (
             [
                 _draft(
-                    draft_id="D-NEG",
-                    proposed_key="entities.item.constraints.unknown",
-                    category="negative",
-                    layer="api",
-                )
-            ],
-            "unknown",
-        ),
-        (
-            [
-                _draft(
                     draft_id="D-COND",
                     proposed_key="checkout",
                     category="e2e_if_enabled",
@@ -194,17 +183,6 @@ def test_empty_legacy_condition_does_not_make_resolved_obligations_unresolved() 
                 )
             ],
             "unresolved",
-        ),
-        (
-            [
-                _draft(
-                    draft_id="D-E2E",
-                    proposed_key=None,
-                    category="e2e",
-                    layer="e2e",
-                )
-            ],
-            "unknown journey",
         ),
     ],
 )
@@ -242,6 +220,40 @@ def test_unresolved_closed_obligation_is_preserved_for_later_gate(category: str)
         ("MRC-NEGATIVE-009", None, None, True)
     ]
     assert required_goal_families(rows) == ("api",)
+
+
+@pytest.mark.parametrize(
+    ("category", "layer", "proposed_key"),
+    [
+        ("negative", "api", "departments.permissions.deny"),
+        ("e2e", "e2e", "department-admin-journey"),
+    ],
+)
+def test_unknown_proposed_capability_is_preserved_as_unresolved(
+    category: str,
+    layer: str,
+    proposed_key: str,
+) -> None:
+    advisory = ExploreAdvisoryV1.model_validate(
+        _advisory(
+            [
+                _draft(
+                    draft_id="MRC-UNRESOLVED-001",
+                    proposed_key=proposed_key,
+                    category=category,
+                    layer=layer,
+                )
+            ]
+        )
+    )
+
+    rows = normalize_goal_obligations(
+        advisory,
+        capability_leafs=frozenset({"entities.item.constraints.name"}),
+        journey_keys=frozenset({"checkout"}),
+    )
+
+    assert [(row.key, row.proposed_key, row.required) for row in rows] == [(None, proposed_key, True)]
 
 
 @pytest.mark.parametrize("empty_legacy_category", [False, True])

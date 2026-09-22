@@ -56,6 +56,14 @@ def test_valid_spec_round_trips() -> None:
     assert RunSpecV1.model_validate(dumped) == spec
 
 
+def test_bootstrap_derives_only_the_http_origin_from_sut_base_url() -> None:
+    from assurance_product.bootstrap.composition import _origin_from_base_url
+
+    assert _origin_from_base_url("https://sut.example:8443/api/v1") == "https://sut.example:8443"
+    with pytest.raises(ValueError, match="without credentials"):
+        _origin_from_base_url("https://user:secret@sut.example/api")
+
+
 def test_spec_rejects_unknown_product() -> None:
     with pytest.raises(ValidationError):
         _spec(product="other-product")

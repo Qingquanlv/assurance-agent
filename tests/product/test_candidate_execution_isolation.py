@@ -124,7 +124,7 @@ class RecordingHost:
         self.cwds: list[Path] = []
         self.crash = crash
 
-    def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
+    def spawn(self, argv: tuple[str, ...], cwd: Path, **_kwargs: object) -> ProcessReceipt:
         self.commands.append(argv)
         self.cwds.append(cwd)
         if self.crash:
@@ -313,7 +313,7 @@ def _canonical_selector(item: str) -> str:
 
 
 class LivePytestHost:
-    def spawn(self, argv: tuple[str, ...], cwd: Path) -> ProcessReceipt:
+    def spawn(self, argv: tuple[str, ...], cwd: Path, **_kwargs: object) -> ProcessReceipt:
         public = tuple(
             item
             for item in argv
