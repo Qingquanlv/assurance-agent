@@ -13,7 +13,13 @@ mapping.
 - Do not create tests, change Case YAML, change mappings, or edit product code.
 - Write every changed file at its exact logical path beneath the provided write root.
 - Return `TestRepairResultV1` with the exact sorted `output_files` write set and a
-  concise summary.
+  concise summary. Do not list `repair.json` in `output_files`.
 
-The runtime finalizer compares staged bytes with the authenticated source refs. A
-proposal or summary alone never counts as an applied repair.
+The runtime finalizer compares staged test bytes with the authenticated source
+refs. A proposal or summary alone never counts as an applied repair.
+
+### Host-owned repair history
+
+Your outputs are only the approved changed test files. After verifying the
+repair, the host finalize handler generates `repair.json` under its declared
+write claims, binding the actual changed bytes. History is not an Agent output.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from assurance_execution.contracts.evidence import FamilyExecutionOutcomeV1
 from assurance_execution.contracts.workflow import ExecutionCycleResultV1
 from assurance_execution.graphs.factory import ExecutionGraphs
 from assurance_generation.contracts.workflow import GenerationCycleResultV1
@@ -110,6 +112,7 @@ def _reviewed(epoch: int = 0) -> ReviewedCaseV1:
         ),
         case_refs=(_ref(_CASE_DELTA),),
         review_ref=_ref("qa/results/review/case-review.json"),
+        selection_ref=_ref(f"qa/results/cases/epochs/{epoch}/selection.json"),
     )
 
 
@@ -141,6 +144,7 @@ def _generation(epoch: int = 0) -> dict[str, object]:
         mapping_ref=_ref(f"qa/results/generation/epochs/{epoch}/mapping.json"),
         source_refs=(_ref(f"qa/results/generated/epochs/{epoch}/tests/test_case.py"),),
         plan_refs=(_ref(f"qa/results/plans/epochs/{epoch}/api.json"),),
+        method_plan_ref=_ref(f"qa/results/generation/epochs/{epoch}/obligation-methods.json"),
     )
     return {"generation_result": result.model_dump(mode="json"), "status": "passed"}
 
@@ -160,6 +164,7 @@ def _execution(epoch: int = 0, *, repair_round: int = 0, status: str = "PASS") -
         mapping_ref=generated.mapping_ref,
         source_refs=generated.source_refs,
         receipt=_receipt(f"execution-{epoch}-{repair_round}"),
+        family_outcomes=(FamilyExecutionOutcomeV1(family="api", state="executed"),),
     )
     return {"execution_result": result.model_dump(mode="json"), "status": "passed"}
 
@@ -224,6 +229,18 @@ def _inspection(epoch: int = 0, disposition: str = "satisfied") -> dict[str, obj
             "sufficiency_ref": sufficiency.model_dump(mode="json"),
             "execution_ref": execution.evidence_ref.model_dump(mode="json"),
             "observations_ref": observations.model_dump(mode="json"),
+            "obligation_assessment_ref": {
+                "path": f"qa/results/inspect/epochs/{epoch}/batches/B-1/obligation-assessment.json",
+                "digest": _SHA,
+            },
+            "obligation_gate_facts": {
+                "required_count": 1,
+                "supported_count": 1,
+                "refuted_count": 0,
+                "inconclusive_count": 0,
+                "repairable_gap_count": 0,
+                "human_gap_count": 0,
+            },
             "issue_evidence_manifest_ref": issue_manifest.model_dump(mode="json"),
             "owned_evidence_ids": ["OBS-DEMO-001"],
             "evidence_bundle_digest": f"sha256:{_SHA}",
@@ -395,6 +412,7 @@ def _flow_features(
     run: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     assess: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
     issue_analyze: Mapping[str, object] | None = None,
+    issue_reconcile: Mapping[str, object] | None = None,
     repair_failure: Mapping[str, object] | None = None,
     repair_coverage: Mapping[str, object] | None = None,
     report: Mapping[str, object] | tuple[Mapping[str, object], ...] | None = None,
@@ -438,7 +456,17 @@ def _flow_features(
         assess=_graph(assess or _inspection()),
         issue_review=_echo({"classification": "test", "fix_eligible": True}),
         issue_analyze=_echo(issue_analyze or {"classification": "test", "fix_eligible": True}),
-        issue_reconcile=_echo({"classification": "test", "fix_eligible": True}),
+        issue_reconcile=_echo(
+            issue_reconcile
+            or {
+                "classification": "test",
+                "fix_eligible": True,
+                "issue_snapshot_ref": {
+                    "path": "qa/results/issues/snapshot.json",
+                    "digest": _SHA,
+                },
+            }
+        ),
         report=_graph(report or _report()),
         fact_baseline=_graph(_fact_baseline()),
     )
@@ -652,6 +680,51 @@ def test_full_init_failure_does_not_enter_case() -> None:
     assert calls == {"case": 0}
 
 
+def test_full_retains_case_and_generation_history_across_nested_graphs() -> None:
+    case_ref = {"path": "qa/cases/reviews/epochs/0/rounds/0.json", "digest": "a" * 64}
+    generation_ref = {
+        "path": "qa/results/codegen/api/reviews/epochs/0/rounds/0.json",
+        "digest": "b" * 64,
+    }
+    result = invoke_product_root(
+        _product_graphs(
+            _flow_features(
+                case={**_case(), "history_refs": [case_ref]},
+                generation={**_generation(), "history_refs": [generation_ref]},
+            )
+        ),
+        "full",
+        _public_input("full"),
+    )
+    assert result["history_refs"] == [case_ref, generation_ref]
+
+
+def test_diagnostic_execute_snapshots_runtime_before_retro() -> None:
+    runtime_ref = {
+        "path": "qa/results/workflow/" + "a" * 64 + "/pre-retro/workflow-evidence.json",
+        "digest": "b" * 64,
+    }
+    snapshots = 0
+
+    async def snapshot():
+        nonlocal snapshots
+        snapshots += 1
+        return EvidenceArtifactRefV1.model_validate(runtime_ref)
+
+    graphs = build_product_graphs(
+        context=_build_context(),
+        features=_flow_features(
+            assess=_inspection(disposition="blocked"),
+            issue_analyze=_analysis_result("product_bug"),
+            report=_diagnostic_report(),
+        ),
+        runtime_snapshot=snapshot,
+    )
+    result = asyncio.run(graphs.entrypoints["execute"].ainvoke(_public_input("execute")))
+    assert snapshots == 1
+    assert runtime_ref in result["source_refs"]
+
+
 @pytest.mark.parametrize("feature", ["retro", "apply"])
 def test_full_does_not_invoke_optional_post_report_work(feature: str) -> None:
     update = {"status": "failed", "attempt_failure": {"kind": "invalid_input"}}
@@ -703,9 +776,17 @@ def test_full_uses_internal_execute_tail_while_public_execute_wraps_it() -> None
         nested_nodes = getattr(inner, "nodes", {})
     forbidden = {"coverage-repair", "coverage-repair-brief", "quality-recheck", "coverage-needed"}
     assert not forbidden.intersection(nested_nodes)
-    assert {"fact-baseline", "generation", "execute", "quality", "fix-proposal", "run", "report"} <= set(
-        nested_nodes
-    )
+    assert {
+        "fact-baseline",
+        "generation",
+        "execute",
+        "quality",
+        "fix-proposal",
+        "run",
+        "report",
+        "issue-reconcile",
+        "retro",
+    } <= set(nested_nodes)
 
 
 def test_dry_and_runtime_product_roots_share_nodes_and_attach_saver_only_at_runtime() -> None:

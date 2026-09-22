@@ -2473,7 +2473,7 @@ items:
   legacy_id: operation:reconcile-issues
   disposition: migrate
   owner: assurance.quality
-  new_id: assurance.quality.reconcile-issues
+  new_id: assurance.quality.reconcile-issues.execute
   status: verified
   verification: tests/capabilities/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:reconcile-issues]
 - kind: operation
@@ -2618,11 +2618,11 @@ items:
   verification: tests/capabilities/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:run-tests]
 - kind: operation
   legacy_id: operation:run-tests-and-collect-pr-metrics
-  disposition: migrate
-  owner: assurance.execution
-  new_id: assurance.execution.run-tests-and-collect-pr-metrics
-  status: verified
-  verification: tests/capabilities/test_ownership_live.py::test_migrate_operation_is_live_handler[operation:run-tests-and-collect-pr-metrics]
+  disposition: delete_phase6
+  owner: null
+  new_id: null
+  status: planned
+  verification: null
 - kind: operation
   legacy_id: operation:select-current-retro-auto-review-items
   disposition: migrate

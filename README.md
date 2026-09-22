@@ -22,7 +22,7 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 ```
 
 `aa compile`, `aa start`, `aa run`, `aa status`, `aa resume`,
-`aa bindings build`, and `aa lock show` operate on an installed
+`aa bindings build`, `aa lock show`, and `aa retro show` operate on an installed
 product plus an explicit binding wheel and project configuration tree.
 
 Delivery is `aa run` to achieved.
@@ -80,7 +80,10 @@ the review histories, inspection and report. Test verdicts come from execution;
 inspection `analyzed` only means classification finished. Inspection must bind the
 same execution digest, change and batch. Report-only evidence is incomplete.
 
-Non-Retro `aa run` and `aa resume` export a redacted Kernel journal projection to
+Full/execute diagnostic flows snapshot redacted Kernel journal evidence before Retro at
+`qa/results/workflow/<invocation-id-digest>/pre-retro/<snapshot-sha256>/workflow-evidence.json` and bind
+its exact digest to Retro. Non-Retro `aa run` and `aa resume` also export a post-run
+projection to
 `qa/results/workflow/<invocation-id-digest>/workflow-evidence.json`. Include its exact
 file digest in the Retro input to retain technical failures, even after recovery.
 The projection contains message fingerprints, not raw prompts or error messages.
@@ -90,7 +93,7 @@ main result; an older projection cannot establish complete coverage of that run.
 
 Missing runtime history, execution evidence or formal issue ledgers remain explicit
 integrity gaps. There is currently no complete skill-adherence audit source, so
-`skill_drift_evidence_absent` is retained: review rework is not proof of drift, and
+`skill_drift_not_assessed` is explicit: review rework is not proof of drift, and
 missing audit evidence is not proof of compliance. Available facts still produce
 signals; `completed_with_gaps` does not mean no problems. Rebuild and deploy updated
 wheels before a live rerun; existing benchmark environments do not update themselves.
@@ -106,3 +109,26 @@ code review, the repository gate, wheel rebuild, and authenticated deployment.
 
 The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
+
+Execute and run are deterministic tasks. They do not call an LLM. Same-process
+`aa_observe` collection detects omitted or mismatched observations; it is not a
+cryptographic anti-forgery guarantee. `output_preexisting`, review, and fault
+injection increase detection, not authenticity. Unconfirmed expectations stay
+`expectation_unconfirmed` and cannot achieve. OpenChamber must upgrade to the
+`minimum-coverage-result.json` 2.0 reader to show the obligation view; see
+`docs/superpowers/specs/2026-09-19-obligation-evidence-closure-design.md`.
+Live OpenCode codegen acceptance is a separate authorized run and is not claimed
+by the deterministic test gate.
+
+Execution reads the SUT from `project_root`; its lock, collector documents,
+diagnostics and final evidence are staged in the Task's `write_root`. Only the
+Kernel promotes them. The committed execution result carries the observation
+reference and locked execution time into Quality. An obligation requiring human
+confirmation or blocking delivery cannot be overridden by a coverage/test repair.
+
+The lockout fault experiment proves the observation/verdict component, not a
+product-level `achieved` outcome. The execution commit-boundary tests separately
+exercise real pytest collection, the production execution subgraph and Kernel,
+root checkpoint resume, and routing into Quality without replaying the tests.
+Those tests use the host interpreter; isolated SUT dependency provisioning and
+live OpenCode acceptance are separate checks.

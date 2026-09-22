@@ -53,15 +53,15 @@ _CURRENT_GENERATION_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.generation.schema.plan-review.v1": (
         "1",
-        "7dc96dc5ee821aaf8f6e1e0adbd19ec563b9f8594ca20f96af5dae003a993ca8",
+        "abcf63153ad069c58cf7ba1f9b369e2f31ff7bdc0549cd99be10aeeff77ff929",
     ),
     "assurance.generation.workflow.generate.input.v1": (
         "1",
-        "940e0fc7647aa3fe68bccecaec4af951903fababeac56e1ab6314954167e556d",
+        "4bb205702f0d75fee1b79bce04ded98202f9844aa1d26ccf8e080521b3a7688c",
     ),
     "assurance.generation.workflow.generate.output.v1": (
         "1",
-        "ed44f659a1f3ec7d9cd80b3c0bd2a4461f26a13eb27d09e8703193d8366a455d",
+        "491639ed5ce38231579cfbd16fbe9f79666b2662b2d721f9a173eeea9f6acd5c",
     ),
 }
 
@@ -233,6 +233,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-api-codegen-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/finding-scope.json",
                 "qa/results/codegen/api/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/api-codegen-review-summary.md",
                 "qa/results/review/api-codegen-review.json",
@@ -250,6 +251,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-e2e-codegen-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/results/codegen/e2e/reviews/epochs/{coverage_epoch}/finding-scope.json",
                 "qa/results/codegen/e2e/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/e2e-codegen-review-summary.md",
                 "qa/results/review/e2e-codegen-review.json",
@@ -267,6 +269,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-fuzz-codegen-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/results/codegen/fuzz/reviews/epochs/{coverage_epoch}/finding-scope.json",
                 "qa/results/codegen/fuzz/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/fuzz-codegen-review-summary.md",
                 "qa/results/review/fuzz-codegen-review.json",
@@ -284,6 +287,7 @@ def test_generation_agent_job_catalog_is_feature_owned() -> None:
             "aa-performance-codegen-reviewer",
             "assurance-v1-reviewer",
             (
+                "qa/results/codegen/performance/reviews/epochs/{coverage_epoch}/finding-scope.json",
                 "qa/results/codegen/performance/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json",
                 "qa/results/review/performance-codegen-review-summary.md",
                 "qa/results/review/performance-codegen-review.json",

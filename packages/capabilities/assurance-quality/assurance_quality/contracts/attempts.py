@@ -29,6 +29,7 @@ from assurance_quality.contracts.assessment import (
     MaterializeAssessmentInputV1,
     ReportSkillInputV1,
 )
+from assurance_quality.contracts.issues import ReconcileIssuesInputV1, ReconcileIssuesResultV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REPORTER = "assurance-v1-reporter"
@@ -160,6 +161,7 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/coverage-gaps.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/metrics.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/observations.json",
+            "inspect/epochs/{coverage_epoch}/batches/{batch_id}/obligation-assessment.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/issue-evidence-manifest.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace-sufficiency.json",
             "inspect/epochs/{coverage_epoch}/batches/{batch_id}/trace.json",
@@ -169,11 +171,29 @@ _MATERIALIZE_ASSESSMENT = TaskAttemptContract(
     timeout=_TIMEOUT,
     validators=(),
 )
+_RECONCILE_ISSUES = TaskAttemptContract(
+    contract_id="assurance.quality.reconcile-issues",
+    owner_id="assurance.quality",
+    handler_id="assurance.quality.reconcile-issues.execute",
+    input_model=ReconcileIssuesInputV1,
+    output_model=ReconcileIssuesResultV1,
+    resources=ResourceClaims(
+        reads=("qa",),
+        writes=_paths("issues/snapshot.json"),
+    ),
+    retry=_TASK_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
-    {"materialize-assessment-inputs": _MATERIALIZE_ASSESSMENT}
+    {
+        "materialize-assessment-inputs": _MATERIALIZE_ASSESSMENT,
+        "reconcile-issues": _RECONCILE_ISSUES,
+    }
 )
 QUALITY_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
     _MATERIALIZE_ASSESSMENT.contract_id,
+    _RECONCILE_ISSUES.contract_id,
     "assurance.quality.agent.fact-baseline.v1",
     "assurance.quality.agent.inspect.v1",
     "assurance.quality.agent.issue-triage.v1",

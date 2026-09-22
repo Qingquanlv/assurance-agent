@@ -401,13 +401,13 @@ def test_generated_provider_contributes_exactly_32_semantic_bindings(tmp_path, o
     assert descriptor.effects == ()
     assert descriptor.schemas == ()
     assert set(descriptor.bindings) == set(ALL_BINDING_IDS)
-    assert len(descriptor.bindings) == 28
+    assert len(descriptor.bindings) == 26
     assert contribution.task_handlers == {}
     assert contribution.commit_validators == {}
     assert contribution.effects == ()
     assert contribution.schemas == ()
     assert {binding.capability_id for binding in contribution.bindings} == set(ALL_BINDING_IDS)
-    assert len(contribution.bindings) == 28
+    assert len(contribution.bindings) == 26
     resources = {resource.resource_id: resource for resource in contribution.resources}
     adapter = resources["assurance.product.agent.adapter-binding"]
     assert adapter.media_type == "application/json"

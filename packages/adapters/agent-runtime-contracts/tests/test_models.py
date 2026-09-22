@@ -917,3 +917,18 @@ def test_agent_execution_contract_is_provider_neutral() -> None:
     assert contract.contract_id == "assurance.intake.agent.intake.v1"
     assert "opencode" not in dumped
     assert "cursor" not in dumped
+
+
+def test_phase_claims_allow_prepare_to_seed_runtime_files() -> None:
+    claims = AgentPhaseWriteClaims(prepare=("qa/tests",), runtime=("qa/tests",), finalize=())
+    assert claims.as_projection() == {"prepare": ["qa/tests"], "runtime": ["qa/tests"], "finalize": []}
+
+
+@pytest.mark.parametrize("phase", ("prepare", "runtime"))
+def test_phase_claims_keep_finalize_outputs_separate(phase: str) -> None:
+    with pytest.raises(ValueError, match="disjoint"):
+        AgentPhaseWriteClaims(
+            prepare=("qa/review.json",) if phase == "prepare" else (),
+            runtime=("qa/review.json",) if phase == "runtime" else (),
+            finalize=("qa/review.json",),
+        )

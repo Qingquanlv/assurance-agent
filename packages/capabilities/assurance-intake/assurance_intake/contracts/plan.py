@@ -15,6 +15,7 @@ from graph_engine.plugin_api import FrozenModel
 from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_intake.contracts.common import TestFamily, validate_family_tuple
+from assurance_intake.contracts.impact import INVENTORY_PATH, impact_row_identity
 from assurance_intake.contracts.quality_goals import (
     PreparedQualityGoalV1,
     validate_resource_digests,
@@ -28,7 +29,28 @@ _REASON_ORDER = {
     "required_retained": 2,
     "candidate_outside_allowed": 3,
     "proposed_outside_candidate": 4,
+    "impact_retained": 5,
+    "impact_family_unavailable": 6,
+    "impact_pending_confirmation": 7,
 }
+_GLOBAL_REASONS = frozenset({"accepted_proposal", "fallback_all_candidates", "impact_pending_confirmation"})
+
+
+def bind_impact_row_ids(
+    *,
+    plan_digest: str,
+    inventory_ref: EvidenceArtifactRefV1,
+    row_ids: tuple[str, ...],
+) -> tuple[tuple[str, str, str], ...]:
+    """Bind local IR-* ids to the plan and authenticated inventory digest."""
+    return tuple(
+        impact_row_identity(
+            plan_digest=plan_digest,
+            inventory_digest=inventory_ref.digest,
+            row_id=row_id,
+        )
+        for row_id in row_ids
+    )
 
 
 def _canonical_segment(value: str, label: str) -> str:
@@ -74,6 +96,9 @@ ResolutionReasonCode = Literal[
     "required_retained",
     "candidate_outside_allowed",
     "proposed_outside_candidate",
+    "impact_retained",
+    "impact_family_unavailable",
+    "impact_pending_confirmation",
 ]
 FallbackDetail = Literal["empty_proposal", "outside_candidate", "empty_after_policy"]
 
@@ -86,7 +111,7 @@ class ResolutionReasonV1(FrozenModel):
 
     @model_validator(mode="after")
     def _shape_matches_reason(self) -> Self:
-        global_reason = self.reason_code in {"accepted_proposal", "fallback_all_candidates"}
+        global_reason = self.reason_code in _GLOBAL_REASONS
         if global_reason and self.family is not None:
             raise ValueError("global resolution reason cannot name a family")
         if not global_reason and self.family is None:
@@ -118,6 +143,7 @@ class ResolvedAssurancePlan(FrozenModel):
     policy_resource_id: str
     policy_digest: str = Field(pattern=_SHA256)
     exploration_ref: EvidenceArtifactRefV1
+    impact_inventory_ref: EvidenceArtifactRefV1
     plan_digest: str = Field(pattern=_SHA256)
     resolution_reasons: tuple[ResolutionReasonV1, ...]
 
@@ -149,6 +175,8 @@ class ResolvedAssurancePlan(FrozenModel):
         expected_exploration = "qa/results/explore/exploration.json"
         if self.exploration_ref.path != expected_exploration:
             raise ValueError("exploration_ref must bind the current change")
+        if self.impact_inventory_ref.path != INVENTORY_PATH:
+            raise ValueError("impact_inventory_ref must bind the current change")
         if self.quality_goal.obligations_ref != self.exploration_ref:
             raise ValueError("quality goal obligations must bind exploration_ref")
         ordered = tuple(
@@ -177,6 +205,7 @@ class ResolvePlanInputV1(FrozenModel):
     policy_digest: str = Field(pattern=_SHA256)
     family_policy: TestFamilyPolicyV1
     exploration_ref: EvidenceArtifactRefV1
+    impact_inventory_ref: EvidenceArtifactRefV1
     source_resource_digests: tuple[tuple[str, str], ...]
     capability_leafs: tuple[str, ...]
 
@@ -216,6 +245,8 @@ class ResolvePlanInputV1(FrozenModel):
         expected = "qa/results/explore/exploration.json"
         if self.exploration_ref.path != expected:
             raise ValueError("exploration_ref must bind the current change")
+        if self.impact_inventory_ref.path != INVENTORY_PATH:
+            raise ValueError("impact_inventory_ref must bind the current change")
         return self
 
 
@@ -311,6 +342,7 @@ __all__ = [
     "ResolvePlanOutputV1",
     "ResolvedAssurancePlan",
     "TestFamilyPolicyV1",
+    "bind_impact_row_ids",
     "decode_plan",
     "plan_artifact_ref",
     "plan_bytes",

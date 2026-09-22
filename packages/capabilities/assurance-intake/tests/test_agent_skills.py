@@ -9,10 +9,11 @@ from typing import Any, cast
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from agent_runtime_contracts import AgentRunRequest, AgentRunResult
 from agent_runtime_contracts.schema import canonical_digest
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler, TaskOutcome
 from tests.capabilities.agent_harness import FakeAgentAdapter
 from tests.product.test_change_local_output_routing import dual_roots, execute_task
@@ -30,6 +31,21 @@ from assurance_intake.operations import (
 )
 from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_intake.contracts.review import CaseReviewResultV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_intake.operations.agent_skills import case_review_outputs
+from assurance_intake.operations.case_review_seal import (
+    collect_selected_cases,
+    expected_case_selection,
+    expected_review_history,
+    expected_reviewed_case,
+)
+from assurance_intake.contracts.explore import (
+    ExploreAdvisoryV1,
+    ObligationDraftV1,
+    PreparedExploreV1,
+)
+from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
 from assurance_intake.resource_loader import resource_text
 
 _SHA = "a" * 64
@@ -85,6 +101,7 @@ async def run_prepare(
     binding: JSONValue,
     workspace: Path,
     write_root: Path | None = None,
+    impact_rows: tuple[Mapping[str, object], ...] = (),
 ) -> Any:
     if type(handler).__name__.startswith("Case"):
         exploration = workspace / "qa/results/explore/exploration.json"
@@ -95,7 +112,7 @@ async def run_prepare(
             existing = json.loads(existing_bytes)
             if isinstance(existing, Mapping):
                 candidate = existing.get("minimum_required_coverage")
-                if isinstance(candidate, Mapping):
+                if isinstance(candidate, Mapping | list):
                     minimum_required_coverage = candidate
                 if existing.get("change_id") != "CH-DEMO-001":
                     mismatched_exploration = existing_bytes
@@ -104,6 +121,7 @@ async def run_prepare(
             "CH-DEMO-001",
             capability_leafs=VALID_LEAFS,
             minimum_required_coverage=minimum_required_coverage,
+            impact_rows=impact_rows,
         )
         if isinstance(payload, dict):
             payload = {
@@ -113,9 +131,29 @@ async def run_prepare(
             }
         if mismatched_exploration is not None:
             exploration.write_bytes(mismatched_exploration)
+    if type(handler).__name__.startswith("CaseReview") and isinstance(payload, dict):
+        payload = _with_case_refs(workspace, payload)
     if type(handler).__name__.startswith("Explore") and isinstance(payload, dict):
         payload = {**payload, "candidate_test_families": ["api"]}
     return await execute_task(handler, payload, workspace, binding_data=binding, write_root=write_root)
+
+
+def _with_case_refs(workspace: Path, payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    paths = payload.get("case_delta_paths")
+    raw_refs = payload.get("case_refs")
+    existing: list[JSONValue] = (
+        [item for item in raw_refs if isinstance(item, Mapping)] if isinstance(raw_refs, list) else []
+    )
+    bound = {str(item.get("path")) for item in existing if isinstance(item, Mapping)}
+    refs: list[JSONValue] = list(existing)
+    if isinstance(paths, list):
+        for relative in paths:
+            if not isinstance(relative, str) or relative in bound:
+                continue
+            path = workspace.joinpath(*relative.split("/"))
+            if path.is_file():
+                refs.append({"path": relative, "digest": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return {**payload, "case_refs": refs}
 
 
 async def run_finalize(
@@ -164,8 +202,8 @@ def test_intake_skill_requires_direct_change_write() -> None:
     assert "must not require" in skill.lower() or "do not require" in skill.lower()
     assert "initialize" in skill.lower()
     assert "requirement.md" in skill
-    assert "Call the native `write` tool exactly twice" in skill
-    assert "read both files back" in skill
+    assert "Call the native `write` tool exactly once" in skill
+    assert "read" in skill and "back" in skill
     assert "A final JSON response without those successful tool calls is invalid" in normalized
     assert "interactive" not in persona.lower()
     assert "do not ask" in persona.lower()
@@ -178,7 +216,35 @@ def test_explore_skill_returns_the_locked_result_contract() -> None:
     assert "schemas/explore-advisory.schema.json" not in skill
     assert 'Set it to the exact string\n    `"explore/context.json"`' in skill
     assert "Do not expand it to" in skill
-    assert '{"output_files":["qa/results/explore/exploration.json"]}' in skill
+    assert (
+        '{"output_files":["qa/results/explore/exploration-draft.json","qa/results/explore/impact-inventory.json"]}'
+        in skill
+    )
+
+
+def test_explore_skill_requires_a_complete_impact_inventory() -> None:
+    skill = resource_text("skills/aa-explore/SKILL.md")
+    assert "## Step 4b — Change impact inventory" in skill
+    assert "qa/results/explore/impact-inventory.json" in skill
+    assert (
+        "every `impact.seeds[].seed_id` must appear in at least one row's `change_evidence_ids` or in `exclusions[]`"
+        in skill
+    )
+    for disposition in ("`reuse`", "`modify`", "`add`", "`capability_gap`", "`pending_confirmation`"):
+        assert disposition in skill
+    assert "`CF-*`, `CS-*`, `HI-*`" in skill
+    assert "The product finalizer rejects any id that does not resolve" in skill
+    assert "case_module" in skill
+    assert "The operator never supplies modules" in skill
+    assert "One requirement commonly spans several modules" in skill
+
+
+def test_case_design_skill_covers_actionable_impact_rows() -> None:
+    skill = resource_text("skills/aa-case-design/SKILL.md")
+    assert "`impact_inventory`" in skill
+    assert "`impact_rows`" in skill
+    assert "every row with disposition `add` or `modify` must be covered by at least one case" in skill
+    assert "`capability_gap` and `pending_confirmation` rows are listed in `proposal.md`" in skill
 
 
 def test_explore_skill_requires_evidence_ids_on_every_layer_recommendation() -> None:
@@ -193,8 +259,26 @@ def test_explore_skill_requires_evidence_ids_on_every_layer_recommendation() -> 
 def test_explore_skill_keeps_explicit_api_only_scope_out_of_e2e_obligations() -> None:
     skill = resource_text("skills/aa-explore/SKILL.md")
 
-    assert "an explicit API-only requirement makes E2E journeys inapplicable" in skill
-    assert "set `minimum_required_coverage.e2e` to `[]`" in skill
+    assert "An explicit API-only requirement, or a candidate set that does not include `e2e`" in skill
+    assert "makes E2E journeys inapplicable" in skill
+    assert 'do not emit `category: "e2e"` drafts' in skill
+    assert "Do not keep a catalog journey as required after declining E2E" in skill
+    assert "set `minimum_required_coverage.e2e` to `[]`" not in skill
+    assert '"minimum_required_coverage": {' not in skill
+
+
+def test_explore_skill_mrc_example_validates_as_obligation_drafts() -> None:
+    skill = resource_text("skills/aa-explore/SKILL.md")
+    start = skill.index("*Example (menu-management, only when these exact catalog leaves")
+    fence = skill.index("```json", start)
+    end = skill.index("```", fence + 7)
+    blob = skill[fence + 7 : end].strip().rstrip(",")
+    document = json.loads("{" + blob + "}" if blob.startswith('"minimum_required_coverage"') else blob)
+    drafts = document["minimum_required_coverage"]
+    assert isinstance(drafts, list) and drafts
+    for item in drafts:
+        ObligationDraftV1.model_validate(item)
+    assert {item["category"] for item in drafts} <= {"api", "e2e", "negative", "data_integrity"}
 
 
 def test_case_design_skill_requires_cleanup_for_every_successful_persistent_create() -> None:
@@ -464,10 +548,7 @@ async def test_intake_prepare_embeds_locked_requirement_and_write_rules(tmp_path
     prepared = await run_prepare(IntakePrepareHandler(), INTAKE_INPUT, BINDING, tmp_path)
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.agent_profile == "assurance-v1-doc-author"
-    assert request.workspace.allowed_outputs == (
-        "qa/.qa.yaml",
-        "qa/requirement.md",
-    )
+    assert request.workspace.allowed_outputs == ("qa/.qa.yaml",)
     skill, persona, business = request.instructions
     assert "Capability-owned intake" in (skill.text_content or "")
     assert "Do not ask" in (skill.text_content or "")
@@ -718,7 +799,6 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
     path = tmp_path / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     advisory = _valid_explore_advisory()
-    advisory["minimum_required_coverage"] = {"api": ["create_item"]}
     path.write_text(json.dumps(advisory), encoding="utf-8")
 
     prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
@@ -728,9 +808,34 @@ async def test_case_design_prepare_consumes_typed_current_change_exploration(tmp
     business = cast(Mapping[str, object], request.instructions[2].json_content)
     exploration = cast(Mapping[str, object], business["exploration"])
     assert exploration["change_id"] == "CH-DEMO-001"
-    assert dict(cast(Mapping[str, object], exploration["minimum_required_coverage"])) == {
-        "api": ("create_item",)
-    }
+    coverage = tuple(
+        cast(Mapping[str, object], item)
+        for item in cast(tuple[object, ...], exploration["minimum_required_coverage"])
+    )
+    assert coverage
+    assert coverage[0]["category"] in {"api", "capability", "invariant"}
+    assert "statement" in coverage[0]
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_consumes_sealed_prepared_exploration(tmp_path: Path) -> None:
+    relative = "qa/results/explore/exploration.json"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_sealed_explore_document()), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded", prepared.failure
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    exploration = cast(Mapping[str, object], business["exploration"])
+    coverage = tuple(
+        cast(Mapping[str, object], item)
+        for item in cast(tuple[object, ...], exploration["minimum_required_coverage"])
+    )
+    assert coverage[0]["mrc_id"]
+    assert "draft_id" not in coverage[0]
 
 
 @pytest.mark.asyncio
@@ -773,6 +878,7 @@ async def test_case_review_prepare_locks_exact_current_change_inputs(tmp_path: P
     )
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     (change_root / "results/trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
+    (change_root / "requirement.md").write_text("# Requirement\n", encoding="utf-8")
     (change_root / "cases/menus/case.yaml").write_text(
         "schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n",
         encoding="utf-8",
@@ -838,6 +944,7 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
     committed_refs = [ref(relative) for relative in content if relative != "requirement.md"]
     update = publish_case_design(state, {"artifacts": committed_refs}, object())
     state.update(update)
+    assert update["case_delta_paths"] == ["qa/cases/menus/case.yaml"]
     assert original_refs != [ref(".qa.yaml"), ref("requirement.md")]
     if tampered_path is not None:
         (tmp_path / change / tampered_path).write_text("uncommitted drift\n")
@@ -864,6 +971,9 @@ async def test_case_design_commit_refreshes_review_refs_without_accepting_drift(
 
 @pytest.mark.asyncio
 async def test_case_review_prepare_rejects_missing_locked_input(tmp_path: Path) -> None:
+    case = tmp_path / "qa/cases/menus/case.yaml"
+    case.parent.mkdir(parents=True, exist_ok=True)
+    case.write_text("schema_version: '1'\nadded: []\nmodified: []\nremoved: []\n", encoding="utf-8")
     prepared = await run_prepare(CaseReviewPrepareHandler(), CASE_REVIEW_INPUT, BINDING, tmp_path)
 
     assert prepared.status == "failed"
@@ -880,6 +990,7 @@ async def test_case_review_prepare_rejects_intermediate_directory_symlink(tmp_pa
     (change_root / "cases").mkdir()
     sibling_cases.mkdir(parents=True)
     (change_root / ".qa.yaml").write_text("change_id: CH-DEMO-001\n", encoding="utf-8")
+    (change_root / "requirement.md").write_text("# Requirement\n", encoding="utf-8")
     (change_root / "proposal.md").write_text("# Proposal\n", encoding="utf-8")
     (change_root / "results/trace/minimum-coverage-matrix.json").write_text("[]\n", encoding="utf-8")
     (sibling_cases / "case.yaml").write_text(
@@ -1025,6 +1136,116 @@ def _case_review_document(*, missing: list[str]) -> JSONValue:
     )
 
 
+def _ref(path: Path, relative: str) -> EvidenceArtifactRefV1:
+    return EvidenceArtifactRefV1(
+        path=relative,
+        digest=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
+def _write_json_model(root: Path, relative: str, model: BaseModel) -> None:
+    path = root.joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_json_bytes(model.model_dump(mode="json")) + b"\n")
+
+
+def _write_case_review_runtime_seal(
+    *,
+    project: Path,
+    write_root: Path,
+    document: Mapping[str, object],
+    change_id: str,
+    coverage_epoch: int,
+    review_round: int,
+    case_delta_paths: list[str],
+    case_refs: list[dict[str, str]],
+    preparation_refs: list[dict[str, str]],
+    plan: object,
+    plan_ref: dict[str, str],
+) -> list[str]:
+    review_relative = "qa/results/review/case-review.json"
+    review_ref = _ref(write_root / review_relative, review_relative)
+    refs = [EvidenceArtifactRefV1.model_validate(item) for item in case_refs]
+    documents: list[tuple[EvidenceArtifactRefV1, Mapping[str, object]]] = []
+    for ref in refs:
+        source = yaml.safe_load((project / ref.path).read_bytes())
+        assert isinstance(source, Mapping)
+        documents.append((ref, source))
+    selected = collect_selected_cases(refs, case_delta_paths, documents)
+    selection = expected_case_selection(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        plan=plan,  # type: ignore[arg-type]
+        cases=selected,
+    )
+    selection_relative = f"qa/results/cases/epochs/{coverage_epoch}/selection.json"
+    _write_json_model(write_root, selection_relative, selection)
+    selection_ref = _ref(write_root.joinpath(*selection_relative.split("/")), selection_relative)
+    history = expected_review_history(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        review_round=review_round,
+        document=CaseReviewResultV1.model_validate(document),
+        preparation_refs=[EvidenceArtifactRefV1.model_validate(item) for item in preparation_refs],
+        case_refs=refs,
+        review_ref=review_ref,
+    )
+    history_relative = f"qa/cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"
+    _write_json_model(write_root, history_relative, history)
+    reviewed = expected_reviewed_case(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        plan_digest=str(plan.plan_digest),  # type: ignore[attr-defined]
+        plan_ref=EvidenceArtifactRefV1.model_validate(plan_ref),
+        preparation_refs=[EvidenceArtifactRefV1.model_validate(item) for item in preparation_refs],
+        case_refs=refs,
+        review_ref=review_ref,
+        selection_ref=selection_ref,
+    )
+    manifest_relative = "qa/cases/reviewed-case.json"
+    _write_json_model(write_root, manifest_relative, reviewed)
+    return [manifest_relative, history_relative, selection_relative]
+
+
+def _install_and_write_case_review_seal(
+    *,
+    project: Path,
+    write_root: Path,
+    document: Mapping[str, object],
+    case_refs: list[dict[str, str]],
+    preparation_refs: list[dict[str, str]],
+    case_delta_paths: list[str],
+    coverage_epoch: int = 0,
+    review_round: int = 0,
+    change_id: str = "CH-DEMO-001",
+) -> list[dict[str, str]]:
+    plan, plan_ref = install_plan(
+        project,
+        change_id,
+        capability_leafs=VALID_LEAFS,
+        candidates=("api",),
+        proposed=("api",),
+    )
+    bound = list(preparation_refs)
+    if plan_ref not in bound:
+        bound.append(plan_ref)
+        bound.sort(key=lambda item: (item["path"], item["digest"]))
+    _write_case_review_runtime_seal(
+        project=project,
+        write_root=write_root,
+        document=document,
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        review_round=review_round,
+        case_delta_paths=case_delta_paths,
+        case_refs=case_refs,
+        preparation_refs=bound,
+        plan=plan,
+        plan_ref=plan_ref,
+    )
+    return bound
+
+
 def _write_review_matrix(workspace: Path, *, missing: list[str]) -> None:
     keys = ["create_item", "update_item"] if not missing else ["create_item", missing[0]]
     rows = []
@@ -1061,6 +1282,7 @@ async def _finalize_files(
     review_repair: object | None = None,
     coverage_epoch: int = 0,
     review_round: int = 0,
+    impact_rows: tuple[Mapping[str, object], ...] = (),
     preparation_refs: list[dict[str, str]] | None = None,
     case_refs: list[dict[str, str]] | None = None,
 ) -> Any:
@@ -1075,6 +1297,7 @@ async def _finalize_files(
             capability_leafs=VALID_LEAFS,
             candidates=selected,
             proposed=selected,
+            impact_rows=impact_rows,
         )
     bound_preparation_refs = list(preparation_refs or [])
     if plan_ref is not None and plan_ref not in bound_preparation_refs:
@@ -1134,26 +1357,36 @@ async def _finalize_review_with_written_cases(
     review_path.write_text(json.dumps(document), encoding="utf-8")
     summary_relative = "qa/results/review/case-review-summary.md"
     (write_root / summary_relative).write_text("# Case review\n", encoding="utf-8")
+    case_refs = [
+        {
+            "path": case_relative,
+            "digest": hashlib.sha256((workspace / case_relative).read_bytes()).hexdigest(),
+        }
+    ]
+    preparation_refs = [
+        {
+            "path": matrix_relative,
+            "digest": hashlib.sha256((workspace / matrix_relative).read_bytes()).hexdigest(),
+        },
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=workspace,
+        write_root=write_root,
+        document=cast(Mapping[str, object], document),
+        case_refs=case_refs,
+        preparation_refs=preparation_refs,
+        case_delta_paths=[case_relative],
+    )
     executed = await _finalize_files(
         CaseReviewFinalizeHandler(),
         document,
         workspace,
-        [review_relative, summary_relative],
+        list(case_review_outputs("CH-DEMO-001")),
         change_id="CH-DEMO-001",
         write_root=write_root,
         case_delta_paths=[case_relative],
-        case_refs=[
-            {
-                "path": case_relative,
-                "digest": hashlib.sha256((workspace / case_relative).read_bytes()).hexdigest(),
-            }
-        ],
-        preparation_refs=[
-            {
-                "path": matrix_relative,
-                "digest": hashlib.sha256((workspace / matrix_relative).read_bytes()).hexdigest(),
-            }
-        ],
+        case_refs=case_refs,
+        preparation_refs=bound_preparation,
     )
     return executed.outcome
 
@@ -1293,7 +1526,22 @@ def _valid_explore_advisory() -> dict[str, Any]:
             "suggested_scenarios": [],
             "regression_focus": [],
         },
-        "minimum_required_coverage": {"api": []},
+        "minimum_required_coverage": [
+            {
+                "draft_id": "D-API-001",
+                "proposed_key": "create_item",
+                "category": "api",
+                "layer": "api",
+                "statement": "create_item must hold",
+                "applicability_conditions": [],
+                "impact_row_ids": [],
+                "proposed_profile_id": None,
+                "prerequisites": [],
+                "observation_goals": [],
+                "basis_quotes": [],
+                "open_questions": [],
+            }
+        ],
         "open_questions_for_case_design": [],
         "test_strategy": {
             "scope": None,
@@ -1313,15 +1561,151 @@ def _valid_explore_advisory() -> dict[str, Any]:
     }
 
 
+def _sealed_explore_document() -> dict[str, Any]:
+    advisory = ExploreAdvisoryV1.model_validate(_valid_explore_advisory())
+    rows = normalize_obligation_drafts(advisory.minimum_required_coverage, resolved_quotes={})
+    return PreparedExploreV1(
+        schema_version="1",
+        change_id=advisory.change_id,
+        context_ref=advisory.context_ref,
+        generated_at=advisory.generated_at,
+        executive_summary=advisory.executive_summary,
+        watchlist=tuple(advisory.watchlist),
+        evidence_inventory=advisory.evidence_inventory,
+        source_code_evidence=tuple(advisory.source_code_evidence),
+        case_design_guidance=advisory.case_design_guidance,
+        minimum_required_coverage=rows,
+        open_questions_for_case_design=tuple(advisory.open_questions_for_case_design),
+        test_strategy=advisory.test_strategy,
+    ).model_dump(mode="json")
+
+
+_EXPLORATION = "qa/results/explore/exploration.json"
+_EXPLORATION_DRAFT = "qa/results/explore/exploration-draft.json"
+_INVENTORY = "qa/results/explore/impact-inventory.json"
+_CONTEXT = "qa/results/explore/context.json"
+
+
+def _explore_context_document(
+    *,
+    seeds: tuple[tuple[str, str], ...] = (("CF-001", "app/controllers/item.py"),),
+    case_ids: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    from assurance_intake.contracts.explore import ExploreContextV1, RequirementReadFactsV1
+    from assurance_intake.contracts.impact import CandidateCaseV1, ImpactProjectionV1, ImpactSeedV1
+
+    return ExploreContextV1(
+        change_id="CH-DEMO-001",
+        requirement_summary="# Requirement",
+        aggregation_policy={
+            "source": "graph-owned-content-snapshot",
+            "layers": ["api", "e2e", "fuzz", "performance"],
+            "ambient_git_forbidden": True,
+        },
+        archive_window={"depth": 0, "archives_sampled": [], "newest_archive": None, "oldest_archive": None},
+        staleness={"max_age_days": None, "stale": False},
+        impact=ImpactProjectionV1(
+            diff_base="content-snapshot",
+            seeds=tuple(
+                ImpactSeedV1(seed_id=seed_id, path=path, reason="requirement_hint") for seed_id, path in seeds
+            ),
+            candidate_cases=tuple(
+                CandidateCaseV1(
+                    evidence_id=f"CS-{index:03d}",
+                    case_id=case_id,
+                    module="menus",
+                    path="qa/cases/menus/case.yaml",
+                    title=case_id,
+                )
+                for index, case_id in enumerate(case_ids, start=1)
+            ),
+            historical_problems=(),
+            factory_leafs=(),
+        ),
+        case_signals=[],
+        test_health=[],
+        historical_issues=[],
+        evidence=[],
+        source_catalog=(),
+        requirement_read_facts=RequirementReadFactsV1(
+            total_bytes=0,
+            provided_bytes=0,
+            read_state="complete",
+        ),
+        degraded=True,
+        degraded_reasons=["no_diff: no authenticated diff projection was supplied"],
+        no_git=True,
+    ).model_dump(mode="json")
+
+
+def _valid_inventory(
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    exclusions: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "context_ref": "explore/context.json",
+        "rows": rows if rows is not None else [_inventory_row()],
+        "exclusions": exclusions or [],
+    }
+
+
+def _inventory_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "row_id": "IR-001",
+        "change_evidence_ids": ["CF-001"],
+        "affected_behavior": {"kind": "api", "key": "POST /api/v1/item/create"},
+        "obligation": "duplicate item names must be rejected with 400",
+        "expected_basis_ids": ["SC-001"],
+        "assets": {"case_ids": [], "factory_leafs": [], "problem_ids": []},
+        "disposition": "add",
+        "gap_reason": None,
+        "confidence": "medium",
+    }
+    row.update(overrides)
+    return row
+
+
+def _advisory_with_source_evidence() -> dict[str, Any]:
+    advisory = _valid_explore_advisory()
+    advisory["source_code_evidence"] = [
+        {
+            "id": "SC-001",
+            "source": "source_code",
+            "type": "api_route",
+            "description": "POST /api/v1/item/create — create_item handler",
+            "parse_confidence_cap": "medium",
+        }
+    ]
+    return advisory
+
+
+def _stage_explore_outputs(
+    write_root: Path,
+    *,
+    advisory: dict[str, Any] | None = None,
+    inventory: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, bytes]:
+    files = {
+        _CONTEXT: canonical_json_bytes(cast(JSONValue, context or _explore_context_document())) + b"\n",
+        _EXPLORATION_DRAFT: json.dumps(advisory or _advisory_with_source_evidence()).encode(),
+        _INVENTORY: json.dumps(inventory or _valid_inventory()).encode(),
+    }
+    for relative, data in files.items():
+        path = write_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return files
+
+
 @pytest.mark.asyncio
 async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/results/explore/exploration.json"
-    path = write_root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(_valid_explore_advisory()).encode()
-    path.write_bytes(payload)
-    result = fake_agent_result({"output_files": [relative]})
+    files = _stage_explore_outputs(write_root)
+    result = fake_agent_result({"output_files": [_EXPLORATION_DRAFT, _INVENTORY]})
     executed = await execute_task(
         ExploreFinalizeHandler(),
         {
@@ -1341,10 +1725,12 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
         project,
         write_root=write_root,
     )
-    assert executed.status == "succeeded"
+    assert executed.status == "succeeded", executed.failure
+    official = (write_root / _EXPLORATION).read_bytes()
     assert executed.output == {
         "artifacts": [
-            {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
+            {"path": _EXPLORATION, "digest": hashlib.sha256(official).hexdigest()},
+            {"path": _INVENTORY, "digest": hashlib.sha256(files[_INVENTORY]).hexdigest()},
         ]
     }
     contract = AGENT_JOB_CONTRACTS["explore"]
@@ -1355,9 +1741,8 @@ async def test_explore_finalize_returns_artifact_digests(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/results/explore/exploration.json"
-    path = write_root / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _stage_explore_outputs(write_root, inventory=_valid_inventory())
+    path = write_root / _EXPLORATION_DRAFT
     path.write_text(
         json.dumps(
             {
@@ -1372,9 +1757,9 @@ async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> 
 
     executed = await _finalize_files(
         ExploreFinalizeHandler(),
-        {"output_files": [relative]},
+        {"output_files": [_EXPLORATION_DRAFT, _INVENTORY]},
         project,
-        [relative],
+        [_EXPLORATION_DRAFT, _INVENTORY],
         change_id="CH-DEMO-001",
         write_root=write_root,
     )
@@ -1382,7 +1767,7 @@ async def test_explore_finalize_rejects_placeholder_advisory(tmp_path: Path) -> 
     assert executed.status == "failed"
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
-    assert "exploration.json" in executed.failure.message
+    assert "exploration" in executed.failure.message
 
 
 @pytest.mark.asyncio
@@ -1390,13 +1775,13 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
     tmp_path: Path,
 ) -> None:
     project, write_root = dual_roots(tmp_path)
-    relative = "qa/results/explore/exploration.json"
+    relative = _EXPLORATION_DRAFT
 
     executed = await _finalize_files(
         ExploreFinalizeHandler(),
-        {"output_files": [relative]},
+        {"output_files": [_EXPLORATION_DRAFT, _INVENTORY]},
         project,
-        [relative],
+        [_EXPLORATION_DRAFT, _INVENTORY],
         change_id="CH-DEMO-001",
         write_root=write_root,
     )
@@ -1408,6 +1793,129 @@ async def test_explore_finalize_rejects_a_declared_missing_advisory_as_invalid_o
     assert executed.failure.message == f"declared output file is missing: {relative}"
 
 
+async def _finalize_explore(project: Path, write_root: Path) -> Any:
+    return await _finalize_files(
+        ExploreFinalizeHandler(),
+        {"output_files": [_EXPLORATION_DRAFT, _INVENTORY]},
+        project,
+        [_EXPLORATION_DRAFT, _INVENTORY],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+    )
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_requires_both_declared_outputs(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(write_root)
+    executed = await _finalize_files(
+        ExploreFinalizeHandler(),
+        {"output_files": [_EXPLORATION_DRAFT]},
+        project,
+        [_EXPLORATION_DRAFT],
+        change_id="CH-DEMO-001",
+        write_root=write_root,
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "impact-inventory.json" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_advisory_evidence_ids_that_do_not_resolve(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    advisory = _advisory_with_source_evidence()
+    advisory["case_design_guidance"]["priority_hints"] = [
+        {"id": "PH-001", "hint": "assert 400 on duplicates", "confidence": "low", "evidence_ids": ["SC-404"]}
+    ]
+    _stage_explore_outputs(write_root, advisory=advisory)
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "exploration.json cites unresolvable evidence ids: ['SC-404']" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_inventory_that_leaves_a_seed_unhandled(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(
+        write_root,
+        context=_explore_context_document(
+            seeds=(("CF-001", "app/controllers/item.py"), ("CF-002", "app/api/v1/items.py"))
+        ),
+    )
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "seeds without an impact row or exclusion: ['CF-002']" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_accepts_an_explicit_exclusion(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(
+        write_root,
+        context=_explore_context_document(
+            seeds=(("CF-001", "app/controllers/item.py"), ("CF-002", "app/api/v1/items.py"))
+        ),
+        inventory=_valid_inventory(exclusions=[{"seed_id": "CF-002", "reason": "router wiring only"}]),
+    )
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "succeeded", executed.failure
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_inventory_citing_unknown_case_or_leaf(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(
+        write_root,
+        context=_explore_context_document(case_ids=("TC_MENU_001",)),
+        inventory=_valid_inventory(
+            rows=[
+                _inventory_row(
+                    disposition="modify",
+                    assets={
+                        "case_ids": ["TC_MENU_999"],
+                        "factory_leafs": ["capabilities.domain_factories.menu.nope"],
+                        "problem_ids": [],
+                    },
+                )
+            ]
+        ),
+    )
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "IR-001: unresolvable assets.case_ids: ['TC_MENU_999']" in executed.failure.message
+    assert "assets.factory_leafs outside the typed catalog" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_rejects_inventory_for_another_change(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    inventory = _valid_inventory()
+    inventory["change_id"] = "CH-SIBLING"
+    _stage_explore_outputs(write_root, inventory=inventory)
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "impact-inventory.json change_id" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_explore_finalize_requires_the_prepared_context_in_staging(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _stage_explore_outputs(write_root)
+    (write_root / _CONTEXT).unlink()
+    executed = await _finalize_explore(project, write_root)
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "context.json" in executed.failure.message
+
+
 @pytest.mark.asyncio
 async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path) -> None:
     project, write_root = dual_roots(tmp_path)
@@ -1416,6 +1924,8 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
     path = write_root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
+    requirement = b"# Requirement\n"
+    (write_root / "qa/requirement.md").write_bytes(requirement)
 
     executed = await _finalize_files(
         IntakeFinalizeHandler(),
@@ -1434,7 +1944,10 @@ async def test_intake_finalize_accepts_files_under_locked_prefix(tmp_path: Path)
     )
     assert executed.status == "succeeded"
     assert executed.output == {
-        "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
+        "artifacts": [
+            {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
+            {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
+        ]
     }
 
 
@@ -1474,16 +1987,22 @@ async def test_intake_finalize_returns_artifact_digests(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = b'{"ok":true}'
     path.write_bytes(payload)
+    requirement = b"# Requirement\n"
+    (write_root / "qa/requirement.md").parent.mkdir(parents=True, exist_ok=True)
+    (write_root / "qa/requirement.md").write_bytes(requirement)
     executed = await _finalize_files(
         IntakeFinalizeHandler(),
         {"output_files": [relative]},
         project,
-        [relative],
+        [relative, "qa/requirement.md"],
         write_root=write_root,
     )
     assert executed.status == "succeeded"
     assert executed.output == {
-        "artifacts": [{"path": relative, "digest": hashlib.sha256(payload).hexdigest()}]
+        "artifacts": [
+            {"path": "qa/requirement.md", "digest": hashlib.sha256(requirement).hexdigest()},
+            {"path": relative, "digest": hashlib.sha256(payload).hexdigest()},
+        ]
     }
     AGENT_JOB_CONTRACTS["intake"].output_model.model_validate(executed.output)
 
@@ -2700,6 +3219,15 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
             "digest": hashlib.sha256(case_path.read_bytes()).hexdigest(),
         }
     ]
+    case_delta_paths = [case_path.relative_to(project).as_posix()]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+    )
 
     executed = await _finalize_files(
         CaseReviewFinalizeHandler(),
@@ -2715,8 +3243,8 @@ async def test_case_review_finalize_publishes_reviewed_case_manifest(tmp_path: P
             "qa/tests",
         ],
         change_id="CH-DEMO-001",
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
     )
@@ -2764,25 +3292,36 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
             "digest": hashlib.sha256(case_path.read_bytes()).hexdigest(),
         }
     ]
+    case_delta_paths = [case_path.relative_to(project).as_posix()]
+    artifact_paths = [
+        "qa/.qa.yaml",
+        "qa/cases",
+        "qa/fixtures",
+        "qa/proposal.md",
+        "qa/requirement.md",
+        "qa/results",
+        "qa/tests",
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        coverage_epoch=0,
+    )
 
     first = await _finalize_files(
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
+        artifact_paths,
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
     )
@@ -2793,41 +3332,34 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
+        artifact_paths,
         change_id="CH-DEMO-001",
         coverage_epoch=0,
         review_round=0,
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
+    )
+    _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=bound_preparation,
+        case_delta_paths=case_delta_paths,
+        coverage_epoch=1,
     )
     second = await _finalize_files(
         CaseReviewFinalizeHandler(),
         review_document,
         project,
-        [
-            "qa/.qa.yaml",
-            "qa/cases",
-            "qa/fixtures",
-            "qa/proposal.md",
-            "qa/requirement.md",
-            "qa/results",
-            "qa/tests",
-        ],
+        artifact_paths,
         change_id="CH-DEMO-001",
         coverage_epoch=1,
         review_round=0,
-        case_delta_paths=[case_path.relative_to(project).as_posix()],
-        preparation_refs=preparation_refs,
+        case_delta_paths=case_delta_paths,
+        preparation_refs=bound_preparation,
         case_refs=case_refs,
         write_root=write_root,
     )
@@ -2844,6 +3376,134 @@ async def test_case_review_finalize_preserves_each_epoch_history_and_updates_lat
         "path": "qa/cases/reviews/epochs/1/rounds/0.json",
         "digest": hashlib.sha256(second_history.read_bytes()).hexdigest(),
     }
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_preserves_raw_review_bytes(
+    tmp_path: Path,
+) -> None:
+    project, write_root = dual_roots(tmp_path)
+    _write_review_matrix(project, missing=[])
+    case_relative = _write_case_delta(
+        project,
+        yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
+    )
+    review_document = _case_review_document(missing=[])
+    review_path = write_root / "qa/results/review/case-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(review_document), encoding="utf-8")
+    (review_path.parent / "case-review-summary.md").write_text("# Case review\n", encoding="utf-8")
+    case_refs = [
+        {
+            "path": case_relative,
+            "digest": hashlib.sha256((project / case_relative).read_bytes()).hexdigest(),
+        }
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=[
+            {
+                "path": "qa/results/trace/minimum-coverage-matrix.json",
+                "digest": hashlib.sha256(
+                    (project / "qa/results/trace/minimum-coverage-matrix.json").read_bytes()
+                ).hexdigest(),
+            }
+        ],
+        case_delta_paths=[case_relative],
+    )
+    before = {
+        relative: (write_root / relative).read_bytes()
+        for relative in case_review_outputs("CH-DEMO-001")
+        if relative != "qa/results/review/case-review-summary.md"
+    }
+    executed = await _finalize_files(
+        CaseReviewFinalizeHandler(),
+        review_document,
+        project,
+        list(case_review_outputs("CH-DEMO-001")),
+        change_id="CH-DEMO-001",
+        case_delta_paths=[case_relative],
+        preparation_refs=bound_preparation,
+        case_refs=case_refs,
+        write_root=write_root,
+    )
+    assert executed.status == "succeeded", executed.failure
+    for relative, data in before.items():
+        assert (write_root / relative).read_bytes() == data
+
+
+@pytest.mark.asyncio
+async def test_case_review_finalize_generates_host_seals(
+    tmp_path: Path,
+) -> None:
+    from tests.capabilities.finalize_phase import checked_finalize
+
+    project, write_root = dual_roots(tmp_path)
+    _write_review_matrix(project, missing=[])
+    case_relative = _write_case_delta(
+        project,
+        yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8")),
+    )
+    review_document = _case_review_document(missing=[])
+    review_path = write_root / "qa/results/review/case-review.json"
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    review_path.write_text(json.dumps(review_document), encoding="utf-8")
+    (review_path.parent / "case-review-summary.md").write_text("# Case review\n", encoding="utf-8")
+    case_refs = [
+        {
+            "path": case_relative,
+            "digest": hashlib.sha256((project / case_relative).read_bytes()).hexdigest(),
+        }
+    ]
+    bound_preparation = _install_and_write_case_review_seal(
+        project=project,
+        write_root=write_root,
+        document=cast(Mapping[str, object], review_document),
+        case_refs=case_refs,
+        preparation_refs=[
+            {
+                "path": "qa/results/trace/minimum-coverage-matrix.json",
+                "digest": hashlib.sha256(
+                    (project / "qa/results/trace/minimum-coverage-matrix.json").read_bytes()
+                ).hexdigest(),
+            }
+        ],
+        case_delta_paths=[case_relative],
+    )
+    for relative in (
+        "qa/results/cases/epochs/0/selection.json",
+        "qa/cases/reviews/epochs/0/rounds/0.json",
+        "qa/cases/reviewed-case.json",
+    ):
+        (write_root / relative).unlink()
+    executed = await checked_finalize(
+        AGENT_JOB_CONTRACTS["case-review"],
+        write_root,
+        lambda: _finalize_files(
+            CaseReviewFinalizeHandler(),
+            review_document,
+            project,
+            list(case_review_outputs("CH-DEMO-001")),
+            change_id="CH-DEMO-001",
+            case_delta_paths=[case_relative],
+            preparation_refs=bound_preparation,
+            case_refs=case_refs,
+            write_root=write_root,
+        ),
+    )
+    assert executed.status == "succeeded", executed.failure
+    selection_path = write_root / "qa/results/cases/epochs/0/selection.json"
+    selection = json.loads(selection_path.read_bytes())
+    assert selection["cases"][0]["case_id"] == "TC_MENU_001"
+    reviewed = json.loads((write_root / "qa/cases/reviewed-case.json").read_bytes())
+    assert reviewed["selection_ref"]["digest"] == hashlib.sha256(selection_path.read_bytes()).hexdigest()
+    assert reviewed["review_ref"]["digest"] == hashlib.sha256(review_path.read_bytes()).hexdigest()
+    assert (
+        json.loads((write_root / "qa/cases/reviews/epochs/0/rounds/0.json").read_bytes())["outcome"] == "pass"
+    )
 
 
 @pytest.mark.asyncio
@@ -3024,3 +3684,270 @@ async def test_failed_case_design_validation_leaves_canonical_outputs_unchanged(
     assert executed.failure is not None
     assert executed.failure.kind == "invalid_output"
     assert canonical.read_bytes() == original
+
+
+def _case_impact_row(
+    row_id: str = "IR-001",
+    *,
+    disposition: str = "add",
+    gap_reason: str | None = None,
+    case_module: str | None = None,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "row_id": row_id,
+        "change_evidence_ids": ["CF-001"],
+        "affected_behavior": {"kind": "api", "key": "POST /items"},
+        "obligation": "duplicate item names must be rejected",
+        "expected_basis_ids": [],
+        "assets": {"case_ids": [], "factory_leafs": [], "problem_ids": []},
+        "disposition": disposition,
+        "gap_reason": gap_reason,
+        "confidence": "medium",
+    }
+    if case_module is not None:
+        row["case_module"] = case_module
+    return row
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_embeds_the_frozen_inventory(tmp_path: Path) -> None:
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        CASE_INPUT,
+        BINDING,
+        tmp_path,
+        impact_rows=(_case_impact_row(),),
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    inventory = cast(Mapping[str, object], business["impact_inventory"])
+    rows = cast(list[Mapping[str, object]], inventory["rows"])
+    assert rows[0]["row_id"] == "IR-001"
+    assert rows[0]["disposition"] == "add"
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_infers_case_paths_from_inventory(tmp_path: Path) -> None:
+    payload = {**CASE_INPUT, "case_delta_paths": []}
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        payload,
+        BINDING,
+        tmp_path,
+        impact_rows=(_case_impact_row(case_module="system/dept"),),
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    assert business["case_delta_paths"] == ("qa/cases/system/dept/case.yaml",)
+    assert request.workspace.allowed_outputs == (
+        "qa/.qa.yaml",
+        "qa/cases/system/dept/case.yaml",
+        "qa/proposal.md",
+        "qa/results/trace/minimum-coverage-matrix.json",
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_locks_every_inferred_module(tmp_path: Path) -> None:
+    payload = {**CASE_INPUT, "case_delta_paths": ["qa/cases/menus/case.yaml"]}
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        payload,
+        BINDING,
+        tmp_path,
+        impact_rows=(
+            _case_impact_row(case_module="system/dept"),
+            _case_impact_row(row_id="IR-002", case_module="system/user"),
+        ),
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    assert business["case_delta_paths"] == (
+        "qa/cases/system/dept/case.yaml",
+        "qa/cases/system/user/case.yaml",
+    )
+    assert "qa/cases/menus/case.yaml" not in request.workspace.allowed_outputs
+    assert "qa/cases/system/dept/case.yaml" in request.workspace.allowed_outputs
+    assert "qa/cases/system/user/case.yaml" in request.workspace.allowed_outputs
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_derives_module_when_explore_omits_case_module(
+    tmp_path: Path,
+) -> None:
+    payload = {**CASE_INPUT, "case_delta_paths": []}
+    prepared = await run_prepare(
+        CaseDesignPrepareHandler(),
+        payload,
+        BINDING,
+        tmp_path,
+        impact_rows=(_case_impact_row(),),
+    )
+    assert prepared.status == "succeeded"
+    request = AgentRunRequest.model_validate(prepared.output)
+    assert "qa/cases/items/case.yaml" in request.workspace.allowed_outputs
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_rejects_empty_lock_without_inferred_module(
+    tmp_path: Path,
+) -> None:
+    payload = {**CASE_INPUT, "case_delta_paths": []}
+    prepared = await run_prepare(CaseDesignPrepareHandler(), payload, BINDING, tmp_path)
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert prepared.failure.kind == "invalid_input"
+    assert "does not imply any case module" in prepared.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_locks_inferred_case_module(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    authored["added"][0]["impact_rows"] = ["IR-001"]
+    outputs = _write_case_design_outputs(write_root, authored)
+    inferred = "qa/cases/system/dept/case.yaml"
+    source = write_root / "qa/cases/menus/case.yaml"
+    dest = write_root / inferred
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(source.read_bytes())
+    source.unlink()
+    outputs = [inferred if path.endswith("/case.yaml") else path for path in outputs]
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        case_delta_paths=[],
+        impact_rows=(_case_impact_row(case_module="system/dept"),),
+    )
+    assert executed.status == "succeeded", executed.failure
+    assert [artifact["path"] for artifact in executed.output["artifacts"]] == sorted(outputs)
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_rejects_uncovered_add_rows(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(case_module="menus"),),
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.kind == "invalid_output"
+    assert "add/modify inventory rows have no covering case: ['IR-001']" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_accepts_a_covering_added_case(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    authored["added"][0]["impact_rows"] = ["IR-001"]
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(case_module="menus"),),
+    )
+    assert executed.status == "succeeded", executed.failure
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_rejects_add_row_cited_from_modified(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    added = authored.pop("added")
+    authored["added"] = []
+    authored["modified"] = added
+    authored["modified"][0]["impact_rows"] = ["IR-001"]
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(case_module="menus"),),
+    )
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert "inventory row cited in the wrong section" in executed.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_does_not_require_coverage_for_open_rows(tmp_path: Path) -> None:
+    project, write_root = dual_roots(tmp_path)
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        impact_rows=(_case_impact_row(disposition="capability_gap", gap_reason="no factory yet"),),
+    )
+    assert executed.status == "succeeded", executed.failure

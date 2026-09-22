@@ -58,13 +58,14 @@ _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
         "qa/results/healing/**",
         "qa/results/plans/**",
         "qa/proposal.md",
-        "qa/requirement.md",
         "qa/results/retro/**",
         "qa/results/review/**",
         "qa/results/trace/**",
     ),
-    "assurance-v1-executor": ("qa/results/execution/**",),
-    "assurance-v1-explorer": ("qa/results/explore/**",),
+    "assurance-v1-explorer": (
+        "qa/results/explore/exploration-draft.json",
+        "qa/results/explore/impact-inventory.json",
+    ),
     "assurance-v1-reporter": (
         "qa/results/inspect/**",
         "qa/results/issue-review/**",
@@ -83,25 +84,9 @@ _EDIT_RULES: Mapping[str, tuple[str, ...]] = {
     ),
 }
 
-_DURABLE_TESTS = "qa/tests/**"
-_EXECUTOR_COMMANDS = (
-    "npm run test --prefix qa *",
-    "npm test --prefix qa *",
-    f"npx playwright test --config={_DURABLE_TESTS} *",
-    "pnpm --dir qa run test *",
-    "pnpm --dir qa test *",
-    (
-        "PYTHONDONTWRITEBYTECODE=1 "
-        "HYPOTHESIS_STORAGE_DIRECTORY=/tmp/aa-hypothesis-* "
-        "uv run --isolated pytest -p no:cacheprovider --tb=line -o pythonpath=qa *"
-    ),
-    f"PYTHONDONTWRITEBYTECODE=1 uv run --isolated locust --locustfile {_DURABLE_TESTS} *",
-)
-
 _BASH_RULES: Mapping[str, tuple[str, ...]] = {
     "assurance-v1-archiver": (),
     "assurance-v1-doc-author": (),
-    "assurance-v1-executor": _EXECUTOR_COMMANDS,
     "assurance-v1-explorer": (),
     "assurance-v1-reporter": (
         "aa --version",
@@ -209,6 +194,8 @@ def bounded_agent_profiles() -> tuple[str, ...]:
 
 _EDIT_DENY_FILES = (
     "qa/results/explore/context.json",
+    "qa/results/explore/exploration.json",
+    "qa/requirement.md",
     "qa/results/workflow-state.json",
     "qa/results/workflow-state.yaml",
 )
@@ -301,13 +288,33 @@ def _opencode_config() -> str:
     return json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
+def _is_owned_install_target(path: Path) -> bool:
+    if path.name == "assurance-boundary.mjs":
+        return True
+    if path.name != "opencode.json":
+        return False
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(document, dict):
+        return False
+    agents = document.get("agent")
+    plugins = document.get("plugin")
+    if not isinstance(agents, dict) or not isinstance(plugins, list):
+        return False
+    return set(bounded_agent_profiles()).issubset(agents) and _BOUNDARY_PLUGIN_ENTRY in plugins
+
+
 def _assert_install_target(path: Path, content: str) -> None:
     if not path.exists():
         return
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"OpenCode agent target is not a regular file: {path}")
-    if path.read_text(encoding="utf-8") != content:
-        raise ValueError(f"OpenCode agent target already has different content: {path}")
+    existing = path.read_text(encoding="utf-8")
+    if existing == content or _is_owned_install_target(path):
+        return
+    raise ValueError(f"OpenCode agent target already has different content: {path}")
 
 
 def install_opencode_agents(project_dir: Path) -> tuple[Path, ...]:
@@ -327,9 +334,10 @@ def install_opencode_agents(project_dir: Path) -> tuple[Path, ...]:
         (plugin_path, plugin_content),
     ):
         _assert_install_target(path, content)
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+        if path.exists() and path.read_text(encoding="utf-8") == content:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     return config_path, plugin_path
 
 

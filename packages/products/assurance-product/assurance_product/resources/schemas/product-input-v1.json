@@ -64,6 +64,21 @@
         "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
       }
     },
+    "allowed_origins": {
+      "type": "array",
+      "uniqueItems": true,
+      "default": [],
+      "items": {
+        "type": "string",
+        "pattern": "^https?://[^/?#]+$"
+      }
+    },
+    "execution_timeout_seconds": {
+      "type": "integer",
+      "minimum": 31,
+      "maximum": 3600,
+      "default": 3600
+    },
     "budgets": {
       "type": "object",
       "additionalProperties": false,

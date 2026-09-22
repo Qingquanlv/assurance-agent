@@ -25,15 +25,13 @@ from tests.capabilities.ownership import (
     legacy_skill_ids,
     legacy_validator_ids,
     load_ownership_ledger,
+    operation_handler_id,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
-    "assurance.execution": (
-        "operation:run-tests",
-        "operation:run-tests-and-collect-pr-metrics",
-    ),
+    "assurance.execution": ("operation:run-tests",),
     "assurance.healing": (
         "operation:allocate-healing-attempt",
         "operation:fixer-authority-ready",
@@ -392,10 +390,9 @@ def test_operation_skill_and_persona_dispositions_are_exact() -> None:
     for owner, operations in OPERATION_OWNERS.items():
         for operation_id in operations:
             item = by_id[("operation", operation_id)]
-            slug = operation_id.removeprefix("operation:")
             assert item.disposition == "migrate"
             assert item.owner == owner
-            assert item.new_id == f"{owner}.{slug}"
+            assert item.new_id == operation_handler_id(owner, operation_id)
             assert item.status == "verified"
             assert item.verification == _operation_live_pointer(operation_id)
 

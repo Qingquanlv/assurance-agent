@@ -15,6 +15,8 @@ from graph_engine.attempts.resolutions import ReceiptRef
 from assurance_generation.contracts.codegen import CodegenMapping
 from assurance_generation.contracts.generated_files import GeneratedFileEntryV1
 from assurance_generation.contracts.families import LayerName
+from assurance_generation.contracts.plans import ObligationMethodPlanV1
+from assurance_generation.contracts.reviews import ObligationSemanticReviewV1
 
 
 class GeneratedFamilyV1(FrozenModel):
@@ -24,6 +26,8 @@ class GeneratedFamilyV1(FrozenModel):
     files: tuple[GeneratedFileEntryV1, ...] = Field(min_length=1)
     mapping: CodegenMapping
     receipt: ReceiptRef
+    method_plans: tuple[ObligationMethodPlanV1, ...] = ()
+    semantic_reviews: tuple[ObligationSemanticReviewV1, ...] = ()
 
 
 class CompleteGenerationInputV1(FrozenModel):
@@ -81,6 +85,7 @@ class GenerationCycleResultV1(FrozenModel):
     mapping_ref: EvidenceArtifactRefV1
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     plan_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
+    method_plan_ref: EvidenceArtifactRefV1
 
     @model_validator(mode="after")
     def _identity_matches(self) -> Self:

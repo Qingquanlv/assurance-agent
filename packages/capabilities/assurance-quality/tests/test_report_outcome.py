@@ -66,6 +66,7 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         ),
         "case_refs": [_ref("qa/cases/system/case.yaml")],
         "review_ref": _ref(f"{results}/review/case-review.json"),
+        "selection_ref": _ref("qa/results/cases/epochs/0/selection.json"),
     }
     mapping_ref = _ref(f"{results}/generation/epochs/0/mapping.json")
     execution_ref = _ref(f"{results}/execution/epochs/0/batches/{batch_id}/result.json")
@@ -99,6 +100,15 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
         "sufficiency_ref": _ref(f"{assessment_base}/trace-sufficiency.json"),
         "execution_ref": execution_ref,
         "observations_ref": _ref(f"{assessment_base}/observations.json"),
+        "obligation_assessment_ref": _ref(f"{assessment_base}/obligation-assessment.json"),
+        "obligation_gate_facts": {
+            "required_count": 1,
+            "supported_count": 1,
+            "refuted_count": 0,
+            "inconclusive_count": 0,
+            "repairable_gap_count": 0,
+            "human_gap_count": 0,
+        },
         "issue_evidence_manifest_ref": _ref(f"{assessment_base}/issue-evidence-manifest.json"),
         "owned_evidence_ids": ["OBS-REPORT-1"],
         "evidence_bundle_digest": f"sha256:{_DIGEST}",
@@ -113,6 +123,7 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
             assessment["metrics_ref"],
             assessment["sufficiency_ref"],
             assessment["observations_ref"],
+            assessment["obligation_assessment_ref"],
             assessment["issue_evidence_manifest_ref"],
             execution_ref,
             fact_ref,
@@ -151,6 +162,7 @@ def _state(*, batch_id: str = _BATCH) -> dict[str, object]:
             "mapping_ref": mapping_ref,
             "source_refs": [_ref("qa/tests/test_orders.py")],
             "plan_refs": [_ref(f"{results}/generation/epochs/0/api/plan.json")],
+            "method_plan_ref": _ref(f"{results}/generation/epochs/0/obligation-methods.json"),
         },
         "inspection_outcome": inspection,
         "coverage_state": "satisfied",

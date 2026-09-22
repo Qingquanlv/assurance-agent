@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import time
 from collections.abc import Mapping
@@ -101,7 +102,9 @@ class OpenCodeHttpClient:
         self._directory = directory if directory is not None else config.project_scope
         headers: dict[str, str] = {}
         if secret:
-            headers["Authorization"] = f"Bearer {secret.decode('utf-8')}"
+            token = secret.decode("utf-8")
+            encoded = base64.b64encode(f"opencode:{token}".encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {encoded}"
         self._client = httpx.AsyncClient(
             base_url=self._origin,
             timeout=httpx.Timeout(config.request_timeout_seconds),

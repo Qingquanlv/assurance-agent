@@ -81,7 +81,7 @@ class SelectInputV1(FrozenModel):
 
 
 class ExecutionPrepareInputV1(FrozenModel):
-    """Root data from which prepare locks the executable test selection."""
+    """Root data from which the execution task locks the test selection."""
 
     change_id: str = Field(min_length=1)
     plan_digest: str = Field(pattern=_SHA256)
@@ -89,8 +89,12 @@ class ExecutionPrepareInputV1(FrozenModel):
     selected_test_families: tuple[Literal["api", "e2e", "fuzz", "performance"], ...]
     capability_leafs: tuple[str, ...]
     coverage_epoch: int = Field(default=0, ge=0)
+    coverage_epoch_token: str = Field(default="0", min_length=1)
     repair_round: int = Field(default=0, ge=0)
+    execution_kind: Literal["execute", "run"] = "execute"
     generation_result: GenerationCycleResultV1 | None = None
+    allowed_origins: tuple[str, ...] = ()
+    timeout_seconds: int = Field(default=3600, ge=31, le=3600)
 
     @field_validator("selected_test_families")
     @classmethod
@@ -110,6 +114,8 @@ class ExecutionPrepareInputV1(FrozenModel):
 
     @model_validator(mode="after")
     def _plan_matches_generation(self) -> ExecutionPrepareInputV1:
+        if self.coverage_epoch_token != str(self.coverage_epoch):
+            raise ValueError("coverage_epoch_token must equal coverage_epoch")
         if self.generation_result is not None:
             require_same_plan(
                 self.plan_digest,
@@ -125,12 +131,20 @@ class RunTestsInputV1(FrozenModel):
     plan_digest: str = Field(pattern=_SHA256)
     plan_ref: EvidenceArtifactRefV1
     batch_id: str = Field(min_length=1)
+    executed_at: AwareDatetime | None = None
     selected_targets: SelectedTargets
     mapping: ClosedMappingV1
     capability_leafs: tuple[str, ...]
     case_ids: tuple[str, ...]
     baseline_tree_id: str = Field(pattern=_SHA256)
     runner_profile_digest: str = Field(pattern=_SHA256)
+    timeout_seconds: int = Field(default=3600, ge=31, le=3600)
+    coverage_epoch: int = Field(default=0, ge=0)
+    execution_kind: Literal["execute", "run"] = "execute"
+    # Frozen observation method. Without it the runner cannot collect a runtime
+    # observation and every obligation stays inconclusive downstream.
+    method_plan_refs: tuple[EvidenceArtifactRefV1, ...] = ()
+    allowed_origins: tuple[str, ...] = ()
 
     @field_validator("capability_leafs")
     @classmethod

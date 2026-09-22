@@ -34,8 +34,8 @@ FAMILY_TERMINALS = ("api-done", "e2e-done", "fuzz-done", "performance-done")
 _PUBLIC_DIGEST = "a" * 64
 _EXECUTION_IDS = frozenset(
     {
-        "assurance.execution.agent.execute.v1",
-        "assurance.execution.agent.run.v1",
+        "assurance.execution.execute",
+        "assurance.execution.run",
     }
 )
 _INSPECT_ID = "assurance.quality.agent.inspect.v1"

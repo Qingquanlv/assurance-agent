@@ -268,6 +268,8 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
     issue_digest = artifact_digest(issue_slice)
     workflow_digest = artifact_digest(workflow_slice)
     eval_digest = artifact_digest(evaluation)
+    coverage_gap_slice = collected.coverage_gap_slice
+    coverage_gap_digest = artifact_digest(coverage_gap_slice) if coverage_gap_slice is not None else None
     domains = (
         ("issue", issue_slice, issue_analysis, issue_digest),
         ("workflow", workflow_slice, workflow_analysis, workflow_digest),
@@ -304,6 +306,13 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
         for reason in slice_.integrity.reasons:
             if reason not in reasons:
                 reasons.append(reason)
+    if coverage_gap_slice is not None:
+        # The coverage_gap slice is collected but has no analyzer in this graph.
+        # Its integrity reasons still have to reach the context, otherwise a
+        # corrupt or out-of-window projection is invisible to every consumer.
+        for reason in coverage_gap_slice.integrity.reasons:
+            if reason not in reasons:
+                reasons.append(reason)
     context = RetroContextV3(
         retro_id=collected.retro_id,
         generated_at=str(state["ts"]),
@@ -313,9 +322,11 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
             issue_slice_sha256=issue_digest,
             workflow_slice_sha256=workflow_digest,
             eval_slice_sha256=eval_digest,
+            coverage_gap_slice_sha256=coverage_gap_digest,
             issue_sources=issue_slice.sources,
             workflow_sources=workflow_slice.sources,
             eval_sources=evaluation.sources,
+            coverage_gap_sources=coverage_gap_slice.sources if coverage_gap_slice is not None else (),
         ),
         integrity=(
             RetroIntegrity(status="incomplete", reasons=tuple(dict.fromkeys(reasons)))
@@ -326,6 +337,7 @@ def assemble_analyses(state: Mapping[str, object]) -> dict[str, object]:
             issue=statuses["issue"],
             workflow=statuses["workflow"],
             eval=statuses["eval"],
+            coverage_gap=(DomainAnalysisStatus(status="skipped") if coverage_gap_slice is not None else None),
         ),
         signals=ContextSignalSet.model_validate(
             {"issue": signals["issue"], "workflow": signals["workflow"], "eval": signals["eval"]}

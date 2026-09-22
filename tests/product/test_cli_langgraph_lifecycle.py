@@ -31,6 +31,7 @@ _NON_AGENT_ENTRYPOINTS = frozenset(
         "improvement-export",
         "improvement-rollback",
         "init",
+        "issue-reconcile",
     }
 )
 _AGENT_ENTRYPOINTS = frozenset(
@@ -42,7 +43,6 @@ _AGENT_ENTRYPOINTS = frozenset(
         "improvement-review",
         "intake",
         "issue-analyze",
-        "issue-reconcile",
         "issue-review",
         "retro",
     }

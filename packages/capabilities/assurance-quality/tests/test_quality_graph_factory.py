@@ -34,6 +34,7 @@ _INSPECT_ID = "assurance.quality.agent.inspect.v1"
 _MATERIALIZE_ID = "assurance.quality.materialize-assessment-inputs"
 _ISSUE_TRIAGE_ID = "assurance.quality.agent.issue-triage.v1"
 _ISSUE_ANALYSIS_ID = "assurance.quality.agent.issue-analysis.v1"
+_ISSUE_RECONCILE_ID = "assurance.quality.reconcile-issues"
 _REPORT_ID = "assurance.quality.agent.report.v1"
 _GRAPH_CONTRACT_IDS = (
     _MATERIALIZE_ID,
@@ -41,6 +42,7 @@ _GRAPH_CONTRACT_IDS = (
     _INSPECT_ID,
     _ISSUE_TRIAGE_ID,
     _ISSUE_ANALYSIS_ID,
+    _ISSUE_RECONCILE_ID,
     _REPORT_ID,
 )
 _PHASE_NODES = frozenset(
@@ -144,6 +146,7 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
         ],
         "case_refs": [ref("qa/cases/items/case.yaml")],
         "review_ref": ref("qa/results/review/case-review.json"),
+        "selection_ref": ref("qa/results/cases/epochs/2/selection.json"),
     }
     generation = {
         "change_id": "CH-DEMO-001",
@@ -154,6 +157,7 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
         "mapping_ref": ref("qa/results/codegen/closed-mapping.json"),
         "source_refs": [ref("qa/tests/a.py")],
         "plan_refs": [ref("qa/results/plans/api-plan.md")],
+        "method_plan_ref": ref("qa/results/generation/epochs/2/obligation-methods.json"),
     }
     payload.update(
         {
@@ -173,6 +177,9 @@ def assess_graph_input(*, kind: str = "root", value: str = "1") -> dict[str, obj
                 "mapping_ref": generation["mapping_ref"],
                 "source_refs": generation["source_refs"],
                 "receipt": {"receipt_id": "execution", "receipt_digest": _SHA},
+                "family_outcomes": [
+                    {"family": "api", "state": "executed", "reason_code": None, "diagnostic_refs": []}
+                ],
             },
             "policy_resource_id": "assurance.product.configuration.product-policy",
             "policy_sha256": _SHA,
@@ -237,6 +244,18 @@ def _assessment_output() -> dict[str, object]:
             "digest": _SHA,
         },
         "observations_ref": {"path": f"{base}/observations.json", "digest": _SHA},
+        "obligation_assessment_ref": {
+            "path": f"{base}/obligation-assessment.json",
+            "digest": _SHA,
+        },
+        "obligation_gate_facts": {
+            "required_count": 1,
+            "supported_count": 1,
+            "refuted_count": 0,
+            "inconclusive_count": 0,
+            "repairable_gap_count": 0,
+            "human_gap_count": 0,
+        },
         "issue_evidence_manifest_ref": {
             "path": f"{base}/issue-evidence-manifest.json",
             "digest": _SHA,
@@ -386,6 +405,31 @@ def _finalized_issue_analysis_output() -> dict[str, object]:
     }
 
 
+def _reconcile_output() -> dict[str, object]:
+    snapshot_ref = {"path": "qa/results/issues/snapshot.json", "digest": _SHA}
+    return {
+        "schema_version": "1.0",
+        "change_id": "CH-DEMO-001",
+        "authoritative_batch_id": "20260822T000000Z",
+        "observations": [],
+        "occurrences": [],
+        "problems": [],
+        "analysis_status": {
+            "schema_version": "1.0",
+            "change_id": "CH-DEMO-001",
+            "batch_id": "20260822T000000Z",
+            "status": "completed",
+            "evidence_bundle_digest": f"sha256:{_SHA}",
+            "candidate_count": 0,
+            "candidate_digest": f"sha256:{_SHA}",
+        },
+        "candidate_digest": f"sha256:{_SHA}",
+        "project_sync_status": "completed",
+        "batches": ["20260822T000000Z"],
+        "issue_snapshot_ref": snapshot_ref,
+    }
+
+
 def test_incomplete_issue_analysis_preserves_evidence_without_authorizing_repair() -> None:
     output = _finalized_issue_analysis_output()
     agent_result = cast(dict[str, object], output["agent_result"])
@@ -489,8 +533,9 @@ def test_quality_factory_exports_five_public_graphs(recording_context) -> None:
     assert isinstance(bundle, QualityGraphs)
     assert not hasattr(bundle, "nodes")
     assert set(recording_context.bound_contract_ids) == set(_GRAPH_CONTRACT_IDS)
-    assert len(set(recording_context.bound_contract_ids)) == 6
-    assert recording_context.bound_contract_ids.count(_ISSUE_ANALYSIS_ID) == 2
+    assert len(set(recording_context.bound_contract_ids)) == 7
+    assert recording_context.bound_contract_ids.count(_ISSUE_ANALYSIS_ID) == 1
+    assert recording_context.bound_contract_ids.count(_ISSUE_RECONCILE_ID) == 1
     assert all(item is None for item in recording_context.compiled_subgraph_checkpointers)
 
 
@@ -562,7 +607,8 @@ async def test_assess_publishes_coverage_state_rounds_and_evidence() -> None:
     receipt_payload = inspection_outcome["inspection_receipt"]
     assert isinstance(receipt_payload, dict)
     assert receipt_payload["receipt_id"] == _RECEIPT_ID
-    assert len(evidence_refs) == 8
+    assert len(evidence_refs) == 9
+    assert any("obligation-assessment.json" in str(ref["path"]) for ref in evidence_refs)
     assert result.terminal is not None
 
 
@@ -610,7 +656,6 @@ async def test_fact_baseline_export_publishes_the_committed_ref() -> None:
     [
         ("issue_review", "quality.issue-review", _ISSUE_TRIAGE_ID),
         ("issue_analyze", "quality.issue-analyze", _ISSUE_ANALYSIS_ID),
-        ("issue_reconcile", "quality.issue-reconcile", _ISSUE_ANALYSIS_ID),
     ],
 )
 async def test_issue_exports_are_independently_callable(
@@ -626,9 +671,7 @@ async def test_issue_exports_are_independently_callable(
         script={
             semantic_node_id: [
                 committed(
-                    _finalized_issue_analysis_output()
-                    if graph_name in {"issue_analyze", "issue_reconcile"}
-                    else _issue_output(),
+                    _finalized_issue_analysis_output() if graph_name == "issue_analyze" else _issue_output(),
                     _receipt(),
                 )
             ]
@@ -638,6 +681,30 @@ async def test_issue_exports_are_independently_callable(
     assert [call.contract_id for call in result.semantic_calls] == [contract_id]
     published = result.published_update
     assert published is not None
+    assert published["classification"] == "test"
+    assert published["fix_eligible"] is True
+    assert result.terminal is not None
+
+
+async def test_issue_reconcile_export_is_the_deterministic_task() -> None:
+    harness = GraphHarness()
+    context = harness.recording_context(owner_id="assurance.quality", contracts=quality_contracts())
+    bundle = build_quality_graphs(context)
+    payload = quality_graph_input()
+    payload["issue_analysis"] = _finalized_issue_analysis_output()
+    result = await harness.run(
+        bundle.issue_reconcile,
+        input=payload,
+        script={"quality.issue-reconcile": [committed(_reconcile_output(), _receipt())]},
+    )
+    assert [call.semantic_node_id for call in result.semantic_calls] == ["quality.issue-reconcile"]
+    assert [call.contract_id for call in result.semantic_calls] == [_ISSUE_RECONCILE_ID]
+    published = result.published_update
+    assert published is not None
+    assert published["issue_snapshot_ref"] == {
+        "path": "qa/results/issues/snapshot.json",
+        "digest": _SHA,
+    }
     assert published["classification"] == "test"
     assert published["fix_eligible"] is True
     assert result.terminal is not None

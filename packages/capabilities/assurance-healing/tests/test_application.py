@@ -16,12 +16,15 @@ from assurance_healing.contracts.application import (
     AppliedTestRepairV1,
     ApplyTestRepairInputV1,
     TestRepairResultV1 as RepairAgentResultV1,
+    VerifiedTestRepairV1,
 )
 from assurance_healing.contracts.agent import FixProposalResultV1
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
 from assurance_healing.operations.application import (
     ApplyTestRepairFinalizeHandler,
     ApplyTestRepairPrepareHandler,
+    expected_repair_history,
+    repair_history_path,
 )
 from assurance_healing.operations.keys import derive_approval_id
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
@@ -94,6 +97,7 @@ def _execution(plan_digest: str = SHA, plan_ref: dict[str, str] | None = None) -
         "plan_ref": bound_ref,
         "batch_id": "batch-1",
         "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+        "family_outcomes": [{"family": "api", "state": "executed"}],
         "mapping": {
             "schema_version": "1",
             "selected": [f"{TARGET}::test_users"],
@@ -186,6 +190,7 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
         _json_bytes(_execution(plan.plan_digest, plan_ref)),
     )
     source_ref = _write(project, SOURCE, before)
+    selection_ref = _write(project, "qa/results/cases/epochs/0/selection.json", b'{"schema_version":"1"}\n')
     payload: dict[str, object] = {
         "change_id": CHANGE,
         "plan_digest": plan.plan_digest,
@@ -203,6 +208,7 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
             ),
             "case_refs": [case_ref],
             "review_ref": review_ref,
+            "selection_ref": selection_ref,
         },
         "proposal_ref": proposal_ref,
         "approval_ref": approval_ref,
@@ -212,6 +218,37 @@ def _fixture(project: Path) -> tuple[dict[str, object], bytes]:
         "allowed_test_paths": [SOURCE],
     }
     return payload, before
+
+
+def _write_expected_repair_history(
+    stage: Path,
+    payload: dict[str, object],
+    *,
+    after: bytes,
+    outputs: list[str] | None = None,
+) -> bytes:
+    business = ApplyTestRepairInputV1.model_validate(payload)
+    changed = tuple(
+        EvidenceArtifactRefV1(path=path, digest=hashlib.sha256(after).hexdigest())
+        for path in (outputs or [SOURCE])
+    )
+    verified = VerifiedTestRepairV1(
+        change_id=business.change_id,
+        plan_digest=business.plan_digest,
+        plan_ref=business.plan_ref,
+        coverage_epoch=business.coverage_epoch,
+        repair_round=business.repair_round,
+        changed_test_refs=changed,
+        mapping_ref=business.mapping_ref,
+    )
+    history = expected_repair_history(business, verified)
+    data = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
+    relative = repair_history_path(
+        coverage_epoch=business.coverage_epoch,
+        repair_round=business.repair_round,
+    )
+    _write(stage, relative, data)
+    return data
 
 
 def _agent_result(output_files: list[str]) -> dict[str, object]:
@@ -288,13 +325,13 @@ async def test_finalize_proves_existing_test_bytes_changed(tmp_path: Path) -> No
     stage = tmp_path / ".stage"
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
     _write(stage, SOURCE, after)
+    first_history = _write_expected_repair_history(stage, payload, after=after)
     result = await _finalize(tmp_path, stage, payload, [SOURCE])
     assert result.outcome.status == "succeeded", result.outcome.failure
     output = cast(dict[str, Any], result.outcome.output)
     assert output["changed_test_refs"] == [{"path": SOURCE, "digest": hashlib.sha256(after).hexdigest()}]
     assert output["mapping_ref"] == payload["mapping_ref"]
     history_path = stage / "qa/results/healing/epochs/0/rounds/1/repair.json"
-    first_history = history_path.read_bytes()
     history = json.loads(first_history)
     assert history["loop_kind"] == "implementation_repair"
     assert [ref["path"] for ref in history["source_refs"]].count(SOURCE) == 1
@@ -349,6 +386,7 @@ async def test_proposal_and_application_accept_the_same_generated_source_path(tm
     stage = tmp_path / ".stage"
     after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
     _write(stage, SOURCE, after)
+    _write_expected_repair_history(stage, payload, after=after)
     result = await _finalize(tmp_path, stage, payload, [SOURCE])
     assert result.outcome.status == "succeeded", result.outcome.failure
 
@@ -389,11 +427,9 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
     request = AgentRunRequest.model_validate(prepared.output)
     assert request.workspace.allowed_outputs == (SOURCE,)
     stage = tmp_path / ".stage"
-    _write(
-        stage,
-        SOURCE,
-        b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n",
-    )
+    after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
+    _write(stage, SOURCE, after)
+    _write_expected_repair_history(stage, payload, after=after)
     result = await _finalize(tmp_path, stage, payload, [SOURCE])
     assert result.outcome.status == "succeeded", result.outcome.failure
     assert (tmp_path / other_source).read_bytes() == other_bytes
@@ -402,6 +438,26 @@ async def test_repair_changes_only_the_approved_file_in_a_two_file_generation(tm
     _write(stage, other_source, b"def test_other():\n    x = 1\n    assert True\n")
     extra = await _finalize(tmp_path, stage, payload, sorted([SOURCE, other_source]))
     assert extra.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_finalize_generates_host_repair_history(tmp_path: Path) -> None:
+    from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS
+    from tests.capabilities.finalize_phase import checked_finalize
+
+    payload, _before = _fixture(tmp_path)
+    stage = tmp_path / ".stage"
+    after = b"def test_users(client):\n    response = client.get('/users')\n    assert response.status_code == 200\n"
+    _write(stage, SOURCE, after)
+    result = await checked_finalize(
+        AGENT_JOB_CONTRACTS["apply-test-repair"],
+        stage,
+        lambda: _finalize(tmp_path, stage, payload, [SOURCE]),
+    )
+    assert result.outcome.status == "succeeded", result.outcome.failure
+    history = json.loads((stage / "qa/results/healing/epochs/0/rounds/1/repair.json").read_bytes())
+    assert history["outcome"] == "applied"
+    assert {"path": SOURCE, "digest": hashlib.sha256(after).hexdigest()} in history["source_refs"]
 
 
 @pytest.mark.asyncio
@@ -495,6 +551,10 @@ def test_input_binds_reviewed_case_epoch() -> None:
                     "preparation_refs": [{"path": PREP, "digest": SHA}],
                     "case_refs": [{"path": CASE, "digest": SHA}],
                     "review_ref": {"path": REVIEW, "digest": SHA},
+                    "selection_ref": {
+                        "path": "qa/results/cases/epochs/0/selection.json",
+                        "digest": SHA,
+                    },
                 },
                 "proposal_ref": {"path": PROPOSAL, "digest": SHA},
                 "approval_ref": None,

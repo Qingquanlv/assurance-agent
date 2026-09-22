@@ -64,12 +64,13 @@ def _seed_review(root: Path, loaded: Any) -> dict[str, str]:
     )
     reviewed = ReviewedCaseV1(
         change_id="CH-DEMO-001",
-        coverage_epoch=3,
+        coverage_epoch=0,
         plan_digest=loaded.plan.plan_digest,
         plan_ref=loaded.plan_ref,
         preparation_refs=(loaded.plan_ref,),
         case_refs=(case,),
         review_ref=review,
+        selection_ref=write("qa/results/cases/epochs/0/selection.json", b'{"schema_version":"1"}'),
     )
     return write("qa/cases/reviewed-case.json", reviewed.model_dump_json().encode()).model_dump(mode="json")
 

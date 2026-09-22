@@ -10,6 +10,7 @@ from assurance_quality.contracts.assessment import (
 )
 from assurance_quality.contracts.coverage import COVERAGE_STATES, CoverageState
 from assurance_quality.contracts.agent import IssueAnalysisResultV1
+from assurance_quality.contracts.obligations import ObligationGateDecision
 
 FailureClassification = Literal[
     "environment_failure",
@@ -91,6 +92,24 @@ def classify_inspection_disposition(
     return "blocked"
 
 
+def merge_obligation_disposition(
+    disposition: InspectionDisposition,
+    obligation_decision: ObligationGateDecision,
+) -> InspectionDisposition:
+    """A coverage/test repair cannot override an obligation stop condition."""
+    if disposition in {"blocked", "analysis_required"}:
+        return disposition
+    if obligation_decision == "blocked":
+        return "blocked"
+    if disposition == "needs_human" or obligation_decision == "needs_human":
+        return "needs_human"
+    if disposition == "repairable_execution_failure":
+        return disposition
+    if disposition == "coverage_insufficient" or obligation_decision == "repair_required":
+        return "coverage_insufficient"
+    return "satisfied"
+
+
 __all__ = [
     "COVERAGE_STATES",
     "CoverageAssessmentPublicV1",
@@ -99,4 +118,5 @@ __all__ = [
     "FailureClassification",
     "IssueAnalysisPublicV1",
     "classify_inspection_disposition",
+    "merge_obligation_disposition",
 ]

@@ -47,10 +47,18 @@ def _job(
     outputs: tuple[str, ...],
     extra_claims: tuple[str, ...] = (),
 ) -> AgentExecutionContract[Any, Any, Any]:
-    prepare_suffixes = ("explore/context.json",) if base == "explore" else ()
+    prepare_suffixes = {
+        "explore": ("explore/context.json",),
+        "intake": ("requirement.md", "intake/sources/run-spec.effective.yaml"),
+    }.get(base, ())
     prepare_paths = _paths(*prepare_suffixes) if prepare_suffixes else ()
-    finalize_suffixes = ("cases/reviewed-case.json", "cases/reviews") if base == "case-review" else ()
+    finalize_suffixes = {
+        "case-review": ("cases/reviewed-case.json", "cases/reviews"),
+        "explore": ("explore/exploration.json",),
+    }.get(base, ())
     finalize_paths = _paths(*finalize_suffixes) if finalize_suffixes else ()
+    if base == "case-review":
+        finalize_paths = tuple(sorted((*finalize_paths, "qa/results/cases/epochs")))
     literal_claims = (_CASES_ROOT,) if base == "case-design" else ()
     writes = tuple(
         sorted(
@@ -109,7 +117,7 @@ _JOBS: tuple[
         CaseReviewResultV1,
         CaseReviewResultV1,
         ("review/case-review.json", "review/case-review-summary.md"),
-        ("cases/reviewed-case.json",),
+        (),
     ),
     (
         "explore",
@@ -118,7 +126,7 @@ _JOBS: tuple[
         ExploreInputV1,
         ArtifactListResultV1,
         FinalizedArtifactsV1,
-        ("explore/exploration.json",),
+        ("explore/exploration-draft.json", "explore/impact-inventory.json"),
         (),
     ),
     (
@@ -128,7 +136,7 @@ _JOBS: tuple[
         IntakeInputV1,
         ArtifactListResultV1,
         FinalizedArtifactsV1,
-        (".qa.yaml", "requirement.md"),
+        (".qa.yaml",),
         (),
     ),
 )
@@ -146,7 +154,11 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                 (
                     *_paths(*outputs),
                     *(
-                        (qa_join("cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"),)
+                        (
+                            qa_join("cases/reviewed-case.json"),
+                            qa_join("cases/reviews/epochs/{coverage_epoch}/rounds/{review_round}.json"),
+                            "qa/results/cases/epochs/{coverage_epoch}/selection.json",
+                        )
                         if base == "case-review"
                         else ()
                     ),

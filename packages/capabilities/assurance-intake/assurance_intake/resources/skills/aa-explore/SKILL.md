@@ -25,22 +25,22 @@ Do not rely on prior conversation context.
 
 **After completing work:**
 
-1. Write `qa/results/explore/exploration.json`
+1. Write `qa/results/explore/exploration-draft.json` **and** `qa/results/explore/impact-inventory.json`
    - Use the native `write` tool directly. Do not call `aa risk`, `aa artifact`,
      `base64`, or any shell command; the explorer agent has no shell write authority.
    - Write the complete advisory in one operation. A placeholder or reduced object is
      invalid even when it contains `schema_version`, `change_id`, `watchlist`, and
      `open_questions_for_case_design`.
    - Autonomous, degraded, and no-source runs MUST still write a complete valid
-     `exploration.json`. Weak or absent evidence changes the evidence fields and
+     `exploration-draft.json`. Weak or absent evidence changes the evidence fields and
      confidence, never the required output file.
-2. Immediately read `qa/results/explore/exploration.json` back. This is a hard
+2. Immediately read both files back. This is a hard
    completion condition: if the read reports missing/error, continue writing and do
    not return. Native `write` is mandatory in this execution profile; there is no CLI
    or shell fallback. Never use Python, `tee`, a heredoc, `base64`, `aa risk`,
    `aa artifact`, `ast_grep_replace`, or a shell command suffix to create this artifact.
 3. Do **not** write `qa/results/explore/advisory.md`
-4. After read-back, verify every field listed under `exploration.json schema (MVP)` and
+4. After read-back, verify every field listed under `exploration-draft.json schema (MVP)` and
    `test_strategy` is present and populated. The product finalizer performs the
    authoritative validation after this agent returns.
 5. On a read-back or completeness failure, continue correcting the artifact; do not
@@ -70,6 +70,13 @@ Do not use glob to check either Explore path (`context.json` or `exploration.jso
 Change-local files may be ignored by repository search even though an exact native
 read can access them. A glob result of `No files found` is not a missing-file result:
 perform the exact read. Likewise, verify the output with an exact read after writing.
+
+`context.json` now carries a typed `impact` projection: `impact.seeds[]` (`CF-*`, the
+files/symbols the change touched — from a sealed diff when `impact.diff_base ==
+"change-evidence"`, otherwise from explicit paths in the requirement),
+`impact.candidate_cases[]` (`CS-*` with `case_id`), `impact.historical_problems[]`
+(`HI-*` with `problem_id`), `impact.factory_leafs[]`, and `impact.unobserved_hints[]`.
+These ids, together with your own `SC-*` ids, are the only ids you may cite anywhere.
 
 - Missing or unreadable context → fail the task. Do not return structured success,
   especially not `{"output_files":[]}`; without authenticated context there is no
@@ -171,7 +178,7 @@ business obligations.
 
 ### LLM Hard Rules
 
-1. All numbers, `case_id`, `issue_id`, module names **must** come from `context.json` fields (`evidence[]`, `impact.*`, `historical_issues[]`, `case_signals[]`) **or from source code evidence (SC-* IDs) collected in Step 3**.
+1. All numbers, `case_id`, `issue_id`, module names **must** come from `context.json` fields (`evidence[]`, `impact.seeds[]`, `impact.candidate_cases[]`, `impact.historical_problems[]`, `historical_issues[]`, `case_signals[]`) **or from source code evidence (SC-* IDs) collected in Step 3**. Cite them by id: `CF-*`, `CS-*`, `HI-*`. The product finalizer rejects any id that does not resolve to `context.json` or to your `SC-*` list.
 2. Every `priority_hint` / watchlist item **must** reference ≥1 evidence ID (`context.evidence[].id` or Step 3 `SC-*` ID) via `evidence_ids[]`.
 3. No `evidence_ids` → item MUST be `confidence: low`. Do not generate `priority_hint`/watchlist items with no evidence.
 4. `case_design_guidance` is an **evidence-anchored channel** — never write case files. `priority_hints` is the **sole channel for risk-area signals** (there is no separate `hotspots` array — every `priority_hint` carries its own `confidence`, following the same §5.7 rules as watchlist). When ALL evidence (historical AND source code) is empty, set `priority_hints`, `suggested_scenarios`, and `regression_focus` to `[]`. Do **not** fill them with generic advice — generic "at least cover" guidance belongs exclusively in `minimum_required_coverage`; degraded disclaimers belong exclusively in `executive_summary`.
@@ -269,7 +276,7 @@ finalizer enforces the installed model after read-back.
 
 | Field | Derive from |
 |-------|-------------|
-| `scope.in_scope` / `scope.out_of_scope` | Diff-changed modules/files (`context.json` `impact.modules`) + requirement text scope; uncertain areas go to `out_of_scope` with a note in `executive_summary`, not a guess. When no evidence supports a scope, the required `scope` key is JSON `null`. |
+| `scope.in_scope` / `scope.out_of_scope` | Changed files/symbols (`context.json` `impact.seeds[].path`) + requirement text scope; uncertain areas go to `out_of_scope` with a note in `executive_summary`, not a guess. When no evidence supports a scope, the required `scope` key is JSON `null`. |
 | `data_focus` | Model/entity fields read in Step 3 (SC-* `model_field` evidence) that are central to the change |
 | `layer_recommendation` | Exactly one entry per `API/E2E/Fuzz/Performance`; every entry includes `evidence_ids`: `recommended: true` only when evidence supports it and cites those IDs; `recommended: false` when evidence does not support the layer and uses `evidence_ids: []` plus a concrete evidence-limit reason |
 | `approach` | One sentence combining the recommended layers, e.g. "API + E2E，并对 UserCreate/UserUpdate schema 增加 Fuzz 覆盖" |
@@ -325,35 +332,113 @@ Three buckets; populate dynamically for every change, do **not** copy-paste the 
 
 #### minimum_required_coverage — derivation rules
 
-Generate applicable obligations from the **module's domain shape** (CRUD operations + tree/hierarchy if applicable + RBAC/auth + negative/integrity), the requirement, and authenticated catalog/data knowledge. Populate these four sub-arrays, using `[]` for a category with no applicable obligations:
+`minimum_required_coverage` is a **JSON array of obligation drafts**. Do **not** write
+the legacy family object (`{"api": [...], "e2e": [], "negative": [...],
+"data_integrity": [...]}`); the product finalizer rejects that shape as
+`invalid_output`.
 
-| Sub-array | What to include |
-|-----------|----------------|
-| `api` | One entry per main API operation the module exposes (CRUD + any module-specific queries). Name in snake_case (`verb_noun`). |
-| `e2e` | Every applicable business-required user journey, using an exact key from authenticated data knowledge's `journeys`. A `recommended: false` E2E row must not erase a required journey. However, an explicit API-only requirement makes E2E journeys inapplicable: set `minimum_required_coverage.e2e` to `[]`. The candidate set alone is not enough to make a journey inapplicable. |
-| `negative` | Exact authenticated capability-catalog leaf keys for required-field, foreign-key, boundary, or authorization obligations. Do not invent scenario names as keys. |
-| `data_integrity` | Exact authenticated capability-catalog leaf keys for consistency invariants, such as hierarchy, ordering, or relationship constraints. Do not invent scenario names as keys. |
+Generate one draft per applicable obligation from the **module's domain shape**
+(CRUD operations + tree/hierarchy if applicable + RBAC/auth + negative/integrity),
+the requirement, and authenticated catalog/data knowledge. Empty categories are
+omitted — do not emit placeholder drafts.
 
-Resolve conditional requiredness/applicability from requirement and authenticated policy/data evidence before finalizing. Write resolved required E2E journeys under `e2e`, regardless of the recommendation or candidate family set. When the authenticated requirement explicitly limits scope to API-only, that requirement resolves E2E journeys as inapplicable and the `e2e` array must be empty even if the data-knowledge catalog contains matching journeys. An unresolved condition blocks plan freezing; do not turn it into `required: false`, erase it, or use a family recommendation as its condition. The legacy `e2e_if_enabled` category may be absent or `[]`; non-empty entries are unresolved and rejected.
+| `category` | What to include | `proposed_key` | default `layer` |
+|-----------|-----------------|----------------|-----------------|
+| `api` | One draft per main API operation the module exposes (CRUD + any module-specific queries) | snake_case `verb_noun` | `api` |
+| `e2e` | Every applicable business-required user journey | exact key from authenticated data knowledge `journeys` | `e2e` |
+| `negative` | Required-field, foreign-key, boundary, or authorization obligations | exact capability-catalog leaf | `api` |
+| `data_integrity` | Consistency invariants such as hierarchy, ordering, or relationship constraints | exact capability-catalog leaf | `api` |
 
-An entry is either a canonical non-empty key string (required by default) or a closed object with only `id`, `key`, `category`, `required`, and `layer`. `category`, if present, must match its containing sub-array. `layer` defaults to `e2e` for `e2e` and `api` for the other categories; use `both` only when both kinds of evidence are required. Resolve `required` to a boolean using the evidence above. Keep IDs and keys unique across all categories. If a required closed key is unavailable, report the unresolved obligation instead of inventing a key or silently omitting it.
+Each draft MUST include every field below. Use `[]` / `null` when a list or optional
+id has no value; do not omit keys.
+
+| Field | Rule |
+|-------|------|
+| `draft_id` | Unique in this array (`D-API-001`, `D-NEG-001`, …) |
+| `proposed_key` | The operation, journey, or catalog leaf from the table |
+| `category` | `api` / `e2e` / `negative` / `data_integrity` only. Do not emit `e2e_if_enabled`. |
+| `layer` | `api`, `e2e`, or `both`. Use `both` only when both kinds of evidence are required. |
+| `statement` | One sentence stating what must hold |
+| `applicability_conditions` | Resolved conditions, or `[]` |
+| `impact_row_ids` | Inventory row ids this draft covers, or `[]` |
+| `proposed_profile_id` | A known profile id, or `null` |
+| `prerequisites` | Setup the later observation needs, or `[]` |
+| `observation_goals` | Later observation drafts, or `[]` |
+| `basis_quotes` | Quotes whose `source_id` is in the host source catalog, or `[]` |
+| `open_questions` | Unresolved questions that block freezing, or `[]` |
+
+A `recommended: false` E2E layer row must not erase a required journey when `e2e`
+is still a candidate family and the requirement still needs that journey. An explicit API-only requirement, or a candidate set that does not include `e2e`, makes E2E journeys inapplicable: do not emit `category: "e2e"` drafts. Do not keep a catalog journey as required after declining E2E for API-only scope.
+
+Resolve conditional requiredness/applicability from requirement and authenticated
+policy/data evidence before finalizing. Write `category: "e2e"` drafts only when
+`e2e` remains a candidate family and the requirement still needs those journeys.
+An unresolved condition belongs in `open_questions`; do not invent `required`,
+erase the draft, or use a family recommendation as its condition. Keep
+`draft_id` and `proposed_key` unique across the array. If a required closed key
+is unavailable, leave `proposed_key` null and record the unresolved obligation
+in `open_questions` instead of inventing a key or silently omitting it.
 
 *Example (menu-management, only when these exact catalog leaves and journey keys are authenticated):*
 ```json
-"minimum_required_coverage": {
-  "api": ["create_menu", "list_menu_tree", "get_menu_detail",
-          "update_menu", "delete_menu"],
-  "e2e": ["admin_can_enter_menu_management",
-          "admin_creates_menu_and_sees_navigation",
-          "role_based_menu_visibility",
-          "non_admin_cannot_access_menu_management"],
-  "negative": ["entities.menu.constraints.name_required",
-               "entities.menu.constraints.parent_exists",
-               "auth.menu.manage"],
-  "data_integrity": ["entities.menu.constraints.parent_child_tree",
-                     "entities.menu.constraints.sort_order",
-                     "entities.menu.constraints.role_relation"]
-}
+"minimum_required_coverage": [
+  {
+    "draft_id": "D-API-001",
+    "proposed_key": "create_menu",
+    "category": "api",
+    "layer": "api",
+    "statement": "POST create must persist a menu under an authenticated parent.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  },
+  {
+    "draft_id": "D-E2E-001",
+    "proposed_key": "admin_can_enter_menu_management",
+    "category": "e2e",
+    "layer": "e2e",
+    "statement": "An admin can open the menu-management page.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  },
+  {
+    "draft_id": "D-NEG-001",
+    "proposed_key": "entities.menu.constraints.name_required",
+    "category": "negative",
+    "layer": "api",
+    "statement": "Create and update reject a missing menu name.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  },
+  {
+    "draft_id": "D-DATA-001",
+    "proposed_key": "entities.menu.constraints.parent_child_tree",
+    "category": "data_integrity",
+    "layer": "api",
+    "statement": "Parent/child menu links stay a tree after writes.",
+    "applicability_conditions": [],
+    "impact_row_ids": [],
+    "proposed_profile_id": null,
+    "prerequisites": [],
+    "observation_goals": [],
+    "basis_quotes": [],
+    "open_questions": []
+  }
+]
 ```
 
 ### Confidence rules (§5.7)
@@ -373,6 +458,57 @@ An entry is either a canonical non-empty key string (required by default) or a c
 | `success_assertions` | Success assertions | pitfall's assertion content is undecided (assert known-bug behavior vs assert ideal behavior) |
 | `exception_scenarios` | Exception scenarios | pitfall is an edge/error path whose handling is undecided |
 | `out_of_scope` | Out of scope | pitfall should plausibly be ignored (known/accepted behavior) rather than asserted at all |
+
+---
+
+## Step 4b — Change impact inventory
+
+Write `qa/results/explore/impact-inventory.json` with the native `write` tool in one
+operation, then read it back. It is a table of impact rows; the graph seals it and the
+frozen plan binds it, so case design and retro can cite `IR-*` ids.
+
+```json
+{
+  "schema_version": "1",
+  "change_id": "<change_id>",
+  "context_ref": "explore/context.json",
+  "rows": [
+    {
+      "row_id": "IR-001",
+      "change_evidence_ids": ["CF-001", "SC-003"],
+      "affected_behavior": {"kind": "api", "key": "DELETE /api/v1/dept/delete"},
+      "case_module": "system/dept",
+      "obligation": "deleting a department must also remove its DeptClosure rows and leave user.dept empty",
+      "expected_basis_ids": ["SC-005", "HI-001"],
+      "assets": {"case_ids": ["TC_DEPT_API_011"], "factory_leafs": ["capabilities.domain_factories.dept.make_dept"], "problem_ids": ["PROB-1"]},
+      "disposition": "modify",
+      "gap_reason": null,
+      "confidence": "medium"
+    }
+  ],
+  "exclusions": [
+    {"seed_id": "CF-004", "reason": "router registration only; behavior is covered by CF-001 rows"}
+  ]
+}
+```
+
+| Column | Question it answers | Rules |
+|--------|---------------------|-------|
+| `change_evidence_ids` | Which requirement, file, or symbol changed? | ≥1 id; `CF-*` from `impact.seeds[]` or your `SC-*` |
+| `affected_behavior` | Which API, journey, role, or data constraint may be affected? | `kind` ∈ `api`, `journey`, `role`, `data_constraint`; `data_constraint` keys must be exact typed catalog leafs and `journey` keys exact data-knowledge journeys, otherwise use `capability_gap` |
+| `case_module` | Which `qa/cases/<module>/` directory should receive the delta? | required on `add`/`modify`; slash-separated slugs such as `system/dept`; rows that belong in one `case.yaml` MUST share the same module; prefer an existing catalog path when `impact.candidate_cases[]` already has one |
+| `obligation` + `expected_basis_ids` | What must be verified and on what basis? | one sentence; basis ids from `SC-*`, `HI-*`, `CS-*` |
+| `assets` | Which cases, factories, and problems can be reused? | `case_ids` from `impact.candidate_cases[].case_id`; `factory_leafs` from `impact.factory_leafs`; `problem_ids` from `impact.historical_problems[].problem_id` |
+| `disposition` | Reuse, modify, add, or is something missing? | `reuse`/`modify` require `assets.case_ids`; `add` requires none; `capability_gap` and `pending_confirmation` require `gap_reason` |
+
+Hard rules:
+
+1. Completeness: every `impact.seeds[].seed_id` must appear in at least one row's `change_evidence_ids` or in `exclusions[]` with a reason. Never drop a seed silently.
+2. Do not invent ids. `CF-*`, `CS-*`, `HI-*` come from `context.json`; `SC-*` from Step 3. The product finalizer rejects any id that does not resolve.
+3. Prefer `capability_gap` over a guessed catalog key, and `pending_confirmation` over a guessed business rule. Open rows are visible to case design and retro; wrong closed rows are not.
+4. When `impact.seeds` is empty (no diff, no explicit paths), rows still cite `SC-*` evidence and `exclusions` is `[]`.
+5. The inventory does not replace `exploration.json`; `test_strategy`, `minimum_required_coverage`, and `priority_hints` keep their own channels.
+6. Name `case_module` on every `add` or `modify` row. One requirement commonly spans several modules — emit one inventory row per affected behavior, and reuse the same `case_module` only when those rows belong in the same `case.yaml`. The operator never supplies modules; case-design writes every inferred `qa/cases/<case_module>/case.yaml` path.
 
 ---
 
@@ -461,12 +597,12 @@ After reconciliation, re-run a mental check: for every answered OQ, no surviving
 
 ## Step 6 — Read-back completeness check
 
-Read `exploration.json` and verify the required top-level fields above, the three
+Read `exploration.json` and `impact-inventory.json` and verify the required top-level fields above, the three
 `case_design_guidance` arrays, all three `evidence_inventory` arrays, a non-empty
-`minimum_required_coverage` object, every required `test_strategy` key (`scope`,
+`minimum_required_coverage` array of obligation drafts, every required `test_strategy` key (`scope`,
 `data_focus`, `depth`, `layer_recommendation`, `approach`), and four
 `test_strategy.layer_recommendation` entries, each with an explicit
-`evidence_ids` array. Do not run a validator command. The product finalizer performs the
+`evidence_ids` array, and that every inventory row has all required columns. Do not run a validator command. The product finalizer performs the
 authoritative typed validation after this agent returns.
 
 - Incomplete → rewrite the complete object and repeat the read-back check.
@@ -486,6 +622,7 @@ phases:
     outputs:
       - explore/context.json
       - explore/exploration.json    # only when done
+      - explore/impact-inventory.json    # only when done
     priority_hints_count: <n>
     watchlist_high_count: <n>
     degraded: <bool from context.json>
@@ -503,7 +640,7 @@ Do not output a user-facing summary, step log, phase delta, or compliance checkl
 After both artifacts are written and read-back validation succeeds, return structured JSON only:
 
 ```json
-{"output_files":["qa/results/explore/exploration.json"]}
+{"output_files":["qa/results/explore/exploration-draft.json","qa/results/explore/impact-inventory.json"]}
 ```
 
 Every successful run returns exactly the non-empty receipt above. If missing or

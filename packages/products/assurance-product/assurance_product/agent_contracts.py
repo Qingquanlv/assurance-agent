@@ -6,7 +6,9 @@ from typing import Mapping
 from agent_runtime_contracts import AgentExecutionContract
 from graph_engine.attempts import TaskAttemptContract
 
-from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_AGENT_JOB_CONTRACTS
+from assurance_execution.contracts.attempts import (
+    TASK_ATTEMPT_CONTRACTS as EXECUTION_TASK_ATTEMPT_CONTRACTS,
+)
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_AGENT_JOB_CONTRACTS
 from assurance_generation.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS as GENERATION_TASK_ATTEMPT_CONTRACTS,
@@ -30,7 +32,6 @@ from assurance_quality.contracts.attempts import (
 FEATURE_AGENT_JOB_CATALOGS: tuple[Mapping[str, AgentExecutionContract], ...] = (
     INTAKE_AGENT_JOB_CONTRACTS,
     GENERATION_AGENT_JOB_CONTRACTS,
-    EXECUTION_AGENT_JOB_CONTRACTS,
     QUALITY_AGENT_JOB_CONTRACTS,
     HEALING_AGENT_JOB_CONTRACTS,
     IMPROVEMENT_AGENT_JOB_CONTRACTS,
@@ -49,6 +50,7 @@ FEATURE_TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract] = MappingProxy
         **IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
         **GENERATION_TASK_ATTEMPT_CONTRACTS,
         **QUALITY_TASK_ATTEMPT_CONTRACTS,
+        **EXECUTION_TASK_ATTEMPT_CONTRACTS,
     }
 )
 

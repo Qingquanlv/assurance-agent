@@ -62,6 +62,10 @@ def _reviewed_case() -> dict[str, object]:
             "path": "qa/results/review/case-review.json",
             "digest": _SHA,
         },
+        "selection_ref": {
+            "path": "qa/results/cases/epochs/0/selection.json",
+            "digest": _SHA,
+        },
     }
 
 

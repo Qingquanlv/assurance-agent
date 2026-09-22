@@ -8,6 +8,7 @@ from typing import cast
 
 import pytest
 from agent_runtime_contracts import AgentRunRequest
+from agent_runtime_contracts.schema import validate_structured_result
 from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskHandler
 from tests.product.test_change_local_output_routing import execute_task
@@ -141,6 +142,47 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
     assert "opencode" not in encoded
     assert "cursor" not in encoded
     assert request.execution.provider_model == "test-model"
+
+
+@pytest.mark.asyncio
+async def test_retro_result_contract_rejects_memory_patch_without_memory_path(tmp_path: Path) -> None:
+    outcome = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
+    assert outcome.status == "succeeded"
+    contract = AgentRunRequest.model_validate(outcome.output).result_contract
+    payload = cast(dict[str, object], retro_result())
+    payload["signals"] = []
+    candidate = candidate_payload(
+        kind="test_improvement",
+        delivery="memory_patch",
+        target="assurance-execution suite replay for failure signature abc",
+    )
+    payload["candidates"] = [candidate]
+
+    for invalid_target in (
+        "assurance-execution suite replay for failure signature abc",
+        "/.aa/memory/replay.md",
+        ".aa/memory/../replay.md",
+        ".aa/memory/a//replay.md",
+        ".aa/memory/a\\replay.md",
+        ".aa/memory/a\x00replay.md",
+    ):
+        candidate["target"] = invalid_target
+        with pytest.raises(ValueError, match="anyOf"):
+            validate_structured_result(
+                payload,
+                schema=contract.schema_document,
+                schema_digest=contract.schema_digest,
+            )
+
+    candidate["target"] = ".aa/memory/assurance-execution.md"
+    assert (
+        validate_structured_result(
+            payload,
+            schema=contract.schema_document,
+            schema_digest=contract.schema_digest,
+        )
+        == payload
+    )
 
 
 @pytest.mark.asyncio

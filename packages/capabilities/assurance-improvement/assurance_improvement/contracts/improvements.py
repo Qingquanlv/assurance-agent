@@ -216,4 +216,33 @@ class ImprovementCandidateDocument(BaseModel):
 
 
 class ImprovementCandidateV3(ImprovementCandidate):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "anyOf": [
+                {
+                    "type": "object",
+                    "required": ["delivery", "target"],
+                    "properties": {
+                        "delivery": {"const": "memory_patch"},
+                        "target": {
+                            "type": "string",
+                            "pattern": r"^\.aa/memory/(?!\.{1,2}(?:/|$))[^/\\\x00]+(?:/(?!\.{1,2}(?:/|$))[^/\\\x00]+)*$",
+                        },
+                    },
+                },
+                {
+                    "type": "object",
+                    "required": ["delivery"],
+                    "properties": {
+                        "delivery": {"enum": ["change_draft", "knowledge_delta", "test_promotion"]}
+                    },
+                },
+            ],
+            "prompt_notes": [
+                "For memory_patch, target must be a canonical child path under .aa/memory/.",
+                "A suite name or a one-off replay instruction is not a memory_patch target.",
+            ],
+        }
+    )
+
     signal_ids: tuple[NonEmptyStr, ...] = Field(min_length=1)

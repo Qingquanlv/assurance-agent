@@ -154,19 +154,19 @@
       },
       {
         "contract_id": "assurance.improvement.agent.retro-eval-analysis.v1",
-        "digest": "50dc66c5b102837e3c7950acbaa3046b053ddbf191e2ef25c5969a092795651c"
+        "digest": "8c9f0613fa75d960f9f2d2b96391c3c73b1b26550b4204dc447aa18477741a6c"
       },
       {
         "contract_id": "assurance.improvement.agent.retro-issue-analysis.v1",
-        "digest": "0e1b85c3e3582ea4819fa0ea852eaa483fdb12d8ff0d25c75d033dcfe94e9a20"
+        "digest": "dcc2e34beaadc2b011517e106eac7d906396c1b9e9bbd580b1c30a6bc8b9f9ba"
       },
       {
         "contract_id": "assurance.improvement.agent.retro-workflow-analysis.v1",
-        "digest": "d3d70f3cbf47fb364609a70e24bb6a447052460c838aacd0d624ba7198a5198a"
+        "digest": "91866d4a181c5c8188a3014c04c7d1c9a7427774a8fbd6e39a2d7c21a67f7dcb"
       },
       {
         "contract_id": "assurance.improvement.agent.retro.v1",
-        "digest": "8c7139d8b016faafa78927ebce33f9b0c60e4c850fa4b33eb24a3328798d582c"
+        "digest": "226fec4afdc02151fd1538c33175f32d6b3974e977a7c293cd045e34795d4e11"
       },
       {
         "contract_id": "assurance.improvement.retro-build-slices",
@@ -194,7 +194,7 @@
       },
       {
         "contract_id": "assurance.improvement.task.reconcile-improvements",
-        "digest": "a3bd3d4a54f0e229c99dc3b24ea4284a593efae5cd0dd378246ab56be3b7911a"
+        "digest": "5c6123dfadfed548eda129ce1ffcfbccf7c856344a8a77bbcd12f591d39cd7ee"
       },
       {
         "contract_id": "assurance.improvement.task.retro-collect-v3",

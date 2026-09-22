@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from graph_engine import ENGINE_API_VERSION, RegistryPorts
-from graph_engine.canonical import JSONValue, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest, canonical_json_bytes
 
 from assurance_execution.contracts import (
     ClosedMappingV1,
@@ -77,6 +77,10 @@ def valid_result(test: str = "tests/a.py") -> dict[str, object]:
     return {"test": test, "status": "passed", "duration_ms": 1, "message": ""}
 
 
+def executed_outcome(family: str = "api") -> dict[str, object]:
+    return {"family": family, "state": "executed", "reason_code": None, "diagnostic_refs": []}
+
+
 def valid_evidence(
     *,
     selected: list[str] | None = None,
@@ -84,6 +88,7 @@ def valid_evidence(
 ) -> dict[str, object]:
     tests = selected or ["tests/a.py"]
     return {
+        "family_outcomes": [executed_outcome()],
         "change_id": "CH-DEMO-001",
         "plan_digest": "a" * 64,
         "plan_ref": _PLAN_REF,
@@ -179,9 +184,24 @@ def test_closed_mapping_rejects_unknown_case_or_capability() -> None:
         )
 
 
+def test_execution_evidence_names_its_missing_family_outcomes() -> None:
+    raw = valid_evidence()
+    del raw["family_outcomes"]
+    with pytest.raises(ValidationError, match="family_outcomes"):
+        ExecutionEvidenceV1.model_validate(raw)
+
+
+def test_validating_execution_evidence_leaves_the_sealed_document_alone() -> None:
+    # The gate pins a digest of the validated document and later re-derives it
+    # from the stored bytes, so validation must not rewrite what it read.
+    sealed = ExecutionEvidenceV1.model_validate(valid_evidence()).model_dump(mode="json")
+    revalidated = ExecutionEvidenceV1.model_validate(sealed).model_dump(mode="json")
+    assert canonical_digest(cast(JSONValue, revalidated)) == canonical_digest(cast(JSONValue, sealed))
+
+
 def test_execution_evidence_rejects_unselected_old_test() -> None:
     raw = valid_evidence(results=[valid_result("tests/legacy_test.py")])
-    with pytest.raises(ValidationError, match="test outside the closed mapping"):
+    with pytest.raises(ValidationError, match="test outside the executed mapping"):
         ExecutionEvidenceV1.model_validate(raw)
 
 
@@ -212,6 +232,7 @@ def test_execution_evidence_accepts_one_ordered_command_receipt_per_selected_fam
         results=[valid_result(test) for test in tests],
     )
     raw["selected_targets"] = {family: True for family in families}
+    raw["family_outcomes"] = [executed_outcome(family) for family in families]
     raw["mapping"] = {
         "selected": tests,
         "mappings": [
@@ -256,7 +277,7 @@ def test_execution_evidence_rejects_missing_reordered_or_duplicate_command_recei
     raw["selected_targets"] = {"api": True, "e2e": True, "fuzz": False, "performance": False}
     raw["receipt"] = {"commands": commands}
 
-    with pytest.raises(ValidationError, match="command receipt|at least 1"):
+    with pytest.raises(ValidationError, match="command receipts must|family_outcomes must cover"):
         ExecutionEvidenceV1.model_validate(raw)
 
 
@@ -286,6 +307,7 @@ def test_execution_evidence_rejects_a_command_runner_that_contradicts_its_family
 def test_execution_evidence_rejects_selected_family_without_a_mapped_test() -> None:
     raw = valid_evidence()
     raw["selected_targets"] = {"api": True, "e2e": True, "fuzz": False, "performance": False}
+    raw["family_outcomes"] = [executed_outcome("api"), executed_outcome("e2e")]
     raw["receipt"] = {
         "commands": [
             valid_command_receipt(),
@@ -347,31 +369,23 @@ def test_execution_contracts_import_only_intake_and_generation_contracts() -> No
 def test_execution_agent_job_catalog_is_feature_owned() -> None:
     from types import MappingProxyType
 
-    from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS, OUTPUT_ROUTE_TEMPLATES
+    from assurance_execution.contracts.attempts import (
+        AGENT_JOB_CONTRACTS,
+        OUTPUT_ROUTE_TEMPLATES,
+        TASK_ATTEMPT_CONTRACTS,
+    )
 
     expected = {
-        "execute": (
-            "aa-execute",
-            "assurance-v1-executor",
-            ("qa/results/execution/execute-result.json",),
-        ),
-        "run": (
-            "aa-run",
-            "assurance-v1-executor",
-            ("qa/results/execution/run-result.json",),
-        ),
+        "execute": ("qa/results/execution/execute-result.json",),
+        "run": ("qa/results/execution/run-result.json",),
     }
     assert isinstance(AGENT_JOB_CONTRACTS, MappingProxyType)
     assert isinstance(OUTPUT_ROUTE_TEMPLATES, MappingProxyType)
-    assert len(AGENT_JOB_CONTRACTS) == 2
-    assert tuple(AGENT_JOB_CONTRACTS) == tuple(expected)
+    assert AGENT_JOB_CONTRACTS == {}
     assert tuple(OUTPUT_ROUTE_TEMPLATES) == tuple(expected)
-    for base, (skill_id, agent_profile, writes) in expected.items():
-        contract = AGENT_JOB_CONTRACTS[base]
-        assert contract.contract_id == f"assurance.execution.agent.{base}.v1"
-        assert contract.skill_id == skill_id
-        assert contract.agent_profile == agent_profile
-        assert contract.resources.writes == tuple(sorted(("qa/.staging/execution", *writes)))
+    for base, writes in expected.items():
+        contract = TASK_ATTEMPT_CONTRACTS[base]
+        assert contract.contract_id == f"assurance.execution.{base}"
         assert OUTPUT_ROUTE_TEMPLATES[base] == writes
         dumped = json.dumps(contract.canonical_projection()).lower()
         assert "opencode" not in dumped

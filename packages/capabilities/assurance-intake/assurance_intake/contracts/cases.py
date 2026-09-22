@@ -8,6 +8,7 @@ from typing import Generic, Literal, Self, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationInfo, model_validator
 
 from assurance_intake.contracts.common import CaseId, NonEmptyStr, RiskTier
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 
 CasePriority = Literal["P0", "P1", "P2", "P3"]
 CaseSeverity = Literal["blocker", "critical", "major", "minor"]
@@ -126,7 +127,7 @@ class MinimumCoverageMatrixRowAuthoring(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mrc_id: NonEmptyStr
-    key: NonEmptyStr
+    key: NonEmptyStr | None
     required: bool = True
     covered_by_cases: list[CaseId] = Field(default_factory=list)
     status: Literal["covered", "skipped_by_scope"] = "covered"
@@ -136,6 +137,8 @@ class MinimumCoverageMatrixRowAuthoring(BaseModel):
 
     @model_validator(mode="after")
     def _require_status_evidence(self) -> Self:
+        if self.key is None and self.status != "skipped_by_scope":
+            raise ValueError("unresolved MRC rows must remain skipped_by_scope")
         if self.status == "covered":
             if not self.covered_by_cases:
                 raise ValueError("covered MRC rows require covered_by_cases")
@@ -157,7 +160,7 @@ class MinimumCoverageMatrixAuthoring(RootModel[list[MinimumCoverageMatrixRowAuth
         if not self.root:
             raise ValueError("minimum coverage matrix must contain at least one row")
         for field in ("mrc_id", "key"):
-            values = [getattr(row, field) for row in self.root]
+            values = [getattr(row, field) for row in self.root if getattr(row, field) is not None]
             duplicates = sorted(value for value in set(values) if values.count(value) > 1)
             if duplicates:
                 raise ValueError(f"duplicate {field} values are not allowed: {duplicates!r}")
@@ -184,6 +187,13 @@ class CaseEntryAuthoring(_CaseEntryBase):
     automation: CaseAutomationAuthoring
     regression: CaseRegressionAuthoring
     trace: dict[str, CaseTraceCoverage] = Field(min_length=1)
+    impact_rows: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _impact_rows_unique(self) -> CaseEntryAuthoring:
+        if self.impact_rows != tuple(dict.fromkeys(self.impact_rows)):
+            raise ValueError(f"{self.case_id}: impact_rows must be unique")
+        return self
 
     @model_validator(mode="after")
     def _validate_automation_contract(self) -> CaseEntryAuthoring:
@@ -291,6 +301,50 @@ class CaseYamlAuthoring(_CaseYamlBase[CaseEntryAuthoring]):
                 if capability not in leafs:
                     raise ValueError(f"capability key is not a declared typed leaf: {capability}")
         return self
+
+    @model_validator(mode="after")
+    def _require_impact_row_coverage(self, info: ValidationInfo) -> CaseYamlAuthoring:
+        context = info.context or {}
+        inventory = context.get("inventory")
+        if inventory is None:
+            return self
+        if not isinstance(inventory, ChangeImpactInventoryV1):
+            raise ValueError("inventory context must be a ChangeImpactInventoryV1")
+        _require_impact_row_coverage(self, inventory)
+        return self
+
+
+def _require_impact_row_coverage(
+    document: CaseYamlAuthoring,
+    inventory: ChangeImpactInventoryV1,
+) -> None:
+    required = {row.row_id: row.disposition for row in inventory.actionable_rows()}
+    if not required:
+        return
+    cited: dict[str, str] = {}
+    for entry in (*document.added, *document.modified):
+        for row_id in entry.impact_rows:
+            cited[row_id] = entry.case_id
+    missing = sorted(required.keys() - cited.keys())
+    if missing:
+        raise ValueError(f"add/modify inventory rows have no covering case: {missing}")
+    wrong_section = [
+        f"{row_id} ({required[row_id]}) cited by {cited[row_id]}"
+        for row_id, disposition in required.items()
+        if row_id in cited
+        and (
+            (disposition == "add" and cited[row_id] not in {entry.case_id for entry in document.added})
+            or (
+                disposition == "modify"
+                and cited[row_id] not in {entry.case_id for entry in document.modified}
+            )
+        )
+    ]
+    if wrong_section:
+        raise ValueError(f"inventory row cited in the wrong section: {wrong_section}")
+    unknown = sorted(set(cited) - {row.row_id for row in inventory.rows})
+    if unknown:
+        raise ValueError(f"cases cite unknown inventory rows: {unknown}")
 
 
 CaseEntry = CaseEntryAuthoring

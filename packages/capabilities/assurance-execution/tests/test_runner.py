@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from assurance_execution.operations.common import InputError
+from assurance_execution.operations.observation_run import RunnerUnsupported, build_family_argv
 from assurance_execution.operations.runner import (
     ConfinedExecutionProcessHost,
+    ExecutionTimeout,
     RunTestsHandler,
+    _subject_binding,
     build_pytest_argv,
 )
 from execution_fixtures import (  # pyright: ignore[reportMissingImports]
-    as_object,
     execute_task,
     executed_paths,
     fake_pytest_host,
@@ -68,7 +72,7 @@ async def test_run_tests_rejects_symlink_and_traversal(tmp_path: Path) -> None:
     assert escaped.status == "failed"
     assert escaped.failure is not None
     assert escaped.failure.kind == "invalid_input"
-    assert escaped.failure.retryable is True
+    assert escaped.failure.retryable is False
 
 
 @pytest.mark.asyncio
@@ -123,6 +127,34 @@ def test_runner_argv_imports_support_from_durable_qa_tests(tmp_path: Path) -> No
     assert completed.returncode == 0, completed.stderr
 
 
+def test_external_http_execution_does_not_forge_local_subject_identity() -> None:
+    remote = _subject_binding(
+        baseline_tree_id="a" * 64,
+        allowed_origins=("https://sut.example",),
+    )
+    assert remote.kind == "remote"
+    assert remote.status == "unavailable"
+    assert remote.observed_identity is None
+
+    local = _subject_binding(baseline_tree_id="a" * 64, allowed_origins=())
+    assert local.kind == "local"
+    assert local.status == "matched"
+
+
+def test_confined_host_reports_pid_and_kills_process_group_on_timeout(tmp_path: Path) -> None:
+    started: list[int] = []
+    with pytest.raises(ExecutionTimeout):
+        ConfinedExecutionProcessHost().spawn(
+            (sys.executable, "-c", "import time; time.sleep(30)"),
+            tmp_path,
+            timeout_seconds=0.05,
+            on_started=started.append,
+        )
+    assert len(started) == 1
+    with pytest.raises(OSError):
+        os.kill(started[0], 0)
+
+
 @pytest.mark.asyncio
 async def test_run_tests_empty_mapping_fails_closed_without_spawning(tmp_path: Path) -> None:
     write_test(tmp_path / "qa/tests/legacy_test.py")
@@ -145,31 +177,35 @@ def test_confined_host_scrubs_env_and_confines_report(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_run(
-        argv: list[str],
-        **kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        captured["argv"] = tuple(argv)
-        captured["env"] = kwargs.get("env")
-        captured["shell"] = kwargs.get("shell")
-        report_flag = next(item for item in argv if item.startswith("--json-report-file="))
-        report_path = Path(report_flag.split("=", 1)[1])
-        if not report_path.is_absolute():
-            report_path = tmp_path / report_path
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(
-            json.dumps(
-                {
-                    "tests": [],
-                    "exitcode": 0,
-                    "summary": {"collected": 0, "passed": 0, "failed": 0, "skipped": 0},
-                }
-            ),
-            encoding="utf-8",
-        )
-        return subprocess.CompletedProcess(argv, 0, "", "")
+    class FakePopen:
+        pid = 12345
+        returncode = 0
 
-    monkeypatch.setattr("assurance_execution.operations.runner.subprocess.run", fake_run)
+        def __init__(self, argv: list[str], **kwargs: object) -> None:
+            captured["argv"] = tuple(argv)
+            captured["env"] = kwargs.get("env")
+            captured["shell"] = kwargs.get("shell")
+            report_flag = next(item for item in argv if item.startswith("--json-report-file="))
+            report_path = Path(report_flag.split("=", 1)[1])
+            if not report_path.is_absolute():
+                report_path = tmp_path / report_path
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "tests": [],
+                        "exitcode": 0,
+                        "summary": {"collected": 0, "passed": 0, "failed": 0, "skipped": 0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        def communicate(self, timeout: float | None = None) -> tuple[str, str]:
+            del timeout
+            return "", ""
+
+    monkeypatch.setattr("assurance_execution.operations.runner.subprocess.Popen", FakePopen)
     monkeypatch.setenv("PYTEST_ADDOPTS", "tests/legacy_test.py")
     host = ConfinedExecutionProcessHost()
     receipt = host.spawn(
@@ -208,19 +244,9 @@ def test_confined_host_rejects_report_outside_cwd(tmp_path: Path) -> None:
         host.spawn(("pytest", "--json-report", "--json-report-file=link-report.json"), tmp_path)
 
 
-@pytest.mark.asyncio
-async def test_run_tests_and_collect_pr_metrics_uses_selected_only(tmp_path: Path) -> None:
-    from assurance_execution.operations.runner import RunTestsAndCollectPrMetricsHandler
-
-    write_test(tmp_path / "qa/tests/generated_test.py")
-    write_test(tmp_path / "qa/tests/legacy_test.py")
-    outcome = await execute_task(
-        RunTestsAndCollectPrMetricsHandler(process_host=fake_pytest_host()),
-        run_request(selected=["qa/tests/generated_test.py"]),
-        tmp_path,
-    )
-    assert outcome.status == "succeeded"
-    assert executed_paths(outcome) == ("qa/tests/generated_test.py",)
-    metric = as_object(as_object(outcome.output)["pr_metric_input"])
-    assert metric["selected"] == ["qa/tests/generated_test.py"]
-    assert as_object(metric["results"][0])["test"] == "qa/tests/generated_test.py"
+def test_family_argv_rejects_performance_and_keeps_pytest_observe() -> None:
+    with pytest.raises(RunnerUnsupported, match="performance"):
+        build_family_argv("performance", ("qa/tests/locustfile.py",), batch_id="B-1")
+    argv = build_family_argv("api", ("qa/tests/api/test_a.py",), batch_id="B-1")
+    assert argv[:5] == ("uv", "run", "--isolated", "--frozen", "pytest")
+    assert "-p" in argv and "aa_observe" in argv

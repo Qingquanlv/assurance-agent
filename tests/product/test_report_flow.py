@@ -47,7 +47,9 @@ def test_nonrepairable_execution_failure_has_no_normal_report(
         assert run.dispatch_count("quality.issue-analyze") == 1
         assert ExecuteTailResultV1.model_validate(run.state["tail_result"]).status == "diagnostic"
         assert run.state["report_refs"]
-    assert "retro" not in run.node_visits
+        assert "retro" in run.node_visits
+    else:
+        assert "retro" not in run.node_visits
     assert run.state["status"] == "failed"
 
 

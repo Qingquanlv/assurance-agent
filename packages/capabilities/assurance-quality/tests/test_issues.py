@@ -10,7 +10,11 @@ from tests.capabilities.conformance import execute_task
 
 from pydantic import ValidationError
 
-from assurance_quality.contracts.issues import IssueReconcileStatusDocument, ProblemFingerprint
+from assurance_quality.contracts.issues import (
+    ChangeIssueSnapshot,
+    IssueReconcileStatusDocument,
+    ProblemFingerprint,
+)
 from assurance_quality.operations.issues import (
     ApplyProblemReviewHandler,
     CollectObservationsHandler,
@@ -129,6 +133,23 @@ async def test_reconcile_and_review_use_canonical_fingerprint() -> None:
     assert reconcile.status == "succeeded"
     snapshot = as_object(reconcile.output)
     first_problem = snapshot["problems"][0]
+    assert snapshot["batches"] == [BATCH_ID]
+    assert snapshot["issue_snapshot_ref"]["path"] == "qa/results/issues/snapshot.json"
+    ChangeIssueSnapshot.model_validate(
+        {
+            key: snapshot[key]
+            for key in (
+                "schema_version",
+                "change_id",
+                "authoritative_batch_id",
+                "observations",
+                "occurrences",
+                "analysis_status",
+                "project_sync_status",
+                "batches",
+            )
+        }
+    )
     rewritten = await execute_task(
         ReconcileIssuesHandler(),
         {

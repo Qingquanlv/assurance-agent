@@ -26,19 +26,30 @@ _SKILL_FIELDS = (
     "coverage_epoch",
     "repair_round",
     "generation_result",
+    "allowed_origins",
+    "timeout_seconds",
 )
 
 
-def _skill_payload(state: Mapping[str, object]) -> dict[str, object]:
-    return {name: state[name] for name in _SKILL_FIELDS if name in state}
+def _skill_payload(
+    state: Mapping[str, object], *, execution_kind: Literal["execute", "run"]
+) -> dict[str, object]:
+    payload = {name: state[name] for name in _SKILL_FIELDS if name in state}
+    epoch = payload.get("coverage_epoch", 0)
+    if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 0:
+        epoch = 0
+    payload["coverage_epoch"] = epoch
+    payload["coverage_epoch_token"] = str(epoch)
+    payload["execution_kind"] = execution_kind
+    return payload
 
 
 def select_execute(state: Mapping[str, object]) -> ExecutionPrepareInputV1:
-    return ExecutionPrepareInputV1.model_validate(_skill_payload(state))
+    return ExecutionPrepareInputV1.model_validate(_skill_payload(state, execution_kind="execute"))
 
 
 def select_rerun(state: Mapping[str, object]) -> ExecutionPrepareInputV1:
-    return ExecutionPrepareInputV1.model_validate(_skill_payload(state))
+    return ExecutionPrepareInputV1.model_validate(_skill_payload(state, execution_kind="run"))
 
 
 def _int(state: Mapping[str, object], key: str, default: int = 0) -> int:
@@ -80,6 +91,7 @@ def publish_execution(
         raise TypeError("rounds_budget must be an int")
     if not isinstance(rounds_used, int) or isinstance(rounds_used, bool):
         raise TypeError("rounds_used must be an int")
+    family_outcomes = tuple(item.model_dump(mode="json") for item in evidence.family_outcomes)
     published: dict[str, object] = ExecutionPublicOutput(
         batch_id=evidence.batch_id,
         execution_evidence=document,
@@ -88,6 +100,7 @@ def publish_execution(
         rounds_budget=rounds_budget,
         rounds_used=rounds_used,
         status=status,
+        family_outcomes=family_outcomes,
     ).model_dump(mode="json")
     raw_generation = state.get("generation_result")
     if raw_generation is not None:
@@ -108,9 +121,11 @@ def publish_execution(
             executed_at=evidence.executed_at,
             final_status=raw_status,
             evidence_ref=evidence_ref,
+            observations_ref=evidence.observations_ref,
             mapping_ref=generation.mapping_ref,
             source_refs=generation.source_refs,
             receipt=ReceiptRef.model_validate(receipt),
+            family_outcomes=evidence.family_outcomes,
         )
         published["execution_result"] = cycle.model_dump(mode="json")
     return published

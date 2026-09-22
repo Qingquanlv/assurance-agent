@@ -134,6 +134,7 @@ class AgentFinalizeInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
+    codegen_output: dict[str, Any] | None = None
 
     @field_validator("capability_leafs")
     @classmethod
@@ -174,6 +175,11 @@ class AgentFinalizeInputV1(FrozenModel):
                 self.reviewed_case.plan_ref,
             )
         return self
+
+
+class CodegenFinalizeInputV1(AgentFinalizeInputV1):
+    # Projected from locked host input, never from the agent's authoring manifest.
+    codegen_output: dict[str, Any] | None = None
 
 
 class CodegenInputV1(FrozenModel):

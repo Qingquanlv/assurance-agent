@@ -61,7 +61,7 @@ def authenticate_reviewed_case(
         plan.plan_digest,
         reviewed.plan_ref,
     )
-    for ref in (*reviewed.preparation_refs, *reviewed.case_refs, reviewed.review_ref):
+    for ref in (*reviewed.preparation_refs, *reviewed.case_refs, reviewed.review_ref, reviewed.selection_ref):
         _file(project_root, ref)
     try:
         raw_review = json.loads(_file(project_root, reviewed.review_ref).read_bytes())
@@ -105,10 +105,10 @@ def resolve_generation_input(data: object, project_root: Path) -> ReviewedCaseV1
         )
     except ValueError as error:
         raise InputError(str(error)) from error
-    if not standalone and authenticated.coverage_epoch != request.coverage_epoch:
-        raise InputError("full generation epoch must match the current Reviewed Case")
-    if standalone and authenticated.coverage_epoch != request.coverage_epoch:
-        return authenticated.model_copy(update={"coverage_epoch": request.coverage_epoch})
+    if authenticated.coverage_epoch != request.coverage_epoch:
+        # The review's selection is bound to the epoch it was sealed at, so
+        # relabelling it here would produce a case that contradicts itself.
+        raise InputError("generation epoch must match the current Reviewed Case")
     return authenticated
 
 

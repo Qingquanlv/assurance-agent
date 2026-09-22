@@ -30,6 +30,10 @@ Map validated retro signals to concrete process Improvements. Schema truth is
   - `test_improvement` → `memory_patch` or `change_draft`
   - `workflow_improvement` → `change_draft`
   - `domain_knowledge` → `knowledge_delta`
+- For `memory_patch`, `target` must be a canonical child path under `.aa/memory/`
+  (for example `.aa/memory/aa-api-plan.md`), not a suite name or prose description.
+  Do not invent a memory path for a one-off rerun recommendation: omit that
+  candidate unless it describes a concrete reusable improvement with a valid target.
 - `domain_knowledge` is allowed only when context integrity is complete and must
   cite a Problem plus a valid L2 delta.
 - Write the complete `RetroAnalysisResultV3` object: `schema_version`, `retro_id`, `domain: null`,

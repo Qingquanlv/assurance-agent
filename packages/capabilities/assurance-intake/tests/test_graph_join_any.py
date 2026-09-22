@@ -299,7 +299,11 @@ def _review(
             {
                 "path": "qa/results/review/case-review.json",
                 "digest": _SHA,
-            }
+            },
+            {
+                "path": "qa/results/cases/epochs/0/selection.json",
+                "digest": _SHA,
+            },
         ],
         "rounds_used": used,
         "rounds_budget": budget,

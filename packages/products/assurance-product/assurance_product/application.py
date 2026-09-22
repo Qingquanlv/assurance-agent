@@ -60,8 +60,6 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
             "assurance.intake.agent.case-review.v1",
         ),
         "execute": (
-            "assurance.execution.agent.execute.v1",
-            "assurance.execution.agent.run.v1",
             "assurance.generation.agent.api.codegen.v1",
             "assurance.healing.agent.apply-test-repair.v1",
             "assurance.healing.agent.coverage-repair.v1",
@@ -71,7 +69,6 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
             "assurance.quality.agent.report.v1",
         ),
         "full": (
-            "assurance.execution.agent.execute.v1",
             "assurance.generation.agent.api.codegen.v1",
             "assurance.improvement.agent.archive.v1",
             "assurance.intake.agent.intake.v1",
@@ -90,7 +87,7 @@ ENTRYPOINT_AGENT_CONTRACT_IDS: MappingProxyType[str, tuple[str, ...]] = MappingP
             "assurance.intake.agent.case-review.v1",
         ),
         "issue-analyze": ("assurance.quality.agent.issue-analysis.v1",),
-        "issue-reconcile": ("assurance.quality.agent.issue-analysis.v1",),
+        "issue-reconcile": (),
         "issue-review": ("assurance.quality.agent.issue-triage.v1",),
         "retro": (
             "assurance.improvement.agent.retro.v1",

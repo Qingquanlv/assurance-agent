@@ -33,15 +33,14 @@ EXECUTION_DEPENDENCIES: tuple[PluginDependency, ...] = (
 )
 
 EXECUTION_RESOURCE_FILES: dict[str, str] = {
-    "assurance.execution.persona.executor.v1": "personas/executor.md",
     "assurance.execution.result.execution.v1": "result-contracts/execution.v1.schema.json",
-    "assurance.execution.skill.aa-execute.v1": "skills/aa-execute/SKILL.md",
-    "assurance.execution.skill.aa-run.v1": "skills/aa-run/SKILL.md",
 }
 
 _SCHEMA_FILES: dict[str, str] = {
     "assurance.execution.schema.closed-mapping.v1": "schemas/closed-mapping.v1.schema.json",
     "assurance.execution.schema.execution-evidence.v1": "schemas/execution-evidence.v1.schema.json",
+    "assurance.execution.schema.execution-event.v1": "schemas/execution-event.v1.schema.json",
+    "assurance.execution.schema.observation-bundle.v1": "schemas/observation-bundle.v1.schema.json",
     "assurance.execution.schema.execution-manifest.v1": "schemas/execution-manifest.v1.schema.json",
     "assurance.execution.schema.selected-targets.v1": "schemas/selected-targets.v1.schema.json",
     "assurance.execution.workflow.execute.input.v1": "schemas/workflow/execute-input.v1.schema.json",

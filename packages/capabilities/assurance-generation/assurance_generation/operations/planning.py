@@ -13,7 +13,7 @@ import yaml
 
 from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
 from agent_runtime_contracts.schema import canonical_digest
-from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
+from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
@@ -32,6 +32,7 @@ from assurance_generation.resource_loader import resource_bytes, resource_text
 from assurance_intake.contracts import (
     CaseYamlAuthoring,
     EvidenceArtifactRefV1,
+    LoopRoundHistoryV1,
     build_loop_round_history,
 )
 from assurance_intake.contracts.planning_facts import build_planning_facts
@@ -94,8 +95,14 @@ def plan_outputs(change_id: str, family: Family) -> tuple[str, ...]:
     return tuple(sorted(f"qa/results/plans/{name}" for name in _PLAN_OUTPUT_NAMES[family]))
 
 
-def plan_review_outputs(change_id: str, family: Family) -> tuple[str, ...]:
-    del change_id
+def plan_review_outputs(
+    change_id: str,
+    family: Family,
+    *,
+    coverage_epoch: int = 0,
+    review_round: int = 0,
+) -> tuple[str, ...]:
+    del change_id, coverage_epoch, review_round
     return tuple(
         sorted(
             (
@@ -232,38 +239,46 @@ def evidence_ref(workspace: Path, relative: str) -> EvidenceArtifactRefV1:
     return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
 
 
-def persist_loop_round_history(
-    context: TaskContext,
+def expected_plan_review_history(
     *,
-    relative: str,
     change_id: str,
     coverage_epoch: int,
-    loop_kind: Literal["plan_review"],
     family: Family,
     round_index: int,
     outcome: str,
     input_refs: tuple[EvidenceArtifactRefV1, ...],
     source_refs: tuple[EvidenceArtifactRefV1, ...],
-) -> EvidenceArtifactRefV1:
+) -> LoopRoundHistoryV1:
     ordered_inputs = tuple(sorted(input_refs, key=lambda item: item.path))
     review_input_digest = engine_digest(
         cast(JSONValue, [item.model_dump(mode="json") for item in ordered_inputs])
     )
-    history = build_loop_round_history(
+    return build_loop_round_history(
         change_id=change_id,
         coverage_epoch=coverage_epoch,
-        loop_kind=loop_kind,
+        loop_kind="plan_review",
         family=family,
         round_index=round_index,
         outcome=outcome,
         review_input_digest=review_input_digest,
         source_refs=tuple(sorted(source_refs, key=lambda item: item.path)),
     )
-    data = canonical_json_bytes(history.model_dump(mode="json")) + b"\n"
+
+
+def authenticate_loop_round_history(
+    context: TaskContext,
+    *,
+    relative: str,
+    expected: LoopRoundHistoryV1,
+) -> EvidenceArtifactRefV1:
     path = context.write_root.joinpath(*PurePosixPath(relative).parts)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
-    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
+    try:
+        authored = LoopRoundHistoryV1.model_validate_json(path.read_bytes())
+    except (OSError, ValidationError, ValueError) as error:
+        raise OutputError(f"invalid plan-review history: {error}") from error
+    if authored != expected:
+        raise OutputError("plan-review history does not match the locked review inputs")
+    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def leafs_of(values: tuple[str, ...]) -> frozenset[str]:
@@ -520,6 +535,7 @@ def validate_plan_input(
         business = PlanInputV1.model_validate(data)
     except ValidationError as error:
         raise InputError(str(error)) from error
+    selected_cases: CaseYamlAuthoring | None = None
     if business.reviewed_case is not None:
         try:
             reviewed = authenticate_reviewed_case(
@@ -530,16 +546,23 @@ def validate_plan_input(
             )
         except ValueError as error:
             raise InputError(str(error)) from error
-        case_paths = tuple(item.path for item in reviewed.case_refs)
-    else:
-        case_paths = None
-    if business.reviewed_cases is None:
+        from assurance_generation.operations.selected_cases import load_selected_case_authoring
+
+        selected_cases, _ = load_selected_case_authoring(
+            workspace,
+            reviewed,
+            family=family,
+            capability_leafs=business.capability_leafs,
+        )
+    if selected_cases is not None:
+        cases = selected_cases
+    elif business.reviewed_cases is None:
         cases = load_family_cases(
             workspace,
             change_id=business.change_id,
             family=family,
             capability_leafs=business.capability_leafs,
-            case_paths=case_paths,
+            case_paths=None,
         )
     else:
         try:
@@ -830,7 +853,8 @@ __all__ = [
     "load_family_case_modules",
     "planning_handler",
     "plan_review_input_paths",
-    "persist_loop_round_history",
+    "authenticate_loop_round_history",
+    "expected_plan_review_history",
     "prepare_plan_outcome",
     "request_family",
     "resolve_family",

@@ -110,7 +110,7 @@ def test_evidence_validator_rejects_injected_unmapped_result_bytes() -> None:
     ).validate(_evidence_candidate(), validation_context())
     assert result.accepted is False
     assert result.reason is not None
-    assert "outside the closed mapping" in result.reason
+    assert "outside the executed mapping" in result.reason
 
 
 def test_evidence_validator_rejects_injected_mapping_mismatch() -> None:

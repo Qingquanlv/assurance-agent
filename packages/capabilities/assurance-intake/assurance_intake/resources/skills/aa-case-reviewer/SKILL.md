@@ -17,7 +17,7 @@ requirements and frozen assertion intent distinct from observed implementation;
 a source defect must not weaken the expected test behavior.
 
 Independently verify source behavior and owner-defined expectations. Before
-returning findings, trace each defect across cases, proposal and MRC, and supply
+returning findings, apply the Repair-plan linked-location check below to supply
 all affected locators in the same review using the existing repair contract.
 A repair must be reviewed again; a target repair count never authorizes a pass.
 
@@ -126,8 +126,9 @@ Use this skill when:
 The user or orchestrator should provide:
 
 - `change_id`
-- `case_delta_paths` — the exact current-change `cases/<module>/case.yaml` paths
+- `case_delta_paths` — write-authorized current-change `cases/<module>/case.yaml` paths; may be empty when the current selection is reuse-only
 - `review_input_paths` — the complete exact case-design input paths; read every item
+- Current execution scope is the sealed selection, including reused historical cases. Do not treat delta IDs as the whole set.
 
 Expected input files:
 
@@ -180,6 +181,13 @@ This skill is a **gate producer**. The workflow cannot advance past case review 
 - User approval in chat does not release the gate; only a valid `case-review.json` does. If the user says "approved", "looks good", or "continue", treat it only as review context — still validate every review criterion independently. Only write `decision == "pass"` when the artifacts satisfy all review criteria.
 - If you cannot write the JSON file for any reason, treat the review as **failed** and report it — the workflow must treat a missing or invalid `case-review.json` as a STOP condition.
 - `case-review.json` must contain a `source_verification` object with exactly these required fields: `independent: true`, a non-empty `reviewed_source_files` list of product source paths, and a non-empty `verified_claims` list. Every `verified_claims[]` item must contain `claim` and a non-empty `evidence_files` list drawn from `reviewed_source_files`. Paths under `qa/`, `.aa/`, `adapter-config/`, `docs/`, `requirements/`, and `tests/` do not count as product source.
+
+### Host-owned derived files
+
+Your outputs are the review JSON and Markdown summary. After authenticating
+the raw review, the host finalize handler generates `selection.json`, review
+history, and `reviewed-case.json` under its declared write claims. These are
+not Agent outputs; their digests and identities are computed by the host.
 
 ---
 
@@ -261,7 +269,10 @@ FOR EACH required MRC item:
 
 Violations:
 
-- required MRC item has no covering case → `needs_fix`
+- required MRC item has no covering case → `needs_fix`, except a frozen
+  `proposed_key: null` row explicitly recorded as `key: null`,
+  `status: skipped_by_scope`, and `skip_reason: capability_unresolved: ...`;
+  that row is a known delivery gap, not an authoring error
 - matrix references a missing case or a case in the wrong layer → `needs_fix`
 - e2e_if_enabled item is skipped without explicit skipped_by_scope + reason → `needs_fix`
   (the author must either cover it or add the explicit reason). Escalate to human
@@ -269,12 +280,11 @@ Violations:
 - closed-category MRC key absent from `.aa/data-knowledge.yaml` / declared journey set
   **and** no already-existing matching
   `plans/data-knowledge.proposal.*.yaml` `discovered_candidates` entry: follow the
-  same closed-key recipe as `aa-case-design`. When an explicit requirement or
-  resolved Explore assertion intent supplies the oracle, the row may remain
-  covered and `proposal.md` Data Needs records the missing vocabulary. Otherwise
-  return bounded `needs_fix` instructing `aa-case-design` to mark that exact
-  matrix row `skipped_by_scope`, clear `covered_by_cases`, add a precise
-  `skip_reason`, and narrow any unsupported case assertion. Do not instruct
+  same closed-key recipe as `aa-case-design`. Return bounded `needs_fix` to
+  instruct `aa-case-design` to mark that exact matrix row `skipped_by_scope`
+  only when it is missing or is not recorded with frozen `mrc_id`, `key: null`,
+  `status: skipped_by_scope`, empty `covered_by_cases`, and a precise
+  `capability_unresolved:` reason. Narrow any unsupported case assertion. Do not instruct
   `aa-case-design` to create a data-knowledge proposal; it is not an authorized
   case-design output.
 
@@ -298,7 +308,10 @@ business oracle. Every advisory MRC item must have one row, but
   `needs_review` item and do not ask a human to define optional new behavior.
 - Use `needs_human_review` only when the explicit owner requirement itself
   requires the ambiguous behavior and available frozen inputs/source do not
-  select one meaning.
+  select one meaning **and** the Case artifacts claim to implement or verify
+  one of those meanings. A correctly recorded unresolved row does not stop
+  review of other cases; Quality retains it as `capability_unresolved` and
+  routes the final gate to `needs_human`.
 
 A matching `discovered_candidates[].knowledge_key` authenticates proposed
 closed-category vocabulary for an MRC row. It does not promote that key into an
@@ -321,7 +334,8 @@ These four fields are an exact projection of the frozen matrix, not an estimate:
 - count only rows whose `required` value is true;
 - `covered` is the number of required rows with `status: covered`;
 - `skipped_by_scope` is the number of required rows with that status;
-- `missing` lists every required `skipped_by_scope` row's `key`, in matrix order.
+- `missing` lists every required `skipped_by_scope` row's non-null `key`, or its
+  `mrc_id` when `key` is null, in matrix order.
 
 The runtime recomputes this projection from `trace/minimum-coverage-matrix.json`
 and rejects the review when any count or key differs.
@@ -683,6 +697,12 @@ Return one of these decisions:
 - The required repair has two or more plausible product meanings and the available evidence does
   not select one. High or critical risk by itself is not such an ambiguity.
 
+An unresolved MRC with `key: null` and `status: skipped_by_scope` is not a
+Case-artifact repair or permission to guess a product meaning. Review the
+remaining cases normally; if they pass, use `decision: pass` and preserve the
+unresolved row in `minimum_coverage.missing` by `mrc_id`. The later Quality
+gate, not this local review, issues `needs_human` for that obligation.
+
 An optional assertion invented by the case author is not, by itself, a reason to
 ask a person to define new business behavior. When that assertion is not required
 by the requirement or frozen MRC, return `needs_fix` with the bounded repair
@@ -795,6 +815,36 @@ When `decision == "needs_fix"`, ALL of the following MUST hold — violating any
 - `.qa.yaml` contains change identity, targets, and approval authority and MUST
   NOT appear in `auto_fix_plan`. Report such a finding as diagnostic and choose
   `needs_human_review` or `reject` when it blocks progress.
+
+### Repair-plan linked-location check
+
+Before returning `needs_fix`, check the intended repaired state against the inputs
+already read. Complete the existing `findings` and `auto_fix_plan` together:
+
+- **Adding a case:** check its planned `test_condition_id` in proposal's
+  `## Test Conditions` and its `case_id` / `type` in `## Layer Rationale`.
+  Include missing or stale entries in the same repair plan as the new case.
+- **Changing a case:** check whether the changed condition, layer, assertion or
+  fixture makes related case fields, proposal claims or MRC mappings inconsistent.
+  List only the affected fields, sections and exact MRC rows that need edits.
+- **Preserving valid content:** leave already-correct entries unchanged. An added
+  case alone does not require an MRC edit; include one only when its coverage
+  mapping needs to change. Keep frozen scope and the existing locator limits.
+
+Example: add `TC_PERMISSION_024` with condition `COND-PERMISSION-024` when both
+proposal sections exist but lack its entries. The complete plan has three paired
+findings/actions, with distinct IDs and these locators:
+
+| Finding ID | Artifact | `case_id` | `locator.key` |
+|---|---|---|---|
+| CR-001 | `qa/cases/system/permission/case.yaml` | `TC_PERMISSION_024` | `added` |
+| CR-002 | `qa/proposal.md` | `null` | `## Test Conditions` |
+| CR-003 | `qa/proposal.md` | `null` | `## Layer Rationale` |
+
+Each matching plan item states the exact entry to add or update. Reuse the
+existing output shape; no extra report or JSON fields are needed. The repair agent
+can edit only listed locators, so include these dependencies now rather than
+leaving them for the next review to discover.
 
 ---
 

@@ -37,6 +37,7 @@ from assurance_quality.contracts import (
 from assurance_quality.contracts.issue_events import CHANGE_ISSUE_EVENT_ADAPTER
 from assurance_quality.contracts.issues import IssueReconcileStatusDocument, IssueReconcileStatusV2
 from assurance_quality.contracts.metrics import MetricsDocument
+from assurance_quality.contracts.obligations import ObligationAssessmentV1
 from assurance_quality.plugin import QualityPlugin
 
 _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
@@ -70,7 +71,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.coverage-gaps.v1": (
         "1",
-        "6562dc9ff64c98c27e720f5b91bfdf225a416d7c555085769b68ea68a3c44f20",
+        "268de79665c17e117d4aa69d96ab0d14610d6f6952edf5518d30aaffb1231262",
     ),
     "assurance.quality.schema.fact-baseline.v1": (
         "1",
@@ -94,7 +95,11 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.minimum-coverage.v1": (
         "1",
-        "366eb9262f190af5165a0d62cd332c980f9135b47dddfb5a4f5fb7b58d22582f",
+        "aef09f2ab32f91700903a73424e4c9274391dbb48297d4ad59c39ecba7854fe8",
+    ),
+    "assurance.quality.schema.obligation-assessment.v1": (
+        "1",
+        "8bae0fcf3ee607cff065865a594a27f718babd7671bbad2b3bad0473bb1ff500",
     ),
     "assurance.quality.schema.mutation.v1": (
         "1",
@@ -114,7 +119,7 @@ _CURRENT_QUALITY_SCHEMA_MAPPING: dict[str, tuple[str, str]] = {
     ),
     "assurance.quality.schema.report.v1": (
         "1",
-        "4a93f202bb07571a20cfddc3cc37e498e920cd4494d10a8957c78c839924d37e",
+        "edddd18d71cf091b561c504f6077a3d23fff4a6fc464741d22f556afa2f95a11",
     ),
     "assurance.quality.schema.sufficiency.v2": (
         "1",
@@ -391,6 +396,9 @@ def test_quality_schema_bytes_equal_model_schema() -> None:
     )
     assert schema_bytes("assurance.quality.schema.minimum-coverage.v1") == canonical_json_bytes(
         cast(JSONValue, MinimumCoverageResult.model_json_schema())
+    )
+    assert schema_bytes("assurance.quality.schema.obligation-assessment.v1") == canonical_json_bytes(
+        cast(JSONValue, ObligationAssessmentV1.model_json_schema())
     )
     assert schema_bytes("assurance.quality.schema.issues.v1") == canonical_json_bytes(
         cast(JSONValue, ChangeIssueSnapshot.model_json_schema())

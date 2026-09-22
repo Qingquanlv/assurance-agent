@@ -1,1664 +1,1586 @@
 {
-  "items": [
-    {
-      "adapter_binding": {
-        "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d",
-        "cancel_timeout_seconds": 60,
-        "endpoint": "http://127.0.0.1:4096",
-        "max_response_bytes": 4000000,
-        "observation_horizon_seconds": 3600,
-        "progress_timeout_seconds": 300,
-        "poll_interval_seconds": 2,
-        "project_scope": "live-project",
-        "protocol_profile": "opencode-http-v1",
-        "request_timeout_seconds": 300,
-        "schema_version": "1",
-        "secret_handle": "opencode.token",
-        "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
-      },
-      "adapter_version": "0.1.0",
-      "deployment_binding_routes": {
-        "assurance.execution.agent.execute.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
+    "items": [
+        {
+            "adapter_binding": {
+                "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d",
+                "cancel_timeout_seconds": 60,
+                "endpoint": "http://127.0.0.1:4096",
+                "max_response_bytes": 4000000,
+                "observation_horizon_seconds": 3600,
+                "progress_timeout_seconds": 300,
+                "poll_interval_seconds": 2,
+                "project_scope": "live-project",
+                "protocol_profile": "opencode-http-v1",
+                "request_timeout_seconds": 300,
+                "schema_version": "1",
+                "secret_handle": "opencode.token",
+                "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
+            },
+            "adapter_version": "0.1.0",
+            "deployment_binding_routes": {
+                "assurance.generation.agent.api.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.api.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.apply-test-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.coverage-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.fix-proposal.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.archive.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.improvement-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-eval-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-workflow-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.explore.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.intake.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.fact-baseline.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.inspect.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-triage.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.report.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                }
+            },
+            "entrypoint": "full",
+            "expected_terminal": "completed",
+            "id": "opencode-ret-dept-management",
+            "product": "assurance-opencode",
+            "required_steps": [
+                "intake.intake",
+                "intake.explore",
+                "intake.case-design",
+                "intake.case-review",
+                "quality.fact-baseline",
+                "generation.api.codegen",
+                "generation.api.codegen-review",
+                "execution.execute",
+                "quality.inspect",
+                "quality.report"
+            ],
+            "requirement_path": "benchmark/assurance-product/requirements/dept-management.md",
+            "routing_assignments": {
+                "assurance.generation.agent.api.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.api.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.apply-test-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.coverage-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.fix-proposal.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.archive.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.improvement-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-eval-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-workflow-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.explore.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.intake.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.fact-baseline.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.inspect.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-triage.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.report.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                }
+            },
+            "secret_env": "AA_NEXT_OPENCODE_TOKEN",
+            "secret_handle": "opencode.token",
+            "selected_test_families": [
+                "api"
+            ],
+            "case_modules": [
+                "system/dept"
+            ],
+            "sut_item_id": "RET-dept-management",
+            "sut_root": "benchmark/vue-fastapi-admin",
+            "task_attempt_summaries": {
+                "assurance.execution.execute": {
+                    "kind": "TaskAttemptContract",
+                    "handler_id": "assurance.execution.run-tests"
+                },
+                "assurance.execution.run": {
+                    "kind": "TaskAttemptContract",
+                    "handler_id": "assurance.execution.run-tests"
+                }
+            }
         },
-        "assurance.execution.agent.run.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
+        {
+            "adapter_binding": {
+                "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d",
+                "cancel_timeout_seconds": 60,
+                "endpoint": "http://127.0.0.1:4096",
+                "max_response_bytes": 4000000,
+                "observation_horizon_seconds": 3600,
+                "progress_timeout_seconds": 300,
+                "poll_interval_seconds": 2,
+                "project_scope": "live-project",
+                "protocol_profile": "opencode-http-v1",
+                "request_timeout_seconds": 300,
+                "schema_version": "1",
+                "secret_handle": "opencode.token",
+                "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
+            },
+            "adapter_version": "0.1.0",
+            "deployment_binding_routes": {
+                "assurance.generation.agent.api.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.api.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.apply-test-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.coverage-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.fix-proposal.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.archive.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.improvement-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-eval-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-workflow-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.explore.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.intake.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.fact-baseline.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.inspect.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-triage.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.report.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                }
+            },
+            "entrypoint": "full",
+            "expected_terminal": "completed",
+            "id": "opencode-ret-user-management",
+            "product": "assurance-opencode",
+            "required_steps": [
+                "intake.intake",
+                "intake.explore",
+                "intake.case-design",
+                "intake.case-review",
+                "quality.fact-baseline",
+                "generation.api.codegen",
+                "generation.api.codegen-review",
+                "execution.execute",
+                "quality.inspect",
+                "quality.report"
+            ],
+            "requirement_path": "benchmark/assurance-product/requirements/user-management.md",
+            "routing_assignments": {
+                "assurance.generation.agent.api.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.api.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.apply-test-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.coverage-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.fix-proposal.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.archive.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.improvement-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-eval-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-workflow-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.explore.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.intake.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.fact-baseline.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.inspect.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-triage.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.report.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                }
+            },
+            "secret_env": "AA_NEXT_OPENCODE_TOKEN",
+            "secret_handle": "opencode.token",
+            "selected_test_families": [
+                "api"
+            ],
+            "case_modules": [
+                "system/user"
+            ],
+            "sut_item_id": "RET-user-management",
+            "sut_root": "benchmark/vue-fastapi-admin",
+            "task_attempt_summaries": {
+                "assurance.execution.execute": {
+                    "kind": "TaskAttemptContract",
+                    "handler_id": "assurance.execution.run-tests"
+                },
+                "assurance.execution.run": {
+                    "kind": "TaskAttemptContract",
+                    "handler_id": "assurance.execution.run-tests"
+                }
+            }
         },
-        "assurance.generation.agent.api.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.apply-test-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.coverage-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.fix-proposal.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.archive.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.improvement-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-eval-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-workflow-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-design.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.explore.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.intake.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.fact-baseline.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.inspect.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-triage.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.report.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
+        {
+            "adapter_binding": {
+                "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d",
+                "cancel_timeout_seconds": 60,
+                "endpoint": "http://127.0.0.1:4096",
+                "max_response_bytes": 4000000,
+                "observation_horizon_seconds": 3600,
+                "progress_timeout_seconds": 300,
+                "poll_interval_seconds": 2,
+                "project_scope": "live-project",
+                "protocol_profile": "opencode-http-v1",
+                "request_timeout_seconds": 300,
+                "schema_version": "1",
+                "secret_handle": "opencode.token",
+                "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
+            },
+            "adapter_version": "0.1.0",
+            "deployment_binding_routes": {
+                "assurance.generation.agent.api.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.api.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.apply-test-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.coverage-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.fix-proposal.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.archive.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.improvement-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-eval-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-workflow-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.explore.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.intake.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.fact-baseline.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.inspect.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-triage.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.report.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                }
+            },
+            "entrypoint": "full",
+            "expected_terminal": "completed",
+            "id": "opencode-ret-permission-management",
+            "product": "assurance-opencode",
+            "required_steps": [
+                "intake.intake",
+                "intake.explore",
+                "intake.case-design",
+                "intake.case-review",
+                "quality.fact-baseline",
+                "generation.api.codegen",
+                "generation.api.codegen-review",
+                "execution.execute",
+                "quality.inspect",
+                "quality.report"
+            ],
+            "requirement_path": "benchmark/assurance-product/requirements/permission-management.md",
+            "routing_assignments": {
+                "assurance.generation.agent.api.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.api.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.e2e.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.fuzz.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.generation.agent.performance.codegen-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.apply-test-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.coverage-repair.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.healing.agent.fix-proposal.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.archive.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.improvement-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-eval-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro-workflow-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.improvement.agent.retro.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-design.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.case-review.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.explore.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.intake.agent.intake.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.fact-baseline.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.inspect.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-analysis.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.issue-triage.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                },
+                "assurance.quality.agent.report.v1": {
+                    "limits": {
+                        "max_seconds": 3600
+                    },
+                    "permission_profile_id": "assurance.product.agent.permission.default",
+                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "request_policy_id": "assurance.product.agent.request.default",
+                    "worker_profile": "max"
+                }
+            },
+            "secret_env": "AA_NEXT_OPENCODE_TOKEN",
+            "secret_handle": "opencode.token",
+            "selected_test_families": [
+                "api"
+            ],
+            "case_modules": [
+                "system/permission"
+            ],
+            "sut_item_id": "RET-permission-management",
+            "sut_root": "benchmark/vue-fastapi-admin",
+            "task_attempt_summaries": {
+                "assurance.execution.execute": {
+                    "kind": "TaskAttemptContract",
+                    "handler_id": "assurance.execution.run-tests"
+                },
+                "assurance.execution.run": {
+                    "kind": "TaskAttemptContract",
+                    "handler_id": "assurance.execution.run-tests"
+                }
+            }
         }
-      },
-      "entrypoint": "full",
-      "expected_terminal": "completed",
-      "id": "opencode-ret-dept-management",
-      "product": "assurance-opencode",
-      "required_steps": [
-        "intake.intake",
-        "intake.explore",
-        "intake.case-design",
-        "intake.case-review",
-        "quality.fact-baseline",
-        "generation.api.codegen",
-        "generation.api.codegen-review",
-        "execution.execute",
-        "quality.inspect",
-        "quality.report"
-      ],
-      "requirement_path": "benchmark/assurance-product/requirements/dept-management.md",
-      "routing_assignments": {
-        "assurance.execution.agent.execute.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.execution.agent.run.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.apply-test-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.coverage-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.fix-proposal.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.archive.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.improvement-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-eval-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-workflow-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-design.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.explore.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.intake.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.fact-baseline.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.inspect.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-triage.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.report.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        }
-      },
-      "secret_env": "AA_NEXT_OPENCODE_TOKEN",
-      "secret_handle": "opencode.token",
-      "selected_test_families": [
-        "api"
-      ],
-      "case_modules": [
-        "system/dept"
-      ],
-      "sut_item_id": "RET-dept-management",
-      "sut_root": "benchmark/vue-fastapi-admin"
-    },
-    {
-      "adapter_binding": {
-        "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d",
-        "cancel_timeout_seconds": 60,
-        "endpoint": "http://127.0.0.1:4096",
-        "max_response_bytes": 4000000,
-        "observation_horizon_seconds": 3600,
-        "progress_timeout_seconds": 300,
-        "poll_interval_seconds": 2,
-        "project_scope": "live-project",
-        "protocol_profile": "opencode-http-v1",
-        "request_timeout_seconds": 300,
-        "schema_version": "1",
-        "secret_handle": "opencode.token",
-        "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
-      },
-      "adapter_version": "0.1.0",
-      "deployment_binding_routes": {
-        "assurance.execution.agent.execute.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.execution.agent.run.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.apply-test-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.coverage-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.fix-proposal.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.archive.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.improvement-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-eval-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-workflow-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-design.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.explore.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.intake.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.fact-baseline.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.inspect.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-triage.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.report.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        }
-      },
-      "entrypoint": "full",
-      "expected_terminal": "completed",
-      "id": "opencode-ret-user-management",
-      "product": "assurance-opencode",
-      "required_steps": [
-        "intake.intake",
-        "intake.explore",
-        "intake.case-design",
-        "intake.case-review",
-        "quality.fact-baseline",
-        "generation.api.codegen",
-        "generation.api.codegen-review",
-        "execution.execute",
-        "quality.inspect",
-        "quality.report"
-      ],
-      "requirement_path": "benchmark/assurance-product/requirements/user-management.md",
-      "routing_assignments": {
-        "assurance.execution.agent.execute.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.execution.agent.run.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.apply-test-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.coverage-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.fix-proposal.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.archive.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.improvement-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-eval-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-workflow-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-design.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.explore.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.intake.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.fact-baseline.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.inspect.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-triage.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.report.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        }
-      },
-      "secret_env": "AA_NEXT_OPENCODE_TOKEN",
-      "secret_handle": "opencode.token",
-      "selected_test_families": [
-        "api"
-      ],
-      "case_modules": [
-        "system/user"
-      ],
-      "sut_item_id": "RET-user-management",
-      "sut_root": "benchmark/vue-fastapi-admin"
-    },
-    {
-      "adapter_binding": {
-        "adapter_configuration_digest": "7cd4626d1a9d26c705f3c0578c1f19b19c1f7f364daf15e175740e0541aa7c8d",
-        "cancel_timeout_seconds": 60,
-        "endpoint": "http://127.0.0.1:4096",
-        "max_response_bytes": 4000000,
-        "observation_horizon_seconds": 3600,
-        "progress_timeout_seconds": 300,
-        "poll_interval_seconds": 2,
-        "project_scope": "live-project",
-        "protocol_profile": "opencode-http-v1",
-        "request_timeout_seconds": 300,
-        "schema_version": "1",
-        "secret_handle": "opencode.token",
-        "tls_identity_digest": "fe528b695a03f2a0e62f03bfb958d53adce124684f6879c2df73776aa3c80003"
-      },
-      "adapter_version": "0.1.0",
-      "deployment_binding_routes": {
-        "assurance.execution.agent.execute.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.execution.agent.run.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.apply-test-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.coverage-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.fix-proposal.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.archive.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.improvement-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-eval-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-workflow-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-design.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.explore.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.intake.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.fact-baseline.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.inspect.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-triage.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.report.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        }
-      },
-      "entrypoint": "full",
-      "expected_terminal": "completed",
-      "id": "opencode-ret-permission-management",
-      "product": "assurance-opencode",
-      "required_steps": [
-        "intake.intake",
-        "intake.explore",
-        "intake.case-design",
-        "intake.case-review",
-        "quality.fact-baseline",
-        "generation.api.codegen",
-        "generation.api.codegen-review",
-        "execution.execute",
-        "quality.inspect",
-        "quality.report"
-      ],
-      "requirement_path": "benchmark/assurance-product/requirements/permission-management.md",
-      "routing_assignments": {
-        "assurance.execution.agent.execute.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.execution.agent.run.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.api.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.e2e.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.fuzz.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.generation.agent.performance.codegen-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.apply-test-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.coverage-repair.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.healing.agent.fix-proposal.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.archive.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.improvement-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-eval-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro-workflow-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.improvement.agent.retro.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-design.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.case-review.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.explore.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.intake.agent.intake.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.fact-baseline.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.inspect.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-analysis.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.issue-triage.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        },
-        "assurance.quality.agent.report.v1": {
-          "limits": {
-            "max_seconds": 3600
-          },
-          "permission_profile_id": "assurance.product.agent.permission.default",
-          "provider_model": "deepseek/deepseek-v4-flash",
-          "request_policy_id": "assurance.product.agent.request.default",
-          "worker_profile": "max"
-        }
-      },
-      "secret_env": "AA_NEXT_OPENCODE_TOKEN",
-      "secret_handle": "opencode.token",
-      "selected_test_families": [
-    "api"
-      ],
-      "case_modules": [
-        "system/permission"
-      ],
-      "sut_item_id": "RET-permission-management",
-      "sut_root": "benchmark/vue-fastapi-admin"
-    }
-  ],
-  "schema_version": "1"
+    ],
+    "schema_version": "1"
 }

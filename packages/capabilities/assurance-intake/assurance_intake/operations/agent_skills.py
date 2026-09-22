@@ -28,12 +28,20 @@ from assurance_intake.contracts.agent import (
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import ResolvedAssurancePlan, decode_plan
 from assurance_intake.contracts.planning_facts import build_planning_facts
-from assurance_intake.contracts.explore import ExploreAdvisoryV1, build_explore_context
+from assurance_intake.contracts.explore import (
+    EXPLORE_AGENT_OUTPUT_PATHS,
+    REQUIREMENT_PATH,
+    RUN_SPEC_SNAPSHOT_PATH,
+    build_explore_context,
+    load_exploration_document,
+)
+from assurance_intake.contracts.impact import ChangeImpactInventoryV1
 from assurance_intake.contracts.review import (
     CaseReviewResultV1,
     normalized_auto_fix_case_id,
     normalized_auto_fix_edits,
 )
+from assurance_intake.operations.case_modules import infer_case_delta_paths
 from assurance_intake.resource_loader import resource_bytes, resource_text
 
 INTAKE_SKILL = "skills/aa-intake/SKILL.md"
@@ -69,11 +77,13 @@ _BOUNDED_PROFILES: Mapping[str, str] = {
 
 
 def intake_outputs(change_id: str) -> tuple[str, ...]:
-    return tuple(sorted(("qa/.qa.yaml", "qa/requirement.md")))
+    del change_id
+    return ("qa/.qa.yaml",)
 
 
 def explore_outputs(change_id: str) -> tuple[str, ...]:
-    return ("qa/results/explore/exploration.json",)
+    del change_id
+    return EXPLORE_AGENT_OUTPUT_PATHS
 
 
 def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tuple[str, ...]:
@@ -89,7 +99,13 @@ def case_design_outputs(change_id: str, case_delta_paths: tuple[str, ...]) -> tu
     )
 
 
-def case_review_outputs(change_id: str) -> tuple[str, ...]:
+def case_review_outputs(
+    change_id: str,
+    *,
+    coverage_epoch: int = 0,
+    review_round: int = 0,
+) -> tuple[str, ...]:
+    del change_id, coverage_epoch, review_round
     return tuple(
         sorted(
             (
@@ -347,11 +363,29 @@ def failed_input(error: Exception) -> TaskOutcome:
     return TaskOutcome.failed("invalid_input", str(error), retryable=True)
 
 
+def _materialize_requirement(text: str) -> bytes:
+    return (text.removesuffix("\n") + "\n").encode("utf-8")
+
+
+def _write_prepare_file(write_root: Path, relative: str, data: bytes) -> None:
+    path = write_root.joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
 class IntakePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
             business = validate_input(IntakeInputV1, request.input)
             binding = validate_binding(request.binding_data)
+            _write_prepare_file(
+                context.write_root, REQUIREMENT_PATH, _materialize_requirement(business.requirement)
+            )
+            snapshot = yaml.safe_dump(
+                {"candidate_test_families": list(business.candidate_test_families)},
+                sort_keys=True,
+            ).encode("utf-8")
+            _write_prepare_file(context.write_root, RUN_SPEC_SNAPSHOT_PATH, snapshot)
             return prepare_outcome(
                 skill_path=INTAKE_SKILL,
                 persona_path=INTAKE_PERSONA,
@@ -373,6 +407,7 @@ class ExplorePrepareHandler:
             document = build_explore_context(
                 context.project_root,
                 change_id=business.change_id,
+                capability_leafs=business.capability_leafs,
             )
             relative = "qa/results/explore/context.json"
             path = context.write_root.joinpath(*relative.split("/"))
@@ -387,7 +422,7 @@ class ExplorePrepareHandler:
                 context=context,
                 allowed_outputs=explore_outputs(business.change_id),
             )
-        except InputError as error:
+        except (InputError, ValueError) as error:
             return failed_input(error)
 
 
@@ -405,6 +440,15 @@ class CaseDesignPrepareHandler:
             if business.selected_test_families != plan.selected_test_families:
                 raise InputError("case selected families do not match frozen assurance plan")
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
+            _authenticate_evidence_refs(context.project_root, (plan.impact_inventory_ref,))
+            try:
+                inventory = ChangeImpactInventoryV1.model_validate_json(
+                    context.project_root.joinpath(*plan.impact_inventory_ref.path.split("/")).read_bytes()
+                )
+            except (OSError, ValidationError, ValueError) as error:
+                raise InputError(f"invalid impact-inventory.json: {error}") from error
+            if inventory.change_id != business.change_id:
+                raise InputError("impact-inventory.json change_id does not match case-design change_id")
             if business.case_rework_context is not None:
                 rework = business.case_rework_context
                 _authenticate_evidence_refs(context.project_root, rework.assessment_refs)
@@ -419,14 +463,22 @@ class CaseDesignPrepareHandler:
                 if not exploration_path.is_file() or exploration_path.is_symlink():
                     raise InputError("exploration.json must be a regular file")
                 try:
-                    exploration = ExploreAdvisoryV1.model_validate_json(exploration_path.read_bytes())
+                    exploration = load_exploration_document(exploration_path.read_bytes())
                 except (OSError, ValidationError, ValueError) as error:
                     raise InputError(f"invalid exploration.json: {error}") from error
                 if exploration.change_id != business.change_id:
                     raise InputError("exploration.json change_id does not match case-design change_id")
                 if exploration.context_ref != "explore/context.json":
                     raise InputError("exploration.json context_ref must be explore/context.json")
-            business = business.model_copy(update={"exploration": exploration})
+            business = business.model_copy(update={"exploration": exploration, "impact_inventory": inventory})
+            try:
+                inferred = infer_case_delta_paths(inventory)
+            except ValueError:
+                inferred = ()
+            if inferred:
+                business = business.model_copy(update={"case_delta_paths": inferred})
+            elif not business.case_delta_paths:
+                raise InputError("impact inventory does not imply any case module")
             review_repair = business.review_repair or _review_repair_contract(
                 context.project_root,
                 business=business,
@@ -467,10 +519,10 @@ class CaseReviewPrepareHandler:
             )
             _authenticate_evidence_refs(context.project_root, business.preparation_refs)
             _authenticate_evidence_refs(context.project_root, business.case_refs)
-            if business.case_refs and {item.path for item in business.case_refs} != set(
-                business.case_delta_paths
-            ):
-                raise InputError("case_refs must bind every locked case_delta_path exactly once")
+            if business.case_delta_paths and not set(business.case_delta_paths) <= {
+                item.path for item in business.case_refs
+            }:
+                raise InputError("case_refs must bind every locked case_delta_path")
             review_inputs = case_review_inputs(business.change_id, business.case_delta_paths)
             for relative in review_inputs:
                 _require_regular_project_input(context.project_root, relative)
@@ -484,7 +536,11 @@ class CaseReviewPrepareHandler:
                 binding=binding,
                 result_schema_id=CASE_REVIEW_RESULT_ID,
                 context=context,
-                allowed_outputs=case_review_outputs(business.change_id),
+                allowed_outputs=case_review_outputs(
+                    business.change_id,
+                    coverage_epoch=business.coverage_epoch,
+                    review_round=business.review_round,
+                ),
                 planning_facts=build_planning_facts(
                     context.project_root,
                     change_id=business.change_id,

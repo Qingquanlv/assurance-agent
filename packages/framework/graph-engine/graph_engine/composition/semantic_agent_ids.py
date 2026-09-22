@@ -2,8 +2,6 @@ from __future__ import annotations
 
 SEMANTIC_AGENT_CONTRACT_IDS: frozenset[str] = frozenset(
     {
-        "assurance.execution.agent.execute.v1",
-        "assurance.execution.agent.run.v1",
         "assurance.generation.agent.api.codegen.v1",
         "assurance.generation.agent.api.codegen-review.v1",
         "assurance.generation.agent.e2e.codegen.v1",

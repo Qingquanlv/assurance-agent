@@ -69,6 +69,7 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.quality.schema.journey-coverage.v1": "schemas/journey-coverage.v1.schema.json",
     "assurance.quality.schema.metrics.v1": "schemas/metrics.v1.schema.json",
     "assurance.quality.schema.minimum-coverage.v1": "schemas/minimum-coverage.v1.schema.json",
+    "assurance.quality.schema.obligation-assessment.v1": "schemas/obligation-assessment.v1.schema.json",
     "assurance.quality.schema.mutation.v1": "schemas/mutation.v1.schema.json",
     "assurance.quality.schema.perf-slack.v1": "schemas/perf-slack.v1.schema.json",
     "assurance.quality.schema.quality-gate.v2": "schemas/quality-gate.v2.schema.json",

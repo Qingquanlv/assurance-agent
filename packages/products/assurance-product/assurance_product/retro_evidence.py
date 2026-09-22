@@ -48,6 +48,19 @@ async def export_runtime_evidence(
         )
 
 
+async def snapshot_runtime_evidence(
+    workspace: ChangeWorkspace,
+    read_records: Callable[[], Awaitable[tuple[AttemptJournalRecord, ...]]],
+    *,
+    invocation_id: str,
+) -> EvidenceArtifactRefV1:
+    """Bind the current journal before Retro; keep the later diagnostic export separate."""
+    document = project_runtime_evidence(
+        await read_records(), change_id=workspace.change_id, invocation_id=invocation_id
+    )
+    return publish_runtime_evidence(workspace, document, stage="pre-retro")
+
+
 def project_runtime_evidence(
     records: Sequence[AttemptJournalRecord],
     *,
@@ -137,16 +150,28 @@ def project_runtime_evidence(
 def publish_runtime_evidence(
     workspace: ChangeWorkspace,
     document: WorkflowRuntimeEvidenceV1,
+    *,
+    stage: str = "post-run",
 ) -> EvidenceArtifactRefV1:
-    """Export a replaceable projection, never the journal, prompts or credentials.
+    """Export a runtime projection, never the journal, prompts or credentials.
 
     Consumers must explicitly include its exact byte digest in Retro source_refs.
-    Updating this projection invalidates stale refs instead of silently changing a
-    previously frozen Retro input. It is not a formal issue or a skill-drift audit.
+    Pre-Retro snapshots are immutable and content-addressed so replay cannot
+    change bytes already bound to Retro. Post-run projections remain replaceable.
+    This is not a formal issue or a skill-drift audit.
     """
     if document.change_id != workspace.change_id:
         raise ValueError("runtime evidence change does not match workspace")
-    relative = f"qa/results/workflow/{canonical_digest(document.invocation_id)}/workflow-evidence.json"
+    if stage not in {"pre-retro", "post-run"}:
+        raise ValueError("unknown runtime evidence stage")
+    root = f"qa/results/workflow/{canonical_digest(document.invocation_id)}"
+    encoded = canonical_json_bytes(document.model_dump(mode="json")) + b"\n"
+    content_digest = hashlib.sha256(encoded).hexdigest()
+    relative = (
+        f"{root}/pre-retro/{content_digest}/workflow-evidence.json"
+        if stage == "pre-retro"
+        else f"{root}/workflow-evidence.json"
+    )
     path = workspace.paths.project_root / relative
     for parent in reversed(path.parents):
         if parent == workspace.paths.project_root or workspace.paths.project_root in parent.parents:
@@ -155,14 +180,20 @@ def publish_runtime_evidence(
             parent.mkdir(exist_ok=True)
     if path.is_symlink():
         raise ValueError("runtime evidence path contains a symlink")
-    encoded = canonical_json_bytes(document.model_dump(mode="json")) + b"\n"
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".workflow-", delete=False) as pending:
         pending.write(encoded)
         pending.flush()
         os.fsync(pending.fileno())
     try:
-        os.replace(pending.name, path)
+        if stage == "pre-retro":
+            try:
+                os.link(pending.name, path)
+            except FileExistsError:
+                if path.is_symlink() or path.read_bytes() != encoded:
+                    raise ValueError("immutable pre-retro snapshot differs from existing bytes") from None
+        else:
+            os.replace(pending.name, path)
     finally:
         if os.path.exists(pending.name):
             os.unlink(pending.name)
-    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(encoded).hexdigest())
+    return EvidenceArtifactRefV1(path=relative, digest=content_digest)

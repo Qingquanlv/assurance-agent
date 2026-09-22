@@ -50,9 +50,13 @@ def test_help_exposes_exact_command_tree(cli_runner):
         "status",
         "resume",
         "lock",
+        "retro",
+        "bootstrap",
     }
     assert nested_command_names(cli_runner, app, "bindings") == {"build"}
     assert nested_command_names(cli_runner, app, "lock") == {"show"}
+    assert nested_command_names(cli_runner, app, "retro") == {"show"}
+    assert nested_command_names(cli_runner, app, "bootstrap") == {"run", "status", "stop", "resume"}
 
 
 def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
@@ -96,9 +100,9 @@ def test_compile_emits_authenticated_v3_lock_without_secrets_or_invocation(
     assert "AssuranceAttemptKernel" not in encoded
     assert "secret" not in encoded.lower() or "secret_handles" in encoded
     assert "/Users/" not in json.dumps(artifacts.graph_manifest.model_dump(mode="json"))
-    assert len(raw_agent_runtime_binding_rows(opencode_composition)) == 28
-    assert count_semantic_agent_contracts() == 28
-    assert count_raw_agent_runtime_bindings() == 28
+    assert len(raw_agent_runtime_binding_rows(opencode_composition)) == 26
+    assert count_semantic_agent_contracts() == 26
+    assert count_raw_agent_runtime_bindings() == 26
 
     tree = copy_config_tree(tmp_path / "org-config")
     policy = tree.path / ".aa" / "policy.yaml"

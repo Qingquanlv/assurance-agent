@@ -26,7 +26,7 @@ from assurance_intake.contracts.cases import (
     CaseYamlAuthoring,
     MinimumCoverageMatrixAuthoring,
 )
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.explore import load_exploration_document
 from assurance_intake.contracts.quality_goals import (
     CoverageGoal,
     MrcCategory,
@@ -42,7 +42,13 @@ from assurance_quality.contracts.assessment import (
     MaterializeAssessmentInputV1,
 )
 from assurance_quality.contracts.decisions import classify_inspection_disposition
-from assurance_quality.contracts.coverage import MinimumCoverageMatrixRow
+from assurance_quality.contracts.coverage import (
+    CoverageGap,
+    CoverageGapKind,
+    CoverageGapLocator,
+    CoverageGapsDocument,
+    MinimumCoverageMatrixRow,
+)
 from assurance_quality.contracts.goal_policy import (
     ActiveCoverageScopeV1,
     CoverageGoalPolicyV1,
@@ -75,13 +81,52 @@ from assurance_quality.operations.metrics import (
 )
 from assurance_quality.operations.sufficiency import build_sufficiency_facts
 from assurance_quality.operations.trace import TraceCaseInput, TraceOperationInput, project_trace
-from assurance_quality.operations.common import json_digest
+from assurance_quality.operations.common import InputError, json_digest
+from assurance_quality.operations.obligations import (
+    REPAIRABLE_OBLIGATION_GAPS,
+    assess_obligations,
+    derive_obligation_gate_facts,
+    load_prepared_obligations,
+    write_obligation_assessment,
+)
 from assurance_quality.operations.goal_scope import has_layer_evidence, obligation_goal
 from assurance_quality.operations.identity import ObservationIdentityInput, observation_id
 
 
 class AssessmentInputError(ValueError):
     """The assessment sources could not prove one coherent execution cycle."""
+
+
+def _coverage_gaps_with_obligations(
+    gaps: CoverageGapsDocument,
+    *,
+    assessment,
+    batch_id: str,
+    computed_at: datetime,
+    minimum_coverage,
+) -> CoverageGapsDocument:
+    extra: list[CoverageGap] = []
+    for row in assessment.rows:
+        for code in row.gap_codes:
+            if code not in REPAIRABLE_OBLIGATION_GAPS:
+                continue
+            extra.append(
+                CoverageGap(
+                    kind=cast(CoverageGapKind, code),
+                    locator=CoverageGapLocator(plan_digest=row.plan_digest, mrc_id=row.mrc_id),
+                    layer="declaration",
+                    batch_id=batch_id,
+                    evidence_refs=tuple(ref.path for ref in row.evidence_refs) or (assessment.plan_ref.path,),
+                )
+            )
+    return CoverageGapsDocument.model_validate(
+        {
+            **gaps.model_dump(mode="json"),
+            "computed_at": computed_at,
+            "minimum_coverage": minimum_coverage.model_dump(mode="json"),
+            "gaps": [item.model_dump(mode="json") for item in (*gaps.gaps, *extra)],
+        }
+    )
 
 
 _FAMILY_ORDER = ("api", "e2e", "fuzz", "performance")
@@ -181,8 +226,8 @@ def _prepared_obligations(
 ) -> tuple[tuple[PreparedObligationV1, ...], frozenset[str], frozenset[str]]:
     quality_goal = plan.quality_goal
     try:
-        advisory = ExploreAdvisoryV1.model_validate(json.loads(_read_ref(root, quality_goal.obligations_ref)))
-    except (json.JSONDecodeError, ValidationError) as error:
+        advisory = load_exploration_document(_read_ref(root, quality_goal.obligations_ref))
+    except (json.JSONDecodeError, ValidationError, ValueError) as error:
         raise AssessmentInputError(f"invalid prepared goal obligations: {error}") from error
     if advisory.change_id != request.reviewed_case.change_id:
         raise AssessmentInputError("prepared goal obligations belong to another change")
@@ -213,6 +258,7 @@ def _prepared_obligations(
             advisory,
             capability_leafs=capability_leafs,
             journey_keys=journey_keys,
+            admissible_families=frozenset(plan.candidate_test_families),
         )
     except (json.JSONDecodeError, yaml.YAMLError, ValidationError, ValueError) as error:
         if isinstance(error, AssessmentInputError):
@@ -242,10 +288,50 @@ def _reviewed_obligations(
     except (json.JSONDecodeError, ValidationError) as error:
         raise AssessmentInputError(f"invalid reviewed minimum coverage matrix: {error}") from error
     case_by_id = {case.case_id: case for case in cases}
-    prepared = {row.key: row for row in baseline}
-    result = {row.key: MinimumCoverageMatrixRow(**row.model_dump()) for row in baseline}
+    prepared = {row.key: row for row in baseline if row.key is not None}
+    result = {
+        row.key: MinimumCoverageMatrixRow(
+            mrc_id=row.mrc_id,
+            key=row.key,
+            proposed_key=row.proposed_key,
+            required=row.required,
+            category=row.category,
+            layer=row.layer,
+        )
+        for row in baseline
+        if row.key is not None
+    }
+    unresolved = {
+        row.mrc_id: MinimumCoverageMatrixRow(
+            mrc_id=row.mrc_id,
+            key=None,
+            proposed_key=row.proposed_key,
+            required=row.required,
+            category=row.category,
+            layer=row.layer,
+            status="skipped_by_scope",
+            skip_reason="capability_unresolved",
+        )
+        for row in baseline
+        if row.key is None
+    }
+    unresolved_matrix_ids = {row.mrc_id for row in matrix.root if row.key is None}
+    missing_unresolved = sorted(set(unresolved) - unresolved_matrix_ids)
+    if missing_unresolved:
+        raise AssessmentInputError(f"unresolved MRC rows missing or rebound: {missing_unresolved}")
     journey_cases: set[str] = set()
     for row in matrix.root:
+        if row.mrc_id in unresolved and row.key is not None:
+            raise AssessmentInputError(f"unresolved MRC row was rebound to a key: {row.mrc_id}")
+        if row.key is None:
+            original = unresolved.get(row.mrc_id)
+            if original is None:
+                raise AssessmentInputError(f"unresolved MRC row is not in the frozen plan: {row.mrc_id}")
+            if row.category not in {None, original.category} or row.layer not in {None, original.layer}:
+                raise AssessmentInputError(
+                    f"reviewed MRC scope conflicts with prepared obligation: {row.mrc_id}"
+                )
+            continue
         unknown = sorted(set(row.covered_by_cases) - set(case_by_id))
         if unknown:
             raise AssessmentInputError(f"minimum coverage matrix references unknown active cases: {unknown}")
@@ -321,7 +407,9 @@ def _reviewed_obligations(
                     )
                 }
             )
-    return tuple(sorted(result.values(), key=lambda row: (row.mrc_id, row.key)))
+    return tuple(
+        sorted((*result.values(), *unresolved.values()), key=lambda row: (row.mrc_id, row.key or ""))
+    )
 
 
 def _metrics(
@@ -611,12 +699,15 @@ def materialize_assessment_inputs(
     }
     trace_keys = {key for case in cases for key in case.trace}
     for obligation in obligations:
-        goal = obligation_goal(key=obligation.key, category=obligation.category)
+        obligation_key = obligation.key or obligation.proposed_key
+        if not obligation_key:
+            continue
+        goal = obligation_goal(key=obligation_key, category=obligation.category)
         if goal is not None and (
-            obligation.required or obligation.covered_by_cases or obligation.key in trace_keys
+            obligation.required or obligation.covered_by_cases or obligation_key in trace_keys
         ):
-            reviewed_goal_maps[goal][obligation.key] = tuple(obligation.covered_by_cases)
-    mrc_keys = {obligation.key for obligation in obligations}
+            reviewed_goal_maps[goal][obligation_key] = tuple(obligation.covered_by_cases)
+    mrc_keys = {obligation.key for obligation in obligations if obligation.key}
     for case in cases:
         for key in case.trace:
             if key in mrc_keys:
@@ -676,26 +767,51 @@ def materialize_assessment_inputs(
     # Numeric obligations retain their authenticated coverage floors. MRCs
     # without a numeric goal still require execution evidence through the
     # existing sufficiency route.
+    selected = {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
     if any(
         item.required
-        and obligation_goal(key=item.key, category=item.category) is None
+        and obligation_goal(key=item.key or item.proposed_key or "", category=item.category) is None
         and item.status != "covered"
         for item in minimum_coverage.items
+    ) or any(
+        outcome.state == "blocked" for outcome in evidence.family_outcomes if outcome.family in selected
     ):
         sufficiency = sufficiency.model_copy(update={"sufficient": False})
-    gaps = build_coverage_gaps(
-        projection,
-        sufficiency,
-        change_id=request.reviewed_case.change_id,
+    try:
+        obligation_assessment = assess_obligations(workspace=project_root, request=request)
+        prepared = load_prepared_obligations(project_root, request)
+        obligation_gate_facts = derive_obligation_gate_facts(
+            obligation_assessment,
+            required_ids=tuple(
+                (request.plan_digest, item.mrc_id)
+                for item in prepared
+                if item.scope_disposition != "excluded"
+            ),
+        )
+    except InputError as error:
+        raise AssessmentInputError(str(error)) from error
+    gaps = _coverage_gaps_with_obligations(
+        build_coverage_gaps(
+            projection,
+            sufficiency,
+            change_id=request.reviewed_case.change_id,
+            batch_id=request.execution.batch_id,
+        ),
+        assessment=obligation_assessment,
         batch_id=request.execution.batch_id,
-    ).model_copy(update={"computed_at": request.execution_at, "minimum_coverage": minimum_coverage})
+        computed_at=request.execution_at,
+        minimum_coverage=minimum_coverage,
+    )
     metrics = _metrics(
         cases=cases,
         projection=projection,
         policy_digest=request.policy_sha256,
         computed_at=request.execution_at,
         reviewed=reviewed_goal_maps,
-        required_layers={obligation.key: obligation.layer for obligation in obligations},
+        required_layers={
+            (obligation.key or obligation.proposed_key or obligation.mrc_id): obligation.layer
+            for obligation in obligations
+        },
     )
     goals = tuple(goal for goal in _GOAL_ORDER if reviewed_goal_maps[cast(CoverageGoal, goal)])
     selected = {family for family in _FAMILY_ORDER if getattr(evidence.selected_targets, family)}
@@ -749,12 +865,18 @@ def materialize_assessment_inputs(
             observations=list(observations),
         ),
     )
+    obligation_assessment_ref = write_obligation_assessment(
+        write_root,
+        request,
+        obligation_assessment,
+    )
     issue_manifest = _issue_evidence_manifest(
         change_id=request.reviewed_case.change_id,
         batch_id=request.execution.batch_id,
         refs=(
             request.execution.evidence_ref,
             observations_ref,
+            obligation_assessment_ref,
             trace_ref,
             gaps_ref,
             sufficiency_ref,
@@ -789,6 +911,8 @@ def materialize_assessment_inputs(
         sufficiency_ref=sufficiency_ref,
         execution_ref=request.execution.evidence_ref,
         observations_ref=observations_ref,
+        obligation_assessment_ref=obligation_assessment_ref,
+        obligation_gate_facts=obligation_gate_facts,
         issue_evidence_manifest_ref=issue_evidence_manifest_ref,
         owned_evidence_ids=tuple(item.observation_id for item in observations),
         evidence_bundle_digest=issue_manifest.digest,

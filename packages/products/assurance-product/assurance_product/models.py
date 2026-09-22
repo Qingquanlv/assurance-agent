@@ -452,6 +452,8 @@ class ProductInputV1(FrozenModel):
     product_policy: ResourceRefV1
     data_knowledge: ResourceRefV1
     allowed_artifact_paths: tuple[str, ...]
+    allowed_origins: tuple[str, ...] = ()
+    execution_timeout_seconds: int = Field(default=3600, ge=31, le=3600)
     budgets: BusinessBudgetsV1
     artifacts: tuple[ArtifactRefV1, ...] = ()
     retro_window: RetroWindow | None = None
@@ -493,6 +495,27 @@ class ProductInputV1(FrozenModel):
     def _case_delta_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _exact_case_delta_paths(value)
 
+    @field_validator("allowed_origins")
+    @classmethod
+    def _allowed_origins(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(set(value))):
+            raise ValueError("allowed_origins must be sorted and unique")
+        for origin in value:
+            parsed = urlparse(origin)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or parsed.params
+                or parsed.query
+                or parsed.fragment
+                or origin != f"{parsed.scheme}://{parsed.netloc}"
+            ):
+                raise ValueError("allowed_origins must contain canonical HTTP origins")
+        return value
+
     @model_validator(mode="after")
     def _case_delta_paths_match_change(self) -> ProductInputV1:
         prefix = ("qa", "cases")
@@ -523,10 +546,11 @@ class ProductInputV1(FrozenModel):
             raise ValueError(f"{entrypoint} requires resolved_plan_ref")
         if not creator and not consumer and self.resolved_plan_ref is not None:
             raise ValueError(f"{entrypoint} does not consume resolved_plan_ref")
-        requires_case_delta = entrypoint in {"full", "intake", "case"}
-        if requires_case_delta and not self.case_delta_paths:
-            raise ValueError(f"{entrypoint} requires non-empty exact case_delta_paths")
-        if not requires_case_delta and self.case_delta_paths:
+        # full / intake / case all lock case files from Explore inventory.
+        # Empty case_delta_paths is the operator contract; case-design infers
+        # every implied qa/cases/<module>/case.yaml (one requirement can span
+        # several modules).
+        if entrypoint not in {"full", "intake", "case"} and self.case_delta_paths:
             raise ValueError(f"{entrypoint} does not consume case_delta_paths")
         if entrypoint != "retro" and self.retro_window is not None:
             raise ValueError(f"{entrypoint} does not consume retro_window")

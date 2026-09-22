@@ -8,6 +8,20 @@ Review the generated API tests and mapping and emit a `PlanReviewAuthoring` docu
 treat them as evidence only; the downstream gate owns routing. Their absence is
 not a reason to stop because this skill independently reviews the generated tests and mapping.
 
+Required observation keys must appear as `aa_observe.request(observation_id=...)`
+calls. A passing client assertion without that call, a same-named fake fixture,
+or a missing observation ID is not collection-closed.
+
+## Semantic obligation review
+
+The final JSON instruction includes the trusted `codegen_output.method_plans`.
+For every method plan, emit exactly one `semantic_reviews` row and exactly
+one expectation review for each bound observation key. Confirm an expectation
+only from its frozen normative basis references; use `abstain`, `conflict`,
+or `fail` when the source is absent, ambiguous, contradictory, or mismatched.
+Copy `frozen_plan_digest`, `plan_ref`, MRC ID, and requirement ID from the
+locked inputs. An empty method-plan set requires an empty semantic-review set.
+
 Routing uses exactly two fields: `route` and `finding_ids`. The host validates
 that combination and does not rewrite it. An illegal pair is invalid output
 and retries this node.
@@ -125,6 +139,12 @@ Write the entire object to `api-codegen-review.json`, then read and parse that e
 file. After any correction, rewrite and re-read the file first; a corrected final
 response alone does not repair the staged artifact. The Markdown summary is the
 human-readable summary, not a replacement or reduced shape for the JSON file.
+### Host-owned derived files
+
+Your outputs are the review JSON and Markdown summary. After authenticating
+the raw review, the host finalize handler generates history and finding-scope
+under declared write claims. Digests and identities are computed by the host.
+Return the same complete JSON object that you wrote to the review file.
 
 ## Boundaries
 

@@ -17,3 +17,5 @@ in this same review; do not reveal one related defect per repair round.
 Capability keys must be exact declared typed leaves.
 
 Write `review/case-review.json` and `review/case-review-summary.md`. Do not modify cases or the proposal.
+The host finalize handler generates selection, history, and reviewed-case files
+after authenticating the raw review, under its declared write claims.

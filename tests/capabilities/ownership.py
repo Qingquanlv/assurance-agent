@@ -158,10 +158,7 @@ CALLABLE_OWNER_OVERRIDES: dict[str, str] = {
 }
 
 OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
-    "assurance.execution": (
-        "operation:run-tests",
-        "operation:run-tests-and-collect-pr-metrics",
-    ),
+    "assurance.execution": ("operation:run-tests",),
     "assurance.healing": (
         "operation:allocate-healing-attempt",
         "operation:fixer-authority-ready",
@@ -239,7 +236,10 @@ OPERATION_OWNERS: dict[str, tuple[str, ...]] = {
 }
 
 REPLACED_OPERATIONS = frozenset({"operation:no-op", "operation:stop", "operation:skill-registry-check"})
-DELETED_OPERATIONS = frozenset({"operation:retro-accept"})
+DELETED_OPERATIONS = frozenset({"operation:retro-accept", "operation:run-tests-and-collect-pr-metrics"})
+# Operations that migrated onto a task attempt contract. The contract keeps the
+# bare slug and the live handler carries the `.execute` suffix.
+TASK_HANDLER_OPERATIONS = frozenset({"operation:reconcile-issues"})
 
 SKILL_OWNERS: dict[str, tuple[str, ...]] = {
     "assurance.intake": ("aa-intake", "aa-explore", "aa-case-design", "aa-case-reviewer"),
@@ -958,6 +958,13 @@ def _item(
     )
 
 
+def operation_handler_id(owner: str, operation_id: str) -> str:
+    """The live handler id an operation migrated to."""
+    slug = operation_id.removeprefix("operation:")
+    suffix = ".execute" if operation_id in TASK_HANDLER_OPERATIONS else ""
+    return f"{owner}.{slug}{suffix}"
+
+
 def _operation_owner(operation_id: str) -> tuple[Disposition, str | None, str | None]:
     if operation_id in REPLACED_OPERATIONS:
         return "replace_phase5", None, None
@@ -965,7 +972,7 @@ def _operation_owner(operation_id: str) -> tuple[Disposition, str | None, str | 
         return "delete_phase6", None, None
     for owner, operations in OPERATION_OWNERS.items():
         if operation_id in operations:
-            return "migrate", owner, f"{owner}.{operation_id.removeprefix('operation:')}"
+            return "migrate", owner, operation_handler_id(owner, operation_id)
     raise ValueError(f"unassigned operation: {operation_id}")
 
 

@@ -31,6 +31,14 @@ _FACTS_LIMITS = (
 )
 
 
+def source_path_hints(text: str) -> tuple[str, ...]:
+    """Explicit source paths named in prose, first-seen order, without duplicates."""
+    seen: dict[str, None] = {}
+    for match in _SOURCE_PATH.findall(text):
+        seen.setdefault(match, None)
+    return tuple(seen)
+
+
 def _durable_test_path(relative: str) -> str | None:
     path = PurePosixPath(relative)
     if path.is_absolute() or path.as_posix() != relative or ".." in path.parts:
@@ -193,7 +201,7 @@ def build_planning_facts(
         if data is None:
             continue
         inputs.append({"path": relative, "digest": hashlib.sha256(data).hexdigest()})
-        candidates.update(_SOURCE_PATH.findall(data.decode("utf-8", errors="replace")))
+        candidates.update(source_path_hints(data.decode("utf-8", errors="replace")))
     knowledge_path = ".aa/data-knowledge.yaml"
     knowledge_bytes, _ = _read(root, knowledge_path)
     knowledge: Any = {}

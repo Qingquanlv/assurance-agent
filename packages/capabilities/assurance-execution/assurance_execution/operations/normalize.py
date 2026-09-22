@@ -11,7 +11,7 @@ from graph_engine.canonical import JSONValue
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_execution.contracts.agent import NormalizeInputV1
-from assurance_execution.contracts.evidence import ExecutionEvidenceV1
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1, FamilyExecutionOutcomeV1
 from assurance_execution.contracts.execution import (
     EXECUTION_FAMILIES,
     ExecutionCommandReceiptV1,
@@ -58,6 +58,8 @@ def normalize_evidence(
     report: Mapping[str, Any],
     receipt: ExecutionReceiptV1 | None = None,
 ) -> ExecutionEvidenceV1:
+    plan_ref_dump = getattr(plan_ref, "model_dump", None)
+    plan_ref_data = plan_ref_dump(mode="json") if callable(plan_ref_dump) else plan_ref
     try:
         targets = SelectedTargets.model_validate(selected_targets)
     except ValidationError as error:
@@ -103,12 +105,19 @@ def normalize_evidence(
             ),
         )
     )
+    # Normalization observes a real run, so every family that produced a
+    # command receipt executed. The evidence states this; it is not inferred
+    # again when the sealed document is read back.
+    outcomes = tuple(
+        FamilyExecutionOutcomeV1(family=item.family, state="executed") for item in built.commands
+    )
     try:
         return ExecutionEvidenceV1.model_validate(
             {
+                "family_outcomes": [item.model_dump(mode="json") for item in outcomes],
                 "change_id": change_id,
                 "plan_digest": plan_digest,
-                "plan_ref": plan_ref,
+                "plan_ref": plan_ref_data,
                 "batch_id": batch_id,
                 "status": "failed"
                 if built.exit_code != 0 or any(item.status == "failed" for item in results)

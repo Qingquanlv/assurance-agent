@@ -10,6 +10,16 @@ from agent_runtime_contracts import AgentRunRequest
 from graph_engine.frozen_json import thaw_json
 from tests.product.test_change_local_output_routing import execute_task
 
+from graph_engine.canonical import canonical_json_bytes
+
+from assurance_generation.contracts.reviews import public_review_outcome
+from assurance_generation.operations.plan_review_policy import write_finding_scope
+from assurance_generation.operations.planning import (
+    closed_family,
+    evidence_ref,
+    expected_plan_review_history,
+    plan_review_input_paths,
+)
 from assurance_generation.operations.review import review_finalize_handler, review_prepare_handler
 from assurance_generation.resource_loader import resource_text
 from review_audit_fixtures import (  # pyright: ignore[reportMissingImports]
@@ -21,12 +31,54 @@ from review_audit_fixtures import (  # pyright: ignore[reportMissingImports]
 from planning_fixtures import (  # pyright: ignore[reportMissingImports]
     BINDING,
     FAMILIES,
+    PLAN_DIGEST,
+    PLAN_REF,
     fake_agent_result,
     plan_input,
     review_result,
     reviewed_cases,
     valid_plan_review,
 )
+
+
+def _codegen_with_method() -> dict[str, object]:
+    return {
+        "schema_version": "1",
+        "change_id": "CH-DEMO-001",
+        "layer": "api",
+        "files": [],
+        "mapping": {
+            "schema_version": "1",
+            "layer": "api",
+            "entries": [
+                {
+                    "case_id": "TC_API_001",
+                    "symbol": "test_lockout",
+                    "target_file": "qa/tests/api/items/test_items.py",
+                }
+            ],
+        },
+        "required_capabilities": ["entities.item.create"],
+        "method_plans": [
+            {
+                "mrc_id": "MRC-LOCK",
+                "requirement_id": "REQ-LOCK",
+                "profile_id": "api.state-sequence.v1",
+                "case_ids": ["TC_API_001"],
+                "prerequisites": [],
+                "steps": [{"step_id": "S1", "purpose": "observe", "action": "login"}],
+                "observations": [
+                    {
+                        "observation_id": "OBS-LOCK",
+                        "observation_key": "locked_status",
+                        "step_id": "S1",
+                        "test_nodeid": "qa/tests/api/items/test_items.py::test_lockout",
+                        "assertion_id": "A1",
+                    }
+                ],
+            }
+        ],
+    }
 
 
 def test_review_audit_modules_are_gone() -> None:
@@ -69,6 +121,47 @@ def _write_review_workspace(tmp_path: Path, family: str = "api") -> None:
     case_path.write_text(json.dumps(reviewed_cases(family)), encoding="utf-8")
 
 
+def _stage_root(tmp_path: Path) -> Path:
+    return tmp_path / "qa" / ".staging" / "attempt-1"
+
+
+def _write_plan_review_runtime_seal(
+    write_root: Path,
+    project_root: Path,
+    *,
+    family: str,
+    change_id: str,
+    coverage_epoch: int,
+    local_round: int,
+    review: dict[str, object],
+) -> None:
+    typed_family = closed_family(family)
+    input_paths = plan_review_input_paths(project_root, change_id=change_id, family=typed_family)
+    input_refs = tuple(evidence_ref(project_root, path) for path in input_paths)
+    review_ref = evidence_ref(write_root, f"qa/results/review/{family}-codegen-review.json")
+    history = expected_plan_review_history(
+        change_id=change_id,
+        coverage_epoch=coverage_epoch,
+        family=typed_family,
+        round_index=local_round,
+        outcome=public_review_outcome(str(review["route"])),
+        input_refs=input_refs,
+        source_refs=(*input_refs, review_ref),
+    )
+    relative = f"qa/results/codegen/{family}/reviews/epochs/{coverage_epoch}/rounds/{local_round}.json"
+    path = write_root.joinpath(*relative.split("/"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(canonical_json_bytes(history.model_dump(mode="json")) + b"\n")
+    write_finding_scope(
+        write_root,
+        family=family,
+        coverage_epoch=coverage_epoch,
+        change_id=change_id,
+        route=str(review["route"]),
+        finding_ids=tuple(str(item) for item in cast(list[object], review["finding_ids"])),
+    )
+
+
 @pytest.mark.asyncio
 async def test_api_review_finalizes_without_review_audit(tmp_path: Path) -> None:
     outcome = await execute_task(
@@ -80,6 +173,44 @@ async def test_api_review_finalizes_without_review_audit(tmp_path: Path) -> None
     output = cast(dict[str, object], outcome.output)
     assert output["route"] == "codegen"
     assert "review_audit" not in output
+
+
+@pytest.mark.asyncio
+async def test_review_requires_typed_semantic_review_for_each_method_plan(tmp_path: Path) -> None:
+    payload = fake_agent_result(valid_plan_review())
+    payload["codegen_output"] = _codegen_with_method()
+
+    missing = await execute_task(review_finalize_handler("api"), payload, tmp_path)
+    assert missing.status == "failed"
+    assert missing.failure is not None
+    assert "semantic_reviews" in missing.failure.message
+
+    review = {
+        **valid_plan_review(),
+        "semantic_reviews": [
+            {
+                "frozen_plan_digest": PLAN_DIGEST,
+                "mrc_id": "MRC-LOCK",
+                "requirement_id": "REQ-LOCK",
+                "plan_ref": PLAN_REF,
+                "status": "pass",
+                "reason": "the frozen requirement supports the expected status",
+                "source_refs": [],
+                "expectation_reviews": [
+                    {
+                        "observation_key": "locked_status",
+                        "status": "pass",
+                        "reason": "the expected status is explicit",
+                        "basis_refs": [],
+                    }
+                ],
+            }
+        ],
+    }
+    accepted_payload = fake_agent_result(review)
+    accepted_payload["codegen_output"] = _codegen_with_method()
+    accepted = await execute_task(review_finalize_handler("api"), accepted_payload, tmp_path)
+    assert accepted.status == "succeeded", accepted.failure
 
 
 @pytest.mark.asyncio
@@ -234,6 +365,17 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
     staged_review = stage / latest.relative_to(tmp_path)
     staged_review.parent.mkdir(parents=True)
     staged_review.write_bytes(latest.read_bytes())
+    _write_plan_review_runtime_seal(
+        stage,
+        tmp_path,
+        family=family,
+        change_id="CH-DEMO-001",
+        coverage_epoch=2,
+        local_round=1,
+        review=review,
+    )
+    before_history = (stage / "qa/results/codegen/api/reviews/epochs/2/rounds/1.json").read_bytes()
+    before_scope = (stage / "qa/results/codegen/api/reviews/epochs/2/finding-scope.json").read_bytes()
 
     executed = await execute_task(
         review_finalize_handler(family),
@@ -257,6 +399,133 @@ async def test_plan_review_finalize_persists_epoch_scoped_history(tmp_path: Path
     output = cast(dict[str, object], executed.output)
     history_ref = cast(dict[str, object], output["history_ref"])
     assert history_ref["path"] == history_path.relative_to(stage).as_posix()
+    assert history_path.read_bytes() == before_history
+    assert (stage / "qa/results/codegen/api/reviews/epochs/2/finding-scope.json").read_bytes() == before_scope
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("disk_content", ["{}", "not json", "different_review", "different_route"])
+async def test_plan_review_rejects_disk_result_mismatch(
+    tmp_path: Path, family: str, disk_content: str
+) -> None:
+    review = review_result(family)
+    _write_review_workspace(tmp_path, family)
+    stage = tmp_path / ".stage"
+    path = stage / f"qa/results/review/{family}-codegen-review.json"
+    path.parent.mkdir(parents=True)
+    if disk_content == "different_review":
+        disk_content = json.dumps({**review, "change_id": "CH-DIFFERENT"})
+    elif disk_content == "different_route":
+        disk_content = json.dumps({**review, "route": "human"})
+    path.write_text(disk_content, encoding="utf-8")
+    _write_plan_review_runtime_seal(
+        stage,
+        tmp_path,
+        family=family,
+        change_id="CH-DEMO-001",
+        coverage_epoch=2,
+        local_round=1,
+        review=review,
+    )
+
+    outcome = await execute_task(
+        review_finalize_handler(family),
+        {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 2, "local_round": 1},
+        tmp_path,
+        write_root=stage,
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.failure is not None
+    assert outcome.failure.kind == "invalid_output"
+    assert "review artifact" in outcome.failure.message
+    assert path.read_text(encoding="utf-8") == disk_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("family", FAMILIES)
+async def test_plan_review_accepts_matching_artifact_without_rewriting(tmp_path: Path, family: str) -> None:
+    review = review_result(family)
+    _write_review_workspace(tmp_path, family)
+    stage = tmp_path / ".stage"
+    path = stage / f"qa/results/review/{family}-codegen-review.json"
+    path.parent.mkdir(parents=True)
+    original = json.dumps(review, indent=4).encode("utf-8") + b"\n"
+    path.write_bytes(original)
+    _write_plan_review_runtime_seal(
+        stage,
+        tmp_path,
+        family=family,
+        change_id="CH-DEMO-001",
+        coverage_epoch=2,
+        local_round=1,
+        review=review,
+    )
+
+    outcome = await execute_task(
+        review_finalize_handler(family),
+        {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 2, "local_round": 1},
+        tmp_path,
+        write_root=stage,
+    )
+
+    assert outcome.status == "succeeded", outcome.failure
+    assert cast(dict[str, object], outcome.output)["route"] == "codegen"
+    assert path.read_bytes() == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("family", FAMILIES)
+async def test_plan_review_finalize_generates_host_seals(tmp_path: Path, family: str) -> None:
+    from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS
+    from tests.capabilities.finalize_phase import checked_finalize
+
+    review = review_result(family)
+    _write_review_workspace(tmp_path, family)
+    stage = _stage_root(tmp_path)
+    raw = stage / f"qa/results/review/{family}-codegen-review.json"
+    raw.parent.mkdir(parents=True)
+    original = json.dumps(review).encode()
+    raw.write_bytes(original)
+    executed = await checked_finalize(
+        AGENT_JOB_CONTRACTS[f"{family}.codegen-review"],
+        stage,
+        lambda: execute_task(
+            review_finalize_handler(family),
+            {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 0},
+            tmp_path,
+        ),
+    )
+    assert executed.status == "succeeded", executed.failure
+    history = stage / f"qa/results/codegen/{family}/reviews/epochs/0/rounds/0.json"
+    scope = stage / f"qa/results/codegen/{family}/reviews/epochs/0/finding-scope.json"
+    assert json.loads(history.read_bytes())["outcome"] == "pass"
+    assert json.loads(scope.read_bytes())["route"] == "codegen"
+    assert raw.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_plan_review_finalize_regenerates_history_from_raw_review(tmp_path: Path) -> None:
+    review = valid_plan_review()
+    _write_review_workspace(tmp_path)
+    write_review(tmp_path, review)
+    write_finding_scope(
+        _stage_root(tmp_path),
+        family="api",
+        coverage_epoch=0,
+        change_id="CH-DEMO-001",
+        route=str(review["route"]),
+        finding_ids=tuple(str(item) for item in review["finding_ids"]),
+    )
+    executed = await execute_task(
+        review_finalize_handler("api"),
+        {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 0},
+        tmp_path,
+    )
+    assert executed.status == "succeeded", executed.failure
+    history = _stage_root(tmp_path) / "qa/results/codegen/api/reviews/epochs/0/rounds/0.json"
+    assert json.loads(history.read_bytes())["outcome"] == "pass"
 
 
 def _runner_finding() -> dict[str, object]:
@@ -303,6 +572,15 @@ async def test_plan_review_finalize_strips_runner_contract_findings(tmp_path: Pa
     write_review(tmp_path, review)
     review = _as_auto_fix(review, _runner_finding())
     write_review(tmp_path, review)
+    _write_plan_review_runtime_seal(
+        _stage_root(tmp_path),
+        tmp_path,
+        family="api",
+        change_id="CH-DEMO-001",
+        coverage_epoch=0,
+        local_round=0,
+        review=review,
+    )
     executed = await execute_task(
         review_finalize_handler("api"),
         {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 0},
@@ -321,6 +599,15 @@ async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) 
     write_review(tmp_path, review)
     first = _as_auto_fix(review, _semantic_finding())
     write_review(tmp_path, first)
+    _write_plan_review_runtime_seal(
+        _stage_root(tmp_path),
+        tmp_path,
+        family="api",
+        change_id="CH-DEMO-001",
+        coverage_epoch=1,
+        local_round=0,
+        review=first,
+    )
     first_pass = await execute_task(
         review_finalize_handler("api"),
         {**fake_agent_result(first), "change_id": "CH-DEMO-001", "coverage_epoch": 1},
@@ -331,6 +618,15 @@ async def test_plan_review_finalize_retry_drops_new_finding_ids(tmp_path: Path) 
 
     second = _as_auto_fix(review, _semantic_finding(), _semantic_finding("API-PLAN-004"))
     write_review(tmp_path, second)
+    _write_plan_review_runtime_seal(
+        _stage_root(tmp_path),
+        tmp_path,
+        family="api",
+        change_id="CH-DEMO-001",
+        coverage_epoch=1,
+        local_round=0,
+        review=second,
+    )
     retried = await execute_task(
         review_finalize_handler("api"),
         {**fake_agent_result(second), "change_id": "CH-DEMO-001", "coverage_epoch": 1},
@@ -350,6 +646,15 @@ async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
     review = valid_plan_review()
     _write_review_workspace(tmp_path)
     write_review(tmp_path, review)
+    _write_plan_review_runtime_seal(
+        _stage_root(tmp_path),
+        tmp_path,
+        family="api",
+        change_id="CH-DEMO-001",
+        coverage_epoch=4,
+        local_round=0,
+        review=review,
+    )
     passed = await execute_task(
         review_finalize_handler("api"),
         {**fake_agent_result(review), "change_id": "CH-DEMO-001", "coverage_epoch": 4},
@@ -360,6 +665,15 @@ async def test_plan_review_finalize_keeps_a_prior_pass(tmp_path: Path) -> None:
 
     later = _as_auto_fix(review, _semantic_finding())
     write_review(tmp_path, later)
+    _write_plan_review_runtime_seal(
+        _stage_root(tmp_path),
+        tmp_path,
+        family="api",
+        change_id="CH-DEMO-001",
+        coverage_epoch=4,
+        local_round=0,
+        review=later,
+    )
     retried = await execute_task(
         review_finalize_handler("api"),
         {**fake_agent_result(later), "change_id": "CH-DEMO-001", "coverage_epoch": 4},

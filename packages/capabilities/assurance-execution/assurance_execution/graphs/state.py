@@ -14,6 +14,7 @@ class ExecutionPublicOutput(FrozenModel):
     rounds_budget: int
     rounds_used: int
     status: Literal["failed", "passed"]
+    family_outcomes: tuple[dict[str, object], ...]
 
 
 class ExecutionState(CheckpointBridgeState, total=False):

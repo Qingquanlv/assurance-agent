@@ -63,6 +63,11 @@ def _fixture(
         preparation_refs=tuple(sorted((plan_ref, preparation), key=lambda item: item.path)),
         case_refs=(case,),
         review_ref=review,
+        selection_ref=_write(
+            root,
+            f"qa/results/cases/epochs/{coverage_epoch}/selection.json",
+            b'{"schema_version":"1"}',
+        ),
     )
     manifest = _write(
         root,
@@ -118,21 +123,20 @@ def test_generation_rejects_case_bytes_changed_after_review(tmp_path: Path) -> N
         )
 
 
-def test_standalone_generation_rebinds_verified_historical_review_to_epoch_zero(
+def test_standalone_generation_refuses_to_relabel_a_review_into_another_epoch(
     tmp_path: Path,
 ) -> None:
+    # The review's selection is bound to the epoch it was sealed at, so it
+    # cannot be carried into a different one under a new label.
     reviewed, manifest = _fixture(tmp_path, coverage_epoch=3)
-    resolved = resolve_generation_input(
-        {
-            "change_id": "CH-DEMO-001",
-            "coverage_epoch": 0,
-            "plan_digest": reviewed.plan_digest,
-            "plan_ref": reviewed.plan_ref.model_dump(mode="json"),
-            "source_artifacts": [manifest.model_dump(mode="json")],
-        },
-        tmp_path,
-    )
-    assert reviewed.coverage_epoch == 3
-    assert resolved.coverage_epoch == 0
-    assert resolved.case_refs == reviewed.case_refs
-    assert resolved.review_ref == reviewed.review_ref
+    with pytest.raises(InputError, match="epoch"):
+        resolve_generation_input(
+            {
+                "change_id": "CH-DEMO-001",
+                "coverage_epoch": 0,
+                "plan_digest": reviewed.plan_digest,
+                "plan_ref": reviewed.plan_ref.model_dump(mode="json"),
+                "source_artifacts": [manifest.model_dump(mode="json")],
+            },
+            tmp_path,
+        )

@@ -50,7 +50,7 @@ from tests.product.test_change_local_output_routing import execute_task
 EXPECTED_AGENT_COUNTS = {
     "assurance.intake": 4,
     "assurance.generation": 8,
-    "assurance.execution": 2,
+    "assurance.execution": 0,
     "assurance.quality": 5,
     "assurance.healing": 3,
     "assurance.improvement": 6,
@@ -75,6 +75,19 @@ _PURE_IDS = frozenset(
 )
 
 
+def test_case_review_seal_files_are_finalize_not_runtime() -> None:
+    claims = AGENT_JOB_CONTRACTS["case-review"].phase_write_claims
+    assert claims.finalize == (
+        "qa/cases/reviewed-case.json",
+        "qa/cases/reviews",
+        "qa/results/cases/epochs",
+    )
+    assert claims.runtime == (
+        "qa/results/review/case-review-summary.md",
+        "qa/results/review/case-review.json",
+    )
+
+
 def test_review_history_identity_includes_epoch() -> None:
     from assurance_intake.contracts.attempts import OUTPUT_ROUTE_TEMPLATES
 
@@ -97,7 +110,7 @@ def test_feature_agent_counts_are_frozen() -> None:
     for owner, expected in EXPECTED_AGENT_COUNTS.items():
         assert len(catalogs[owner]) == expected
         assert all(contract.owner_id == owner for contract in catalogs[owner].values())
-    assert sum(EXPECTED_AGENT_COUNTS.values()) == 28
+    assert sum(EXPECTED_AGENT_COUNTS.values()) == 26
 
 
 def test_intake_agent_catalog_uses_concrete_models_and_empty_validators() -> None:
@@ -211,7 +224,7 @@ def test_registered_validators_remain_unbound_and_legal() -> None:
         assert contract.validators == ()
         effectful += 1
     assert registered == 19
-    assert effectful == 37
+    assert effectful == 35
     assert set(IMPROVEMENT_TASKS).isdisjoint(_PURE_IDS)
 
 
@@ -224,7 +237,7 @@ def test_semantic_agent_contracts_are_thirty_four() -> None:
         HEALING_AGENT_JOBS,
         IMPROVEMENT_AGENT_JOBS,
     )
-    assert sum(len(catalog) for catalog in catalogs) == 28
+    assert sum(len(catalog) for catalog in catalogs) == 26
 
 
 def test_intake_plugin_projects_authenticated_attempt_contracts() -> None:

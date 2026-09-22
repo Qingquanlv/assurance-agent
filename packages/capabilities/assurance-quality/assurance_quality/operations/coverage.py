@@ -332,6 +332,7 @@ def join_minimum_coverage(payload: MinimumCoverageInput) -> MinimumCoverageResul
             MinimumCoverageItem(
                 mrc_id=row.mrc_id,
                 key=row.key,
+                proposed_key=row.proposed_key,
                 category=row.category,
                 required=row.required,
                 layer=row.layer,
@@ -487,6 +488,13 @@ _REPAIRABLE_GAP_KINDS: frozenset[str] = frozenset(
         "matrix_cell_unasserted",
     }
 )
+_OBLIGATION_GAP_KINDS = frozenset(
+    {
+        "obligation_case_missing",
+        "obligation_mapping_missing",
+        "obligation_observation_missing",
+    }
+)
 _GAP_METRICS: dict[str, str] = {
     "uncovered_required_case": "coverage",
     "stale_required_case": "coverage",
@@ -506,7 +514,14 @@ def coverage_gap_to_repair_brief(document: CoverageGapsDocument) -> CoverageRepa
             constraint_key=gap.locator.constraint_key,
             cell=gap.locator.cell,
             cluster_key=gap.locator.cluster_key,
+            mrc_id=gap.locator.mrc_id,
         )
+        # Obligation gaps name a missing case, mapping, or observation. None of
+        # those are repairable inside the approved test files, so they travel to
+        # intake instead of the healing attempt.
+        if gap.kind in _OBLIGATION_GAP_KINDS:
+            deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="obligation_scope"))
+            continue
         if gap.layer == "declaration":
             deferred.append(DeferredItem(kind=gap.kind, locator=locator, reason="declaration_layer"))
             continue

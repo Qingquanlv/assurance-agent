@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import PurePosixPath
 from typing import cast
 
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskHandler, TaskOutcome, TaskRequest
 
 from assurance_generation.contracts.agent import AgentBindingDataV1, AgentFinalizeInputV1
 from assurance_generation.contracts.reviews import PlanReviewAuthoring, public_review_outcome
+from assurance_generation.contracts.codegen import CodegenResultV1
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_REVIEW_RESULT_ID,
@@ -22,6 +22,7 @@ from assurance_generation.operations.planning import (
     InputError,
     OutputError,
     closed_family,
+    expected_plan_review_history,
     failed_input,
     failed_output,
     evidence_ref,
@@ -29,7 +30,6 @@ from assurance_generation.operations.planning import (
     plan_review_outputs,
     plan_review_input_paths,
     prepare_plan_outcome,
-    persist_loop_round_history,
     plan_repair_review,
     resolve_family,
 )
@@ -96,12 +96,19 @@ class PlanReviewPrepareHandler:
                 binding=binding,
                 result_schema_id=PLAN_REVIEW_RESULT_ID,
                 context=context,
-                allowed_outputs=plan_review_outputs(business.change_id, family),
+                allowed_outputs=plan_review_outputs(
+                    business.change_id,
+                    family,
+                    coverage_epoch=business.coverage_epoch,
+                    review_round=business.local_round,
+                ),
                 close_result_capabilities=True,
                 review_input_paths=review_inputs,
                 extra_json={
                     "codegen_scope": scope.model_dump(mode="json"),
                     "codegen_output": codegen_business.codegen_output,
+                    "frozen_plan_digest": business.plan_digest,
+                    "plan_ref": business.plan_ref.model_dump(mode="json"),
                 },
                 repair_review=plan_repair_review(
                     context.project_root,
@@ -140,14 +147,6 @@ class PlanReviewFinalizeHandler:
                 apply_plan_review_policy(document.model_dump(mode="json"), previous=None),
                 context={"capability_leafs": leafs_of(payload.capability_leafs)},
             )
-            if family == "api":
-                raw_path = "qa/results/review/api-codegen-review.json"
-                sealed = context.write_root.joinpath(*PurePosixPath(raw_path).parts)
-                sealed.parent.mkdir(parents=True, exist_ok=True)
-                sealed.write_text(
-                    json.dumps(document.model_dump(mode="json"), indent=2) + "\n",
-                    encoding="utf-8",
-                )
             extra: dict[str, object] = {
                 "public_outcome": public_review_outcome(document.route),
             }
@@ -164,36 +163,91 @@ class PlanReviewFinalizeHandler:
                     context.write_root,
                     f"qa/results/review/{family}-codegen-review.json",
                 )
+                try:
+                    authored = json.loads((context.write_root / review_ref.path).read_text(encoding="utf-8"))
+                    if isinstance(authored, dict):
+                        authored.pop("review_audit", None)
+                    authored_document = PlanReviewAuthoring.model_validate(
+                        authored,
+                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    )
+                    authored_document = PlanReviewAuthoring.model_validate(
+                        apply_plan_review_policy(authored_document.model_dump(mode="json"), previous=None),
+                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    )
+                except (OSError, UnicodeError, ValueError) as error:
+                    raise OutputError(f"invalid review artifact: {error}") from error
+                if authored_document != document:
+                    raise OutputError("review artifact does not match the returned agent result")
                 history_relative = (
                     f"qa/results/codegen/{family}/reviews/epochs/"
                     f"{payload.coverage_epoch}/rounds/{payload.local_round}.json"
                 )
-                history_ref = persist_loop_round_history(
-                    context,
-                    relative=history_relative,
+                expected_history = expected_plan_review_history(
                     change_id=document.change_id,
                     coverage_epoch=payload.coverage_epoch,
-                    loop_kind="plan_review",
                     family=family,
                     round_index=payload.local_round,
                     outcome=str(extra["public_outcome"]),
                     input_refs=input_refs,
                     source_refs=(*input_refs, review_ref),
                 )
-                extra["history_ref"] = history_ref.model_dump(mode="json")
-                scope_relative = write_finding_scope(
-                    context.write_root,
-                    family=family,
-                    coverage_epoch=payload.coverage_epoch,
-                    change_id=document.change_id,
-                    route=document.route,
-                    finding_ids=tuple(str(item) for item in document.finding_ids),
+                history_path = context.write_root / history_relative
+                history_path.parent.mkdir(parents=True, exist_ok=True)
+                history_path.write_bytes(
+                    canonical_json_bytes(expected_history.model_dump(mode="json")) + b"\n"
                 )
+                history_ref = evidence_ref(context.write_root, history_relative)
+                extra["history_ref"] = history_ref.model_dump(mode="json")
+                try:
+                    scope_relative = write_finding_scope(
+                        context.write_root,
+                        family=family,
+                        coverage_epoch=payload.coverage_epoch,
+                        change_id=document.change_id,
+                        route=document.route,
+                        finding_ids=tuple(str(item) for item in document.finding_ids),
+                    )
+                except ValueError as error:
+                    raise OutputError(str(error)) from error
                 scope_ref = evidence_ref(context.write_root, scope_relative)
                 extra["artifacts"] = [
                     history_ref.model_dump(mode="json"),
                     scope_ref.model_dump(mode="json"),
                 ]
+            if payload.codegen_output is not None:
+                try:
+                    codegen_output = CodegenResultV1.model_validate(
+                        payload.codegen_output,
+                        context={"capability_leafs": leafs_of(payload.capability_leafs)},
+                    )
+                except ValidationError as error:
+                    raise InputError(f"invalid codegen output: {error}") from error
+                expected = {
+                    (item.mrc_id, item.requirement_id): {
+                        binding.observation_key for binding in item.observations
+                    }
+                    for item in codegen_output.method_plans
+                }
+                actual = {
+                    (item.mrc_id, item.requirement_id): {
+                        review.observation_key for review in item.expectation_reviews
+                    }
+                    for item in document.semantic_reviews
+                }
+                if actual != expected:
+                    raise OutputError("semantic_reviews must exactly cover reviewed method-plan expectations")
+                if any(
+                    item.frozen_plan_digest != payload.plan_digest or item.plan_ref != payload.plan_ref
+                    for item in document.semantic_reviews
+                ):
+                    raise OutputError("semantic review identity does not match the frozen plan")
+                if document.route == "codegen" and any(
+                    item.status != "pass"
+                    or any(expectation.status != "pass" for expectation in item.expectation_reviews)
+                    for item in document.semantic_reviews
+                ):
+                    raise OutputError("codegen route requires every semantic review to pass")
             return TaskOutcome.succeeded(
                 cast(
                     JSONValue,

@@ -42,6 +42,14 @@ def test_assertion_analysis_product_bug_reaches_diagnostic_not_repair() -> None:
     assert tail.status == "diagnostic"
     assert result["terminal"]["reason"] == "not_achieved"
     assert not result.get("repair_result")
+    assert str(result.get("retro_id") or "").startswith("retro-")
+
+
+def test_reported_inspect_does_not_enter_retro() -> None:
+    result = invoke_product_root(_product_graphs(), "execute", _public_input("execute"))
+    tail = ExecuteTailResultV1.model_validate(result["tail_result"])
+    assert tail.status == "reported"
+    assert not result.get("retro_id")
 
 
 def test_assertion_analysis_test_bug_reaches_repair_rerun_and_inspect() -> None:
@@ -265,6 +273,7 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
     from tests.product.test_product_stategraph_flow import _execution
 
     issue_inputs: list[dict[str, object]] = []
+    reconcile_inputs: list[dict[str, object]] = []
     report_inputs: list[dict[str, object]] = []
     execution = _execution(status="FAIL")
     cycle = cast(dict, execution["execution_result"])
@@ -325,7 +334,15 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
                 "status": "passed",
             },
         ),
-        issue_reconcile=quality.issue_reconcile,
+        issue_reconcile=recording_graph(
+            reconcile_inputs,
+            {
+                "issue_snapshot_ref": {
+                    "path": "qa/results/issues/snapshot.json",
+                    "digest": "a" * 64,
+                }
+            },
+        ),
         report=recording_graph(report_inputs, _diagnostic_report()),
     )
     result = invoke_product_root(
@@ -345,6 +362,8 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
     assert len(issue_inputs) == 1
     assert issue_inputs[0]["owned_evidence_ids"] == ["OBS-DEMO-001"]
     assert issue_inputs[0]["evidence_bundle_digest"] == f"sha256:{'a' * 64}"
+    assert len(reconcile_inputs) == 1
+    assert reconcile_inputs[0]["issue_analysis"] is not None
     assert len(report_inputs) == 1
     assert report_inputs[0]["issue_analysis_ref"] == issue_ref
     gate = _execution_gate_from_snapshot(SimpleNamespace(values=result))

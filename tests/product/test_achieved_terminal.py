@@ -9,6 +9,7 @@ from typing import TypedDict, cast
 import pytest
 from pydantic import ValidationError
 
+from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from graph_engine.canonical import JSONValue, canonical_digest
 from tests.acg_plan_fixture import install_plan
 
@@ -25,6 +26,16 @@ def _digest(content: bytes) -> str:
 
 def _canonical(value: object) -> str:
     return canonical_digest(cast(JSONValue, value))
+
+
+def _producer_shaped(payload: dict[str, object]) -> dict[str, object]:
+    try:
+        model = ExecutionEvidenceV1.model_validate(payload)
+    except ValidationError:
+        # Some tests deliberately seal evidence the contract rejects and assert
+        # the terminal refuses it. Leave those bytes exactly as written.
+        return payload
+    return cast(dict[str, object], model.model_dump(mode="json"))
 
 
 def _write(project: Path, relative: str, content: bytes) -> Path:
@@ -134,36 +145,41 @@ def _execution_evidence(
             }
         ]
     }
-    return {
-        "schema_version": "1",
-        "status": status,
-        "change_id": CHANGE_ID,
-        "batch_id": batch_id,
-        "executed_at": "2026-09-05T00:00:00Z",
-        "plan_digest": plan_digest,
-        "plan_ref": plan_ref,
-        "selected_targets": {
-            "api": True,
-            "e2e": False,
-            "fuzz": False,
-            "performance": False,
-        },
-        "mapping": mapping,
-        "mapping_digest": _canonical(mapping),
-        "baseline_tree_id": "b" * 64,
-        "runner_profile_digest": "c" * 64,
-        "receipt_digest": _canonical(receipt),
-        "receipt": receipt,
-        "results": [
-            {
-                "test": TARGET,
-                "case_id": "TC_API_001",
-                "status": status,
-                "duration_ms": 1,
-                "message": "" if status == "passed" else "assertion failed",
-            }
-        ],
-    }
+    # Hand-written evidence omits defaulted fields, so normalize it the way a
+    # real producer does. The bytes on disk and the gate digest must agree.
+    return _producer_shaped(
+        {
+            "schema_version": "1",
+            "status": status,
+            "change_id": CHANGE_ID,
+            "batch_id": batch_id,
+            "executed_at": "2026-09-05T00:00:00Z",
+            "plan_digest": plan_digest,
+            "plan_ref": plan_ref,
+            "selected_targets": {
+                "api": True,
+                "e2e": False,
+                "fuzz": False,
+                "performance": False,
+            },
+            "family_outcomes": [{"family": "api", "state": "executed"}],
+            "mapping": mapping,
+            "mapping_digest": _canonical(mapping),
+            "baseline_tree_id": "b" * 64,
+            "runner_profile_digest": "c" * 64,
+            "receipt_digest": _canonical(receipt),
+            "receipt": receipt,
+            "results": [
+                {
+                    "test": TARGET,
+                    "case_id": "TC_API_001",
+                    "status": status,
+                    "duration_ms": 1,
+                    "message": "" if status == "passed" else "assertion failed",
+                }
+            ],
+        }
+    )
 
 
 def _execution_gate(
@@ -271,6 +287,7 @@ def _quality_gate_for(
         ),
         case_refs=(ref(f"{prefix}/cases/items/case.yaml", b"reviewed cases"),),
         review_ref=ref(f"{results}/review/case-review.json", b'{"decision":"pass"}'),
+        selection_ref=ref(f"{prefix}/results/cases/epochs/0/selection.json", b'{"schema_version":"1"}'),
     )
     filename = (
         "run-result.json" if execution_gate["semantic_node_id"] == "execution.run" else "execute-result.json"

@@ -31,8 +31,12 @@ from assurance_quality.plugin import QualityPlugin
 
 def test_quality_owns_five_agent_contracts() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 5
-    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("materialize-assessment-inputs",)
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("materialize-assessment-inputs", "reconcile-issues")
     materialize = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
+    reconcile = TASK_ATTEMPT_CONTRACTS["reconcile-issues"]
+    assert reconcile.contract_id == "assurance.quality.reconcile-issues"
+    assert reconcile.handler_id == "assurance.quality.reconcile-issues.execute"
+    assert reconcile.resources.writes == ("qa/results/issues/snapshot.json",)
     assert materialize.contract_id == "assurance.quality.materialize-assessment-inputs"
     assert materialize.handler_id == "assurance.quality.materialize-assessment-inputs.execute"
     assert isinstance(materialize.resources, ResourceClaimTemplate)
@@ -54,6 +58,7 @@ def test_quality_owns_five_agent_contracts() -> None:
         "qa/results/inspect/epochs/2/batches/B-1/coverage-gaps.json",
         "qa/results/inspect/epochs/2/batches/B-1/issue-evidence-manifest.json",
         "qa/results/inspect/epochs/2/batches/B-1/metrics.json",
+        "qa/results/inspect/epochs/2/batches/B-1/obligation-assessment.json",
         "qa/results/inspect/epochs/2/batches/B-1/observations.json",
         "qa/results/inspect/epochs/2/batches/B-1/trace-sufficiency.json",
         "qa/results/inspect/epochs/2/batches/B-1/trace.json",

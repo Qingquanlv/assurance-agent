@@ -16,16 +16,20 @@ from graph_engine.plugin_api import ResourceClaimTemplate
 
 from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_intake.contracts.common import TestFamily
-from assurance_quality.contracts.assessment import AssessmentInputsV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_quality.contracts.assessment import AssessmentInputsV1, MaterializeAssessmentInputV1
 from assurance_quality.contracts.attempts import TASK_ATTEMPT_CONTRACTS
 from assurance_quality.contracts.coverage import CoverageGapsDocument, classify_coverage_state
 from assurance_quality.contracts.decisions import classify_inspection_disposition
 from assurance_quality.contracts.metrics import MetricKey, MetricsDocument
+from assurance_quality.contracts.obligations import obligation_gate
 from assurance_quality.contracts.issues import IssueEvidenceManifest, ObservationDocument
 from assurance_quality.contracts.sufficiency import TraceSufficiencyFacts
 from assurance_quality.contracts.trace import TraceProjectionV2
 from assurance_quality.operations.assessment import MaterializeAssessmentHandler
+from assurance_quality.operations.common import InputError
 from assurance_quality.operations.inspect import build_failure_classification_facts
+from assurance_quality.operations.obligations import assess_obligations
 from tests.acg_plan_fixture import install_plan
 from tests.capabilities.conformance import execute_task
 
@@ -103,7 +107,7 @@ def _workspace_input(
     *,
     capability_leafs: tuple[str, ...] = (CAPABILITY, "entities.item.constraints.description"),
     journeys: tuple[str, ...] = (),
-    minimum_required_coverage: Mapping[str, object] | None = None,
+    minimum_required_coverage: Mapping[str, object] | list[Mapping[str, object]] | None = None,
     case_entries: list[dict[str, object]] | None = None,
     matrix_rows: list[dict[str, object]] | None = None,
     family: Literal["api", "e2e"] = "api",
@@ -187,7 +191,18 @@ def _workspace_input(
         f"qa/results/generated/{family}/files/tests/{family}/test_items.py",
         "def test_create_item():\n    assert True\n",
     )
-    plan = _write_text(root, f"qa/results/plans/{family}-plan.md", "# Plan\n")
+    plan = _write_json(
+        root,
+        f"qa/results/generation/epochs/3/{family}-obligation-methods.json",
+        {
+            "schema_version": "1",
+            "plan_digest": plan_document.plan_digest,
+            "plan_ref": plan_ref,
+            "requirements": [],
+            "method_plans": [],
+            "semantic_reviews": [],
+        },
+    )
     mapping = {
         "schema_version": "1",
         "selected": [selector],
@@ -227,6 +242,7 @@ def _workspace_input(
             "fuzz": False,
             "performance": False,
         },
+        "family_outcomes": [{"family": family, "state": "executed"}],
         "mapping": evidence_mapping,
         "mapping_digest": mapping_ref["digest"],
         "baseline_tree_id": "b" * 64,
@@ -258,6 +274,32 @@ def _workspace_input(
         ],
     }
     evidence_ref = _write_json(root, EVIDENCE_PATH, evidence)
+    inventory_path = root / "qa/results/explore/impact-inventory.json"
+    inventory_ref = {
+        "path": "qa/results/explore/impact-inventory.json",
+        "digest": hashlib.sha256(inventory_path.read_bytes()).hexdigest(),
+    }
+    selection_ref = _write_json(
+        root,
+        "qa/results/cases/epochs/3/selection.json",
+        {
+            "schema_version": "1",
+            "change_id": CHANGE_ID,
+            "coverage_epoch": 3,
+            "plan_digest": plan_document.plan_digest,
+            "inventory_ref": inventory_ref,
+            "cases": [
+                {
+                    "case_id": item["case_id"],
+                    "origin": "added",
+                    "source_ref": case_ref,
+                    "source_locator": CASE_PATH,
+                    "mrc_ids": [CAPABILITY],
+                }
+                for item in selected_cases
+            ],
+        },
+    )
     reviewed = {
         "change_id": CHANGE_ID,
         "coverage_epoch": 3,
@@ -269,6 +311,7 @@ def _workspace_input(
         ),
         "case_refs": [case_ref],
         "review_ref": review,
+        "selection_ref": selection_ref,
     }
     generation = {
         "change_id": CHANGE_ID,
@@ -279,6 +322,7 @@ def _workspace_input(
         "mapping_ref": mapping_ref,
         "source_refs": [source],
         "plan_refs": [plan],
+        "method_plan_ref": plan,
     }
     return {
         "plan_digest": plan_document.plan_digest,
@@ -298,6 +342,7 @@ def _workspace_input(
             "mapping_ref": mapping_ref,
             "source_refs": [source],
             "receipt": {"receipt_id": "execute", "receipt_digest": "e" * 64},
+            "family_outcomes": [{"family": family, "state": "executed"}],
         },
         "policy_resource_id": "assurance.product.configuration.product-policy",
         "policy_sha256": plan_document.policy_digest,
@@ -853,6 +898,7 @@ def _both_layer_input(root: Path, key: str, e2e_evidence: str) -> dict[str, Any]
     evidence["mapping"] = mapping
     evidence["mapping_digest"] = mapping_ref["digest"]
     evidence["selected_targets"]["e2e"] = True
+    evidence["family_outcomes"].append({"family": "e2e", "state": "executed"})
     skipped = e2e_evidence == "skipped"
     evidence["results"].append(
         {
@@ -989,6 +1035,165 @@ async def test_applicability_preserves_authenticated_goal_sources(tmp_path: Path
         assert refs[source].digest == hashlib.sha256((tmp_path / source).read_bytes()).hexdigest()
 
 
+@pytest.mark.asyncio
+async def test_materialize_accepts_sealed_prepared_exploration_obligations(tmp_path: Path) -> None:
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage=[
+            {
+                "mrc_id": "MRC-API-001",
+                "key": None,
+                "proposed_key": CAPABILITY,
+                "category": "api",
+                "layer": "api",
+                "statement": f"{CAPABILITY} must hold",
+                "applicability_conditions": [],
+                "expected_basis_refs": [],
+                "impact_row_ids": [],
+                "required": True,
+                "scope_disposition": "included",
+                "exclusion_basis": None,
+                "open_questions": [],
+                "verification_requirements": [],
+            }
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+
+
+@pytest.mark.asyncio
+async def test_plan_bound_draft_obligations_outrank_supplemental_goals(tmp_path: Path) -> None:
+    request = _workspace_input(tmp_path)
+    supplemental = _write_json(
+        tmp_path,
+        "qa/results/intake/quality-goals.json",
+        {
+            "minimum_required_coverage": [
+                {
+                    "mrc_id": "MRC-API-001",
+                    "key": CAPABILITY,
+                    "proposed_key": CAPABILITY,
+                    "category": "api",
+                    "layer": "api",
+                    "statement": "only one obligation",
+                    "applicability_conditions": [],
+                    "expected_basis_refs": [],
+                    "impact_row_ids": [],
+                    "required": True,
+                    "scope_disposition": "included",
+                    "exclusion_basis": None,
+                    "open_questions": [],
+                    "verification_requirements": [],
+                }
+            ]
+        },
+    )
+    request["reviewed_case"]["preparation_refs"] = sorted(
+        [*request["reviewed_case"]["preparation_refs"], supplemental],
+        key=lambda ref: (ref["path"], ref["digest"]),
+    )
+    request["generation"]["reviewed_case"] = request["reviewed_case"]
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    assert output.obligation_gate_facts.required_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matrix_mode", ("valid", "dropped", "rebound"))
+async def test_materialize_keeps_unresolved_obligation_as_explicit_gap(
+    tmp_path: Path, matrix_mode: str
+) -> None:
+    def obligation(mrc_id: str, proposed_key: str | None, category: str) -> dict[str, object]:
+        return {
+            "mrc_id": mrc_id,
+            "key": None,
+            "proposed_key": proposed_key,
+            "category": category,
+            "layer": "api",
+            "statement": "required behavior must be verified",
+            "applicability_conditions": [],
+            "expected_basis_refs": [],
+            "impact_row_ids": [],
+            "required": True,
+            "scope_disposition": "included",
+            "exclusion_basis": None,
+            "open_questions": [],
+            "verification_requirements": [],
+        }
+
+    matrix_rows = [
+        {
+            "mrc_id": "MRC-API-001",
+            "key": CAPABILITY,
+            "required": True,
+            "covered_by_cases": ["TC_ITEM_001"],
+            "status": "covered",
+            "category": "api",
+            "layer": "api",
+        },
+    ]
+    if matrix_mode != "dropped":
+        matrix_rows.append(
+            {
+                "mrc_id": "MRC-NEGATIVE-009",
+                "key": None if matrix_mode == "valid" else "entities.item.constraints.description",
+                "required": True,
+                "covered_by_cases": [] if matrix_mode == "valid" else ["TC_ITEM_002"],
+                "status": "skipped_by_scope" if matrix_mode == "valid" else "covered",
+                "skip_reason": "capability_unresolved" if matrix_mode == "valid" else None,
+                "category": "negative",
+                "layer": "api",
+            }
+        )
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage=[
+            obligation("MRC-API-001", CAPABILITY, "api"),
+            obligation("MRC-NEGATIVE-009", None, "negative"),
+        ],
+        matrix_rows=matrix_rows,
+    )
+    supplemental = _write_json(
+        tmp_path,
+        "qa/results/intake/quality-goals.json",
+        {"minimum_required_coverage": [obligation("MRC-API-001", CAPABILITY, "api")]},
+    )
+    request["reviewed_case"]["preparation_refs"] = sorted(
+        [*request["reviewed_case"]["preparation_refs"], supplemental],
+        key=lambda ref: (ref["path"], ref["digest"]),
+    )
+    request["generation"]["reviewed_case"] = request["reviewed_case"]
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    if matrix_mode != "valid":
+        assert result.status == "failed"
+        assert result.failure is not None
+        assert "unresolved MRC" in result.failure.message
+        return
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    assert output.obligation_gate_facts.required_count == 2
+    assert output.obligation_gate_facts.human_gap_count >= 1
+    assert obligation_gate(output.obligation_gate_facts) == "needs_human"
+    obligation_assessment = json.loads(result.workspace_bytes[output.obligation_assessment_ref.path])
+    unresolved_assessment = next(
+        item for item in obligation_assessment["rows"] if item["mrc_id"] == "MRC-NEGATIVE-009"
+    )
+    assert unresolved_assessment["verdict"] == "inconclusive"
+    assert "capability_unresolved" in unresolved_assessment["gap_codes"]
+    coverage = json.loads(result.workspace_bytes[output.gaps_ref.path])["minimum_coverage"]
+    unresolved = next(item for item in coverage["items"] if item["mrc_id"] == "MRC-NEGATIVE-009")
+    assert unresolved["key"] is None
+    assert unresolved["status"] == "skipped_by_scope"
+
+
 def test_materializer_claims_allow_reading_frozen_goal_sources() -> None:
     contract = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
     assert isinstance(contract.resources, ResourceClaimTemplate)
@@ -1073,3 +1278,330 @@ async def test_optional_healing_and_issue_evidence_are_digest_authenticated(tmp_
     assert result.failure is not None
     assert result.failure.kind == "invalid_input"
     assert "digest changed" in result.failure.message
+
+
+OBSERVATION_KEY = "locked_valid_password"
+OBSERVATION_ID = "OBS-LOCK-1"
+PLANNED_MRC = "MRC-LOCK-1"
+UNPLANNED_MRC = "MRC-LOCK-2"
+
+
+def _obligation_source(requirement: dict[str, str]) -> dict[str, Any]:
+    return {"kind": "requirement", "artifact": requirement, "locator": "L10"}
+
+
+def _prepared_obligation(mrc_id: str, requirement: dict[str, str]) -> dict[str, Any]:
+    source = _obligation_source(requirement)
+    return {
+        "mrc_id": mrc_id,
+        "key": CAPABILITY,
+        "proposed_key": None,
+        "category": "api",
+        "layer": "api",
+        "statement": "the account locks after five failed logins",
+        "applicability_conditions": [],
+        "expected_basis_refs": [{"source": source, "source_status": "authenticated"}],
+        "impact_row_ids": [],
+        "required": True,
+        "scope_disposition": "included",
+        "exclusion_basis": None,
+        "open_questions": [],
+        "verification_requirements": [
+            {
+                "requirement_id": f"REQ-{mrc_id}",
+                "profile_id": "api-default",
+                "prerequisites": [],
+                "observations": [
+                    {
+                        "observation_key": OBSERVATION_KEY,
+                        "condition": "valid password after five failures",
+                        "predicate": "status_code_eq",
+                        "expected": 423,
+                        "basis_refs": [source],
+                    }
+                ],
+                "semantic_review_required": True,
+                "subject_binding_required": False,
+            }
+        ],
+    }
+
+
+def _with_two_obligations(root: Path, *, unresolved_planned: bool = False) -> dict[str, Any]:
+    """One obligation carries a reviewed method plan; the other carries none."""
+
+    request = _workspace_input(root)
+    requirement = next(
+        ref for ref in request["reviewed_case"]["preparation_refs"] if ref["path"] == "qa/requirement.md"
+    )
+    obligations = [
+        _prepared_obligation(PLANNED_MRC, requirement),
+        _prepared_obligation(UNPLANNED_MRC, requirement),
+    ]
+    obligations[0]["proposed_key"] = "auth.lockout.candidate" if unresolved_planned else CAPABILITY
+    obligations[0]["key"] = None if unresolved_planned else CAPABILITY
+    obligations[1]["key"] = "entities.item.constraints.description"
+    obligations[1]["proposed_key"] = "entities.item.constraints.description"
+    plan, plan_ref = install_plan(
+        root,
+        CHANGE_ID,
+        minimum_required_coverage=[cast(Mapping[str, object], row) for row in obligations],
+    )
+    old_plan_path = request["plan_ref"]["path"]
+    request["plan_digest"] = plan.plan_digest
+    request["plan_ref"] = plan_ref
+    for cycle in ("reviewed_case", "generation", "execution"):
+        request[cycle]["plan_digest"] = plan.plan_digest
+        request[cycle]["plan_ref"] = plan_ref
+    request["reviewed_case"]["preparation_refs"] = sorted(
+        [
+            ref
+            for ref in request["reviewed_case"]["preparation_refs"]
+            if ref["path"] not in {old_plan_path, plan_ref["path"]}
+        ]
+        + [plan_ref],
+        key=lambda ref: (ref["path"], ref["digest"]),
+    )
+    request["generation"]["reviewed_case"] = request["reviewed_case"]
+    method_plan_ref = _write_json(
+        root,
+        "qa/results/plans/obligation-method-plans.json",
+        {
+            "schema_version": "1",
+            "plan_digest": request["plan_digest"],
+            "plan_ref": request["plan_ref"],
+            "requirements": [requirement],
+            "method_plans": [
+                {
+                    "mrc_id": PLANNED_MRC,
+                    "requirement_id": f"REQ-{PLANNED_MRC}",
+                    "profile_id": "api-default",
+                    "case_ids": ["TC_ITEM_001"],
+                    "prerequisites": [],
+                    "steps": [{"step_id": "S1", "purpose": "observe", "action": "post the valid password"}],
+                    "observations": [
+                        {
+                            "observation_id": OBSERVATION_ID,
+                            "observation_key": OBSERVATION_KEY,
+                            "step_id": "S1",
+                            "test_nodeid": TEST_SELECTOR,
+                            "assertion_id": "A1",
+                        }
+                    ],
+                }
+            ],
+            "semantic_reviews": [
+                {
+                    "frozen_plan_digest": request["plan_digest"],
+                    "mrc_id": PLANNED_MRC,
+                    "requirement_id": f"REQ-{PLANNED_MRC}",
+                    "plan_ref": request["plan_ref"],
+                    "status": "pass",
+                    "reason": "the expected lockout status is quoted from the requirement",
+                    "source_refs": [_obligation_source(requirement)],
+                    "expectation_reviews": [
+                        {
+                            "observation_key": OBSERVATION_KEY,
+                            "status": "pass",
+                            "reason": "423 is the quoted locked status",
+                            "basis_refs": [_obligation_source(requirement)],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    request["generation"]["plan_refs"] = [*request["generation"]["plan_refs"], method_plan_ref]
+    request["generation"]["method_plan_ref"] = method_plan_ref
+    return request
+
+
+def test_each_obligation_is_concluded_from_its_own_method_and_observations(tmp_path: Path) -> None:
+    request = MaterializeAssessmentInputV1.model_validate(_with_two_obligations(tmp_path))
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    verdicts = {row.mrc_id: row for row in assessment.rows}
+    assert set(verdicts) == {PLANNED_MRC, UNPLANNED_MRC}
+    # The whole run passed, but neither obligation has a runtime observation for
+    # its own required key, so neither may be reported as supported.
+    assert verdicts[PLANNED_MRC].verdict == "inconclusive"
+    assert "obligation_observation_missing" in verdicts[PLANNED_MRC].gap_codes
+    # The second obligation has no reviewed method at all, which is a different
+    # gap from a missing observation.
+    assert verdicts[UNPLANNED_MRC].verdict == "inconclusive"
+    assert "obligation_case_missing" in verdicts[UNPLANNED_MRC].gap_codes
+    assert "obligation_case_missing" not in verdicts[PLANNED_MRC].gap_codes
+
+
+def test_unreviewed_expectation_is_not_confirmed(tmp_path: Path) -> None:
+    payload = _with_two_obligations(tmp_path)
+    plans = json.loads((tmp_path / "qa/results/plans/obligation-method-plans.json").read_bytes())
+    plans["semantic_reviews"][0]["status"] = "abstain"
+    ref = _write_json(tmp_path, "qa/results/plans/obligation-method-plans.json", plans)
+    payload["generation"]["plan_refs"] = [
+        item for item in payload["generation"]["plan_refs"] if item["path"] != ref["path"]
+    ] + [ref]
+    payload["generation"]["method_plan_ref"] = ref
+    request = MaterializeAssessmentInputV1.model_validate(payload)
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    row = next(item for item in assessment.rows if item.mrc_id == PLANNED_MRC)
+    assert row.verdict == "inconclusive"
+    assert "expectation_unconfirmed" in row.gap_codes
+
+
+def _with_runtime_observations(
+    root: Path,
+    *,
+    predicate_passed: bool,
+    actual_status: int | None = None,
+    unresolved_planned: bool = False,
+) -> dict[str, Any]:
+    payload = _with_two_obligations(root, unresolved_planned=unresolved_planned)
+    mapping_ref = payload["execution"]["mapping_ref"]
+    bundle_ref = _write_json(
+        root,
+        f"qa/results/execution/epochs/3/batches/{BATCH_ID}/runtime-observations.json",
+        {
+            "schema_version": "1",
+            "identity": {
+                "plan_digest": payload["plan_digest"],
+                "method_plan_refs": [payload["generation"]["plan_refs"][-1]],
+                "mapping_digest": mapping_ref["digest"],
+                "batch_id": BATCH_ID,
+                "baseline_tree_id": "b" * 64,
+                "runner_profile_digest": "c" * 64,
+            },
+            "subject": {
+                "kind": "local",
+                "expected_identity": "loopback",
+                "observed_identity": "loopback",
+                "evidence_ref": None,
+                "status": "matched",
+            },
+            "observations": [
+                {
+                    "observation_id": OBSERVATION_ID,
+                    "observation_key": OBSERVATION_KEY,
+                    "mrc_id": PLANNED_MRC,
+                    "requirement_id": f"REQ-{PLANNED_MRC}",
+                    "test_nodeid": TEST_SELECTOR,
+                    "assertion_id": "A1",
+                    "step_id": "S1",
+                    "sequence_id": "SEQ-1",
+                    "sequence_index": 0,
+                    "actual_status": (
+                        actual_status if actual_status is not None else (423 if predicate_passed else 200)
+                    ),
+                    "predicate_passed": predicate_passed,
+                    "observed_at": EXECUTED_AT.isoformat(),
+                    "prerequisite_refs": [],
+                }
+            ],
+            "collection_errors": [],
+        },
+    )
+    payload["execution"]["observations_ref"] = bundle_ref
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("predicate_passed", "expected"),
+    ((True, "supported"), (False, "refuted")),
+)
+def test_obligation_verdict_follows_its_own_runtime_observation(
+    tmp_path: Path, predicate_passed: bool, expected: str
+) -> None:
+    request = MaterializeAssessmentInputV1.model_validate(
+        _with_runtime_observations(tmp_path, predicate_passed=predicate_passed)
+    )
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    rows = {row.mrc_id: row for row in assessment.rows}
+    assert rows[PLANNED_MRC].verdict == expected
+    # The unplanned obligation shares the run but has no observation of its own,
+    # so the same execution cannot conclude it either way.
+    assert rows[UNPLANNED_MRC].verdict == "inconclusive"
+
+
+def test_unresolved_capability_remains_inconclusive_despite_passing_observation(tmp_path: Path) -> None:
+    payload = _with_runtime_observations(tmp_path, predicate_passed=True, unresolved_planned=True)
+    request = MaterializeAssessmentInputV1.model_validate(payload)
+
+    assessment = assess_obligations(workspace=tmp_path, request=request)
+
+    row = next(item for item in assessment.rows if item.mrc_id == PLANNED_MRC)
+    assert row.verdict == "inconclusive"
+    assert "capability_unresolved" in row.gap_codes
+
+
+@pytest.mark.parametrize(
+    ("actual_status", "forged_predicate", "expected"),
+    ((423, False, "supported"), (200, True, "refuted")),
+)
+def test_obligation_verdict_recomputes_predicate_from_actual_status(
+    tmp_path: Path,
+    actual_status: int,
+    forged_predicate: bool,
+    expected: str,
+) -> None:
+    payload = _with_runtime_observations(
+        tmp_path,
+        predicate_passed=forged_predicate,
+        actual_status=actual_status,
+    )
+
+    assessment = assess_obligations(
+        workspace=tmp_path,
+        request=MaterializeAssessmentInputV1.model_validate(payload),
+    )
+
+    row = next(item for item in assessment.rows if item.mrc_id == PLANNED_MRC)
+    assert row.verdict == expected
+    assert row.method_plan_refs == (
+        EvidenceArtifactRefV1.model_validate(payload["generation"]["plan_refs"][-1]),
+    )
+
+
+def test_obligation_observation_with_wrong_assertion_binding_is_inconclusive(tmp_path: Path) -> None:
+    payload = _with_runtime_observations(tmp_path, predicate_passed=True)
+    observation_ref = payload["execution"]["observations_ref"]
+    observation_path = tmp_path / observation_ref["path"]
+    document = json.loads(observation_path.read_bytes())
+    document["observations"][0]["assertion_id"] = "FORGED"
+    payload["execution"]["observations_ref"] = _write_json(
+        tmp_path,
+        observation_ref["path"],
+        document,
+    )
+
+    assessment = assess_obligations(
+        workspace=tmp_path,
+        request=MaterializeAssessmentInputV1.model_validate(payload),
+    )
+
+    row = next(item for item in assessment.rows if item.mrc_id == PLANNED_MRC)
+    assert row.verdict == "inconclusive"
+    assert "obligation_observation_missing" in row.gap_codes
+
+
+def test_observation_bundle_identity_must_match_execution_evidence(tmp_path: Path) -> None:
+    payload = _with_runtime_observations(tmp_path, predicate_passed=True)
+    observation_ref = payload["execution"]["observations_ref"]
+    observation_path = tmp_path / observation_ref["path"]
+    document = json.loads(observation_path.read_bytes())
+    document["identity"]["mapping_digest"] = "f" * 64
+    payload["execution"]["observations_ref"] = _write_json(
+        tmp_path,
+        observation_ref["path"],
+        document,
+    )
+
+    with pytest.raises(InputError, match="identity"):
+        assess_obligations(
+            workspace=tmp_path,
+            request=MaterializeAssessmentInputV1.model_validate(payload),
+        )

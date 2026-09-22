@@ -81,6 +81,9 @@ CoverageGapKind = Literal[
     "constraint_without_property",
     "matrix_cell_unasserted",
     "unmapped_test_cluster",
+    "obligation_case_missing",
+    "obligation_mapping_missing",
+    "obligation_observation_missing",
 ]
 
 # Declaration order is the deterministic sort order for kinds.
@@ -98,11 +101,26 @@ class CoverageGapLocator(BaseModel):
     constraint_key: NonEmptyStr | None = None
     cell: NonEmptyStr | None = None
     cluster_key: NonEmptyStr | None = None
+    plan_digest: NonEmptyStr | None = None
+    mrc_id: NonEmptyStr | None = None
+    requirement_id: NonEmptyStr | None = None
+    observation_id: NonEmptyStr | None = None
 
     @model_validator(mode="after")
     def _at_least_one_key(self) -> Self:
-        if not any((self.case_id, self.constraint_key, self.cell, self.cluster_key)):
-            raise ValueError("locator requires at least one of case_id, constraint_key, cell, cluster_key")
+        if not any(
+            (
+                self.case_id,
+                self.constraint_key,
+                self.cell,
+                self.cluster_key,
+                self.plan_digest,
+                self.mrc_id,
+                self.requirement_id,
+                self.observation_id,
+            )
+        ):
+            raise ValueError("locator requires at least one locating field")
         return self
 
 
@@ -165,6 +183,10 @@ class CoverageGapsDocument(BaseModel):
                     gap.locator.constraint_key or "",
                     gap.locator.cell or "",
                     gap.locator.cluster_key or "",
+                    gap.locator.plan_digest or "",
+                    gap.locator.mrc_id or "",
+                    gap.locator.requirement_id or "",
+                    gap.locator.observation_id or "",
                     gap.batch_id,
                 ),
             )
@@ -188,7 +210,12 @@ __all__ = [
 ]
 
 
-"""MRC matrix + ``report/minimum-coverage-result.json`` (must_compat).
+"""MRC matrix + ``report/minimum-coverage-result.json``.
+
+Shape changed in obligation-evidence-closure (schema_version 2.0). See
+``docs/superpowers/specs/2026-09-19-obligation-evidence-closure-design.md``
+appendix. OpenChamber must read 2.0 to show the obligation view; this
+repo does not keep a 1.0 shim. Old files remain readable by old wheels.
 
 Minimum Required Coverage was historically LLM-authored (matrix) and
 LLM-joined against execution (result). Spec
@@ -244,7 +271,8 @@ class MinimumCoverageMatrixRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mrc_id: NonEmptyStr
-    key: NonEmptyStr
+    key: NonEmptyStr | None = None
+    proposed_key: str | None = None
     required: bool = True
     covered_by_cases: list[str] = []
     status: MrcMatrixRowStatus = "covered"
@@ -267,7 +295,7 @@ class MinimumCoverageMatrix(RootModel[list[MinimumCoverageMatrixRow]]):
     @model_validator(mode="after")
     def _require_unique_row_identity(self) -> Self:
         for field in ("mrc_id", "key"):
-            values = [getattr(row, field) for row in self.root]
+            values = [getattr(row, field) for row in self.root if getattr(row, field) is not None]
             duplicates = sorted(value for value in set(values) if values.count(value) > 1)
             if duplicates:
                 raise ValueError(f"duplicate {field} values are not allowed: {duplicates!r}")
@@ -280,7 +308,7 @@ class MrcObligation(BaseModel):
     model_config = _FROZEN
 
     mrc_id: NonEmptyStr
-    key: NonEmptyStr
+    key: NonEmptyStr | None = None
     category: MrcCategory
     required: bool
     layer: MrcLayer
@@ -294,7 +322,8 @@ class MinimumCoverageItem(BaseModel):
     model_config = _FROZEN
 
     mrc_id: NonEmptyStr
-    key: NonEmptyStr
+    key: NonEmptyStr | None = None
+    proposed_key: str | None = None
     category: MrcCategory
     required: bool
     layer: MrcLayer
@@ -331,7 +360,7 @@ class MinimumCoverageResult(BaseModel):
 
     model_config = _FROZEN
 
-    schema_version: Literal["1.0"]
+    schema_version: Literal["2.0"]
     change_id: NonEmptyStr
     summary: MinimumCoverageSummary
     items: tuple[MinimumCoverageItem, ...]
@@ -347,7 +376,7 @@ class MinimumCoverageResult(BaseModel):
     ) -> MinimumCoverageResult:
         summary = summarize_minimum_coverage(items)
         return cls(
-            schema_version="1.0",
+            schema_version="2.0",
             change_id=change_id,
             summary=summary,
             items=tuple(items),
@@ -468,6 +497,8 @@ def mrc_closed_key_findings(
         category = getattr(item, "category", None)
         key = item.key
         if category is None:
+            continue
+        if key is None:
             continue
         if category in _CONSTRAINT_OR_AUTH_CATEGORIES and key not in allowed_constraint_or_auth:
             bad.add(key)

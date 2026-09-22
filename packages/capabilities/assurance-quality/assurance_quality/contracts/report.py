@@ -16,7 +16,9 @@ from assurance_quality.contracts.common import (
     GateStatus,
     ReportRiskLevel,
 )
+from assurance_intake.contracts.obligations import PreparedObligationV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
+from assurance_quality.contracts.obligations import ObligationAssessmentV1
 
 ScoreValue = float | Literal["N/A"]
 
@@ -97,7 +99,8 @@ class QualityReport(BaseModel):
     started_at: str | None = None
     duration: str | None = None
     human_decisions: list[Any] | None = None
-    minimum_required_coverage: Any = None
+    minimum_required_coverage: tuple[PreparedObligationV1, ...] | None = None
+    obligation_assessment: ObligationAssessmentV1 | None = None
     non_functional: Any = None
     issues: IssueReport
     # Verification metrics vector from ``inspect/metrics.json`` (Task 8). Combined

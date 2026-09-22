@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from assurance_execution.contracts.attempts import AGENT_JOB_CONTRACTS as EXECUTION_JOBS
+from assurance_execution.contracts.attempts import TASK_ATTEMPT_CONTRACTS as EXECUTION_TASKS
 from assurance_execution.graphs.factory import build_execution_graphs
 from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_JOBS
 from assurance_generation.contracts.attempts import TASK_ATTEMPT_CONTRACTS as GENERATION_TASKS
@@ -155,7 +156,10 @@ def _contracts_for(owner_id: str) -> dict[str, TaskAttemptContract[Any, Any]]:
             **{task.contract_id: task for task in GENERATION_TASKS.values()},
         }
     if owner_id == "assurance.execution":
-        return _job_contracts(EXECUTION_JOBS)
+        return {
+            **_job_contracts(EXECUTION_JOBS),
+            **{task.contract_id: task for task in EXECUTION_TASKS.values()},
+        }
     if owner_id == "assurance.quality":
         return {
             **_job_contracts(QUALITY_JOBS),
@@ -237,7 +241,6 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
 
     duplicated_contract_ids = {
         "assurance.intake.agent.case-design.v1",
-        "assurance.quality.agent.issue-analysis.v1",
     }
     expected = Counter(
         {
@@ -247,7 +250,7 @@ def test_agent_contract_occurrence_inventory_is_exact() -> None:
     )
 
     assert Counter(occurrences) == expected
-    assert expected.total() == 30
+    assert expected.total() == 27
 
 
 def test_product_allowlist_pairs_match_the_six_factory_builders() -> None:

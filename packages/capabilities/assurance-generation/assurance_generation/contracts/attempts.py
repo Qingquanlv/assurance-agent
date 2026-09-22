@@ -59,13 +59,10 @@ def _job(
     outputs: tuple[str, ...],
 ) -> AgentExecutionContract[Any, Any, Any]:
     family, _, stage = base.partition(".")
-    finalize_suffixes: tuple[str, ...] = ()
-    if stage == "codegen-review":
-        finalize_suffixes = (f"codegen/{family}/reviews",)
     runtime_writes = _paths(*outputs)
     if stage == "codegen":
         runtime_writes = tuple(sorted((*runtime_writes, _GENERATED_TESTS_ROOT)))
-    finalize_writes = _paths(*finalize_suffixes)
+    finalize_writes = _paths(f"codegen/{family}/reviews") if stage == "codegen-review" else ()
     writes = tuple(sorted((*runtime_writes, *finalize_writes)))
     return AgentExecutionContract(
         contract_id=f"assurance.generation.agent.{base}.v1",
@@ -85,7 +82,9 @@ def _job(
         timeout=_TIMEOUT,
         validators=(),
         phase_write_claims=AgentPhaseWriteClaims(
-            prepare=(), runtime=runtime_writes, finalize=finalize_writes
+            prepare=(_GENERATED_TESTS_ROOT,) if stage == "codegen" else (),
+            runtime=runtime_writes,
+            finalize=finalize_writes,
         ),
     )
 
@@ -186,6 +185,10 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
                                 f"codegen/{base.partition('.')[0]}/reviews/"
                                 "epochs/{coverage_epoch}/rounds/{review_round}.json"
                             ),
+                            qa_join(
+                                f"codegen/{base.partition('.')[0]}/reviews/"
+                                "epochs/{coverage_epoch}/finding-scope.json"
+                            ),
                         )
                         if base.partition(".")[2] == "codegen-review"
                         else ()
@@ -216,7 +219,10 @@ _PUBLISH_CYCLE = TaskAttemptContract(
     resources=ResourceClaimTemplate(
         parameters={"coverage_epoch": "/coverage_epoch_token"},
         reads=("qa",),
-        writes=(qa_join("generation/epochs/{coverage_epoch}/mapping.json"),),
+        writes=(
+            qa_join("generation/epochs/{coverage_epoch}/mapping.json"),
+            qa_join("generation/epochs/{coverage_epoch}/obligation-methods.json"),
+        ),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,

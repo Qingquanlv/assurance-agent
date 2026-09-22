@@ -43,6 +43,77 @@ DEFAULT_POLICY: dict[str, object] = {
 }
 
 
+def _draft(
+    *,
+    draft_id: str,
+    proposed_key: str,
+    category: str,
+    layer: str,
+) -> dict[str, object]:
+    return {
+        "draft_id": draft_id,
+        "proposed_key": proposed_key,
+        "category": category,
+        "layer": layer,
+        "statement": f"{proposed_key} must hold",
+        "applicability_conditions": [],
+        "impact_row_ids": [],
+        "proposed_profile_id": None,
+        "prerequisites": [],
+        "observation_goals": [],
+        "basis_quotes": [],
+        "open_questions": [],
+    }
+
+
+def _coverage_drafts(
+    minimum_required_coverage: Mapping[str, object] | list[Mapping[str, object]] | None,
+    *,
+    capability_leafs: tuple[str, ...],
+) -> list[dict[str, object]]:
+    if minimum_required_coverage is None:
+        return [
+            _draft(
+                draft_id="D-API",
+                proposed_key=capability_leafs[0],
+                category="api",
+                layer="api",
+            )
+        ]
+    if isinstance(minimum_required_coverage, list):
+        return [dict(item) for item in minimum_required_coverage]
+    drafts: list[dict[str, object]] = []
+    for index, (family, keys) in enumerate(minimum_required_coverage.items()):
+        if isinstance(keys, Mapping):
+            drafts.append(dict(keys))
+            continue
+        if not isinstance(keys, list):
+            continue
+        for key_index, key in enumerate(keys):
+            if isinstance(key, Mapping):
+                proposed = str(key.get("proposed_key") or key.get("key") or capability_leafs[0])
+                drafts.append(
+                    _draft(
+                        draft_id=str(key.get("draft_id") or f"D-{family}-{index}-{key_index}"),
+                        proposed_key=proposed,
+                        category=str(key.get("category") or ("e2e" if family == "e2e" else "api")),
+                        layer=str(key.get("layer") or family),
+                    )
+                )
+                continue
+            layer = str(family) if family in {"api", "e2e", "both"} else "api"
+            category = "e2e" if family == "e2e" else "api"
+            drafts.append(
+                _draft(
+                    draft_id=f"D-{family}-{index}-{key_index}",
+                    proposed_key=str(key),
+                    category=category,
+                    layer=layer,
+                )
+            )
+    return drafts
+
+
 def _write(root: Path, relative: str, data: bytes) -> str:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,10 +127,11 @@ def install_plan(
     *,
     capability_leafs: tuple[str, ...] = ("entities.item.constraints.name",),
     journeys: tuple[str, ...] = (),
-    minimum_required_coverage: Mapping[str, object] | None = None,
+    minimum_required_coverage: Mapping[str, object] | list[Mapping[str, object]] | None = None,
     candidates: tuple[TestFamily, ...] = ("api",),
     proposed: tuple[TestFamily, ...] = ("api",),
     policy: Mapping[str, object] = DEFAULT_POLICY,
+    impact_rows: tuple[Mapping[str, object], ...] = (),
 ) -> tuple[ResolvedAssurancePlan, dict[str, str]]:
     capability_leafs = tuple(sorted(set(capability_leafs)))
     policy_bytes = yaml.safe_dump(dict(policy), sort_keys=True).encode()
@@ -69,10 +141,9 @@ def install_plan(
     knowledge_bytes = yaml.safe_dump({"journeys": list(journeys)}, sort_keys=True).encode()
     knowledge_digest = _write(root, ".aa/data-knowledge.yaml", knowledge_bytes)
 
-    coverage = (
-        dict(minimum_required_coverage)
-        if minimum_required_coverage is not None
-        else {"api": [capability_leafs[0]]}
+    coverage = _coverage_drafts(
+        minimum_required_coverage,
+        capability_leafs=capability_leafs,
     )
     recommended = set(proposed)
     exploration = {
@@ -114,6 +185,20 @@ def install_plan(
     exploration_bytes = canonical_json_bytes(cast(JSONValue, exploration))
     exploration_path = "qa/results/explore/exploration.json"
     exploration_digest = _write(root, exploration_path, exploration_bytes)
+    inventory_bytes = canonical_json_bytes(
+        cast(
+            JSONValue,
+            {
+                "schema_version": "1",
+                "change_id": change_id,
+                "context_ref": "explore/context.json",
+                "rows": [dict(row) for row in impact_rows],
+                "exclusions": [],
+            },
+        )
+    )
+    inventory_path = "qa/results/explore/impact-inventory.json"
+    inventory_digest = _write(root, inventory_path, inventory_bytes)
     source_digests = (
         ("assurance.product.configuration.capability-catalog", catalog_digest),
         ("assurance.product.configuration.data-knowledge", knowledge_digest),
@@ -136,10 +221,14 @@ def install_plan(
             path=exploration_path,
             digest=exploration_digest,
         ),
+        impact_inventory_ref=EvidenceArtifactRefV1(
+            path=inventory_path,
+            digest=inventory_digest,
+        ),
         source_resource_digests=source_digests,
         capability_leafs=capability_leafs,
     )
-    advisory, quality_goal = prepare_quality_goal(request, project_root=root)
+    advisory, inventory, quality_goal = prepare_quality_goal(request, project_root=root)
     selected = tuple(
         family
         for label, family in (
@@ -151,7 +240,10 @@ def install_plan(
         if any(row.layer == label and row.recommended for row in advisory.test_strategy.layer_recommendation)
     )
     plan = resolve_plan(
-        request=request, proposed=cast(tuple[TestFamily, ...], selected), quality_goal=quality_goal
+        request=request,
+        proposed=cast(tuple[TestFamily, ...], selected),
+        quality_goal=quality_goal,
+        inventory=inventory,
     )
     ref = plan_artifact_ref(plan)
     _write(root, ref.path, plan_bytes(plan))

@@ -419,6 +419,23 @@ def render_quality_report_markdown(raw: Mapping[str, object]) -> bytes:
         "metrics": "Metrics",
     }
     lines.extend(f"- {labels[name]}: {source_digests[name]}" for name in expected)
+    lines.extend(["", "## Obligations", ""])
+    if report.obligation_assessment is None or not report.obligation_assessment.rows:
+        lines.append("- No verifiable obligation was assessed; this is not a passing result.")
+    else:
+        for row in report.obligation_assessment.rows:
+            lines.append(f"- {row.mrc_id}: {row.verdict}")
+            if row.gap_codes:
+                lines.append(f"  - Gaps: {', '.join(row.gap_codes)}")
+            if row.remaining_assumptions:
+                lines.append(f"  - Remaining assumptions: {', '.join(row.remaining_assumptions)}")
+        if report.obligation_assessment.excluded_mrc_ids:
+            lines.append("- Excluded: " + ", ".join(report.obligation_assessment.excluded_mrc_ids))
+        lines.append("- Source authentication is not the same as a confirmed expected behavior.")
+    if report.minimum_required_coverage:
+        lines.extend(["", "## Prepared obligations", ""])
+        for item in report.minimum_required_coverage:
+            lines.append(f"- {item.mrc_id}: {_one_line(item.statement)}")
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 

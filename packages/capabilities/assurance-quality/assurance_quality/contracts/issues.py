@@ -18,7 +18,10 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, model_validator
 
+from graph_engine.plugin_api import FrozenModel
+
 from assurance_intake.contracts import NonEmptyStr
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 ObservationKind = Literal[
     "test_failure",
@@ -395,6 +398,31 @@ class ChangeIssueSnapshot(BaseModel):
     analysis_status: IssueAnalysisStatus | None = None
     project_sync_status: ProjectSyncStatus = "completed"
     batches: list[NonEmptyStr] = Field(min_length=1)
+
+
+class ReconcileIssuesInputV1(FrozenModel):
+    change_id: NonEmptyStr
+    batch_id: NonEmptyStr
+    evidence_bundle_digest: NonEmptyStr
+    candidates: tuple[IssueCandidate, ...] = ()
+    observations: tuple[Observation, ...] = ()
+    observations_ref: EvidenceArtifactRefV1 | None = None
+    analyzer: str = "assurance.quality"
+    prompt_version: str = "1"
+
+
+class ReconcileIssuesResultV1(FrozenModel):
+    schema_version: Literal["1.0"]
+    change_id: NonEmptyStr
+    authoritative_batch_id: NonEmptyStr
+    observations: tuple[Observation, ...]
+    occurrences: tuple[IssueOccurrence, ...]
+    problems: tuple[Problem, ...]
+    analysis_status: IssueAnalysisStatus
+    candidate_digest: NonEmptyStr
+    project_sync_status: ProjectSyncStatus = "completed"
+    batches: tuple[NonEmptyStr, ...]
+    issue_snapshot_ref: EvidenceArtifactRefV1
 
 
 class ProblemProjection(BaseModel):

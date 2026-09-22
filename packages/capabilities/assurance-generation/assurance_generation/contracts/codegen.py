@@ -15,6 +15,7 @@ from assurance_generation.contracts.plans import (
     PerformanceScenarioV1,
     PlanCoverageRow,
     canonical_relative_path,
+    ObligationMethodPlanV1,
 )
 from assurance_intake.contracts import NonEmptyStr
 
@@ -251,6 +252,7 @@ class CodegenAuthoringV1(CodegenGeneratedFilesAuthoring):
 
     mapping: CodegenMapping
     required_capabilities: tuple[NonEmptyStr, ...] = ()
+    method_plans: tuple[ObligationMethodPlanV1, ...] = ()
 
     @field_validator("required_capabilities")
     @classmethod
@@ -282,6 +284,7 @@ class CodegenResultV1(BaseModel):
     files: tuple[GeneratedFileEntryV1, ...]
     mapping: CodegenMapping
     required_capabilities: tuple[NonEmptyStr, ...] = ()
+    method_plans: tuple[ObligationMethodPlanV1, ...] = ()
 
     @model_validator(mode="after")
     def _validate_result(self, info: ValidationInfo) -> Self:

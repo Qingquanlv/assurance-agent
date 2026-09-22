@@ -46,6 +46,7 @@ def execution_document(
             },
             "batch_id": BATCH_ID,
             "selected_targets": selected,
+            "family_outcomes": [{"family": layer, "state": "executed"}],
             "mapping": {
                 "schema_version": "1",
                 "selected": ["tests/generated.py"],
@@ -101,6 +102,7 @@ def missing_asset_execution() -> dict[str, object]:
             },
             "batch_id": BATCH_ID,
             "selected_targets": {"api": True, "e2e": False, "fuzz": False, "performance": False},
+            "family_outcomes": [{"family": "api", "state": "executed"}],
             "mapping": {
                 "schema_version": "1",
                 "selected": ["tests/generated.py"],

@@ -64,6 +64,7 @@ _SCHEMA_FILES: dict[str, str] = {
     "assurance.intake.schema.case-authoring.v1": "schemas/case-authoring.v1.schema.json",
     "assurance.intake.schema.case-review.v1": "schemas/case-review.v1.schema.json",
     "assurance.intake.schema.case.v1": "schemas/case.v1.schema.json",
+    "assurance.intake.schema.case-selection.v1": "schemas/case-selection.v1.schema.json",
     "assurance.intake.schema.qa-change.v1": "schemas/qa-change.v1.schema.json",
     "assurance.intake.workflow.case.input.v1": "schemas/workflow/case-input.v1.schema.json",
     "assurance.intake.workflow.case.output.v1": "schemas/workflow/case-output.v1.schema.json",

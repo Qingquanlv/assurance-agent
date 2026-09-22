@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -24,9 +25,16 @@ from graph_engine.attempts.secret_sources import (
     runtime_authorization_digest,
 )
 
+from assurance_improvement.operations.retro_dashboard import build_retro_dashboard
+
 from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
-from assurance_product.change_workspace import ChangeWorkspace
+from assurance_product.bootstrap.driver import resume_bootstrap, run_bootstrap, stop_bootstrap
+from assurance_product.bootstrap.opencode import OpenCodeLaunchError
+from assurance_product.bootstrap.preflight import BootstrapPreflightError
+from assurance_product.bootstrap.spec import SpecOverrideError, load_run_spec
+from assurance_product.bootstrap.status import read_bootstrap_status
+from assurance_product.change_workspace import ChangeWorkspace, require_real_directory
 from assurance_product.models import PRODUCT_ENTRYPOINTS
 from assurance_product.product import (
     AssuranceCompositionError,
@@ -35,6 +43,7 @@ from assurance_product.product import (
     reopen_change_workspace,
     resolve_assurance_composition,
 )
+from assurance_product.sut_worktree import ensure_run_worktree
 from assurance_product.application import RuntimeSelectionError, SelectionCrash
 
 _SOURCE_FLAGS = (
@@ -503,6 +512,139 @@ def lock_show(
     _emit(document)
 
 
+@app.group("retro")
+def retro() -> None:
+    """Read-only retro run dashboard commands."""
+
+
+@retro.command("show")
+@click.option("--project-dir", type=click.Path())
+@click.option("--change")
+@click.option("--json", "as_json", is_flag=True)
+def retro_show(project_dir: str | None, change: str | None, as_json: bool) -> None:
+    del as_json
+    _require_options({"project_dir": project_dir}, ("project_dir",))
+    try:
+        root = require_real_directory(Path(cast(str, project_dir)))
+        dashboard = build_retro_dashboard(root, change_id=change)
+    except CommandError as error:
+        _fail(str(error), error.code)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(dashboard.model_dump(mode="json"))
+
+
+@app.group("bootstrap")
+def bootstrap() -> None:
+    """Operator wrapper that prepares composition and drives an entrypoint."""
+
+
+@bootstrap.command("run")
+@click.option("--project-dir", type=click.Path())
+@click.option("--spec", type=click.Path())
+@click.option("--runs-root", type=click.Path())
+@click.option("--change")
+@click.option("--json", "as_json", is_flag=True)
+def bootstrap_run(
+    project_dir: str | None,
+    spec: str | None,
+    runs_root: str | None,
+    change: str | None,
+    as_json: bool,
+) -> None:
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "spec": spec,
+            "runs_root": runs_root,
+            "json": as_json,
+        },
+        ("project_dir", "spec", "runs_root", "json"),
+    )
+    status_path: Path | None = None
+    previous_status_bytes: bytes | None = None
+    if (
+        as_json
+        and runs_root is not None
+        and change is not None
+        and change not in {"", ".", ".."}
+        and not any(character in change for character in ("/", "\\", " ", "\x00"))
+    ):
+        status_path = Path(runs_root) / change / "bootstrap-status.json"
+        try:
+            previous_status_bytes = status_path.read_bytes()
+        except OSError:
+            pass
+    try:
+        loaded = load_run_spec(Path(cast(str, spec)))
+        status = run_bootstrap(
+            project_dir=Path(cast(str, project_dir)),
+            spec=loaded,
+            runs_root=Path(cast(str, runs_root)),
+            change_id=change,
+            environ=os.environ,
+        )
+    except Exception as error:
+        if status_path is not None:
+            try:
+                current_status_bytes = status_path.read_bytes()
+            except (OSError, ValueError):
+                pass
+            else:
+                if current_status_bytes != previous_status_bytes:
+                    try:
+                        persisted = read_bootstrap_status(status_path.parent)
+                    except (OSError, ValueError):
+                        pass
+                    else:
+                        if persisted.phase == "terminal" and persisted.change_id == change:
+                            _emit(persisted.model_dump(mode="json"))
+        _fail(str(error), error.code if isinstance(error, CommandError) else 40)
+    _emit(status.model_dump(mode="json"))
+    raise SystemExit(status.exit_code or 0)
+
+
+@bootstrap.command("status")
+@click.option("--run-dir", type=click.Path())
+@click.option("--json", "as_json", is_flag=True)
+def bootstrap_status(run_dir: str | None, as_json: bool) -> None:
+    _require_options({"run_dir": run_dir, "json": as_json}, ("run_dir", "json"))
+    try:
+        status = read_bootstrap_status(Path(cast(str, run_dir)))
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(status.model_dump(mode="json"))
+
+
+@bootstrap.command("stop")
+@click.option("--run-dir", type=click.Path())
+def bootstrap_stop(run_dir: str | None) -> None:
+    _require_options({"run_dir": run_dir}, ("run_dir",))
+    try:
+        destination = Path(cast(str, run_dir))
+        before = read_bootstrap_status(destination)
+        status = stop_bootstrap(destination)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(status.model_dump(mode="json"))
+    raise SystemExit(0 if before.phase == "terminal" else 20)
+
+
+@bootstrap.command("resume")
+@click.option("--run-dir", type=click.Path())
+@click.option("--json", "as_json", is_flag=True)
+def bootstrap_resume(run_dir: str | None, as_json: bool) -> None:
+    _require_options({"run_dir": run_dir, "json": as_json}, ("run_dir", "json"))
+    try:
+        status = resume_bootstrap(Path(cast(str, run_dir)), environ=os.environ)
+    except (BootstrapPreflightError, SpecOverrideError, OpenCodeLaunchError) as error:
+        _fail(str(error), 40)
+    except Exception as error:
+        _fail(str(error), 40)
+    _emit(status.model_dump(mode="json"))
+    raise SystemExit(status.exit_code or 0)
+
+
 def _require_options(values: Mapping[str, object], names: Sequence[str]) -> None:
     missing = [f"--{name.replace('_', '-')}" for name in names if not values.get(name)]
     if missing:
@@ -608,6 +750,13 @@ def _authorize_secrets(
     return authorization
 
 
+def _project_for_run(project_dir: Path, change_id: str) -> Path:
+    try:
+        return ensure_run_worktree(project_dir, change_id)
+    except ValueError as error:
+        raise CommandError(str(error)) from error
+
+
 def _bind_workspace(project_dir: Path, change_id: str, *, create: bool) -> ChangeWorkspace:
     try:
         if create:
@@ -657,6 +806,7 @@ def _start_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
+    project_dir = _project_for_run(project_dir, change_id)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
         return AssuranceProductApplication().start(
@@ -693,6 +843,7 @@ def _run_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
+    project_dir = _project_for_run(project_dir, change_id)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
         result, mapped, _code = AssuranceProductApplication().run(

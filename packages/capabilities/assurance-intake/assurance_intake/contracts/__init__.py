@@ -19,9 +19,18 @@ from assurance_intake.contracts.cases import (
 from assurance_intake.contracts.common import (
     TEST_FAMILY_ORDER,
     CaseId,
+    MrcCategory,
+    MrcLayer,
     NonEmptyStr,
     RiskTier,
     TestFamily,
+)
+from assurance_intake.contracts.obligations import (
+    DiscoveryAuditRowV1,
+    ExpectedBasisV1,
+    GoalSummaryV1,
+    PreparedObligationV1,
+    SourceRefV1,
 )
 from assurance_intake.contracts.plan import (
     LoadPlanInputV1,
@@ -59,10 +68,17 @@ __all__ = [
     "CaseRisk",
     "CaseYaml",
     "CaseYamlAuthoring",
+    "DiscoveryAuditRowV1",
     "EvidenceArtifactRefV1",
+    "ExpectedBasisV1",
+    "GoalSummaryV1",
     "MinimumCoverageMatrixAuthoring",
     "MinimumCoverageMatrixRowAuthoring",
+    "MrcCategory",
+    "MrcLayer",
     "NonEmptyStr",
+    "PreparedObligationV1",
+    "SourceRefV1",
     "QaApproval",
     "QaCaseTarget",
     "QaChange",

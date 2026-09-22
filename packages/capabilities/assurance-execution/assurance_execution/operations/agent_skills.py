@@ -17,14 +17,13 @@ from agent_runtime_contracts.qa_paths import qa_join
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
-from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+from graph_engine.plugin_api import TaskContext, TaskOutcome
 
 from assurance_execution.contracts.agent import (
     AgentBindingDataV1,
     AgentFinalizeInputV1,
     ExecutionPrepareInputV1,
-    ExecuteInputV1,
-    RunSkillInputV1,
+    RunTestsInputV1,
     SelectInputV1,
 )
 from assurance_execution.contracts.evidence import ExecutionAgentResultV1, ExecutionEvidenceV1
@@ -39,8 +38,6 @@ from assurance_execution.generated_merge import merge_generated
 from assurance_execution.operations.common import (
     InputError,
     OutputError,
-    failed_input,
-    failed_output,
     json_digest,
     leafs_of,
     mapping_digest,
@@ -51,7 +48,10 @@ from assurance_execution.operations.runner import write_canonical_evidence
 from assurance_execution.operations.selection import close_mappings
 from assurance_generation.contracts import CodegenAuthoringV1
 from assurance_intake.contracts import CaseYamlAuthoring
+from assurance_intake.contracts.case_selection import CaseSelectionV1, selection_path
+from assurance_intake.contracts.cases import CaseEntryAuthoring
 from assurance_intake.contracts.plan import decode_plan
+from assurance_intake.contracts.workflow import ReviewedCaseV1
 from assurance_execution.resource_loader import resource_bytes, resource_text
 
 EXECUTE_SKILL = "skills/aa-execute/SKILL.md"
@@ -268,7 +268,66 @@ def _reviewed_cases(
     workspace: Path,
     *,
     capability_leafs: tuple[str, ...],
+    reviewed_case: ReviewedCaseV1 | None = None,
 ) -> CaseYamlAuthoring:
+    if reviewed_case is not None:
+        selection_file = _regular_input_file(workspace, reviewed_case.selection_ref.path)
+        if hashlib.sha256(selection_file.read_bytes()).hexdigest() != reviewed_case.selection_ref.digest:
+            raise InputError("reviewed case selection digest changed")
+        if reviewed_case.selection_ref.path != selection_path(reviewed_case.coverage_epoch):
+            raise InputError("reviewed case selection does not bind the current epoch")
+        try:
+            selection = CaseSelectionV1.model_validate(_json_document(selection_file))
+        except ValidationError as error:
+            raise InputError(f"invalid reviewed case selection: {error}") from error
+        if (
+            selection.change_id != reviewed_case.change_id
+            or selection.coverage_epoch != reviewed_case.coverage_epoch
+            or selection.plan_digest != reviewed_case.plan_digest
+        ):
+            raise InputError("reviewed case selection identity does not match")
+        review_file = _regular_input_file(workspace, reviewed_case.review_ref.path)
+        if hashlib.sha256(review_file.read_bytes()).hexdigest() != reviewed_case.review_ref.digest:
+            raise InputError("reviewed case review digest changed")
+        case_refs = {item.path: item for item in reviewed_case.case_refs}
+        selected: list[CaseEntryAuthoring] = []
+        for row in selection.cases:
+            source_ref = case_refs.get(row.source_ref.path)
+            if source_ref is None or source_ref != row.source_ref:
+                raise InputError("selected case source is not authenticated by the reviewed case")
+            source_file = _regular_input_file(workspace, source_ref.path)
+            if hashlib.sha256(source_file.read_bytes()).hexdigest() != source_ref.digest:
+                raise InputError(f"selected case source digest changed: {source_ref.path}")
+            try:
+                document = yaml.safe_load(source_file.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, yaml.YAMLError) as error:
+                raise InputError(f"selected case source is invalid: {source_ref.path}") from error
+            section, marker, raw_index = row.source_locator.partition("[")
+            entries = document.get(section) if isinstance(document, dict) else None
+            if not marker or not raw_index.endswith("]") or not raw_index[:-1].isdigit():
+                raise InputError(f"selected case locator is invalid: {row.source_locator}")
+            index = int(raw_index[:-1])
+            if not isinstance(entries, list) or index >= len(entries):
+                raise InputError(f"selected case locator is out of range: {row.source_locator}")
+            try:
+                entry = CaseEntryAuthoring.model_validate(entries[index])
+            except ValidationError as error:
+                raise InputError(f"selected case is invalid: {error}") from error
+            if entry.case_id != row.case_id:
+                raise InputError("selected case locator does not match case_id")
+            selected.append(entry)
+        try:
+            return CaseYamlAuthoring.model_validate(
+                {
+                    "schema_version": "1.0",
+                    "added": [entry.model_dump(mode="json") for entry in selected],
+                    "modified": [],
+                    "removed": [],
+                },
+                context={"capability_leafs": leafs_of(capability_leafs)},
+            )
+        except ValidationError as error:
+            raise InputError(str(error)) from error
     root = workspace / "qa" / "cases"
     if not root.is_dir() or root.is_symlink():
         raise InputError("reviewed case directory is missing: qa/cases")
@@ -319,8 +378,10 @@ def _workspace_tree_id(
     manifest = _BaselineManifest()
     try:
         excluded = excluded_root.resolve().relative_to(workspace.resolve())
-    except ValueError as error:
-        raise InputError("attempt write root must remain inside the project") from error
+    except ValueError:
+        # Kernel workspaces may live outside the SUT. There is then no
+        # candidate subtree to exclude from the project baseline.
+        excluded = None
     for relative_root in _BASELINE_SOURCE_ROOTS:
         _add_baseline_tree(workspace, relative_root, excluded=excluded, manifest=manifest)
     try:
@@ -345,7 +406,7 @@ def _add_baseline_tree(
     workspace: Path,
     relative_root: str,
     *,
-    excluded: Path,
+    excluded: Path | None,
     manifest: _BaselineManifest,
 ) -> None:
     root = workspace.joinpath(*PurePosixPath(relative_root).parts)
@@ -440,8 +501,11 @@ def assemble_execution_input(
     *,
     workspace: Path,
     write_root: Path,
-    model: type[ExecuteInputV1] | type[RunSkillInputV1],
-) -> ExecuteInputV1 | RunSkillInputV1:
+    model: type[Any] | None = None,
+) -> RunTestsInputV1:
+    model_dump = getattr(data, "model_dump", None)
+    if callable(model_dump):
+        data = model_dump(mode="json")
     root = validate_input(ExecutionPrepareInputV1, data)
     try:
         plan = decode_plan(
@@ -474,6 +538,7 @@ def assemble_execution_input(
     cases = _reviewed_cases(
         workspace,
         capability_leafs=root.capability_leafs,
+        reviewed_case=(None if root.generation_result is None else root.generation_result.reviewed_case),
     )
     case_ids = tuple(
         sorted(
@@ -523,24 +588,26 @@ def assemble_execution_input(
             raise ValueError("durable execution lock time is missing")
     except ValueError as error:
         raise InputError(str(error)) from error
-    return model(
+    del execution_view_root, model
+    return RunTestsInputV1(
         change_id=root.change_id,
         plan_digest=root.plan_digest,
         plan_ref=root.plan_ref,
         batch_id=batch_id,
+        executed_at=view.executed_at,
         capability_leafs=root.capability_leafs,
         case_ids=case_ids,
-        artifact_paths=(),
         mapping=closed,
         selected_targets=selected,
         baseline_tree_id=locked_baseline,
         runner_profile_digest=runner_profile_digest,
         coverage_epoch=root.coverage_epoch,
-        repair_round=root.repair_round,
-        generation_result=root.generation_result,
-        execution_view_root=execution_view_root,
-        execution_view_digest=view.digest,
-        executed_at=view.executed_at,
+        execution_kind=root.execution_kind,
+        timeout_seconds=root.timeout_seconds,
+        method_plan_refs=(
+            () if root.generation_result is None else (root.generation_result.method_plan_ref,)
+        ),
+        allowed_origins=root.allowed_origins,
     )
 
 
@@ -675,89 +742,3 @@ def _finalize_evidence(payload: AgentFinalizeInputV1, workspace: Path) -> Execut
         },
         context={"capability_leafs": leafs, "case_ids": case_ids},
     )
-
-
-class ExecutePrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            binding = validate_binding(request.binding_data)
-            business = assemble_execution_input(
-                request.input,
-                workspace=context.project_root,
-                write_root=context.write_root,
-                model=ExecuteInputV1,
-            )
-            return prepare_outcome(
-                skill_path=EXECUTE_SKILL,
-                business=business,
-                binding=binding,
-                context=context,
-                allowed_outputs=(),
-                read_roots=(business.execution_view_root,),
-            )
-        except InputError as error:
-            return failed_input(error)
-
-
-class RunPrepareHandler:
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            binding = validate_binding(request.binding_data)
-            business = assemble_execution_input(
-                request.input,
-                workspace=context.project_root,
-                write_root=context.write_root,
-                model=RunSkillInputV1,
-            )
-            return prepare_outcome(
-                skill_path=RUN_SKILL,
-                business=business,
-                binding=binding,
-                context=context,
-                allowed_outputs=(),
-                read_roots=(business.execution_view_root,),
-            )
-        except InputError as error:
-            return failed_input(error)
-
-
-class ExecuteFinalizeHandler:
-    input_model = AgentFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = _finalize_payload(request.input)
-            evidence = _finalize_evidence(payload, context.project_root)
-            _commit_execution_evidence(
-                payload,
-                evidence,
-                project_root=context.project_root,
-                write_root=context.write_root,
-                filename="execute-result.json",
-            )
-            return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))
-
-
-class RunFinalizeHandler:
-    input_model = AgentFinalizeInputV1
-
-    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
-        try:
-            payload = _finalize_payload(request.input)
-            evidence = _finalize_evidence(payload, context.project_root)
-            _commit_execution_evidence(
-                payload,
-                evidence,
-                project_root=context.project_root,
-                write_root=context.write_root,
-                filename="run-result.json",
-            )
-            return TaskOutcome.succeeded(cast(JSONValue, evidence.model_dump(mode="json")))
-        except InputError as error:
-            return failed_input(error)
-        except OutputError as error:
-            return failed_output(str(error))

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from assurance_intake.contracts import NonEmptyStr, RiskTier
+from assurance_intake.contracts.obligations import SourceRefV1
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 ReviewDecision = Literal["pass", "needs_fix", "needs_human_review", "reject"]
 PlanReviewRoute = Literal["codegen", "auto_fix", "human", "reject"]
@@ -203,6 +205,28 @@ class Review(BaseModel):
         return self
 
 
+class ExpectationReviewV1(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    observation_key: NonEmptyStr
+    status: Literal["pass", "fail", "abstain", "conflict"]
+    reason: NonEmptyStr
+    basis_refs: tuple[SourceRefV1, ...]
+
+
+class ObligationSemanticReviewV1(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    frozen_plan_digest: str
+    mrc_id: NonEmptyStr
+    requirement_id: NonEmptyStr
+    plan_ref: EvidenceArtifactRefV1
+    status: Literal["pass", "fail", "abstain", "conflict"]
+    reason: NonEmptyStr
+    source_refs: tuple[SourceRefV1, ...]
+    expectation_reviews: tuple[ExpectationReviewV1, ...] = Field(min_length=1)
+
+
 class PlanReview(Review):
     """Strong cross-skill contract for API, E2E, Fuzz, and Performance plans."""
 
@@ -277,6 +301,7 @@ class PlanReviewAuthoring(BaseModel):
     next_action: NonEmptyStr
     risk_level: RiskTier
     required_capabilities: list[NonEmptyStr]
+    semantic_reviews: tuple[ObligationSemanticReviewV1, ...] = ()
     public_outcome: PublicReviewOutcome | None = None
     rounds_used: int | None = None
     rounds_budget: int | None = None

@@ -76,9 +76,10 @@ _JOBS: tuple[tuple[str, str, str, type[Any], type[Any], tuple[str, ...]], ...] =
     ),
 )
 
-_APPLICATION_RUNTIME_ROOTS = ("qa/tests",)
-_APPLICATION_FINALIZE_ROOTS = _paths("healing/epochs")
-_APPLICATION_ROOTS = tuple(sorted((*_APPLICATION_RUNTIME_ROOTS, *_APPLICATION_FINALIZE_ROOTS)))
+_APPLICATION_TEST_ROOTS = ("qa/tests",)
+_APPLICATION_HISTORY_ROOTS = _paths("healing/epochs")
+_APPLICATION_RUNTIME_ROOTS = _APPLICATION_TEST_ROOTS
+_APPLICATION_ROOTS = tuple(sorted((*_APPLICATION_RUNTIME_ROOTS, *_APPLICATION_HISTORY_ROOTS)))
 
 AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = MappingProxyType(
     {
@@ -106,7 +107,7 @@ AGENT_JOB_CONTRACTS: Mapping[str, AgentExecutionContract[Any, Any, Any]] = Mappi
             phase_write_claims=AgentPhaseWriteClaims(
                 prepare=(),
                 runtime=_APPLICATION_RUNTIME_ROOTS,
-                finalize=_APPLICATION_FINALIZE_ROOTS,
+                finalize=_APPLICATION_HISTORY_ROOTS,
             ),
         )
     }
@@ -117,7 +118,7 @@ OUTPUT_ROUTE_TEMPLATES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "apply-test-repair": tuple(
             sorted(
                 (
-                    *_APPLICATION_RUNTIME_ROOTS,
+                    *_APPLICATION_TEST_ROOTS,
                     qa_join("healing/epochs/{coverage_epoch}/rounds/{repair_round}"),
                 )
             )

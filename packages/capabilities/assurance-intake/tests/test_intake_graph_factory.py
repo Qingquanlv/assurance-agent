@@ -128,6 +128,10 @@ def intake_graph_input() -> dict[str, object]:
                 "path": "qa/results/explore/exploration.json",
                 "digest": _SHA,
             },
+            {
+                "path": "qa/results/explore/impact-inventory.json",
+                "digest": _SHA,
+            },
             plan_ref,
         ],
     }
@@ -157,7 +161,11 @@ def _review_output(
             {
                 "path": "qa/results/review/case-review.json",
                 "digest": _SHA,
-            }
+            },
+            {
+                "path": "qa/results/cases/epochs/0/selection.json",
+                "digest": _SHA,
+            },
         ],
         "rounds_used": rounds_used,
         "rounds_budget": rounds_budget,

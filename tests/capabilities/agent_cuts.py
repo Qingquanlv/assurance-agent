@@ -21,7 +21,6 @@ from tests.capabilities.six_wheel_harness import (
 )
 from tests.acg_plan_fixture import install_plan
 
-from assurance_execution.operations.agent_skills import ExecuteFinalizeHandler
 from assurance_generation.operations.planning import PlanFinalizeHandler
 from assurance_healing.operations.agent import FixProposalFinalizeHandler
 from assurance_improvement.operations.agent import RetroFinalizeHandler
@@ -38,7 +37,6 @@ AGENT_CUTS = (
 WHEEL_FINALIZERS = {
     "intake": CaseReviewFinalizeHandler,
     "generation": lambda: PlanFinalizeHandler("api"),
-    "execution": ExecuteFinalizeHandler,
     "healing": FixProposalFinalizeHandler,
     "quality": InspectFinalizeHandler,
     "improvement": RetroFinalizeHandler,
@@ -191,6 +189,18 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                         "path": "qa/results/inspect/observations.json",
                         "digest": _HEX,
                     },
+                    "obligation_assessment_ref": {
+                        "path": "qa/results/inspect/obligation-assessment.json",
+                        "digest": _HEX,
+                    },
+                    "obligation_gate_facts": {
+                        "required_count": 1,
+                        "supported_count": 1,
+                        "refuted_count": 0,
+                        "inconclusive_count": 0,
+                        "repairable_gap_count": 0,
+                        "human_gap_count": 0,
+                    },
                     "issue_evidence_manifest_ref": {
                         "path": "qa/results/inspect/issue-evidence-manifest.json",
                         "digest": _HEX,
@@ -210,6 +220,10 @@ def _cut_payload(wheel: str, cut: str) -> JSONValue:
                     "case_refs": [{"path": "qa/cases/api/case.yaml", "digest": _HEX}],
                     "review_ref": {
                         "path": "qa/results/review/case-review.json",
+                        "digest": _HEX,
+                    },
+                    "selection_ref": {
+                        "path": "qa/results/cases/epochs/0/selection.json",
                         "digest": _HEX,
                     },
                 },

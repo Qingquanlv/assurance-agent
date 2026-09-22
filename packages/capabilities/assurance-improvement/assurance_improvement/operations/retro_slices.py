@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -16,6 +17,8 @@ from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_improvement.contracts.retro import (
     AffectedSurface,
+    CoverageGapEvidenceEntry,
+    CoverageGapEvidenceSlice,
     EvalEvidenceEntry,
     EvalEvidenceSlice,
     IssueEvidenceEntry,
@@ -36,7 +39,8 @@ from assurance_execution.contracts.evidence import ExecutionEvidenceV1
 from assurance_intake.contracts import EvidenceArtifactRefV1, LoopRoundHistoryV1
 from assurance_intake.contracts.plan import decode_plan
 from assurance_quality.contracts.agent import InspectionResultV1
-from assurance_quality.contracts.issues import ChangeIssueSnapshot
+from assurance_quality.contracts.coverage import CoverageGapsDocument
+from assurance_quality.contracts.issues import ChangeIssueSnapshot, ObservationDocument
 
 
 class RetroSlicesInputError(ValueError):
@@ -104,6 +108,149 @@ def _descriptor(
     )
 
 
+def _regular_file_ref(root: Path, relative: str) -> EvidenceArtifactRefV1 | None:
+    candidate = root.joinpath(*relative.split("/"))
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root.resolve(strict=True))
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file() or resolved.is_symlink():
+        return None
+    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(resolved.read_bytes()).hexdigest())
+
+
+def _inspect_batch_dir(root: Path, batch_id: str) -> tuple[Path | None, str | None]:
+    epochs = root / "qa" / "results" / "inspect" / "epochs"
+    if not epochs.is_dir() or epochs.is_symlink():
+        return None, None
+    matches: list[Path] = []
+    for epoch in epochs.iterdir():
+        if epoch.is_symlink() or not epoch.is_dir():
+            continue
+        candidate = epoch / "batches" / batch_id
+        if candidate.is_dir() and not candidate.is_symlink():
+            matches.append(candidate)
+    if len(matches) > 1:
+        return None, "inspect_batch_ambiguous"
+    if not matches:
+        return None, None
+    return matches[0], None
+
+
+@dataclass(frozen=True)
+class _LockedInspectExtension:
+    """Refs reachable from a locked inspection, plus why some were not followed."""
+
+    refs: tuple[EvidenceArtifactRefV1, ...]
+    issue_reasons: tuple[str, ...] = ()
+    eval_reasons: tuple[str, ...] = ()
+    coverage_reasons: tuple[str, ...] = ()
+
+
+def _extend_locked_inspect_batch(
+    refs: tuple[EvidenceArtifactRefV1, ...],
+    *,
+    project_root: Path,
+) -> _LockedInspectExtension:
+    by_path = {ref.path: ref for ref in refs}
+    extras: list[EvidenceArtifactRefV1] = []
+    issue_reasons: list[str] = []
+    eval_reasons: list[str] = []
+    coverage_reasons: list[str] = []
+    for ref in refs:
+        if not ref.path.endswith("/inspect/inspection.json"):
+            continue
+        try:
+            inspection = InspectionResultV1.model_validate(_json(_read_ref(project_root, ref), ref.path))
+        except (ValidationError, RetroSlicesInputError):
+            continue
+        batch_dir, ambiguity = _inspect_batch_dir(project_root, inspection.batch_id)
+        if ambiguity is not None:
+            eval_reasons.append(ambiguity)
+        if batch_dir is None:
+            continue
+        try:
+            relative_base = (
+                batch_dir.resolve(strict=True).relative_to(project_root.resolve(strict=True)).as_posix()
+            )
+        except ValueError:
+            continue
+        locked = {
+            "coverage-gaps.json": inspection.coverage_digest,
+            "trace.json": inspection.trace_digest,
+            "metrics.json": inspection.metrics_digest,
+        }
+        for name, digest in locked.items():
+            extra = _regular_file_ref(project_root, f"{relative_base}/{name}")
+            if extra is None:
+                continue
+            if extra.digest != digest:
+                if name == "coverage-gaps.json":
+                    coverage_reasons.append("coverage_gap_evidence_digest_drift")
+                else:
+                    eval_reasons.append("inspect_projection_digest_drift")
+                continue
+            if extra.path in by_path:
+                continue
+            extras.append(extra)
+            by_path[extra.path] = extra
+        observations = _regular_file_ref(project_root, f"{relative_base}/observations.json")
+        if observations is not None and observations.path not in by_path:
+            try:
+                document = ObservationDocument.model_validate(
+                    _json(_read_ref(project_root, observations), observations.path)
+                )
+            except (ValidationError, RetroSlicesInputError):
+                issue_reasons.append("observations_evidence_corrupt")
+                continue
+            if (document.change_id, document.batch_id) == (inspection.change_id, inspection.batch_id):
+                extras.append(observations)
+                by_path[observations.path] = observations
+            else:
+                issue_reasons.append("observations_identity_mismatch")
+    return _LockedInspectExtension(
+        refs=tuple((*refs, *extras)),
+        issue_reasons=tuple(issue_reasons),
+        eval_reasons=tuple(eval_reasons),
+        coverage_reasons=tuple(coverage_reasons),
+    )
+
+
+def _coverage_gap_entries(
+    document: CoverageGapsDocument,
+    *,
+    document_digest: str,
+) -> tuple[CoverageGapEvidenceEntry, ...]:
+    projection = document.projection_digest.removeprefix("sha256:")
+    entries: list[CoverageGapEvidenceEntry] = []
+    for gap in document.gaps:
+        locator = {
+            "case_id": gap.locator.case_id,
+            "constraint_key": gap.locator.constraint_key,
+            "cell": gap.locator.cell,
+            "cluster_key": gap.locator.cluster_key,
+        }
+        fingerprint = canonical_digest(cast(JSONValue, locator))
+        entries.append(
+            CoverageGapEvidenceEntry(
+                evidence_id=f"coverage-gap-{canonical_digest([document.change_id, document.batch_id, gap.kind, fingerprint])}",
+                change_id=document.change_id,
+                batch_id=document.batch_id,
+                projection_digest=projection,
+                document_digest=document_digest,
+                event_kind="current",
+                gap_kind=gap.kind,
+                locator_fingerprint=fingerprint,
+                case_id=gap.locator.case_id,
+                constraint_key=gap.locator.constraint_key,
+                cell=gap.locator.cell,
+                cluster_key=gap.locator.cluster_key,
+            )
+        )
+    return tuple(entries)
+
+
 def _source_plan_binding(
     document: object,
     *,
@@ -114,9 +261,9 @@ def _source_plan_binding(
         return None
     raw_digest = document.get("plan_digest")
     raw_ref = document.get("plan_ref")
-    if raw_digest is None and raw_ref is None:
-        return None
-    if raw_digest is None or raw_ref is None:
+    if raw_ref is None:
+        if raw_digest is None:
+            return None
         raise RetroSlicesInputError("plan-bound Retro source has an incomplete plan binding")
     try:
         ref = EvidenceArtifactRefV1.model_validate(raw_ref)
@@ -126,7 +273,7 @@ def _source_plan_binding(
     if supplied != ref:
         raise RetroSlicesInputError("plan-bound Retro source did not include its exact plan source")
     plan = decode_plan(_read_ref(project_root, ref), ref)
-    if raw_digest != plan.plan_digest:
+    if raw_digest is not None and raw_digest != plan.plan_digest:
         raise RetroSlicesInputError("plan-bound Retro source plan_digest does not match its plan")
     return plan.plan_digest, ref
 
@@ -228,17 +375,24 @@ def build_retro_slices(
     project_root: Path,
 ) -> RetroCollectInput:
     selected_changes = frozenset(request.window.change_ids)
-    refs = tuple(ref for ref in request.source_refs if _selected(ref, selected_changes))
+    extension = _extend_locked_inspect_batch(
+        tuple(ref for ref in request.source_refs if _selected(ref, selected_changes)),
+        project_root=project_root,
+    )
+    refs = extension.refs
     refs_by_path = {ref.path: ref for ref in refs}
     issue_sources: list[RetroSourceDescriptor] = []
     issue_entries: list[IssueEvidenceEntry] = []
     workflow_sources: list[RetroSourceDescriptor] = []
     eval_sources: list[RetroSourceDescriptor] = []
+    coverage_sources: list[RetroSourceDescriptor] = []
+    coverage_entries: list[CoverageGapEvidenceEntry] = []
     workflow_entries: list[WorkflowEvidenceEntry] = []
     eval_entries: list[EvalEvidenceEntry] = []
-    issue_reasons: list[str] = []
+    issue_reasons: list[str] = list(extension.issue_reasons)
     workflow_reasons: list[str] = []
-    eval_reasons: list[str] = []
+    eval_reasons: list[str] = list(extension.eval_reasons)
+    coverage_reasons: list[str] = list(extension.coverage_reasons)
     history_seen = False
     runtime_changes: set[str] = set()
     executions: dict[str, ExecutionEvidenceV1] = {}
@@ -364,7 +518,32 @@ def build_retro_slices(
                     kind="change_issue_ledger",
                     ref=ref,
                     change_id=snapshot.change_id,
-                    evidence_ids=(item.occurrence_id for item in entries),
+                    # Issue analysis may cite an occurrence or the problem that groups it;
+                    # both identities come from this one authenticated snapshot.
+                    evidence_ids=(
+                        value for item in entries for value in (item.occurrence_id, item.problem_id)
+                    ),
+                )
+            )
+            continue
+        if ref.path.endswith("/coverage-gaps.json"):
+            try:
+                payload = _json(data, ref.path)
+                document = CoverageGapsDocument.model_validate(payload)
+            except (ValidationError, RetroSlicesInputError):
+                coverage_reasons.append("coverage_gap_evidence_corrupt")
+                continue
+            if document.change_id not in selected_changes:
+                coverage_reasons.append("coverage_gap_window_mismatch")
+                continue
+            entries = _coverage_gap_entries(document, document_digest=ref.digest)
+            coverage_entries.extend(entries)
+            coverage_sources.append(
+                _descriptor(
+                    kind="coverage_gap_projection",
+                    ref=ref,
+                    change_id=document.change_id,
+                    evidence_ids=(item.evidence_id for item in entries),
                 )
             )
             continue
@@ -403,7 +582,7 @@ def build_retro_slices(
     if not selected_changes.issubset(runtime_changes):
         workflow_reasons.append("task_failure_evidence_absent")
     # Loop outcomes and runtime errors do not establish adherence to a skill.
-    workflow_reasons.append("skill_drift_evidence_absent")
+    workflow_reasons.append("skill_drift_not_assessed")
     if not issue_sources:
         issue_reasons.append("issue_evidence_absent")
     if not eval_entries:
@@ -436,6 +615,7 @@ def build_retro_slices(
     )
     issue_entries.sort(key=lambda item: (item.change_id, item.occurrence_id))
     eval_entries.sort(key=lambda item: (item.run_id, item.suite))
+    coverage_entries.sort(key=lambda item: (item.change_id, item.batch_id, item.evidence_id))
 
     def source_key(item: RetroSourceDescriptor) -> tuple[str, str, str]:
         return (item.change_id or "", item.kind, item.sha256)
@@ -443,6 +623,7 @@ def build_retro_slices(
     issue_sources.sort(key=source_key)
     workflow_sources.sort(key=source_key)
     eval_sources.sort(key=source_key)
+    coverage_sources.sort(key=source_key)
 
     def integrity(reasons: list[str]) -> RetroIntegrity:
         canonical = tuple(sorted(set(reasons)))
@@ -476,6 +657,17 @@ def build_retro_slices(
             sources=tuple(eval_sources),
             integrity=integrity(eval_reasons),
             entries=tuple(eval_entries),
+        ),
+        coverage_gap_slice=(
+            CoverageGapEvidenceSlice(
+                retro_id=request.retro_id,
+                window=request.window,
+                sources=tuple(coverage_sources),
+                integrity=integrity(coverage_reasons),
+                entries=tuple(coverage_entries),
+            )
+            if coverage_sources or coverage_entries or coverage_reasons
+            else None
         ),
     )
 

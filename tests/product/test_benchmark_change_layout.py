@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import importlib.util
+import re
 from importlib.resources import files
 import json
 import os
-import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -22,7 +22,6 @@ from tests.acg_plan_fixture import install_plan
 
 from tests.product.test_benchmark_manifest import (
     FULL_WORKFLOW_REQUIRED_STEPS,
-    REPO,
     RUNNER_PATH,
 )
 
@@ -71,13 +70,18 @@ def _make_sut(root: Path) -> Path:
     return sut
 
 
+def test_run_item_drives_through_aa_bootstrap() -> None:
+    text = RUNNER_PATH.read_text(encoding="utf-8")
+    assert re.search(r'"bootstrap",\s*"run"', text)
+    assert "_WRITE_PRODUCT_INPUT" not in text
+
+
 def test_project_config_tree_uses_exact_live_sut_policy(tmp_path: Path) -> None:
-    runner = _load_runner()
+    from assurance_product.bootstrap.composition import _materialize_config_tree
+
     sut = _make_sut(tmp_path)
     config_tree = tmp_path / "config-tree"
-    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
-
-    runner._prepare_project_config_tree(config_tree, sut)
+    _materialize_config_tree(config_tree, sut)
 
     source_policy = (sut / ".aa" / "policy.yaml").read_bytes()
     assert (config_tree / ".aa" / "policy.yaml").read_bytes() == source_policy
@@ -86,12 +90,11 @@ def test_project_config_tree_uses_exact_live_sut_policy(tmp_path: Path) -> None:
 
 
 def test_project_config_tree_materializes_exact_live_sut_catalog(tmp_path: Path) -> None:
-    runner = _load_runner()
+    from assurance_product.bootstrap.composition import _materialize_config_tree
+
     sut = _make_sut(tmp_path)
     config_tree = tmp_path / "config-tree"
-    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
-
-    runner._prepare_project_config_tree(config_tree, sut)
+    _materialize_config_tree(config_tree, sut)
 
     source_catalog = (sut / ".aa" / "capability-catalog.json").read_bytes()
     assert source_catalog == (config_tree / ".aa" / "capability-catalog.json").read_bytes()
@@ -100,17 +103,16 @@ def test_project_config_tree_materializes_exact_live_sut_catalog(tmp_path: Path)
 
 
 def test_project_config_tree_uses_exact_live_sut_knowledge_bytes(tmp_path: Path) -> None:
-    runner = _load_runner()
     sut = _make_sut(tmp_path)
     (sut / ".aa" / "data-knowledge.yaml").write_text(
         'schema_version: "1"\ncapabilities: {domain_factories: {}, adapters: {api: {}}}\n# keep-bytes\n',
         encoding="utf-8",
     )
-    config_tree = tmp_path / "config-tree"
-    shutil.copytree(REPO / "tests" / "product" / "fixtures" / "project-config", config_tree)
+    from assurance_product.bootstrap.composition import _materialize_config_tree
 
+    config_tree = tmp_path / "config-tree"
     source_knowledge = (sut / ".aa" / "data-knowledge.yaml").read_bytes()
-    runner._prepare_project_config_tree(config_tree, sut)
+    _materialize_config_tree(config_tree, sut)
 
     assert (config_tree / ".aa" / "data-knowledge.yaml").read_bytes() == source_knowledge
 
@@ -247,6 +249,20 @@ class _FakeAA:
                     }
                 ),
             )
+        if verb == "bootstrap":
+            self._materialize_change()
+            exit_code = 0 if self.terminal.get("status") == "completed" else 40
+            return _completed(
+                exit_code,
+                json.dumps(
+                    {
+                        "phase": "terminal",
+                        "change_id": self.change_id,
+                        "exit_code": exit_code,
+                        "status": self.terminal,
+                    }
+                ),
+            )
         return _completed(1, stderr=f"unexpected aa command: {command}")
 
     def handle_subprocess(self, command: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -280,10 +296,47 @@ class _FakeAA:
 
 class _UnstructuredRunAA(_FakeAA):
     def handle_aa(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        if len(command) > 1 and command[1] == "run":
+        if len(command) > 1 and command[1] == "bootstrap":
             return _completed(23, stdout="deterministic local runner failure\n")
         if len(command) > 1 and command[1] == "status":
             raise AssertionError("unstructured non-zero run must fail before status polling")
+        return super().handle_aa(command)
+
+
+class _TerminalErrorAA(_FakeAA):
+    def handle_aa(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if len(command) > 1 and command[1] == "bootstrap":
+            self._materialize_change()
+            return _completed(
+                40,
+                json.dumps(
+                    {
+                        "phase": "terminal",
+                        "change_id": self.change_id,
+                        "exit_code": 40,
+                        "status": {},
+                        "error": "plan-bound Retro source has an incomplete plan binding",
+                    }
+                ),
+            )
+        return super().handle_aa(command)
+
+
+class _NonzeroAchievedAA(_FakeAA):
+    def handle_aa(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        if len(command) > 1 and command[1] == "bootstrap":
+            self._materialize_change()
+            return _completed(
+                40,
+                json.dumps(
+                    {
+                        "phase": "terminal",
+                        "change_id": self.change_id,
+                        "exit_code": 0,
+                        "status": self.terminal,
+                    }
+                ),
+            )
         return super().handle_aa(command)
 
 
@@ -306,11 +359,6 @@ def _wire_fake(runner, monkeypatch: pytest.MonkeyPatch, fake: _FakeAA, sut: Path
     )
     monkeypatch.setattr(runner.subprocess, "run", fake.handle_subprocess)
     monkeypatch.setattr(runner, "_load_opencode_secret", lambda _name: None)
-    monkeypatch.setattr(
-        runner,
-        "_prepare_sut_worktree",
-        lambda **kwargs: kwargs["sut_root"],
-    )
 
     @contextmanager
     def ready_runtime(**_kwargs):
@@ -369,6 +417,44 @@ def test_explicit_project_runs_without_touching_retained_project(
     assert (isolated / "qa/status.json").is_file()
     assert retained.read_bytes() == b"retained departmental evidence\n"
     assert not (original / "qa/status.json").exists()
+
+
+def test_custom_runtime_ports_are_written_to_run_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    fake = _FakeAA(sut=sut, change_id=change_id, terminal=_achieved_status(change_id=change_id))
+    _wire_fake(runner, monkeypatch, fake, sut)
+    output = tmp_path / "custom-ports"
+
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--project-dir",
+            str(sut),
+            "--output",
+            str(output),
+            "--stamp",
+            STAMP,
+            "--nonce",
+            NONCE,
+            "--backend-port",
+            "19999",
+            "--frontend-port",
+            "13100",
+        ]
+    )
+
+    assert code == 0
+    spec = yaml.safe_load((output / "run-spec.yaml").read_text(encoding="utf-8"))
+    assert spec["sut"]["base_url"] == "http://127.0.0.1:19999"
+    assert spec["sut"]["readiness_url"] == "http://127.0.0.1:19999/openapi.json"
+    assert runner._required_runtime_environment(output)["FRONTEND_URL"] == "http://127.0.0.1:13100"
 
 
 def test_explicit_project_refuses_existing_qa_without_overwrite(
@@ -905,7 +991,7 @@ def test_main_keeps_managed_sut_active_from_start_through_achieved(
     original_handle = fake.handle_aa
 
     def require_runtime(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        if len(command) > 1 and command[1] in {"start", "run", "status"}:
+        if len(command) > 1 and command[1] in {"start", "run", "status", "bootstrap"}:
             assert active, f"{command[1]} ran outside the managed SUT lifecycle"
         return original_handle(command)
 
@@ -1005,9 +1091,79 @@ def test_nonzero_unstructured_run_fails_closed_without_status_polling(
     evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
     assert code == 23
     assert evidence["outcome"] == "blocked"
-    assert evidence["validation"]["last_run"]["returncode"] == 23
-    assert "structured run result" in evidence["notes"]
+    assert "bootstrap run" in evidence["notes"]
     assert all(command[1] != "status" for command in fake.commands if len(command) > 1)
+
+
+def test_structured_bootstrap_failure_reports_its_terminal_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    output = tmp_path / "results" / "opencode-terminal-error"
+    fake = _TerminalErrorAA(
+        sut=sut,
+        change_id=change_id,
+        terminal=_failed_status(change_id=change_id),
+    )
+    _wire_fake(runner, monkeypatch, fake, sut)
+
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--output",
+            str(output),
+            "--nonce",
+            NONCE,
+            "--stamp",
+            STAMP,
+        ]
+    )
+
+    evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
+    assert code == 40
+    assert evidence["outcome"] == "blocked"
+    assert "incomplete plan binding" in evidence["notes"]
+    assert evidence["validation"]["bootstrap"]["phase"] == "terminal"
+
+
+def test_nonzero_bootstrap_exit_cannot_report_achieved_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _load_runner()
+    sut = _make_sut(tmp_path)
+    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
+    output = tmp_path / "results" / "opencode-nonzero-achieved"
+    fake = _NonzeroAchievedAA(
+        sut=sut,
+        change_id=change_id,
+        terminal=_achieved_status(change_id=change_id),
+    )
+    _wire_fake(runner, monkeypatch, fake, sut)
+
+    code = runner.main(
+        [
+            "--item",
+            ITEM_ID,
+            "--adapter",
+            "opencode",
+            "--output",
+            str(output),
+            "--nonce",
+            NONCE,
+            "--stamp",
+            STAMP,
+        ]
+    )
+
+    evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
+    assert code == 40
+    assert evidence["outcome"] == "blocked"
+    assert "bootstrap exited 40" in evidence["notes"]
 
 
 def test_run_result_parser_does_not_reuse_a_prior_invocation_json_object(tmp_path: Path) -> None:
@@ -1153,50 +1309,7 @@ def _make_git_sut(root: Path) -> Path:
     return sut
 
 
-def test_prepare_sut_worktree_checks_out_outside_the_sut(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runner = _load_runner()
-    sut = _make_git_sut(tmp_path / "source")
-    home = tmp_path / "worktrees"
-    monkeypatch.setattr(runner, "_sut_worktree_home", lambda _repo: home)
-    change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
-
-    worktree = runner._prepare_sut_worktree(repo=tmp_path, sut_root=sut, change_id=change_id)
-
-    assert worktree == (home / sut.name / change_id).resolve()
-    assert worktree.is_dir()
-    assert not worktree.is_relative_to(sut.resolve())
-    assert (worktree / "app").is_dir()
-    assert not (worktree / "qa").exists()
-    assert (worktree / ".opencode" / "plugins" / "assurance-boundary.mjs").is_file()
-    assert (worktree / "opencode.json").read_text(encoding="utf-8") == _opencode_config()
-    assert not (worktree / "web" / "node_modules").exists()
-    assert (worktree / "migrations" / ".keep").read_text(encoding="utf-8") == "keep\n"
-    assert runner._frontend_web_root(worktree) == (sut / "web").resolve()
-    listed = _git(sut, "worktree", "list", "--porcelain").stdout
-    assert str(worktree) in listed
-    assert _git(sut, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != f"bench/{change_id}"
-    _git(sut, "worktree", "remove", "--force", str(worktree))
-
-
-def test_prepare_sut_worktree_refuses_parent_repo_root(tmp_path: Path) -> None:
-    runner = _load_runner()
-    parent = tmp_path / "aa"
-    sut = _make_sut(parent / "benchmark")
-    _git(parent, "init")
-    _git(parent, "add", "-A")
-    _git(parent, "-c", "user.email=t@t.test", "-c", "user.name=t", "commit", "-m", "parent")
-
-    with pytest.raises(SystemExit, match="refuse to worktree the parent repo"):
-        runner._prepare_sut_worktree(
-            repo=parent,
-            sut_root=sut,
-            change_id=runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE),
-        )
-
-
-def test_main_without_project_dir_runs_in_a_fresh_sut_worktree(
+def test_main_without_project_dir_passes_the_primary_and_does_not_add_a_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _load_runner()
@@ -1206,15 +1319,12 @@ def test_main_without_project_dir_runs_in_a_fresh_sut_worktree(
     leftover.write_text("change:\n  change_id: BENCH-leftover-dept\n", encoding="utf-8")
     change_id = runner.derive_change_id(item_id=ITEM_ID, stamp=STAMP, nonce=NONCE)
     home = tmp_path / "worktrees"
-    worktree = home / sut.name / change_id
     fake = _FakeAA(
-        sut=worktree,
+        sut=sut,
         change_id=change_id,
         terminal=_achieved_status(change_id=change_id),
     )
-    real_prepare = runner._prepare_sut_worktree
     _wire_fake(runner, monkeypatch, fake, sut)
-    monkeypatch.setattr(runner, "_prepare_sut_worktree", real_prepare)
     monkeypatch.setattr(runner, "_sut_worktree_home", lambda _repo: home)
 
     code = runner.main(
@@ -1234,9 +1344,8 @@ def test_main_without_project_dir_runs_in_a_fresh_sut_worktree(
 
     evidence = json.loads((tmp_path / "output" / "evidence.json").read_text(encoding="utf-8"))
     assert code == 0
-    assert evidence["sut_root"] == str(worktree.resolve())
-    assert evidence["change_root"] == str(worktree.resolve() / "qa")
-    assert set(fake.project_dirs) == {str(worktree.resolve())}
+    assert evidence["sut_root"] == str(sut)
+    assert evidence["change_root"] == str(sut / "qa")
+    assert set(fake.project_dirs) == {str(sut)}
     assert leftover.read_text(encoding="utf-8") == "change:\n  change_id: BENCH-leftover-dept\n"
-    assert not (sut / "qa" / "status.json").exists()
-    _git(sut, "worktree", "remove", "--force", str(worktree.resolve()))
+    assert not (home / sut.name / change_id).exists()

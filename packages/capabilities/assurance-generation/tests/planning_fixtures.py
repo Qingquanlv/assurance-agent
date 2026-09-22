@@ -231,15 +231,12 @@ def valid_plan_result(family: str) -> dict[str, Any]:
 def review_result(family: str, leaf: str = "entities.item.create") -> dict[str, Any]:
     return {
         "schema_version": "1.0",
-        "review_type": f"{family}-plan",
+        "review_type": f"{family}-codegen",
         "change_id": "CH-DEMO-001",
-        "decision": "pass",
+        "route": "codegen",
         "findings": [],
-        "auto_fix_plan": [],
+        "finding_ids": [],
         "next_action": "proceed to codegen",
-        "auto_fix_allowed": False,
-        "human_review_required": False,
-        "codegen_readiness": "ready",
         "risk_level": "medium",
         "required_capabilities": [leaf],
     }

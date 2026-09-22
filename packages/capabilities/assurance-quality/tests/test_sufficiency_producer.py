@@ -29,6 +29,7 @@ def _evidence(*, case_id: str = "TC_A", case_type: str = "api") -> ExecutionEvid
             },
             "batch_id": "B-1",
             "selected_targets": selected_targets,
+            "family_outcomes": [{"family": case_type, "state": "executed"}],
             "mapping": {
                 "schema_version": "1",
                 "selected": ("tests/test_a.py::test_a",),
