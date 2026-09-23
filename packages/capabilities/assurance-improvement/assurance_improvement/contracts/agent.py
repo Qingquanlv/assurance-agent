@@ -58,6 +58,7 @@ class AgentBindingDataV1(FrozenModel):
 
 class RetroAnalysisInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
     evidence_slice: Annotated[
         IssueEvidenceSlice | WorkflowEvidenceSlice | EvalEvidenceSlice,
         Field(discriminator="domain"),
@@ -66,6 +67,7 @@ class RetroAnalysisInputV1(FrozenModel):
 
 class RetroSynthesisInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
     context: RetroContextV3
 
 
@@ -93,6 +95,7 @@ class ImprovementSkillInputV1(FrozenModel):
     invocation_id: str = Field(min_length=1)
     archive_digest: str = Field(pattern=_SHA256)
     locked_signal_ids: tuple[str, ...] = ()
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @field_validator("owned_evidence_ids")
     @classmethod

@@ -138,6 +138,7 @@ class AttemptNodeFactory:
                 and resolution.retryable
                 and technical_attempt < task.retry.max_attempts
             ):
+                validated = _with_latest_validation_error(validated, resolution.message)
                 self.trace.append(f"retry:{technical_attempt + 1}/{task.retry.max_attempts}")
                 if task.retry.interval_seconds:
                     await asyncio.sleep(task.retry.interval_seconds)
@@ -260,6 +261,24 @@ def _resolve_activation(activation: object, state: object) -> BusinessActivation
         raise
     except (TypeError, ValueError):
         raise ValueError("business activation is not canonical") from None
+
+
+def _with_latest_validation_error(validated: BaseModel, message: str) -> BaseModel:
+    """Carry this attempt's invalid_output into the next technical retry."""
+    fields = type(validated).model_fields
+    if "validation_error" not in fields:
+        return validated
+    latest = message[:8192]
+    if not latest or getattr(validated, "validation_error", None) == latest:
+        return validated
+    payload = validated.model_dump(mode="json")
+    payload["validation_error"] = latest
+    if "validation_attempt" in fields and payload.get("validation_attempt") == 0:
+        payload["validation_attempt"] = 1
+    try:
+        return type(validated).model_validate(payload)
+    except ValidationError:
+        return validated
 
 
 def _validate_input(select: object, state: object, contract: TaskAttemptContract[Any, Any]) -> BaseModel:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -31,6 +32,7 @@ from agent_runtime_opencode.discovery import (
     adapter_source_digest,
     agent_run_from_request,
     discovery_metadata,
+    discovery_metadata_from_record,
     exact_metadata_matches,
     expected_message_id,
     metadata_match_digest,
@@ -55,7 +57,14 @@ from agent_runtime_opencode.reducer import (
     result_candidate_satisfies_contract,
     select_unique_contract_valid_result,
 )
-from agent_runtime_opencode.workspace_binding import reject_isolated_root_discovery, workspace_binding_title
+from agent_runtime_opencode.workspace_binding import (
+    activity_label_for_session,
+    child_session_title,
+    workspace_binding_for,
+)
+
+
+_BINDING_INVALID = "workspace binding is missing or invalid"
 
 
 def workspace_identity_digest_for(context: TaskContext) -> str:
@@ -335,7 +344,12 @@ class OpenCodeHandler:
             snapshot=snapshot,
             adapter_source_digest=adapter_source_digest(),
         )
-        matches = exact_metadata_matches(sessions, metadata)
+        matches = exact_metadata_matches(
+            sessions,
+            metadata,
+            parent_session_id=expected.get("parent_session_id"),
+            worktree=expected.get("worktree"),
+        )
         if len(matches) > 1:
             return TaskActivityReconcileResult(
                 status="indeterminate",
@@ -364,7 +378,12 @@ class OpenCodeHandler:
             snapshot=snapshot,
             adapter_source_digest=adapter_source_digest(),
         )
-        matches = exact_metadata_matches(sessions, metadata)
+        matches = exact_metadata_matches(
+            sessions,
+            metadata,
+            parent_session_id=expected.get("parent_session_id"),
+            worktree=expected.get("worktree"),
+        )
         if len(matches) > 1:
             return TaskActivityReconcileResult(
                 status="indeterminate",
@@ -398,21 +417,51 @@ class OpenCodeHandler:
         *,
         agent_run: AgentRunRequest,
     ) -> TaskActivityReconcileResult:
-        body = OpenCodeSessionCreateRequest(
-            title=f"aa:{metadata.activity_id}",
-            metadata=metadata,
-            agent=agent_run.workspace.agent_profile,
-        )
-        payload = body.model_dump(mode="json")
-        if "id" in payload or "parentID" in payload:
-            raise ValueError("create must not supply a session id or parentID")
+        try:
+            label = activity_label_for_session(agent_run, request.node_id)
+            binding = workspace_binding_for(
+                context,
+                agent_run.workspace,
+                activity_label=label,
+            )
+            title = child_session_title(
+                activity_label=label,
+                task_id=context.workspace_identity.task_id,
+                attempt=context.workspace_identity.attempt,
+            )
+            body = OpenCodeSessionCreateRequest.model_validate(
+                {
+                    "title": title,
+                    "metadata": {
+                        "discovery": metadata.model_dump(mode="json"),
+                        "workspace_binding": binding,
+                    },
+                    "agent": agent_run.workspace.agent_profile,
+                    "parentID": expected.get("parent_session_id"),
+                }
+            )
+        except ValueError:
+            return TaskActivityReconcileResult(
+                status="indeterminate",
+                reason=_BINDING_INVALID,
+            )
+        payload = body.model_dump(mode="json", exclude_none=True)
+        if "id" in payload:
+            raise ValueError("create must not supply a session id")
         record = await client.create_session(payload)
         session_id = record.get("id") if isinstance(record, dict) else None
         if isinstance(session_id, str) and session_id:
-            stamped = await self._stamp_workspace_binding(client, agent_run, context, session_id)
-            if stamped is not None:
+            verified = await self._verify_workspace_binding(
+                client,
+                agent_run,
+                context,
+                session_id,
+                activity_label=label,
+                check_title=True,
+            )
+            if verified is not None:
                 self._bind_match(port, record, expected)
-                return stamped
+                return verified
         return self._bind_match(port, record, expected)
 
     async def _reconcile_bound(
@@ -436,9 +485,16 @@ class OpenCodeHandler:
                 status="indeterminate",
                 reason="bound session identity is unknown",
             )
-        stamped = await self._stamp_workspace_binding(client, agent_run, context, session_id)
-        if stamped is not None:
-            return stamped
+        verified = await self._verify_workspace_binding(
+            client,
+            agent_run,
+            context,
+            session_id,
+            activity_label=activity_label_for_session(agent_run, request.node_id),
+            check_title=False,
+        )
+        if verified is not None:
+            return verified
         admitted = await self._admit_prompt(client, agent_run, reference)
         if admitted is not None:
             return admitted
@@ -485,7 +541,25 @@ class OpenCodeHandler:
                 )
             raise
         parent = record.get("parentID") if isinstance(record, dict) else None
-        if isinstance(parent, str) and parent:
+        expected_parent = reference.parent_session_id
+        if expected_parent:
+            if parent != expected_parent:
+                return TaskActivityReconcileResult(
+                    status="indeterminate",
+                    reason="child session parent does not match the run root",
+                )
+            if reference.worktree:
+                directory = record.get("directory") if isinstance(record, dict) else None
+                if (
+                    not isinstance(directory, str)
+                    or not directory
+                    or Path(directory).resolve() != Path(reference.worktree).resolve()
+                ):
+                    return TaskActivityReconcileResult(
+                        status="indeterminate",
+                        reason="child session worktree does not match the run",
+                    )
+        elif isinstance(parent, str) and parent:
             return TaskActivityReconcileResult(
                 status="indeterminate",
                 reason="parentID reconnect is forbidden",
@@ -496,8 +570,8 @@ class OpenCodeHandler:
                 reason="session identity drifted",
             )
         try:
-            observed = OpenCodeDiscoveryMetadata.model_validate(record.get("metadata"))
-        except ValidationError:
+            observed = discovery_metadata_from_record(record)
+        except (ValidationError, ValueError):
             return TaskActivityReconcileResult(
                 status="indeterminate",
                 reason="foreign session metadata",
@@ -509,42 +583,43 @@ class OpenCodeHandler:
             )
         return reference, record
 
-    async def _stamp_workspace_binding(
+    async def _verify_workspace_binding(
         self,
         client: OpenCodeHttpClient,
         agent_run: AgentRunRequest,
         context: TaskContext,
         session_id: str,
+        *,
+        activity_label: str,
+        check_title: bool,
     ) -> TaskActivityReconcileResult | None:
         try:
-            reject_isolated_root_discovery(context.write_root)
-            title = workspace_binding_title(
+            expected = workspace_binding_for(
                 context,
                 agent_run.workspace,
-                session_id,
+                activity_label=activity_label,
+            )
+            title = child_session_title(
+                activity_label=activity_label,
+                task_id=context.workspace_identity.task_id,
+                attempt=context.workspace_identity.attempt,
             )
             agent = agent_run.workspace.agent_profile
             record = await client.get_session(session_id)
-            if not isinstance(record, dict) or record.get("title") != title:
-                updated = await client.update_session(session_id, {"title": title})
-                if (
-                    not isinstance(updated, dict)
-                    or updated.get("id") != session_id
-                    or updated.get("title") != title
-                ):
-                    raise ValueError("workspace binding title is missing or invalid")
-                record = await client.get_session(session_id)
+            metadata = record.get("metadata") if isinstance(record, dict) else None
+            binding = metadata.get("workspace_binding") if isinstance(metadata, dict) else None
             if (
                 not isinstance(record, dict)
                 or record.get("id") != session_id
-                or record.get("title") != title
                 or record.get("agent") != agent
+                or binding != expected
+                or (check_title and record.get("title") != title)
             ):
-                raise ValueError("workspace binding title is missing or invalid")
+                raise ValueError(_BINDING_INVALID)
         except (httpx.TransportError, httpx.HTTPStatusError, json.JSONDecodeError, ValueError):
             return TaskActivityReconcileResult(
                 status="indeterminate",
-                reason="workspace binding title is missing or invalid",
+                reason=_BINDING_INVALID,
             )
         return None
 
@@ -758,7 +833,7 @@ class OpenCodeHandler:
             snapshot=snapshot,
             adapter_source_digest=adapter_source_digest(),
         )
-        return {
+        fields = {
             "profile_identity_digest": canonical_digest(fingerprint),
             "metadata_match_digest": metadata_match_digest(metadata),
             "request_digest": snapshot.request_digest,
@@ -766,6 +841,11 @@ class OpenCodeHandler:
             "prompt_body_digest": prompt_body_digest(agent_run),
             "adapter_version": ADAPTER_VERSION,
         }
+        config = OpenCodeAdapterConfig.from_request(request)
+        if config.parent_session_id:
+            fields["parent_session_id"] = config.parent_session_id
+            fields["worktree"] = str(config.project_scope)
+        return fields
 
     def _reference_drifted(self, reference: OpenCodeActivityReference, expected: dict[str, str]) -> bool:
         return (
@@ -775,6 +855,8 @@ class OpenCodeHandler:
             or reference.expected_message_id != expected["expected_message_id"]
             or reference.prompt_body_digest != expected["prompt_body_digest"]
             or reference.adapter_version != expected["adapter_version"]
+            or reference.parent_session_id != expected.get("parent_session_id")
+            or (expected.get("worktree") is not None and reference.worktree != expected.get("worktree"))
         )
 
     def _identity_mismatch(

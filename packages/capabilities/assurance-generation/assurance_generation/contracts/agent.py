@@ -195,6 +195,7 @@ class CodegenInputV1(FrozenModel):
     coverage_epoch: int = Field(default=0, ge=0)
     local_round: int = Field(default=0, ge=0)
     reviewed_case: ReviewedCaseV1 | None = None
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @field_validator("capability_leafs")
     @classmethod

@@ -119,6 +119,7 @@ class FactBaselineSkillInputV1(FrozenModel):
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
     reviewed_case: ReviewedCaseV1
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @model_validator(mode="after")
     def _identity_is_closed(self) -> Self:
@@ -153,6 +154,7 @@ class AssessmentSkillInputV1(FrozenModel):
     reviewed_case: ReviewedCaseV1
     mapping_ref: EvidenceArtifactRefV1
     fact_baseline_ref: EvidenceArtifactRefV1 | None = None
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @model_validator(mode="after")
     def _identity_is_closed(self) -> Self:

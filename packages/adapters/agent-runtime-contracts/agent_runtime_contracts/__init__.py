@@ -12,6 +12,8 @@ from agent_runtime_contracts.models import (
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
+    prompt_model_json,
+    with_validation_retry,
 )
 from agent_runtime_contracts.runtime_binding import (
     AgentRuntimeBinding,
@@ -44,6 +46,8 @@ __all__ = [
     "AgentWorkspaceV1",
     "FrozenExecutionSelection",
     "InstructionPart",
+    "prompt_model_json",
+    "with_validation_retry",
     "RawAgentRuntimeOutcome",
     "RawFinalizeBundle",
     "ReadOnlyRawWorkspace",

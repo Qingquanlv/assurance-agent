@@ -3,10 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from assurance_product.bootstrap.contracts import OpenCodeHandleV1
 from assurance_product.bootstrap.opencode import (
+    OpenCodeLaunchError,
     allocate_loopback_port,
+    attach_shared_opencode,
     build_opencode_env,
+    create_run_root_session,
     start_opencode_serve,
+    stop_opencode,
 )
 from tests.product.test_bootstrap_contracts import _spec
 
@@ -67,3 +72,91 @@ def test_start_opencode_serve_uses_injected_spawn(tmp_path: Path, monkeypatch) -
     args, kwargs = spawned[0]
     assert args[:3] == ["/usr/bin/opencode", "serve", "--hostname"]
     assert kwargs["cwd"] == project
+
+
+def test_attach_shared_opencode_probes_health_and_does_not_install_agents(monkeypatch) -> None:
+    probed: list[str] = []
+
+    def probe(url: str, timeout: float, authorization: str | None = None) -> None:
+        del timeout
+        assert authorization == "Basic dG9rZW4="
+        probed.append(url)
+
+    monkeypatch.setattr(
+        "assurance_product.bootstrap.opencode.install_opencode_agents",
+        lambda root: (_ for _ in ()).throw(AssertionError("install")),
+    )
+    handle = attach_shared_opencode(
+        endpoint="http://127.0.0.1:4096",
+        authorization="Basic dG9rZW4=",
+        probe=probe,
+    )
+    assert handle.ownership == "shared"
+    assert handle.pid is None
+    assert probed == ["http://127.0.0.1:4096/global/health"]
+
+
+def test_attach_shared_opencode_reports_an_unreachable_endpoint() -> None:
+    def probe(url: str, timeout: float, authorization: str | None = None) -> None:
+        del url, timeout, authorization
+        raise OpenCodeLaunchError("connection refused")
+
+    try:
+        attach_shared_opencode(endpoint="http://127.0.0.1:4096", probe=probe)
+    except OpenCodeLaunchError as error:
+        assert "connection refused" in str(error)
+    else:
+        raise AssertionError("unreachable shared server was treated as attached")
+
+
+def test_stop_opencode_does_not_signal_a_shared_handle(monkeypatch) -> None:
+    def fail_kill(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("shared server was signaled")
+
+    monkeypatch.setattr("assurance_product.bootstrap.opencode.os.kill", fail_kill)
+    monkeypatch.setattr("assurance_product.bootstrap.opencode.os.killpg", fail_kill)
+    stop_opencode(OpenCodeHandleV1(endpoint="http://127.0.0.1:4096", ownership="shared"))
+
+
+def test_create_run_root_session_is_unprompted_and_has_no_parent() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def opener(method: str, path: str, body: object, directory: str) -> object:
+        del directory
+        calls.append((method, path))
+        if method == "POST":
+            assert isinstance(body, dict)
+            assert body["title"] == "aa:BOOT-1"
+            assert "parentID" not in body
+            return {"id": "ses_root"}
+        return []
+
+    session_id = create_run_root_session(
+        endpoint="http://127.0.0.1:4096",
+        directory="/work",
+        change_id="BOOT-1",
+        origin_session_id="ses_user",
+        opener=opener,
+    )
+    assert session_id == "ses_root"
+    assert calls == [("POST", "/session"), ("GET", "/session/ses_root/message")]
+
+
+def test_create_run_root_session_rejects_a_prompted_or_child_session() -> None:
+    def child(method: str, path: str, body: object, directory: str) -> object:
+        del method, path, body, directory
+        return {"id": "ses_root", "parentID": "ses_user"}
+
+    try:
+        create_run_root_session(
+            endpoint="http://127.0.0.1:4096",
+            directory="/work",
+            change_id="BOOT-1",
+            origin_session_id=None,
+            opener=child,
+        )
+    except OpenCodeLaunchError as error:
+        assert "parent" in str(error)
+    else:
+        raise AssertionError("child root was accepted")

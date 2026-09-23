@@ -8,7 +8,8 @@ from pathlib import Path
 
 from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
-_BINDING_TITLE_PREFIX = "aa-workspace-binding-v1:"
+_ACTIVITY_LABEL_MAX = 120
+_BINDING_SCHEMA_VERSION = "2"
 
 
 _BOUNDARY_PLUGIN_ENTRY = "./.opencode/plugins/assurance-boundary.mjs"
@@ -16,6 +17,7 @@ _BOUNDARY_PLUGIN_ENTRY = "./.opencode/plugins/assurance-boundary.mjs"
 _DISABLED_TOOLS = (
     "ast_grep_replace",
     "ast_grep_search",
+    "assurance",
     "assurance_boundary_v1",
     "background_cancel",
     "background_output",
@@ -106,9 +108,20 @@ def _canonical_digest(value: object) -> str:
     return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
 
 
+def _validate_activity_label(value: str) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > _ACTIVITY_LABEL_MAX
+        or any(character.isspace() and character != " " for character in value)
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError("workspace binding requires an activity label")
+    return value
+
+
 def workspace_binding_document(
     *,
-    session_id: str,
     agent_profile: str,
     project_root: Path,
     write_root: str,
@@ -116,14 +129,14 @@ def workspace_binding_document(
     task_id: str,
     attempt: int,
     attempt_id: str,
+    activity_label: str,
     read_roots: Sequence[str] = (),
 ) -> dict[str, object]:
-    if not session_id or session_id.strip() != session_id or any(ch.isspace() for ch in session_id):
-        raise ValueError("workspace binding requires a provider session id")
     if not agent_profile:
         raise ValueError("workspace binding requires an agent profile")
     if not task_id or attempt < 1 or not attempt_id:
         raise ValueError("workspace binding requires task and attempt identity")
+    label = _validate_activity_label(activity_label)
     if not write_root or write_root.startswith("/") or "\\" in write_root or ".." in write_root.split("/"):
         raise ValueError("write_root must be a canonical project-relative path")
     outputs = tuple(allowed_outputs)
@@ -139,8 +152,8 @@ def workspace_binding_document(
         if not item or item.startswith("/") or "\\" in item or ".." in item.split("/"):
             raise ValueError("read roots must be canonical project-relative paths")
     payload: dict[str, object] = {
-        "schema_version": "1",
-        "session_id": session_id,
+        "schema_version": _BINDING_SCHEMA_VERSION,
+        "activity_label": label,
         "agent_profile": agent_profile,
         "project_root_digest": _canonical_digest(str(project_root.resolve())),
         "write_root": write_root,
@@ -151,32 +164,6 @@ def workspace_binding_document(
         "attempt_id": attempt_id,
     }
     return {**payload, "digest": _canonical_digest(payload)}
-
-
-def workspace_binding_title(
-    *,
-    session_id: str,
-    agent_profile: str,
-    project_root: Path,
-    write_root: str,
-    allowed_outputs: Sequence[str],
-    task_id: str,
-    attempt: int,
-    attempt_id: str,
-    read_roots: Sequence[str] = (),
-) -> str:
-    document = workspace_binding_document(
-        session_id=session_id,
-        agent_profile=agent_profile,
-        project_root=project_root,
-        write_root=write_root,
-        allowed_outputs=allowed_outputs,
-        task_id=task_id,
-        attempt=attempt,
-        attempt_id=attempt_id,
-        read_roots=read_roots,
-    )
-    return _BINDING_TITLE_PREFIX + _canonical_json_bytes(document).decode("utf-8")
 
 
 def bounded_agent_profiles() -> tuple[str, ...]:
@@ -345,5 +332,4 @@ __all__ = [
     "bounded_agent_profiles",
     "install_opencode_agents",
     "workspace_binding_document",
-    "workspace_binding_title",
 ]

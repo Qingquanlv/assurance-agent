@@ -115,6 +115,7 @@ class PlanReviewPrepareHandler:
                     business=business,
                     family=family,
                 ),
+                validation_error=codegen_business.validation_error,
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)

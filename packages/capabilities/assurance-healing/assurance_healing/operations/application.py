@@ -7,7 +7,13 @@ import hashlib
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from agent_runtime_contracts import AgentRunRequest, AgentRunResult, InstructionPart
+from agent_runtime_contracts import (
+    AgentRunRequest,
+    AgentRunResult,
+    InstructionPart,
+    prompt_model_json,
+    with_validation_retry,
+)
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
 from graph_engine.frozen_json import thaw_json
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
@@ -287,15 +293,15 @@ class ApplyTestRepairPrepareHandler:
             business = ApplyTestRepairInputV1.model_validate(request.input)
             binding = AgentBindingDataV1.model_validate(request.binding_data)
             approved_paths = tuple(_approved_sources(business, context.project_root))
+            payload = prompt_model_json(business)
+            payload["allowed_test_paths"] = list(approved_paths)
             request_payload = AgentRunRequest(
-                instructions=(
-                    InstructionPart.text("text/plain", resource_text(APPLICATION_SKILL)),
-                    InstructionPart.from_json(
-                        {
-                            **business.model_dump(mode="json"),
-                            "allowed_test_paths": list(approved_paths),
-                        }
+                instructions=with_validation_retry(
+                    (
+                        InstructionPart.text("text/plain", resource_text(APPLICATION_SKILL)),
+                        InstructionPart.from_json(payload),
                     ),
+                    business.validation_error,
                 ),
                 result_contract=result_contract(APPLICATION_RESULT_ID, APPLICATION_RESULT_FILE),
                 execution=binding.execution,

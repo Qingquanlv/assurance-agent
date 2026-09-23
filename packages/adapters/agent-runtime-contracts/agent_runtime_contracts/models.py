@@ -83,6 +83,33 @@ class InstructionPart(FrozenModel):
         return self
 
 
+_VALIDATION_RETRY_PREFACE = (
+    "The previous attempt was rejected. Repair this validation error before anything else:\n"
+)
+
+
+def prompt_model_json(model: FrozenModel) -> dict[str, Any]:
+    """Prompt JSON for one skill input, without an empty validation error."""
+    payload = model.model_dump(mode="json")
+    if payload.get("validation_error") is None:
+        payload.pop("validation_error", None)
+    return payload
+
+
+def with_validation_retry(
+    instructions: tuple[InstructionPart, ...],
+    validation_error: str | None,
+) -> tuple[InstructionPart, ...]:
+    """Place this attempt's invalid_output ahead of the JSON the agent reads."""
+    if validation_error is None or not validation_error.strip():
+        return instructions
+    notice = InstructionPart.text("text/plain", _VALIDATION_RETRY_PREFACE + validation_error)
+    for index, part in enumerate(instructions):
+        if part.media_type == "application/json":
+            return (*instructions[:index], notice, *instructions[index:])
+    return (*instructions, notice)
+
+
 class ResultContract(FrozenModel):
     schema_id: str = Field(min_length=1)
     schema_digest: str = Field(pattern=_SHA256_PATTERN)

@@ -59,6 +59,17 @@ def effective_spec_digest(spec: RunSpecV1) -> str:
     return hashlib.sha256(effective_spec_bytes(spec)).hexdigest()
 
 
+def write_stop_request(run_dir: Path, *, change_id: str) -> None:
+    _write_json(
+        run_dir / "stop-request.json",
+        {"schema_version": "1", "change_id": change_id},
+    )
+
+
+def stop_requested(run_dir: Path) -> bool:
+    return (run_dir / "stop-request.json").is_file()
+
+
 def write_run_manifest(run_dir: Path, document: Mapping[str, object]) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_json(run_dir / "run-manifest.json", document)

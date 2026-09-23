@@ -52,6 +52,22 @@ def test_prepare_composition_writes_authenticated_input(tmp_path: Path) -> None:
     assert value.capability_catalog.sha256 == hashlib.sha256(catalog_bytes).hexdigest()
     deployment = yaml.safe_load((run_dir / "deployment.yaml").read_text(encoding="utf-8"))
     assert deployment["adapter_binding"]["endpoint"] == "http://127.0.0.1:4101"
+    assert "parent_session_id" not in deployment["adapter_binding"]
+
+
+def test_prepare_composition_records_the_run_root_parent(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    run_dir = tmp_path / "run"
+    prepare_composition(
+        project_dir=project,
+        run_dir=run_dir,
+        spec=_spec(),
+        opencode_endpoint="http://127.0.0.1:4101",
+        change_id="BOOT-1",
+        parent_session_id="ses_root",
+    )
+    deployment = yaml.safe_load((run_dir / "deployment.yaml").read_text(encoding="utf-8"))
+    assert deployment["adapter_binding"]["parent_session_id"] == "ses_root"
 
 
 def test_prepare_composition_rejects_missing_policy(tmp_path: Path) -> None:

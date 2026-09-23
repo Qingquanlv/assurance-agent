@@ -217,6 +217,213 @@ async def test_committed_resolution_publishes_typed_output_and_receipt() -> None
     assert update == {"execution": output, "receipts": (receipt_ref,)}
 
 
+class RepairInput(BaseModel):
+    change_id: str
+    validation_attempt: int = 0
+    validation_error: str | None = None
+
+
+async def test_technical_retry_replaces_validation_error_with_latest_invalid_output() -> None:
+    failure = PermanentTaskFailure(
+        kind="invalid_output",
+        message="proposed_key is not a matrix field",
+        retryable=True,
+    )
+    kernel = ScriptedKernel(failure)
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    seen: list[BaseModel] = []
+
+    async def execute_or_recover(
+        attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
+        context: AttemptExecutionContext,
+    ) -> AttemptResolution:
+        seen.append(validated_input)
+        return await ScriptedKernel.execute_or_recover(
+            kernel, attempt_key, contract, validated_input, context
+        )
+
+    kernel.execute_or_recover = execute_or_recover  # type: ignore[method-assign]
+
+    class _Executor:
+        async def execute(self, validated_input: RepairInput, scope: object) -> RunOutput:
+            del validated_input, scope
+            return OUTPUT
+
+    contract = resolve_contract(
+        TaskAttemptContract(
+            contract_id="assurance.intake.case-design.v1",
+            owner_id="assurance.intake",
+            handler_id="assurance.intake.case-design",
+            input_model=RepairInput,
+            output_model=RunOutput,
+            resources=ResourceClaims(),
+            retry=AttemptRetryPolicy(max_attempts=2, interval_seconds=0),
+            timeout=AttemptTimeoutPolicy(seconds=60),
+            validators=(),
+        ),
+        executor=_Executor(),
+    )
+
+    def select_repair(state: dict[str, object]) -> RepairInput:
+        del state
+        return RepairInput(
+            change_id="chg-1",
+            validation_attempt=1,
+            validation_error="unresolved MRC rows missing or rebound",
+        )
+
+    factory = _factory(kernel)
+    node = factory.attempt(
+        contract,
+        semantic_node_id="case-design",
+        activation=select_activation,
+        select=select_repair,
+        publish=publish_output,
+    )
+    update = await node(_state(), runtime=_runtime(kernel))
+
+    assert update == {"execution": OUTPUT, "receipts": (RECEIPT,)}
+    assert isinstance(seen[0], RepairInput)
+    assert seen[0].validation_error == "unresolved MRC rows missing or rebound"
+    assert isinstance(seen[1], RepairInput)
+    assert seen[1].validation_error == "proposed_key is not a matrix field"
+
+
+class AttemptFreeInput(BaseModel):
+    change_id: str
+    validation_error: str | None = None
+
+
+async def test_technical_retry_carries_validation_error_without_an_attempt_counter() -> None:
+    failure = PermanentTaskFailure(
+        kind="invalid_output",
+        message="schema rejected the authored document",
+        retryable=True,
+    )
+    kernel = ScriptedKernel(failure)
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    seen: list[BaseModel] = []
+
+    async def execute_or_recover(
+        attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
+        context: AttemptExecutionContext,
+    ) -> AttemptResolution:
+        seen.append(validated_input)
+        return await ScriptedKernel.execute_or_recover(
+            kernel, attempt_key, contract, validated_input, context
+        )
+
+    kernel.execute_or_recover = execute_or_recover  # type: ignore[method-assign]
+
+    class _Executor:
+        async def execute(self, validated_input: AttemptFreeInput, scope: object) -> RunOutput:
+            del validated_input, scope
+            return OUTPUT
+
+    contract = resolve_contract(
+        TaskAttemptContract(
+            contract_id="assurance.quality.agent.inspect.v1",
+            owner_id="assurance.quality",
+            handler_id="assurance.quality.inspect.prepare",
+            input_model=AttemptFreeInput,
+            output_model=RunOutput,
+            resources=ResourceClaims(),
+            retry=AttemptRetryPolicy(max_attempts=2, interval_seconds=0),
+            timeout=AttemptTimeoutPolicy(seconds=60),
+            validators=(),
+        ),
+        executor=_Executor(),
+    )
+
+    def select_attempt_free(state: dict[str, object]) -> AttemptFreeInput:
+        del state
+        return AttemptFreeInput(change_id="chg-1")
+
+    factory = _factory(kernel)
+    node = factory.attempt(
+        contract,
+        semantic_node_id="quality.inspect",
+        activation=select_activation,
+        select=select_attempt_free,
+        publish=publish_output,
+    )
+    update = await node(_state(), runtime=_runtime(kernel))
+
+    assert update == {"execution": OUTPUT, "receipts": (RECEIPT,)}
+    assert isinstance(seen[1], AttemptFreeInput)
+    assert seen[1].validation_error == "schema rejected the authored document"
+
+
+async def test_technical_retry_promotes_attempt_zero_so_the_error_is_admitted() -> None:
+    failure = PermanentTaskFailure(
+        kind="invalid_output",
+        message="unresolved MRC rows must remain skipped_by_scope",
+        retryable=True,
+    )
+    kernel = ScriptedKernel(failure)
+    kernel.push(CommittedTaskResult(output=OUTPUT, receipt=RECEIPT))
+    seen: list[BaseModel] = []
+
+    async def execute_or_recover(
+        attempt_key: AttemptKey,
+        contract: ResolvedAttemptContract[Any, Any],
+        validated_input: BaseModel,
+        context: AttemptExecutionContext,
+    ) -> AttemptResolution:
+        seen.append(validated_input)
+        return await ScriptedKernel.execute_or_recover(
+            kernel, attempt_key, contract, validated_input, context
+        )
+
+    kernel.execute_or_recover = execute_or_recover  # type: ignore[method-assign]
+
+    class _Executor:
+        async def execute(self, validated_input: RepairInput, scope: object) -> RunOutput:
+            del validated_input, scope
+            return OUTPUT
+
+    contract = resolve_contract(
+        TaskAttemptContract(
+            contract_id="assurance.intake.agent.case-design.v1",
+            owner_id="assurance.intake",
+            handler_id="assurance.intake.case-design.prepare",
+            input_model=RepairInput,
+            output_model=RunOutput,
+            resources=ResourceClaims(),
+            retry=AttemptRetryPolicy(max_attempts=2, interval_seconds=0),
+            timeout=AttemptTimeoutPolicy(seconds=60),
+            validators=(),
+        ),
+        executor=_Executor(),
+    )
+
+    def select_first(state: dict[str, object]) -> RepairInput:
+        del state
+        return RepairInput(change_id="chg-1", validation_attempt=0)
+
+    factory = _factory(kernel)
+    node = factory.attempt(
+        contract,
+        semantic_node_id="intake.case-design",
+        activation=select_activation,
+        select=select_first,
+        publish=publish_output,
+    )
+    update = await node(_state(), runtime=_runtime(kernel))
+
+    assert update == {"execution": OUTPUT, "receipts": (RECEIPT,)}
+    assert isinstance(seen[0], RepairInput)
+    assert seen[0].validation_attempt == 0
+    assert seen[0].validation_error is None
+    assert isinstance(seen[1], RepairInput)
+    assert seen[1].validation_attempt == 1
+    assert seen[1].validation_error == "unresolved MRC rows must remain skipped_by_scope"
+
+
 async def test_retryable_failure_uses_contract_budget_and_isolated_attempt_keys() -> None:
     kernel = ScriptedKernel(
         PermanentTaskFailure(kind="transient", message="provider TLS failed", retryable=True)

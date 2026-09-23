@@ -14,6 +14,7 @@ from harness import (  # pyright: ignore[reportMissingImports]
     _completed_engine_invocation,
     _open_code_fixture,
     _terminal_success_fixture,
+    metadata_with_discovery,
     task_request,
     workspace_identity,
 )
@@ -119,7 +120,10 @@ async def test_foreign_and_drift_fail_closed(mutator: str) -> None:
         if mutator == "foreign":
             session_id = fixture.reference.session_id
             assert session_id is not None
-            fixture.fake.set_session_metadata(session_id, {**fixture.metadata, "activity_id": "foreign"})
+            fixture.fake.set_session_metadata(
+                session_id,
+                metadata_with_discovery(fixture.metadata, activity_id="foreign"),
+            )
             result = _reconcile(await fixture.reconcile())
         else:
             result = _reconcile(

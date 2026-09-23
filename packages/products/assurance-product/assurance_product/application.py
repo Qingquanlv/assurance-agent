@@ -532,6 +532,11 @@ class AssuranceProductApplication:
             invocation=rendered,
         )
 
+    def request_stop(self, run_dir: Path, *, change_id: str) -> None:
+        from assurance_product.bootstrap.status import write_stop_request
+
+        write_stop_request(run_dir, change_id=change_id)
+
     def status(
         self,
         *,

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from agent_runtime_contracts import rebind_agent_run_workspace
+from agent_runtime_contracts import InstructionPart, rebind_agent_run_workspace
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.plugin_api import (
     InvocationMetadata,
@@ -22,6 +22,7 @@ from agent_runtime_opencode.config import AdapterConfigurationError, OpenCodeAda
 from agent_runtime_opencode.discovery import agent_run_from_request
 from agent_runtime_opencode.handler import OpenCodeHandler
 from agent_runtime_opencode.protocol import OpenCodeHttpClient
+from agent_runtime_opencode.workspace_binding import activity_label_for_session, child_session_title
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from harness import (  # pyright: ignore[reportMissingImports]
     ALLOWED_OUTPUTS,
@@ -180,7 +181,35 @@ def _first_record_index(
     raise AssertionError(f"missing {method} {path or path_suffix}")
 
 
-async def test_execute_stamps_binding_title_after_create_before_prompt_admission() -> None:
+def test_child_session_label_uses_the_skill_heading() -> None:
+    agent_run = agent_run_request().model_copy(
+        update={
+            "instructions": (
+                InstructionPart.text(
+                    "text/plain",
+                    "# Locator-bounded case repair\n\nKeep the locator.\n",
+                ),
+            )
+        }
+    )
+
+    assert activity_label_for_session(agent_run, "case-design") == "Locator-bounded case repair"
+    assert activity_label_for_session(agent_run_request(), "run") == "run"
+    task_id = "ac8ddcc53c" + "ab" * 27
+    assert (
+        child_session_title(
+            activity_label="Locator-bounded case repair",
+            task_id=task_id,
+            attempt=2,
+        )
+        == "Assurance · Locator-bounded case repair · ac8ddcc53c… · #2"
+    )
+    assert child_session_title(activity_label="run", task_id="task-1", attempt=1) == (
+        "Assurance · run · task-1 · #1"
+    )
+
+
+async def test_execute_stores_binding_metadata_and_readable_title_before_prompt() -> None:
     fixture = _open_code_fixture()
     try:
         fixture.fake.sse_mode = "fast_idle"
@@ -188,28 +217,34 @@ async def test_execute_stamps_binding_title_after_create_before_prompt_admission
         assert outcome.status == "succeeded"
         session_id = fixture.reference.session_id
         assert session_id is not None
-        title = fixture.fake.session_title(session_id)
-        assert title is not None
-        assert title.startswith("aa-workspace-binding-v1:")
-        document = json.loads(title.split(":", 1)[1])
+        assert fixture.fake.session_title(session_id) == "Assurance · run · task-1 · #1"
+        record = fixture.fake._sessions[session_id]
+        metadata = record.get("metadata")
+        assert isinstance(metadata, dict)
+        document = metadata.get("workspace_binding")
+        assert isinstance(document, dict)
         agent_run = agent_run_from_request(fixture.request)
-        assert document["session_id"] == session_id
+        assert "session_id" not in document
+        assert document["schema_version"] == "2"
         assert document["agent_profile"] == agent_run.workspace.agent_profile
         assert document["agent_profile"] != agent_run.execution.worker_profile
         assert document["write_root"] == WRITE_ROOT
         assert document["allowed_outputs"] == list(ALLOWED_OUTPUTS)
         assert document["read_roots"] == []
+        assert document["activity_label"] == "run"
         assert document["task_id"] == "task-1"
         assert document["attempt"] == 1
         assert document["attempt_id"] == "attempt-1"
-        record = fixture.fake._sessions[session_id]
         assert record.get("agent") == document["agent_profile"]
+        assert fixture.fake.create_bodies[0]["metadata"] == metadata
+        assert fixture.fake.title_update_bodies == []
         records = fixture.fake.records
         create_at = _first_record_index(records, method="POST", path="/session")
-        stamp_at = _first_record_index(records, method="PATCH", path_suffix=f"/session/{session_id}")
         admit_at = _first_record_index(records, method="POST", path_suffix="/prompt_async")
-        assert create_at < stamp_at < admit_at
-        assert fixture.fake.title_update_bodies == [{"title": title}]
+        assert create_at < admit_at
+        fixture.fake._sessions[session_id]["title"] = "renamed by user"
+        reconciled = await fixture.handler.reconcile(fixture.request, fixture.context, fixture.activity)
+        assert reconciled.status == "terminal"
     finally:
         fixture.close()
 
@@ -245,12 +280,19 @@ async def test_opencode_rebinds_prepare_workspace_to_current_execute_workspace()
         assert outcome.status == "succeeded"
         session_id = fixture.reference.session_id
         assert session_id is not None
-        title = fixture.fake.session_title(session_id)
-        assert title is not None
-        document = json.loads(title.split(":", 1)[1])
+        record = fixture.fake._sessions[session_id]
+        metadata = record.get("metadata")
+        assert isinstance(metadata, dict)
+        document = metadata.get("workspace_binding")
+        assert isinstance(document, dict)
         assert document["write_root"] == execute_root.relative_to(context.project_root).as_posix()
         assert document["allowed_outputs"] == list(ALLOWED_OUTPUTS)
         assert document["read_roots"] == []
+        assert record.get("title") == child_session_title(
+            activity_label="run",
+            task_id=context.workspace_identity.task_id,
+            attempt=context.workspace_identity.attempt,
+        )
         assert agent_run_from_request(fixture.request).workspace.write_root == WRITE_ROOT
         effective = rebind_agent_run_workspace(
             agent_run_from_request(fixture.request),
@@ -259,7 +301,7 @@ async def test_opencode_rebinds_prepare_workspace_to_current_execute_workspace()
         )
         assert fixture.reference.prompt_body_digest == canonical_digest(effective.model_dump(mode="json"))
         assert fixture.fake.prompt_bodies[0]["agent"] == effective.workspace.agent_profile
-        assert fixture.fake.title_update_bodies == [{"title": title}]
+        assert fixture.fake.title_update_bodies == []
         reconciled = await fixture.handler.reconcile(fixture.request, context, fixture.activity)
         assert reconciled.status == "terminal"
         canceled = await fixture.handler.cancel(fixture.request, context, fixture.activity)
@@ -268,33 +310,35 @@ async def test_opencode_rebinds_prepare_workspace_to_current_execute_workspace()
         fixture.close()
 
 
-async def test_invalid_binding_title_fails_closed_before_prompt_admission() -> None:
+async def test_missing_workspace_binding_fails_closed_before_prompt_admission() -> None:
     fixture = _bound_fixture(terminal_mode="success", sse_mode="fast_idle")
     try:
-        fixture.fake.reject_title_updates = True
-        assert fixture.fake.session_title(fixture.reference.session_id or "") == "seed"
-        try:
-            outcome = await fixture.handler.execute(fixture.request, fixture.context)
-        except Exception:
-            outcome = None
+        session_id = fixture.reference.session_id
+        assert session_id is not None
+        discovery = fixture.metadata["discovery"]
+        fixture.fake.set_session_metadata(session_id, {"discovery": discovery})
+        outcome = await fixture.handler.execute(fixture.request, fixture.context)
         assert fixture.fake.prompt_posts == 0
-        if outcome is not None:
-            assert outcome.status != "succeeded"
+        assert outcome.status == "failed"
+        assert outcome.failure is not None
+        assert outcome.failure.message == "workspace binding is missing or invalid"
     finally:
         fixture.close()
 
 
-async def test_binding_update_wrong_session_id_fails_closed_before_prompt_admission() -> None:
+async def test_stored_binding_mismatch_fails_closed_before_prompt_admission() -> None:
     fixture = _open_code_fixture()
     try:
         fixture.fake.sse_mode = "fast_idle"
-        fixture.fake.title_update_response_session_id = "ses_foreign"
+        fixture.fake.omit_stored_binding = True
 
         outcome = await fixture.handler.execute(fixture.request, fixture.context)
 
         assert outcome.status == "failed"
+        assert outcome.failure is not None
+        assert outcome.failure.message == "workspace binding is missing or invalid"
         assert fixture.fake.prompt_posts == 0
-        assert fixture.fake.title_update_bodies
+        assert fixture.fake.title_update_bodies == []
     finally:
         fixture.close()
 
@@ -350,8 +394,8 @@ async def test_one_root_session_per_stable_attempt_key() -> None:
         assert second_outcome.status == "succeeded"
         assert first.fake.create_calls == 1
         assert second.fake.create_calls == 1
-        assert first.metadata["attempt"] == second.metadata["attempt"]
-        assert first.metadata["activity_id"] == "activity-1"
+        assert first.metadata["discovery"]["attempt"] == second.metadata["discovery"]["attempt"]
+        assert first.metadata["discovery"]["activity_id"] == "activity-1"
         assert first.fake.create_bodies[0]["metadata"] == first.metadata
         assert "parentID" not in first.fake.create_bodies[0]
         replay = await first.handler.reconcile(first.request, first.context, first.activity)

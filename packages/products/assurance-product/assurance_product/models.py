@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 import json
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 import unicodedata
 from urllib.parse import urlparse
 
-from pydantic import AnyHttpUrl, ConfigDict, Field, field_validator, model_validator
+from pydantic import AnyHttpUrl, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from graph_engine.frozen_json import FrozenJSONValue
 from graph_engine.identifiers import IdentifierError, validate_qualified_id
@@ -158,6 +158,14 @@ class OpenCodeBindingV1(FrozenModel):
     cancel_timeout_seconds: float = Field(gt=0, le=300)
     max_response_bytes: int = Field(gt=0, le=4_000_000)
     adapter_configuration_digest: str = Field(pattern=_SHA256)
+    parent_session_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> Any:
+        serialized = handler(self)
+        if isinstance(serialized, dict) and serialized.get("parent_session_id") is None:
+            serialized.pop("parent_session_id", None)
+        return serialized
 
     @field_validator("endpoint")
     @classmethod

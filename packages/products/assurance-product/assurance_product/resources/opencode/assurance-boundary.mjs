@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const BINDING_PREFIX = "aa-workspace-binding-v1:";
 const REQUIRED_KEYS = [
+  "activity_label",
   "agent_profile",
   "allowed_outputs",
   "attempt",
@@ -13,7 +13,6 @@ const REQUIRED_KEYS = [
   "project_root_digest",
   "read_roots",
   "schema_version",
-  "session_id",
   "task_id",
   "write_root",
 ];
@@ -123,16 +122,8 @@ const uniqueSorted = (values) => (
 );
 
 const parseBinding = (session, root) => {
-  if (typeof session?.title !== "string" || !session.title.startsWith(BINDING_PREFIX)) {
-    throw new Error("Assurance write boundary: binding is missing or invalid");
-  }
-  if (typeof session.id !== "string" || session.id.length === 0) {
-    throw new Error("Assurance write boundary: binding is missing or invalid");
-  }
-  let document;
-  try {
-    document = JSON.parse(session.title.slice(BINDING_PREFIX.length));
-  } catch {
+  const document = session?.metadata?.workspace_binding;
+  if (typeof session?.id !== "string" || session.id.length === 0) {
     throw new Error("Assurance write boundary: binding is missing or invalid");
   }
   if (document === null || typeof document !== "object" || Array.isArray(document)) {
@@ -143,10 +134,9 @@ const parseBinding = (session, root) => {
   }
   const { digest, ...payload } = document;
   if (
-    document.schema_version !== "1"
+    document.schema_version !== "2"
     || typeof digest !== "string"
     || digest !== canonicalDigest(payload)
-    || document.session_id !== session.id
     || document.agent_profile !== session.agent
     || document.project_root_digest !== canonicalDigest(root)
     || typeof document.write_root !== "string"
@@ -157,6 +147,11 @@ const parseBinding = (session, root) => {
     || !Array.isArray(document.read_roots)
     || !document.read_roots.every((item) => typeof item === "string" && projectRelative(item))
     || !uniqueSorted(document.read_roots)
+    || typeof document.activity_label !== "string"
+    || document.activity_label.length === 0
+    || document.activity_label.length > 120
+    || document.activity_label !== document.activity_label.trim()
+    || /[\u0000-\u001f\u007f]/.test(document.activity_label)
     || typeof document.task_id !== "string"
     || document.task_id.length === 0
     || !Number.isInteger(document.attempt)

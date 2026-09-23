@@ -289,6 +289,7 @@ def _reviewed_obligations(
         raise AssessmentInputError(f"invalid reviewed minimum coverage matrix: {error}") from error
     case_by_id = {case.case_id: case for case in cases}
     prepared = {row.key: row for row in baseline if row.key is not None}
+    prepared_ids = {row.mrc_id for row in baseline if row.key is not None}
     result = {
         row.key: MinimumCoverageMatrixRow(
             mrc_id=row.mrc_id,
@@ -326,6 +327,8 @@ def _reviewed_obligations(
         if row.key is None:
             original = unresolved.get(row.mrc_id)
             if original is None:
+                if row.mrc_id in prepared_ids:
+                    continue
                 raise AssessmentInputError(f"unresolved MRC row is not in the frozen plan: {row.mrc_id}")
             if row.category not in {None, original.category} or row.layer not in {None, original.layer}:
                 raise AssessmentInputError(

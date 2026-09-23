@@ -30,6 +30,7 @@ from assurance_improvement.operations.retro_dashboard import build_retro_dashboa
 from assurance_product.application import AssuranceProductApplication, SimpleRun
 from assurance_product.binding_builder import BindingBuildError, build_deployment_wheel
 from assurance_product.bootstrap.driver import resume_bootstrap, run_bootstrap, stop_bootstrap
+from assurance_product.operator import AssuranceOperator, OperatorError
 from assurance_product.bootstrap.opencode import OpenCodeLaunchError
 from assurance_product.bootstrap.preflight import BootstrapPreflightError
 from assurance_product.bootstrap.spec import SpecOverrideError, load_run_spec
@@ -532,6 +533,174 @@ def retro_show(project_dir: str | None, change: str | None, as_json: bool) -> No
     except Exception as error:
         _fail(str(error), 40)
     _emit(dashboard.model_dump(mode="json"))
+
+
+@app.group("operator")
+def operator() -> None:
+    """Exact-run lifecycle shared by the QA Panel and /assure."""
+
+
+def _operator_result(payload: Mapping[str, object]) -> None:
+    _emit(payload)
+
+
+def _operator_fail(error: OperatorError) -> NoReturn:
+    _emit({"kind": error.kind, "error": str(error)})
+    raise SystemExit(40)
+
+
+@operator.command("start")
+@click.option("--project-dir", type=click.Path())
+@click.option("--requirement")
+@click.option("--family", "families", multiple=True)
+@click.option("--opencode-endpoint")
+@click.option("--origin-session-id")
+@click.option("--origin-parent-session-id")
+@click.option("--json", "as_json", is_flag=True)
+def operator_start(
+    project_dir: str | None,
+    requirement: str | None,
+    families: tuple[str, ...],
+    opencode_endpoint: str | None,
+    origin_session_id: str | None,
+    origin_parent_session_id: str | None,
+    as_json: bool,
+) -> None:
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "requirement": requirement,
+            "family": families,
+            "opencode_endpoint": opencode_endpoint,
+            "json": as_json,
+        },
+        ("project_dir", "requirement", "family", "opencode_endpoint", "json"),
+    )
+    try:
+        payload = AssuranceOperator().start(
+            project_dir=Path(cast(str, project_dir)),
+            requirement=cast(str, requirement),
+            families=families,
+            opencode_endpoint=cast(str, opencode_endpoint),
+            origin_session_id=origin_session_id,
+            origin_parent_session_id=origin_parent_session_id,
+            environ=os.environ,
+        )
+    except OperatorError as error:
+        _operator_fail(error)
+    _operator_result(payload)
+
+
+@operator.command("status")
+@click.option("--project-dir", type=click.Path())
+@click.option("--run-id")
+@click.option("--json", "as_json", is_flag=True)
+def operator_status(project_dir: str | None, run_id: str | None, as_json: bool) -> None:
+    _require_options(
+        {"project_dir": project_dir, "run_id": run_id, "json": as_json},
+        ("project_dir", "run_id", "json"),
+    )
+    try:
+        payload = AssuranceOperator().status(
+            project_dir=Path(cast(str, project_dir)),
+            run_id=cast(str, run_id),
+        )
+    except OperatorError as error:
+        _operator_fail(error)
+    _operator_result(payload)
+
+
+@operator.command("stop")
+@click.option("--project-dir", type=click.Path())
+@click.option("--run-id")
+@click.option("--json", "as_json", is_flag=True)
+def operator_stop(project_dir: str | None, run_id: str | None, as_json: bool) -> None:
+    _require_options(
+        {"project_dir": project_dir, "run_id": run_id, "json": as_json},
+        ("project_dir", "run_id", "json"),
+    )
+    try:
+        payload = AssuranceOperator().stop(
+            project_dir=Path(cast(str, project_dir)),
+            run_id=cast(str, run_id),
+        )
+    except OperatorError as error:
+        _operator_fail(error)
+    _operator_result(payload)
+
+
+@operator.command("resume")
+@click.option("--project-dir", type=click.Path())
+@click.option("--run-id")
+@click.option("--mode", type=click.Choice(("restart_terminal", "resolve_interrupt")))
+@click.option("--action")
+@click.option("--reason")
+@click.option("--json", "as_json", is_flag=True)
+def operator_resume(
+    project_dir: str | None,
+    run_id: str | None,
+    mode: str | None,
+    action: str | None,
+    reason: str | None,
+    as_json: bool,
+) -> None:
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "run_id": run_id,
+            "mode": mode,
+            "json": as_json,
+        },
+        ("project_dir", "run_id", "mode", "json"),
+    )
+    try:
+        payload = AssuranceOperator().resume(
+            project_dir=Path(cast(str, project_dir)),
+            run_id=cast(str, run_id),
+            mode=cast(str, mode),
+            action=action,
+            reason=reason,
+            environ=os.environ,
+        )
+    except OperatorError as error:
+        _operator_fail(error)
+    _operator_result(payload)
+
+
+@operator.command("assessment")
+@click.option("--project-dir", type=click.Path())
+@click.option("--change-id")
+@click.option("--plan-digest")
+@click.option("--coverage-epoch")
+@click.option("--batch-id")
+@click.option("--json", "as_json", is_flag=True)
+def operator_assessment(
+    project_dir: str | None,
+    change_id: str | None,
+    plan_digest: str | None,
+    coverage_epoch: str | None,
+    batch_id: str | None,
+    as_json: bool,
+) -> None:
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "change_id": change_id,
+            "plan_digest": plan_digest,
+            "coverage_epoch": coverage_epoch,
+            "batch_id": batch_id,
+            "json": as_json,
+        },
+        ("project_dir", "change_id", "plan_digest", "coverage_epoch", "batch_id", "json"),
+    )
+    payload = AssuranceOperator().assessment(
+        project_dir=Path(cast(str, project_dir)),
+        change_id=cast(str, change_id),
+        plan_digest=cast(str, plan_digest),
+        coverage_epoch=cast(str, coverage_epoch),
+        batch_id=cast(str, batch_id),
+    )
+    _operator_result(payload)
 
 
 @app.group("bootstrap")

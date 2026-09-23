@@ -11,7 +11,13 @@ from typing import Any, Literal, cast
 from pydantic import ValidationError
 import yaml
 
-from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
+from agent_runtime_contracts import (
+    AgentRunRequest,
+    AgentWorkspaceV1,
+    InstructionPart,
+    ResultContract,
+    with_validation_retry,
+)
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest
 from graph_engine.frozen_json import thaw_json
@@ -629,6 +635,7 @@ def prepare_plan_outcome(
     review_input_paths: tuple[str, ...] = (),
     repair_review: Mapping[str, object] | None = None,
     extra_json: Mapping[str, object] | None = None,
+    validation_error: str | None = None,
 ) -> TaskOutcome:
     if business.family_constraints is None:
         raise InputError("family_constraints were not materialized")
@@ -664,7 +671,7 @@ def prepare_plan_outcome(
     if extra_json is not None:
         instructions = (*instructions, InstructionPart.from_json(dict(extra_json)))
     agent_request = AgentRunRequest(
-        instructions=instructions,
+        instructions=with_validation_retry(instructions, validation_error),
         result_contract=result_contract(
             result_schema_id,
             capability_leafs=business.capability_leafs if close_result_capabilities else None,
