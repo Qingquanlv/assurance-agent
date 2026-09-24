@@ -129,9 +129,9 @@ class OpenCodeHttpClient:
         from agent_runtime_opencode.discovery import OpenCodeSessionCreateRequest
 
         typed = OpenCodeSessionCreateRequest.model_validate(body)
-        payload = typed.model_dump(mode="json")
-        if "id" in payload or "parentID" in payload:
-            raise ValueError("create must not supply a session id or parentID")
+        payload = typed.model_dump(mode="json", exclude_none=True)
+        if "id" in payload:
+            raise ValueError("create must not supply a session id")
         return await self._json("POST", "/session", payload)
 
     async def get_session(self, session_id: str) -> dict[str, Any]:

@@ -499,6 +499,197 @@ def test_case_prompts_prevent_incremental_closed_key_review_churn() -> None:
     assert "an absent stable target is not a finding" in persona.lower()
 
 
+def _sealed_rows(*drafts: dict[str, object]) -> list[dict[str, object]]:
+    advisory = ExploreAdvisoryV1.model_validate(_valid_explore_advisory())
+    advisory = advisory.model_copy(
+        update={
+            "change_id": "CH-DEMO-001",
+            "minimum_required_coverage": tuple(ObligationDraftV1.model_validate(draft) for draft in drafts),
+        }
+    )
+    sealed = PreparedExploreV1(
+        schema_version="1",
+        change_id=advisory.change_id,
+        context_ref=advisory.context_ref,
+        generated_at=advisory.generated_at,
+        executive_summary=advisory.executive_summary,
+        watchlist=tuple(advisory.watchlist),
+        evidence_inventory=advisory.evidence_inventory,
+        source_code_evidence=tuple(advisory.source_code_evidence),
+        case_design_guidance=advisory.case_design_guidance,
+        minimum_required_coverage=normalize_obligation_drafts(
+            advisory.minimum_required_coverage,
+            resolved_quotes={},
+        ),
+        open_questions_for_case_design=tuple(advisory.open_questions_for_case_design),
+        test_strategy=advisory.test_strategy,
+    )
+    return [row.model_dump(mode="json") for row in sealed.minimum_required_coverage]
+
+
+def _obligation_draft(
+    *,
+    draft_id: str,
+    proposed_key: str | None,
+    category: str,
+) -> dict[str, object]:
+    return {
+        "draft_id": draft_id,
+        "proposed_key": proposed_key,
+        "category": category,
+        "layer": "api",
+        "statement": f"{draft_id} must hold",
+        "applicability_conditions": [],
+        "impact_row_ids": [],
+        "proposed_profile_id": None,
+        "prerequisites": [],
+        "observation_goals": [],
+        "basis_quotes": [],
+        "open_questions": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_rejects_covered_repair_for_unbound_mrc(tmp_path: Path) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    _write_case_design_outputs(tmp_path, authored)
+    exploration = tmp_path / "qa/results/explore/exploration.json"
+    exploration.parent.mkdir(parents=True, exist_ok=True)
+    exploration.write_text(
+        json.dumps(
+            {
+                **_sealed_explore_document(),
+                "change_id": "CH-DEMO-001",
+                "minimum_required_coverage": _sealed_rows(
+                    _obligation_draft(
+                        draft_id="MRC-API-001",
+                        proposed_key="create_user",
+                        category="api",
+                    ),
+                    _obligation_draft(
+                        draft_id="MRC-NEGATIVE-009",
+                        proposed_key="entities.item.constraints.missing",
+                        category="negative",
+                    ),
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_fixable_case_review(
+        tmp_path,
+        allowed_key="MRC-NEGATIVE-009",
+        artifact="qa/results/trace/minimum-coverage-matrix.json",
+        case_id=None,
+    )
+    review_path = tmp_path / "qa/results/review/case-review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["auto_fix_plan"][0]["edits"] = ["Keep key empty and set status to covered."]
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "failed"
+    assert prepared.failure is not None
+    assert "frozen key is empty" in prepared.failure.message
+    assert "MRC-NEGATIVE-009" in prepared.failure.message
+
+
+@pytest.mark.asyncio
+async def test_case_design_prepare_allows_covered_repair_for_bound_api_key(tmp_path: Path) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    _write_case_design_outputs(tmp_path, authored)
+    exploration = tmp_path / "qa/results/explore/exploration.json"
+    exploration.parent.mkdir(parents=True, exist_ok=True)
+    exploration.write_text(
+        json.dumps(
+            {
+                **_sealed_explore_document(),
+                "change_id": "CH-DEMO-001",
+                "minimum_required_coverage": _sealed_rows(
+                    _obligation_draft(
+                        draft_id="MRC-API-001",
+                        proposed_key="create_user",
+                        category="api",
+                    )
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_fixable_case_review(
+        tmp_path,
+        allowed_key="MRC-API-001",
+        artifact="qa/results/trace/minimum-coverage-matrix.json",
+        case_id=None,
+    )
+    review_path = tmp_path / "qa/results/review/case-review.json"
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["auto_fix_plan"][0]["edits"] = ["Set status to covered and fill covered_by_cases."]
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+
+    prepared = await run_prepare(CaseDesignPrepareHandler(), CASE_INPUT, BINDING, tmp_path)
+
+    assert prepared.status == "succeeded", prepared.failure
+    request = AgentRunRequest.model_validate(prepared.output)
+    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    repair = cast(Mapping[str, object], business["review_repair"])
+    action = cast(Mapping[str, object], cast(tuple[object, ...], repair["actions"])[0])
+    assert action["allowed_paths"] == ("MRC-API-001",)
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_retries_unbound_covered_matrix(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(project, authored)
+    artifact = "qa/results/trace/minimum-coverage-matrix.json"
+    matrix_path = project / artifact
+    rows = json.loads(matrix_path.read_text(encoding="utf-8"))
+    rows[0].update(
+        {
+            "key": None,
+            "covered_by_cases": [],
+            "status": "skipped_by_scope",
+            "skip_reason": "capability_unresolved: frozen key is empty",
+        }
+    )
+    matrix_path.write_text(json.dumps(rows), encoding="utf-8")
+    _write_fixable_case_review(project, allowed_key="MRC-API-001", artifact=artifact, case_id=None)
+    repair = await _prepared_review_repair(project)
+    rows[0].update({"status": "covered", "covered_by_cases": ["TC_MENU_001"], "skip_reason": None})
+    staged = write_root / artifact
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text(json.dumps(rows), encoding="utf-8")
+
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        validation_attempt=1,
+        review_repair=repair,
+    )
+
+    assert executed.status == "failed"
+    assert executed.failure is not None
+    assert executed.failure.retryable is True
+    assert "unresolved MRC rows must remain skipped_by_scope" in executed.failure.message
+
+
 def test_case_reviewer_applies_frozen_explore_oracle_before_normal_review() -> None:
     reviewer = resource_text("skills/aa-case-reviewer/SKILL.md")
 
@@ -507,7 +698,8 @@ def test_case_reviewer_applies_frozen_explore_oracle_before_normal_review() -> N
     gate = reviewer[reviewer.index(marker) : reviewer.index("**Before doing any work:**")]
     assert "assertion_intent: assert_ideal" in gate
     assert "must not remove its covering case" in gate
-    assert "must not mark its MRC row `skipped_by_scope`" in gate
+    assert "depends only on the frozen obligation `key`" in gate
+    assert "keeps `key` empty and changes that row to `covered`" in gate
 
 
 def test_case_design_repairs_e2e_journey_mapping_from_authenticated_keys() -> None:
@@ -626,7 +818,9 @@ async def test_case_design_prepare_includes_deterministic_validation_feedback(tm
 
     assert prepared.status == "succeeded"
     request = AgentRunRequest.model_validate(prepared.output)
-    business = cast(Mapping[str, object], request.instructions[2].json_content)
+    notice = request.instructions[2].text_content or ""
+    business = cast(Mapping[str, object], request.instructions[3].json_content)
+    assert "capability key is not a declared typed leaf" in notice
     assert business["validation_attempt"] == 1
     assert business["validation_error"] == (
         "capability key is not a declared typed leaf: "

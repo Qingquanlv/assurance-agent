@@ -1194,6 +1194,51 @@ async def test_materialize_keeps_unresolved_obligation_as_explicit_gap(
     assert unresolved["status"] == "skipped_by_scope"
 
 
+@pytest.mark.asyncio
+async def test_api_matrix_null_key_keeps_the_normalized_operation(tmp_path: Path) -> None:
+    def obligation(mrc_id: str, proposed_key: str | None, category: str) -> dict[str, object]:
+        return {
+            "mrc_id": mrc_id,
+            "key": None,
+            "proposed_key": proposed_key,
+            "category": category,
+            "layer": "api",
+            "statement": "required behavior must be verified",
+            "applicability_conditions": [],
+            "expected_basis_refs": [],
+            "impact_row_ids": [],
+            "required": True,
+            "scope_disposition": "included",
+            "exclusion_basis": None,
+            "open_questions": [],
+            "verification_requirements": [],
+        }
+
+    request = _workspace_input(
+        tmp_path,
+        minimum_required_coverage=[obligation("MRC-API-001", CAPABILITY, "api")],
+        matrix_rows=[
+            {
+                "mrc_id": "MRC-API-001",
+                "key": None,
+                "required": True,
+                "covered_by_cases": [],
+                "status": "skipped_by_scope",
+                "skip_reason": "capability_unresolved: frozen plan key is null",
+            }
+        ],
+    )
+
+    result = await execute_task(MaterializeAssessmentHandler(), request, tmp_path)
+
+    assert result.status == "succeeded", result.failure
+    output = AssessmentInputsV1.model_validate(result.output)
+    coverage = json.loads(result.workspace_bytes[output.gaps_ref.path])["minimum_coverage"]
+    row = next(item for item in coverage["items"] if item["mrc_id"] == "MRC-API-001")
+    assert row["key"] == CAPABILITY
+    assert row["status"] == "covered"
+
+
 def test_materializer_claims_allow_reading_frozen_goal_sources() -> None:
     contract = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
     assert isinstance(contract.resources, ResourceClaimTemplate)

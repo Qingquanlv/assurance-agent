@@ -5,6 +5,7 @@ from __future__ import annotations
 from assurance_intake.contracts.common import TEST_FAMILY_ORDER, TestFamily
 from assurance_intake.contracts.explore import TestStrategyV1
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, impact_required_families
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_intake.contracts.plan import (
     FallbackDetail,
     PreparedQualityGoalV1,
@@ -107,8 +108,10 @@ def resolve_plan(
     proposed: tuple[TestFamily, ...],
     quality_goal: PreparedQualityGoalV1,
     inventory: ChangeImpactInventoryV1,
+    exploration_ref: EvidenceArtifactRefV1 | None = None,
 ) -> ResolvedAssurancePlan:
-    if quality_goal.obligations_ref != request.exploration_ref:
+    stored_exploration = exploration_ref or request.exploration_ref
+    if quality_goal.obligations_ref != stored_exploration:
         raise InputError("quality goal obligations must bind the exploration artifact")
     if quality_goal.source_resource_digests != request.source_resource_digests:
         raise InputError("quality goal sources do not match the resolver input")
@@ -184,7 +187,7 @@ def resolve_plan(
             "resolved_budgets": request.budgets.model_dump(mode="json"),
             "policy_resource_id": request.policy_resource_id,
             "policy_digest": request.policy_digest,
-            "exploration_ref": request.exploration_ref.model_dump(mode="json"),
+            "exploration_ref": stored_exploration.model_dump(mode="json"),
             "impact_inventory_ref": request.impact_inventory_ref.model_dump(mode="json"),
             "resolution_reasons": [reason.model_dump(mode="json") for reason in reasons],
         }

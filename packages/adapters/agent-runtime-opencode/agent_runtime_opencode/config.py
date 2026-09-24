@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal, Self
 from urllib.parse import urlparse
 
-from pydantic import AnyHttpUrl, Field, ValidationError, field_validator
+from pydantic import AnyHttpUrl, Field, ValidationError, field_validator, model_serializer
 
 from graph_engine.plugin_api import FrozenModel, TaskRequest
 
@@ -37,6 +37,7 @@ class OpenCodeAdapterConfig(FrozenModel):
     secret_handle: str = Field(min_length=1)
     protocol_profile: Literal["opencode-http-v1"] = _PROTOCOL_PROFILE
     project_scope: str = Field(min_length=1)
+    parent_session_id: str | None = None
     request_timeout_seconds: float = Field(gt=0, le=300)
     observation_horizon_seconds: float = Field(gt=0, le=3600)
     progress_timeout_seconds: float = Field(default=300, gt=0, le=3600)
@@ -44,6 +45,13 @@ class OpenCodeAdapterConfig(FrozenModel):
     cancel_timeout_seconds: float = Field(gt=0, le=300)
     max_response_bytes: int = Field(gt=0, le=4_000_000)
     adapter_configuration_digest: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: object) -> object:
+        serialized = handler(self)  # type: ignore[operator]
+        if isinstance(serialized, dict) and serialized.get("parent_session_id") is None:
+            serialized.pop("parent_session_id", None)
+        return serialized
 
     @field_validator("endpoint")
     @classmethod

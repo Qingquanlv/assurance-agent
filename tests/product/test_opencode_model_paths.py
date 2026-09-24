@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
+from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_document
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 
@@ -43,16 +43,19 @@ def model_workspace(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
         "id": "ses-paths",
         "directory": str(project.resolve()),
         "agent": "assurance-v1-doc-author",
-        "title": workspace_binding_title(
-            session_id="ses-paths",
-            agent_profile="assurance-v1-doc-author",
-            project_root=project,
-            write_root=_WRITE_ROOT,
-            allowed_outputs=(_LOGICAL,),
-            task_id="task-1",
-            attempt=1,
-            attempt_id="attempt-1",
-        ),
+        "title": "Assurance · Fixture · task-1 · #1",
+        "metadata": {
+            "workspace_binding": workspace_binding_document(
+                agent_profile="assurance-v1-doc-author",
+                project_root=project,
+                write_root=_WRITE_ROOT,
+                allowed_outputs=(_LOGICAL,),
+                task_id="task-1",
+                attempt=1,
+                attempt_id="attempt-1",
+                activity_label="Fixture",
+            ),
+        },
     }
     return project, plugin, session
 

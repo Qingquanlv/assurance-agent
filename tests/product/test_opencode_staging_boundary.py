@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 from agent_runtime_contracts import AgentWorkspaceV1
-from agent_runtime_contracts.schema import canonical_digest, canonical_json_bytes
+from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.plugin_api import InvocationMetadata, TaskContext, TaskWorkspaceIdentity
 
-from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
+from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_document
 
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
@@ -48,10 +48,9 @@ try {
 """
 
 
-def _binding_title(
+def _binding(
     project: Path,
     *,
-    session_id: str = _SESSION_ID,
     agent_profile: str = _AGENT,
     write_root: str = _WRITE_ROOT,
     allowed_outputs: tuple[str, ...] = (_ALLOWED,),
@@ -59,9 +58,9 @@ def _binding_title(
     task_id: str = "task-1",
     attempt: int = 1,
     attempt_id: str = "attempt-1",
-) -> str:
-    return workspace_binding_title(
-        session_id=session_id,
+    activity_label: str = "Fixture",
+) -> dict[str, object]:
+    return workspace_binding_document(
         agent_profile=agent_profile,
         project_root=project,
         write_root=write_root,
@@ -69,18 +68,27 @@ def _binding_title(
         task_id=task_id,
         attempt=attempt,
         attempt_id=attempt_id,
+        activity_label=activity_label,
         read_roots=read_roots,
     )
 
 
 def _session(
-    project: Path, title: str, *, agent: str = _AGENT, session_id: str = _SESSION_ID
+    project: Path,
+    binding: Mapping[str, object] | None = None,
+    *,
+    agent: str = _AGENT,
+    session_id: str = _SESSION_ID,
 ) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    if binding is not None:
+        metadata["workspace_binding"] = dict(binding)
     return {
         "id": session_id,
         "directory": str(project.resolve()),
         "agent": agent,
-        "title": title,
+        "title": "Assurance · Fixture · task-1 · #1",
+        "metadata": metadata,
     }
 
 
@@ -159,7 +167,7 @@ def test_retro_contract_output_passes_both_profile_and_session_boundaries(tmp_pa
             action = rule
     assert action == "allow"
     plugin = _install(tmp_path)
-    title = _binding_title(tmp_path, allowed_outputs=(logical,))
+    title = _binding(tmp_path, allowed_outputs=(logical,))
     allowed = _allowed(
         _run(
             plugin,
@@ -250,72 +258,74 @@ def _workspace(*, agent_profile: str = _AGENT) -> AgentWorkspaceV1:
     return AgentWorkspaceV1.model_validate({**payload, "identity_digest": canonical_digest(payload)})
 
 
-def test_product_and_adapter_builders_produce_the_same_plugin_acceptable_title(tmp_path: Path) -> None:
-    from agent_runtime_opencode.workspace_binding import workspace_binding_title as adapter_title
+def test_product_and_adapter_builders_produce_the_same_plugin_acceptable_binding(tmp_path: Path) -> None:
+    from agent_runtime_opencode.workspace_binding import workspace_binding_for
 
     project = tmp_path / "project"
     project.mkdir()
     workspace = _workspace()
-    product = _binding_title(project, agent_profile=workspace.agent_profile)
-    adapter = adapter_title(
+    product = _binding(project, agent_profile=workspace.agent_profile)
+    adapter = workspace_binding_for(
         _task_context(project),
         workspace,
-        _SESSION_ID,
+        activity_label="Fixture",
     )
     assert adapter == product
-    assert adapter.startswith("aa-workspace-binding-v1:")
+    assert "session_id" not in adapter
     plugin = _install(project)
     session = _session(project, adapter, agent=workspace.agent_profile)
-    document = json.loads(adapter.split(":", 1)[1])
-    assert document["agent_profile"] == workspace.agent_profile
-    assert session["agent"] == document["agent_profile"]
+    assert adapter["agent_profile"] == workspace.agent_profile
+    assert session["agent"] == adapter["agent_profile"]
     args = _allowed(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}))
     assert args["filePath"] == str(_staged(project, _ALLOWED))
 
 
-def test_stamped_production_title_is_plugin_acceptable_and_session_agent_matches(tmp_path: Path) -> None:
-    from agent_runtime_opencode.workspace_binding import workspace_binding_title as adapter_title
+def test_stored_binding_is_plugin_acceptable_and_session_agent_matches(tmp_path: Path) -> None:
+    from agent_runtime_opencode.workspace_binding import workspace_binding_for
 
     project = tmp_path / "project"
     project.mkdir()
     workspace = _workspace(agent_profile="assurance-v1-executor")
-    title = adapter_title(_task_context(project), workspace, _SESSION_ID)
-    document = json.loads(title.split(":", 1)[1])
+    document = workspace_binding_for(
+        _task_context(project),
+        workspace,
+        activity_label="Fixture",
+    )
     assert document["agent_profile"] == "assurance-v1-executor"
-    session = _session(project, title, agent=workspace.agent_profile)
+    session = _session(project, document, agent=workspace.agent_profile)
     assert session["agent"] == document["agent_profile"]
     plugin = _install(project)
     args = _allowed(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}))
     assert args["filePath"] == str(_staged(project, _ALLOWED))
 
 
-def test_workspace_binding_is_digest_bound_and_requires_session_identity(tmp_path: Path) -> None:
+def test_workspace_binding_is_digest_bound_without_session_id(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    title = _binding_title(project)
-    assert title.startswith("aa-workspace-binding-v1:")
-    document = json.loads(title.split(":", 1)[1])
+    document = dict(_binding(project))
     digest = document.pop("digest")
     assert digest == canonical_digest(document)
-    assert document["session_id"] == _SESSION_ID
+    assert "session_id" not in document
+    assert document["schema_version"] == "2"
     assert document["agent_profile"] == _AGENT
     assert document["project_root_digest"] == canonical_digest(str(project.resolve()))
     assert document["write_root"] == _WRITE_ROOT
     assert document["allowed_outputs"] == [_ALLOWED]
     assert document["read_roots"] == []
+    assert document["activity_label"] == "Fixture"
     assert document["task_id"] == "task-1"
     assert document["attempt"] == 1
     assert document["attempt_id"] == "attempt-1"
-    with pytest.raises(ValueError, match="session"):
-        workspace_binding_title(
-            session_id="",
-            agent_profile=_AGENT,
+    with pytest.raises(ValueError, match="agent profile"):
+        workspace_binding_document(
+            agent_profile="",
             project_root=project,
             write_root=_WRITE_ROOT,
             allowed_outputs=(_ALLOWED,),
             task_id="task-1",
             attempt=1,
             attempt_id="attempt-1",
+            activity_label="Fixture",
         )
 
 
@@ -327,7 +337,7 @@ def test_native_write_and_edit_redirect_allowed_logical_path_to_write_root(
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     args = _allowed(_run(plugin, session=session, tool=tool, args={key: _ALLOWED}))
     assert args[key] == str(_staged(project, _ALLOWED))
     assert (project / _ALLOWED).exists() is False
@@ -344,7 +354,7 @@ def test_repair_mutation_copies_the_existing_output_to_staging_before_redirect(
     baseline.write_bytes(b"baseline bytes\n")
     baseline.chmod(0o640)
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     if tool == "edit":
         original_args: Mapping[str, object] = {
             "filePath": _ALLOWED,
@@ -392,7 +402,7 @@ def test_repair_copy_on_write_rejects_non_private_project_baselines(
         (project / "qa").symlink_to(outside_qa, target_is_directory=True)
         outside = outside_baseline
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
 
     denied = _run(
         plugin,
@@ -416,7 +426,7 @@ def test_repair_copy_on_write_never_overwrites_an_existing_staged_output(tmp_pat
     staged.parent.mkdir(parents=True)
     staged.write_text("prior staged repair\n", encoding="utf-8")
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
 
     args = _allowed(
         _run(
@@ -438,7 +448,7 @@ def test_new_file_write_does_not_copy_a_project_baseline(tmp_path: Path) -> None
     baseline.parent.mkdir(parents=True)
     baseline.write_text("baseline\n", encoding="utf-8")
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
 
     args = _allowed(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}))
 
@@ -455,7 +465,7 @@ def test_every_apply_patch_header_is_redirected_to_write_root(tmp_path: Path, he
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     if header == "Move to":
         patch = (
             "*** Begin Patch\n"
@@ -488,7 +498,7 @@ def test_reads_prefer_staged_overlay(tmp_path: Path) -> None:
     staged.parent.mkdir(parents=True)
     staged.write_text("staged\n", encoding="utf-8")
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     args = _allowed(_run(plugin, session=session, tool="read", args={"filePath": _ALLOWED}))
     assert args["filePath"] == str(staged)
 
@@ -500,7 +510,7 @@ def test_reads_fall_back_to_project_when_overlay_is_absent(tmp_path: Path) -> No
     canonical.parent.mkdir(parents=True)
     canonical.write_text("canonical\n", encoding="utf-8")
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     args = _allowed(_run(plugin, session=session, tool="read", args={"filePath": _ALLOWED}))
     assert Path(str(args["filePath"])).resolve() == canonical.resolve()
 
@@ -530,7 +540,7 @@ def test_writes_outside_exact_allowed_outputs_are_denied(
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     _denied(_run(plugin, session=session, tool=tool, args=args), "not allowed")
 
 
@@ -540,7 +550,7 @@ def test_ambient_glob_permission_is_not_authority(tmp_path: Path) -> None:
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, allowed_outputs=(_ALLOWED,)),
+        _binding(project, allowed_outputs=(_ALLOWED,)),
         agent="assurance-v1-doc-author",
     )
     _denied(
@@ -560,7 +570,7 @@ def test_different_attempt_binding_cannot_write_this_attempt(tmp_path: Path) -> 
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(
+        _binding(
             project,
             write_root="qa/.staging/task-1/attempt-2",
             attempt=2,
@@ -575,7 +585,7 @@ def test_different_attempt_binding_cannot_write_this_attempt(tmp_path: Path) -> 
     _denied(
         _run(
             plugin,
-            session=_session(project, _binding_title(project)),
+            session=_session(project, _binding(project)),
             tool="write",
             args={"filePath": "qa/.staging/task-1/attempt-2/qa/proposal.md"},
         ),
@@ -592,7 +602,7 @@ def test_symlink_write_targets_are_denied(tmp_path: Path) -> None:
     link.parent.mkdir(parents=True)
     link.symlink_to(outside)
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     _denied(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}), "symlink")
 
 
@@ -600,7 +610,7 @@ def test_shell_escapes_and_root_swaps_are_denied(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     parent = project.parent
     for command in (
         f"mv {project} {parent / 'swapped'}",
@@ -616,43 +626,40 @@ def test_shell_escapes_and_root_swaps_are_denied(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "title",
-    ["", "aa:activity-1", "aa-workspace-binding-v1:{", "aa-workspace-binding-v1:{}"],
+    "binding",
+    [None, {}, {"schema_version": "1"}, {"schema_version": "2"}],
 )
-def test_missing_or_invalid_bindings_are_denied(tmp_path: Path, title: str) -> None:
+def test_missing_or_invalid_bindings_are_denied(tmp_path: Path, binding: dict[str, object] | None) -> None:
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    session = _session(project, title)
+    session = _session(project, binding)
+    session["title"] = "aa-workspace-binding-v1:{}"
     _denied(_run(plugin, session=session, tool="write", args={"filePath": _ALLOWED}), "binding")
 
 
-def test_binding_session_and_digest_must_match(tmp_path: Path) -> None:
+def test_binding_digest_and_exact_keys_must_match(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    forged = json.loads(_binding_title(project).split(":", 1)[1])
+    forged = dict(_binding(project))
     forged["session_id"] = "ses-other"
     forged["digest"] = canonical_digest({key: value for key, value in forged.items() if key != "digest"})
     _denied(
         _run(
             plugin,
-            session=_session(
-                project, "aa-workspace-binding-v1:" + canonical_json_bytes(forged).decode("utf-8")
-            ),
+            session=_session(project, forged),
             tool="write",
             args={"filePath": _ALLOWED},
         ),
         "binding",
     )
-    tampered = json.loads(_binding_title(project).split(":", 1)[1])
+    tampered = dict(_binding(project))
     tampered["digest"] = "0" * 64
     _denied(
         _run(
             plugin,
-            session=_session(
-                project, "aa-workspace-binding-v1:" + json.dumps(tampered, separators=(",", ":"))
-            ),
+            session=_session(project, tampered),
             tool="write",
             args={"filePath": _ALLOWED},
         ),
@@ -679,7 +686,7 @@ def test_executor_execution_view_shell_is_allowed(tmp_path: Path) -> None:
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(
+        _binding(
             project,
             agent_profile="assurance-v1-executor",
             read_roots=("qa",),
@@ -716,7 +723,7 @@ def test_executor_read_permission_does_not_authorize_runner_outputs(tmp_path: Pa
     plugin = _install(tmp_path)
     session = _session(
         tmp_path,
-        _binding_title(
+        _binding(
             tmp_path,
             agent_profile="assurance-v1-executor",
             allowed_outputs=(),
@@ -750,7 +757,7 @@ def test_executor_keeps_canonical_input_paths_and_external_outputs(tmp_path: Pat
     plugin = _install(tmp_path)
     session = _session(
         tmp_path,
-        _binding_title(
+        _binding(
             tmp_path,
             agent_profile="assurance-v1-executor",
             allowed_outputs=(),
@@ -768,9 +775,7 @@ def test_executor_cannot_write_locust_csv_into_readable_tests(tmp_path: Path, fl
     plugin = _install(tmp_path)
     session = _session(
         tmp_path,
-        _binding_title(
-            tmp_path, agent_profile="assurance-v1-executor", allowed_outputs=(), read_roots=("qa",)
-        ),
+        _binding(tmp_path, agent_profile="assurance-v1-executor", allowed_outputs=(), read_roots=("qa",)),
         agent="assurance-v1-executor",
     )
     command = (
@@ -786,7 +791,7 @@ def test_executor_playwright_config_view_shell_is_allowed(tmp_path: Path) -> Non
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(
+        _binding(
             project,
             agent_profile="assurance-v1-executor",
             read_roots=("qa",),
@@ -803,7 +808,7 @@ def test_executor_shell_rejects_a_sibling_attempt_execution_view(tmp_path: Path)
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(
+        _binding(
             project,
             agent_profile="assurance-v1-executor",
             read_roots=("qa",),
@@ -827,7 +832,7 @@ def test_executor_cannot_overwrite_the_authenticated_execution_view(tmp_path: Pa
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(
+        _binding(
             project,
             agent_profile="assurance-v1-executor",
             read_roots=("qa",),
@@ -852,7 +857,7 @@ def test_executor_read_is_confined_to_the_authenticated_execution_view(tmp_path:
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(
+        _binding(
             project,
             agent_profile="assurance-v1-executor",
             read_roots=("qa",),
@@ -884,20 +889,19 @@ def test_tampered_execution_read_root_is_rejected_by_binding_digest(tmp_path: Pa
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    document = json.loads(
-        _binding_title(
+    document = dict(
+        _binding(
             project,
             agent_profile="assurance-v1-executor",
             read_roots=("qa",),
-        ).split(":", 1)[1]
+        )
     )
     document["read_roots"] = ["app"]
-    title = "aa-workspace-binding-v1:" + canonical_json_bytes(document).decode("utf-8")
 
     _denied(
         _run(
             plugin,
-            session=_session(project, title, agent="assurance-v1-executor"),
+            session=_session(project, document, agent="assurance-v1-executor"),
             tool="bash",
             args={"command": _EXECUTOR_VIEW_COMMAND},
         ),
@@ -909,21 +913,20 @@ def test_signed_noncanonical_execution_read_roots_are_rejected(tmp_path: Path) -
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    document = json.loads(
-        _binding_title(
+    document = dict(
+        _binding(
             project,
             agent_profile="assurance-v1-executor",
             read_roots=("qa",),
-        ).split(":", 1)[1]
+        )
     )
     document["read_roots"] = ["qa", "qa"]
     document["digest"] = canonical_digest({key: value for key, value in document.items() if key != "digest"})
-    title = "aa-workspace-binding-v1:" + canonical_json_bytes(document).decode("utf-8")
 
     _denied(
         _run(
             plugin,
-            session=_session(project, title, agent="assurance-v1-executor"),
+            session=_session(project, document, agent="assurance-v1-executor"),
             tool="bash",
             args={"command": _EXECUTOR_VIEW_COMMAND},
         ),
@@ -937,7 +940,7 @@ def test_executor_project_root_mv_is_denied(tmp_path: Path) -> None:
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, agent_profile="assurance-v1-executor"),
+        _binding(project, agent_profile="assurance-v1-executor"),
         agent="assurance-v1-executor",
     )
     _denied(
@@ -957,7 +960,7 @@ def test_executor_chained_python_rename_after_view_substring_is_denied(tmp_path:
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, agent_profile="assurance-v1-executor"),
+        _binding(project, agent_profile="assurance-v1-executor"),
         agent="assurance-v1-executor",
     )
     command = (
@@ -973,7 +976,7 @@ def test_executor_echo_view_then_rm_outside_view_is_denied(tmp_path: Path) -> No
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, agent_profile="assurance-v1-executor"),
+        _binding(project, agent_profile="assurance-v1-executor"),
         agent="assurance-v1-executor",
     )
     _denied(
@@ -1004,7 +1007,7 @@ def test_executor_cwd_root_mutation_bypasses_are_denied_by_installed_plugin(
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, agent_profile="assurance-v1-executor"),
+        _binding(project, agent_profile="assurance-v1-executor"),
         agent="assurance-v1-executor",
     )
     _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
@@ -1028,7 +1031,7 @@ def test_executor_cwd_output_flags_are_denied_by_installed_plugin(tmp_path: Path
     plugin = _install(project)
     session = _session(
         project,
-        _binding_title(project, agent_profile="assurance-v1-executor"),
+        _binding(project, agent_profile="assurance-v1-executor"),
         agent="assurance-v1-executor",
     )
     _denied(_run(plugin, session=session, tool="bash", args={"command": command}), "shell")
@@ -1038,7 +1041,7 @@ def test_artifact_write_redirects_allowed_logical_path_to_write_root(tmp_path: P
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     args = _allowed(_run(plugin, session=session, tool="artifact_write", args={"filePath": _ALLOWED}))
     assert args["filePath"] == str(_staged(project, _ALLOWED))
 
@@ -1047,7 +1050,7 @@ def test_author_profile_cannot_run_execution_view_shell(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     _denied(
         _run(plugin, session=session, tool="bash", args={"command": _EXECUTOR_VIEW_COMMAND}),
         "shell",
@@ -1059,7 +1062,7 @@ def test_adversarial_rename_replace_and_swap_of_project_or_output_parent_are_den
     project.mkdir()
     (project / "qa").mkdir(parents=True)
     plugin = _install(project)
-    session = _session(project, _binding_title(project))
+    session = _session(project, _binding(project))
     output_parent = "qa"
     for tool, args in (
         ("write", {"filePath": str(project)}),

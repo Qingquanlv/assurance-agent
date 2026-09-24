@@ -615,17 +615,20 @@ Minimum Required Coverage keys are a **closed set**. Do **not** freely invent MR
 |---|---|
 | `data_integrity` / `negative` | `entities.<entity>.constraints.<key>` from `.aa/data-knowledge.yaml`, or `auth.*` / `auth_matrix.*` |
 | `e2e` / `e2e_if_enabled` | Declared journey keys already present in advisory MRC / project journey set (A4 denominator) — do not invent new journey names |
-| `api` | Free-form operation names (not a DataKnowledge leaf) |
+| `api` | Copy the frozen row's `key` exactly. Do not read or write `proposed_key`. A frozen `key` is covered; a frozen empty `key` stays empty and is `skipped_by_scope`. |
 
-**When a needed `data_integrity` / `negative` / auth / journey key is missing from the closed set:**
+**When a frozen obligation `key` is empty:**
 
 1. Do not create a data-knowledge proposal file; it is not an authorized output.
    Record the missing closed key under `proposal.md` **Data Needs**.
 2. Keep the MRC inventory complete: every advisory MRC item still gets exactly
-   one matrix row. Preserve the frozen `mrc_id`; use `key: null`,
-   `required: true`, `status: skipped_by_scope`, an empty `covered_by_cases`,
-   and a `skip_reason` beginning `capability_unresolved:`. Even when an oracle
-   is known, do not claim a closed-key MRC is covered before its key resolves.
+   one matrix row. Copy the frozen `mrc_id` and the frozen `key`. When that
+   `key` has a value, set `status: covered` and fill `covered_by_cases`. When
+   that `key` is empty, set `status: skipped_by_scope`, leave
+   `covered_by_cases` empty, and set `skip_reason` beginning
+   `capability_unresolved:`. Do not copy `proposed_key` into the matrix; the
+   author schema rejects that field. Do not invent a key the frozen row does
+   not already contain.
    When the advisory expansion lacks a frozen oracle, include that fact in the
    same `skip_reason` and narrow dependent assertions.
 3. Do not put the unavailable key in case `trace`. Case `trace`
@@ -637,7 +640,8 @@ Self-review must fail if any `data_integrity` / `negative` / journey MRC key was
 invented as authenticated vocabulary or if any unauthorized proposal file was written.
 Self-review must also fail when any item from every advisory
 `minimum_required_coverage` category is absent from the matrix. A required row
-may be `skipped_by_scope`, but it may not disappear.
+whose frozen `key` is empty is `skipped_by_scope`. A required row whose frozen
+`key` has a value is `covered`. A row may not disappear.
 
 ---
 
@@ -1105,12 +1109,12 @@ capability leaves and each value must be `{covered: true}` as shown above. Do no
 put MRC IDs or an intermediate grouping key such as `minimum_required_coverage`
 inside `trace`; MRC-to-case mapping belongs in the separate coverage matrix.
 
-MRC keys must obey **MRC closed-key discipline** above: never invent
-closed-category keys. Record an unknown key in `proposal.md` **Data Needs** and
-retain its matrix row with `key: null`, `status: skipped_by_scope`, and
-`skip_reason: capability_unresolved` followed by the precise reason. Keep the
-frozen `mrc_id`; multiple unresolved rows may have null keys. Do not write a
-knowledge-proposal file or a silent covered matrix entry.
+MRC keys must obey **MRC closed-key discipline** above: copy the frozen `key`
+and do not write `proposed_key`. A frozen key with a value is `covered` and
+names its cases. A frozen empty key stays empty, uses `skipped_by_scope`, and
+records `skip_reason: capability_unresolved:` followed by the precise reason.
+Keep the frozen `mrc_id`; multiple unresolved rows may have null keys. Do not
+write a knowledge-proposal file or a covered matrix entry for an empty key.
 
 Also write `qa/results/trace/minimum-coverage-matrix.json`:
 
@@ -1119,8 +1123,14 @@ Also write `qa/results/trace/minimum-coverage-matrix.json`:
   key: refresh_api
   required: true
   covered_by_cases: [TC_API_012, TC_API_013]
-  status: covered | skipped_by_scope
+  status: covered
   skip_reason: null
+- mrc_id: MRC-API-007
+  key: null
+  required: true
+  covered_by_cases: []
+  status: skipped_by_scope
+  skip_reason: "capability_unresolved: frozen key is empty"
 - mrc_id: MRC-NEGATIVE-009
   key: null
   required: true
@@ -1128,6 +1138,10 @@ Also write `qa/results/trace/minimum-coverage-matrix.json`:
   status: skipped_by_scope
   skip_reason: "capability_unresolved: no matching closed leaf"
 ```
+
+An API row copies its frozen `key` when that key is present. When the frozen
+`key` is empty, the matrix key stays empty and the row is skipped. Do not fill
+the matrix key from `proposed_key`.
 
 This is a required case-design output, not reviewer-owned diagnostics. Include it
 in the final `output_files` receipt and read it back before returning. Every

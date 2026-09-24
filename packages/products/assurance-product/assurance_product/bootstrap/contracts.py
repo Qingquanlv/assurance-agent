@@ -110,7 +110,8 @@ class RunSpecV1(FrozenModel):
 class OpenCodeHandleV1(FrozenModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     endpoint: str
-    pid: int
+    pid: int | None = None
+    ownership: Literal["private", "shared"] = "private"
 
 
 class BootstrapStatusV1(FrozenModel):
@@ -118,6 +119,7 @@ class BootstrapStatusV1(FrozenModel):
     phase: BootstrapPhase
     change_id: str
     opencode: OpenCodeHandleV1 | None = None
+    root_session_id: str | None = None
     status: Mapping[str, Any] = Field(default_factory=dict)
     started_at: str | None = None
     updated_at: str | None = None

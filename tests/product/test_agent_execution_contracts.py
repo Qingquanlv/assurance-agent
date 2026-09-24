@@ -130,7 +130,7 @@ def test_opencode_agent_installation_is_complete_noninteractive_and_idempotent(t
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 def test_opencode_boundary_confines_apply_patch_to_agent_write_surface(tmp_path: Path) -> None:
-    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
+    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_document
 
     project = tmp_path / "project"
     project.mkdir()
@@ -158,8 +158,7 @@ try {
 
     def run(agent: str, target: str, allowed: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
         patch_text = f"*** Begin Patch\n*** Update File: {target}\n@@\n-old\n+new\n*** End Patch"
-        title = workspace_binding_title(
-            session_id="ses-test",
+        binding = workspace_binding_document(
             agent_profile=agent,
             project_root=project,
             write_root="qa/.staging/task-1/attempt-1",
@@ -167,6 +166,7 @@ try {
             task_id="task-1",
             attempt=1,
             attempt_id="attempt-1",
+            activity_label="Fixture",
         )
         return subprocess.run(
             [
@@ -181,7 +181,8 @@ try {
                             "id": "ses-test",
                             "directory": str(project.resolve()),
                             "agent": agent,
-                            "title": title,
+                            "title": "Assurance · Fixture · task-1 · #1",
+                            "metadata": {"workspace_binding": binding},
                         },
                         "patchText": patch_text,
                     }
@@ -206,7 +207,7 @@ try {
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
 def test_opencode_boundary_confines_read_search_paths_to_session(tmp_path: Path) -> None:
-    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_title
+    from assurance_product.opencode_agents import install_opencode_agents, workspace_binding_document
 
     project = tmp_path / "project"
     project.mkdir()
@@ -214,8 +215,7 @@ def test_opencode_boundary_confines_read_search_paths_to_session(tmp_path: Path)
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
     _config, plugin = install_opencode_agents(project)
-    title = workspace_binding_title(
-        session_id="ses-test",
+    binding = workspace_binding_document(
         agent_profile="assurance-v1-explorer",
         project_root=project,
         write_root="qa/.staging/task-1/attempt-1",
@@ -223,6 +223,7 @@ def test_opencode_boundary_confines_read_search_paths_to_session(tmp_path: Path)
         task_id="task-1",
         attempt=1,
         attempt_id="attempt-1",
+        activity_label="Fixture",
     )
     driver = r"""
 import { pathToFileURL } from "node:url";
@@ -258,7 +259,8 @@ try {
                             "id": "ses-test",
                             "directory": str(project.resolve()),
                             "agent": "assurance-v1-explorer",
-                            "title": title,
+                            "title": "Assurance · Fixture · task-1 · #1",
+                            "metadata": {"workspace_binding": binding},
                         },
                         "tool": tool,
                         "args": args,

@@ -72,6 +72,7 @@ class _SkillInputV1(FrozenModel):
     change_id: str = Field(min_length=1)
     capability_leafs: tuple[str, ...]
     artifact_paths: tuple[str, ...]
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @field_validator("change_id")
     @classmethod

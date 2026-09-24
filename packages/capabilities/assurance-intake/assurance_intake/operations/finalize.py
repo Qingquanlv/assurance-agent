@@ -50,7 +50,7 @@ from assurance_intake.operations.obligations import (
     resolve_requirement_quote,
 )
 from assurance_intake.contracts.agent import TrustedIntakeSourcesV1
-from assurance_intake.contracts.obligations import ExpectedBasisV1, SourceRefV1
+from assurance_intake.contracts.obligations import ExpectedBasisV1, PreparedObligationV1, SourceRefV1
 from assurance_intake.contracts.explore import RUN_SPEC_SNAPSHOT_PATH
 from assurance_intake.contracts.cases import _require_impact_row_coverage
 from assurance_intake.contracts.impact import ChangeImpactInventoryV1, validate_inventory_references
@@ -644,11 +644,11 @@ def _load_minimum_coverage_matrix(
     return document
 
 
-def _require_frozen_unresolved_rows(
-    workspace: Path,
-    plan: ResolvedAssurancePlan,
-    matrix: MinimumCoverageMatrixAuthoring,
-) -> None:
+_STATUS_COVERED = re.compile(r"(?<![a-z_])covered(?!_by)")
+_MATRIX_MUTABLE_FIELDS = frozenset({"status", "covered_by_cases", "skip_reason"})
+
+
+def _bound_obligations(workspace: Path, plan: ResolvedAssurancePlan) -> tuple[PreparedObligationV1, ...]:
     ref = plan.quality_goal.obligations_ref
     try:
         data = _read_regular_bytes(workspace, ref.path, kind="frozen exploration")
@@ -658,27 +658,88 @@ def _require_frozen_unresolved_rows(
         raise InputError("frozen exploration does not match the assurance plan")
     try:
         exploration = load_exploration_document(data)
-        obligations = (
-            exploration.minimum_required_coverage
-            if isinstance(exploration, PreparedExploreV1)
-            else normalize_goal_obligations(
-                exploration,
-                capability_leafs=frozenset(
-                    _authenticated_capability_leafs(
-                        workspace,
-                        plan.quality_goal.source_resource_digests,
-                    )
-                ),
-                journey_keys=frozenset(
-                    _authenticated_journey_keys(
-                        workspace,
-                        plan.quality_goal.source_resource_digests,
-                    )
-                ),
-            )
+        return normalize_goal_obligations(
+            exploration,
+            capability_leafs=frozenset(
+                _authenticated_capability_leafs(
+                    workspace,
+                    plan.quality_goal.source_resource_digests,
+                )
+            ),
+            journey_keys=frozenset(
+                _authenticated_journey_keys(
+                    workspace,
+                    plan.quality_goal.source_resource_digests,
+                )
+            ),
         )
     except (ValueError, ValidationError) as error:
         raise InputError(f"frozen exploration obligations are invalid: {error}") from error
+
+
+def _instruction_sets_covered(instructions: tuple[str, ...]) -> bool:
+    return _STATUS_COVERED.search("\n".join(instructions).lower()) is not None
+
+
+def _review_requests_matrix_coverage(document: CaseReviewResultV1) -> bool:
+    if document.public_outcome != "needs_fix":
+        return False
+    for item in document.auto_fix_plan:
+        if not isinstance(item, Mapping):
+            continue
+        artifact = item.get("artifact")
+        if not isinstance(artifact, str) or not artifact.endswith("/trace/minimum-coverage-matrix.json"):
+            continue
+        try:
+            edits = normalized_auto_fix_edits(item)
+        except ValueError:
+            continue
+        if _instruction_sets_covered(edits):
+            return True
+    return False
+
+
+def _reject_unbound_covered_repairs(
+    document: CaseReviewResultV1,
+    obligations: tuple[PreparedObligationV1, ...],
+) -> None:
+    """Refuse a patch that covers a row whose frozen key is still empty."""
+    if document.public_outcome != "needs_fix":
+        return
+    bound = {row.mrc_id: row for row in obligations}
+    findings = {finding.id: finding for finding in document.findings}
+    for item in document.auto_fix_plan:
+        if not isinstance(item, Mapping):
+            continue
+        finding_id = item.get("finding_id")
+        artifact = item.get("artifact")
+        if not isinstance(finding_id, str) or finding_id not in findings:
+            continue
+        if not isinstance(artifact, str) or not artifact.endswith("/trace/minimum-coverage-matrix.json"):
+            continue
+        try:
+            edits = normalized_auto_fix_edits(item)
+        except ValueError:
+            continue
+        if not _instruction_sets_covered(edits):
+            continue
+        raw_key = findings[finding_id].locator.key or ""
+        paths = tuple(part.strip() for part in raw_key.split(",") if part.strip())
+        targets = tuple(bound) if paths and set(paths) <= _MATRIX_MUTABLE_FIELDS else paths
+        unbound = [mrc_id for mrc_id in targets if mrc_id in bound and bound[mrc_id].key is None]
+        if unbound:
+            raise OutputError(
+                "review repair cannot mark an unbound MRC covered while its frozen key is empty: "
+                + ", ".join(unbound)
+            )
+
+
+def _require_frozen_unresolved_rows(
+    workspace: Path,
+    plan: ResolvedAssurancePlan,
+    matrix: MinimumCoverageMatrixAuthoring,
+) -> None:
+    obligations = _bound_obligations(workspace, plan)
     unresolved = {row.mrc_id for row in obligations if row.key is None}
     mapped = {row.mrc_id for row in matrix.root if row.key is None}
     missing = sorted(unresolved - mapped)
@@ -1456,6 +1517,7 @@ class CaseReviewFinalizeHandler:
                 images=images,
             )
             _require_frozen_unresolved_rows(context.project_root, plan, matrix)
+            _reject_unbound_covered_repairs(document, _bound_obligations(context.project_root, plan))
             required = [row for row in matrix.root if row.required]
             expected_projection = {
                 "total_required": len(required),

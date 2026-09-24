@@ -14,6 +14,7 @@ from agent_runtime_contracts.schema import (
 from assurance_quality.contracts.agent import FactBaselineResultV1
 from assurance_quality.operations.agent_skills import FACT_BASELINE_RESULT_ID
 from assurance_quality.resource_loader import resource_bytes
+from agent_runtime_opencode.discovery import ADAPTER_VERSION
 from agent_runtime_opencode.observation import classify_provider_state, parse_closed_terminal_result
 from agent_runtime_opencode.reducer import reduce_terminal
 from agent_runtime_opencode.redaction import encoded_canary_forms
@@ -59,7 +60,7 @@ async def test_terminal_reduction_keeps_full_session_state_out_of_result() -> No
     assert thaw_json(result.result_payload) == {"ok": True}
     assert result.result_digest == canonical_digest({"ok": True})
     assert result.adapter_id == "runtime.opencode"
-    assert result.adapter_version == "0.1.0"
+    assert result.adapter_version == ADAPTER_VERSION
     assert result.provider_diff_digest is None
     assert len(result.evidence_digest) == 64
 

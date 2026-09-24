@@ -31,7 +31,10 @@ Before judging whether a case has an owner-defined oracle, read the authenticate
 Explore advisory. When a resolved priority hint or open question declares
 `assertion_intent: assert_ideal`, that ideal behavior is a frozen oracle even when
 the owner requirement omits it and current source does not enforce it. The reviewer
-must not remove its covering case and must not mark its MRC row `skipped_by_scope`.
+must not remove its covering case. Whether the MRC row is `skipped_by_scope`
+depends only on the frozen obligation `key`: a key with a value must not be
+skipped, and an empty key must stay `skipped_by_scope`. Do not emit a repair that
+keeps `key` empty and changes that row to `covered`.
 Treat a source mismatch as the product fault that downstream execution and issue
 analysis are expected to expose.
 
@@ -269,10 +272,12 @@ FOR EACH required MRC item:
 
 Violations:
 
-- required MRC item has no covering case → `needs_fix`, except a frozen
-  `proposed_key: null` row explicitly recorded as `key: null`,
+- required MRC item has no covering case → `needs_fix`, except a row whose
+  frozen `key` is empty and is explicitly recorded as `key: null`,
   `status: skipped_by_scope`, and `skip_reason: capability_unresolved: ...`;
-  that row is a known delivery gap, not an authoring error
+  that row is a known delivery gap, not an authoring error. A frozen key with
+  a value must be `covered`. Never instruct the author to keep `key` empty and
+  also set `status: covered`.
 - matrix references a missing case or a case in the wrong layer → `needs_fix`
 - e2e_if_enabled item is skipped without explicit skipped_by_scope + reason → `needs_fix`
   (the author must either cover it or add the explicit reason). Escalate to human

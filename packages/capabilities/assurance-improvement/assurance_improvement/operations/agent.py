@@ -8,7 +8,14 @@ from typing import Any, Literal, cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
+from agent_runtime_contracts import (
+    AgentRunRequest,
+    AgentWorkspaceV1,
+    InstructionPart,
+    ResultContract,
+    prompt_model_json,
+    with_validation_retry,
+)
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -127,10 +134,13 @@ def prepare_outcome(
     context: TaskContext,
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
-        instructions=(
-            InstructionPart.text("text/plain", resource_text(skill_path)),
-            InstructionPart.text("text/plain", resource_text(persona_path)),
-            InstructionPart.from_json(business.model_dump(mode="json")),
+        instructions=with_validation_retry(
+            (
+                InstructionPart.text("text/plain", resource_text(skill_path)),
+                InstructionPart.text("text/plain", resource_text(persona_path)),
+                InstructionPart.from_json(prompt_model_json(business)),
+            ),
+            getattr(business, "validation_error", None),
         ),
         result_contract=result_contract(result_schema_id),
         execution=binding.execution,

@@ -64,6 +64,7 @@ class QualitySkillInputV1(FrozenModel):
     plan_ref: EvidenceArtifactRefV1
     mapping_digest: str = Field(pattern=_SHA256)
     issue_digest: str | None = Field(default=None, pattern=_SHA256)
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @field_validator("capability_leafs")
     @classmethod

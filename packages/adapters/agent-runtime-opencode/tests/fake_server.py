@@ -114,6 +114,7 @@ class OpenCodeFakeServer:
         self.title_update_bodies: list[dict[str, object]] = []
         self.title_update_response_session_id: str | None = None
         self.reject_title_updates = False
+        self.omit_stored_binding = False
         self.directories: list[str] = []
         self.sse_cursors: list[str | None] = []
         self.terminal_mode: TerminalMode = "success"
@@ -203,6 +204,7 @@ class OpenCodeFakeServer:
         session_id: str | None = None,
         metadata: dict[str, object] | None = None,
         parent_id: str | None = None,
+        directory: str | None = None,
         agent: str = "build",
     ) -> dict[str, object]:
         with self._lock:
@@ -211,7 +213,7 @@ class OpenCodeFakeServer:
             payload: dict[str, object] = {
                 "id": sid,
                 "title": "seed",
-                "directory": self.project_scope,
+                "directory": directory or self.project_scope,
                 "agent": agent,
                 "metadata": dict(metadata if metadata is not None else self.metadata),
             }
@@ -350,13 +352,19 @@ class OpenCodeFakeServer:
             self._seq += 1
             session_id = f"ses_generated_{self._seq}"
             self._created_ids.append(session_id)
+            metadata = parsed.get("metadata")
+            if self.omit_stored_binding and isinstance(metadata, dict):
+                metadata = {key: value for key, value in metadata.items() if key != "workspace_binding"}
             session: dict[str, object] = {
                 "id": session_id,
                 "title": parsed.get("title"),
                 "directory": self.project_scope,
                 "agent": parsed.get("agent"),
-                "metadata": parsed.get("metadata"),
+                "metadata": metadata,
             }
+            parent = parsed.get("parentID")
+            if isinstance(parent, str) and parent:
+                session["parentID"] = parent
             self._sessions[session_id] = session
             return dict(session)
 

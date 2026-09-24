@@ -60,6 +60,7 @@ class ApplyTestRepairInputV1(FrozenModel):
     mapping_ref: EvidenceArtifactRefV1
     source_refs: tuple[EvidenceArtifactRefV1, ...] = Field(min_length=1)
     allowed_test_paths: tuple[str, ...] = Field(min_length=1)
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @field_validator("source_refs")
     @classmethod

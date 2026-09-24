@@ -139,7 +139,57 @@ def start_opencode_serve(
     return OpenCodeHandleV1(endpoint=endpoint, pid=int(process.pid))
 
 
+def attach_shared_opencode(
+    *,
+    endpoint: str,
+    authorization: str | None = None,
+    probe: Callable[..., None] | None = None,
+) -> OpenCodeHandleV1:
+    """Borrow an already running loopback OpenCode server. The handle has no PID."""
+    ready = probe or wait_http_ready
+    health = endpoint.rstrip("/") + "/global/health"
+    try:
+        ready(health, timeout=5, authorization=authorization)
+    except TypeError:
+        ready(health, timeout=5)
+    return OpenCodeHandleV1(endpoint=endpoint, ownership="shared")
+
+
+def create_run_root_session(
+    *,
+    endpoint: str,
+    directory: str,
+    change_id: str,
+    origin_session_id: str | None,
+    opener: Callable[..., object],
+) -> str:
+    """Create one unprompted session for the run. Children use its id as parentID."""
+    created = opener(
+        "POST",
+        "/session",
+        {
+            "title": f"aa:{change_id}",
+            "metadata": {
+                "role": "run_root",
+                "change_id": change_id,
+                "origin_session_id": origin_session_id,
+            },
+        },
+        directory,
+    )
+    if not isinstance(created, Mapping) or not isinstance(created.get("id"), str) or not created["id"]:
+        raise OpenCodeLaunchError("run root session id is missing")
+    if created.get("parentID"):
+        raise OpenCodeLaunchError("run root must not have a parent")
+    messages = opener("GET", f"/session/{created['id']}/message", None, directory)
+    if messages:
+        raise OpenCodeLaunchError("run root must not contain messages")
+    return str(created["id"])
+
+
 def stop_opencode(handle: OpenCodeHandleV1) -> None:
+    if handle.ownership == "shared" or handle.pid is None:
+        return
     try:
         os.killpg(handle.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):

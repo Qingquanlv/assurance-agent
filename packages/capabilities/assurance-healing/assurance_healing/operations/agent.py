@@ -14,6 +14,8 @@ from agent_runtime_contracts import (
     AgentWorkspaceV1,
     InstructionPart,
     ResultContract,
+    prompt_model_json,
+    with_validation_retry,
 )
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue, canonical_digest as engine_digest, canonical_json_bytes
@@ -108,10 +110,13 @@ def prepare_outcome(
     allowed_outputs: tuple[str, ...],
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
-        instructions=(
-            InstructionPart.text("text/plain", resource_text(skill_path)),
-            InstructionPart.text("text/plain", resource_text(FIX_PROPOSER_PERSONA)),
-            InstructionPart.from_json(business.model_dump(mode="json")),
+        instructions=with_validation_retry(
+            (
+                InstructionPart.text("text/plain", resource_text(skill_path)),
+                InstructionPart.text("text/plain", resource_text(FIX_PROPOSER_PERSONA)),
+                InstructionPart.from_json(prompt_model_json(business)),
+            ),
+            getattr(business, "validation_error", None),
         ),
         result_contract=result_contract(result_id, result_file),
         execution=binding.execution,

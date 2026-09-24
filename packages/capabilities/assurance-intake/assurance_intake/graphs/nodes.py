@@ -151,6 +151,7 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     if current is not None and current != resolved.plan.plan_digest:
         raise ValueError("frozen assurance plan cannot be replaced")
     refs = _mapping_items(state.get("preparation_refs"))
+    refs.append(resolved.plan.exploration_ref.model_dump(mode="json"))
     refs.append(resolved.plan_ref.model_dump(mode="json"))
     by_path = {str(item["path"]): item for item in refs}
     return {

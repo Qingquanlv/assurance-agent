@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, JsonValue, model_serializer
 
 from agent_runtime_contracts import AgentRunRequest
 from agent_runtime_contracts.schema import canonical_digest, thaw_json
 from graph_engine.plugin_api import FrozenModel, TaskActivitySnapshot, TaskRequest
 
 
-ADAPTER_VERSION = "0.1.0"
+ADAPTER_VERSION = "0.2.0"
 
 
 class OpenCodeDispatchIncomplete(Exception):
@@ -32,17 +33,41 @@ class OpenCodeDiscoveryMetadata(FrozenModel):
 class OpenCodeActivityReference(FrozenModel):
     profile_identity_digest: str = Field(min_length=64, max_length=64)
     session_id: str | None = None
+    parent_session_id: str | None = None
+    worktree: str | None = None
     metadata_match_digest: str = Field(min_length=64, max_length=64)
     request_digest: str = Field(min_length=64, max_length=64)
     expected_message_id: str = Field(min_length=1)
     prompt_body_digest: str = Field(min_length=64, max_length=64)
     adapter_version: str = Field(min_length=1)
 
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: object) -> object:
+        serialized = handler(self)  # type: ignore[operator]
+        if isinstance(serialized, dict):
+            for key in ("parent_session_id", "worktree"):
+                if serialized.get(key) is None:
+                    serialized.pop(key, None)
+        return serialized
+
+
+class OpenCodeSessionMetadata(FrozenModel):
+    discovery: OpenCodeDiscoveryMetadata
+    workspace_binding: dict[str, JsonValue]
+
 
 class OpenCodeSessionCreateRequest(FrozenModel):
     title: str = Field(min_length=1)
-    metadata: OpenCodeDiscoveryMetadata
+    metadata: OpenCodeSessionMetadata
     agent: str | None = None
+    parentID: str | None = None
+
+
+def discovery_metadata_from_record(record: Mapping[str, object]) -> OpenCodeDiscoveryMetadata:
+    metadata = record.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise ValueError("foreign session metadata")
+    return OpenCodeDiscoveryMetadata.model_validate(metadata.get("discovery"))
 
 
 def adapter_source_digest() -> str:
@@ -104,6 +129,9 @@ def metadata_match_digest(metadata: OpenCodeDiscoveryMetadata) -> str:
 def exact_metadata_matches(
     sessions: Sequence[object],
     expected: OpenCodeDiscoveryMetadata,
+    *,
+    parent_session_id: str | None = None,
+    worktree: str | None = None,
 ) -> tuple[Mapping[str, object], ...]:
     expected_digest = metadata_match_digest(expected)
     matches: list[Mapping[str, object]] = []
@@ -111,10 +139,21 @@ def exact_metadata_matches(
         if not isinstance(session, Mapping):
             continue
         parent = session.get("parentID")
-        if isinstance(parent, str) and parent:
+        if parent_session_id is None:
+            if isinstance(parent, str) and parent:
+                continue
+        elif parent != parent_session_id:
             continue
+        if worktree is not None:
+            directory = session.get("directory")
+            if (
+                not isinstance(directory, str)
+                or not directory
+                or Path(directory).resolve() != Path(worktree).resolve()
+            ):
+                continue
         try:
-            metadata = OpenCodeDiscoveryMetadata.model_validate(session.get("metadata"))
+            metadata = discovery_metadata_from_record(session)
         except (TypeError, ValueError):
             continue
         if metadata_match_digest(metadata) == expected_digest:
@@ -132,10 +171,12 @@ __all__ = [
     "OpenCodeDiscoveryMetadata",
     "OpenCodeDispatchIncomplete",
     "OpenCodeSessionCreateRequest",
+    "OpenCodeSessionMetadata",
     "activation_identity",
     "adapter_source_digest",
     "agent_run_from_request",
     "discovery_metadata",
+    "discovery_metadata_from_record",
     "exact_metadata_matches",
     "expected_message_id",
     "metadata_match_digest",

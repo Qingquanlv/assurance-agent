@@ -228,7 +228,7 @@ def install_plan(
         source_resource_digests=source_digests,
         capability_leafs=capability_leafs,
     )
-    advisory, inventory, quality_goal = prepare_quality_goal(request, project_root=root)
+    advisory, inventory, quality_goal, _obligations = prepare_quality_goal(request, project_root=root)
     selected = tuple(
         family
         for label, family in (

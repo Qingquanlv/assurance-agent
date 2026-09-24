@@ -49,39 +49,39 @@ execution:
   self_healing:
     mode: proposal-only
   model_routing:
-    default: anthropic/deepseek-v4-flash
+    default: deepseek/deepseek-flash
     strict_routes: true
     routes:
-      aa-explore: anthropic/deepseek-v4-flash
-      aa-fact-baseline: anthropic/deepseek-v4-flash
-      aa-case-design: anthropic/glm-5.2
-      aa-api-plan: anthropic/glm-5.2
-      aa-e2e-plan: anthropic/glm-5.2
-      aa-fuzz-plan: anthropic/glm-5.2
-      aa-performance-plan: anthropic/glm-5.2
-      aa-coverage-repair: anthropic/glm-5.2
-      aa-case-reviewer: anthropic/deepseek-v4-flash
-      aa-api-plan-reviewer: anthropic/deepseek-v4-flash
-      aa-e2e-plan-reviewer: anthropic/deepseek-v4-flash
-      aa-fuzz-plan-reviewer: anthropic/deepseek-v4-flash
-      aa-performance-plan-reviewer: anthropic/deepseek-v4-flash
-      aa-api-codegen: anthropic/deepseek-v4-flash
-      aa-api-codegen-fixer: anthropic/deepseek-v4-flash
-      aa-e2e-codegen: anthropic/deepseek-v4-flash
-      aa-e2e-codegen-fixer: anthropic/deepseek-v4-flash
-      aa-fuzz-codegen: anthropic/deepseek-v4-flash
-      aa-performance-codegen: anthropic/deepseek-v4-flash
-      aa-fix-proposal: anthropic/deepseek-v4-flash
-      aa-issue-analyzer: anthropic/deepseek-v4-flash
-      aa-issue-triage-advisor: anthropic/deepseek-v4-flash
-      aa-archive: anthropic/deepseek-v4-flash
-      aa-retro-issue-analysis: anthropic/deepseek-v4-flash
-      aa-retro-workflow-analysis: anthropic/deepseek-v4-flash
-      aa-retro-eval-analysis: anthropic/deepseek-v4-flash
-      aa-retro: anthropic/deepseek-v4-flash
-      aa-improvement-reviewer: anthropic/glm-5.2
+      aa-explore: deepseek/deepseek-flash
+      aa-fact-baseline: deepseek/deepseek-flash
+      aa-case-design: deepseek/deepseek-v4-pro
+      aa-api-plan: deepseek/deepseek-v4-pro
+      aa-e2e-plan: deepseek/deepseek-v4-pro
+      aa-fuzz-plan: deepseek/deepseek-v4-pro
+      aa-performance-plan: deepseek/deepseek-v4-pro
+      aa-coverage-repair: deepseek/deepseek-v4-pro
+      aa-case-reviewer: deepseek/deepseek-flash
+      aa-api-plan-reviewer: deepseek/deepseek-flash
+      aa-e2e-plan-reviewer: deepseek/deepseek-flash
+      aa-fuzz-plan-reviewer: deepseek/deepseek-flash
+      aa-performance-plan-reviewer: deepseek/deepseek-flash
+      aa-api-codegen: deepseek/deepseek-flash
+      aa-api-codegen-fixer: deepseek/deepseek-flash
+      aa-e2e-codegen: deepseek/deepseek-flash
+      aa-e2e-codegen-fixer: deepseek/deepseek-flash
+      aa-fuzz-codegen: deepseek/deepseek-flash
+      aa-performance-codegen: deepseek/deepseek-flash
+      aa-fix-proposal: deepseek/deepseek-flash
+      aa-issue-analyzer: deepseek/deepseek-flash
+      aa-issue-triage-advisor: deepseek/deepseek-flash
+      aa-archive: deepseek/deepseek-flash
+      aa-retro-issue-analysis: deepseek/deepseek-flash
+      aa-retro-workflow-analysis: deepseek/deepseek-flash
+      aa-retro-eval-analysis: deepseek/deepseek-flash
+      aa-retro: deepseek/deepseek-flash
+      aa-improvement-reviewer: deepseek/deepseek-v4-pro
     escalation:
-      model: anthropic/glm-5.2
+      model: deepseek/deepseek-v4-pro
       on_error_kinds:
         - invalid_output
         - forbidden_write

@@ -155,6 +155,7 @@ def _write_deployment_manifest(
     spec: RunSpecV1,
     project_scope: str,
     opencode_endpoint: str,
+    parent_session_id: str | None = None,
 ) -> None:
     routes = {
         contract_id: {
@@ -183,6 +184,7 @@ def _write_deployment_manifest(
             "schema_version": "1",
             "secret_handle": "opencode.token",
             "tls_identity_digest": _TLS_IDENTITY_DIGEST,
+            **({"parent_session_id": parent_session_id} if parent_session_id else {}),
         },
         "routes": routes,
         "permission_profiles": {
@@ -281,6 +283,7 @@ def prepare_composition(
     spec: RunSpecV1,
     opencode_endpoint: str,
     change_id: str,
+    parent_session_id: str | None = None,
 ) -> dict[str, object]:
     if set(PREPARE_IDS) != set(AGENT_EXECUTION_CONTRACTS):
         raise ValueError("PREPARE_IDS drifted from AGENT_EXECUTION_CONTRACTS")
@@ -295,6 +298,7 @@ def prepare_composition(
         spec=spec,
         project_scope=str(project),
         opencode_endpoint=opencode_endpoint,
+        parent_session_id=parent_session_id,
     )
     built = build_deployment_wheel(manifest_path, destination / "binding-wheel")
     _extract_binding_wheel(built.wheel, destination / "binding-extract")

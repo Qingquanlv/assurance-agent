@@ -12,6 +12,7 @@ from agent_runtime_contracts import (
     FrozenExecutionSelection,
     InstructionPart,
     ResultContract,
+    rebind_agent_run_workspace,
 )
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.plugin_api import TaskOutcome
@@ -28,6 +29,10 @@ from agent_runtime_opencode.discovery import (
 )
 from agent_runtime_opencode.handler import OpenCodeHandler, workspace_identity_digest_for
 from agent_runtime_opencode.protocol import OpenCodeProtocolProfile
+from agent_runtime_opencode.workspace_binding import (
+    activity_label_for_session,
+    workspace_binding_for,
+)
 from fake_server import OpenCodeFakeServer  # pyright: ignore[reportMissingImports]
 from graph_engine.plugin_api import (
     InvocationMetadata,
@@ -344,6 +349,39 @@ def _binding_data(config: OpenCodeAdapterConfig) -> dict[str, object]:
     return config.model_dump(mode="json")
 
 
+def metadata_with_discovery(metadata: dict[str, object], **overrides: object) -> dict[str, object]:
+    discovery = metadata["discovery"]
+    if not isinstance(discovery, dict):
+        raise AssertionError("session metadata is missing discovery")
+    return {**metadata, "discovery": {**discovery, **overrides}}
+
+
+def bound_session_metadata(
+    request: TaskRequest,
+    context: TaskContext,
+    snapshot: TaskActivitySnapshot,
+) -> dict[str, object]:
+    discovery = discovery_metadata(
+        request=request,
+        snapshot=snapshot,
+        adapter_source_digest=adapter_source_digest(),
+    )
+    agent_run = rebind_agent_run_workspace(
+        agent_run_from_request(request),
+        project_root=context.project_root,
+        write_root=context.write_root,
+    )
+    label = activity_label_for_session(agent_run, request.node_id)
+    return {
+        "discovery": discovery.model_dump(mode="json"),
+        "workspace_binding": workspace_binding_for(
+            context,
+            agent_run.workspace,
+            activity_label=label,
+        ),
+    }
+
+
 def _open_code_fixture(
     *,
     create_cut: str | None = None,
@@ -372,14 +410,6 @@ def _open_code_fixture(
     config = _config(fake, **(config_overrides or {}))
     request = task_request(run, binding_data=_binding_data(config))
     snapshot = prepared_snapshot(request)
-    metadata = discovery_metadata(
-        request=request,
-        snapshot=snapshot,
-        adapter_source_digest=adapter_source_digest(),
-    )
-    fake.metadata = metadata.model_dump(mode="json")
-    for index in range(existing_matches):
-        fake.add_session(session_id=f"ses_existing_{index + 1}", metadata=fake.metadata)
     port = FakeActivityPort(snapshot)
     heartbeats: list[int] = []
 
@@ -396,6 +426,10 @@ def _open_code_fixture(
         activity=port,
         secrets=secrets if secrets is not None else ExactSecretPort({"opencode.token": _CANARY}),
     )
+    session_metadata = bound_session_metadata(request, context, snapshot)
+    fake.metadata = session_metadata
+    for index in range(existing_matches):
+        fake.add_session(session_id=f"ses_existing_{index + 1}", metadata=fake.metadata)
     return OpenCodeFixture(
         fake=fake,
         handler=OpenCodeHandler(),
@@ -403,7 +437,7 @@ def _open_code_fixture(
         request=request,
         context=context,
         port=port,
-        metadata=metadata.model_dump(mode="json"),
+        metadata=session_metadata,
         heartbeats=heartbeats,
         _root=root,
     )
@@ -493,7 +527,7 @@ def reference_payload(**overrides: object) -> dict[str, object]:
         "request_digest": _SHA,
         "expected_message_id": _SHA,
         "prompt_body_digest": _SHA,
-        "adapter_version": "0.1.0",
+        "adapter_version": ADAPTER_VERSION,
     }
     payload.update(overrides)
     return payload

@@ -10,7 +10,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract
+from agent_runtime_contracts import AgentRunRequest, InstructionPart, ResultContract, with_validation_retry
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import JSONValue
 from graph_engine.frozen_json import thaw_json
@@ -250,14 +250,18 @@ def prepare_codegen_outcome(
     context: TaskContext,
     scope_id: str,
     allowed_outputs: tuple[str, ...],
+    validation_error: str | None = None,
 ) -> TaskOutcome:
     agent_request = AgentRunRequest(
-        instructions=(
-            InstructionPart.text("text/plain", resource_text(skill_path)),
-            InstructionPart.text("text/plain", resource_text(persona_path)),
-            InstructionPart.from_json(scope.model_dump(mode="json")),
-            InstructionPart.from_json(cases.model_dump(mode="json")),
-            InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
+        instructions=with_validation_retry(
+            (
+                InstructionPart.text("text/plain", resource_text(skill_path)),
+                InstructionPart.text("text/plain", resource_text(persona_path)),
+                InstructionPart.from_json(scope.model_dump(mode="json")),
+                InstructionPart.from_json(cases.model_dump(mode="json")),
+                InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
+            ),
+            validation_error,
         ),
         result_contract=codegen_result_contract(result_schema_id),
         execution=binding.execution,
@@ -519,6 +523,7 @@ class CodegenPrepareHandler:
                 context=context,
                 scope_id=business.change_id,
                 allowed_outputs=codegen_outputs(scope),
+                validation_error=business.validation_error,
             )
         except (InputError, ValidationError) as error:
             return failed_input(error)

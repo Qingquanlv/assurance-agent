@@ -42,30 +42,52 @@ def test_activity_reference_is_opaque_and_allows_unknown_session_id() -> None:
         OpenCodeActivityReference.model_validate(reference_payload(authorization="Bearer x"))
 
 
-def test_create_body_forbids_caller_selected_id_and_parent_id() -> None:
+def _session_metadata(discovery: OpenCodeDiscoveryMetadata) -> dict[str, object]:
+    return {
+        "discovery": discovery.model_dump(mode="json"),
+        "workspace_binding": {"schema_version": "2"},
+    }
+
+
+def test_create_body_forbids_caller_selected_id_and_accepts_exact_parent() -> None:
     metadata = OpenCodeDiscoveryMetadata.model_validate(metadata_payload())
-    base = {"title": "aa:activity-1", "metadata": metadata.model_dump(mode="json")}
+    base = {
+        "title": "Assurance · activity · task-1 · #1",
+        "metadata": _session_metadata(metadata),
+    }
     OpenCodeSessionCreateRequest.model_validate(base)
+    child = OpenCodeSessionCreateRequest.model_validate({**base, "parentID": "ses_root"})
+    assert child.parentID == "ses_root"
     with pytest.raises(ValidationError):
         OpenCodeSessionCreateRequest.model_validate({**base, "id": "ses_caller"})
-    with pytest.raises(ValidationError):
-        OpenCodeSessionCreateRequest.model_validate({**base, "parentID": "ses_parent"})
 
 
 def test_exact_metadata_matches_ignore_title_and_exclude_parent_id_children() -> None:
     expected = OpenCodeDiscoveryMetadata.model_validate(metadata_payload())
     foreign = OpenCodeDiscoveryMetadata.model_validate(metadata_payload(activity_id="other"))
     sessions = (
-        {"id": "ses_1", "title": "other-title", "metadata": expected.model_dump(mode="json")},
-        {"id": "ses_2", "title": "aa:activity-1", "metadata": foreign.model_dump(mode="json")},
+        {"id": "ses_1", "title": "other-title", "metadata": _session_metadata(expected)},
+        {"id": "ses_2", "title": "aa:activity-1", "metadata": _session_metadata(foreign)},
         {
             "id": "ses_child",
             "parentID": "ses_1",
-            "metadata": expected.model_dump(mode="json"),
+            "metadata": _session_metadata(expected),
         },
+        {"id": "ses_flat", "metadata": expected.model_dump(mode="json")},
     )
     matches = exact_metadata_matches(sessions, expected)
     assert [item["id"] for item in matches] == ["ses_1"]
+    adopted = exact_metadata_matches(sessions, expected, parent_session_id="ses_1", worktree=None)
+    assert [item["id"] for item in adopted] == ["ses_child"]
+    rejected = exact_metadata_matches(sessions, expected, parent_session_id="ses_other")
+    assert rejected == ()
+    wrong_tree = exact_metadata_matches(
+        ({**sessions[2], "directory": "/other"},),
+        expected,
+        parent_session_id="ses_1",
+        worktree="/work",
+    )
+    assert wrong_tree == ()
 
 
 async def test_multiple_exact_metadata_matches_fail_closed() -> None:

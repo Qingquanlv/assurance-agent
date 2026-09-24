@@ -9,6 +9,8 @@ from typing import Any
 
 from assurance_product.bootstrap.contracts import BootstrapStatusV1, OpenCodeHandleV1, RunSpecV1
 from assurance_product.bootstrap.opencode import OpenCodeLaunchError
+from assurance_product.bootstrap.opencode import attach_shared_opencode as _attach_shared_opencode
+from assurance_product.bootstrap.opencode import create_run_root_session as _create_run_root_session
 from assurance_product.bootstrap.opencode import start_opencode_serve as _start_opencode_serve
 from assurance_product.bootstrap.opencode import stop_opencode as _stop_opencode
 from assurance_product.bootstrap.opencode import wait_http_ready
@@ -20,9 +22,11 @@ from assurance_product.bootstrap.status import (
     read_bootstrap_status,
     read_run_manifest,
     run_dir_for,
+    stop_requested,
     write_bootstrap_status,
     write_effective_spec,
     write_run_manifest,
+    write_stop_request,
 )
 from assurance_product.sut_worktree import ensure_run_worktree
 
@@ -56,11 +60,18 @@ def _persist(
     ended_at: str | None = None,
     exit_code: int | None = None,
     error: str | None = None,
+    root_session_id: str | None = None,
 ) -> BootstrapStatusV1:
+    if root_session_id is None:
+        try:
+            root_session_id = read_bootstrap_status(run_dir).root_session_id
+        except (OSError, ValueError):
+            root_session_id = None
     value = BootstrapStatusV1(
         phase=phase,  # type: ignore[arg-type]
         change_id=change_id,
         opencode=opencode,
+        root_session_id=root_session_id,
         status=dict(status or {}),
         started_at=started_at,
         updated_at=_iso_now(),
@@ -116,6 +127,49 @@ def _default_read_status(**kwargs: Any) -> dict[str, object]:
     )
 
 
+def _session_opener(handle: OpenCodeHandleV1, token: str | None) -> Callable[..., object]:
+    from assurance_product.bootstrap.opencode import _basic_opencode_authorization
+
+    authorization = _basic_opencode_authorization(token) if token else None
+
+    def open_session(method: str, path: str, body: object, directory: str) -> object:
+        import json
+        from urllib.parse import quote
+        from urllib.request import Request, urlopen
+
+        url = handle.endpoint.rstrip("/") + path
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        request = Request(
+            f"{url}?directory={quote(directory, safe='/')}",
+            data=data,
+            method=method,
+        )
+        request.add_header("Content-Type", "application/json")
+        if authorization:
+            request.add_header("Authorization", authorization)
+        with urlopen(request, timeout=10) as response:  # noqa: S310 - managed local OpenCode
+            payload = json.loads(response.read().decode("utf-8"))
+        return payload
+
+    return open_session
+
+
+def _private_server(run_dir: Path) -> bool:
+    try:
+        manifest = read_run_manifest(run_dir)
+    except (OSError, ValueError):
+        return True
+    return manifest.get("ownership") != "shared"
+
+
+def _manifest_fields(run_dir: Path, fields: Mapping[str, object]) -> dict[str, object]:
+    try:
+        current = read_run_manifest(run_dir)
+    except (OSError, ValueError):
+        current = {}
+    return {**current, **fields}
+
+
 def _exit_code_for(snapshot: Mapping[str, Any], mapped: str | None) -> int:
     status = str(snapshot.get("status") or mapped or "failed")
     return _EXIT_BY_STATUS.get(status, 40)
@@ -138,6 +192,7 @@ def _drive_application(
     start_invocation: Callable[..., dict[str, object]],
     run_invocation: Callable[..., tuple[object, str]],
     read_status: Callable[..., Mapping[str, Any]],
+    probe_shared: Callable[..., None] | None = None,
 ) -> BootstrapStatusV1:
     invocation_id = change_id
     secrets = (_secret_arg(spec),)
@@ -168,6 +223,33 @@ def _drive_application(
     mapped: str | None = None
     snapshot: Mapping[str, Any] = {}
     while True:
+        if handle.ownership == "shared" and probe_shared is not None:
+            try:
+                probe_shared(f"{handle.endpoint.rstrip('/')}/global/health", timeout=2)
+            except OpenCodeLaunchError as error:
+                return _persist(
+                    run_dir,
+                    phase="terminal",
+                    change_id=change_id,
+                    opencode=handle,
+                    status=snapshot,
+                    started_at=started_at,
+                    ended_at=_iso_now(),
+                    exit_code=30,
+                    error=f"shared OpenCode server is unavailable: {error}",
+                )
+        if stop_requested(run_dir):
+            return _persist(
+                run_dir,
+                phase="terminal",
+                change_id=change_id,
+                opencode=handle,
+                status={**dict(snapshot), "status": "stopped"},
+                started_at=started_at,
+                ended_at=_iso_now(),
+                exit_code=20,
+                error=None,
+            )
         if time.monotonic() >= deadline:
             return _persist(
                 run_dir,
@@ -223,6 +305,8 @@ def run_bootstrap(
     run_invocation: Callable[..., tuple[object, str]] | None = None,
     read_status: Callable[..., Mapping[str, Any]] | None = None,
     wait_ready: Callable[..., None] | None = None,
+    shared_endpoint: str | None = None,
+    ensure_run_root: Callable[..., str] | None = None,
 ) -> BootstrapStatusV1:
     from assurance_product.bootstrap.composition import prepare_composition as _prepare_composition
 
@@ -307,29 +391,67 @@ def run_bootstrap(
             )
             raise
         try:
-            handle = start_serve(
-                spec=spec,
-                project_dir=project_dir,
-                run_dir=run_dir,
-                environ=environ,
-            )
+            if shared_endpoint is not None:
+                token = environ.get(spec.opencode_token_env)
+                authorization = None
+                if token:
+                    from assurance_product.bootstrap.opencode import _basic_opencode_authorization
+
+                    authorization = _basic_opencode_authorization(token)
+                handle = _attach_shared_opencode(
+                    endpoint=shared_endpoint,
+                    authorization=authorization,
+                    probe=ready,
+                )
+            else:
+                handle = start_serve(
+                    spec=spec,
+                    project_dir=project_dir,
+                    run_dir=run_dir,
+                    environ=environ,
+                )
         except (OpenCodeLaunchError, ValueError) as error:
-            _persist(
+            shared_failure = shared_endpoint is not None and isinstance(error, OpenCodeLaunchError)
+            persisted = _persist(
                 run_dir,
                 phase="terminal",
                 change_id=resolved_change,
                 started_at=started_at,
                 ended_at=_iso_now(),
-                exit_code=40,
+                exit_code=30 if shared_failure else 40,
                 error=str(error),
             )
+            if shared_failure:
+                return persisted
             raise
+        root_session_id: str | None = None
+        if ensure_run_root is not None:
+            root_session_id = ensure_run_root(
+                endpoint=handle.endpoint,
+                directory=str(project_dir.resolve()),
+                change_id=resolved_change,
+            )
+        elif start_opencode_serve is None:
+            manifest = {}
+            try:
+                manifest = read_run_manifest(run_dir)
+            except (OSError, ValueError):
+                manifest = {}
+            origin = manifest.get("origin_session_id")
+            root_session_id = _create_run_root_session(
+                endpoint=handle.endpoint,
+                directory=str(project_dir.resolve()),
+                change_id=resolved_change,
+                origin_session_id=origin if isinstance(origin, str) else None,
+                opener=_session_opener(handle, environ.get(spec.opencode_token_env)),
+            )
         current = _persist(
             run_dir,
             phase="opencode_ready",
             change_id=resolved_change,
             opencode=handle,
             started_at=started_at,
+            root_session_id=root_session_id,
         )
         prepared = prepare(
             project_dir=project_dir,
@@ -337,21 +459,30 @@ def run_bootstrap(
             spec=spec,
             opencode_endpoint=handle.endpoint,
             change_id=resolved_change,
+            parent_session_id=root_session_id,
         )
         write_run_manifest(
             run_dir,
-            {
-                "project_dir": str(project_dir.resolve()),
-                "change_id": resolved_change,
-                "invocation_id": resolved_change,
-                "product": prepared["product"],
-                "binding_dist": prepared["binding_dist"],
-                "binding_declaration": prepared["binding_declaration"],
-                "config_tree": str(prepared["config_tree"]),
-                "input_path": str(prepared["input_path"]),
-                "entrypoint": spec.entrypoint,
-                "opencode_endpoint": handle.endpoint,
-            },
+            _manifest_fields(
+                run_dir,
+                {
+                    "project_dir": str(project_dir.resolve()),
+                    "change_id": resolved_change,
+                    "invocation_id": resolved_change,
+                    "product": prepared["product"],
+                    "binding_dist": prepared["binding_dist"],
+                    "binding_declaration": prepared["binding_declaration"],
+                    "config_tree": str(prepared["config_tree"]),
+                    "input_path": str(prepared["input_path"]),
+                    "entrypoint": spec.entrypoint,
+                    "opencode_endpoint": handle.endpoint,
+                    **(
+                        {"ownership": "shared", "requested_opencode_endpoint": handle.endpoint}
+                        if handle.ownership == "shared"
+                        else {}
+                    ),
+                },
+            ),
         )
         current = _persist(
             run_dir,
@@ -371,6 +502,7 @@ def run_bootstrap(
             start_invocation=start_app,
             run_invocation=run_app,
             read_status=status_app,
+            probe_shared=ready if handle.ownership == "shared" else None,
         )
         return current
     except (BootstrapPreflightError, OpenCodeLaunchError):
@@ -394,7 +526,7 @@ def run_bootstrap(
         raise
     finally:
         cli_mod._resolve_and_audit = original_resolve
-        if handle is not None:
+        if handle is not None and handle.ownership != "shared" and _private_server(run_dir):
             stop(handle)
 
 
@@ -406,8 +538,9 @@ def stop_bootstrap(
     status = read_bootstrap_status(run_dir)
     if status.phase == "terminal":
         return status
+    write_stop_request(run_dir, change_id=status.change_id)
     stop = stop_opencode or _stop_opencode
-    if status.opencode is not None:
+    if status.opencode is not None and _private_server(run_dir):
         stop(status.opencode)
     return _persist(
         run_dir,
@@ -454,18 +587,27 @@ def resume_bootstrap(
     handle: OpenCodeHandleV1 | None = None
     try:
         ready(spec.sut.readiness_url, timeout=_SUT_READY_TIMEOUT_SECONDS)
-        handle = start_serve(
-            spec=spec,
-            project_dir=project_dir,
-            run_dir=run_dir,
-            environ=environ,
-        )
+        if manifest.get("ownership") == "shared":
+            endpoint = manifest.get("requested_opencode_endpoint") or (
+                status.opencode.endpoint if status.opencode is not None else ""
+            )
+            if not isinstance(endpoint, str) or not endpoint:
+                raise OpenCodeLaunchError("shared resume is missing the borrowed endpoint")
+            handle = _attach_shared_opencode(endpoint=endpoint, probe=ready)
+        else:
+            handle = start_serve(
+                spec=spec,
+                project_dir=project_dir,
+                run_dir=run_dir,
+                environ=environ,
+            )
         prepared = prepare(
             project_dir=project_dir,
             run_dir=run_dir,
             spec=spec,
             opencode_endpoint=handle.endpoint,
             change_id=change_id,
+            parent_session_id=status.root_session_id,
         )
         write_run_manifest(
             run_dir,
@@ -489,7 +631,22 @@ def resume_bootstrap(
             start_invocation=start_app,
             run_invocation=run_app,
             read_status=status_app,
+            probe_shared=ready if handle.ownership == "shared" else None,
         )
+    except OpenCodeLaunchError as error:
+        if manifest.get("ownership") == "shared":
+            return _persist(
+                run_dir,
+                phase="terminal",
+                change_id=change_id,
+                opencode=handle,
+                status=dict(status.status),
+                started_at=started_at,
+                ended_at=_iso_now(),
+                exit_code=30,
+                error=f"shared OpenCode server is unavailable: {error}",
+            )
+        raise
     finally:
-        if handle is not None:
+        if handle is not None and handle.ownership != "shared" and _private_server(run_dir):
             stop(handle)

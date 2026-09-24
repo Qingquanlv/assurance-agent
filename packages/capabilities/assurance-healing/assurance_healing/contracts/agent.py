@@ -80,6 +80,7 @@ class FixProposalInputV1(FrozenModel):
     execution_evidence_digest: HexDigest
     issue_analysis_ref: EvidenceArtifactRefV1 | None = None
     claimed_capabilities: tuple[str, ...] = ()
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @model_validator(mode="after")
     def _analysis_belongs_to_change(self) -> FixProposalInputV1:
@@ -118,6 +119,7 @@ class CoverageRepairInputV1(FrozenModel):
     brief: CoverageRepairBrief
     baseline_digest: HexDigest
     allowed_roots: tuple[str, ...]
+    validation_error: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @field_validator("allowed_roots")
     @classmethod

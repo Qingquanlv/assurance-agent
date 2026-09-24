@@ -11,7 +11,14 @@ from typing import Any
 import yaml
 from pydantic import ValidationError
 
-from agent_runtime_contracts import AgentRunRequest, AgentWorkspaceV1, InstructionPart, ResultContract
+from agent_runtime_contracts import (
+    AgentRunRequest,
+    AgentWorkspaceV1,
+    InstructionPart,
+    ResultContract,
+    prompt_model_json,
+    with_validation_retry,
+)
 from agent_runtime_contracts.schema import canonical_digest
 from graph_engine.canonical import canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
@@ -182,6 +189,7 @@ def _review_repair_contract(
     project_root: Path,
     *,
     business: CaseDesignInputV1,
+    plan: ResolvedAssurancePlan,
 ) -> ReviewRepairContractV1 | None:
     review_relative = "qa/results/review/case-review.json"
     review_path = project_root.joinpath(*review_relative.split("/"))
@@ -197,6 +205,19 @@ def _review_repair_contract(
         raise InputError("case-review.json change_id does not match case-design change_id")
     if review.public_outcome != "needs_fix":
         return None
+    # Imported lazily: finalize imports this module at load time.
+    from assurance_intake.operations.finalize import (
+        OutputError,
+        _bound_obligations,
+        _reject_unbound_covered_repairs,
+        _review_requests_matrix_coverage,
+    )
+
+    if _review_requests_matrix_coverage(review):
+        try:
+            _reject_unbound_covered_repairs(review, _bound_obligations(project_root, plan))
+        except OutputError as error:
+            raise InputError(str(error)) from error
 
     findings = {finding.id: finding for finding in review.findings}
     actions: list[ReviewRepairActionV1] = []
@@ -336,14 +357,17 @@ def prepare_outcome(
     allowed_outputs: tuple[str, ...],
     planning_facts: dict[str, Any] | None = None,
 ) -> TaskOutcome:
-    business_input = business.model_dump(mode="json")
+    business_input = prompt_model_json(business)
     if planning_facts is not None:
         business_input["planning_facts"] = planning_facts
     agent_request = AgentRunRequest(
-        instructions=(
-            InstructionPart.text("text/plain", resource_text(skill_path)),
-            InstructionPart.text("text/plain", resource_text(persona_path)),
-            InstructionPart.from_json(business_input),
+        instructions=with_validation_retry(
+            (
+                InstructionPart.text("text/plain", resource_text(skill_path)),
+                InstructionPart.text("text/plain", resource_text(persona_path)),
+                InstructionPart.from_json(business_input),
+            ),
+            getattr(business, "validation_error", None),
         ),
         result_contract=result_contract(result_schema_id),
         execution=binding.execution,
@@ -482,6 +506,7 @@ class CaseDesignPrepareHandler:
             review_repair = business.review_repair or _review_repair_contract(
                 context.project_root,
                 business=business,
+                plan=plan,
             )
             business = business.model_copy(update={"review_repair": review_repair})
             return prepare_outcome(

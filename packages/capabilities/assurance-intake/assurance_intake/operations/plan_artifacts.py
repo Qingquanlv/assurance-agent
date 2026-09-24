@@ -11,7 +11,7 @@ from typing import cast
 import yaml
 from pydantic import ValidationError
 
-from graph_engine.canonical import JSONValue
+from graph_engine.canonical import JSONValue, canonical_json_bytes
 from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
 
 from assurance_intake.contracts.explore import (
@@ -35,6 +35,7 @@ from assurance_intake.contracts.plan import (
     plan_artifact_ref,
     plan_bytes,
 )
+from assurance_intake.contracts.obligations import PreparedObligationV1
 from assurance_intake.contracts.quality_goals import (
     COVERAGE_GOAL_ORDER,
     CoverageGoalPolicyV1,
@@ -109,7 +110,12 @@ def prepare_quality_goal(
     request: ResolvePlanInputV1,
     *,
     project_root: Path,
-) -> tuple[ExploreAdvisoryV1 | PreparedExploreV1, ChangeImpactInventoryV1, PreparedQualityGoalV1]:
+) -> tuple[
+    ExploreAdvisoryV1 | PreparedExploreV1,
+    ChangeImpactInventoryV1,
+    PreparedQualityGoalV1,
+    tuple[PreparedObligationV1, ...],
+]:
     exploration_data = _read_regular_bytes(
         project_root,
         request.exploration_ref.path,
@@ -190,7 +196,27 @@ def prepare_quality_goal(
         coverage_policy=CoverageGoalPolicyV1.from_product_policy(policy),
         sufficiency_policy=SufficiencyPolicyV1.from_product_policy(policy),
     )
-    return advisory, inventory, goal
+    return advisory, inventory, goal, obligations
+
+
+def write_bound_exploration(
+    project_root: Path,
+    document: ExploreAdvisoryV1 | PreparedExploreV1,
+    obligations: tuple[PreparedObligationV1, ...],
+    current_ref: EvidenceArtifactRefV1,
+) -> EvidenceArtifactRefV1:
+    """Write plan-bound keys into the sealed exploration case design reads."""
+    if not isinstance(document, PreparedExploreV1):
+        return current_ref
+    updated = document.model_copy(update={"minimum_required_coverage": obligations})
+    data = canonical_json_bytes(cast(JSONValue, updated.model_dump(mode="json"))) + b"\n"
+    destination = project_root.joinpath(*current_ref.path.split("/"))
+    if destination.is_symlink() or not destination.is_file():
+        raise ValueError("sealed exploration must be one regular file")
+    if destination.read_bytes() == data:
+        return current_ref
+    destination.write_bytes(data)
+    return EvidenceArtifactRefV1(path=current_ref.path, digest=hashlib.sha256(data).hexdigest())
 
 
 def _write_plan(output: ResolvePlanOutputV1, write_root: Path) -> None:
@@ -215,12 +241,20 @@ def resolve_plan_artifact(
     project_root: Path,
     write_root: Path,
 ) -> ResolvePlanOutputV1:
-    advisory, inventory, goal = prepare_quality_goal(request, project_root=project_root)
+    advisory, inventory, goal, obligations = prepare_quality_goal(request, project_root=project_root)
+    exploration_ref = write_bound_exploration(
+        project_root,
+        advisory,
+        obligations,
+        request.exploration_ref,
+    )
+    goal = goal.model_copy(update={"obligations_ref": exploration_ref})
     plan = resolve_plan(
         request=request,
         proposed=derive_family_proposal(advisory.test_strategy),  # type: ignore[union-attr]
         quality_goal=goal,
         inventory=inventory,
+        exploration_ref=exploration_ref,
     )
     output = ResolvePlanOutputV1(plan=plan, plan_ref=plan_artifact_ref(plan))
     _write_plan(output, write_root)
@@ -267,7 +301,7 @@ def load_plan_artifact(
         source_resource_digests=request.source_resource_digests,
         capability_leafs=request.capability_leafs,
     )
-    advisory, inventory, goal = prepare_quality_goal(resolve_input, project_root=project_root)
+    advisory, inventory, goal, _obligations = prepare_quality_goal(resolve_input, project_root=project_root)
     expected = resolve_plan(
         request=resolve_input,
         proposed=derive_family_proposal(advisory.test_strategy),

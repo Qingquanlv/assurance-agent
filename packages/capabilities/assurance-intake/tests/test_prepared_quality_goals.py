@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from assurance_intake.contracts.explore import ExploreAdvisoryV1
+from assurance_intake.contracts.explore import ExploreAdvisoryV1, PreparedExploreV1
 from assurance_intake.contracts.plan import LoadPlanInputV1, ResolvePlanInputV1
+from assurance_intake.contracts.quality_goals import normalize_obligation_drafts, required_goal_families
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.contracts.quality_goals import required_goal_families
 from assurance_intake.operations.obligations import normalize_goal_obligations
 from assurance_intake.operations.plan_artifacts import (
     LoadPlanHandler,
@@ -371,7 +371,7 @@ def test_prepare_quality_goal_authenticates_every_source(
         }
     )
 
-    advisory, _inventory, goal = prepare_quality_goal(request, project_root=project)
+    advisory, _inventory, goal, _obligations = prepare_quality_goal(request, project_root=project)
     assert advisory.change_id == "CH-1"
     assert advisory.test_strategy.layer_recommendation[1].recommended is False
     assert goal.required_test_families == ("api", "e2e")
@@ -542,7 +542,7 @@ def test_prepare_quality_goal_does_not_require_e2e_outside_the_candidate_set(
         }
     )
 
-    _advisory_doc, _inventory, goal = prepare_quality_goal(request, project_root=project)
+    _advisory_doc, _inventory, goal, _obligations = prepare_quality_goal(request, project_root=project)
     assert goal.required_test_families == ("api", "e2e")
 
     resolve_stage = project / "resolve-stage"
@@ -557,3 +557,133 @@ def test_prepare_quality_goal_does_not_require_e2e_outside_the_candidate_set(
         )
     )
     assert resolved.outcome.status == "failed"
+
+
+def test_resolve_plan_writes_bound_keys_into_sealed_exploration(tmp_path: Path) -> None:
+    project = tmp_path
+    drafts = [
+        _draft(draft_id="MRC-API-001", proposed_key="create_item", category="api", layer="api"),
+        _draft(
+            draft_id="MRC-NEGATIVE-001",
+            proposed_key="entities.item.constraints.name",
+            category="negative",
+            layer="api",
+        ),
+        _draft(
+            draft_id="MRC-DATA-001",
+            proposed_key="entities.item.constraints.missing",
+            category="data_integrity",
+            layer="api",
+        ),
+    ]
+    advisory = ExploreAdvisoryV1.model_validate(_advisory(drafts, recommended=("API",)))
+    sealed = PreparedExploreV1(
+        schema_version="1",
+        change_id=advisory.change_id,
+        context_ref=advisory.context_ref,
+        generated_at=advisory.generated_at,
+        executive_summary=advisory.executive_summary,
+        watchlist=tuple(advisory.watchlist),
+        evidence_inventory=advisory.evidence_inventory,
+        source_code_evidence=tuple(advisory.source_code_evidence),
+        case_design_guidance=advisory.case_design_guidance,
+        minimum_required_coverage=normalize_obligation_drafts(
+            advisory.minimum_required_coverage,
+            resolved_quotes={},
+        ),
+        open_questions_for_case_design=tuple(advisory.open_questions_for_case_design),
+        test_strategy=advisory.test_strategy,
+    )
+    assert all(row.key is None for row in sealed.minimum_required_coverage)
+    explore_path = project / "qa/results/explore/exploration.json"
+    explore_path.parent.mkdir(parents=True)
+    explore_bytes = json.dumps(sealed.model_dump(mode="json")).encode()
+    explore_path.write_bytes(explore_bytes)
+    inventory_bytes = json.dumps(
+        {
+            "schema_version": "1",
+            "change_id": "CH-1",
+            "context_ref": "explore/context.json",
+            "rows": [],
+            "exclusions": [],
+        }
+    ).encode()
+    (project / "qa/results/explore/impact-inventory.json").write_bytes(inventory_bytes)
+    aa = project / ".aa"
+    aa.mkdir()
+    policy_bytes = yaml.safe_dump(
+        {
+            "schema_version": "1",
+            "test_family_policy": {"required": [], "allowed": ["api"]},
+            "coverage_floor_by_tier": {"low": 0.7, "medium": 0.8, "high": 0.9, "critical": 1.0},
+            "evidence_sufficiency": {"recency_hours": 24, "require_current_batch": True},
+        },
+        sort_keys=True,
+    ).encode()
+    knowledge_bytes = yaml.safe_dump({"schema_version": "1", "journeys": []}, sort_keys=True).encode()
+    catalog_bytes = json.dumps(
+        {"schema_version": "1", "typed_leafs": ["entities.item.constraints.name"]},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    (aa / "policy.yaml").write_bytes(policy_bytes)
+    (aa / "data-knowledge.yaml").write_bytes(knowledge_bytes)
+    (aa / "capability-catalog.json").write_bytes(catalog_bytes)
+    request = ResolvePlanInputV1.model_validate(
+        {
+            "change_id": "CH-1",
+            "requirement_digest": "a" * 64,
+            "candidate_test_families": ("api",),
+            "budgets": {
+                "review_rounds": 1,
+                "coverage_rounds": 2,
+                "healing_rounds": 1,
+                "execution_retries": 0,
+            },
+            "policy_resource_id": "assurance.product.configuration.product-policy",
+            "policy_digest": _sha(policy_bytes),
+            "family_policy": {"required": (), "allowed": ("api",)},
+            "exploration_ref": {
+                "path": "qa/results/explore/exploration.json",
+                "digest": _sha(explore_bytes),
+            },
+            "impact_inventory_ref": {
+                "path": "qa/results/explore/impact-inventory.json",
+                "digest": _sha(inventory_bytes),
+            },
+            "source_resource_digests": (
+                ("assurance.product.configuration.capability-catalog", _sha(catalog_bytes)),
+                ("assurance.product.configuration.data-knowledge", _sha(knowledge_bytes)),
+            ),
+            "capability_leafs": ("entities.item.constraints.name",),
+        }
+    )
+    resolve_stage = project / "resolve-stage"
+    resolve_stage.mkdir()
+    resolved = asyncio.run(
+        execute_task(
+            ResolvePlanHandler(),
+            request.model_dump(mode="json"),
+            workspace=project,
+            write_root=resolve_stage,
+            capability_id="assurance.intake.resolve-plan",
+        )
+    )
+    assert resolved.outcome.status == "succeeded", resolved.outcome.failure
+    written = json.loads(explore_path.read_bytes())
+    rows = {row["mrc_id"]: row for row in written["minimum_required_coverage"]}
+    assert rows["MRC-API-001"]["key"] == "create_item"
+    assert rows["MRC-API-001"]["proposed_key"] == "create_item"
+    assert rows["MRC-NEGATIVE-001"]["key"] == "entities.item.constraints.name"
+    assert rows["MRC-DATA-001"]["key"] is None
+    assert rows["MRC-DATA-001"]["proposed_key"] == "entities.item.constraints.missing"
+    output = resolved.outcome.output
+    assert isinstance(output, dict)
+    plan = output["plan"]
+    assert isinstance(plan, dict)
+    exploration_ref = plan["exploration_ref"]
+    assert isinstance(exploration_ref, dict)
+    assert exploration_ref["digest"] == _sha(explore_path.read_bytes())
+    quality_goal = plan["quality_goal"]
+    assert isinstance(quality_goal, dict)
+    assert quality_goal["obligations_ref"] == exploration_ref
