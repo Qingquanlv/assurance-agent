@@ -34,6 +34,7 @@ from graph_engine.attempts.resolutions import (
     PermanentTaskFailure,
     ReceiptRef,
     RejectedTaskResult,
+    SystemReference,
 )
 from graph_engine.attempts.resource_arbiter import ResourceArbiterPort, ResourceAuthorization
 from graph_engine.persistence.resource_authorization import ResourceAuthorizationError
@@ -106,6 +107,7 @@ class AssuranceAttemptKernel:
         schemas: SchemaRegistry | None = None,
         effect_state: EffectStatePort | None = None,
         transaction_cut: Callable[[str], None] | None = None,
+        pause_requested: Callable[[], bool] | None = None,
     ) -> None:
         self.journal = journal
         self.arbiter = arbiter
@@ -116,6 +118,7 @@ class AssuranceAttemptKernel:
         self.schemas = schemas
         self.effect_state = effect_state
         self._transaction_cut = transaction_cut or _noop_cut
+        self._pause_requested = pause_requested
 
     async def execute_or_recover(
         self,
@@ -202,6 +205,9 @@ class AssuranceAttemptKernel:
             snapshot = await self._complete_terminal_release(attempt_key, context, snapshot, cut)
             assert snapshot.terminal is not None
             return _resolution_from_terminal(snapshot.terminal, contract)
+
+        if snapshot.activity_state is None and self._pause_requested is not None and self._pause_requested():
+            return PendingTaskResult(wakeup=SystemReference(reference_id="operator_stop"))
 
         claims = _resolved_claims(contract, validated_input)
         authorization, snapshot, context = await self._authorize(

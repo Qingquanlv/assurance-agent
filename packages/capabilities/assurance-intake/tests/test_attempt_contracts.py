@@ -260,7 +260,7 @@ def test_intake_owns_resolve_and_read_only_load_plan_tasks() -> None:
     load = TASK_ATTEMPT_CONTRACTS["load-plan"]
     assert resolve.contract_id == "assurance.intake.task.resolve-plan"
     assert resolve.handler_id == "assurance.intake.resolve-plan"
-    assert resolve.resources.writes == ("qa/results/plan",)
+    assert resolve.resources.writes == ("qa/results/explore/exploration.json", "qa/results/plan")
     assert load.contract_id == "assurance.intake.task.load-plan"
     assert load.handler_id == "assurance.intake.load-plan"
     assert load.resources.writes == ()

@@ -154,6 +154,21 @@ def test_full_retro_uses_the_current_change_and_report_receipt_identity() -> Non
     assert first["retro_id"] == second["retro_id"]
 
 
+def test_full_retro_prefers_the_plan_bound_exploration_digest() -> None:
+    from assurance_product.graphs.entrypoints import adapt_retro
+
+    stale = {"path": "qa/results/explore/exploration.json", "digest": "a" * 64}
+    bound = {"path": "qa/results/explore/exploration.json", "digest": "b" * 64}
+    state = valid_product_input(artifacts=(stale,))
+    state["artifacts"] = [stale]
+    state["source_artifacts"] = [stale]
+    state["preparation_refs"] = [bound]
+    source_refs = adapt_retro(state)["source_refs"]  # type: ignore[arg-type]
+    assert isinstance(source_refs, list)
+    assert bound in source_refs
+    assert stale not in source_refs
+
+
 def test_full_retro_binds_pre_retro_snapshot_and_all_review_rounds() -> None:
     from assurance_product.graphs.entrypoints import adapt_retro
 

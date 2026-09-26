@@ -567,6 +567,29 @@ async def test_prepared_value_and_agent_result_reach_finalize_through_one_compos
     assert isinstance(output.output, BaseModel)
 
 
+def test_publish_plan_rebinds_exploration_to_the_plan_digest(tmp_path: Path) -> None:
+    from assurance_intake.graphs.nodes import publish_plan
+
+    plan, plan_ref = install_plan(
+        tmp_path,
+        "CH-DEMO-001",
+        capability_leafs=("entities.item.create",),
+    )
+    bound = plan.exploration_ref.model_dump(mode="json")
+    stale = {"path": bound["path"], "digest": "b" * 64}
+    inventory = plan.impact_inventory_ref.model_dump(mode="json")
+    published = publish_plan(
+        {"artifacts": [stale, inventory, stale], "preparation_refs": [stale]},
+        {"plan": plan.model_dump(mode="json"), "plan_ref": plan_ref},
+        None,
+    )
+    assert published["artifacts"] == [bound, inventory]
+    preparation = published["preparation_refs"]
+    assert isinstance(preparation, list)
+    assert bound in preparation
+    assert stale not in preparation
+
+
 async def test_prepare_graph_runs_intake_explore_and_plan_resolution(tmp_path: Path) -> None:
     harness = GraphHarness()
     context = harness.recording_context(owner_id="assurance.intake", contracts=intake_contracts())

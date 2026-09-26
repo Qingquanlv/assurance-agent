@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, model_validator
 
 from graph_engine.attempts.checkpoint_bridge import AttemptCheckpointObserver
 from graph_engine.attempts.contracts import (
@@ -222,10 +222,25 @@ class RepairInput(BaseModel):
     validation_attempt: int = 0
     validation_error: str | None = None
 
+    @model_validator(mode="after")
+    def require_business_repair_for_feedback(self) -> RepairInput:
+        if self.validation_attempt == 0 and self.validation_error is not None:
+            raise ValueError("validation feedback requires the business repair attempt")
+        return self
 
-async def test_technical_retry_replaces_validation_error_with_latest_invalid_output() -> None:
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_error"),
+    [
+        ("invalid_output", "proposed_key is not a matrix field"),
+        ("transient", "unresolved MRC rows missing or rebound"),
+    ],
+)
+async def test_technical_retry_only_replaces_feedback_for_invalid_output(
+    failure_kind, expected_error: str
+) -> None:
     failure = PermanentTaskFailure(
-        kind="invalid_output",
+        kind=failure_kind,
         message="proposed_key is not a matrix field",
         retryable=True,
     )
@@ -288,7 +303,8 @@ async def test_technical_retry_replaces_validation_error_with_latest_invalid_out
     assert isinstance(seen[0], RepairInput)
     assert seen[0].validation_error == "unresolved MRC rows missing or rebound"
     assert isinstance(seen[1], RepairInput)
-    assert seen[1].validation_error == "proposed_key is not a matrix field"
+    assert seen[1].validation_error == expected_error
+    assert seen[1].validation_attempt == 1
 
 
 class AttemptFreeInput(BaseModel):
@@ -358,9 +374,10 @@ async def test_technical_retry_carries_validation_error_without_an_attempt_count
     assert seen[1].validation_error == "schema rejected the authored document"
 
 
-async def test_technical_retry_promotes_attempt_zero_so_the_error_is_admitted() -> None:
+@pytest.mark.parametrize("failure_kind", ["invalid_output", "transient"])
+async def test_technical_retry_does_not_advance_business_repair_attempt(failure_kind) -> None:
     failure = PermanentTaskFailure(
-        kind="invalid_output",
+        kind=failure_kind,
         message="unresolved MRC rows must remain skipped_by_scope",
         retryable=True,
     )
@@ -420,8 +437,8 @@ async def test_technical_retry_promotes_attempt_zero_so_the_error_is_admitted() 
     assert seen[0].validation_attempt == 0
     assert seen[0].validation_error is None
     assert isinstance(seen[1], RepairInput)
-    assert seen[1].validation_attempt == 1
-    assert seen[1].validation_error == "unresolved MRC rows must remain skipped_by_scope"
+    assert seen[1].validation_attempt == 0
+    assert seen[1].validation_error is None
 
 
 async def test_retryable_failure_uses_contract_budget_and_isolated_attempt_keys() -> None:

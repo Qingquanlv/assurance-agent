@@ -64,6 +64,14 @@ def test_help_exposes_exact_command_tree(cli_runner):
         "stop",
         "resume",
         "assessment",
+        "task-define",
+        "task",
+        "preflight",
+        "capabilities",
+        "history",
+        "run",
+        "output",
+        "current-output",
     }
 
 

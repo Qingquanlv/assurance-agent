@@ -80,6 +80,23 @@ def test_product_runtime_ports_register_observer_before_boot(opencode_compositio
     asyncio.run(_register_observer(opencode_composition, tmp_path))
 
 
+def test_managed_run_uses_output_capture_workspace(opencode_composition, tmp_path: Path) -> None:
+    from assurance_product.product import prepare_change_workspace
+    from assurance_product.run_history import RunOutputWorkspaceProvider
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    project = write_project_dir(tmp_path / "project")
+    change_id = "CH-OUTPUT-CAPTURE"
+    workspace = prepare_change_workspace(project, change_id)
+    (project / ".aa" / "runs" / change_id).mkdir(parents=True, exist_ok=True)
+
+    async def inspect() -> None:
+        async with ProductRuntimePorts.open(workspace, opencode_composition, invocation=change_id) as ports:
+            assert isinstance(ports.workspace_provider, RunOutputWorkspaceProvider)
+
+    asyncio.run(inspect())
+
+
 async def _register_observer(composition, tmp_path: Path) -> None:
     from assurance_product.product import prepare_change_workspace
     from assurance_product.runtime_ports import ProductRuntimePorts
@@ -147,6 +164,63 @@ async def _reject_observers(composition, tmp_path: Path) -> None:
 
 def test_ports_shutdown_closes_in_reverse_after_recovery(opencode_composition, tmp_path: Path) -> None:
     asyncio.run(_shutdown_order(opencode_composition, tmp_path))
+
+
+def test_projection_failure_preserves_result_and_closes_workspace(
+    opencode_composition, tmp_path: Path, monkeypatch, caplog
+) -> None:
+    import os
+
+    from assurance_product.product import prepare_change_workspace
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    project = write_project_dir(tmp_path / "project")
+    change_id = "CH-PROJECTION-ERROR"
+    workspace = prepare_change_workspace(project, change_id)
+    (project / ".aa/runs" / change_id).mkdir(parents=True)
+    descriptors: list[int] = []
+
+    def broken_projection(*args, **kwargs):
+        raise OSError("display filesystem unavailable")
+
+    monkeypatch.setattr("assurance_product.operator_views.write_attempt_projection", broken_projection)
+
+    async def run() -> str:
+        async with ProductRuntimePorts.open(workspace, opencode_composition, invocation=change_id) as ports:
+            descriptors.append(ports.workspace_provider.store._project_fd)
+            return "completed"
+
+    assert asyncio.run(run()) == "completed"
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert "display filesystem unavailable" in caplog.text
+
+
+def test_checkpoint_recovery_failure_is_reported_after_workspace_close(
+    opencode_composition, tmp_path: Path, monkeypatch
+) -> None:
+    import os
+
+    from assurance_product.product import prepare_change_workspace
+    from assurance_product.runtime_ports import ProductRuntimePorts
+
+    project = write_project_dir(tmp_path / "project")
+    workspace = prepare_change_workspace(project, "CH-RECOVERY-ERROR")
+    descriptors: list[int] = []
+
+    async def run() -> None:
+        async with ProductRuntimePorts.open(workspace, opencode_composition) as ports:
+            descriptors.append(ports.workspace_provider.store._project_fd)
+
+            async def broken_recovery(_backend, _invocation_id: str):
+                raise RuntimeError("checkpoint recovery failed")
+
+            monkeypatch.setattr(type(ports.backend), "recover_handshake", broken_recovery)
+
+    with pytest.raises(RuntimeError, match="checkpoint recovery failed"):
+        asyncio.run(run())
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
 
 
 async def _shutdown_order(composition, tmp_path: Path) -> None:

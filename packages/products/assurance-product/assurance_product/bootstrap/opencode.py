@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from assurance_product.bootstrap.contracts import OpenCodeHandleV1, RunSpecV1
@@ -64,6 +65,29 @@ def build_opencode_env(
 def _basic_opencode_authorization(token: str) -> str:
     encoded = base64.b64encode(f"opencode:{token}".encode("utf-8")).decode("ascii")
     return f"Basic {encoded}"
+
+
+def dispose_project_instance(
+    *,
+    endpoint: str,
+    directory: str,
+    authorization: str | None = None,
+) -> None:
+    """Drop a cached OpenCode project instance so the next session reloads plugins."""
+    query = urlencode({"directory": directory})
+    url = f"{endpoint.rstrip('/')}/instance/dispose?{query}"
+    request = Request(url, data=b"", method="POST")
+    if authorization:
+        request.add_header("Authorization", authorization)
+    try:
+        with urlopen(request, timeout=5) as response:  # noqa: S310 - local OpenCode control call
+            status = int(response.status)
+    except HTTPError as error:
+        raise OpenCodeLaunchError(f"instance dispose failed: HTTP {error.code}") from error
+    except (URLError, TimeoutError, OSError) as error:
+        raise OpenCodeLaunchError(f"instance dispose failed: {error}") from error
+    if not 200 <= status < 300:
+        raise OpenCodeLaunchError(f"instance dispose failed: HTTP {status}")
 
 
 def wait_http_ready(

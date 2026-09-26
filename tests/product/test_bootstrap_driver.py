@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -171,7 +173,7 @@ def test_run_bootstrap_marks_terminal_when_running_graph_raises_value_error(tmp_
     assert stopped == [handle]
 
 
-def test_stop_bootstrap_kills_recorded_pid(tmp_path: Path) -> None:
+def test_stop_bootstrap_waits_for_checkpoint_before_stopping_private_server(tmp_path: Path) -> None:
     run_dir = run_dir_for(tmp_path / "runs", "BOOT-1")
     handle = OpenCodeHandleV1(endpoint="http://127.0.0.1:4100", pid=4242)
     write_run_manifest(run_dir, {"project_dir": str((tmp_path / "sut").resolve())})
@@ -181,9 +183,10 @@ def test_stop_bootstrap_kills_recorded_pid(tmp_path: Path) -> None:
     )
     killed: list[OpenCodeHandleV1] = []
     status = stop_bootstrap(run_dir, stop_opencode=killed.append)
-    assert killed == [handle]
-    assert status.phase == "terminal"
-    assert status.exit_code == 20
+    assert killed == []
+    assert status.phase == "running"
+    assert status.exit_code is None
+    assert (run_dir / "stop-request.json").is_file()
 
 
 def test_stop_bootstrap_does_not_kill_a_shared_server(tmp_path: Path) -> None:
@@ -197,7 +200,7 @@ def test_stop_bootstrap_does_not_kill_a_shared_server(tmp_path: Path) -> None:
     killed: list[OpenCodeHandleV1] = []
     status = stop_bootstrap(run_dir, stop_opencode=killed.append)
     assert killed == []
-    assert status.phase == "terminal"
+    assert status.phase == "running"
     assert (run_dir / "stop-request.json").is_file()
 
 
@@ -208,10 +211,10 @@ def test_run_bootstrap_stops_after_a_cancellation_request(tmp_path: Path) -> Non
     calls = {"run": 0}
 
     def run_invocation(**kwargs: object) -> tuple[dict[str, str], str]:
-        del kwargs
+        assert kwargs["stop_file"] == run_dir_for(runs_root, "BOOT-1") / "stop-request.json"
         calls["run"] += 1
         write_stop_request(run_dir_for(runs_root, "BOOT-1"), change_id="BOOT-1")
-        return {"status": "running"}, "running"
+        return {"status": "blocked"}, "blocked"
 
     status = run_bootstrap(
         project_dir=project,
@@ -230,13 +233,16 @@ def test_run_bootstrap_stops_after_a_cancellation_request(tmp_path: Path) -> Non
         },
         start_invocation=lambda **kwargs: {"invocation_id": kwargs["invocation_id"]},
         run_invocation=run_invocation,
-        read_status=lambda **kwargs: {"status": "running"},
+        read_status=lambda **kwargs: {
+            "status": "blocked",
+            "pending_interrupt": {"reason_category": "operator_stop"},
+        },
         wait_ready=lambda url, timeout: None,
     )
     assert calls["run"] == 1
     assert status.phase == "terminal"
     assert status.exit_code == 20
-    assert status.status["status"] == "stopped"
+    assert status.status["status"] == "blocked"
 
 
 def _prepared(run_dir: Path) -> dict[str, object]:
@@ -280,16 +286,68 @@ def test_run_bootstrap_attaches_a_shared_server_and_does_not_stop_it(tmp_path: P
         read_status=lambda **kwargs: {"status": "completed"},
         wait_ready=ready,
         shared_endpoint="http://127.0.0.1:4096",
-        ensure_run_root=lambda **kwargs: "ses_root",
+        ensure_run_root=lambda **kwargs: (_ for _ in ()).throw(AssertionError("root session")),
     )
     assert status.phase == "terminal"
     assert status.exit_code == 0
-    assert status.root_session_id == "ses_root"
+    assert status.root_session_id is None
     assert status.opencode is not None
     assert status.opencode.ownership == "shared"
     assert status.opencode.pid is None
-    assert parents == ["ses_root"]
+    assert parents == [None]
     assert stopped == []
+
+
+def test_managed_run_does_not_create_a_root_session(tmp_path: Path) -> None:
+    task = _sut(tmp_path)
+    parents: list[object] = []
+    disposed: list[dict[str, object]] = []
+
+    def record_dispose(**kwargs: object) -> None:
+        disposed.append(dict(kwargs))
+
+    def forbidden_root(**kwargs: object) -> str:
+        del kwargs
+        raise AssertionError("managed run created a root session")
+
+    def prepare(**kwargs: object) -> dict[str, object]:
+        parents.append(kwargs.get("parent_session_id"))
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        return _prepared(run_dir)
+
+    status = run_bootstrap(
+        project_dir=task,
+        spec=_spec(),
+        runs_root=task / ".aa" / "runs",
+        change_id="BOOT-managed",
+        environ=_environ(),
+        start_opencode_serve=lambda **kwargs: OpenCodeHandleV1(endpoint="http://127.0.0.1:4101", pid=1),
+        stop_opencode=lambda handle: None,
+        prepare_composition=prepare,
+        start_invocation=lambda **kwargs: {"invocation_id": kwargs["invocation_id"]},
+        run_invocation=lambda **kwargs: ({"status": "succeeded"}, "completed"),
+        read_status=lambda **kwargs: {"status": "completed"},
+        wait_ready=lambda url, timeout: None,
+        shared_endpoint="http://127.0.0.1:4101",
+        ensure_run_root=forbidden_root,
+        task_directory=task,
+        dispose_instance=record_dispose,
+    )
+    assert status.phase == "terminal"
+    assert status.exit_code == 0
+    assert status.root_session_id is None
+    assert parents == [None]
+    plugin = task / ".opencode" / "plugins" / "assurance-boundary.mjs"
+    assert plugin.is_file()
+    assert "stagedPhysical" in plugin.read_text(encoding="utf-8")
+    config = json.loads((task / "opencode.json").read_text(encoding="utf-8"))
+    assert "./.opencode/plugins/assurance-boundary.mjs" in config["plugin"]
+    assert len(disposed) == 1
+    assert disposed[0]["endpoint"] == "http://127.0.0.1:4101"
+    assert disposed[0]["directory"] == str(task.resolve())
+    assert isinstance(disposed[0]["authorization"], str)
+    assert str(disposed[0]["authorization"]).startswith("Basic ")
 
 
 def test_shared_attach_failure_is_an_explicit_terminal_failure(tmp_path: Path) -> None:
@@ -396,5 +454,149 @@ def test_resume_bootstrap_reattaches_a_shared_server(tmp_path: Path) -> None:
     )
     assert status.exit_code == 0
     assert status.opencode is not None and status.opencode.ownership == "shared"
-    assert parents == ["ses_root"]
-    assert stopped == []
+    assert parents == [None]
+
+
+def test_existing_task_directory_is_reused_for_two_changes(tmp_path: Path, monkeypatch) -> None:
+    task = _sut(tmp_path)
+    seen: list[Path] = []
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("nested worktree creation")
+
+    monkeypatch.setattr("assurance_product.bootstrap.driver.ensure_run_worktree", forbidden)
+
+    reused: list[object] = []
+
+    def prepare(**kwargs: object) -> dict[str, object]:
+        project_dir = kwargs["project_dir"]
+        assert isinstance(project_dir, Path)
+        seen.append(project_dir)
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        return _prepared(run_dir)
+
+    def start_invocation(**kwargs: object) -> dict[str, object]:
+        reused.append(kwargs.get("reuse_directory"))
+        return {"invocation_id": kwargs["invocation_id"]}
+
+    for change_id in ("BOOT-A", "BOOT-B"):
+        status = run_bootstrap(
+            project_dir=tmp_path / "primary",
+            spec=_spec(),
+            runs_root=task / ".aa" / "runs",
+            change_id=change_id,
+            environ=_environ(),
+            start_opencode_serve=lambda **kwargs: OpenCodeHandleV1(endpoint="http://127.0.0.1:4101", pid=1),
+            stop_opencode=lambda handle: None,
+            prepare_composition=prepare,
+            start_invocation=start_invocation,
+            run_invocation=lambda **kwargs: ({"status": "succeeded"}, "completed"),
+            read_status=lambda **kwargs: {"status": "completed"},
+            wait_ready=lambda url, timeout, authorization=None: None,
+            shared_endpoint="http://127.0.0.1:4101",
+            task_directory=task,
+        )
+        assert status.exit_code == 0
+    assert seen == [task.resolve(), task.resolve()]
+    assert reused == [True, True]
+
+
+def test_reused_task_directory_creates_qa_without_another_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from assurance_product.cli import _start_invocation
+
+    task = tmp_path / "task"
+    task.mkdir()
+    subprocess.run(["git", "init", str(task)], check=True, capture_output=True)
+    calls: list[Path] = []
+
+    def forbidden(project_dir: Path, change_id: str) -> Path:
+        del change_id
+        calls.append(project_dir)
+        raise AssertionError("nested worktree creation")
+
+    monkeypatch.setattr("assurance_product.cli.ensure_run_worktree", forbidden)
+    monkeypatch.setattr(
+        "assurance_product.cli._resolve_and_audit",
+        lambda **kwargs: (object(), object()),
+    )
+    monkeypatch.setattr(
+        "assurance_product.cli._authorize_secrets",
+        lambda composition, secrets: object(),
+    )
+
+    class _Application:
+        def start(self, **kwargs: object) -> dict[str, object]:
+            calls.append(Path(str(kwargs["project_dir"])))
+            return {"invocation_id": kwargs["invocation_id"]}
+
+    monkeypatch.setattr("assurance_product.cli.AssuranceProductApplication", _Application)
+    _start_invocation(
+        project_dir=task,
+        change_id="BOOT-qa",
+        invocation_id="BOOT-qa",
+        product="assurance-opencode",
+        binding_dist="bindings",
+        binding_entrypoint="deployment",
+        binding_declaration="declaration.json",
+        config_tree="config",
+        entrypoint="full",
+        input_path=tmp_path / "input.json",
+        secrets=("opencode.token=env:AA_NEXT_OPENCODE_TOKEN",),
+        reuse_directory=True,
+    )
+    assert calls == [task.resolve()]
+    assert (task / "qa").is_dir()
+    assert not (task / "qa").is_symlink()
+
+
+def test_managed_run_does_not_create_an_empty_root_session(tmp_path: Path) -> None:
+    task = _sut(tmp_path)
+    parents: list[object] = []
+
+    def unexpected_root(**_kwargs: object) -> str:
+        raise AssertionError("managed Run created an empty root session")
+
+    def prepare(**kwargs: object) -> dict[str, object]:
+        parents.append(kwargs.get("parent_session_id"))
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        return _prepared(run_dir)
+
+    status = run_bootstrap(
+        project_dir=tmp_path / "primary",
+        spec=_spec(),
+        runs_root=task / ".aa" / "runs",
+        change_id="BOOT-managed",
+        environ=_environ(),
+        start_opencode_serve=lambda **kwargs: OpenCodeHandleV1(endpoint="http://127.0.0.1:4101", pid=1),
+        stop_opencode=lambda handle: None,
+        prepare_composition=prepare,
+        start_invocation=lambda **kwargs: {"invocation_id": kwargs["invocation_id"]},
+        run_invocation=lambda **kwargs: ({"status": "succeeded"}, "completed"),
+        read_status=lambda **kwargs: {"status": "completed"},
+        wait_ready=lambda url, timeout, authorization=None: None,
+        shared_endpoint="http://127.0.0.1:4101",
+        ensure_run_root=unexpected_root,
+        task_directory=task,
+    )
+    assert status.root_session_id is None
+    assert parents == [None]
+
+
+def test_missing_task_directory_fails_before_worktree_creation(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "assurance_product.bootstrap.driver.ensure_run_worktree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("nested worktree creation")),
+    )
+    with pytest.raises(ValueError, match="task directory does not exist"):
+        run_bootstrap(
+            project_dir=tmp_path,
+            spec=_spec(),
+            runs_root=tmp_path / "runs",
+            change_id="BOOT-missing",
+            environ=_environ(),
+            task_directory=tmp_path / "missing",
+        )

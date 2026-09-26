@@ -556,6 +556,8 @@ def _operator_fail(error: OperatorError) -> NoReturn:
 @click.option("--opencode-endpoint")
 @click.option("--origin-session-id")
 @click.option("--origin-parent-session-id")
+@click.option("--task-directory", type=click.Path())
+@click.option("--request-id")
 @click.option("--json", "as_json", is_flag=True)
 def operator_start(
     project_dir: str | None,
@@ -564,6 +566,8 @@ def operator_start(
     opencode_endpoint: str | None,
     origin_session_id: str | None,
     origin_parent_session_id: str | None,
+    task_directory: str | None,
+    request_id: str | None,
     as_json: bool,
 ) -> None:
     _require_options(
@@ -584,10 +588,238 @@ def operator_start(
             opencode_endpoint=cast(str, opencode_endpoint),
             origin_session_id=origin_session_id,
             origin_parent_session_id=origin_parent_session_id,
+            task_directory=Path(task_directory) if task_directory else None,
+            request_id=request_id,
             environ=os.environ,
         )
     except OperatorError as error:
         _operator_fail(error)
+    _operator_result(payload)
+
+
+@operator.command("task-define")
+@click.option("--project-dir", type=click.Path())
+@click.option("--task-directory", type=click.Path())
+@click.option("--name")
+@click.option("--base-ref")
+@click.option("--requirement")
+@click.option("--family", "families", multiple=True)
+@click.option("--json", "as_json", is_flag=True)
+def operator_task_define(
+    project_dir: str | None,
+    task_directory: str | None,
+    name: str | None,
+    base_ref: str | None,
+    requirement: str | None,
+    families: tuple[str, ...],
+    as_json: bool,
+) -> None:
+    from assurance_product.task_records import TaskRecordError, define_task
+
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "task_directory": task_directory,
+            "name": name,
+            "base_ref": base_ref,
+            "requirement": requirement,
+            "family": families,
+            "json": as_json,
+        },
+        ("project_dir", "task_directory", "name", "base_ref", "requirement", "family", "json"),
+    )
+    try:
+        definition = define_task(
+            project_dir=Path(cast(str, project_dir)),
+            task_directory=Path(cast(str, task_directory)),
+            name=cast(str, name),
+            base_ref=cast(str, base_ref),
+            requirement=cast(str, requirement),
+            families=families,
+        )
+    except TaskRecordError as error:
+        _operator_fail(OperatorError(error.kind, str(error)))
+    _operator_result(definition.model_dump(mode="json"))
+
+
+@operator.command("task")
+@click.option("--project-dir", type=click.Path())
+@click.option("--json", "as_json", is_flag=True)
+def operator_task(project_dir: str | None, as_json: bool) -> None:
+    from assurance_product.task_records import TaskRecordError, read_task
+
+    _require_options({"project_dir": project_dir, "json": as_json}, ("project_dir", "json"))
+    try:
+        definition = read_task(Path(cast(str, project_dir)))
+    except TaskRecordError as error:
+        _operator_fail(OperatorError(error.kind, str(error)))
+    if definition is None:
+        _operator_fail(OperatorError("not_configured", "task is not configured"))
+    _operator_result(definition.model_dump(mode="json"))
+
+
+@operator.command("preflight")
+@click.option("--project-dir", type=click.Path())
+@click.option("--requirement")
+@click.option("--family", "families", multiple=True)
+@click.option("--opencode-endpoint")
+@click.option("--task-directory", type=click.Path())
+@click.option("--json", "as_json", is_flag=True)
+def operator_preflight(
+    project_dir: str | None,
+    requirement: str | None,
+    families: tuple[str, ...],
+    opencode_endpoint: str | None,
+    task_directory: str | None,
+    as_json: bool,
+) -> None:
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "requirement": requirement,
+            "family": families,
+            "opencode_endpoint": opencode_endpoint,
+            "json": as_json,
+        },
+        ("project_dir", "requirement", "family", "opencode_endpoint", "json"),
+    )
+    try:
+        payload = AssuranceOperator().preflight(
+            project_dir=Path(cast(str, project_dir)),
+            requirement=cast(str, requirement),
+            families=families,
+            opencode_endpoint=cast(str, opencode_endpoint),
+            task_directory=Path(task_directory) if task_directory else None,
+        )
+    except OperatorError as error:
+        _operator_fail(error)
+    _operator_result(payload)
+
+
+@operator.command("capabilities")
+@click.option("--json", "as_json", is_flag=True)
+def operator_capabilities(as_json: bool) -> None:
+    from assurance_product.operator_views import capabilities
+
+    _require_options({"json": as_json}, ("json",))
+    _operator_result(capabilities())
+
+
+@operator.command("history")
+@click.option("--project-dir", type=click.Path())
+@click.option("--json", "as_json", is_flag=True)
+def operator_history(project_dir: str | None, as_json: bool) -> None:
+    from assurance_product.operator_views import ProjectionError, read_task_history
+
+    _require_options({"project_dir": project_dir, "json": as_json}, ("project_dir", "json"))
+    try:
+        view = read_task_history(Path(cast(str, project_dir)))
+    except ProjectionError as error:
+        _operator_fail(OperatorError(error.kind, str(error)))
+    _operator_result(view.model_dump(mode="json"))
+
+
+@operator.command("run")
+@click.option("--project-dir", type=click.Path())
+@click.option("--run-id")
+@click.option("--json", "as_json", is_flag=True)
+def operator_run(project_dir: str | None, run_id: str | None, as_json: bool) -> None:
+    from assurance_product.operator_views import ProjectionError, read_run_view
+
+    _require_options(
+        {"project_dir": project_dir, "run_id": run_id, "json": as_json},
+        ("project_dir", "run_id", "json"),
+    )
+    try:
+        view = read_run_view(Path(cast(str, project_dir)), cast(str, run_id))
+    except ProjectionError as error:
+        _operator_fail(OperatorError(error.kind, str(error)))
+    _operator_result(view.model_dump(mode="json"))
+
+
+@operator.command("output")
+@click.option("--project-dir", type=click.Path())
+@click.option("--run-id")
+@click.option("--output-id")
+@click.option("--preview", is_flag=True)
+@click.option("--json", "as_json", is_flag=True)
+def operator_output(
+    project_dir: str | None,
+    run_id: str | None,
+    output_id: str | None,
+    preview: bool,
+    as_json: bool,
+) -> None:
+    from assurance_product.operator_views import ProjectionError, read_run_view
+    from assurance_product.run_history import RunHistoryError, read_output_ref, read_preserved_output
+
+    _require_options(
+        {
+            "project_dir": project_dir,
+            "run_id": run_id,
+            "output_id": output_id,
+            "preview": preview,
+            "json": as_json,
+        },
+        ("project_dir", "run_id", "output_id", "json"),
+    )
+    task = Path(cast(str, project_dir))
+    try:
+        view = read_run_view(task, cast(str, run_id))
+        known = {ref.output_id for node in view.nodes for ref in node.outputs}
+        if cast(str, output_id) not in known:
+            raise RunHistoryError("unavailable", "preserved output is missing")
+        ref = read_output_ref(task / ".aa" / "runs" / view.change_id, cast(str, output_id))
+        content = read_preserved_output(task / ".aa" / "runs" / view.change_id, ref)
+    except ProjectionError as error:
+        _operator_fail(OperatorError(error.kind, str(error)))
+    except RunHistoryError as error:
+        _operator_fail(OperatorError(error.kind, str(error)))
+    if preview:
+        limit = 64_000
+        sample = content[:limit]
+        _operator_result(
+            {
+                "output": ref.model_dump(mode="json"),
+                "preview": None if b"\0" in sample else sample.decode("utf-8", errors="replace"),
+                "truncated": len(content) > limit,
+            }
+        )
+        return
+    _operator_result(ref.model_dump(mode="json"))
+
+
+@operator.command("current-output")
+@click.option("--project-dir", type=click.Path())
+@click.option("--node-id")
+@click.option("--output-id")
+@click.option("--json", "as_json", is_flag=True)
+def operator_current_output(
+    project_dir: str | None,
+    node_id: str | None,
+    output_id: str | None,
+    as_json: bool,
+) -> None:
+    from assurance_product.current_node_output import (
+        CurrentNodeOutputError,
+        list_current_node_outputs,
+        preview_current_node_output,
+    )
+
+    _require_options(
+        {"project_dir": project_dir, "node_id": node_id, "json": as_json},
+        ("project_dir", "node_id", "json"),
+    )
+    task = Path(cast(str, project_dir))
+    node = cast(str, node_id)
+    try:
+        payload = (
+            preview_current_node_output(task, node, output_id)
+            if output_id
+            else list_current_node_outputs(task, node)
+        )
+    except CurrentNodeOutputError as error:
+        _operator_fail(OperatorError("unavailable", str(error)))
     _operator_result(payload)
 
 
@@ -964,6 +1196,7 @@ def _start_invocation(
     entrypoint: str,
     input_path: Path,
     secrets: Sequence[str],
+    reuse_directory: bool = False,
 ) -> dict[str, object]:
     if entrypoint not in PRODUCT_ENTRYPOINTS:
         raise CommandError(f"unknown product entrypoint: {entrypoint}")
@@ -975,7 +1208,8 @@ def _start_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
-    project_dir = _project_for_run(project_dir, change_id)
+    if not reuse_directory:
+        project_dir = _project_for_run(project_dir, change_id)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
         return AssuranceProductApplication().start(
@@ -1003,6 +1237,8 @@ def _run_invocation(
     entrypoint: str | None,
     input_path: Path | None,
     secrets: Sequence[str],
+    reuse_directory: bool = False,
+    stop_file: Path | None = None,
 ) -> tuple[SimpleRun, str]:
     composition, _audit = _resolve_and_audit(
         product=product,
@@ -1012,7 +1248,8 @@ def _run_invocation(
         config_tree=config_tree,
     )
     authorization = _authorize_secrets(composition, secrets)
-    project_dir = _project_for_run(project_dir, change_id)
+    if not reuse_directory:
+        project_dir = _project_for_run(project_dir, change_id)
     workspace = _bind_workspace(project_dir, change_id, create=True)
     with _engine_failures():
         result, mapped, _code = AssuranceProductApplication().run(
@@ -1025,6 +1262,7 @@ def _run_invocation(
             input_path=input_path,
             workspace=workspace,
             secrets=secrets,
+            stop_file=stop_file,
         )
     return cast(SimpleRun, result), mapped
 
@@ -1043,6 +1281,7 @@ def _resume_invocation(
     action: str | None,
     reason: str | None,
     resume_file: Path | None = None,
+    stop_file: Path | None = None,
 ) -> tuple[SimpleRun, str, int]:
     composition, _audit = _resolve_and_audit(
         product=product,
@@ -1064,5 +1303,6 @@ def _resume_invocation(
                 action=action,
                 reason=reason,
                 resume_file=resume_file,
+                stop_file=stop_file,
             ),
         )

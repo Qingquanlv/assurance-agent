@@ -138,7 +138,8 @@ class AttemptNodeFactory:
                 and resolution.retryable
                 and technical_attempt < task.retry.max_attempts
             ):
-                validated = _with_latest_validation_error(validated, resolution.message)
+                if resolution.kind == "invalid_output":
+                    validated = _with_latest_validation_error(validated, resolution.message)
                 self.trace.append(f"retry:{technical_attempt + 1}/{task.retry.max_attempts}")
                 if task.retry.interval_seconds:
                     await asyncio.sleep(task.retry.interval_seconds)
@@ -273,8 +274,6 @@ def _with_latest_validation_error(validated: BaseModel, message: str) -> BaseMod
         return validated
     payload = validated.model_dump(mode="json")
     payload["validation_error"] = latest
-    if "validation_attempt" in fields and payload.get("validation_attempt") == 0:
-        payload["validation_attempt"] = 1
     try:
         return type(validated).model_validate(payload)
     except ValidationError:

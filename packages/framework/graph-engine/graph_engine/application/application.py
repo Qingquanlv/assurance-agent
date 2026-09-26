@@ -67,6 +67,7 @@ class InvalidResume(GraphEngineError):
 
 class HumanResumeAction(FrozenModel):
     action: Literal["approve", "reject", "rework"]
+    reason: str | None = None
 
 
 class _CompiledGraph(Protocol):
@@ -528,6 +529,8 @@ def _resume_payload(resume: object, pending: tuple[object, ...]) -> object:
     first = next(iter(pending), None)
     if first is None:
         raise InvalidResume("no pending interrupt")
+    if len(pending) == 1 and isinstance(resume, dict) and getattr(first, "id", None) not in resume:
+        return _validate_one(resume, first)
     if len(pending) > 1 and not isinstance(resume, dict):
         raise AmbiguousResume("multiple pending interrupts require {interrupt_id: validated_value}")
     if isinstance(resume, dict) and all(hasattr(item, "id") for item in pending):

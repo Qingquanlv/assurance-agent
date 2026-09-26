@@ -345,6 +345,7 @@ class AssuranceProductApplication:
         input_path: Path | None,
         workspace: ChangeWorkspace,
         secrets: Sequence[str],
+        stop_file: Path | None = None,
     ) -> tuple[SimpleRun, str, int]:
         del project_dir, secrets
         existing = load_identity(workspace, invocation_id)
@@ -381,6 +382,7 @@ class AssuranceProductApplication:
                 authorization=authorization,
                 invocation_id=invocation_id,
                 record=record,
+                stop_file=stop_file,
             )
         )
         self._terminalize_full_if_achieved(
@@ -405,6 +407,7 @@ class AssuranceProductApplication:
         action: str | None,
         reason: str | None,
         resume_file: Path | None,
+        stop_file: Path | None = None,
     ) -> tuple[SimpleRun, str, int]:
         record = self._resolve_existing(
             workspace,
@@ -444,6 +447,7 @@ class AssuranceProductApplication:
                 invocation_id=invocation_id,
                 record=record,
                 resume=resume_payload,
+                stop_file=stop_file,
             )
         )
         self._terminalize_full_if_achieved(
@@ -656,6 +660,7 @@ class AssuranceProductApplication:
         invocation_id: str,
         authorization: InvocationRuntimeAuthorization,
         entrypoint: str,
+        stop_file: Path | None = None,
     ):
         return ProductRuntimePorts.open(
             workspace,
@@ -663,6 +668,7 @@ class AssuranceProductApplication:
             invocation=invocation_id,
             authorization=authorization,
             reachable_contract_ids=ENTRYPOINT_AGENT_CONTRACT_IDS[entrypoint],
+            pause_requested=stop_file.exists if stop_file is not None else None,
         )
 
     def _execution_factory(
@@ -755,6 +761,7 @@ class AssuranceProductApplication:
         authorization: InvocationRuntimeAuthorization,
         invocation_id: str,
         record: InvocationIdentityRecord,
+        stop_file: Path | None = None,
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with self._open_ports(
@@ -763,6 +770,7 @@ class AssuranceProductApplication:
             invocation_id=invocation_id,
             authorization=authorization,
             entrypoint=record.entrypoint,
+            **({"stop_file": stop_file} if stop_file is not None else {}),
         ) as ports:
             application = self._application(ports)
             self._remember_started(application, ports, invocation_id, record.entrypoint)
@@ -794,6 +802,7 @@ class AssuranceProductApplication:
         invocation_id: str,
         record: InvocationIdentityRecord,
         resume: object,
+        stop_file: Path | None = None,
     ) -> str:
         _assert_langgraph_revision(workspace, composition, invocation_id)
         async with self._open_ports(
@@ -802,6 +811,7 @@ class AssuranceProductApplication:
             invocation_id=invocation_id,
             authorization=authorization,
             entrypoint=record.entrypoint,
+            **({"stop_file": stop_file} if stop_file is not None else {}),
         ) as ports:
             application = self._application(ports)
             self._remember_started(application, ports, invocation_id, record.entrypoint)

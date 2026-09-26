@@ -200,37 +200,34 @@ def prepare_quality_goal(
 
 
 def write_bound_exploration(
-    project_root: Path,
+    write_root: Path,
     document: ExploreAdvisoryV1 | PreparedExploreV1,
     obligations: tuple[PreparedObligationV1, ...],
     current_ref: EvidenceArtifactRefV1,
 ) -> EvidenceArtifactRefV1:
-    """Write plan-bound keys into the sealed exploration case design reads."""
+    """Stage plan-bound keys for the Kernel to commit with the plan."""
     if not isinstance(document, PreparedExploreV1):
         return current_ref
     updated = document.model_copy(update={"minimum_required_coverage": obligations})
     data = canonical_json_bytes(cast(JSONValue, updated.model_dump(mode="json"))) + b"\n"
-    destination = project_root.joinpath(*current_ref.path.split("/"))
-    if destination.is_symlink() or not destination.is_file():
-        raise ValueError("sealed exploration must be one regular file")
-    if destination.read_bytes() == data:
+    digest = hashlib.sha256(data).hexdigest()
+    if digest == current_ref.digest:
         return current_ref
-    destination.write_bytes(data)
-    return EvidenceArtifactRefV1(path=current_ref.path, digest=hashlib.sha256(data).hexdigest())
+    _write_artifact(write_root, current_ref.path, data)
+    return EvidenceArtifactRefV1(path=current_ref.path, digest=digest)
 
 
-def _write_plan(output: ResolvePlanOutputV1, write_root: Path) -> None:
-    destination = write_root.joinpath(*output.plan_ref.path.split("/"))
+def _write_artifact(write_root: Path, relative: str, data: bytes) -> None:
+    destination = write_root.joinpath(*relative.split("/"))
     resolved_root = write_root.resolve(strict=True)
-    destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         destination.resolve(strict=False).relative_to(resolved_root)
     except ValueError as error:
-        raise ValueError("plan output path escapes write_root") from error
-    data = plan_bytes(output.plan)
-    if destination.exists():
+        raise ValueError("artifact output path escapes write_root") from error
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
         if destination.is_symlink() or destination.read_bytes() != data:
-            raise ValueError("plan output already exists with different bytes")
+            raise ValueError("artifact output already exists with different bytes")
         return
     destination.write_bytes(data)
 
@@ -243,7 +240,7 @@ def resolve_plan_artifact(
 ) -> ResolvePlanOutputV1:
     advisory, inventory, goal, obligations = prepare_quality_goal(request, project_root=project_root)
     exploration_ref = write_bound_exploration(
-        project_root,
+        write_root,
         advisory,
         obligations,
         request.exploration_ref,
@@ -257,7 +254,7 @@ def resolve_plan_artifact(
         exploration_ref=exploration_ref,
     )
     output = ResolvePlanOutputV1(plan=plan, plan_ref=plan_artifact_ref(plan))
-    _write_plan(output, write_root)
+    _write_artifact(write_root, output.plan_ref.path, plan_bytes(output.plan))
     return output
 
 
