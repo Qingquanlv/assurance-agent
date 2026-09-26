@@ -31,10 +31,17 @@ and process exit do not signal it. Standalone `aa bootstrap` still starts a
 private OpenCode process and stops that process only. A lost shared server
 becomes an explicit terminal failure (exit 30), not an empty success.
 
-Each run creates one unprompted root session on that server and stores
-`root_session_id`. Attempt sessions are children of that exact parent and the
-same run worktree. `origin_session_id` correlates the operator chat and is not
-the parent. A session that already has a parent cannot start another run.
+Stop is cooperative: an active Attempt settles before the next fresh Attempt
+pauses through the existing LangGraph system interrupt. Until then the operator
+reports `stop_pending`. The runner exits 20, but the graph remains `blocked`
+with `operator_stop`; resume continues the same invocation and checkpoint.
+Neither stop nor UI projections fabricate a graph terminal state.
+
+A full workflow does not create a root session: `root_session_id` stays null,
+and each agent attempt is its own top-level session in the run worktree.
+Operator run and history views publish those session links from the attempt
+journal. `origin_session_id` correlates the operator chat and is not a parent.
+A session that already has a parent cannot start another run.
 Bounded leaf agents have the `assurance` tool disabled.
 
 `aa operator assessment` reads one explicit

@@ -206,6 +206,7 @@ def make_kernel(
     validators: Mapping[str, CommitValidator] | None = None,
     validator_ids: tuple[str, ...] = (),
     output_model: type[BaseModel] = RunOutput,
+    pause_requested=None,
 ):
     project = tmp_path / "project"
     project.mkdir()
@@ -224,6 +225,7 @@ def make_kernel(
         graph_revision=graph_revision(),
         validators=validators or {},
         transaction_cut=transaction_cut,
+        pause_requested=pause_requested,
     )
     validated = RunInput(change_id="chg-1")
     key = derive_attempt_key(
@@ -243,6 +245,32 @@ def make_kernel(
         fencing_token=4,
     )
     return kernel, key, resolved, validated, context, writer, project, store
+
+
+async def test_pause_before_fresh_attempt_preserves_identity_and_replays(tmp_path: Path) -> None:
+    paused = True
+    kernel, key, resolved, validated, context, executor, project, store = make_kernel(
+        tmp_path, pause_requested=lambda: paused
+    )
+    try:
+        result = await kernel.execute_or_recover(key, resolved, validated, context)
+        assert isinstance(result, PendingTaskResult)
+        assert result.wakeup.reference_id == "operator_stop"
+        assert executor.calls == 0
+        assert not (project / "out.txt").exists()
+        snapshot = await kernel.journal.load(key)
+        assert snapshot is not None and snapshot.activity_state is None
+        paused = False
+        assert isinstance(
+            await kernel.execute_or_recover(key, resolved, validated, context), CommittedTaskResult
+        )
+        paused = True
+        assert isinstance(
+            await kernel.execute_or_recover(key, resolved, validated, context), CommittedTaskResult
+        )
+        assert executor.calls == 1
+    finally:
+        store.close()
 
 
 async def test_happy_path_trace_commits_receipt(tmp_path: Path) -> None:

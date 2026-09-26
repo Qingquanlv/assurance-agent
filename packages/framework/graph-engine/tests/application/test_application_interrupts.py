@@ -203,7 +203,10 @@ async def _start_and_block(
     return context, blocked
 
 
-async def test_single_human_interrupt_accepts_validated_scalar(application: AssuranceApplication) -> None:
+@pytest.mark.parametrize("resume", ["approve", {"action": "approve", "reason": "owner approved"}])
+async def test_single_human_interrupt_accepts_validated_action(
+    application: AssuranceApplication, resume: object
+) -> None:
     artifact = _artifact({"execute": _human_graph()})
     context, blocked = await _start_and_block(
         application,
@@ -216,9 +219,11 @@ async def test_single_human_interrupt_accepts_validated_scalar(application: Assu
     result = await application.resume(
         invocation_id="inv-human",
         execution_factory=_factory(artifact),
-        resume="approve",
+        resume=resume,
     )
     assert result == InvocationStatus(status="completed")
+    snapshot = await artifact.entrypoints["execute"].aget_state({"configurable": {"thread_id": "inv-human"}})
+    assert snapshot.values["decision"] == "approve"
 
 
 async def test_single_human_interrupt_rejects_invalid_scalar(application: AssuranceApplication) -> None:

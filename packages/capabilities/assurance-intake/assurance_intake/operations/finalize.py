@@ -575,6 +575,51 @@ def _load_authored_case_delta(
         raise OutputError(f"invalid aggregate written case delta: {error}") from error
 
 
+_ENDPOINT_LITERAL = re.compile(r"(?<![A-Za-z])(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+/\S*")
+_NATURAL_LANGUAGE_FIELDS = (
+    "title",
+    "objective",
+    "summary",
+    "preconditions",
+    "test_data",
+    "steps",
+    "assertions",
+    "postconditions",
+    "edge_cases",
+)
+
+
+def _strings(value: object) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            yield from _strings(item)
+
+
+def _reject_endpoint_literals(authored: CaseYamlAuthoring) -> None:
+    """HTTP method + path belongs in the API plan, except schema-owned Fuzz/Performance fields."""
+
+    hits: list[str] = []
+    for entry in (*authored.added, *authored.modified):
+        for field in _NATURAL_LANGUAGE_FIELDS:
+            for text in _strings(getattr(entry, field, None)):
+                for match in _ENDPOINT_LITERAL.finditer(text):
+                    hits.append(f"{entry.case_id}.{field}: {match.group(0)!r}")
+    if hits:
+        shown = "; ".join(hits[:12])
+        more = f"; and {len(hits) - 12} more" if len(hits) > 12 else ""
+        raise OutputError(
+            "case.yaml natural-language fields must not contain an HTTP method + endpoint path; "
+            "describe the operation in words (for example 调用用户创建接口) and leave method/path "
+            "to the API plan; only automation.fuzz and automation.performance may name endpoints: "
+            f"{shown}{more}"
+        )
+
+
 def _load_minimum_coverage_matrix(
     workspace: Path,
     *,
@@ -1415,6 +1460,10 @@ class CaseDesignFinalizeHandler:
             except ValueError as error:
                 raise OutputError(str(error)) from error
             validation_errors: list[str] = []
+            try:
+                _reject_endpoint_literals(authored)
+            except OutputError as error:
+                validation_errors.append(str(error))
             if payload.selected_test_families:
                 try:
                     _require_selected_test_families(authored, payload.selected_test_families)

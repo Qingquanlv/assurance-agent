@@ -237,21 +237,36 @@ def _retro_source_refs(state: ProductState, payload: ProductInputV1) -> tuple[Ev
         candidates.extend(getattr(report_outcome, "report_refs", ()))
     by_path: dict[str, EvidenceArtifactRefV1] = {}
     for candidate in candidates:
-        if candidate is None:
-            continue
-        try:
-            ref = (
-                candidate
-                if isinstance(candidate, EvidenceArtifactRefV1)
-                else EvidenceArtifactRefV1.model_validate(candidate)
-            )
-        except (TypeError, ValueError):
-            continue
-        existing = by_path.get(ref.path)
-        if existing is not None and existing.digest != ref.digest:
-            raise ValueError(f"conflicting Retro source digest for {ref.path}")
-        by_path[ref.path] = ref
+        _remember_retro_ref(by_path, candidate, replace=False)
+    # Plan resolution rewrites exploration.json after Explore records its digest.
+    # preparation_refs carries the bytes now on disk and replaces that stale ref.
+    preparation = state.get("preparation_refs")
+    if isinstance(preparation, (list, tuple)):
+        for candidate in preparation:
+            _remember_retro_ref(by_path, candidate, replace=True)
     return tuple(by_path[path] for path in sorted(by_path))
+
+
+def _remember_retro_ref(
+    by_path: dict[str, EvidenceArtifactRefV1],
+    candidate: object,
+    *,
+    replace: bool,
+) -> None:
+    if candidate is None:
+        return
+    try:
+        ref = (
+            candidate
+            if isinstance(candidate, EvidenceArtifactRefV1)
+            else EvidenceArtifactRefV1.model_validate(candidate)
+        )
+    except (TypeError, ValueError):
+        return
+    existing = by_path.get(ref.path)
+    if existing is not None and existing.digest != ref.digest and not replace:
+        raise ValueError(f"conflicting Retro source digest for {ref.path}")
+    by_path[ref.path] = ref
 
 
 def adapt_retro(state: ProductState) -> dict[str, object]:

@@ -176,7 +176,7 @@ _RESOLVE_PLAN = TaskAttemptContract(
     output_model=ResolvePlanOutputV1,
     resources=ResourceClaims(
         reads=(".aa", "qa"),
-        writes=_paths("plan"),
+        writes=_paths("explore/exploration.json", "plan"),
     ),
     retry=_TASK_RETRY,
     timeout=_TIMEOUT,

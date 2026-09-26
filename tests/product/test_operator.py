@@ -30,11 +30,44 @@ def _project(tmp_path: Path) -> Path:
                     "backend": "http://127.0.0.1:9999",
                     "frontend": "http://127.0.0.1:3100",
                 },
+                "execution": {"model_routing": {"default": "deepseek/deepseek-flash"}},
             }
         ),
         encoding="utf-8",
     )
     return project
+
+
+def _spec_config(**execution: object) -> dict[str, object]:
+    return {
+        "project": {"name": "demo", "type": "backend"},
+        "urls": {"backend": "http://127.0.0.1:9999"},
+        "execution": execution,
+    }
+
+
+def test_effective_spec_uses_the_configured_default_model():
+    from assurance_product.operator import build_effective_spec
+
+    spec = build_effective_spec(
+        _spec_config(model_routing={"default": "deepseek/deepseek-flash"}),
+        requirement="Cover user CRUD.",
+        families=("api",),
+    )
+    assert spec.routes.provider_model == "deepseek/deepseek-flash"
+
+
+def test_effective_spec_rejects_a_missing_default_model():
+    import pytest
+
+    from assurance_product.operator import OperatorError, build_effective_spec
+
+    with pytest.raises(OperatorError, match="execution.model_routing.default"):
+        build_effective_spec(
+            _spec_config(),
+            requirement="Cover user CRUD.",
+            families=("api",),
+        )
 
 
 def _start_args(project: Path, *extra: str) -> list[str]:
@@ -59,6 +92,170 @@ def _finish(run_dir: Path, change_id: str) -> None:
         run_dir,
         BootstrapStatusV1(phase="terminal", change_id=change_id, exit_code=0),
     )
+
+
+def test_existing_task_does_not_create_a_second_worktree(cli_runner, tmp_path, monkeypatch):
+    from assurance_product.cli import app
+
+    project = _project(tmp_path)
+    task = tmp_path / "task"
+    task.mkdir()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("nested worktree creation")
+
+    from assurance_product.task_records import define_task
+
+    define_task(
+        project_dir=project,
+        task_directory=task,
+        name="User QA",
+        base_ref="main",
+        requirement="Cover user CRUD.",
+        families=("api",),
+    )
+
+    def prepare_workspace(**kwargs: object) -> None:
+        from assurance_product.change_workspace import ChangeWorkspace
+
+        change_id = str(kwargs["change_id"])
+        ChangeWorkspace.open(task, change_id)
+        _finish(task / ".aa" / "runs" / change_id, change_id)
+
+    monkeypatch.setattr("assurance_product.operator.ensure_run_worktree", forbidden)
+    monkeypatch.setattr("assurance_product.operator.launch_worker", prepare_workspace)
+    result = cli_runner.invoke(
+        app,
+        _start_args(project, "--task-directory", str(task), "--request-id", "req-1"),
+    )
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert Path(body["worktree"]) == task.resolve()
+    manifest = read_run_manifest(task / ".aa" / "runs" / body["run_id"])
+    assert manifest["source_project_dir"] == str(project.resolve())
+    assert manifest["task_directory"] == str(task.resolve())
+    assert manifest["config_source"] == str((project / ".aa" / "config.yaml").resolve())
+    assert manifest["baseline"] == []
+    assert manifest["request_id"] == "req-1"
+    again = cli_runner.invoke(
+        app,
+        _start_args(project, "--task-directory", str(task), "--request-id", "req-1"),
+    )
+    assert again.exit_code == 0, again.output
+    assert json.loads(again.stdout)["run_id"] == body["run_id"]
+    assert len(list((task / ".aa" / "runs").iterdir())) == 1
+    assert (task / "qa").is_dir()
+    (task / "repaired.txt").write_text("chat repair\n", encoding="utf-8")
+    second = cli_runner.invoke(
+        app,
+        _start_args(project, "--task-directory", str(task), "--request-id", "req-2"),
+    )
+    assert second.exit_code == 0, second.output
+    second_id = json.loads(second.stdout)["run_id"]
+    assert second_id != body["run_id"]
+    first = read_run_manifest(task / ".aa" / "runs" / body["run_id"])
+    second_manifest = read_run_manifest(task / ".aa" / "runs" / second_id)
+    assert first["task_directory"] == second_manifest["task_directory"] == str(task.resolve())
+    assert first["change_id"] != second_manifest["change_id"]
+
+
+def test_same_request_id_does_not_relaunch_after_worker_failure(cli_runner, tmp_path, monkeypatch) -> None:
+    from assurance_product.cli import app
+    from assurance_product.task_records import define_task
+
+    project = _project(tmp_path)
+    task = tmp_path / "task"
+    task.mkdir()
+    define_task(
+        project_dir=project,
+        task_directory=task,
+        name="User QA",
+        base_ref="main",
+        requirement="Cover user CRUD.",
+        families=("api",),
+    )
+    calls = {"n": 0}
+
+    def boom(**kwargs):
+        calls["n"] += 1
+        raise RuntimeError("worker down")
+
+    monkeypatch.setattr("assurance_product.operator.launch_worker", boom)
+    args = _start_args(project, "--task-directory", str(task), "--request-id", "req-fail")
+    failed = cli_runner.invoke(app, args)
+    assert failed.exit_code != 0
+    assert "worker_failed" in failed.output
+    recovered = cli_runner.invoke(app, args)
+    assert recovered.exit_code == 0, recovered.output
+    assert json.loads(recovered.stdout)["phase"] == "terminal"
+    assert calls["n"] == 1
+
+
+def test_two_tasks_share_project_defaults_without_sharing_runs(cli_runner, tmp_path, monkeypatch) -> None:
+    from assurance_product.cli import app
+    from assurance_product.task_records import define_task
+
+    project = _project(tmp_path)
+    monkeypatch.setattr("assurance_product.operator.launch_worker", lambda **kwargs: None)
+    ids: list[str] = []
+    for name in ("a", "b"):
+        task = tmp_path / name
+        task.mkdir()
+        define_task(
+            project_dir=project,
+            task_directory=task,
+            name=name,
+            base_ref="main",
+            requirement="Cover user CRUD.",
+            families=("api",),
+        )
+        result = cli_runner.invoke(
+            app,
+            _start_args(project, "--task-directory", str(task), "--request-id", f"req-{name}"),
+        )
+        assert result.exit_code == 0, result.output
+        ids.append(json.loads(result.stdout)["run_id"])
+    assert ids[0] != ids[1]
+
+
+def test_unconfigured_task_start_reports_not_configured(cli_runner, tmp_path, monkeypatch) -> None:
+    from assurance_product.cli import app
+
+    project = _project(tmp_path)
+    task = tmp_path / "task"
+    task.mkdir()
+    monkeypatch.setattr("assurance_product.operator.launch_worker", lambda **kwargs: None)
+    result = cli_runner.invoke(
+        app, _start_args(project, "--task-directory", str(task), "--request-id", "req-1")
+    )
+    assert result.exit_code != 0
+    assert "not_configured" in result.output
+
+
+def test_malformed_task_config_does_not_fall_back(cli_runner, tmp_path, monkeypatch) -> None:
+    from assurance_product.cli import app
+
+    project = _project(tmp_path)
+    task = tmp_path / "task"
+    (task / ".aa").mkdir(parents=True)
+    (task / ".aa" / "config.yaml").write_text("[]\n", encoding="utf-8")
+    monkeypatch.setattr("assurance_product.operator.launch_worker", lambda **kwargs: None)
+    result = cli_runner.invoke(app, _start_args(project, "--task-directory", str(task)))
+    assert result.exit_code != 0
+    assert not (task / ".aa" / "runs").exists()
+
+
+def test_missing_task_directory_is_rejected(cli_runner, tmp_path, monkeypatch) -> None:
+    from assurance_product.cli import app
+
+    project = _project(tmp_path)
+    monkeypatch.setattr(
+        "assurance_product.operator.ensure_run_worktree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("nested worktree creation")),
+    )
+    result = cli_runner.invoke(app, _start_args(project, "--task-directory", str(tmp_path / "missing")))
+    assert result.exit_code != 0
+    assert "task directory does not exist" in result.output
 
 
 def test_operator_start_allocates_distinct_ids_and_rejects_bad_input(
@@ -546,3 +743,121 @@ def test_operator_assessment_reports_a_missing_manifest_entry(cli_runner, tmp_pa
         ],
     )
     assert json.loads(result.stdout)["reason"] == "missing_ref"
+
+
+def test_run_view_projects_journal_sessions_without_a_synthetic_attempts_file(tmp_path: Path) -> None:
+    import asyncio
+
+    from assurance_product.change_workspace import ChangeWorkspace
+    from assurance_product.operator_views import read_run_view
+    from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
+    from assurance_product.sqlite_checkpointer import open_sqlite_checkpointer
+    from assurance_product.task_records import define_task
+    from graph_engine.attempts.events import ActivityBound, ActivityPrepared, AttemptOpened, AttemptTerminated
+    from graph_engine.attempts.keys import AttemptKey
+
+    project = _project(tmp_path)
+    task = tmp_path / "task"
+    task.mkdir()
+    define_task(
+        project_dir=project,
+        task_directory=task,
+        name="User QA",
+        base_ref="main",
+        requirement="Cover user CRUD.",
+        families=("api",),
+    )
+    change_id = "BOOT-journal"
+    run_dir = task / ".aa" / "runs" / change_id
+    run_dir.mkdir(parents=True)
+    from assurance_product.bootstrap.status import write_run_manifest
+    from assurance_product.task_records import read_task
+
+    definition = read_task(task)
+    assert definition is not None
+    write_run_manifest(
+        run_dir,
+        {
+            "change_id": change_id,
+            "invocation_id": change_id,
+            "task_id": definition.task_id,
+            "task_directory": str(task.resolve()),
+            "run_number": 1,
+            "config_source": str((project / ".aa" / "config.yaml").resolve()),
+            "requested_opencode_endpoint": "http://127.0.0.1:4096",
+            "baseline": [],
+        },
+    )
+    write_bootstrap_status(run_dir, BootstrapStatusV1(phase="terminal", change_id=change_id, exit_code=0))
+    workspace = ChangeWorkspace.prepare(task, change_id)
+    digest = "ab" * 32
+
+    async def record() -> None:
+        async with open_sqlite_checkpointer(workspace) as backend:
+            journal = SqliteAttemptJournal(backend)
+            specs = (
+                ("1" * 64, "intake", "a1", "try-1", {"session_id": "ses-a"}),
+                ("2" * 64, "intake", "a2", "try-2", {"session_id": "ses-b"}),
+                ("3" * 64, "execute", "a3", "try-1", None),
+                ("4" * 64, "intake", "other", "try-9", {"session_id": "ses-other"}),
+            )
+            for key, node_id, activity_id, attempt_key, reference in specs:
+                if reference is None:
+                    events = (
+                        AttemptOpened(
+                            contract_digest=digest,
+                            input_digest=digest,
+                            graph_revision=digest,
+                            invocation_id=change_id,
+                            public_entrypoint="full",
+                            semantic_node_id=node_id,
+                        ),
+                        ActivityPrepared(activity_id=activity_id),
+                        ActivityBound(
+                            activity_id=activity_id,
+                            reference={"attempt_key": attempt_key},
+                            reference_digest=digest,
+                        ),
+                        AttemptTerminated(resolution_kind="committed"),
+                    )
+                else:
+                    invocation = "BOOT-other" if reference["session_id"] == "ses-other" else change_id
+                    events = (
+                        AttemptOpened(
+                            contract_digest=digest,
+                            input_digest=digest,
+                            graph_revision=digest,
+                            invocation_id=invocation,
+                            public_entrypoint="full",
+                            semantic_node_id=node_id,
+                        ),
+                        ActivityPrepared(activity_id=activity_id),
+                        ActivityBound(
+                            activity_id=activity_id,
+                            reference={**reference, "attempt_key": attempt_key},
+                            reference_digest=digest,
+                        ),
+                        AttemptTerminated(resolution_kind="committed"),
+                    )
+                await journal.append(
+                    AttemptKey(digest=key),
+                    events,  # type: ignore[arg-type]
+                    expected_revision=0,
+                    fencing_token=1,
+                )
+
+    asyncio.run(record())
+    assert not (run_dir / "attempts.json").exists()
+    view = read_run_view(task, change_id)
+    assert [(node.node_id, node.activation_id, node.attempt_key, node.session_id) for node in view.nodes] == [
+        ("intake", "a1", "try-1", "ses-a"),
+        ("intake", "a2", "try-2", "ses-b"),
+        ("execute", "a3", "try-1", None),
+    ]
+    assert view.nodes[2].execution_kind == "command"
+    reopened = read_run_view(task, change_id)
+    assert [(node.attempt_key, node.session_id) for node in reopened.nodes] == [
+        ("try-1", "ses-a"),
+        ("try-2", "ses-b"),
+        ("try-1", None),
+    ]

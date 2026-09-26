@@ -558,7 +558,7 @@ Check whether the case links back to:
 
 ### 9. Forbidden Content
 
-Case YAML must NOT contain any of the following. Flag as a blocker if found:
+Case YAML must NOT contain any of the following. Any occurrence blocks `pass`:
 
 Fuzz and Performance are the field-level exception to the general rule below:
 `automation.fuzz.endpoints[]` must contain concrete `method` + absolute `path`
@@ -581,6 +581,14 @@ fields as forbidden execution detail.
 - Execution history or test run results embedded in the case body
 
 These details belong in API plan, test code, or data-knowledge.yaml — not in case.yaml.
+
+When the fix is only to delete or reword that detail in the case text (for
+example, replace `调用 POST /api/v1/user/create` with `调用用户创建接口`) and the
+intended behavior is unchanged, it is a mechanical repair: use `severity: high`,
+`auto_fix_allowed: true`, `human_review_required: false`, decision `needs_fix`,
+and an `auto_fix_plan` item that names the case and field. Do not use
+`blocking` or `critical` for it: finalize rejects auto-fix for those severities,
+and forbidden content is never, by itself, a reason for `needs_human_review`.
 
 ### 10. Delta Operation Correctness
 

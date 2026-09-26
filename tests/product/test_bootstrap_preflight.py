@@ -68,6 +68,21 @@ def test_preflight_rejects_foreign_qa(tmp_path: Path) -> None:
         )
 
 
+def test_preflight_allows_prior_run_qa_when_reusing_directory(tmp_path: Path) -> None:
+    project = _sut(tmp_path)
+    qa = project / "qa"
+    qa.mkdir()
+    (qa / ".qa.yaml").write_text("change:\n  change_id: BOOT-PREV\n", encoding="utf-8")
+    preflight_bootstrap(
+        project_dir=project,
+        spec=_spec(),
+        runs_root=tmp_path / "runs",
+        change_id="BOOT-NEXT",
+        environ={"AA_NEXT_OPENCODE_TOKEN": "t", "QA_ADMIN_PASSWORD": "x"},
+        reuse_directory=True,
+    )
+
+
 def test_preflight_rejects_ambient_model_override(tmp_path: Path) -> None:
     project = _sut(tmp_path)
     with pytest.raises(BootstrapPreflightError, match="OPENCODE_MODEL"):

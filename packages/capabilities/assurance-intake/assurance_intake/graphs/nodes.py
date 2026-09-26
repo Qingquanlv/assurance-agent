@@ -144,6 +144,28 @@ def select_load_plan(state: Mapping[str, object]) -> LoadPlanInputV1:
     )
 
 
+def _rebind_artifact_path(
+    items: object,
+    ref: EvidenceArtifactRefV1,
+) -> list[dict[str, object]] | None:
+    """Replace one path with the digest of the bytes now on disk."""
+    mappings = _mapping_items(items)
+    if not any(item.get("path") == ref.path for item in mappings):
+        return None
+    dumped = ref.model_dump(mode="json")
+    rebound: list[dict[str, object]] = []
+    replaced = False
+    for item in mappings:
+        if item.get("path") != ref.path:
+            rebound.append(dict(item))
+            continue
+        if replaced:
+            continue
+        rebound.append(dumped)
+        replaced = True
+    return rebound
+
+
 def publish_plan(state: Mapping[str, object], output: object, receipt: object) -> dict[str, object]:
     del receipt
     resolved = ResolvePlanOutputV1.model_validate(output)
@@ -154,13 +176,20 @@ def publish_plan(state: Mapping[str, object], output: object, receipt: object) -
     refs.append(resolved.plan.exploration_ref.model_dump(mode="json"))
     refs.append(resolved.plan_ref.model_dump(mode="json"))
     by_path = {str(item["path"]): item for item in refs}
-    return {
+    published: dict[str, object] = {
         "selected_test_families": list(resolved.plan.selected_test_families),
         "plan_digest": resolved.plan.plan_digest,
         "plan_ref": resolved.plan_ref.model_dump(mode="json"),
         "policy_digest": resolved.plan.policy_digest,
         "preparation_refs": [by_path[path] for path in sorted(by_path)],
     }
+    # Plan resolution rewrites exploration.json with bound obligation keys.
+    # Keep the artifact list on that digest so later readers do not authenticate
+    # the pre-bind bytes.
+    rebound = _rebind_artifact_path(state.get("artifacts"), resolved.plan.exploration_ref)
+    if rebound is not None:
+        published["artifacts"] = rebound
+    return published
 
 
 def select_case_design(state: Mapping[str, object]) -> CaseDesignInputV1:

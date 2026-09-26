@@ -424,6 +424,9 @@ def test_case_reviewer_routes_source_proven_case_defects_to_agent_fix_loop() -> 
     assert "A high-severity finding may still be mechanically fixable" in skill
     assert "must use `needs_fix`" in skill
     assert "Risk level is high or critical" not in skill
+    assert "it is a mechanical repair: use `severity: high`" in skill
+    assert "forbidden content is never, by itself, a reason for `needs_human_review`" in skill
+    assert "Flag as a blocker if found" not in skill
 
 
 def test_case_reviewer_uses_locked_requirement_and_reports_findings_exhaustively() -> None:
@@ -2256,6 +2259,41 @@ async def test_case_design_finalize_accepts_typed_authoring(tmp_path: Path) -> N
     assert not (write_root / "qa/results/case-index.json").exists()
     assert "added" not in executed.output
     AGENT_JOB_CONTRACTS["case-design"].output_model.model_validate(executed.output)
+
+
+@pytest.mark.asyncio
+async def test_case_design_finalize_routes_endpoint_literals_to_validation_repair(
+    tmp_path: Path,
+) -> None:
+    authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_text(encoding="utf-8"))
+    authored["added"][0]["steps"] = ["以管理员身份调用POST /api/v1/menu/create 创建菜单"]
+    project, write_root = dual_roots(tmp_path)
+    outputs = _write_case_design_outputs(write_root, authored)
+    executed = await _finalize_files(
+        CaseDesignFinalizeHandler(),
+        cast(JSONValue, {"output_files": outputs}),
+        project,
+        [
+            "qa/.qa.yaml",
+            "qa/cases",
+            "qa/fixtures",
+            "qa/proposal.md",
+            "qa/requirement.md",
+            "qa/results",
+            "qa/tests",
+        ],
+        change_id="CH-DEMO-001",
+        selected_test_families=["api"],
+        write_root=write_root,
+        validation_attempt=0,
+    )
+    assert executed.status == "succeeded", executed.failure
+    assert executed.output["validation_status"] == "needs_fix"
+    assert executed.output["validation_attempt"] == 1
+    error = executed.output["validation_error"]
+    assert "must not contain an HTTP method + endpoint path" in error
+    assert "'POST /api/v1/menu/create'" in error
+    assert ".steps:" in error
 
 
 @pytest.mark.asyncio

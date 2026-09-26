@@ -64,6 +64,7 @@ def preflight_bootstrap(
     runs_root: Path,
     change_id: str,
     environ: Mapping[str, str],
+    reuse_directory: bool = False,
 ) -> None:
     try:
         root = require_real_directory(project_dir if project_dir.is_absolute() else project_dir.resolve())
@@ -72,7 +73,7 @@ def preflight_bootstrap(
     _require_regular_file(root / ".aa" / "policy.yaml", ".aa/policy.yaml")
     _require_regular_file(root / ".aa" / "data-knowledge.yaml", ".aa/data-knowledge.yaml")
     qa_root = root / "qa"
-    if qa_root.exists():
+    if qa_root.exists() and not reuse_directory:
         existing = _qa_change_id(root)
         if existing is not None and existing != change_id:
             raise BootstrapPreflightError("qa/ already belongs to a different change")

@@ -10,7 +10,7 @@ from typing import Any
 from assurance_product.bootstrap.contracts import BootstrapStatusV1, OpenCodeHandleV1, RunSpecV1
 from assurance_product.bootstrap.opencode import OpenCodeLaunchError
 from assurance_product.bootstrap.opencode import attach_shared_opencode as _attach_shared_opencode
-from assurance_product.bootstrap.opencode import create_run_root_session as _create_run_root_session
+from assurance_product.bootstrap.opencode import dispose_project_instance
 from assurance_product.bootstrap.opencode import start_opencode_serve as _start_opencode_serve
 from assurance_product.bootstrap.opencode import stop_opencode as _stop_opencode
 from assurance_product.bootstrap.opencode import wait_http_ready
@@ -22,12 +22,12 @@ from assurance_product.bootstrap.status import (
     read_bootstrap_status,
     read_run_manifest,
     run_dir_for,
-    stop_requested,
     write_bootstrap_status,
     write_effective_spec,
     write_run_manifest,
     write_stop_request,
 )
+from assurance_product.opencode_agents import install_opencode_agents
 from assurance_product.sut_worktree import ensure_run_worktree
 
 _SUT_READY_TIMEOUT_SECONDS = 90.0
@@ -104,6 +104,7 @@ def _default_read_status(**kwargs: Any) -> dict[str, object]:
     from assurance_product.application import AssuranceProductApplication
     from assurance_product.cli import _authorize_secrets, _bind_workspace, _resolve_and_audit
 
+    reuse_directory = bool(kwargs.pop("reuse_directory", False))
     composition, _audit = _resolve_and_audit(
         product=str(kwargs["product"]),
         binding_dist=str(kwargs["binding_dist"]),
@@ -113,7 +114,11 @@ def _default_read_status(**kwargs: Any) -> dict[str, object]:
     )
     secrets = kwargs["secrets"]
     authorization = _authorize_secrets(composition, secrets)
-    workspace = _bind_workspace(Path(str(kwargs["project_dir"])), str(kwargs["change_id"]), create=False)
+    workspace = _bind_workspace(
+        Path(str(kwargs["project_dir"])),
+        str(kwargs["change_id"]),
+        create=reuse_directory,
+    )
     return (
         AssuranceProductApplication()
         .status(
@@ -125,33 +130,6 @@ def _default_read_status(**kwargs: Any) -> dict[str, object]:
         )
         .model_dump(mode="json")
     )
-
-
-def _session_opener(handle: OpenCodeHandleV1, token: str | None) -> Callable[..., object]:
-    from assurance_product.bootstrap.opencode import _basic_opencode_authorization
-
-    authorization = _basic_opencode_authorization(token) if token else None
-
-    def open_session(method: str, path: str, body: object, directory: str) -> object:
-        import json
-        from urllib.parse import quote
-        from urllib.request import Request, urlopen
-
-        url = handle.endpoint.rstrip("/") + path
-        data = None if body is None else json.dumps(body).encode("utf-8")
-        request = Request(
-            f"{url}?directory={quote(directory, safe='/')}",
-            data=data,
-            method=method,
-        )
-        request.add_header("Content-Type", "application/json")
-        if authorization:
-            request.add_header("Authorization", authorization)
-        with urlopen(request, timeout=10) as response:  # noqa: S310 - managed local OpenCode
-            payload = json.loads(response.read().decode("utf-8"))
-        return payload
-
-    return open_session
 
 
 def _private_server(run_dir: Path) -> bool:
@@ -180,6 +158,15 @@ def _is_terminal(snapshot: Mapping[str, Any], mapped: str | None) -> bool:
     return status in _TERMINAL_STATUSES
 
 
+def _publish_managed_attempts(project_dir: Path, change_id: str) -> None:
+    database = project_dir / "qa" / ".runtime" / "langgraph" / "checkpoints.sqlite3"
+    if not database.is_file() or database.is_symlink():
+        return
+    from assurance_product.operator_views import publish_run_attempts
+
+    publish_run_attempts(project_dir, change_id)
+
+
 def _drive_application(
     *,
     project_dir: Path,
@@ -193,6 +180,8 @@ def _drive_application(
     run_invocation: Callable[..., tuple[object, str]],
     read_status: Callable[..., Mapping[str, Any]],
     probe_shared: Callable[..., None] | None = None,
+    reuse_directory: bool = False,
+    resume_invocation: Callable[..., tuple[object, str]] | None = None,
 ) -> BootstrapStatusV1:
     invocation_id = change_id
     secrets = (_secret_arg(spec),)
@@ -206,6 +195,7 @@ def _drive_application(
         "binding_declaration": str(prepared["binding_declaration"]),
         "config_tree": str(prepared["config_tree"]),
         "secrets": secrets,
+        "reuse_directory": reuse_directory,
     }
     start_invocation(
         **common,
@@ -238,18 +228,6 @@ def _drive_application(
                     exit_code=30,
                     error=f"shared OpenCode server is unavailable: {error}",
                 )
-        if stop_requested(run_dir):
-            return _persist(
-                run_dir,
-                phase="terminal",
-                change_id=change_id,
-                opencode=handle,
-                status={**dict(snapshot), "status": "stopped"},
-                started_at=started_at,
-                ended_at=_iso_now(),
-                exit_code=20,
-                error=None,
-            )
         if time.monotonic() >= deadline:
             return _persist(
                 run_dir,
@@ -271,13 +249,26 @@ def _drive_application(
             started_at=started_at,
         )
         del current
-        _result, mapped = run_invocation(
-            **common,
-            entrypoint=None,
-            input_path=None,
-        )
+        if resume_invocation is not None:
+            _result, mapped = resume_invocation(**common, stop_file=run_dir / "stop-request.json")
+            resume_invocation = None
+        else:
+            _result, mapped = run_invocation(
+                **common,
+                entrypoint=None,
+                input_path=None,
+                stop_file=run_dir / "stop-request.json",
+            )
         snapshot = dict(read_status(**common))
-        if _is_terminal(snapshot, mapped):
+        if reuse_directory:
+            _publish_managed_attempts(project_dir, change_id)
+        pending = snapshot.get("pending_interrupt")
+        paused = (
+            snapshot.get("status") == "blocked"
+            and isinstance(pending, Mapping)
+            and pending.get("reason_category") == "operator_stop"
+        )
+        if _is_terminal(snapshot, mapped) or paused:
             return _persist(
                 run_dir,
                 phase="terminal",
@@ -286,7 +277,7 @@ def _drive_application(
                 status=snapshot,
                 started_at=started_at,
                 ended_at=_iso_now(),
-                exit_code=_exit_code_for(snapshot, mapped),
+                exit_code=20 if paused else _exit_code_for(snapshot, mapped),
             )
         time.sleep(1.0)
 
@@ -307,14 +298,29 @@ def run_bootstrap(
     wait_ready: Callable[..., None] | None = None,
     shared_endpoint: str | None = None,
     ensure_run_root: Callable[..., str] | None = None,
+    task_directory: Path | None = None,
+    dispose_instance: Callable[..., None] | None = None,
 ) -> BootstrapStatusV1:
     from assurance_product.bootstrap.composition import prepare_composition as _prepare_composition
 
+    if dispose_instance is None and start_opencode_serve is None:
+        dispose_instance = dispose_project_instance
     resolved_change = change_id or derive_bootstrap_change_id(
         stamp=utc_stamp(),
         nonce=secrets.token_hex(4),
     )
-    project_dir = ensure_run_worktree(project_dir, resolved_change)
+    selected_task = task_directory
+    reuse_directory = selected_task is not None
+    if selected_task is not None:
+        project_dir = selected_task.resolve()
+        if not project_dir.is_dir():
+            raise ValueError("task directory does not exist")
+        # Shared attach skips start_opencode_serve, which is what installs the
+        # write boundary. Without that plugin, agent writes land in the task
+        # root and intake finalize cannot see them in the attempt write root.
+        install_opencode_agents(project_dir)
+    else:
+        project_dir = ensure_run_worktree(project_dir, resolved_change)
     run_dir = run_dir_for(runs_root, resolved_change)
     write_effective_spec(run_dir, spec)
     started_at = _iso_now()
@@ -362,6 +368,7 @@ def run_bootstrap(
                 runs_root=runs_root,
                 change_id=resolved_change,
                 environ=environ,
+                reuse_directory=reuse_directory,
             )
         except BootstrapPreflightError as error:
             _persist(
@@ -424,34 +431,37 @@ def run_bootstrap(
             if shared_failure:
                 return persisted
             raise
-        root_session_id: str | None = None
-        if ensure_run_root is not None:
-            root_session_id = ensure_run_root(
-                endpoint=handle.endpoint,
-                directory=str(project_dir.resolve()),
-                change_id=resolved_change,
-            )
-        elif start_opencode_serve is None:
-            manifest = {}
+        if reuse_directory and dispose_instance is not None:
+            token = environ.get(spec.opencode_token_env)
+            authorization = None
+            if token:
+                from assurance_product.bootstrap.opencode import _basic_opencode_authorization
+
+                authorization = _basic_opencode_authorization(token)
             try:
-                manifest = read_run_manifest(run_dir)
-            except (OSError, ValueError):
-                manifest = {}
-            origin = manifest.get("origin_session_id")
-            root_session_id = _create_run_root_session(
-                endpoint=handle.endpoint,
-                directory=str(project_dir.resolve()),
-                change_id=resolved_change,
-                origin_session_id=origin if isinstance(origin, str) else None,
-                opener=_session_opener(handle, environ.get(spec.opencode_token_env)),
-            )
+                dispose_instance(
+                    endpoint=handle.endpoint,
+                    directory=str(project_dir.resolve()),
+                    authorization=authorization,
+                )
+            except OpenCodeLaunchError as error:
+                return _persist(
+                    run_dir,
+                    phase="terminal",
+                    change_id=resolved_change,
+                    opencode=handle,
+                    started_at=started_at,
+                    ended_at=_iso_now(),
+                    exit_code=30,
+                    error=str(error),
+                )
         current = _persist(
             run_dir,
             phase="opencode_ready",
             change_id=resolved_change,
             opencode=handle,
             started_at=started_at,
-            root_session_id=root_session_id,
+            root_session_id=None,
         )
         prepared = prepare(
             project_dir=project_dir,
@@ -459,7 +469,7 @@ def run_bootstrap(
             spec=spec,
             opencode_endpoint=handle.endpoint,
             change_id=resolved_change,
-            parent_session_id=root_session_id,
+            parent_session_id=None,
         )
         write_run_manifest(
             run_dir,
@@ -503,6 +513,7 @@ def run_bootstrap(
             run_invocation=run_app,
             read_status=status_app,
             probe_shared=ready if handle.ownership == "shared" else None,
+            reuse_directory=reuse_directory,
         )
         return current
     except (BootstrapPreflightError, OpenCodeLaunchError):
@@ -535,30 +546,21 @@ def stop_bootstrap(
     *,
     stop_opencode: Callable[[OpenCodeHandleV1], None] | None = None,
 ) -> BootstrapStatusV1:
+    # The worker owns cleanup after the graph reaches a durable pause boundary.
+    del stop_opencode
     status = read_bootstrap_status(run_dir)
     if status.phase == "terminal":
         return status
     write_stop_request(run_dir, change_id=status.change_id)
-    stop = stop_opencode or _stop_opencode
-    if status.opencode is not None and _private_server(run_dir):
-        stop(status.opencode)
-    return _persist(
-        run_dir,
-        phase="terminal",
-        change_id=status.change_id,
-        opencode=status.opencode,
-        status=status.status,
-        started_at=status.started_at,
-        ended_at=_iso_now(),
-        exit_code=20,
-        error=status.error,
-    )
+    return read_bootstrap_status(run_dir)
 
 
 def resume_bootstrap(
     run_dir: Path,
     *,
     environ: Mapping[str, str],
+    action: str | None = None,
+    reason: str | None = None,
     start_opencode_serve: Callable[..., OpenCodeHandleV1] | None = None,
     stop_opencode: Callable[[OpenCodeHandleV1], None] | None = None,
     prepare_composition: Callable[..., dict[str, object]] | None = None,
@@ -572,6 +574,34 @@ def resume_bootstrap(
     status = read_bootstrap_status(run_dir)
     if status.phase != "terminal":
         raise ValueError("resume requires a terminal bootstrap run")
+    if (action is None) != (reason is None):
+        raise ValueError("interrupt resume requires action and reason")
+    stop_path = run_dir / "stop-request.json"
+    stopped = stop_path.exists() or stop_path.is_symlink()
+    acknowledged = False
+    if stopped:
+        import json
+
+        if stop_path.is_symlink() or not stop_path.is_file():
+            raise ValueError("stop request must be a regular file")
+        request = json.loads(stop_path.read_bytes())
+        if not isinstance(request, dict) or request.get("change_id") != status.change_id:
+            raise ValueError("operator pause does not match the stop request")
+        pending = status.status.get("pending_interrupt")
+        graph_status = status.status.get("status")
+        acknowledged = (
+            action is None
+            and graph_status == "completed"
+            or action is not None
+            and graph_status == "interrupted"
+            and isinstance(pending, Mapping)
+            or action is None
+            and graph_status == "blocked"
+            and isinstance(pending, Mapping)
+            and pending.get("reason_category") == "operator_stop"
+        )
+        if action is not None and not acknowledged:
+            raise ValueError("restart requires a confirmed operator pause")
     spec = load_run_spec(run_dir / "run-spec.effective.yaml")
     manifest = read_run_manifest(run_dir)
     project_dir = Path(str(manifest["project_dir"]))
@@ -585,6 +615,15 @@ def resume_bootstrap(
     status_app = read_status or _default_read_status
     ready = wait_ready or wait_http_ready
     handle: OpenCodeHandleV1 | None = None
+
+    def resume_app(**kwargs: Any) -> tuple[object, str]:
+        from assurance_product.cli import _resume_invocation
+
+        kwargs.pop("reuse_directory", None)
+        result, mapped, _code = _resume_invocation(**kwargs, action=action, reason=reason)
+        return result, mapped
+
+    prepared: dict[str, object] | None = None
     try:
         ready(spec.sut.readiness_url, timeout=_SUT_READY_TIMEOUT_SECONDS)
         if manifest.get("ownership") == "shared":
@@ -607,7 +646,7 @@ def resume_bootstrap(
             spec=spec,
             opencode_endpoint=handle.endpoint,
             change_id=change_id,
-            parent_session_id=status.root_session_id,
+            parent_session_id=None,
         )
         write_run_manifest(
             run_dir,
@@ -620,6 +659,8 @@ def resume_bootstrap(
                 "opencode_endpoint": handle.endpoint,
             },
         )
+        if acknowledged:
+            stop_path.unlink()
         return _drive_application(
             project_dir=project_dir,
             spec=spec,
@@ -632,6 +673,8 @@ def resume_bootstrap(
             run_invocation=run_app,
             read_status=status_app,
             probe_shared=ready if handle.ownership == "shared" else None,
+            reuse_directory=isinstance(manifest.get("task_directory"), str),
+            resume_invocation=resume_app if action is not None else None,
         )
     except OpenCodeLaunchError as error:
         if manifest.get("ownership") == "shared":
@@ -646,6 +689,36 @@ def resume_bootstrap(
                 exit_code=30,
                 error=f"shared OpenCode server is unavailable: {error}",
             )
+        raise
+    except Exception as error:
+        previous = read_bootstrap_status(run_dir)
+        snapshot = previous.status or status.status
+        if prepared is not None:
+            try:
+                snapshot = status_app(
+                    **prepared,
+                    project_dir=project_dir,
+                    change_id=change_id,
+                    invocation_id=change_id,
+                    binding_entrypoint="deployment",
+                    secrets=(_secret_arg(spec),),
+                    reuse_directory=isinstance(manifest.get("task_directory"), str),
+                )
+            except Exception:
+                pass
+        cause = error.__cause__ or error.__context__
+        detail = str(error) if cause is None else f"{error}: {cause}"
+        _persist(
+            run_dir,
+            phase="terminal",
+            change_id=change_id,
+            opencode=handle,
+            status=snapshot,
+            started_at=started_at,
+            ended_at=_iso_now(),
+            exit_code=40,
+            error=detail,
+        )
         raise
     finally:
         if handle is not None and handle.ownership != "shared" and _private_server(run_dir):

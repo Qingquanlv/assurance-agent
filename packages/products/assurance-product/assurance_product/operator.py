@@ -68,25 +68,32 @@ def serve_run(run_dir: Path, *, environ: Mapping[str, str] | None = None) -> Boo
 
     manifest = read_run_manifest(run_dir)
     source = manifest.get("source_project_dir")
-    if not isinstance(source, str) or not source:
+    task_value = manifest.get("task_directory")
+    task_directory = Path(task_value) if isinstance(task_value, str) and task_value else None
+    if isinstance(source, str) and source:
+        provenance: Path = Path(source)
+    elif task_directory is not None:
+        provenance = task_directory
+    else:
         raise OperatorError("invalid_input", "operator run is missing source_project_dir")
     endpoint = manifest.get("requested_opencode_endpoint")
     shared_endpoint = endpoint if isinstance(endpoint, str) and endpoint else None
     if manifest.get("ownership") != "shared":
         shared_endpoint = None
     return run_bootstrap(
-        project_dir=Path(source),
+        project_dir=provenance,
         spec=load_run_spec(run_dir / "run-spec.effective.yaml"),
         runs_root=run_dir.parent,
         change_id=str(manifest["change_id"]),
         environ=dict(environ or os.environ),
         shared_endpoint=shared_endpoint,
+        task_directory=task_directory,
     )
 
 
 def drive_stop(run_dir: Path) -> None:
-    del run_dir
-    raise OperatorError("stop_pending", "cancellation has not resolved")
+    if read_bootstrap_status(run_dir).phase != "terminal":
+        raise OperatorError("stop_pending", "stop requested; waiting for a durable graph pause")
 
 
 def resume_terminal_run(*, run_dir: Path, environ: Mapping[str, str]) -> BootstrapStatusV1:
@@ -100,8 +107,7 @@ def resolve_graph_interrupt(
     reason: str,
     environ: Mapping[str, str],
 ) -> BootstrapStatusV1:
-    del run_dir, action, reason, environ
-    raise OperatorError("invalid_resume", "graph interrupt resume is not connected")
+    return resume_bootstrap(run_dir, environ=environ, action=action, reason=reason)
 
 
 def build_effective_spec(
@@ -134,6 +140,11 @@ def build_effective_spec(
     frontend = urls.get("frontend")
     if isinstance(frontend, str) and frontend:
         env["FRONTEND_URL"] = frontend
+    execution = config.get("execution")
+    routing = execution.get("model_routing") if isinstance(execution, Mapping) else None
+    model = routing.get("default") if isinstance(routing, Mapping) else None
+    if not isinstance(model, str) or not model.strip():
+        raise OperatorError("invalid_input", "project config is missing execution.model_routing.default")
     try:
         return RunSpecV1.model_validate(
             {
@@ -150,7 +161,7 @@ def build_effective_spec(
                     "env_from_node": ["QA_ADMIN_PASSWORD"],
                 },
                 "routes": {
-                    "provider_model": "deepseek/deepseek-v4-flash",
+                    "provider_model": model.strip(),
                     "worker_profile": "max",
                 },
                 "budgets": {
@@ -179,6 +190,18 @@ def _require_endpoint(endpoint: str) -> str:
     ):
         raise OperatorError("invalid_input", "opencode_endpoint must be a loopback HTTP URL")
     return endpoint
+
+
+def _execution_config(
+    project_dir: Path,
+    task_directory: Path | None,
+) -> tuple[Mapping[str, object], str]:
+    """Read task config when it exists. A present but invalid task config does not fall back."""
+    if task_directory is not None and (task_directory / ".aa" / "config.yaml").exists():
+        source = task_directory / ".aa" / "config.yaml"
+        return _load_config(task_directory), str(source.resolve())
+    source = project_dir / ".aa" / "config.yaml"
+    return _load_config(project_dir), str(source.resolve())
 
 
 def _load_config(project_dir: Path) -> Mapping[str, object]:
@@ -239,6 +262,8 @@ class AssuranceOperator:
         opencode_endpoint: str,
         origin_session_id: str | None = None,
         origin_parent_session_id: str | None = None,
+        task_directory: Path | None = None,
+        request_id: str | None = None,
         environ: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         if origin_parent_session_id:
@@ -247,28 +272,47 @@ class AssuranceOperator:
                 "a child session cannot start a run; start from the operator session",
             )
         root = project_dir.resolve()
-        spec = build_effective_spec(_load_config(root), requirement=requirement, families=families)
+        selected_task: Path | None = None
+        if task_directory is not None:
+            selected_task = task_directory.resolve()
+            if not selected_task.is_dir():
+                raise OperatorError("invalid_input", "task directory does not exist")
+        config, config_source = _execution_config(root, selected_task)
+        spec = build_effective_spec(config, requirement=requirement, families=families)
         endpoint = _require_endpoint(opencode_endpoint)
+        if selected_task is not None:
+            return self._start_managed(
+                root=root,
+                task_directory=selected_task,
+                requirement=requirement,
+                families=families,
+                endpoint=endpoint,
+                config_source=config_source,
+                spec=spec,
+                request_id=request_id,
+                origin_session_id=origin_session_id,
+                environ=environ,
+            )
+        change_id = derive_bootstrap_change_id(stamp=_stamp(), nonce=_nonce())
         active = _active_run(root)
         if active is not None:
             raise OperatorError("conflict", f"project already has an active run: {active.name}")
-        change_id = derive_bootstrap_change_id(stamp=_stamp(), nonce=_nonce())
         worktree = ensure_run_worktree(root, change_id)
-        run_dir = run_dir_for(_runs_root(root), change_id)
+        runs_root = _runs_root(root)
+        run_dir = run_dir_for(runs_root, change_id)
         write_effective_spec(run_dir, spec)
-        write_run_manifest(
-            run_dir,
-            {
-                "source_project_dir": str(root),
-                "project_dir": str(worktree),
-                "worktree": str(worktree),
-                "change_id": change_id,
-                "invocation_id": change_id,
-                "origin_session_id": origin_session_id,
-                "ownership": "shared",
-                "requested_opencode_endpoint": endpoint,
-            },
-        )
+        manifest: dict[str, object] = {
+            "source_project_dir": str(root),
+            "project_dir": str(worktree),
+            "worktree": str(worktree),
+            "change_id": change_id,
+            "invocation_id": change_id,
+            "origin_session_id": origin_session_id,
+            "ownership": "shared",
+            "requested_opencode_endpoint": endpoint,
+            "config_source": config_source,
+        }
+        write_run_manifest(run_dir, manifest)
         write_bootstrap_status(
             run_dir,
             BootstrapStatusV1(phase="preparing", change_id=change_id),
@@ -296,6 +340,176 @@ class AssuranceOperator:
             "project_dir": str(root),
             "worktree": str(worktree),
             "phase": status.phase,
+        }
+
+    def _start_managed(
+        self,
+        *,
+        root: Path,
+        task_directory: Path,
+        requirement: str,
+        families: tuple[str, ...],
+        endpoint: str,
+        config_source: str,
+        spec: RunSpecV1,
+        request_id: str | None,
+        origin_session_id: str | None,
+        environ: Mapping[str, str] | None,
+    ) -> dict[str, str]:
+        from assurance_product.task_records import (
+            TaskRecordError,
+            active_manifest,
+            allocation_lock,
+            input_digest,
+            managed_baseline,
+            read_task,
+            run_manifests,
+            write_next_run_number,
+        )
+
+        if not request_id:
+            raise OperatorError("invalid_input", "request_id is required")
+        try:
+            definition = read_task(task_directory)
+        except TaskRecordError as error:
+            raise OperatorError(error.kind, str(error)) from error
+        if definition is None:
+            raise OperatorError("not_configured", "task is not configured")
+        if definition.project_dir != str(root):
+            raise OperatorError("invalid_input", "invalid task identity")
+        if (
+            requirement.strip() != definition.requirement
+            or tuple(name for name in _FAMILIES if name in families) != definition.test_families
+        ):
+            raise OperatorError("conflict", "request overrides the saved task inputs")
+        digest = input_digest(
+            task_id=definition.task_id,
+            requirement=definition.requirement,
+            families=definition.test_families,
+            config_source=config_source,
+            endpoint=endpoint,
+        )
+        try:
+            with allocation_lock(task_directory, definition.task_id):
+                manifests = run_manifests(task_directory)
+                matches = [row for row in manifests if row.get("request_id") == request_id]
+                if matches:
+                    if matches[0].get("input_digest") != digest:
+                        raise OperatorError("conflict", "request ID already belongs to different inputs")
+                    allocated = matches[0]
+                    change_id = str(allocated["change_id"])
+                    run_dir = Path(str(allocated["run_dir"]))
+                    launch = False
+                else:
+                    if active_manifest(manifests) is not None:
+                        raise OperatorError("conflict", "task already has an active run")
+                    change_id = derive_bootstrap_change_id(stamp=_stamp(), nonce=_nonce())
+                    number = definition.next_run_number
+                    definition = write_next_run_number(task_directory, definition, number + 1)
+                    run_dir = run_dir_for(task_directory / ".aa" / "runs", change_id)
+                    baseline = list(
+                        managed_baseline(
+                            (
+                                {"path": ".aa/task.json"},
+                                {"path": f".aa/runs/{change_id}/bootstrap-status.json"},
+                            )
+                        )
+                    )
+                    write_effective_spec(run_dir, spec)
+                    write_run_manifest(
+                        run_dir,
+                        {
+                            "source_project_dir": str(root),
+                            "project_dir": str(task_directory),
+                            "worktree": str(task_directory),
+                            "task_directory": str(task_directory),
+                            "task_id": definition.task_id,
+                            "change_id": change_id,
+                            "invocation_id": change_id,
+                            "run_number": number,
+                            "request_id": request_id,
+                            "input_digest": digest,
+                            "baseline": baseline,
+                            "origin_session_id": origin_session_id,
+                            "ownership": "shared",
+                            "requested_opencode_endpoint": endpoint,
+                            "config_source": config_source,
+                        },
+                    )
+                    write_bootstrap_status(
+                        run_dir,
+                        BootstrapStatusV1(phase="preparing", change_id=change_id),
+                    )
+                    launch = True
+        except TaskRecordError as error:
+            raise OperatorError(error.kind, str(error)) from error
+        if launch:
+            self._launch_or_fail(run_dir=run_dir, change_id=change_id, environ=environ)
+        status = read_bootstrap_status(run_dir)
+        recorded = read_run_manifest(run_dir)
+        number = recorded.get("run_number")
+        return {
+            "run_id": change_id,
+            "change_id": change_id,
+            "project_dir": str(root),
+            "worktree": str(task_directory),
+            "task_directory": str(task_directory),
+            "run_number": "" if number is None else str(number),
+            "phase": status.phase,
+        }
+
+    def _launch_or_fail(
+        self,
+        *,
+        run_dir: Path,
+        change_id: str,
+        environ: Mapping[str, str] | None,
+    ) -> None:
+        try:
+            recorded = read_run_manifest(run_dir)
+            task_value = recorded.get("task_directory")
+            if isinstance(task_value, str) and task_value:
+                from assurance_product.task_records import prepare_managed_workspace
+
+                prepare_managed_workspace(Path(task_value), change_id)
+            launch_worker(run_dir=run_dir, change_id=change_id, environ=dict(environ or os.environ))
+        except OperatorError:
+            raise
+        except Exception as error:
+            write_bootstrap_status(
+                run_dir,
+                BootstrapStatusV1(
+                    phase="terminal",
+                    change_id=change_id,
+                    exit_code=40,
+                    error=str(error),
+                ),
+            )
+            raise OperatorError("worker_failed", str(error)) from error
+
+    def preflight(
+        self,
+        *,
+        project_dir: Path,
+        requirement: str,
+        families: tuple[str, ...],
+        opencode_endpoint: str,
+        task_directory: Path | None = None,
+    ) -> dict[str, object]:
+        root = project_dir.resolve()
+        selected = task_directory.resolve() if task_directory is not None else None
+        if selected is not None and not selected.is_dir():
+            raise OperatorError("invalid_input", "task directory does not exist")
+        _config, config_source = _execution_config(root, selected)
+        spec = build_effective_spec(_config, requirement=requirement, families=families)
+        endpoint = _require_endpoint(opencode_endpoint)
+        return {
+            "project_dir": str(root),
+            "task_directory": str(selected) if selected is not None else None,
+            "config_source": config_source,
+            "requirement": spec.requirement,
+            "test_families": list(spec.candidate_test_families),
+            "opencode_endpoint": endpoint,
         }
 
     def status(self, *, project_dir: Path, run_id: str) -> dict[str, object]:

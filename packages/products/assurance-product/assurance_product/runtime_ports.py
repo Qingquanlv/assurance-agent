@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+import logging
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, cast
@@ -56,6 +57,8 @@ from assurance_product.sqlite_attempt_store import SqliteAttemptJournal
 from assurance_product.sqlite_checkpointer import AssuranceSqliteBackend, open_sqlite_checkpointer
 from assurance_product.sqlite_effect_state import SQLiteEffectState
 from assurance_product.sqlite_resource_authorization import SqliteResourceAuthorizationStore
+
+_logger = logging.getLogger(__name__)
 
 
 class ProductionObserverError(ValueError):
@@ -237,6 +240,7 @@ class ProductRuntimePorts:
         authorization: InvocationRuntimeAuthorization | None = None,
         reachable_contract_ids: Sequence[str] | None = None,
         observers: Sequence[object] | None = None,
+        pause_requested: Callable[[], bool] | None = None,
     ) -> AsyncIterator[ProductRuntimePorts]:
         typed_composition = cast(FrozenComposition, composition)
         product_lock = product_lock_from_composition(typed_composition)
@@ -268,7 +272,13 @@ class ProductRuntimePorts:
                 binding.attempts_root,
                 binding.receipts_root,
             )
-            workspace_provider = TaskWorkspaceProvider(task_store)
+            run_dir = workspace.paths.project_root / ".aa" / "runs" / invocation_id
+            if run_dir.is_dir():
+                from assurance_product.run_history import RunOutputWorkspaceProvider
+
+                workspace_provider = RunOutputWorkspaceProvider(task_store, run_dir)
+            else:
+                workspace_provider = TaskWorkspaceProvider(task_store)
             receipts_root = invocation_activity_receipts_root(workspace.paths.qa_root, invocation_id)
             receipts_root.parent.mkdir(parents=True, exist_ok=True)
             receipts = TerminalReceiptStore.open_or_create(receipts_root)
@@ -321,6 +331,7 @@ class ProductRuntimePorts:
                 effects=typed_composition.registries.effects,
                 schemas=typed_composition.registries.schemas,
                 effect_state=effect_state,
+                pause_requested=pause_requested,
             )
             ports = cls(
                 workspace=workspace,
@@ -347,10 +358,12 @@ class ProductRuntimePorts:
                 yield ports
             finally:
                 ports._close_log.append("observer_outbox_recovery")
-                await backend.recover_handshake("")
-                await ports._publish_journal_snapshot()
-                task_store.close()
-                ports._close_log.extend(("kernel", "attempt_journal", "sqlite"))
+                try:
+                    await backend.recover_handshake("")
+                    await ports._publish_journal_snapshot()
+                finally:
+                    task_store.close()
+                    ports._close_log.extend(("kernel", "attempt_journal", "sqlite"))
 
     def shutdown_order(self) -> tuple[str, ...]:
         return tuple(self._close_log)
@@ -525,7 +538,16 @@ class ProductRuntimePorts:
 
         events: list[object] = []
         replayed: list[int] = []
-        for record in await self.attempt_journal.read_records():
+        records = await self.attempt_journal.read_records()
+        run_dir = self.workspace.paths.project_root / ".aa" / "runs" / self.invocation_id
+        if run_dir.is_dir():
+            from assurance_product.operator_views import write_attempt_projection
+
+            try:
+                write_attempt_projection(run_dir, records, self.invocation_id)
+            except (OSError, ValueError) as error:
+                _logger.warning("run_attempt_projection_failed: %s", error)
+        for record in records:
             events.extend(record.events)
             replayed.extend(
                 getattr(event, "ordinal", 0)

@@ -559,7 +559,7 @@ def test_prepare_quality_goal_does_not_require_e2e_outside_the_candidate_set(
     assert resolved.outcome.status == "failed"
 
 
-def test_resolve_plan_writes_bound_keys_into_sealed_exploration(tmp_path: Path) -> None:
+def test_resolve_plan_stages_bound_exploration_and_can_replay_before_promotion(tmp_path: Path) -> None:
     project = tmp_path
     drafts = [
         _draft(draft_id="MRC-API-001", proposed_key="create_item", category="api", layer="api"),
@@ -670,7 +670,20 @@ def test_resolve_plan_writes_bound_keys_into_sealed_exploration(tmp_path: Path) 
         )
     )
     assert resolved.outcome.status == "succeeded", resolved.outcome.failure
-    written = json.loads(explore_path.read_bytes())
+    assert explore_path.read_bytes() == explore_bytes
+    replay = asyncio.run(
+        execute_task(
+            ResolvePlanHandler(),
+            request.model_dump(mode="json"),
+            workspace=project,
+            write_root=resolve_stage,
+            capability_id="assurance.intake.resolve-plan",
+        )
+    )
+    assert replay.outcome.status == "succeeded", replay.outcome.failure
+    assert replay.outcome.output == resolved.outcome.output
+    staged_exploration = resolve_stage / request.exploration_ref.path
+    written = json.loads(staged_exploration.read_bytes())
     rows = {row["mrc_id"]: row for row in written["minimum_required_coverage"]}
     assert rows["MRC-API-001"]["key"] == "create_item"
     assert rows["MRC-API-001"]["proposed_key"] == "create_item"
@@ -683,7 +696,7 @@ def test_resolve_plan_writes_bound_keys_into_sealed_exploration(tmp_path: Path) 
     assert isinstance(plan, dict)
     exploration_ref = plan["exploration_ref"]
     assert isinstance(exploration_ref, dict)
-    assert exploration_ref["digest"] == _sha(explore_path.read_bytes())
+    assert exploration_ref["digest"] == _sha(staged_exploration.read_bytes())
     quality_goal = plan["quality_goal"]
     assert isinstance(quality_goal, dict)
     assert quality_goal["obligations_ref"] == exploration_ref
