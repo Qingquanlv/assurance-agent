@@ -13,8 +13,11 @@ if TYPE_CHECKING:
 
 
 class _OwnedContract(Protocol):
-    contract_id: str
-    owner_id: str
+    @property
+    def contract_id(self) -> str: ...
+
+    @property
+    def owner_id(self) -> str: ...
 
 
 AgentContractT = TypeVar("AgentContractT", bound=_OwnedContract)
