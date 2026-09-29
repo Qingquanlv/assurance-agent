@@ -19,7 +19,7 @@ from assurance_intake.contracts.plan import ResolvedAssurancePlan
 from assurance_intake.contracts.cases import MinimumCoverageMatrixAuthoring
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.agent_skills import case_review_outputs
+from assurance_intake.operations.prepare import case_review_outputs
 from assurance_intake.operations.case_review_seal import (
     collect_selected_cases,
     expected_case_selection,

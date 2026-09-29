@@ -15,7 +15,7 @@ from assurance_intake.contracts.decisions import (
     ReviewRoundAdvanceOutput,
     advance_review_round,
 )
-from assurance_intake.operations.agent_skills import InputError, failed_input
+from assurance_intake.operations.prepare import InputError, failed_input
 
 REVIEW_ROUND_ADVANCE_ID = "assurance.intake.review-round.advance"
 

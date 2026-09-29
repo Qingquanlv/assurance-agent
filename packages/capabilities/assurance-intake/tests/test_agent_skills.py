@@ -33,7 +33,7 @@ from assurance_intake.contracts.agent import ArtifactListResultV1
 from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS
 from assurance_intake.contracts.review import CaseReviewResultV1
 from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
-from assurance_intake.operations.agent_skills import case_review_outputs
+from assurance_intake.operations.prepare import case_review_outputs
 from assurance_intake.operations.case_review_seal import (
     collect_selected_cases,
     expected_case_selection,
@@ -47,6 +47,21 @@ from assurance_intake.contracts.explore import (
 )
 from assurance_intake.contracts.quality_goals import normalize_obligation_drafts
 from assurance_intake.resource_loader import resource_text
+
+
+def test_prepare_handlers_are_defined_in_their_own_modules() -> None:
+    from assurance_intake.operations.case_design_prepare import CaseDesignPrepareHandler
+    from assurance_intake.operations.prepare import (
+        CaseReviewPrepareHandler,
+        ExplorePrepareHandler,
+        IntakePrepareHandler,
+    )
+
+    assert IntakePrepareHandler.__module__ == "assurance_intake.operations.prepare"
+    assert ExplorePrepareHandler.__module__ == "assurance_intake.operations.prepare"
+    assert CaseReviewPrepareHandler.__module__ == "assurance_intake.operations.prepare"
+    assert CaseDesignPrepareHandler.__module__ == "assurance_intake.operations.case_design_prepare"
+
 
 _SHA = "a" * 64
 _PLAN_DIGEST = "31e8e6ccff373c935bf09f5f83763f327bd54bc3c96a11b9db3bca1b7b22fa00"
