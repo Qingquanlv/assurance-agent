@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import Awaitable, Callable, Mapping
@@ -515,6 +516,10 @@ class ResolvedRawAgentExecutor(Generic[InputT, PreparedT, AgentResultT, OutputT]
         )
         try:
             await on_exit(context)
+        except asyncio.CancelledError:
+            if not isinstance(primary_error, asyncio.CancelledError):
+                raise
+            logger.warning("agent task finally cancelled for attempt %s", context.attempt_key)
         except Exception as error:
             logger.warning(
                 "agent task finally raised %s for attempt %s", type(error).__name__, context.attempt_key

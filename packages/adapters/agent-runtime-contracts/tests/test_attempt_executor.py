@@ -537,6 +537,39 @@ def test_task_phase_exception_and_cancel_preserve_original(
     )
 
 
+@pytest.mark.parametrize("phase_error_type", (asyncio.CancelledError, RuntimeError))
+def test_finally_cancel_preserves_original_cancel_or_propagates_new_cancel(
+    tmp_path: Path, phase_error_type: type[BaseException]
+) -> None:
+    phase_error = phase_error_type("phase stopped")
+    exit_cancel = asyncio.CancelledError("exit stopped")
+
+    class CancellingRuntime(RecordingRuntime):
+        async def execute(
+            self, prepared: CaseDesignPrepared, scope: AuthorizedAttemptScope
+        ) -> RawAgentRuntimeOutcome:
+            del prepared, scope
+            raise phase_error
+
+    class Task(RecordingTask):
+        @finally_
+        async def on_exit(self, context: FinallyContext) -> None:
+            assert context.error_type == phase_error_type.__name__
+            raise exit_cancel
+
+    executor = _executor(
+        prepare=RecordingPrepare(CaseDesignPrepared(change_id="CH-1", path="primary", prompt="cases"), []),
+        runtime=CancellingRuntime({}, _workspace(tmp_path), []),
+        finalize=RecordingFinalize(_success_output(), []),
+        task_type=Task,
+    )
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        asyncio.run(executor.execute(CaseDesignInput(change_id="CH-1"), _scope(tmp_path)))
+
+    assert caught.value is (phase_error if isinstance(phase_error, asyncio.CancelledError) else exit_cancel)
+
+
 @pytest.mark.parametrize("invalid", ("raw", "output"))
 def test_result_validation_exception_or_resolution_runs_finally(tmp_path: Path, invalid: str) -> None:
     exits: list[FinallyContext] = []
