@@ -22,7 +22,9 @@ cross-wheel consumers exposed an import-boundary conflict. Read-only Intake
 operations used by other wheels are explicitly whitelisted by exact importer
 and imported module in `.importlinter`; the other wheels' behavior and the
 cross-Feature graph ban remain unchanged. `contracts/` must not add forwarding
-shims for those operations.
+shims for those operations. The graph-import architecture scan permits only
+the exact pure reducers/decision function moved from contracts; unrelated
+Feature implementation imports remain forbidden.
 
 ## Directory and interface
 
