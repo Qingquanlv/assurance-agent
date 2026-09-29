@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from graph_engine.plugin_api import FrozenModel
+
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 
 SurfaceSource = Literal["live", "unavailable", "unused"]
 FeatureStatus = Literal["explored", "partial", "unreached"]
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 ApiAuth = Literal["bearer", "api_key", "basic", "none"]
+TestFamily = Literal["api", "e2e", "fuzz", "performance"]
 UI_EXPLORATION_PATH = "qa/results/facts/ui-exploration.json"
 API_DISCOVERY_PATH = "qa/results/facts/api-discovery.json"
 _FROZEN = ConfigDict(extra="forbid", frozen=True)
+_UiPath = Annotated[str, Field(pattern=r"^/")]
 
 
 class ExploredPage(BaseModel):
@@ -129,3 +135,16 @@ class ApiDiscoveryDocument(BaseModel):
         return {
             (operation.method, operation.path) for family in self.families for operation in family.operations
         }
+
+
+class SurfaceProbeInputV1(FrozenModel):
+    change_id: str = Field(min_length=1)
+    candidate_test_families: tuple[TestFamily, ...] = ()
+    api_base_url: str | None = None
+    ui_base_url: str | None = None
+    ui_paths: tuple[_UiPath, ...] = ()
+
+
+class SurfaceProbeResultV1(FrozenModel):
+    ui_exploration_ref: EvidenceArtifactRefV1
+    api_discovery_ref: EvidenceArtifactRefV1

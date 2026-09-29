@@ -324,6 +324,7 @@ def test_blocking_inspection_publishes_diagnostic_report_without_achievement(
         assess=quality.assess,
         issue_review=quality.issue_review,
         fact_baseline=quality.fact_baseline,
+        surface_baseline=quality.surface_baseline,
         issue_analyze=recording_graph(
             issue_inputs,
             {

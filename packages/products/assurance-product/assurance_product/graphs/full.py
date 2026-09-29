@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from assurance_intake.contracts.workflow import CaseFlowResultV1
+from assurance_intake.contracts.workflow import CaseFlowResultV1, EvidenceArtifactRefV1
 from assurance_product.graphs.entrypoints import (
     adapt_case,
     adapt_init,
@@ -20,11 +23,61 @@ from assurance_product.graphs.routes import route_init, route_prepare
 from assurance_product.graphs.state import ProductState
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import BusinessBudgetsV1
+from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
 from graph_engine.boot.boot import GraphBuildContext
+
+_API_FAMILIES = frozenset({"api", "fuzz", "performance"})
 
 
 def adapt_execute_tail(state: ProductState) -> dict[str, object]:
     return adapt_execute_tail_input(state, standalone=False)
+
+
+def _load_surface_document(
+    root: Path,
+    raw_ref: object,
+    model: type[UiExplorationDocument] | type[ApiDiscoveryDocument],
+) -> UiExplorationDocument | ApiDiscoveryDocument | None:
+    try:
+        ref = EvidenceArtifactRefV1.model_validate(raw_ref)
+    except (TypeError, ValueError):
+        return None
+    path = root.joinpath(*ref.path.split("/"))
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != ref.digest:
+        return None
+    try:
+        return model.model_validate(json.loads(data))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def route_surface(
+    state: Mapping[str, object],
+    *,
+    project_root: Path | None = None,
+) -> Literal["prepare", "not-achieved"]:
+    if state.get("attempt_failure"):
+        return "not-achieved"
+    if project_root is not None:
+        root = Path(project_root)
+    else:
+        raw_root = state.get("project_root")
+        root = Path(str(raw_root)) if isinstance(raw_root, str) and raw_root else Path.cwd()
+    ui = _load_surface_document(root, state.get("ui_exploration_ref"), UiExplorationDocument)
+    api = _load_surface_document(root, state.get("api_discovery_ref"), ApiDiscoveryDocument)
+    if ui is None or api is None:
+        return "not-achieved"
+    families = state.get("candidate_test_families") or ()
+    if not isinstance(families, (list, tuple)):
+        return "not-achieved"
+    if any(name in _API_FAMILIES for name in families) and api.source != "live":
+        return "not-achieved"
+    if "e2e" in families and ui.source != "live":
+        return "not-achieved"
+    return "prepare"
 
 
 def route_case_result(state: Mapping[str, object]) -> Literal["reviewed", "failed"]:
@@ -88,6 +141,7 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     typed = cast(Any, bundles)
     builder: StateGraph[ProductState] = StateGraph(ProductState)
     builder.add_node("validate", validate_public_input("full"))
+    builder.add_node("surface-baseline", typed.quality.surface_baseline)
     builder.add_node("adapt-prepare", cast(Any, adapt_prepare))
     builder.add_node("prepare", typed.intake.prepare)
     builder.add_node("adapt-init", cast(Any, adapt_init))
@@ -100,7 +154,12 @@ def build_full_graph(bundles: object, execute: CompiledStateGraph) -> StateGraph
     builder.add_node("achieved", cast(Any, _terminal_achieved))
     builder.add_node("not-achieved", cast(Any, _terminal_not_achieved))
     builder.add_edge(START, "validate")
-    builder.add_edge("validate", "adapt-prepare")
+    builder.add_edge("validate", "surface-baseline")
+    builder.add_conditional_edges(
+        "surface-baseline",
+        cast(Callable[..., Any], route_surface),
+        {"prepare": "adapt-prepare", "not-achieved": "not-achieved"},
+    )
     builder.add_edge("adapt-prepare", "prepare")
     builder.add_conditional_edges(
         "prepare",
@@ -149,4 +208,5 @@ __all__ = [
     "build_full_root",
     "route_case_result",
     "route_full_tail",
+    "route_surface",
 ]

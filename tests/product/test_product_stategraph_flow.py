@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
+import json
+import tempfile
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +53,12 @@ from assurance_product.graphs.routes import (
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import PRODUCT_ENTRYPOINTS, ProductInputV1, ProductPublicOutput
 from assurance_quality.contracts.assessment import InspectionOutcomeV1, ReportOutcomeV1
+from assurance_quality.contracts.surface import (
+    API_DISCOVERY_PATH,
+    UI_EXPLORATION_PATH,
+    ApiDiscoveryDocument,
+    UiExplorationDocument,
+)
 from assurance_quality.graphs.factory import QualityGraphs
 from graph_engine.attempts.resolutions import ReceiptRef
 from graph_engine.boot.boot import EngineGraphBuildContext
@@ -131,6 +140,55 @@ def _case(epoch: int = 0) -> dict[str, object]:
 def _fact_baseline() -> dict[str, object]:
     return {
         "fact_baseline_ref": _ref("qa/results/facts/fact-baseline.json").model_dump(mode="json"),
+    }
+
+
+def _surface_baseline() -> dict[str, object]:
+    root = Path(tempfile.mkdtemp(prefix="surface-baseline-"))
+    ui = UiExplorationDocument.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": "CH-DEMO-001",
+            "source": "unused",
+            "base_url": "",
+            "warnings": [],
+            "features": [],
+        }
+    )
+    api = ApiDiscoveryDocument.model_validate(
+        {
+            "schema_version": "1",
+            "change_id": "CH-DEMO-001",
+            "source": "live",
+            "base_url": "http://127.0.0.1:9999",
+            "warnings": [],
+            "families": [
+                {
+                    "name": "user",
+                    "auth": "none",
+                    "operations": [
+                        {
+                            "method": "GET",
+                            "path": "/api/v1/user/list",
+                            "request": {"required_headers": [], "query": [], "body_fields": []},
+                            "response": {"status_codes": [200], "body_fields": []},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    refs: dict[str, dict[str, str]] = {}
+    for relative, document in ((UI_EXPLORATION_PATH, ui), (API_DISCOVERY_PATH, api)):
+        data = json.dumps(document.model_dump(mode="json"), sort_keys=True).encode()
+        path = root.joinpath(*relative.split("/"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        refs[relative] = {"path": relative, "digest": hashlib.sha256(data).hexdigest()}
+    return {
+        "project_root": str(root),
+        "ui_exploration_ref": refs[UI_EXPLORATION_PATH],
+        "api_discovery_ref": refs[API_DISCOVERY_PATH],
     }
 
 
@@ -469,6 +527,7 @@ def _flow_features(
         ),
         report=_graph(report or _report()),
         fact_baseline=_graph(_fact_baseline()),
+        surface_baseline=_graph(_surface_baseline()),
     )
     features["assurance.healing"] = HealingGraphs(
         repair_failure=_echo(repair_failure or _applied()),

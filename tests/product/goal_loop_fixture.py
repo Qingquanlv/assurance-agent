@@ -39,6 +39,7 @@ from tests.product.test_product_stategraph_flow import (
     _ref,
     _report,
     _reviewed,
+    _surface_baseline,
 )
 from tests.acg_plan_fixture import install_plan
 
@@ -432,6 +433,16 @@ def _scenario_features(
             dispatches=dispatches,
             attempt_keys=attempt_keys,
             select_index=_state_epoch,
+        ),
+        surface_baseline=_recording_graph(
+            root=root,
+            label="surface-baseline",
+            semantic_id="quality.surface-baseline",
+            updates=(_surface_baseline(),),
+            visits=visits,
+            dispatches=dispatches,
+            attempt_keys=attempt_keys,
+            select_index=lambda state: 0,
         ),
     )
     repair = (

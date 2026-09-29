@@ -30,6 +30,7 @@ from assurance_quality.contracts.assessment import (
     ReportSkillInputV1,
 )
 from assurance_quality.contracts.issues import ReconcileIssuesInputV1, ReconcileIssuesResultV1
+from assurance_quality.contracts.surface import SurfaceProbeInputV1, SurfaceProbeResultV1
 
 _DOC_AUTHOR = "assurance-v1-doc-author"
 _REPORTER = "assurance-v1-reporter"
@@ -185,15 +186,31 @@ _RECONCILE_ISSUES = TaskAttemptContract(
     timeout=_TIMEOUT,
     validators=(),
 )
+_SURFACE_BASELINE = TaskAttemptContract(
+    contract_id="assurance.quality.surface-baseline",
+    owner_id="assurance.quality",
+    handler_id="assurance.quality.surface-baseline.execute",
+    input_model=SurfaceProbeInputV1,
+    output_model=SurfaceProbeResultV1,
+    resources=ResourceClaims(
+        reads=("qa",),
+        writes=_paths("facts/ui-exploration.json", "facts/api-discovery.json"),
+    ),
+    retry=_TASK_RETRY,
+    timeout=_TIMEOUT,
+    validators=(),
+)
 TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract[Any, Any]] = MappingProxyType(
     {
         "materialize-assessment-inputs": _MATERIALIZE_ASSESSMENT,
         "reconcile-issues": _RECONCILE_ISSUES,
+        "surface-baseline": _SURFACE_BASELINE,
     }
 )
 QUALITY_GRAPH_CONTRACT_IDS: tuple[str, ...] = (
     _MATERIALIZE_ASSESSMENT.contract_id,
     _RECONCILE_ISSUES.contract_id,
+    _SURFACE_BASELINE.contract_id,
     "assurance.quality.agent.fact-baseline.v1",
     "assurance.quality.agent.inspect.v1",
     "assurance.quality.agent.issue-triage.v1",
@@ -207,6 +224,7 @@ QUALITY_GRAPH_EXPORTS: tuple[str, ...] = (
     "issue_reconcile",
     "report",
     "fact_baseline",
+    "surface_baseline",
 )
 
 

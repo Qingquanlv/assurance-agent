@@ -86,6 +86,8 @@ class QualityState(CheckpointBridgeState, total=False):
     issue_snapshot_ref: EvidenceArtifactRefV1 | None
     assessment_inputs: AssessmentInputsV1
     fact_baseline_ref: EvidenceArtifactRefV1
+    ui_exploration_ref: EvidenceArtifactRefV1
+    api_discovery_ref: EvidenceArtifactRefV1
     inspection_outcome: InspectionOutcomeV1
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]
@@ -117,6 +119,10 @@ class QualityState(CheckpointBridgeState, total=False):
     issue_evidence_manifest_ref: EvidenceArtifactRefV1
     owned_evidence_ids: tuple[str, ...]
     evidence_bundle_digest: str
+    candidate_test_families: list[str]
+    api_base_url: str | None
+    ui_base_url: str | None
+    ui_paths: list[str]
     status: str
     attempt_failure: dict[str, object]
 

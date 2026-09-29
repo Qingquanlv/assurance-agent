@@ -31,7 +31,11 @@ from assurance_quality.plugin import QualityPlugin
 
 def test_quality_owns_five_agent_contracts() -> None:
     assert len(AGENT_JOB_CONTRACTS) == 5
-    assert tuple(TASK_ATTEMPT_CONTRACTS) == ("materialize-assessment-inputs", "reconcile-issues")
+    assert tuple(TASK_ATTEMPT_CONTRACTS) == (
+        "materialize-assessment-inputs",
+        "reconcile-issues",
+        "surface-baseline",
+    )
     materialize = TASK_ATTEMPT_CONTRACTS["materialize-assessment-inputs"]
     reconcile = TASK_ATTEMPT_CONTRACTS["reconcile-issues"]
     assert reconcile.contract_id == "assurance.quality.reconcile-issues"

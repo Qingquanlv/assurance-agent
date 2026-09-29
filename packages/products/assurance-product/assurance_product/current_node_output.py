@@ -45,6 +45,7 @@ _PATHS: dict[str, tuple[str, ...]] = {
         "qa/cases/reviews/**/*",
     ),
     "quality.fact-baseline": ("qa/results/facts/**/*",),
+    "quality.surface-baseline": ("qa/results/facts/**/*",),
     "generation.api.codegen": (
         "qa/results/codegen/api-generated-files.json",
         "qa/results/codegen/api-codegen-summary.md",

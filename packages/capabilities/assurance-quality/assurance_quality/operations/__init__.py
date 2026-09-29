@@ -55,6 +55,7 @@ from assurance_quality.operations.nightly import (
     RunNightlyMetricsPipelineHandler,
 )
 from assurance_quality.operations.report import DashboardHandler, GenerateReportHandler
+from assurance_quality.operations.surface_baseline import SurfaceBaselineHandler
 from assurance_quality.operations.trace import MaterializeTraceHandler
 
 
@@ -105,6 +106,7 @@ def quality_handlers() -> Mapping[str, TaskHandler]:
             "assurance.quality.report.prepare": ReportPrepareHandler(),
             "assurance.quality.run-mutation-sample": RunMutationSampleHandler(),
             "assurance.quality.run-nightly-metrics-pipeline": RunNightlyMetricsPipelineHandler(),
+            "assurance.quality.surface-baseline.execute": SurfaceBaselineHandler(),
         }
     )
 
@@ -154,5 +156,6 @@ __all__ = [
     "ReportPrepareHandler",
     "RunMutationSampleHandler",
     "RunNightlyMetricsPipelineHandler",
+    "SurfaceBaselineHandler",
     "quality_handlers",
 ]

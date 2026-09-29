@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator
 
@@ -29,6 +29,9 @@ class SutEndpointV1(FrozenModel):
     readiness_url: str = Field(min_length=1)
     env: Mapping[str, str] = Field(default_factory=dict)
     env_from_node: tuple[str, ...] = ()
+    api_base_url: str | None = None
+    ui_base_url: str | None = None
+    ui_paths: tuple[Annotated[str, Field(pattern=r"^/")], ...] = ()
 
     @field_validator("env_from_node")
     @classmethod

@@ -94,6 +94,8 @@ def test_advance_coverage_switches_epoch_without_changing_review_budget() -> Non
         plan_ref=_plan_ref(),
         inspection=_inspection(),
     )
+    ui_ref = _ref("qa/results/facts/ui-exploration.json").model_dump(mode="json")
+    api_ref = _ref("qa/results/facts/api-discovery.json").model_dump(mode="json")
     state = {
         "coverage_epoch": 0,
         "healing_rounds_used": 1,
@@ -102,6 +104,8 @@ def test_advance_coverage_switches_epoch_without_changing_review_budget() -> Non
         "generation_result": {"stale": True},
         "execution_result": {"stale": True},
         "report_refs": [{"path": "stale", "digest": _SHA}],
+        "ui_exploration_ref": ui_ref,
+        "api_discovery_ref": api_ref,
     }
 
     update = advance_coverage(state)  # type: ignore[arg-type]
@@ -114,6 +118,8 @@ def test_advance_coverage_switches_epoch_without_changing_review_budget() -> Non
     assert merged["execution_result"] == {}
     assert merged["assessment_inputs"] == {}
     assert merged["fact_baseline_ref"] == {}
+    assert merged["ui_exploration_ref"] == ui_ref
+    assert merged["api_discovery_ref"] == api_ref
     assert merged["report_refs"] == []
     assert update["last_coverage_source_receipt"] == _receipt().model_dump(mode="json")
     rework = cast(dict[str, object], update["case_rework_context"])

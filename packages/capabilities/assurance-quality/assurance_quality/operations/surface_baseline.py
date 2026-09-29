@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
+from pydantic import ValidationError
+
+from graph_engine.canonical import canonical_json_bytes
+from graph_engine.plugin_api import TaskContext, TaskOutcome, TaskRequest
+
+from assurance_intake.contracts.workflow import EvidenceArtifactRefV1
 from assurance_quality.contracts.surface import (
+    API_DISCOVERY_PATH,
+    UI_EXPLORATION_PATH,
     ApiAuth,
     ApiDiscoveryDocument,
     ApiFamily,
@@ -18,9 +30,14 @@ from assurance_quality.contracts.surface import (
     ApiResponseShape,
     ExploredPage,
     HttpMethod,
+    SurfaceProbeInputV1,
+    SurfaceProbeResultV1,
     UiExplorationDocument,
     UiFeature,
 )
+from assurance_quality.operations.common import InputError, failed_input, succeeded, validate_input
+
+_API_FAMILIES = frozenset({"api", "fuzz", "performance"})
 
 Fetch = Callable[[str], tuple[int, bytes, str]]
 
@@ -421,3 +438,56 @@ def _url_path(url: str) -> str:
     parsed = urlparse(url)
     path = parsed.path or "/"
     return path if path.startswith("/") else f"/{path}"
+
+
+def urllib_fetch(url: str) -> tuple[int, bytes, str]:
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return int(response.status), response.read(), response.geturl()
+    except urllib.error.HTTPError as error:
+        body = error.read() if error.fp is not None else b""
+        return int(error.code), body, error.geturl()
+
+
+def _write_document(
+    write_root: Path,
+    relative: str,
+    document: UiExplorationDocument | ApiDiscoveryDocument,
+) -> EvidenceArtifactRefV1:
+    data = canonical_json_bytes(cast(Any, document.model_dump(mode="json")))
+    destination = write_root.joinpath(*PurePosixPath(relative).parts)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    return EvidenceArtifactRefV1(path=relative, digest=hashlib.sha256(data).hexdigest())
+
+
+def run_surface_probe(
+    request: SurfaceProbeInputV1, write_root: Path, fetch: Fetch = urllib_fetch
+) -> SurfaceProbeResultV1:
+    families = set(request.candidate_test_families)
+    probed = collect_surface(
+        SurfaceProbeRequest(
+            change_id=request.change_id,
+            api_base_url=request.api_base_url,
+            ui_base_url=request.ui_base_url,
+            ui_paths=request.ui_paths,
+            needs_api=bool(families & _API_FAMILIES),
+            needs_ui="e2e" in families,
+        ),
+        fetch,
+    )
+    return SurfaceProbeResultV1(
+        ui_exploration_ref=_write_document(write_root, UI_EXPLORATION_PATH, probed.ui),
+        api_discovery_ref=_write_document(write_root, API_DISCOVERY_PATH, probed.api),
+    )
+
+
+class SurfaceBaselineHandler:
+    async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
+        try:
+            payload = validate_input(SurfaceProbeInputV1, request.input)
+            result = run_surface_probe(payload, context.write_root, urllib_fetch)
+            return succeeded(cast(dict[str, object], result.model_dump(mode="json")))
+        except (InputError, ValidationError, OSError, ValueError) as error:
+            return failed_input(error)
