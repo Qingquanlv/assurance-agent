@@ -10,10 +10,10 @@ from assurance_quality.contracts.assessment import AssessmentInputsV1
 
 
 def test_current_revision_rejects_the_previous_state_schema() -> None:
-    assert STATE_SCHEMA_VERSION == "3"
+    assert STATE_SCHEMA_VERSION == "4"
     for contract in ENTRYPOINT_CONTRACTS.values():
-        assert contract.state_schema_version == "3"
-        previous = replace(contract, state_schema_version="2")
+        assert contract.state_schema_version == "4"
+        previous = replace(contract, state_schema_version="3")
         assert digest(previous) != digest(contract)
 
 
