@@ -704,7 +704,7 @@ async def test_plan_review_finalize_rejects_wrong_family(family: str, tmp_path: 
 
 @pytest.mark.parametrize("family", FAMILIES)
 @pytest.mark.asyncio
-async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: Path) -> None:
+async def test_plan_review_prepare_uses_reviewer_skill(family: str, tmp_path: Path) -> None:
     proposal_path = tmp_path / "qa/proposal.md"
     proposal_path.parent.mkdir(parents=True, exist_ok=True)
     proposal_path.write_text("# Proposal\n", encoding="utf-8")
@@ -721,10 +721,10 @@ async def test_plan_review_prepare_uses_reviewer_persona(family: str, tmp_path: 
     )
     assert prepared.status == "succeeded", prepared.failure
     request = AgentRunRequest.model_validate(prepared.output)
-    assert len(request.instructions) == 6
-    skill, persona, reviewed, constraints, locked_inputs, extra = request.instructions
+    assert len(request.instructions) == 5
+    skill, reviewed, constraints, locked_inputs, extra = request.instructions
     assert f"{family} codegen review" in (skill.text_content or "").lower()
-    assert "reviewer persona" in (persona.text_content or "").lower()
+    assert "Evidence-proven, bounded defects" in (skill.text_content or "")
     assert reviewed.media_type == "application/json"
     assert constraints.media_type == "application/json"
     facts = cast(dict[str, object], constraints.json_content)["planning_facts"]

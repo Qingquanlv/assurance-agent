@@ -26,6 +26,8 @@ generate-report handler owns `quality_score` and `final_status`.
 ## Rules
 
 - Never recompute or change `quality_score` or `final_status`.
+- Do not invoke a browser, session, or delegation tool; the report is a bounded
+  artifact projection, not a new orchestration run.
 - Never copy `issue_risk` into `final_status`.
 - Wording may refine `risk_rationale` or `recommendation` but must not claim a
   safe release when `final_status` is `FAIL` or an unresolved product defect exists.

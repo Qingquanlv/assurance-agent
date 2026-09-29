@@ -185,7 +185,7 @@ def test_boot_uses_resolved_raw_executor_for_every_agent_occurrence(opencode_com
 def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
     from agent_runtime_contracts import ResolvedRawAgentExecutor
 
-    from assurance_generation.operations.agent_tasks import (
+    from assurance_generation.task import (
         ApiCodegenReviewTask,
         ApiCodegenTask,
         E2ECodegenReviewTask,
@@ -195,12 +195,12 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         PerformanceCodegenReviewTask,
         PerformanceCodegenTask,
     )
-    from assurance_healing.operations.agent_tasks import (
+    from assurance_healing.task import (
         ApplyTestRepairTask,
         CoverageRepairTask,
         FixProposalTask,
     )
-    from assurance_improvement.operations.agent_tasks import (
+    from assurance_improvement.task import (
         ArchiveTask,
         ImprovementReviewTask,
         RetroEvalAnalysisTask,
@@ -209,7 +209,7 @@ def test_product_selects_migrated_agent_tasks(opencode_composition) -> None:
         RetroWorkflowAnalysisTask,
     )
     from assurance_intake.task import CaseDesignTask, CaseReviewTask, ExploreTask, IntakeTask
-    from assurance_quality.operations.agent_tasks import (
+    from assurance_quality.task import (
         FactBaselineTask,
         InspectTask,
         IssueAnalysisTask,

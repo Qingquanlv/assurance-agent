@@ -384,7 +384,7 @@ async def test_project_archive_accepts_authenticated_publish_receipt(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_archive_prepare_locks_archiver_persona(tmp_path: Path) -> None:
+async def test_archive_prepare_locks_skill(tmp_path: Path) -> None:
     outcome = await execute_task(
         ArchivePrepareHandler(),
         skill_input(),
@@ -394,7 +394,7 @@ async def test_archive_prepare_locks_archiver_persona(tmp_path: Path) -> None:
     assert outcome.status == "succeeded"
     request = AgentRunRequest.model_validate(outcome.output)
     assert "Capability-owned archive skill" in (request.instructions[0].text_content or "")
-    assert "Improvement archiver persona" in (request.instructions[1].text_content or "")
+    assert "Do not run product CLI commands" in (request.instructions[0].text_content or "")
 
 
 @pytest.mark.asyncio

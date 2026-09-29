@@ -76,7 +76,7 @@ def test_improvement_source_identity() -> None:
     assert "assurance.improvement.rollback-memory-improvement" in descriptor.task_handlers
     assert "assurance.improvement.validator.archive-integrity.v1" in descriptor.commit_validators
     assert "assurance.improvement.effect.delivery.v1" in descriptor.effects
-    assert "assurance.improvement.persona.reviewer.v1" in descriptor.resources
+    assert "assurance.improvement.skill.aa-improvement-reviewer.v1" in descriptor.resources
     assert descriptor.bindings == ()
 
 

@@ -77,7 +77,7 @@ async def test_codegen_retry_prepare_receives_previous_codegen_output(family: st
     )
     assert outcome.status == "succeeded", outcome.failure
     request = AgentRunRequest.model_validate(outcome.output)
-    context = thaw_json(request.instructions[4].json_content)
+    context = thaw_json(request.instructions[-1].json_content)
     assert isinstance(context, dict)
     assert context["codegen_scope"]["family"] == family
     assert context["baseline_files"] == sorted((test_path, data_path))

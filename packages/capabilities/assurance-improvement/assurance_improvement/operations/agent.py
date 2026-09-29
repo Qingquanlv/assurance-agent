@@ -50,8 +50,6 @@ RETRO_ISSUE_SKILL = "skills/aa-retro-issue-analysis/SKILL.md"
 RETRO_WORKFLOW_SKILL = "skills/aa-retro-workflow-analysis/SKILL.md"
 REVIEW_SKILL = "skills/aa-improvement-reviewer/SKILL.md"
 ARCHIVE_SKILL = "skills/aa-archive/SKILL.md"
-REVIEWER_PERSONA = "personas/reviewer.md"
-ARCHIVER_PERSONA = "personas/archiver.md"
 
 RETRO_RESULT_ID = "assurance.improvement.result.retro-analysis.v3"
 REVIEW_RESULT_ID = "assurance.improvement.result.improvement-review.v1"
@@ -127,7 +125,6 @@ def validate_binding(data: object) -> AgentBindingDataV1:
 def prepare_outcome(
     *,
     skill_path: str,
-    persona_path: str,
     business: Any,
     binding: AgentBindingDataV1,
     result_schema_id: str,
@@ -137,7 +134,6 @@ def prepare_outcome(
         instructions=with_validation_retry(
             (
                 InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.text("text/plain", resource_text(persona_path)),
                 InstructionPart.from_json(prompt_model_json(business)),
             ),
             getattr(business, "validation_error", None),
@@ -162,9 +158,7 @@ def _structured(
     return thaw_json(payload.agent_result.result_payload)
 
 
-def _prepare(
-    skill: str, persona: str, result_id: str, request: TaskRequest, context: TaskContext
-) -> TaskOutcome:
+def _prepare(skill: str, result_id: str, request: TaskRequest, context: TaskContext) -> TaskOutcome:
     input_model = (
         RetroSynthesisInputV1
         if skill == RETRO_SKILL
@@ -176,7 +170,6 @@ def _prepare(
     binding = validate_binding(request.binding_data)
     return prepare_outcome(
         skill_path=skill,
-        persona_path=persona,
         business=business,
         binding=binding,
         result_schema_id=result_id,
@@ -264,7 +257,7 @@ def _finalize_retro(
 class RetroPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(RETRO_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
+            return _prepare(RETRO_SKILL, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
@@ -272,7 +265,7 @@ class RetroPrepareHandler:
 class RetroEvalPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(RETRO_EVAL_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
+            return _prepare(RETRO_EVAL_SKILL, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
@@ -280,7 +273,7 @@ class RetroEvalPrepareHandler:
 class RetroIssuePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(RETRO_ISSUE_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
+            return _prepare(RETRO_ISSUE_SKILL, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
@@ -288,7 +281,7 @@ class RetroIssuePrepareHandler:
 class RetroWorkflowPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(RETRO_WORKFLOW_SKILL, REVIEWER_PERSONA, RETRO_RESULT_ID, request, context)
+            return _prepare(RETRO_WORKFLOW_SKILL, RETRO_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
@@ -296,7 +289,7 @@ class RetroWorkflowPrepareHandler:
 class ImprovementReviewPrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(REVIEW_SKILL, REVIEWER_PERSONA, REVIEW_RESULT_ID, request, context)
+            return _prepare(REVIEW_SKILL, REVIEW_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
@@ -304,7 +297,7 @@ class ImprovementReviewPrepareHandler:
 class ArchivePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(ARCHIVE_SKILL, ARCHIVER_PERSONA, ARCHIVE_RESULT_ID, request, context)
+            return _prepare(ARCHIVE_SKILL, ARCHIVE_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 

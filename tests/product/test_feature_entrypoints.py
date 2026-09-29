@@ -21,13 +21,13 @@ from graph_engine.boot import FeatureSpec
 def test_capability_feature_exports_existing_contracts_and_graph_factory(
     module: str, owner: str, agents: int, tasks: int, symbol: str
 ) -> None:
-    entry = "task" if module == "assurance_intake" else "feature"
-    feature: FeatureSpec = import_module(f"{module}.{entry}").FEATURE
+    feature: FeatureSpec = import_module(f"{module}.task").FEATURE
 
     assert feature.graph_factory.owner_id == owner
     assert feature.graph_factory.symbol == f"{module}.graphs.factory:{symbol}"
     assert feature.plugin.descriptor().plugin_id == owner
     assert len(feature.agent_contracts) == len(feature.agent_task_types) == agents
+    assert all(task.__module__ == f"{module}.task" for task in feature.agent_task_types)
     assert len(feature.task_contracts) == tasks
     assert {task.contract.contract_id for task in feature.agent_task_types} == {
         contract.contract_id for contract in feature.agent_contracts.values()
@@ -107,8 +107,7 @@ def test_product_rejects_duplicate_task_catalog_key() -> None:
     ],
 )
 def test_feature_exposes_its_graph_bundle_type(module: str, bundle_name: str) -> None:
-    entry = "task" if module == "assurance_intake" else "feature"
-    feature = import_module(f"{module}.{entry}")
+    feature = import_module(f"{module}.task")
     factory = import_module(f"{module}.graphs.factory")
     assert getattr(feature, bundle_name) is getattr(factory, bundle_name)
 

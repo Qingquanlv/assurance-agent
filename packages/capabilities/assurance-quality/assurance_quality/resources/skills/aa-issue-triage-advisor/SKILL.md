@@ -29,6 +29,8 @@ human action. Schema truth is `assurance_quality.contracts` for `IssueTriageResu
 ## Rules
 
 - Do not emit canonical events or mutate Problems or Ledgers.
+- Do not claim a lifecycle transition has already happened; return advice only
+  for the locked Problem identity and authenticated evidence.
 - Do not invent Problem state.
 - Summarize observable facts; do not include raw logs or secrets.
 - Use the locked execution binding from the prepare request.

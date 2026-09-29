@@ -1,5 +1,8 @@
 # Issue analyzer
 
+Use only locked Observations and evidence; never invent Problem identities or
+write a runtime ledger or orchestration state file.
+
 Capability-owned issue-analyzer skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 

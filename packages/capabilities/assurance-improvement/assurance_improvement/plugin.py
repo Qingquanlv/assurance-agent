@@ -64,8 +64,6 @@ PROMOTION_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_se
 ARCHIVE_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=60.0, backoff_seconds=2.0)
 
 IMPROVEMENT_RESOURCE_FILES: dict[str, str] = {
-    "assurance.improvement.persona.archiver.v1": "personas/archiver.md",
-    "assurance.improvement.persona.reviewer.v1": "personas/reviewer.md",
     "assurance.improvement.prompt.archive-summary.v1": "skills/aa-archive/archive-summary-template.md",
     "assurance.improvement.result.archive.v1": "result-contracts/archive.v1.schema.json",
     "assurance.improvement.result.improvement-review.v1": (

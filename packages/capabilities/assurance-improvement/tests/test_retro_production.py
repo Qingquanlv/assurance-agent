@@ -48,7 +48,7 @@ async def test_analysis_receives_real_slice_without_review_archive_fields(
     outcome = await execute_task(handler, validated.model_dump(mode="json"), tmp_path, binding_data=BINDING)
     assert outcome.status == "succeeded", outcome.failure
     request = AgentRunRequest.model_validate(outcome.output)
-    payload = request.instructions[2].model_dump(mode="json")["json_content"]
+    payload = request.instructions[-1].model_dump(mode="json")["json_content"]
     assert payload["evidence_slice"]["domain"] == domain
     assert [source["evidence_ids"] for source in payload["evidence_slice"]["sources"]] == (
         [["PROB-1", "OCC-1"]] if domain == "issue" else []
@@ -218,7 +218,7 @@ async def test_public_retro_runs_real_contracts_and_handlers_with_only_agent_tra
     from assurance_improvement.contracts.attempts import TASK_ATTEMPT_CONTRACTS
     from assurance_improvement.graphs.retro import build_retro_graph
     from assurance_improvement.operations import improvement_handlers
-    from assurance_improvement.operations.agent_tasks import (
+    from assurance_improvement.task import (
         RetroEvalAnalysisTask,
         RetroIssueAnalysisTask,
         RetroWorkflowAnalysisTask,

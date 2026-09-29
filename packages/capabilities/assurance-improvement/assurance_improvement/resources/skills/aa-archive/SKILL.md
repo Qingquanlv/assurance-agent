@@ -32,6 +32,7 @@ artifacts. Schema truth is `assurance_improvement.contracts` for `ArchiveResultV
 - Execution `FAIL` blocks archive unless an authenticated override is present.
 - Do not hand-edit orchestration snapshots or ledgers.
 - Copy process artifacts into the archive tree. Do not delete the change tree.
+- Do not run product CLI commands or rewrite orchestration snapshots.
 - Do not emit provider session transcripts or secret-bearing diagnostics.
 - Use the locked execution binding from the prepare request.
 - Return the typed result and stop.

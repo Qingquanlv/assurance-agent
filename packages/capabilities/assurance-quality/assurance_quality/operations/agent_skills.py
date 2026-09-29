@@ -73,9 +73,6 @@ INSPECT_SKILL = "skills/aa-inspect/SKILL.md"
 ISSUE_ANALYSIS_SKILL = "skills/aa-issue-analyzer/SKILL.md"
 ISSUE_TRIAGE_SKILL = "skills/aa-issue-triage-advisor/SKILL.md"
 REPORT_SKILL = "skills/aa-report-generator/SKILL.md"
-EXPLORER_PERSONA = "personas/explorer.md"
-REVIEWER_PERSONA = "personas/reviewer.md"
-REPORTER_PERSONA = "personas/reporter.md"
 
 FACT_BASELINE_RESULT_ID = "assurance.quality.result.fact-baseline.v1"
 INSPECTION_RESULT_ID = "assurance.quality.result.inspection.v1"
@@ -166,7 +163,6 @@ def validate_binding(data: object) -> AgentBindingDataV1:
 def prepare_outcome(
     *,
     skill_path: str,
-    persona_path: str,
     business: Any,
     binding: AgentBindingDataV1,
     result_schema_id: str,
@@ -176,7 +172,6 @@ def prepare_outcome(
         instructions=with_validation_retry(
             (
                 InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.text("text/plain", resource_text(persona_path)),
                 InstructionPart.from_json(prompt_model_json(business)),
             ),
             getattr(business, "validation_error", None),
@@ -362,7 +357,6 @@ def _staged_agent_document(
 
 def _prepare(
     skill: str,
-    persona: str,
     result_id: str,
     request: TaskRequest,
     context: TaskContext,
@@ -377,7 +371,6 @@ def _prepare(
     binding = validate_binding(request.binding_data)
     return prepare_outcome(
         skill_path=skill,
-        persona_path=persona,
         business=business,
         binding=binding,
         result_schema_id=result_id,
@@ -390,7 +383,6 @@ class FactBaselinePrepareHandler:
         try:
             return _prepare(
                 FACT_BASELINE_SKILL,
-                EXPLORER_PERSONA,
                 FACT_BASELINE_RESULT_ID,
                 request,
                 context,
@@ -405,7 +397,6 @@ class InspectPrepareHandler:
         try:
             return _prepare(
                 INSPECT_SKILL,
-                EXPLORER_PERSONA,
                 INSPECTION_RESULT_ID,
                 request,
                 context,
@@ -423,7 +414,6 @@ class IssueAnalysisPrepareHandler:
             binding = validate_binding(request.binding_data)
             return prepare_outcome(
                 skill_path=ISSUE_ANALYSIS_SKILL,
-                persona_path=EXPLORER_PERSONA,
                 business=business,
                 binding=binding,
                 result_schema_id=ISSUE_ANALYSIS_RESULT_ID,
@@ -436,7 +426,7 @@ class IssueAnalysisPrepareHandler:
 class IssueTriagePrepareHandler:
     async def execute(self, request: TaskRequest, context: TaskContext) -> TaskOutcome:
         try:
-            return _prepare(ISSUE_TRIAGE_SKILL, REVIEWER_PERSONA, ISSUE_TRIAGE_RESULT_ID, request, context)
+            return _prepare(ISSUE_TRIAGE_SKILL, ISSUE_TRIAGE_RESULT_ID, request, context)
         except InputError as error:
             return failed_input(error)
 
@@ -449,7 +439,6 @@ class ReportPrepareHandler:
             binding = validate_binding(request.binding_data)
             return prepare_outcome(
                 skill_path=REPORT_SKILL,
-                persona_path=REPORTER_PERSONA,
                 business=business,
                 binding=binding,
                 result_schema_id=REPORT_RESULT_ID,

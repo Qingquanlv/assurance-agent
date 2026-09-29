@@ -126,18 +126,16 @@ async def test_retro_finalize_accepts_authenticated_source(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
+async def test_prepare_instruction_order_is_skill_business(tmp_path: Path) -> None:
     first = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
     second = await execute_task(RetroPrepareHandler(), _retro_input(), tmp_path, binding_data=BINDING)
     assert first.status == "succeeded"
     request = AgentRunRequest.model_validate(first.output)
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
-    skill, persona, business = request.instructions
+    skill, business = request.instructions
     assert skill.media_type == "text/plain"
-    assert persona.media_type == "text/plain"
     assert business.media_type == "application/json"
     assert "Capability-owned retro skill" in (skill.text_content or "")
-    assert "Improvement reviewer persona" in (persona.text_content or "")
     encoded = request.canonical_bytes().decode("utf-8").lower()
     assert "opencode" not in encoded
     assert "cursor" not in encoded
@@ -216,7 +214,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
         (RetroWorkflowPrepareHandler(), "Capability-owned retro-workflow-analysis skill"),
     ),
 )
-async def test_each_prepare_locks_skill_persona_and_execution(
+async def test_each_prepare_locks_skill_and_execution(
     handler: TaskHandler, marker: str, tmp_path: Path
 ) -> None:
     domain = {

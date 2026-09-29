@@ -1,5 +1,8 @@
 # Retro
 
+Analyze only locked evidence; do not write Ledgers, snapshots, or delivery
+instructions, and do not infer state from prior conversation.
+
 Capability-owned retro skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 

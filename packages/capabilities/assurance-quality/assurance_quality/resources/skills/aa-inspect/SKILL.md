@@ -1,5 +1,8 @@
 # Inspect
 
+Use only locked evidence and projection digests; never invent failure
+categories or write a runtime ledger or orchestration state file.
+
 Capability-owned inspect skill. Do not select a provider, model, or adapter.
 Do not look up a global skill catalog.
 

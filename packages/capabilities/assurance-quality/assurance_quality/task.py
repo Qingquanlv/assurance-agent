@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from langgraph.graph.state import CompiledStateGraph
+
 from agent_runtime_contracts import (
     AgentRunRequest,
     FinalizePhase,
@@ -13,6 +15,7 @@ from agent_runtime_contracts import (
     before,
 )
 from graph_engine.attempts import AuthorizedAttemptScope, PermanentTaskFailure
+from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_quality.contracts.agent import (
     FactBaselineResultV1,
@@ -31,7 +34,12 @@ from assurance_quality.contracts.assessment import (
     FinalizedReportV1,
     ReportSkillInputV1,
 )
-from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS
+from assurance_quality.contracts.attempts import (
+    AGENT_JOB_CONTRACTS,
+    OUTPUT_ROUTE_TEMPLATES,
+    TASK_ATTEMPT_CONTRACTS,
+)
+from assurance_quality.plugin import QualityPlugin
 
 
 @dataclass
@@ -180,3 +188,36 @@ class ReportTask:
         scope: AuthorizedAttemptScope,
     ) -> FinalizedReportV1 | PermanentTaskFailure:
         return await self.finalize_phase.execute(bundle, scope)
+
+
+@dataclass(frozen=True, slots=True)
+class QualityGraphs:
+    assess: CompiledStateGraph
+    issue_review: CompiledStateGraph
+    issue_analyze: CompiledStateGraph
+    issue_reconcile: CompiledStateGraph
+    report: CompiledStateGraph
+    fact_baseline: CompiledStateGraph
+    surface_baseline: CompiledStateGraph
+
+
+FEATURE = FeatureSpec(
+    plugin=QualityPlugin,
+    agent_contracts=AGENT_JOB_CONTRACTS,
+    task_contracts=TASK_ATTEMPT_CONTRACTS,
+    output_route_templates=OUTPUT_ROUTE_TEMPLATES,
+    graph_factory=FeatureFactoryRef(
+        "assurance.quality", "assurance_quality.graphs.factory:build_quality_graphs"
+    ),
+    agent_task_types=(FactBaselineTask, InspectTask, IssueTriageTask, IssueAnalysisTask, ReportTask),
+)
+
+__all__ = [
+    "FEATURE",
+    "QualityGraphs",
+    "FactBaselineTask",
+    "InspectTask",
+    "IssueAnalysisTask",
+    "IssueTriageTask",
+    "ReportTask",
+]

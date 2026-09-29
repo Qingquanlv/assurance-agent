@@ -42,7 +42,7 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
     from agent_runtime_contracts.lifecycle import validate_task_type
 
     from assurance_intake.task import CaseDesignTask, CaseReviewTask, ExploreTask, IntakeTask
-    from assurance_generation.operations.agent_tasks import (
+    from assurance_generation.task import (
         ApiCodegenReviewTask,
         ApiCodegenTask,
         E2ECodegenReviewTask,
@@ -52,19 +52,19 @@ def test_agent_task_phases_delegate_to_injected_phases(name: str, contract_id: s
         PerformanceCodegenReviewTask,
         PerformanceCodegenTask,
     )
-    from assurance_healing.operations.agent_tasks import (
+    from assurance_healing.task import (
         ApplyTestRepairTask,
         CoverageRepairTask,
         FixProposalTask,
     )
-    from assurance_quality.operations.agent_tasks import (
+    from assurance_quality.task import (
         FactBaselineTask,
         InspectTask,
         IssueAnalysisTask,
         IssueTriageTask,
         ReportTask,
     )
-    from assurance_improvement.operations.agent_tasks import (
+    from assurance_improvement.task import (
         ArchiveTask,
         ImprovementReviewTask,
         RetroEvalAnalysisTask,

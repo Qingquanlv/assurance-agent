@@ -1,5 +1,8 @@
 # Performance codegen
 
+Write only declared family outputs, read each completed file back, and do not
+write a runtime ledger or orchestration state file.
+
 Capability-owned performance codegen skill. Do not select a provider, model, or
 adapter. Do not look up a global skill catalog.
 

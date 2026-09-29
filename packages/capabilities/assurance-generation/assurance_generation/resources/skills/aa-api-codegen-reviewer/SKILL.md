@@ -1,5 +1,9 @@
 # API codegen review
 
+Review only this family's declared outputs; do not write plans, tests,
+knowledge, runtime ledgers, or orchestration state. `required_capabilities`
+must be exact declared typed leaves, never prefix matches.
+
 Capability-owned API codegen review skill. Do not select a provider, model, or
 adapter.
 

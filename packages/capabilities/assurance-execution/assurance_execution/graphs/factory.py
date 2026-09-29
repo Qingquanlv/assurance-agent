@@ -6,7 +6,7 @@ from typing import Literal
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from assurance_execution.feature import ExecutionGraphs
+from assurance_execution.task import ExecutionGraphs
 from assurance_execution.graphs.nodes import (
     activation_execute,
     activation_rerun,

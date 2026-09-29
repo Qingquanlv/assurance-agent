@@ -1,4 +1,4 @@
-"""Static composition interface for the deterministic Execution wheel."""
+"""Deterministic Execution wheel tasks and Product-facing feature bundle."""
 
 from dataclasses import dataclass
 

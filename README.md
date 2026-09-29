@@ -26,7 +26,7 @@ bash scripts/assurance_product_wheel_smoke_test.sh
 ### Python plugin registration and generated declarations
 
 Author handlers, schemas, resources, and validators in each wheel's `plugin.py`.
-Task lifecycle definitions stay in `task.py` (Intake) and topology stays in
+Task lifecycle definitions stay in each wheel's `task.py` and topology stays in
 `graphs/`. Do not hand-edit `plugin-declaration.json`: it is generated from the
 provider's `descriptor()`, including its attempt-contract digests.
 
@@ -129,7 +129,7 @@ The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
 
 Each capability wheel exports a static `FEATURE` and public graph-bundle type
-from its `feature.py`. `assurance_product.features` explicitly lists the six
+from its `task.py`. `assurance_product.features` explicitly lists the six
 exports; Product uses them for graph factories, contracts, output routes and
 Agent Task binding. `plugin.py` still owns installed handlers/resources, while
 `graphs/factory.py` still owns LangGraph topology. No decorator scan or new

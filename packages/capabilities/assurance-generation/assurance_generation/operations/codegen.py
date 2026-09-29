@@ -37,7 +37,6 @@ from assurance_generation.contracts.plans import ObligationMethodPlanV1, canonic
 from assurance_generation.operations.codegen_scope import build_codegen_scope
 from assurance_generation.operations.planning import (
     FAMILIES,
-    PLAN_PERSONA,
     Family,
     InputError,
     OutputError,
@@ -259,7 +258,6 @@ def codegen_outputs(scope: CodegenScopeV1) -> tuple[str, ...]:
 def prepare_codegen_outcome(
     *,
     skill_path: str,
-    persona_path: str,
     scope: CodegenScopeV1,
     cases: CaseYamlAuthoring,
     context_payload: Mapping[str, object],
@@ -274,7 +272,6 @@ def prepare_codegen_outcome(
         instructions=with_validation_retry(
             (
                 InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.text("text/plain", resource_text(persona_path)),
                 InstructionPart.from_json(scope.model_dump(mode="json")),
                 InstructionPart.from_json(cases.model_dump(mode="json")),
                 InstructionPart.from_json({**context_payload, "allowed_outputs": list(allowed_outputs)}),
@@ -557,7 +554,6 @@ class CodegenPrepareHandler:
                     context_payload["api_discovery"] = api_discovery.model_dump(mode="json")
             return prepare_codegen_outcome(
                 skill_path=_SKILL_FILES[family],
-                persona_path=PLAN_PERSONA,
                 scope=scope,
                 cases=cases,
                 context_payload=context_payload,

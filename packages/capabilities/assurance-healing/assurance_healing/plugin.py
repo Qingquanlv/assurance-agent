@@ -61,7 +61,6 @@ APPROVAL_POLICY = EffectPolicy(max_attempts=3, timeout_seconds=30.0, backoff_sec
 HEAL_APPLY_POLICY = EffectPolicy(max_attempts=5, timeout_seconds=120.0, backoff_seconds=2.0)
 
 HEALING_RESOURCE_FILES: dict[str, str] = {
-    "assurance.healing.persona.fix-proposer.v1": "personas/fix-proposer.md",
     "assurance.healing.policy.test-change-policy.v1": "policy/test-change-policy.v1.json",
     "assurance.healing.result.coverage-repair.v1": "result-contracts/coverage-repair.v1.schema.json",
     "assurance.healing.result.fix-proposal.v1": "result-contracts/fix-proposal.v1.schema.json",

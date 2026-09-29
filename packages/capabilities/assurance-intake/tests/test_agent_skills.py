@@ -1691,8 +1691,6 @@ async def test_case_design_validates_complete_change_marker(
 async def test_finalize_rejects_change_marker_replaced_after_digest_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
 ) -> None:
-    from assurance_intake.operations import finalize
-
     project, stage = dual_roots(tmp_path)
     if phase == "case-design":
         authored = yaml.safe_load((_FIXTURES / "case-authoring-valid.yaml").read_bytes())
@@ -1704,7 +1702,8 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
         (stage / "qa/requirement.md").write_text("# Requirement\n")
         outputs = ["qa/.qa.yaml"]
         handler = IntakeFinalizeHandler()
-    read = finalize._read_regular_bytes
+    handler_globals = handler.execute.__func__.__globals__
+    read = handler_globals["_read_regular_bytes"]
 
     def replace_before_validation(workspace: Path, relative: str, *, kind: str) -> bytes:
         if workspace == stage and relative == "qa/.qa.yaml":
@@ -1712,7 +1711,7 @@ async def test_finalize_rejects_change_marker_replaced_after_digest_read(
             path.write_bytes(path.read_bytes() + b"# concurrent change\n")
         return read(workspace, relative, kind=kind)
 
-    monkeypatch.setattr(finalize, "_read_regular_bytes", replace_before_validation)
+    monkeypatch.setitem(handler_globals, "_read_regular_bytes", replace_before_validation)
     result = await _finalize_files(
         handler,
         cast(JSONValue, {"output_files": outputs}),

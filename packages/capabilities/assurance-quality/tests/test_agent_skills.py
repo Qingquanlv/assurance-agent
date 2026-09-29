@@ -300,7 +300,7 @@ async def test_issue_finalize_rejects_wrapped_input(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Path) -> None:
+async def test_prepare_instruction_order_is_skill_business(tmp_path: Path) -> None:
     payload = authenticated_issue_input(tmp_path)
     first = await execute_task(
         IssueAnalysisPrepareHandler(),
@@ -317,12 +317,10 @@ async def test_prepare_instruction_order_is_skill_persona_business(tmp_path: Pat
     assert first.status == "succeeded", first.failure
     request = AgentRunRequest.model_validate(first.output)
     assert request.canonical_bytes() == AgentRunRequest.model_validate(second.output).canonical_bytes()
-    skill, persona, business = request.instructions
+    skill, business = request.instructions
     assert skill.media_type == "text/plain"
-    assert persona.media_type == "text/plain"
     assert business.media_type == "application/json"
     assert "Capability-owned issue-analyzer skill" in (skill.text_content or "")
-    assert "Quality explorer persona" in (persona.text_content or "")
     encoded = request.canonical_bytes().decode("utf-8").lower()
     assert "opencode" not in encoded
     assert "cursor" not in encoded
@@ -419,7 +417,7 @@ async def test_prepare_rejects_routing_marker_as_invalid_input(tmp_path: Path) -
     ("handler", "marker"),
     ((IssueTriagePrepareHandler(), "Capability-owned issue-triage skill"),),
 )
-async def test_each_prepare_locks_skill_persona_and_execution(
+async def test_each_prepare_locks_skill_and_execution(
     handler: TaskHandler, marker: str, tmp_path: Path
 ) -> None:
     outcome = await execute_task(handler, skill_input(), tmp_path, binding_data=BINDING)
@@ -604,9 +602,6 @@ def test_quality_resources_forbid_legacy_and_provider_names() -> None:
         "skills/aa-issue-triage-advisor/SKILL.md",
         "skills/aa-report-generator/SKILL.md",
         "skills/aa-dashboard/SKILL.md",
-        "personas/explorer.md",
-        "personas/reviewer.md",
-        "personas/reporter.md",
         "result-contracts/fact-baseline.v1.schema.json",
         "result-contracts/inspection.v1.schema.json",
         "result-contracts/issue-analysis.v1.schema.json",
@@ -627,14 +622,9 @@ def test_quality_resources_forbid_legacy_and_provider_names() -> None:
     )
     for token in _FORBIDDEN:
         assert token not in lowered
-    explorer = (_RESOURCES / "personas/explorer.md").read_text(encoding="utf-8")
-    reviewer = (_RESOURCES / "personas/reviewer.md").read_text(encoding="utf-8")
-    reporter = (_RESOURCES / "personas/reporter.md").read_text(encoding="utf-8")
-    assert "Quality explorer persona" in explorer
-    assert "Quality reviewer persona" in reviewer
-    assert "Quality reporter persona" in reporter
-    assert "Document-author persona" not in explorer
-    assert "Generation reviewer" not in reviewer
+    assert "Do not claim a lifecycle transition" in (
+        _RESOURCES / "skills/aa-issue-triage-advisor/SKILL.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_fact_baseline_records_only_source_proven_initial_admin_credentials() -> None:

@@ -17,7 +17,6 @@ from assurance_generation.contracts.codegen import CodegenResultV1
 from assurance_generation.operations.planning import (
     FAMILIES,
     PLAN_REVIEW_RESULT_ID,
-    REVIEW_PERSONA,
     Family,
     InputError,
     OutputError,
@@ -90,7 +89,6 @@ class PlanReviewPrepareHandler:
             return prepare_plan_outcome(
                 family=family,
                 skill_path=_REVIEW_SKILL_FILES[family],
-                persona_path=REVIEW_PERSONA,
                 business=business,
                 cases=cases,
                 binding=binding,

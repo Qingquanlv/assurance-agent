@@ -12,7 +12,6 @@ _FACETS = (
     "plugin-version",
     "schema-bytes",
     "skill-bytes",
-    "persona-bytes",
     "result-contract-bytes",
     "policy-bytes",
     "binding-data",

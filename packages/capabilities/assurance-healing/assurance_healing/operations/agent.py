@@ -42,7 +42,6 @@ from assurance_healing.resource_loader import resource_bytes, resource_text
 
 FIX_PROPOSAL_SKILL = "skills/aa-fix-proposal/SKILL.md"
 COVERAGE_REPAIR_SKILL = "skills/aa-coverage-repair/SKILL.md"
-FIX_PROPOSER_PERSONA = "personas/fix-proposer.md"
 FIX_PROPOSAL_RESULT_ID = "assurance.healing.result.fix-proposal.v1"
 COVERAGE_REPAIR_RESULT_ID = "assurance.healing.result.coverage-repair.v1"
 _FIX_RESULT_FILE = "result-contracts/fix-proposal.v1.schema.json"
@@ -113,7 +112,6 @@ def prepare_outcome(
         instructions=with_validation_retry(
             (
                 InstructionPart.text("text/plain", resource_text(skill_path)),
-                InstructionPart.text("text/plain", resource_text(FIX_PROPOSER_PERSONA)),
                 InstructionPart.from_json(prompt_model_json(business)),
             ),
             getattr(business, "validation_error", None),
