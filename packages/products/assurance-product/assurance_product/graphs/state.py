@@ -206,6 +206,8 @@ class ProductStateDocument(FrozenModel):
     fact_baseline_ref: EvidenceArtifactRefV1
     ui_exploration_ref: EvidenceArtifactRefV1
     api_discovery_ref: EvidenceArtifactRefV1
+    ui_exploration_source: str
+    api_discovery_source: str
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, Any]
     case_rework_context: CaseReworkContextV1
@@ -331,6 +333,8 @@ class ProductState(CheckpointBridgeState, total=False):
     fact_baseline_ref: EvidenceArtifactRefV1
     ui_exploration_ref: EvidenceArtifactRefV1
     api_discovery_ref: EvidenceArtifactRefV1
+    ui_exploration_source: str
+    api_discovery_source: str
     inspection_outcome: InspectionOutcomeV1
     tail_result: dict[str, object]
     case_rework_context: CaseReworkContextV1

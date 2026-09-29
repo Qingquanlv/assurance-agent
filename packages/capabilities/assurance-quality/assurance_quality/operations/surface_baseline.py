@@ -480,6 +480,8 @@ def run_surface_probe(
     return SurfaceProbeResultV1(
         ui_exploration_ref=_write_document(write_root, UI_EXPLORATION_PATH, probed.ui),
         api_discovery_ref=_write_document(write_root, API_DISCOVERY_PATH, probed.api),
+        ui_source=probed.ui.source,
+        api_source=probed.api.source,
     )
 
 

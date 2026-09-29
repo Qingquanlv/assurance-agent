@@ -170,6 +170,8 @@ def _stub_export(state_schema: type, marker: str, *, status: str | None = None) 
                     "path": "qa/results/facts/api-discovery.json",
                     "digest": _SHA,
                 }
+                update["ui_exploration_source"] = "unused"
+                update["api_discovery_source"] = "live"
         elif state_schema is ImprovementState:
             update["receipt_refs"] = [{"receipt_id": marker, "receipt_digest": _SHA}]
         else:

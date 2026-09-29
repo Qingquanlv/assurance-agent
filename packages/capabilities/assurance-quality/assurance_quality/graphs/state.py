@@ -88,6 +88,8 @@ class QualityState(CheckpointBridgeState, total=False):
     fact_baseline_ref: EvidenceArtifactRefV1
     ui_exploration_ref: EvidenceArtifactRefV1
     api_discovery_ref: EvidenceArtifactRefV1
+    ui_exploration_source: str
+    api_discovery_source: str
     inspection_outcome: InspectionOutcomeV1
     capability_leafs: list[str]
     allowed_artifact_paths: list[str]

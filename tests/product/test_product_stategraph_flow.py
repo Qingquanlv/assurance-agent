@@ -186,9 +186,10 @@ def _surface_baseline() -> dict[str, object]:
         path.write_bytes(data)
         refs[relative] = {"path": relative, "digest": hashlib.sha256(data).hexdigest()}
     return {
-        "project_root": str(root),
         "ui_exploration_ref": refs[UI_EXPLORATION_PATH],
         "api_discovery_ref": refs[API_DISCOVERY_PATH],
+        "ui_exploration_source": ui.source,
+        "api_discovery_source": api.source,
     }
 
 

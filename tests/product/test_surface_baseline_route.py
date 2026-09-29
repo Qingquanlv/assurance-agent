@@ -135,3 +135,27 @@ def test_route_surface_requires_live_side_for_requested_families(tmp_path: Path)
         "api_discovery_ref": api_live,
     }
     assert route_surface(api_state, project_root=tmp_path) == "prepare"
+
+
+def test_route_surface_uses_state_sources_without_project_root() -> None:
+    state = {
+        "candidate_test_families": ["api"],
+        "ui_exploration_ref": {
+            "path": UI_EXPLORATION_PATH,
+            "digest": "0" * 64,
+        },
+        "api_discovery_ref": {
+            "path": API_DISCOVERY_PATH,
+            "digest": "1" * 64,
+        },
+        "ui_exploration_source": "unused",
+        "api_discovery_source": "live",
+    }
+    assert route_surface(state) == "prepare"
+
+    refs_only = {
+        "candidate_test_families": ["api"],
+        "ui_exploration_ref": state["ui_exploration_ref"],
+        "api_discovery_ref": state["api_discovery_ref"],
+    }
+    assert route_surface(refs_only) == "not-achieved"

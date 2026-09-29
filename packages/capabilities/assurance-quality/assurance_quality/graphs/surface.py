@@ -45,6 +45,8 @@ def publish_surface_baseline(
     return {
         "ui_exploration_ref": result.ui_exploration_ref.model_dump(mode="json"),
         "api_discovery_ref": result.api_discovery_ref.model_dump(mode="json"),
+        "ui_exploration_source": result.ui_source,
+        "api_discovery_source": result.api_source,
     }
 
 

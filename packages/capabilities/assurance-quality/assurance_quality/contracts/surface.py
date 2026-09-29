@@ -148,3 +148,5 @@ class SurfaceProbeInputV1(FrozenModel):
 class SurfaceProbeResultV1(FrozenModel):
     ui_exploration_ref: EvidenceArtifactRefV1
     api_discovery_ref: EvidenceArtifactRefV1
+    ui_source: SurfaceSource
+    api_source: SurfaceSource

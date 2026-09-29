@@ -23,10 +23,15 @@ from assurance_product.graphs.routes import route_init, route_prepare
 from assurance_product.graphs.state import ProductState
 from assurance_product.graphs.tail_contracts import ExecuteTailResultV1
 from assurance_product.models import BusinessBudgetsV1
-from assurance_quality.contracts.surface import ApiDiscoveryDocument, UiExplorationDocument
+from assurance_quality.contracts.surface import (
+    ApiDiscoveryDocument,
+    SurfaceSource,
+    UiExplorationDocument,
+)
 from graph_engine.boot.boot import GraphBuildContext
 
 _API_FAMILIES = frozenset({"api", "fuzz", "performance"})
+_SURFACE_SOURCES = frozenset({"live", "unavailable", "unused"})
 
 
 def adapt_execute_tail(state: ProductState) -> dict[str, object]:
@@ -54,6 +59,18 @@ def _load_surface_document(
         return None
 
 
+def _surface_sources_from_state(
+    state: Mapping[str, object],
+) -> tuple[SurfaceSource, SurfaceSource] | None:
+    ui_source = state.get("ui_exploration_source")
+    api_source = state.get("api_discovery_source")
+    if ui_source is None or api_source is None:
+        return None
+    if ui_source not in _SURFACE_SOURCES or api_source not in _SURFACE_SOURCES:
+        return None
+    return cast(SurfaceSource, ui_source), cast(SurfaceSource, api_source)
+
+
 def route_surface(
     state: Mapping[str, object],
     *,
@@ -61,21 +78,25 @@ def route_surface(
 ) -> Literal["prepare", "not-achieved"]:
     if state.get("attempt_failure"):
         return "not-achieved"
-    if project_root is not None:
+    sources = _surface_sources_from_state(state)
+    if sources is not None:
+        ui_source, api_source = sources
+    elif project_root is not None:
         root = Path(project_root)
+        ui = _load_surface_document(root, state.get("ui_exploration_ref"), UiExplorationDocument)
+        api = _load_surface_document(root, state.get("api_discovery_ref"), ApiDiscoveryDocument)
+        if ui is None or api is None:
+            return "not-achieved"
+        ui_source = ui.source
+        api_source = api.source
     else:
-        raw_root = state.get("project_root")
-        root = Path(str(raw_root)) if isinstance(raw_root, str) and raw_root else Path.cwd()
-    ui = _load_surface_document(root, state.get("ui_exploration_ref"), UiExplorationDocument)
-    api = _load_surface_document(root, state.get("api_discovery_ref"), ApiDiscoveryDocument)
-    if ui is None or api is None:
         return "not-achieved"
     families = state.get("candidate_test_families") or ()
     if not isinstance(families, (list, tuple)):
         return "not-achieved"
-    if any(name in _API_FAMILIES for name in families) and api.source != "live":
+    if any(name in _API_FAMILIES for name in families) and api_source != "live":
         return "not-achieved"
-    if "e2e" in families and ui.source != "live":
+    if "e2e" in families and ui_source != "live":
         return "not-achieved"
     return "prepare"
 

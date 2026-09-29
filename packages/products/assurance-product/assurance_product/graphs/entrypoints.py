@@ -49,6 +49,9 @@ _INPUT_KEYS = (
     "artifacts",
     "retro_window",
     "decision",
+    "api_base_url",
+    "ui_base_url",
+    "ui_paths",
 )
 
 
