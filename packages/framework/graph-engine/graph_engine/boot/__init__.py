@@ -21,6 +21,7 @@ from graph_engine.boot.graph_revision import (
     GraphBuildManifest,
     GraphRevision,
 )
+from graph_engine.boot.feature import FeatureSpec
 
 __all__ = [
     "BootArtifact",
@@ -35,6 +36,7 @@ __all__ = [
     "EntrypointGraphContract",
     "FactorySourcePolicyError",
     "FeatureFactoryRef",
+    "FeatureSpec",
     "GraphBuildContext",
     "GraphBuildManifest",
     "GraphEngineBoot",
