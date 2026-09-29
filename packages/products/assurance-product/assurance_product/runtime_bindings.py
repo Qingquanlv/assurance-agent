@@ -46,43 +46,11 @@ from graph_engine.plugin_api import (
     TaskRequest,
 )
 
-from assurance_generation.operations.agent_tasks import (
-    ApiCodegenReviewTask,
-    ApiCodegenTask,
-    E2ECodegenReviewTask,
-    E2ECodegenTask,
-    FuzzCodegenReviewTask,
-    FuzzCodegenTask,
-    PerformanceCodegenReviewTask,
-    PerformanceCodegenTask,
-)
-from assurance_healing.operations.agent_tasks import (
-    ApplyTestRepairTask,
-    CoverageRepairTask,
-    FixProposalTask,
-)
-from assurance_improvement.operations.agent_tasks import (
-    ArchiveTask,
-    ImprovementReviewTask,
-    RetroEvalAnalysisTask,
-    RetroIssueAnalysisTask,
-    RetroTask,
-    RetroWorkflowAnalysisTask,
-)
-from assurance_intake.operations.agent_tasks import CaseReviewTask, ExploreTask, IntakeTask
-from assurance_intake.operations.case_design import CaseDesignTask
-from assurance_quality.operations.agent_tasks import (
-    FactBaselineTask,
-    InspectTask,
-    IssueAnalysisTask,
-    IssueTriageTask,
-    ReportTask,
-)
-
 from assurance_product.agent_contracts import (
     all_feature_agent_contracts,
     all_feature_task_contracts,
 )
+from assurance_product.features import FEATURES
 from assurance_product.models import (
     ADAPTER_BINDING_RESOURCE_ID,
     CONFIGURATION_PLUGIN_ID,
@@ -95,34 +63,7 @@ _PROVIDER = "opencode"
 _ACTIVITY_RECOVERY = "adopt-observe-reconcile-v1"
 _CAPABILITY_CATALOG_RESOURCE_ID = "assurance.product.configuration.capability-catalog"
 _FinalOutputT = TypeVar("_FinalOutputT", bound=BaseModel)
-_AGENT_TASK_CLASSES = (
-    IntakeTask,
-    ExploreTask,
-    CaseDesignTask,
-    CaseReviewTask,
-    ApiCodegenTask,
-    ApiCodegenReviewTask,
-    E2ECodegenTask,
-    E2ECodegenReviewTask,
-    FuzzCodegenTask,
-    FuzzCodegenReviewTask,
-    PerformanceCodegenTask,
-    PerformanceCodegenReviewTask,
-    FixProposalTask,
-    ApplyTestRepairTask,
-    CoverageRepairTask,
-    FactBaselineTask,
-    InspectTask,
-    IssueAnalysisTask,
-    IssueTriageTask,
-    ReportTask,
-    ArchiveTask,
-    ImprovementReviewTask,
-    RetroEvalAnalysisTask,
-    RetroIssueAnalysisTask,
-    RetroWorkflowAnalysisTask,
-    RetroTask,
-)
+_AGENT_TASK_CLASSES = tuple(task for feature in FEATURES for task in feature.agent_task_types)
 _AGENT_TASK_TYPES = {task.contract.contract_id: task for task in _AGENT_TASK_CLASSES}
 
 

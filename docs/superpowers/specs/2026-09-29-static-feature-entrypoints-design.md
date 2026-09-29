@@ -14,7 +14,8 @@ refactor. It does not change graph behavior.
 It carries the existing plugin class, Agent and deterministic Task contract
 catalogs, output-route templates, graph-factory reference, and Agent Task
 classes. Each `assurance_*/feature.py` exports one `FEATURE` value assembled
-from that wheel's existing definitions. Empty Agent fields are valid for
+from that wheel's existing definitions and owns its public graph-bundle type;
+`graphs/factory.py` imports that type without moving topology. Empty Agent fields are valid for
 execution, which has only deterministic Tasks.
 
 The Product has one explicit tuple of the six `FEATURE` values. Its graph

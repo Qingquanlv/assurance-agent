@@ -53,11 +53,11 @@
 
 ### Task 3: Move Product composition to the six interfaces
 
-**Files:** Create `assurance_product/features.py`; modify `agent_contracts.py`, `graph_factories.py`, `output_routes.py`, `runtime_bindings.py`; update `tests/product/test_feature_entrypoints.py` and affected Product tests.
+**Files:** Create `assurance_product/features.py`; modify `agent_contracts.py`, `graph_factories.py`, `output_routes.py`, `runtime_bindings.py`, Product `graphs/factory.py`, and six capability `graphs/factory.py` files; update six `feature.py` files and `tests/product/test_feature_entrypoints.py`.
 
 **Interfaces:** `FEATURES` is the six-item pinned tuple; `FEATURE_GRAPH_FACTORIES`, `AGENT_EXECUTION_CONTRACTS`, `FEATURE_TASK_ATTEMPT_CONTRACTS`, `_ROUTE_TEMPLATES`, and `_AGENT_TASK_TYPES` derive from it. Keep public helper names and factory symbols stable.
 
-- [ ] Add Product tests proving six entries yield 26 Agent contracts, 19 Task contracts, 26 matching Task types, and exact route coverage; duplicate Feature and Task identities fail closed.
+- [ ] Add Product tests proving six entries yield 26 Agent contracts, 19 Task contracts, 26 matching Task types, exact route coverage, and public graph-bundle types; duplicate Feature and Task identities fail closed.
 - [ ] Run the Product test file and observe that `assurance_product.features` is absent.
 - [ ] Implement the single Product tuple and migrate four consumers; preserve static `source_catalog.py` allowlist and validate identities against it.
 - [ ] Run Product graph/contract/route/runtime tests and compare 28 exports, 48 Attempt registrations, and 15 roots against the pre-change expectations.

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Hashable
-from dataclasses import dataclass
 from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from assurance_intake.feature import IntakeGraphs
 from assurance_intake.graphs.case import build_case_graph
 from assurance_intake.graphs.nodes import (
     activation_case_design,
@@ -44,13 +44,6 @@ _CASE_DESIGN_PATHS: dict[Hashable, str] = {
     "case-design-repair": "intake.case-design-repair",
     "failed": "failed",
 }
-
-
-@dataclass(frozen=True, slots=True)
-class IntakeGraphs:
-    prepare: CompiledStateGraph
-    load_plan: CompiledStateGraph
-    case: CompiledStateGraph
 
 
 def build_intake_graphs(context: CapabilityBuildContext) -> IntakeGraphs:

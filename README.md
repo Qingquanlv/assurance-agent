@@ -110,6 +110,13 @@ code review, the repository gate, wheel rebuild, and authenticated deployment.
 The engine does not load executable plugins, graphs, handlers, schemas,
 validators, or runtime bindings from the system under test.
 
+Each capability wheel exports a static `FEATURE` and public graph-bundle type
+from its `feature.py`. `assurance_product.features` explicitly lists the six
+exports; Product uses them for graph factories, contracts, output routes and
+Agent Task binding. `plugin.py` still owns installed handlers/resources, while
+`graphs/factory.py` still owns LangGraph topology. No decorator scan or new
+graph DSL is involved.
+
 ### Agent Task authoring
 
 All 26 Agent contracts have named Task classes with `before`/`run`/`after` and
@@ -119,9 +126,9 @@ authenticated phases; Task code does not create a client or own retries.
 
 [`add_attempt_node`](packages/framework/graph-engine/graph_engine/stategraph/registration.py)
 registers a normal Attempt node in a native LangGraph `StateGraph`, including
-the 18 deterministic Task contracts. Pure state nodes and compiled subgraphs
+the 19 deterministic Task contracts. Pure state nodes and compiled subgraphs
 still use native `add_node`. Routing, activation, selection and post-commit
-publication stay in the graph. All 27 Feature graph exports and 15 Product
+publication stay in the graph. All 28 Feature graph exports and 15 Product
 roots are covered.
 
 `after` validates business output before Kernel commit. `finally_` observes

@@ -1,5 +1,8 @@
 """Static composition interface for the Generation wheel."""
 
+from dataclasses import dataclass
+
+from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_generation.contracts.attempts import (
@@ -18,6 +21,18 @@ from assurance_generation.operations.agent_tasks import (
     PerformanceCodegenTask,
 )
 from assurance_generation.plugin import GenerationPlugin
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationGraphs:
+    generation: CompiledStateGraph
+    api: CompiledStateGraph
+    e2e: CompiledStateGraph
+    fuzz: CompiledStateGraph
+    performance: CompiledStateGraph
+    init_runtime: CompiledStateGraph
+    resolve_inputs: CompiledStateGraph
+
 
 FEATURE = FeatureSpec(
     plugin=GenerationPlugin,
@@ -39,4 +54,4 @@ FEATURE = FeatureSpec(
     ),
 )
 
-__all__ = ["FEATURE"]
+__all__ = ["FEATURE", "GenerationGraphs"]

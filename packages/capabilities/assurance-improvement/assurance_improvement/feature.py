@@ -1,5 +1,8 @@
 """Static composition interface for the Improvement wheel."""
 
+from dataclasses import dataclass
+
+from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_improvement.contracts.attempts import (
@@ -16,6 +19,18 @@ from assurance_improvement.operations.agent_tasks import (
     RetroWorkflowAnalysisTask,
 )
 from assurance_improvement.plugin import ImprovementPlugin
+
+
+@dataclass(frozen=True, slots=True)
+class ImprovementGraphs:
+    archive: CompiledStateGraph
+    retro: CompiledStateGraph
+    review: CompiledStateGraph
+    evaluate: CompiledStateGraph
+    export: CompiledStateGraph
+    apply: CompiledStateGraph
+    rollback: CompiledStateGraph
+
 
 FEATURE = FeatureSpec(
     plugin=ImprovementPlugin,
@@ -35,4 +50,4 @@ FEATURE = FeatureSpec(
     ),
 )
 
-__all__ = ["FEATURE"]
+__all__ = ["FEATURE", "ImprovementGraphs"]

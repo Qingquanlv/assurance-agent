@@ -1,5 +1,8 @@
 """Static composition interface for the deterministic Execution wheel."""
 
+from dataclasses import dataclass
+
+from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_execution.contracts.attempts import (
@@ -8,6 +11,13 @@ from assurance_execution.contracts.attempts import (
     TASK_ATTEMPT_CONTRACTS,
 )
 from assurance_execution.plugin import ExecutionPlugin
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionGraphs:
+    execute: CompiledStateGraph
+    rerun: CompiledStateGraph
+
 
 FEATURE = FeatureSpec(
     plugin=ExecutionPlugin,
@@ -20,4 +30,4 @@ FEATURE = FeatureSpec(
     agent_task_types=(),
 )
 
-__all__ = ["FEATURE"]
+__all__ = ["ExecutionGraphs", "FEATURE"]

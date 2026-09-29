@@ -1,5 +1,8 @@
 """Static composition interface for the Healing wheel."""
 
+from dataclasses import dataclass
+
+from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_healing.contracts.attempts import (
@@ -14,6 +17,13 @@ from assurance_healing.operations.agent_tasks import (
 )
 from assurance_healing.plugin import HealingPlugin
 
+
+@dataclass(frozen=True, slots=True)
+class HealingGraphs:
+    repair_failure: CompiledStateGraph
+    repair_coverage: CompiledStateGraph
+
+
 FEATURE = FeatureSpec(
     plugin=HealingPlugin,
     agent_contracts=AGENT_JOB_CONTRACTS,
@@ -25,4 +35,4 @@ FEATURE = FeatureSpec(
     agent_task_types=(FixProposalTask, ApplyTestRepairTask, CoverageRepairTask),
 )
 
-__all__ = ["FEATURE"]
+__all__ = ["FEATURE", "HealingGraphs"]

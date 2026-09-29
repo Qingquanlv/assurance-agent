@@ -1,5 +1,8 @@
 """Static composition interface for the Quality wheel."""
 
+from dataclasses import dataclass
+
+from langgraph.graph.state import CompiledStateGraph
 from graph_engine.boot import FeatureFactoryRef, FeatureSpec
 
 from assurance_quality.contracts.attempts import (
@@ -16,6 +19,18 @@ from assurance_quality.operations.agent_tasks import (
 )
 from assurance_quality.plugin import QualityPlugin
 
+
+@dataclass(frozen=True, slots=True)
+class QualityGraphs:
+    assess: CompiledStateGraph
+    issue_review: CompiledStateGraph
+    issue_analyze: CompiledStateGraph
+    issue_reconcile: CompiledStateGraph
+    report: CompiledStateGraph
+    fact_baseline: CompiledStateGraph
+    surface_baseline: CompiledStateGraph
+
+
 FEATURE = FeatureSpec(
     plugin=QualityPlugin,
     agent_contracts=AGENT_JOB_CONTRACTS,
@@ -27,4 +42,4 @@ FEATURE = FeatureSpec(
     agent_task_types=(FactBaselineTask, InspectTask, IssueTriageTask, IssueAnalysisTask, ReportTask),
 )
 
-__all__ = ["FEATURE"]
+__all__ = ["FEATURE", "QualityGraphs"]

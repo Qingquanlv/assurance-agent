@@ -6,35 +6,10 @@ from typing import Mapping
 from agent_runtime_contracts import AgentExecutionContract
 from graph_engine.attempts import TaskAttemptContract
 
-from assurance_execution.contracts.attempts import (
-    TASK_ATTEMPT_CONTRACTS as EXECUTION_TASK_ATTEMPT_CONTRACTS,
-)
-from assurance_generation.contracts.attempts import AGENT_JOB_CONTRACTS as GENERATION_AGENT_JOB_CONTRACTS
-from assurance_generation.contracts.attempts import (
-    TASK_ATTEMPT_CONTRACTS as GENERATION_TASK_ATTEMPT_CONTRACTS,
-)
-from assurance_healing.contracts.attempts import AGENT_JOB_CONTRACTS as HEALING_AGENT_JOB_CONTRACTS
-from assurance_improvement.contracts.attempts import (
-    AGENT_JOB_CONTRACTS as IMPROVEMENT_AGENT_JOB_CONTRACTS,
-)
-from assurance_improvement.contracts.attempts import (
-    TASK_ATTEMPT_CONTRACTS as IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
-)
-from assurance_intake.contracts.attempts import AGENT_JOB_CONTRACTS as INTAKE_AGENT_JOB_CONTRACTS
-from assurance_intake.contracts.attempts import (
-    TASK_ATTEMPT_CONTRACTS as INTAKE_TASK_ATTEMPT_CONTRACTS,
-)
-from assurance_quality.contracts.attempts import AGENT_JOB_CONTRACTS as QUALITY_AGENT_JOB_CONTRACTS
-from assurance_quality.contracts.attempts import (
-    TASK_ATTEMPT_CONTRACTS as QUALITY_TASK_ATTEMPT_CONTRACTS,
-)
+from assurance_product.features import FEATURES
 
 FEATURE_AGENT_JOB_CATALOGS: tuple[Mapping[str, AgentExecutionContract], ...] = (
-    INTAKE_AGENT_JOB_CONTRACTS,
-    GENERATION_AGENT_JOB_CONTRACTS,
-    QUALITY_AGENT_JOB_CONTRACTS,
-    HEALING_AGENT_JOB_CONTRACTS,
-    IMPROVEMENT_AGENT_JOB_CONTRACTS,
+    *(feature.agent_contracts for feature in FEATURES if feature.agent_contracts),
 )
 
 AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyType(
@@ -45,13 +20,7 @@ AGENT_EXECUTION_CONTRACTS: Mapping[str, AgentExecutionContract] = MappingProxyTy
     }
 )
 FEATURE_TASK_ATTEMPT_CONTRACTS: Mapping[str, TaskAttemptContract] = MappingProxyType(
-    {
-        **INTAKE_TASK_ATTEMPT_CONTRACTS,
-        **IMPROVEMENT_TASK_ATTEMPT_CONTRACTS,
-        **GENERATION_TASK_ATTEMPT_CONTRACTS,
-        **QUALITY_TASK_ATTEMPT_CONTRACTS,
-        **EXECUTION_TASK_ATTEMPT_CONTRACTS,
-    }
+    {name: contract for feature in FEATURES for name, contract in feature.task_contracts.items()}
 )
 
 
