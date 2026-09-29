@@ -45,7 +45,7 @@ def test_runtime_registry_contains_exact_semantic_contracts(runtime_registry) ->
 
     # The two Intake plan Tasks enter the live registry when Task 11 wires their
     # semantic nodes into the public graphs.
-    assert len(runtime_registry) == 44
+    assert len(runtime_registry) == 45
     assert sum(is_agent_contract(item.contract) for item in runtime_registry.values()) == 26
     assert not any(type(item.executor).__name__.startswith("_Deferred") for item in runtime_registry.values())
 
@@ -73,7 +73,7 @@ def test_semantic_bindings_are_the_only_live_agent_ids(opencode_composition) -> 
     from assurance_product.agent_contracts import AGENT_EXECUTION_CONTRACTS
 
     composition = opencode_composition
-    assert len(composition.semantic_attempt_contracts) == 44
+    assert len(composition.semantic_attempt_contracts) == 45
     assert len(AGENT_EXECUTION_CONTRACTS) == 26
     assert not any(item.startswith("assurance.product.agent.") for item in AGENT_EXECUTION_CONTRACTS)
 
@@ -127,7 +127,7 @@ def test_semantic_registry_omits_pure_functions_and_keeps_validators_unbound(
 
     composition = opencode_composition
     resolved = composition.semantic_attempt_contracts
-    assert len(resolved) == 44
+    assert len(resolved) == 45
     assert all(isinstance(item, ResolvedAttemptContract) for item in resolved.values())
     assert all(item.contract.validators == () for item in resolved.values())
     assert all(pure_id not in resolved for pure_id in _PURE_FUNCTION_IDS)

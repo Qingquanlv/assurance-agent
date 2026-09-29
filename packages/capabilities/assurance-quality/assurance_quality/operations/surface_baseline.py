@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from pydantic import ValidationError
 
@@ -440,14 +440,26 @@ def _url_path(url: str) -> str:
     return path if path.startswith("/") else f"/{path}"
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 def urllib_fetch(url: str) -> tuple[int, bytes, str]:
     request = urllib.request.Request(url, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with _NO_REDIRECT_OPENER.open(request, timeout=5) as response:
             return int(response.status), response.read(), response.geturl()
     except urllib.error.HTTPError as error:
         body = error.read() if error.fp is not None else b""
-        return int(error.code), body, error.geturl()
+        status = int(error.code)
+        if 300 <= status < 400:
+            location = error.headers.get("Location")
+            return status, body, urljoin(url, location) if location else url
+        return status, body, error.geturl()
 
 
 def _write_document(

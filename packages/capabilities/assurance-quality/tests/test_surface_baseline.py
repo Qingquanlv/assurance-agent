@@ -1,6 +1,9 @@
 import json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
+from urllib.parse import urlparse
 
-from assurance_quality.operations.surface_baseline import SurfaceProbeRequest, collect_surface
+from assurance_quality.operations.surface_baseline import SurfaceProbeRequest, collect_surface, urllib_fetch
 
 
 def test_openapi_probe_groups_user_create() -> None:
@@ -92,3 +95,32 @@ def test_ui_redirect_is_partial_and_connection_loss_is_unavailable() -> None:
     )
     assert failed.api.source == "unavailable"
     assert failed.api.warnings
+
+
+def test_urllib_fetch_returns_redirect_status_without_following() -> None:
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/landed")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, _body, final_url = urllib_fetch(f"http://127.0.0.1:{server.server_port}/start")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert status == 302
+    assert urlparse(final_url).path == "/landed"

@@ -149,7 +149,7 @@ def _surface_baseline() -> dict[str, object]:
         {
             "schema_version": "1",
             "change_id": "CH-DEMO-001",
-            "source": "unused",
+            "source": "live",
             "base_url": "",
             "warnings": [],
             "features": [],

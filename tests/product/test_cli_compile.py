@@ -51,12 +51,14 @@ def test_help_exposes_exact_command_tree(cli_runner):
         "resume",
         "lock",
         "retro",
+        "knowledge",
         "bootstrap",
         "operator",
     }
     assert nested_command_names(cli_runner, app, "bindings") == {"build"}
     assert nested_command_names(cli_runner, app, "lock") == {"show"}
     assert nested_command_names(cli_runner, app, "retro") == {"show"}
+    assert nested_command_names(cli_runner, app, "knowledge") == {"promote"}
     assert nested_command_names(cli_runner, app, "bootstrap") == {"run", "status", "stop", "resume"}
     assert nested_command_names(cli_runner, app, "operator") == {
         "start",
